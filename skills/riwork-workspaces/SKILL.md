@@ -1,0 +1,64 @@
+---
+name: riwork-workspaces
+description: Manage RiWork projects, Git worktrees, tasks, and persistent shell sessions through the riwork CLI. Use when organizing work across RiWork worktrees or inspecting a RiWork shell by UUID.
+---
+
+# RiWork workspaces
+
+Use the `riwork` CLI to read or change the same project, worktree, task, and shell state shown in the GPUI app. Run `riwork help` for the installed version's command syntax. If the binary is not installed, run `cargo run -- <command>` from the RiWork repository.
+
+Project and task data lives under `RIWORK_HOME`, or `~/.local/share/riwork` by default. Specify `--project ID` when the intended project is not the active one. Project, worktree, and task IDs accept unique UUID prefixes of at least eight characters; shell commands require the full UUID. Add `--json` to read commands when parsing results.
+
+## Projects and worktrees
+
+- `riwork project add PATH [--name NAME]` registers a project and its root worktree.
+- `riwork project create PATH [--name NAME] [--no-git]` creates or registers a folder. It initializes Git by default only when no project repositories exist. `--no-git` preserves a plain folder; `project add` remains passive. `riwork project inspect PATH --json` reports the repositories found. A project can contain one repository, several repositories, or none.
+- `riwork project list` and `riwork project show [ID]` inspect projects. `riwork project use ID` chooses the default project for subsequent windows and CLI commands; already open windows keep their own project.
+- `riwork open PROJECT_OR_PATH` opens a project in a new window. A project selector can be its name, UUID, or unique UUID prefix; a path registers or opens that directory.
+- `riwork worktree create BRANCH [--project ID] [--path PATH] [--base REF]` creates a Git worktree. `riwork worktree list [--project ID | --all]` and `riwork worktree show ID` inspect it.
+- Add `--repo PATH_OR_NAME_OR_WORKTREE_UUID` when selecting a repository within a project. Several repositories require an explicit selection. A wrapper folder remains a folder; worktrees belong to the selected contained repository. An empty repository needs a first commit before a Git worktree can be created.
+- `riwork worktree forget ID` removes a missing worktree record after its tasks and shells have been cleared. It never deletes the worktree directory.
+- `riwork search QUERY` searches projects, worktrees, and tasks.
+
+## Tasks
+
+- `riwork task add TITLE [--project ID] [--details TEXT]` creates a project task. Use `riwork project tasks [ID]` for all tasks in a project, including unassigned tasks; use `riwork worktree tasks ID` for tasks assigned to one worktree.
+- `riwork task assign WORKTREE_ID TASK_ID...` assigns one or more tasks in a single batch. Tasks must belong to the worktree's project. Inspect the project and worktree task lists before assigning when the target is ambiguous.
+- `riwork task unassign TASK_ID...` removes worktree assignments. `riwork task status TASK_ID todo|in_progress|done` updates progress. `riwork task show ID` and `riwork task list [--project ID | --worktree ID | --all]` inspect tasks.
+
+## Persistent shells
+
+- `riwork shell list [--project ID | --all]` lists project shells. `riwork shell create [--project ID | --worktree ID] [--command CMD]` starts one; a worktree shell starts in that worktree. Record its full UUID.
+- `riwork shell output UUID [--lines N]` reads scrollback and the current screen as text. `riwork shell cwd UUID` shows its current directory; `riwork shell metrics UUID` shows CPU and resident RAM for the shell process tree. Use `--json` if consuming these results programmatically.
+- `riwork shell send UUID TEXT` sends the text followed by Return, so use it only when executing that input is intended. `riwork shell attach UUID` prints the tmux attach command.
+- Shells run in a dedicated tmux server and survive closing tabs, switching projects, and restarting the UI. `riwork shell close UUID` **ends the shell process**; do not use it merely to dismiss a tab or change views.
+
+The UI saves each project's mixed panel/shell tabs, order, split sizes, and active selections. Closing a shell tab keeps its shell alive and detached across restarts; click it in the Shells panel to attach it again. A shell created through the CLI appears in the Shells panel during refresh and joins the saved active pane when that project next opens.
+
+## GPUI views
+
+RiWork creates `~/Documents/riwork` at app startup if missing. New projects default to this parent; `riwork project create --name NAME` creates a folder there, while explicit CLI paths retain their usual meaning. Use **+ PROJECT** or Cmd+N for the compact creation form. Enter a name to create a child folder under the default parent; the folder updates automatically. Editing or browsing the folder selects that explicit location and makes the display name optional. Its Git-init checkbox starts checked when no repository is found and can be disabled. Existing repositories are reused.
+
+The **+** menu opens a shell, Codex, or Claude in the selected worktree. Cmd+Shift+C and Cmd+Shift+L open normal Codex and Claude sessions. Explicit unrestricted presets pass the harness's permission bypass flag.
+
+- `riwork shell create --harness codex|claude [--project ID | --worktree ID] [--unrestricted]` opens a persistent official CLI session and records its harness. Custom `--command` and `--harness` are mutually exclusive.
+- `riwork usage [--shell UUID] [--json]` reads provider-reported quota. Without a shell UUID it reads the current Codex account. Claude preset sessions send local statusline telemetry; quota can be unavailable until the first response or on unsupported accounts/versions. Treat missing windows as unknown.
+- The **USAGE** tab shows remaining quota, reset countdowns, and snapshot age. Context percentage and estimated session cost are separate metrics. Quota belongs to the account and is shared across its sessions.
+
+Projects, Worktrees, Tasks, and Shells are independent searchable panel tabs. Projects lists all projects; the other panels show the active project. Panel tabs begin in the left pane and can be moved or closed like shell tabs. Every pane's tab strip stays at the top.
+
+- Drag tabs to reorder them, move them onto another pane's strip or center, or drop them on a pane edge to create a split. The outer 12 px of the window docks a tab across the whole workspace.
+- Drag the 5 px split dividers to resize panes. Empty strip space or the **⋮** grip touching the window's top edge drags the window; double-click it to zoom. The grip remains reachable when tabs overflow.
+- **▤** reopens closed panels, adds a shell, or closes the active tab.
+- Cmd+B opens or selects Projects. Cmd+F searches the current panel, opening Projects if a shell tab is active.
+- Click a project row to switch the current window. Its **↗** button opens that project in another window; Cmd+Shift+N opens a new project window. Existing windows retain their own project when the CLI default changes.
+
+Native close/minimize/maximize controls occupy a small island; panes use the remaining top and bottom space. The bottom-right status island shows project CPU/RAM, the active shell UUID, **G·ORCH**, and **P·ORCH**.
+
+## Orchestrator
+
+**G·ORCH** or Cmd+Shift+O opens the global orchestrator. **P·ORCH** or Cmd+Alt+O opens the current project's orchestrator. Both are available in the **+ / ▤** menu. The global manager coordinates projects; each project manager coordinates its own tasks, worktrees, and worker sessions. They have independent persistent shells and windows, and no worktree assignment. Worker shell lists exclude orchestrators.
+
+New default Codex orchestrators explicitly load the embedded **riwork-orchestrator** skill in separate contexts, with their global or project scope supplied at startup. Existing sessions can load it once through **LOAD SKILL** or `riwork orchestrator load-skill [--project ID]`; custom commands are unchanged. Loading the skill waits for an objective and does not schedule work.
+
+`riwork orchestrator create [--command CMD]` starts or reuses the global session; add `--project ID` to start or reuse that project's session. `riwork orchestrator list --json` lists all orchestrators. `status`, `output [--lines N]`, `cwd`, `metrics`, `send TEXT`, `load-skill`, and `close` use the global session by default; pass `--project ID` for a project session. For `send`, put scope flags before the one quoted, single-line task argument. Closing one scope preserves the others. Global creation also accepts `--cwd PATH`; project creation uses its registered project root for context.

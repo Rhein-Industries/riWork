@@ -1,0 +1,3 @@
+interface:
+  display_name: "RiWork Workspaces"
+  short_description: "Manage RiWork projects, worktrees, tasks, and shells"
