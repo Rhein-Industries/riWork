@@ -31,7 +31,10 @@ struct RemoteRootView: View {
                         }
                         Section("Desktops") {
                             ForEach(model.desktops) { desktop in
-                                Button { path.append(.projects(desktop.id)) } label: {
+                                Button {
+                                    path.append(.projects(desktop.id))
+                                    Task { await model.activate(desktop.id) }
+                                } label: {
                                     HStack(spacing: 12) {
                                         Image(systemName: "desktopcomputer").font(.title3).foregroundStyle(.tint)
                                         VStack(alignment: .leading, spacing: 4) {
@@ -64,23 +67,26 @@ struct RemoteRootView: View {
                 switch route {
                 case .projects(let desktopID):
                     ProjectSelectionView(model: model, onSelect: { path.append(.terminals($0)) })
-                        .task(id: desktopID) { await model.activate(desktopID) }
+                        .id(desktopID)
                 case .terminals(let project):
                     TerminalTabsView(model: model, project: project)
                 }
             }
         }
         .sheet(item: $pairingRequest) { request in
-            PairDesktopSheet(model: model, initialText: request.text, onAdded: { id in path = [.projects(id)] })
+            PairDesktopSheet(model: model, initialText: request.text, onAdded: { id in
+                path = [.projects(id)]
+                Task { await model.activate(id) }
+            })
         }
         .sheet(item: $renaming) { RenameDesktopSheet(model: model, desktop: $0) }
-        .confirmationDialog("Remove \(removing?.name ?? "desktop")?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
+        .alert("Remove pairing?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { desktop in
             Button("Remove pairing", role: .destructive) {
-                guard let id = removing?.id else { return }
-                Task { do { try await model.remove(id: id) } catch { model.error = error.localizedDescription } }
+                Task { do { try await model.remove(id: desktop.id) } catch { model.error = error.localizedDescription } }
                 removing = nil
             }
-        } message: { Text("Removes the local pairing keys. Desktop sessions keep running. Revoke this device on the desktop to deny future access.") }
+            Button("Cancel", role: .cancel) { removing = nil }
+        } message: { desktop in Text("Removes \(desktop.name)’s local pairing keys. Desktop sessions keep running. Revoke this device on the desktop to deny future access.") }
         .onOpenURL { url in pairingRequest = PairingRequest(text: url.absoluteString) }
     }
 }
@@ -351,8 +357,9 @@ struct SessionConsole: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { review = nil } } }
             }.presentationDetents([.medium, .large])
         }
-        .confirmationDialog("Acknowledge unconfirmed input?", isPresented: $acknowledge, titleVisibility: .visible) {
+        .alert("Acknowledge unconfirmed input?", isPresented: $acknowledge) {
             Button("Acknowledge after review") { do { try model.acknowledgeUncertainInput() } catch { model.error = error.localizedDescription } }
+            Button("Cancel", role: .cancel) {}
         } message: { Text("This clears the local warning. It does not submit or retry anything. Review the indicated session before creating a new input.") }
     }
     private var outputStale: Bool { model.state != .connected || model.snapshotStale || model.outputSessionID != model.sessionID || model.session?.alive != true || !model.viewportReady }

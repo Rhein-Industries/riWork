@@ -57,6 +57,12 @@ the software keyboard stayed at **92×28**, landscape became **136×22**, native
 backgrounding restored **100×30**, and foreground resume retained the selected
 session and re-applied its viewport. No draft was sent during keyboard testing.
 
+Final native cleanup verified the pairing-removal alert on both iOS 18.1 iPad
+and iOS 26 iPhone and returned both apps to their empty state. Test pairings were
+revoked before removal. A final navigation change makes connection activation an
+explicit desktop-selection action; returning to the project list keeps manual
+disconnect in place. Both final signed simulator builds pass.
+
 ## Limits
 
 Physical camera scanning and a public trusted-TLS relay have not been exercised.
