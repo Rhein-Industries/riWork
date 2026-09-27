@@ -180,6 +180,24 @@ pub fn record_claude_hook(home: &Path, shell_id: &str, input: &str) -> Result<()
     result
 }
 
+/// Structured Claude lifecycle gate; terminal prompt evidence is also required.
+pub(crate) fn schedule_state(home: &Path, shell_id: &str) -> Option<(String, Option<String>)> {
+    let file = fs::File::open(
+        home.join("agent-hooks/claude")
+            .join(format!("{shell_id}.json")),
+    )
+    .ok()?;
+    if file.metadata().ok()?.len() > MAX_CURSOR_BYTES {
+        return None;
+    }
+    let cursor: ClaudeTurnCursor = serde_json::from_reader(file.take(MAX_CURSOR_BYTES + 1)).ok()?;
+    if !valid_identifier(&cursor.session_id) {
+        return None;
+    }
+    let token = (cursor.completed && valid_identifier(&cursor.turn_id)).then_some(cursor.turn_id);
+    Some((cursor.session_id, token))
+}
+
 fn private_file(path: &Path, create_new: bool) -> Result<fs::File, String> {
     if fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_file()) {
         return Err("Claude completion cursor must be a regular file".into());
