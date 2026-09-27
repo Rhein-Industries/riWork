@@ -189,7 +189,7 @@ after disconnect, reconnect, revocation and connector SIGKILL. It retains the
 same UUID/window/pane/PID and completes crash recovery within the 15-second bound.
 
 Input deduplication: UUIDs are unique per device and logical operation. Desktop
-persists (device ID, request ID, canonical request, state/result) **before** sending
+persists (device ID, request ID, canonical request digest, state/result) **before** sending
 input and retains it across reconnect/restart. Retry same UUID + same request
 returns cached response; changed contents fail `request_conflict`. Pending/uncertain
 outcome returns `outcome_unknown`, never re-sends automatically. CLI failures after
