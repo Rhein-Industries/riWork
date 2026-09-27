@@ -32,6 +32,31 @@ ln -sfn "$PWD/target/release/riwork" "$HOME/.local/bin/riwork"
 
 Run `riwork help` for the full command list. Data defaults to `~/.local/share/riwork`; set `RIWORK_HOME` to use a separate store and tmux server.
 
+## Encrypted iOS access
+
+The standalone `riwork-remote` relay and outbound desktop connector let paired
+mobile devices inspect existing projects/tasks/worktrees, read persistent shell
+and orchestrator output, and submit a line to an explicitly selected existing
+session. Each device has independent endpoint secrets and revocable access; the
+relay routes encrypted frames without session content or pairing secrets.
+
+```sh
+cargo build --locked --release --manifest-path remote/Cargo.toml
+export RIWORK_REMOTE_BIN="$PWD/remote/target/release/riwork-remote"
+riwork remote --help
+riwork remote start --riwork /absolute/path/to/riwork
+```
+
+Build the standalone binary before bundling to include it beside the desktop
+CLI. `RIWORK_HOME` is retained. Stopping the transport preserves tmux and harness
+state. Mobile tabs can temporarily resize the existing tmux grid to their visible
+terminal area; disconnect restores desktop sizing and keeps the same process.
+Follow [pairing and test instructions](remote/README.md), the
+[frozen mobile protocol](docs/remote-protocol.md), and
+[TLS relay deployment](docs/remote-deployment.md). v1 supports captured terminal
+text and single-line input, with persistent request deduplication and explicit
+unknown-outcome errors.
+
 ## Update and reload
 
 ```sh
@@ -44,7 +69,7 @@ riwork reload --session       # Also resume this RiWork-hosted Codex conversatio
 
 Reloads preserve each window's project, layout, position, and persistent shells. The old app exits only after its replacement has restored the windows. Running agents stay attached to their existing tmux sessions. Apps opened before reload support was installed need one normal quit and reopen first.
 
-`update` builds and packages your local source in a staging directory, then installs the executable and app together. It defaults to an optimized release build, including when run from a debug CLI. Use `--source /path/to/riWork` to choose a checkout, `--debug` for a development build, or `--no-reload` to install without reopening windows. `--release` selects the default explicitly; it cannot be combined with `--debug`. The command does not fetch or change Git history. Later `open` and `reload` commands use the latest successfully installed app, including when its profile or source checkout differs from the CLI's. Build failures keep the installed app running and retain a diagnostic log.
+`update` builds and packages your local source in a staging directory, including `riwork-remote` when the checkout contains its manifest, then installs the executable and app together. A companion failure preserves the previous installation. It defaults to an optimized release build, including when run from a debug CLI. Use `--source /path/to/riWork` to choose a checkout, `--debug` for a development build, or `--no-reload` to install without reopening windows. `--release` selects the default explicitly; it cannot be combined with `--debug`. The command does not fetch or change Git history. Later `open` and `reload` commands use the latest successfully installed app, including when its profile or source checkout differs from the CLI's. Build failures keep the installed app running and retain a diagnostic log.
 
 `--session` applies to the current RiWork Codex pane. It waits for the active turn to finish, then resumes the same conversation UUID through RiWork's Cua launcher. Other agents keep running. New RiWork launches bind tool commands to their own terminal even when Codex shares a backend. For an older launch without that binding, use `riwork reload --session --shell SHELL_UUID`, selecting the conversation's terminal UUID from RiWork. Use it after installing a new harness integration; reopening the app alone cannot replace the tools of an already running agent.
 

@@ -74,6 +74,11 @@ ZIG
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$resources/terminfo" "$resources/ghostty"
 cp "$binary" "$bundle/Contents/MacOS/riwork"
+# Optional standalone connector: build with remote/Cargo.toml before bundling.
+remote_binary="remote/target/$profile/riwork-remote"
+if [ -x "$remote_binary" ]; then
+    cp "$remote_binary" "$bundle/Contents/MacOS/riwork-remote"
+fi
 cp "$app_icon" "$resources/RiWork.icns"
 tic -x -o "$resources/terminfo" "$work/ghostty.terminfo"
 cp -R "$ghostty_source/shell-integration" "$resources/ghostty/"

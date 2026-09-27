@@ -82,12 +82,10 @@ fn validate_source(source: &Path) -> Result<PathBuf, String> {
         if line.starts_with('[') {
             package = line == "[package]";
         }
-        if package {
-            if let Some((key, value)) = line.split_once('=') {
-                let value = value.trim().split('#').next().unwrap_or_default().trim();
-                if key.trim() == "name" && matches!(value, "\"riwork\"" | "'riwork'") {
-                    riwork = true;
-                }
+        if package && let Some((key, value)) = line.split_once('=') {
+            let value = value.trim().split('#').next().unwrap_or_default().trim();
+            if key.trim() == "name" && matches!(value, "\"riwork\"" | "'riwork'") {
+                riwork = true;
             }
         }
     }
@@ -144,10 +142,10 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
     )?;
     let cargo = find_tool("cargo", &tool_path)
         .ok_or("Cargo is required to rebuild RiWork. Install Rust or put cargo on PATH.")?;
-    let mut build = Command::new(cargo);
+    let mut build = Command::new(&cargo);
     build
         .current_dir(&source)
-        .args(["build", "--bin", "riwork"])
+        .args(["build", "--locked", "--bin", "riwork"])
         .env("CARGO_TARGET_DIR", &staged_target)
         .env("PATH", &tool_path);
     if profile == "release" {
@@ -161,6 +159,32 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
         &mut log,
         &log_path,
     )?;
+
+    // Build the companion in the disposable bundler layout. Never copy a stale
+    // optional binary from the running app or silently omit it after failure.
+    let companion = source.join("remote/Cargo.toml").is_file();
+    if companion {
+        let remote_target = staging.path.join("remote/target");
+        fs::create_dir_all(&remote_target)
+            .map_err(|e| format!("Cannot stage remote target: {e}"))?;
+        seed_build_cache(
+            &source.join("remote/target").join(&profile),
+            &remote_target.join(&profile),
+            &tool_path,
+            &mut log,
+            &log_path,
+        )?;
+        let mut remote_build =
+            companion_build_command(&cargo, &source, &remote_target, &profile, &tool_path);
+        eprintln!("Building riwork-remote ({profile}).");
+        run_stage(
+            &mut remote_build,
+            "Remote companion build",
+            BUILD_TIMEOUT,
+            &mut log,
+            &log_path,
+        )?;
+    }
 
     // The existing bundler removes target/<profile>/RiWork.app. Run an exact
     // copy in a disposable checkout layout so it can never remove a live app.
@@ -182,6 +206,7 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
     let staged_executable = staged_target.join(&profile).join("riwork");
     let staged_bundle = staged_target.join(&profile).join("RiWork.app");
     validate_artifacts(&staged_executable, &staged_bundle)?;
+    validate_companion(&staged_bundle, companion)?;
     let destination = target.join(&profile);
     fs::create_dir_all(&destination)
         .map_err(|error| format!("Cannot create install directory: {error}"))?;
@@ -213,6 +238,50 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
         bundle,
         log_path,
     })
+}
+
+fn companion_build_command(
+    cargo: &Path,
+    source: &Path,
+    target: &Path,
+    profile: &str,
+    tool_path: &std::ffi::OsStr,
+) -> Command {
+    let mut command = Command::new(cargo);
+    command
+        .current_dir(source)
+        .args([
+            "build",
+            "--locked",
+            "--bin",
+            "riwork-remote",
+            "--manifest-path",
+        ])
+        .arg(source.join("remote/Cargo.toml"))
+        .env("CARGO_TARGET_DIR", target)
+        .env("PATH", tool_path);
+    if profile == "release" {
+        command.arg("--release");
+    }
+    command
+}
+fn validate_companion(bundle: &Path, required: bool) -> Result<(), String> {
+    if required {
+        let path = bundle.join("Contents/MacOS/riwork-remote");
+        let metadata = fs::metadata(&path)
+            .map_err(|e| format!("Missing staged remote companion {}: {e}", path.display()))?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err("Staged remote companion must be a nonempty executable".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return Err("Staged remote companion is not executable".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn stage_bundle_inputs(source: &Path, staging: &Path) -> Result<PathBuf, String> {
@@ -723,6 +792,60 @@ mod tests {
             fs::read_to_string(staged_bundle.join("version")).unwrap(),
             "old bundle"
         );
+    }
+
+    #[test]
+    fn companion_build_uses_staged_target_and_bundle_validation_fails_closed() {
+        let temporary = StagingDirectory::new(
+            env::temp_dir().join(format!("riwork-update-companion-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let source = temporary.path.join("source with spaces");
+        let target = temporary.path.join("staging/remote/target");
+        for profile in ["debug", "release"] {
+            let command = companion_build_command(
+                Path::new("/test/cargo"),
+                &source,
+                &target,
+                profile,
+                std::ffi::OsStr::new("/test/bin"),
+            );
+            let args = command
+                .get_args()
+                .map(|a| a.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                &args[..5],
+                [
+                    "build",
+                    "--locked",
+                    "--bin",
+                    "riwork-remote",
+                    "--manifest-path"
+                ]
+            );
+            assert_eq!(args[5], source.join("remote/Cargo.toml").to_string_lossy());
+            assert_eq!(args.iter().any(|a| a == "--release"), profile == "release");
+            assert_eq!(command.get_current_dir(), Some(source.as_path()));
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(k, v)| k == "CARGO_TARGET_DIR" && v == Some(target.as_os_str()))
+            );
+        }
+        let bundle = temporary.path.join("RiWork.app");
+        validate_companion(&bundle, false).unwrap();
+        assert!(validate_companion(&bundle, true).is_err());
+        let binary = bundle.join("Contents/MacOS/riwork-remote");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, "companion").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert!(validate_companion(&bundle, true).is_err());
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        validate_companion(&bundle, true).unwrap();
     }
 
     #[cfg(unix)]
