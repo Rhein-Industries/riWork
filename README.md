@@ -57,6 +57,10 @@ Follow [pairing and test instructions](remote/README.md), the
 text and single-line input, with persistent request deduplication and explicit
 unknown-outcome errors.
 
+Open the native iPhone/iPad project in [ios/RiWorkRemote.xcodeproj](ios/RiWorkRemote.xcodeproj).
+See [iOS setup and verification](ios/README.md) for building, pairing and continuing
+in the compact project and terminal-tab interface.
+
 ## Update and reload
 
 ```sh
