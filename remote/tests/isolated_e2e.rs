@@ -48,6 +48,24 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
+    fn tmux(&self, args: &[&str]) -> Result<String> {
+        let canonical = self.home.canonicalize()?;
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in canonical.to_string_lossy().as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let output = std::process::Command::new("tmux")
+            .args(["-L", &format!("riwork-{hash:016x}")])
+            .args(args)
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "isolated tmux: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8(output.stdout)?.trim().into())
+    }
     async fn cli(&self, args: &[&str]) -> Result<Value> {
         let out = Command::new(&self.cli)
             .env("RIWORK_HOME", &self.home)
@@ -84,6 +102,36 @@ impl Fixture {
         }
         Ok(())
     }
+}
+async fn cells(f: &Fixture, shell: &str, columns: u32, rows: u32) -> Result<String> {
+    let target = format!("{shell}:0.0");
+    for _ in 0..300 {
+        let size = f.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &target,
+            "#{pane_width}|#{pane_height}|#{session_name}|#{window_id}|#{pane_id}|#{pane_pid}",
+        ])?;
+        let expected = format!("{columns}|{rows}|{shell}|");
+        if let Some(identity) = size.strip_prefix(&expected) {
+            return Ok(identity.to_owned());
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    anyhow::bail!("isolated shell did not reach {columns}x{rows}")
+}
+async fn harness(path: &Path, turns: usize) -> Result<Value> {
+    for _ in 0..100 {
+        if let Ok(bytes) = std::fs::read(path) {
+            let value: Value = serde_json::from_slice(&bytes)?;
+            if value["turns"].as_array().is_some_and(|t| t.len() == turns) {
+                return Ok(value);
+            }
+        }
+        sleep(Duration::from_millis(30)).await;
+    }
+    anyhow::bail!("raw PTY harness did not receive exactly {turns} turns")
 }
 async fn mobile(pair: &Pairing) -> Result<(Socket, Session)> {
     let end = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -422,6 +470,269 @@ async fn real_relay_connector_persistent_shell_retry_restart_and_revocation() ->
     );
     println!(
         "PASS: isolated projects/worktrees/tasks/shells/orchestrators; encrypted input/output; cached retry; restart preservation; pending unknown; tamper/replay/wrong-device closure; live revocation; no global data touched."
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires RIWORK_TEST_CLI; isolated real tmux/CLI/relay, 12-second crash recovery"]
+async fn mobile_viewport_ownership_restoration_and_long_turns_across_devices() -> Result<()> {
+    let cli = PathBuf::from(std::env::var_os("RIWORK_TEST_CLI").context("set RIWORK_TEST_CLI")?);
+    ensure!(cli.is_absolute(), "absolute CLI path required");
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home)?;
+    let mut f = Fixture {
+        temp,
+        home,
+        cli,
+        shells: vec![],
+        connector: None,
+        relay: None,
+    };
+    let project_dir = f.temp.path().join("project");
+    std::fs::create_dir(&project_dir)?;
+    let project = f
+        .cli(&["project", "add", project_dir.to_str().unwrap()])
+        .await?;
+    let project_id = project["id"].as_str().unwrap();
+    let capture = f.temp.path().join("turns.json");
+    let negative = f.temp.path().join("negative.json");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/paste_harness.py");
+    let command = |path: &Path| {
+        format!(
+            "exec /usr/bin/python3 '{}' '{}'",
+            script.display(),
+            path.display()
+        )
+    };
+    for cmd in [command(&capture), command(&negative), "/bin/zsh".into()] {
+        let shell = f
+            .cli(&[
+                "shell",
+                "create",
+                "--project",
+                project_id,
+                "--command",
+                &cmd,
+            ])
+            .await?;
+        f.shells.push(shell["id"].as_str().unwrap().to_owned());
+    }
+    let shell = f.shells[0].clone();
+    let negative_shell = f.shells[1].clone();
+    let other = f.shells[2].clone();
+    harness(&capture, 0).await?;
+    harness(&negative, 0).await?;
+    // Negative control reproduces the reviewed literal-text/immediate-Return bug.
+    let negative_pane = format!("{negative_shell}:0.0");
+    f.tmux(&[
+        "send-keys",
+        "-t",
+        &negative_pane,
+        "-l",
+        "--",
+        &"n".repeat(3500),
+    ])?;
+    f.tmux(&["send-keys", "-t", &negative_pane, "Enter"])?;
+    sleep(Duration::from_millis(200)).await;
+    let bad = harness(&negative, 0).await?;
+    assert_eq!(bad["suppressed"], 1);
+    assert_eq!(bad["enters"], 1);
+    let window = format!("{shell}:0");
+    f.tmux(&["resize-window", "-t", &window, "-x", "120", "-y", "40"])?;
+    f.tmux(&["set-option", "-wu", "-t", &window, "window-size"])?;
+    let original = cells(&f, &shell, 120, 40).await?;
+    let other_pane = format!("{other}:0.0");
+    let other_size = f.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &other_pane,
+        "#{pane_width}|#{pane_height}",
+    ])?;
+    let dims = other_size
+        .split('|')
+        .map(str::parse::<u32>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let other_identity = cells(&f, &other, dims[0], dims[1]).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let storage = Storage::at(f.home.clone())?;
+    let routes_path = f.temp.path().join("routes.json");
+    let relay_url = format!("ws://{}/v1/ws", listener.local_addr()?);
+    let a = storage.pair(
+        relay_url.clone(),
+        "a".into(),
+        true,
+        &f.temp.path().join("a.json"),
+        Some(&routes_path),
+    )?;
+    let b = storage.pair(
+        relay_url,
+        "b".into(),
+        true,
+        &f.temp.path().join("b.json"),
+        Some(&routes_path),
+    )?;
+    let relay = Relay::new(private_read::<Routes>(&routes_path, 1_048_576)?, 16)?;
+    f.relay = Some(tokio::spawn(async move {
+        axum::serve(listener, relay.router()).await.unwrap();
+    }));
+    f.start_connector().await?;
+    let (mut wa, mut sa) = mobile(&a).await?;
+    let (mut wb, mut sb) = mobile(&b).await?;
+    let size = json!({"shell_id":shell,"columns":43,"rows":17});
+    assert_eq!(
+        call(&mut wa, &mut sa, "shell.resize", size.clone()).await?["result"],
+        size
+    );
+    assert_eq!(cells(&f, &shell, 43, 17).await?, original);
+    assert_eq!(
+        call(&mut wb, &mut sb, "shell.resize", size.clone()).await?["error"]["code"],
+        "viewport_busy"
+    );
+    assert_eq!(
+        call(
+            &mut wb,
+            &mut sb,
+            "shell.resize.clear",
+            json!({"shell_id":shell})
+        )
+        .await?["error"]["code"],
+        "viewport_busy"
+    );
+    assert_eq!(cells(&f, &shell, 43, 17).await?, original);
+    // One complete long turn, then its cached retry sends neither text nor Enter.
+    let long = "a".repeat(3500);
+    let input = request(
+        &Uuid::new_v4().to_string(),
+        "shell.input",
+        json!({"shell_id":shell,"line":long}),
+    );
+    let first = rpc(&mut wa, &mut sa, &input).await?;
+    assert_eq!(first["ok"], true);
+    assert_eq!(rpc(&mut wa, &mut sa, &input).await?, first);
+    let turns = harness(&capture, 1).await?;
+    assert_eq!(turns["turns"], json!([long]));
+    assert_eq!(turns["enters"], 1);
+    assert_eq!(turns["suppressed"], 0);
+    assert_eq!(turns["bracketed"], 1);
+    assert_eq!(turns["cells"], json!([43, 17]));
+    // Switch to another existing tab: release previous size and preserve both PIDs.
+    assert_eq!(
+        call(
+            &mut wa,
+            &mut sa,
+            "shell.resize",
+            json!({"shell_id":other,"columns":57,"rows":21})
+        )
+        .await?["ok"],
+        true
+    );
+    assert_eq!(cells(&f, &shell, 120, 40).await?, original);
+    assert_eq!(cells(&f, &other, 57, 21).await?, other_identity);
+    assert_eq!(
+        call(
+            &mut wa,
+            &mut sa,
+            "shell.resize.clear",
+            json!({"shell_id":other})
+        )
+        .await?["ok"],
+        true
+    );
+    assert_eq!(cells(&f, &other, dims[0], dims[1]).await?, other_identity);
+    // The same device B connection stays usable after a denied resize.
+    let line_a = "b".repeat(3500);
+    let line_b = "c".repeat(3500);
+    let (ra, rb) = tokio::try_join!(
+        call(
+            &mut wa,
+            &mut sa,
+            "shell.input",
+            json!({"shell_id":shell,"line":line_a})
+        ),
+        call(
+            &mut wb,
+            &mut sb,
+            "shell.input",
+            json!({"shell_id":shell,"line":line_b})
+        )
+    )?;
+    assert_eq!(ra["ok"], true);
+    assert_eq!(rb["ok"], true);
+    let turns = harness(&capture, 3).await?;
+    let got = turns["turns"].as_array().unwrap();
+    assert_eq!(got[0], long);
+    assert!(
+        got[1..] == [json!(line_a.clone()), json!(line_b.clone())]
+            || got[1..] == [json!(line_b), json!(line_a)]
+    );
+    assert_eq!(turns["enters"], 3);
+    assert_eq!(turns["suppressed"], 0);
+    assert_eq!(turns["bracketed"], 3);
+    // Renewal keeps the override beyond a lease period. Graceful peer loss clears it.
+    assert_eq!(
+        call(&mut wa, &mut sa, "shell.resize", size.clone()).await?["ok"],
+        true
+    );
+    sleep(Duration::from_secs(13)).await;
+    assert_eq!(cells(&f, &shell, 43, 17).await?, original);
+    wa.close(None).await?;
+    assert_eq!(cells(&f, &shell, 120, 40).await?, original);
+    let (mut wa, mut fresh) = mobile(&a).await?;
+    assert_ne!(fresh.id, sa.id);
+    assert_eq!(rpc(&mut wa, &mut fresh, &input).await?, first);
+    assert_eq!(
+        call(&mut wa, &mut fresh, "shell.resize", size.clone()).await?["ok"],
+        true
+    );
+    // A forged encrypted frame also releases an active viewport immediately.
+    let mut forged = fresh.seal(
+        "c2d",
+        &serde_json::to_vec(&request(
+            &Uuid::new_v4().to_string(),
+            "projects.list",
+            json!({}),
+        ))?,
+    )?;
+    forged.ciphertext.replace_range(
+        0..1,
+        if forged.ciphertext.starts_with('A') {
+            "B"
+        } else {
+            "A"
+        },
+    );
+    send_json(&mut wa, &forged).await?;
+    let lost = timeout(Duration::from_secs(3), receive_json(&mut wa)).await??;
+    assert_eq!(lost["online"], false);
+    assert_eq!(cells(&f, &shell, 120, 40).await?, original);
+    wa.close(None).await?;
+    let (mut wa, mut fresh) = mobile(&a).await?;
+    assert_eq!(
+        call(&mut wa, &mut fresh, "shell.resize", size.clone()).await?["ok"],
+        true
+    );
+    storage.revoke(&a.device_id)?;
+    let lost = timeout(Duration::from_secs(1), receive_json(&mut wa)).await??;
+    assert_eq!(lost["online"], false);
+    assert_eq!(cells(&f, &shell, 120, 40).await?, original);
+    assert_eq!(
+        call(&mut wb, &mut sb, "shell.resize", size).await?["ok"],
+        true
+    );
+    let start = std::time::Instant::now();
+    f.stop_connector().await?; // SIGKILL: independent watchdog must recover.
+    assert_eq!(cells(&f, &shell, 120, 40).await?, original);
+    assert!(start.elapsed() < Duration::from_secs(15));
+    assert_eq!(harness(&capture, 3).await?["enters"], 3);
+    assert_eq!(
+        f.tmux(&["show-options", "-wqv", "-t", &window, "window-size"])?,
+        ""
+    );
+    println!(
+        "PASS: real 120x40 ->43x17 ->120x40; same UUID/window/pane/PID; tab switch; owner denial; renewal, disconnect, reconnect, revoke and SIGKILL restoration; negative immediate-Enter control; complete 3500-char turns, cached retry, cross-device serialization; no user sessions touched."
     );
     Ok(())
 }

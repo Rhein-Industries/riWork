@@ -2,6 +2,7 @@ use riwork_remote::{
     config::{Storage, private_write},
     crypto::uuid,
     rpc::{Request, Rpc},
+    viewport::Viewport,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -19,10 +20,7 @@ fn fixture() -> (tempfile::TempDir, Rpc, String) {
         .unwrap();
     (
         tmp,
-        Rpc {
-            cli: "/nonexistent/no-CLI-may-be-executed".into(),
-            storage,
-        },
+        Rpc::new("/nonexistent/no-CLI-may-be-executed".into(), storage),
         pair.device_id,
     )
 }
@@ -33,6 +31,7 @@ fn req(method: &str, params: Value) -> Value {
 async fn untrusted_rpc_shape_and_input_limits_fail_before_cli() {
     let (_tmp, rpc, device) = fixture();
     let shell = uuid::Uuid::new_v4().to_string();
+    let mut viewport = Viewport::new(rpc.cli.clone(), device.clone());
     for r in [
         req("execute", json!({"command":"anything"})),
         req("projects.list", json!({"unexpected":true})),
@@ -51,8 +50,44 @@ async fn untrusted_rpc_shape_and_input_limits_fail_before_cli() {
             json!({"shell_id":shell,"line":"ok","command":"forbidden"}),
         ),
         req("shell.output", json!({"shell_id":"12345678"})),
+        req(
+            "shell.resize",
+            json!({"shell_id":shell,"columns":19,"rows":17}),
+        ),
+        req(
+            "shell.resize",
+            json!({"shell_id":shell,"columns":301,"rows":17}),
+        ),
+        req(
+            "shell.resize",
+            json!({"shell_id":shell,"columns":43,"rows":7}),
+        ),
+        req(
+            "shell.resize",
+            json!({"shell_id":shell,"columns":43,"rows":161}),
+        ),
+        req(
+            "shell.resize",
+            json!({"shell_id":shell,"columns":43.0,"rows":17}),
+        ),
+        req(
+            "shell.resize",
+            json!({"shell_id":shell,"columns":null,"rows":17}),
+        ),
+        req(
+            "shell.resize",
+            json!({"shell_id":shell,"columns":43,"rows":17,"owner":device}),
+        ),
+        req("shell.resize.clear", json!({"shell_id":"short"})),
+        req(
+            "shell.resize.clear",
+            json!({"shell_id":shell,"lease":device}),
+        ),
     ] {
-        let result = rpc.handle(&device, r).await.unwrap();
+        let result = rpc
+            .handle_in(&device, r, Some(&mut viewport))
+            .await
+            .unwrap();
         assert_eq!(result["error"]["code"], "invalid_request", "{result}");
     }
     assert!(uuid("11111111-1111-4111-8111-11111111111A").is_err());

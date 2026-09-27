@@ -640,9 +640,40 @@ impl SessionManager {
     /// Send literal text followed by Return to an existing shell.
     pub fn send(&self, id: &str, text: &str) -> Result<(), String> {
         self.require_live(id)?;
-        self.tmux_checked(&["send-keys", "-l", "-t", &pane_target(id), "--", text])?;
-        self.tmux_checked(&["send-keys", "-t", &pane_target(id), "Enter"])?;
-        Ok(())
+        self.paste_and_submit(id, text)
+    }
+
+    pub fn resize_viewport(
+        &self,
+        id: &str,
+        owner: &str,
+        lease: &str,
+        columns: u32,
+        rows: u32,
+    ) -> Result<crate::session_viewport::Size, String> {
+        self.require_live(id)?;
+        let exe = env::current_exe().map_err(|e| e.to_string())?;
+        crate::session_viewport::resize(
+            &self.home,
+            crate::session_viewport::Size {
+                shell_id: id.into(),
+                columns,
+                rows,
+            },
+            owner,
+            lease,
+            &exe,
+            &|args| self.tmux_text(args),
+        )
+    }
+    pub fn clear_viewport(&self, id: &str, owner: &str, lease: &str) -> Result<(), String> {
+        crate::session_viewport::clear(&self.home, id, owner, lease, &|args| self.tmux_text(args))
+    }
+    pub fn watch_viewport(&self, id: &str, owner: &str, lease: &str) -> Result<(), String> {
+        crate::session_viewport::watch(&self.home, id, owner, lease, &|args| self.tmux_text(args))
+    }
+    fn tmux_text(&self, args: &[&str]) -> Result<String, String> {
+        Ok(String::from_utf8_lossy(&self.tmux_checked(args)?.stdout).into_owned())
     }
 
     pub fn current_directory(&self, id: &str) -> Result<PathBuf, String> {
@@ -1033,26 +1064,7 @@ impl SessionManager {
     }
 
     fn paste_and_submit(&self, id: &str, text: &str) -> Result<(), String> {
-        // Paste as one bracketed block: literal newline key events could submit
-        // fragments of the embedded skill instead of one complete prompt.
-        let buffer = format!("riwork-skill-{}", Uuid::new_v4());
-        self.tmux_checked(&["set-buffer", "-b", &buffer, "--", text])?;
-        let result = self
-            .tmux_checked(&[
-                "paste-buffer",
-                "-p",
-                "-r",
-                "-d",
-                "-b",
-                &buffer,
-                "-t",
-                &pane_target(id),
-            ])
-            .and_then(|_| self.tmux_checked(&["send-keys", "-t", &pane_target(id), "Enter"]));
-        if result.is_err() {
-            let _ = self.tmux_checked(&["delete-buffer", "-b", &buffer]);
-        }
-        result.map(|_| ())
+        crate::session_input::submit(&self.home, id, text, &|args| self.tmux_text(args))
     }
 
     fn tmux_command(&self, args: &[&str]) -> Result<Output, String> {

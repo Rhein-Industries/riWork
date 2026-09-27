@@ -50,11 +50,14 @@ riwork task status TASK_ID todo|in_progress|done
 riwork search QUERY                     Search projects, worktrees, and tasks
 riwork mcp                              Serve workspace tools over MCP stdio
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
+riwork remote --help                    Pairing, relay and connector command options
 riwork shell create [--project ID | --worktree ID] [--command CMD]
 riwork shell create [--worktree ID] --harness codex|claude [--unrestricted]
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N]      Read current shell output by UUID
-riwork shell send ID TEXT               Send a line to the shell
+riwork shell send ID TEXT               Paste a complete line and submit once
+riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
+riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
 riwork shell cwd|metrics|attach|close ID
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD]
@@ -1170,6 +1173,46 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 print_json(&json!({ "id": id, "output": output }))?;
             } else {
                 print!("{output}");
+            }
+        }
+        "resize" | "resize-clear" | "viewport-watch" => {
+            let owner = take_option(&mut args, "--owner")?.ok_or("--owner UUID is required")?;
+            let lease = take_option(&mut args, "--lease")?.ok_or("--lease UUID is required")?;
+            let columns = take_option(&mut args, "--columns")?;
+            let rows = take_option(&mut args, "--rows")?;
+            let id = take_single(
+                args,
+                "shell resize|resize-clear ID --owner UUID --lease UUID",
+            )?;
+            if operation == "resize" {
+                let columns = columns
+                    .ok_or("--columns required")?
+                    .parse::<u32>()
+                    .map_err(|_| "--columns must be an integer")?;
+                let rows = rows
+                    .ok_or("--rows required")?
+                    .parse::<u32>()
+                    .map_err(|_| "--rows must be an integer")?;
+                let size = manager.resize_viewport(&id, &owner, &lease, columns, rows)?;
+                if json {
+                    print_json(&size)?;
+                } else {
+                    println!("{} {}x{}", size.shell_id, size.columns, size.rows);
+                }
+            } else {
+                if columns.is_some() || rows.is_some() {
+                    return Err("dimensions only apply to resize".into());
+                }
+                if operation == "viewport-watch" {
+                    manager.watch_viewport(&id, &owner, &lease)?;
+                } else {
+                    manager.clear_viewport(&id, &owner, &lease)?;
+                    if json {
+                        print_json(&json!({"shell_id":id,"status":"cleared"}))?;
+                    } else {
+                        println!("Restored desktop sizing for {id}");
+                    }
+                }
             }
         }
         "send" => {

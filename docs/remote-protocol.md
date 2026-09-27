@@ -183,7 +183,10 @@ must reissue resize for its currently selected tab after authenticating ready.
 
 Validated before publication against isolated tmux 3.6a: 120x40 -> 43x17 ->
 120x40 with identical session UUID, pane `%0`, and process PID. No user sessions
-were touched. Root/connector integration verification follows implementation.
+were touched. The implemented isolated relay/connector/CLI test also verifies
+actual PTY cells, tab switching, ownership denial, lease renewal and restoration
+after disconnect, reconnect, revocation and connector SIGKILL. It retains the
+same UUID/window/pane/PID and completes crash recovery within the 15-second bound.
 
 Input deduplication: UUIDs are unique per device and logical operation. Desktop
 persists (device ID, request ID, canonical request, state/result) **before** sending

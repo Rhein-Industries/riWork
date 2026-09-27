@@ -13,15 +13,19 @@ cargo build --locked --release --manifest-path remote/Cargo.toml
 ```
 
 Use `remote/target/release/riwork-remote` directly. With a rebuilt desktop CLI,
-`riwork remote ...` forwards arguments unchanged to a sibling `riwork-remote`
-executable or the absolute path in `RIWORK_REMOTE_BIN`:
+`riwork remote ...` forwards arguments unchanged to a sibling `riwork-remote`,
+the companion inside an adjacent `RiWork.app`, or `RIWORK_REMOTE_BIN`. PATH
+symlinks to `target/{debug,release}/riwork` resolve that packaged companion too:
 
 ```sh
 export RIWORK_REMOTE_BIN="$PWD/remote/target/release/riwork-remote"
 riwork remote --help
 ```
 
-The macOS bundling script includes the optional standalone binary when built in
+`riwork update` builds the companion from `remote/Cargo.toml` into its disposable
+staging directory, requires it in the bundle, then installs the executable/app
+atomically. A companion build or validation failure keeps the previous install.
+The direct macOS bundling script includes the standalone binary when built in
 `remote/target/{debug,release}` before bundling. Existing installed desktop CLIs
 can use the standalone binary directly until the orchestrator installs a new
 build. No GUI window is needed for the connector. `RIWORK_HOME` is inherited by
@@ -69,6 +73,29 @@ relay or mobile client does not terminate tmux or a coding harness. Output is
 captured from existing tmux panes. Mobile requests select full shell UUIDs;
 project/worktree/task list requests use explicit full project UUIDs.
 
+Mobile project tabs select existing terminals by UUID, one terminal per tab.
+`shell.resize` pins the tmux grid to validated mobile cell counts;
+`shell.resize.clear` restores sizing without clearing content or sending input.
+One connection owns one override; another owner gets `viewport_busy`. Peer loss,
+revoke and shutdown clear sizing, with a separate 12-second crash lease as fallback.
+The connector renews the lease every three seconds. This affects the grid rendered
+by Ghostty, not the physical macOS window geometry. The CLI commands are:
+
+```sh
+riwork shell resize SHELL_UUID --columns 43 --rows 17 --owner DEVICE_UUID --lease CONNECTION_UUID --json
+riwork shell resize-clear SHELL_UUID --owner DEVICE_UUID --lease CONNECTION_UUID --json
+```
+
+The connector supplies owner/connection UUIDs internally; mobile RPCs never supply
+them. Local CLI callers must retain their same UUIDs to clear the override, or
+allow its unrenewed lease to expire. Do not use these commands on an unrelated
+terminal. Input uses a per-shell lock for the entire bracketed paste, 500-ms
+settling interval and single Return. It queues paired devices and local CLI sends
+so their text/Return cannot interleave. The delay exceeds the
+[Codex composer's paste suppression window](https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/paste_burst.rs).
+`sent` confirms terminal submission, not a model/server acknowledgment. No second
+Return is sent automatically if an outcome is uncertain.
+
 Revocation stops live endpoint access within one second and removes its local
 PSK/tokens. Remove that route from the relay manifest and restart the relay to
 invalidate relay tokens too. Other paired devices keep their endpoint secrets;
@@ -108,16 +135,25 @@ RIWORK_TEST_CLI=/absolute/path/to/installed/riwork \
   -- --ignored --nocapture
 ```
 
-The opt-in integration test starts a real relay and connector and invokes the
-installed RiWork CLI with its own temporary `RIWORK_HOME`. It creates only its
+The opt-in integration tests start a real relay and connector and invoke a newly
+rebuilt RiWork CLI with temporary `RIWORK_HOME` directories. They create only their
 own project, task, zsh shell and zsh-backed project orchestrator, submits only to
 their recorded UUIDs, and closes those sessions at cleanup. It checks list/output
 RPCs, input exactly once across reconnect/restart, preserved shell variables,
-unknown outcomes, tamper closure and active revocation. Default tests cover
+unknown outcomes, tamper closure and active revocation. The viewport/PTY test
+proves 120x40 ->43x17 ->120x40 with the same UUID/window/pane/PID and actual PTY
+cells, ownership denial, tab switch, reconnect, revoke, renewal and connector
+SIGKILL recovery within 15 seconds. A raw terminal composer reproduces the old
+immediate-Return failure, then verifies complete 3500-character submissions,
+exactly one Return, cached retry and two-device serialization. It calls no model
+and launches no coding worker. Default tests cover
 independent crypto vectors, replay/gaps/wrong device, routing authentication,
 health, duplicate sockets, unavailable peers, frame/socket/queue limits, private
 config, RPC allowlist and durable outcome-cache behavior. Root forwarding is
 compiled and exercised by the standalone tests too.
+The small default terminal-control test also requires `tmux` (and uses its own
+temporary server). Root input/viewport modules are compiled here with strict
+Clippy independently of GPUI.
 
 Fixtures were generated independently with Python `cryptography`, checked in
 Rust, and verified against native Swift CryptoKit. To regenerate:

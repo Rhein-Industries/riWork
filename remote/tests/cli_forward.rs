@@ -58,3 +58,32 @@ fn root_forwarder_preserves_literal_arguments_home_and_child_exit_status() {
             && diagnostic.contains("RIWORK_REMOTE_BIN")
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn resolver_follows_path_links_and_finds_profile_packaged_companion() {
+    use std::{fs, os::unix::fs::symlink};
+    let tmp = tempfile::tempdir().unwrap();
+    let profile = tmp.path().canonicalize().unwrap().join("target/debug");
+    let macos = profile.join("RiWork.app/Contents/MacOS");
+    fs::create_dir_all(&macos).unwrap();
+    let root = profile.join("riwork");
+    fs::write(&root, "CLI").unwrap();
+    let link = tmp.path().join("riwork-on-path");
+    symlink(&root, &link).unwrap();
+    assert!(remote_cli::resolve(&link, None).is_err());
+    let packed = macos.join("riwork-remote");
+    fs::write(&packed, "companion").unwrap();
+    assert_eq!(remote_cli::resolve(&link, None).unwrap(), packed);
+    let packaged_cli = macos.join("riwork");
+    fs::write(&packaged_cli, "CLI").unwrap();
+    assert_eq!(remote_cli::resolve(&packaged_cli, None).unwrap(), packed);
+    let sibling = profile.join("riwork-remote");
+    fs::write(&sibling, "explicit companion").unwrap();
+    assert_eq!(remote_cli::resolve(&link, None).unwrap(), sibling);
+    assert_eq!(
+        remote_cli::resolve(&link, Some(packed.clone())).unwrap(),
+        packed
+    );
+    assert!(remote_cli::resolve(&link, Some(tmp.path().join("missing override"))).is_err());
+}

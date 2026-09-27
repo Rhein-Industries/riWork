@@ -3,12 +3,18 @@ use crate::{
     MAX_PLAINTEXT,
     config::{Storage, private_read, private_write},
     crypto::uuid,
+    viewport::Viewport,
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, path::PathBuf, process::Stdio};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    process::Stdio,
+    sync::{Arc, Mutex, Weak},
+};
 use tokio::{
     io::AsyncReadExt,
     process::Command,
@@ -44,6 +50,17 @@ fn invalid(e: impl std::fmt::Display) -> Fault {
 fn cli_fault(e: impl std::fmt::Display) -> Fault {
     Fault::new("cli_error", e.to_string())
 }
+fn viewport_fault(e: impl std::fmt::Display) -> Fault {
+    let message = e.to_string();
+    let code = if message.contains("viewport_busy:") {
+        "viewport_busy"
+    } else if message.contains("viewport_unsupported:") {
+        "viewport_unsupported"
+    } else {
+        "cli_error"
+    };
+    Fault::new(code, message)
+}
 pub fn error(id: &str, code: &str, message: impl AsRef<str>) -> Value {
     json!({"v":1,"type":"response","id":id,"ok":false,"error":{"code":code,"message":message.as_ref()}})
 }
@@ -76,6 +93,18 @@ struct Output {
 struct Input {
     shell_id: String,
     line: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Resize {
+    shell_id: String,
+    columns: u32,
+    rows: u32,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Clear {
+    shell_id: String,
 }
 fn params<T: serde::de::DeserializeOwned>(r: &Request) -> std::result::Result<T, Fault> {
     serde_json::from_value(r.params.clone()).map_err(invalid)
@@ -122,8 +151,26 @@ struct Ledger {
 pub struct Rpc {
     pub cli: PathBuf,
     pub storage: Storage,
+    input_locks: Mutex<BTreeMap<String, Weak<tokio::sync::Mutex<()>>>>,
 }
 impl Rpc {
+    pub fn new(cli: PathBuf, storage: Storage) -> Self {
+        Self {
+            cli,
+            storage,
+            input_locks: Mutex::new(BTreeMap::new()),
+        }
+    }
+    fn input_lock(&self, shell: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.input_locks.lock().expect("input lock registry");
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(shell).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(shell.into(), Arc::downgrade(&lock));
+        lock
+    }
     async fn raw(&self, args: Vec<String>) -> Result<Vec<u8>> {
         let mut child = Command::new(&self.cli)
             .args(args)
@@ -191,6 +238,14 @@ impl Rpc {
         Ok(())
     }
     pub async fn handle(&self, device: &str, value: Value) -> Result<Value> {
+        self.handle_in(device, value, None).await
+    }
+    pub async fn handle_in(
+        &self,
+        device: &str,
+        value: Value,
+        viewport: Option<&mut Viewport>,
+    ) -> Result<Value> {
         let request_id = value
             .get("id")
             .and_then(Value::as_str)
@@ -218,7 +273,7 @@ impl Rpc {
                     ));
                 }
             }
-            self.dispatch(device, &request).await
+            self.dispatch(device, &request, viewport).await
         };
         let response = match result {
             Ok(v) => success(&request_id, v),
@@ -233,7 +288,12 @@ impl Rpc {
         }
         Ok(response)
     }
-    async fn dispatch(&self, device: &str, r: &Request) -> std::result::Result<Value, Fault> {
+    async fn dispatch(
+        &self,
+        device: &str,
+        r: &Request,
+        viewport: Option<&mut Viewport>,
+    ) -> std::result::Result<Value, Fault> {
         match r.method.as_str() {
             "projects.list" => {
                 let _: Empty = params(r)?;
@@ -329,6 +389,49 @@ impl Rpc {
                     .ok_or_else(|| cli_fault("missing CLI output"))?;
                 Ok(json!({"shell_id":p.shell_id,"output":text}))
             }
+            "shell.resize" => {
+                let p: Resize = params(r)?;
+                id(&p.shell_id)?;
+                if !(20..=300).contains(&p.columns) || !(8..=160).contains(&p.rows) {
+                    return Err(invalid("columns must be 20..300 and rows 8..160"));
+                }
+                let v = viewport.ok_or_else(|| invalid("authenticated connection required"))?;
+                self.selected(&p.shell_id).await?;
+                if v.selected
+                    .as_ref()
+                    .is_some_and(|(s, _, _)| *s != p.shell_id)
+                {
+                    self.clear_viewport(v).await.map_err(viewport_fault)?;
+                }
+                // Track before invoking CLI, so cancellation during the command
+                // still clears any geometry it may have applied.
+                v.selected = Some((p.shell_id.clone(), p.columns, p.rows));
+                if let Err(e) = self.renew_viewport(v).await {
+                    let fault = viewport_fault(e);
+                    if fault.code == "viewport_busy" {
+                        v.selected = None; // denied ownership must not be renewed
+                    } else {
+                        let _ = self.clear_viewport(v).await;
+                    }
+                    return Err(fault);
+                }
+                Ok(json!({"shell_id":p.shell_id,"columns":p.columns,"rows":p.rows}))
+            }
+            "shell.resize.clear" => {
+                let p: Clear = params(r)?;
+                id(&p.shell_id)?;
+                let v = viewport.ok_or_else(|| invalid("authenticated connection required"))?;
+                self.raw(v.args("resize-clear", &p.shell_id))
+                    .await
+                    .map_err(viewport_fault)?;
+                if v.selected
+                    .as_ref()
+                    .is_some_and(|(s, _, _)| *s == p.shell_id)
+                {
+                    v.selected = None;
+                }
+                Ok(json!({"shell_id":p.shell_id,"status":"cleared"}))
+            }
             "shell.input" => {
                 let p: Input = params(r)?;
                 id(&p.shell_id)?;
@@ -345,6 +448,26 @@ impl Rpc {
             }
             _ => Err(invalid("unsupported RPC method")),
         }
+    }
+    pub async fn renew_viewport(&self, v: &Viewport) -> Result<()> {
+        if let Some((shell, columns, rows)) = &v.selected {
+            let mut args = v.args("resize", shell);
+            args.extend([
+                "--columns".into(),
+                columns.to_string(),
+                "--rows".into(),
+                rows.to_string(),
+            ]);
+            self.raw(args).await?;
+        }
+        Ok(())
+    }
+    pub async fn clear_viewport(&self, v: &mut Viewport) -> Result<()> {
+        if let Some((shell, _, _)) = &v.selected {
+            self.raw(v.args("resize-clear", shell)).await?;
+        }
+        v.selected = None;
+        Ok(())
     }
     async fn input(
         &self,
@@ -394,6 +517,10 @@ impl Rpc {
                 "input outcome cache full; review outcomes then pair a new device",
             ));
         }
+        // Await per-shell serialization across every paired device. The root
+        // CLI also locks the complete paste/Return transaction across processes.
+        let shell_lock = self.input_lock(&p.shell_id);
+        let _shell_guard = shell_lock.lock().await;
         self.selected(&p.shell_id).await?;
         if !self.storage.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));

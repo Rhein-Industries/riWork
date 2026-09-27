@@ -5,6 +5,7 @@ use crate::{
         ClientFinish, ClientHello, Envelope, Pending, Session, accept_hello, decode, random32,
     },
     rpc::Rpc,
+    viewport::Viewport,
 };
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::{SinkExt, StreamExt};
@@ -93,10 +94,7 @@ pub async fn start(storage: Storage, cli: PathBuf) -> Result<()> {
         "--riwork must name an existing absolute RiWork executable path"
     );
     let _exclusive = storage.lock("connector.lock")?;
-    let rpc = Arc::new(Rpc {
-        cli,
-        storage: storage.clone(),
-    });
+    let rpc = Arc::new(Rpc::new(cli, storage.clone()));
     let mut running: HashMap<String, (watch::Sender<bool>, tokio::task::JoinHandle<()>)> =
         HashMap::new();
     let mut tick = interval(Duration::from_millis(250));
@@ -156,12 +154,15 @@ async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
     let secret = decode::<32>(&p.pairing_secret)?;
     let mut pending: Option<Pending> = None;
     let mut session: Option<Session> = None;
+    let mut viewport: Option<Viewport> = None;
     let mut deadline: Option<Instant> =
         online.then(|| Instant::now() + Duration::from_secs(HANDSHAKE_SECONDS));
     let mut heartbeat = interval(Duration::from_secs(20));
+    let mut renew = interval(Duration::from_secs(3));
     heartbeat.tick().await;
     loop {
         let value = tokio::select! {
+            _=renew.tick()=>{if let Some(v)=&viewport {rpc.renew_viewport(v).await?;}continue;},
             _=heartbeat.tick()=>{ws.send(Message::Ping(vec![].into())).await?;continue;},
             _=async {if let Some(t)=deadline {tokio::time::sleep_until(t).await;}else{std::future::pending::<()>().await;}}=>bail!("handshake timeout"),
             value=receive_json(&mut ws)=>value?,
@@ -171,6 +172,9 @@ async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
             Some("peer") => {
                 let online = value["online"].as_bool().context("missing peer status")?;
                 // Ordered peer control messages reset old transport state.
+                if let Some(mut v) = viewport.take() {
+                    rpc.clear_viewport(&mut v).await?;
+                }
                 session = None;
                 pending = None;
                 deadline = online.then(|| Instant::now() + Duration::from_secs(HANDSHAKE_SECONDS));
@@ -195,6 +199,7 @@ async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
                 let e = s.seal("d2c", &serde_json::to_vec(&ready)?)?;
                 send_json(&mut ws, &e).await?;
                 session = Some(s);
+                viewport = Some(Viewport::new(rpc.cli.clone(), p.device_id.clone()));
                 deadline = None;
             }
             Some("encrypted") => {
@@ -204,7 +209,11 @@ async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
                 let envelope: Envelope = serde_json::from_value(value)?;
                 let plaintext = s.open("c2d", &envelope)?;
                 let response = rpc
-                    .handle(&p.device_id, serde_json::from_slice(&plaintext)?)
+                    .handle_in(
+                        &p.device_id,
+                        serde_json::from_slice(&plaintext)?,
+                        viewport.as_mut(),
+                    )
                     .await?;
                 ensure!(
                     rpc.storage.authorized(&p.device_id)?,
