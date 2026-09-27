@@ -1,0 +1,150 @@
+# RiWork for iPhone and iPad
+
+Choose a paired RiWork desktop and project, then switch between tabs for its
+existing open terminals. One terminal fills the screen at a time. The app never
+creates, splits, closes or replaces a desktop session.
+
+The interface follows RiWork’s compact desktop layout: flat rows and tab strips,
+thin dividers, Menlo text and a small workspace bar. Light appearance uses the
+desktop’s Gruvbox Light palette; dark appearance uses its RiWork palette. Buttons
+retain 44-point touch targets, accessible labels and text scaling. v1 does not
+export desktop theme preferences, so automatic theme synchronization is not available.
+
+## Open, build and install
+
+Open `ios/RiWorkRemote.xcodeproj` in Xcode 26, select `RiWorkRemote`, and choose an
+iPhone or iPad. The deployment target is iOS 18.0. Select your development team
+in Signing & Capabilities for a physical device. No third-party packages or AI
+service keys are needed. Regenerate the checked-in project from `project.yml`:
+
+```sh
+cd ios
+xcodegen generate
+xcodebuild -project RiWorkRemote.xcodeproj -scheme RiWorkRemote \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -derivedDataPath .derivedData CODE_SIGN_IDENTITY=- test
+xcrun simctl install booted .derivedData/Build/Products/Debug-iphonesimulator/RiWorkRemote.app
+xcrun simctl launch booted com.riwork.remote
+```
+
+Use a specific simulator UDID when several are running. Keep ad-hoc simulator
+signing enabled. `CODE_SIGNING_ALLOWED=NO` compiles but cannot use Keychain (-34018).
+
+## Pair and connect
+
+Follow `remote/README.md` and `docs/remote-deployment.md` in the combined repository.
+Create a device pairing, provision its route hashes on the relay, and run the
+desktop connector with the rebuilt RiWork CLI and its existing `RIWORK_HOME`.
+Terminal fitting requires the published `shell.resize` extension and the new
+desktop CLI's `shell resize` / `shell resize-clear` commands. An older installed
+CLI can list/read sessions but cannot fit them; update both desktop and connector.
+
+Tap **Add desktop**, enter a name, and paste the complete pairing JSON or
+`riwork://pair?v=1&data=…` link. Opening that link or scanning its QR code also
+opens the pairing form. Tap **Save pairing & connect**. Supported physical
+devices can scan with camera permission; simulator/unsupported devices can paste.
+
+Physical devices require a trusted `wss://…/v1/ws` relay. Simulator testing can
+explicitly enable **Allow local development relay**, which permits `ws://` only
+on literal loopback hosts. Pair each device separately. Transfer the secret export
+directly to the intended device and remove it after import.
+
+Pairing keys, relay tokens, selections and unconfirmed input are stored only in
+device-local Keychain (`WhenUnlockedThisDeviceOnly`). The app does not use
+UserDefaults for secrets, save terminal output to disk, or log pairing/frames.
+Rename/remove a desktop through its row’s options menu, context menu or swipe actions. Removal keeps
+desktop sessions running; revoke the device on the desktop to deny access.
+
+## Project and terminal tabs
+
+Select a project, then choose a worker, shell or orchestrator tab. Tabs show actual
+short session IDs and worktree branches. **Session info** exposes the full UUID,
+kind and working directory. The compact status row keeps snapshot freshness,
+connection state and measured terminal dimensions visible.
+
+Each project remembers its selected terminal. On refresh/reconnect, a saved tab
+that is closed or absent falls back to an available live project tab; selection
+clears if none remain. Old draft/output state clears on fallback. Pending input
+stays attached to its original shell and is never resent or moved to the new tab.
+If output returns `not_found`, the app refreshes project sessions once, reconciles,
+and stops polling that UUID. Explicit refresh or reconnect can check it again.
+Refresh or follow output from the toolbar.
+
+The visible terminal measures its character cells and calls the exact v1
+`shell.resize` RPC before reading output. Selecting a tab, rotating the device,
+opening the keyboard or changing text size updates the selected shell's grid.
+Ghostty renders that same existing tmux shell; no split or new session is created.
+The override restores desktop sizing on tab release, backgrounding or disconnect.
+Reconnect authenticates with fresh keys before reapplying the selected tab's grid.
+The server also releases lost connections and recovers a connector crash within
+15 seconds. Another device's active override produces a useful error.
+
+Input is one control-free physical line, at most 8192 UTF-8 bytes. Tap **Send**
+(the upward arrow) to submit directly to the visibly selected tab. Send captures
+that shell ID and the current line; a changed selection prevents delivery to a
+different tab. The desktop sends that line followed by Return. The app persists
+its request UUID
+and line before sending. An uncertain result blocks further submission and
+survives reconnect/app restart. Review the indicated session before acknowledging
+the warning. Acknowledgement does not submit or retry anything.
+
+Backgrounding discards connection keys and marks output stale. Returning reconnects
+if the connection was active, with a fresh handshake and the same selected session.
+Manual disconnect remains disconnected. Reconnect/tab selection never recreates
+a terminal or retries input.
+
+## Tests and real relay smoke
+
+`Core/RelayClient.swift` uses `URLSessionWebSocketTask`; `SessionCrypto.swift`
+implements the relay's exact v1 HMAC/HKDF/ChaCha20-Poly1305 contract in
+`docs/remote-protocol.md`. The checked-in fixture is copied verbatim from the
+relay's independently generated `remote/fixtures/v1.json`.
+
+```sh
+swift test --package-path ios
+swift build --package-path ios
+python3 ios/scripts/local-smoke.py \
+  --relay-binary /absolute/path/to/remote/target/release/riwork-remote \
+  --riwork /absolute/path/to/rebuilt/riwork --viewport
+```
+
+The runner creates a temporary registry, Git project, task, zsh shell and
+zsh-backed orchestrator, then starts a real Rust relay/connector. The Swift tool
+uses the app's transport/crypto to list entities, read the existing session,
+validate eight concurrent read RPCs on one authenticated connection, submit one
+line, reconnect with fresh keys, explicitly repeat the same UUID to
+check deduplication, verify exactly one execution and shell survival, and verify
+revoked-device denial. With `--viewport`, the real shell's `stty size` must report
+17 rows / 43 columns, then desktop dimensions must return to their baseline with
+the same pane and process after peer loss. Cleanup closes only recorded fixture sessions/processes.
+The eight-request batch stays within the relay's 16-message queue and exercises
+actual encrypted send ordering/counters, rather than a mock transport.
+Parent `RIWORK_HOME` stays unchanged. `--hold SECONDS` keeps the disposable
+fixture available for simulator inspection.
+Send SIGUSR1 to the reported fixture runner PID to finish the hold early, verify
+revocation and clean up; Ctrl-C also cleans up its recorded sessions/processes.
+
+For a pre-existing isolated fixture:
+
+```sh
+swift run --package-path ios riwork-ios-smoke /secure/fixture.pairing.json \
+  --local --project FULL_PROJECT_UUID --shell FULL_SHELL_UUID \
+  --columns 43 --rows 17 --send 'printf "explicit isolated continuation\n"'
+```
+
+`--send` executes input in the explicitly selected shell. The duplicate UUID
+operation is an explicit acceptance test; the app never performs it automatically.
+
+## Current limits
+
+v1 carries readable text snapshots and physical-line submission. Arbitrary key
+events, Ctrl-C and a complete ANSI terminal emulator are not part of this wire.
+The resize extension pins the existing shell's terminal grid, without resizing
+the macOS application window. Bounds are 20–300 columns and 8–160 rows.
+Physical camera QR and public TLS deployment require device/operator validation.
+v1's PSK handshake has no forward secrecy; rotate compromised pairing keys.
+
+Apple API references: [WebSocket task](https://developer.apple.com/documentation/foundation/urlsessionwebsockettask),
+[CryptoKit](https://developer.apple.com/documentation/cryptokit),
+[scanner availability](https://developer.apple.com/documentation/visionkit/datascannerviewcontroller/isavailable),
+[scroll alignment](https://developer.apple.com/documentation/swiftui/view/defaultscrollanchor(_:for:)).

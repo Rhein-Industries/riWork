@@ -1,0 +1,63 @@
+{
+  "v": 1,
+  "desktop_id": "11111111-1111-4111-8111-111111111111",
+  "device_id": "22222222-2222-4222-8222-222222222222",
+  "route_id": "33333333-3333-4333-8333-333333333333",
+  "pairing_secret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "client_nonce": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+  "desktop_nonce": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+  "identity_hex": "111111111111411181111111111111112222222222224222822222222222222233333333333343338333333333333333",
+  "transcript_hex": "7269776f726b2f76312f73657373696f6e00111111111111411181111111111111112222222222224222822222222222222233333333333343338333333333333333202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "salt_hex": "e2de1b66e3bd9ebbb0c5a0b36cfaf335e5a9bda6ca44eae664bce7c13d058e93",
+  "c2d_key_hex": "567e7b9497c15378cfdf90d94b003a4aa6721a4b6eccfed66216b35a9227d115",
+  "d2c_key_hex": "a9b9688e374ee81f9376a264f1e4e0c26974ac42f1eaa0368e9712c5395fa681",
+  "session_id": "4t4bZuO9nruwxaCzbPrzNQ",
+  "client_hello": {
+    "v": 1,
+    "type": "client_hello",
+    "desktop_id": "11111111-1111-4111-8111-111111111111",
+    "device_id": "22222222-2222-4222-8222-222222222222",
+    "route_id": "33333333-3333-4333-8333-333333333333",
+    "client_nonce": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "mac": "ufotJbQhzJYKvrUqXI0PvKdVtvGwB0gvKnXbmwxU1ok"
+  },
+  "server_hello": {
+    "v": 1,
+    "type": "server_hello",
+    "desktop_nonce": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+    "mac": "dYBIV6MCIJGd7u1RVvAm-EVWKsntoEPF8GoxelPG7p4"
+  },
+  "client_finish": {
+    "v": 1,
+    "type": "client_finish",
+    "mac": "uGNAvTchheBNObVIX_Ylovy7_DrfSQLvqWwH4VS4W9w"
+  },
+  "frames": [
+    {
+      "plaintext_utf8": "{\"v\":1,\"type\":\"request\",\"id\":\"44444444-4444-4444-8444-444444444444\",\"method\":\"projects.list\",\"params\":{}}",
+      "nonce_hex": "000000000000000000000000",
+      "aad_hex": "7269776f726b2f76312f6672616d6500e2de1b66e3bd9ebbb0c5a0b36cfaf335000000000000000000",
+      "envelope": {
+        "v": 1,
+        "type": "encrypted",
+        "session_id": "4t4bZuO9nruwxaCzbPrzNQ",
+        "direction": "c2d",
+        "counter": "0",
+        "ciphertext": "4CaixO3mzewi-YcDk1FlL8RlYaY4Iq2u02-i8Y1XIUaPm4PmPk3-doXh2Ab-Et_UIOQY4GGooyWWKxbsCKSSFunM0kUEUqO5Qh3is1l0jIZjmWk-aJ0F30Touay2OJ5dU2dV_5jFStRlSHi5iyyMpJQlOsLscAjaPw"
+      }
+    },
+    {
+      "plaintext_utf8": "{\"v\":1,\"type\":\"ready\",\"desktop_id\":\"11111111-1111-4111-8111-111111111111\",\"device_id\":\"22222222-2222-4222-8222-222222222222\"}",
+      "nonce_hex": "000000000000000000000000",
+      "aad_hex": "7269776f726b2f76312f6672616d6500e2de1b66e3bd9ebbb0c5a0b36cfaf335010000000000000000",
+      "envelope": {
+        "v": 1,
+        "type": "encrypted",
+        "session_id": "4t4bZuO9nruwxaCzbPrzNQ",
+        "direction": "d2c",
+        "counter": "0",
+        "ciphertext": "BCUY3-C7SNjPBNU08GkzXp-Cdcho_YPM3rNj1mjEUIZxOoGkXaz53Eq9g2go7sp9dmFJF-tVibYxbXZP0tMUInPatmLo0vRkSOl9ewWhqV_FBvCZtPPo1tR5MWouvtmxJXlWjavjgEC3bla2BL7mSjhcciepVJhtYI7ncWOd2QBpbckmdvmYRbNfQ82A"
+      }
+    }
+  ]
+}
