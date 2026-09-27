@@ -93,6 +93,8 @@ terminal. Input uses a per-shell lock for the entire bracketed paste, 500-ms
 settling interval and single Return. It queues paired devices and local CLI sends
 so their text/Return cannot interleave. The delay exceeds the
 [Codex composer's paste suppression window](https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/paste_burst.rs).
+Empty text sends exactly one Return without a paste buffer or settling delay,
+under the same shell lock and input-mode checks.
 `sent` confirms terminal submission, not a model/server acknowledgment. No second
 Return is sent automatically if an outcome is uncertain.
 

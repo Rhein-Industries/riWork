@@ -48,6 +48,21 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
+    async fn send(&self, shell: &str, text: &str) -> Result<()> {
+        // `shell send` treats every remaining argument as literal terminal text.
+        let out = Command::new(&self.cli)
+            .env("RIWORK_HOME", &self.home)
+            .args(["shell", "send", shell, text])
+            .kill_on_drop(true)
+            .output()
+            .await?;
+        ensure!(
+            out.status.success(),
+            "isolated send: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok(())
+    }
     fn tmux(&self, args: &[&str]) -> Result<String> {
         let canonical = self.home.canonicalize()?;
         let mut hash = 0xcbf29ce484222325u64;
@@ -733,6 +748,165 @@ async fn mobile_viewport_ownership_restoration_and_long_turns_across_devices() -
     );
     println!(
         "PASS: real 120x40 ->43x17 ->120x40; same UUID/window/pane/PID; tab switch; owner denial; renewal, disconnect, reconnect, revoke and SIGKILL restoration; negative immediate-Enter control; complete 3500-char turns, cached retry, cross-device serialization; no user sessions touched."
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires RIWORK_TEST_CLI; one disposable real zsh/tmux session, no coding/verifier harness"]
+async fn return_only_and_long_inputs_are_serialized_in_disposable_cli_session() -> Result<()> {
+    let cli = PathBuf::from(std::env::var_os("RIWORK_TEST_CLI").context("set RIWORK_TEST_CLI")?);
+    ensure!(cli.is_absolute(), "absolute CLI path required");
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home)?;
+    let mut f = Fixture {
+        temp,
+        home,
+        cli,
+        shells: vec![],
+        connector: None,
+        relay: None,
+    };
+    let project_dir = f.temp.path().join("project");
+    std::fs::create_dir(&project_dir)?;
+    let project = f
+        .cli(&["project", "add", project_dir.to_str().unwrap()])
+        .await?;
+    let shell = f
+        .cli(&[
+            "shell",
+            "create",
+            "--project",
+            project["id"].as_str().unwrap(),
+            "--command",
+            "/bin/zsh -f",
+        ])
+        .await?;
+    let id = shell["id"].as_str().unwrap().to_owned();
+    f.shells.push(id.clone());
+    let pane = format!("{id}:0.0");
+    let identity = f.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &pane,
+        "#{session_name}|#{window_id}|#{pane_id}|#{pane_pid}",
+    ])?;
+    let cwd = f.cli(&["shell", "cwd", &id]).await?;
+    let prompts = f.temp.path().join("prompt-count");
+    // An ordinary zsh precmd records each new prompt after a physical Return.
+    // No new model/worker or extra verifier harness is started.
+    let setup = format!("precmd() {{ printf x >> '{}'; }}", prompts.display());
+    f.send(&id, &setup).await?;
+    marker_count(&prompts, 1).await?;
+    f.send(&id, "").await?;
+    marker_count(&prompts, 2).await?;
+    // Empty text must retain the same input-mode validation, before any Return.
+    f.tmux(&["copy-mode", "-t", &pane])?;
+    let blocked = Command::new(&f.cli)
+        .env("RIWORK_HOME", &f.home)
+        .args(["shell", "send", &id, ""])
+        .output()
+        .await?;
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("leave copy mode"));
+    marker_count(&prompts, 2).await?;
+    f.tmux(&["send-keys", "-t", &pane, "-X", "cancel"])?;
+    let local_output = f.temp.path().join("local-long-output");
+    let long = "l".repeat(3500);
+    let line = format!("printf '%s' '{}' > '{}'", long, local_output.display());
+    f.send(&id, &line).await?;
+    marker_count(&local_output, 3500).await?;
+    assert_eq!(std::fs::read_to_string(&local_output)?, long);
+    marker_count(&prompts, 3).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let storage = Storage::at(f.home.clone())?;
+    let routes_path = f.temp.path().join("routes.json");
+    let relay_url = format!("ws://{}/v1/ws", listener.local_addr()?);
+    let a = storage.pair(
+        relay_url.clone(),
+        "a".into(),
+        true,
+        &f.temp.path().join("a.json"),
+        Some(&routes_path),
+    )?;
+    let b = storage.pair(
+        relay_url,
+        "b".into(),
+        true,
+        &f.temp.path().join("b.json"),
+        Some(&routes_path),
+    )?;
+    let relay = Relay::new(private_read::<Routes>(&routes_path, 1_048_576)?, 16)?;
+    f.relay = Some(tokio::spawn(async move {
+        axum::serve(listener, relay.router()).await.unwrap();
+    }));
+    f.start_connector().await?;
+    let (mut wa, mut sa) = mobile(&a).await?;
+    let (mut wb, mut sb) = mobile(&b).await?;
+    let empty = request(
+        &Uuid::new_v4().to_string(),
+        "shell.input",
+        json!({"shell_id":id,"line":""}),
+    );
+    let response = rpc(&mut wa, &mut sa, &empty).await?;
+    assert_eq!(response["result"]["status"], "sent");
+    marker_count(&prompts, 4).await?;
+    assert_eq!(rpc(&mut wa, &mut sa, &empty).await?, response);
+    marker_count(&prompts, 4).await?;
+    let device_output = f.temp.path().join("paired-device-lines");
+    let text_a = "a".repeat(3500);
+    let text_b = "b".repeat(3500);
+    let line_a = format!(
+        "printf '%s\\n' '{}' >> '{}'",
+        text_a,
+        device_output.display()
+    );
+    let line_b = format!(
+        "printf '%s\\n' '{}' >> '{}'",
+        text_b,
+        device_output.display()
+    );
+    // Two device pastes race a local Return-only call on the same shell.
+    let (ra, rb, _) = tokio::try_join!(
+        call(
+            &mut wa,
+            &mut sa,
+            "shell.input",
+            json!({"shell_id":id,"line":line_a})
+        ),
+        call(
+            &mut wb,
+            &mut sb,
+            "shell.input",
+            json!({"shell_id":id,"line":line_b})
+        ),
+        f.send(&id, "")
+    )?;
+    assert_eq!(ra["ok"], true);
+    assert_eq!(rb["ok"], true);
+    marker_count(&device_output, 7002).await?;
+    marker_count(&prompts, 7).await?;
+    let output = std::fs::read_to_string(&device_output)?;
+    let lines = output.lines().collect::<Vec<_>>();
+    assert!(
+        lines == [text_a.as_str(), text_b.as_str()] || lines == [text_b.as_str(), text_a.as_str()]
+    );
+    assert_eq!(
+        f.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            "#{session_name}|#{window_id}|#{pane_id}|#{pane_pid}"
+        ])?,
+        identity
+    );
+    assert_eq!(f.cli(&["shell", "cwd", &id]).await?, cwd);
+    f.stop_connector().await?;
+    println!(
+        "PASS: empty CLI text produces exactly one Return/new prompt, rejects copy mode, empty RPC retry deduplicates; literal 3500-char CLI input and simultaneous paired-device long lines plus local Return do not interleave; same shell UUID/window/pane/PID/cwd; one disposable zsh session, no coding/verifier harness or user terminal input."
     );
     Ok(())
 }

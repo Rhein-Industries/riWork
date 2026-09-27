@@ -1,4 +1,4 @@
-//! One bracketed paste and one delayed Return under a cross-process shell lock.
+//! One Return, with a settled bracketed paste for nonempty text, under a shell lock.
 use std::{path::Path, time::Duration};
 use uuid::Uuid;
 
@@ -19,6 +19,12 @@ pub fn submit(
     ])?;
     if status.trim() != "0|0" {
         return Err("leave copy mode and enable terminal input before submitting".into());
+    }
+    // tmux does not retain an empty set-buffer. Preserve Return-only submission
+    // under the same lock and mode checks without attempting an empty paste.
+    if text.is_empty() {
+        t(&["send-keys", "-t", &pane, "Enter"])?;
+        return Ok(());
     }
     let buffer = format!("riwork-input-{}", Uuid::new_v4());
     t(&["set-buffer", "-b", &buffer, "--", text])?;
