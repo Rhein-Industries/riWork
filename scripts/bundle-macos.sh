@@ -39,6 +39,13 @@ if [ ! -f "$ghostty_source/terminfo/ghostty.zig" ] ||
     exit 1
 fi
 
+# libghostty's crate contains the engine but not Ghostty's named theme catalog.
+themes=${GHOSTTY_THEMES_DIR:-/Applications/Ghostty.app/Contents/Resources/ghostty/themes}
+if [ -n "${GHOSTTY_THEMES_DIR:-}" ] && [ ! -d "$themes" ]; then
+    echo "GHOSTTY_THEMES_DIR must point to Ghostty's themes directory" >&2
+    exit 1
+fi
+
 work=$(mktemp -d "${TMPDIR:-/tmp}/riwork-ghostty.XXXXXX")
 trap 'rm -rf "$work"' 0
 cp "$ghostty_source/terminfo/Source.zig" "$ghostty_source/terminfo/ghostty.zig" "$work/"
@@ -59,6 +66,9 @@ mkdir -p "$bundle/Contents/MacOS" "$resources/terminfo" "$resources/ghostty"
 cp "$binary" "$bundle/Contents/MacOS/riwork"
 tic -x -o "$resources/terminfo" "$work/ghostty.terminfo"
 cp -R "$ghostty_source/shell-integration" "$resources/ghostty/"
+if [ -d "$themes" ]; then
+    cp -R "$themes" "$resources/ghostty/"
+fi
 if [ ! -f "$resources/terminfo/78/xterm-ghostty" ] ||
    [ ! -f "$resources/ghostty/shell-integration/zsh/ghostty-integration" ]; then
     echo "Ghostty runtime resources were not packaged correctly" >&2

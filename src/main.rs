@@ -1,12 +1,28 @@
+mod activity;
+mod agent_hooks;
 mod cli;
+mod codex_accounts;
+mod cua;
+mod file_explorer;
+mod icons;
 mod layouts;
 mod mcp;
+mod notifications;
+mod orca_import;
 mod panels;
 mod paths;
 mod project_creator;
+mod project_recency;
+mod project_settings;
+mod project_sort;
+mod runtime;
+mod session_reload;
 mod sessions;
 mod settings;
+mod status_bar;
 mod store;
+mod theme;
+mod update;
 mod usage;
 
 use std::{
@@ -17,9 +33,11 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use activity::{ActivityTracker, AgentActivity};
+use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, DragMoveEvent, Entity, EntityInputHandler,
     FocusHandle, Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton,
@@ -27,17 +45,22 @@ use gpui::{
     WindowBounds, WindowHandle, WindowOptions, actions, canvas, div, img, point, prelude::*, px,
     rgb, size,
 };
-use gpui_libghostty::{TerminalColor, TerminalConfiguration, TerminalOptions, TerminalTheme};
+use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
+use icons::Icon;
 use layouts::{
     Axis, Layout, LayoutStore, PaneId, PanelKind, ProjectLayout, SavedPane, SavedTab, TabEdge,
     WindowSize,
 };
 use panels::{PanelAction, PanelData};
 use project_creator::{ProjectCreationEvent, ProjectCreator};
+use project_settings::{
+    FolderEditor, FolderEditorEvent, ProjectSettingsEvent, ProjectSettingsPanel,
+};
 use sessions::{HarnessKind, SessionManager, SessionMetrics, ShellKind, ShellSession};
-use settings::{Settings, SettingsPanel, SettingsStore};
+use settings::{CuaSetupState, Settings, SettingsEvent, SettingsPanel, SettingsStore};
 use store::{SearchHit, State, Store};
+use theme::{Appearance, Palette, ThemeChoice};
 use usage::ProviderUsage;
 
 gpui_libghostty::bind_gpui!(gpui);
@@ -62,26 +85,31 @@ actions!(
         CreateProject,
         ToggleFocusMode,
         OpenSettings,
+        OpenFiles,
         Quit
     ]
 );
 
 type TabId = u64;
 
-const BG: u32 = 0x090d14;
-const PANEL: u32 = 0x101720;
-const PANEL_ACTIVE: u32 = 0x14212a;
-const DIVIDER: u32 = 0x253c45;
-const CYAN: u32 = 0x55e6dc;
-const MAGENTA: u32 = 0xce78ef;
-const GOLD: u32 = 0xf4bf75;
-const TEXT: u32 = 0xd3e1e6;
-const MUTED: u32 = 0x708993;
+#[derive(Clone, Copy)]
+enum PaneMenuAction {
+    Shell,
+    Harness(HarnessKind, bool),
+    Orchestrator(bool),
+    View(PanelKind),
+    Split(Axis),
+    Close,
+    Lock,
+    Focus,
+}
+
 const WINDOW_CONTROLS_WIDTH: f32 = 78.0;
 const WINDOW_CONTROLS_CONTENT_INSET: f32 = WINDOW_CONTROLS_WIDTH + 14.0;
 const FOCUS_MAX_WIDTH: f32 = 1100.0;
 const FOCUS_BOTTOM_MARGIN: f32 = 0.30;
 const FOCUS_TOOLBAR_HEIGHT: f32 = 32.0;
+const STATUS_BAR_HEIGHT: f32 = 22.0;
 
 struct Tab {
     id: TabId,
@@ -143,14 +171,15 @@ struct DraggedTab {
 }
 
 impl Render for DraggedTab {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::palette(cx);
         div()
             .px(px(12.0))
             .py(px(7.0))
-            .bg(rgb(PANEL_ACTIVE))
+            .bg(rgb(colors.panel_active))
             .border_1()
-            .border_color(rgb(CYAN))
-            .text_color(rgb(TEXT))
+            .border_color(rgb(colors.cyan))
+            .text_color(rgb(colors.text))
             .font_family("Menlo")
             .text_size(px(11.0))
             .child(self.title.clone())
@@ -174,6 +203,11 @@ struct SplitResize {
 
 #[derive(Default)]
 struct AccountUsage {
+    codex: BTreeMap<PathBuf, CodexUsageEntry>,
+}
+
+#[derive(Default)]
+struct CodexUsageEntry {
     codex: Option<ProviderUsage>,
     codex_error: Option<String>,
     pending: bool,
@@ -183,6 +217,12 @@ impl Global for AccountUsage {}
 
 struct Workspace {
     project_creator: Option<Entity<ProjectCreator>>,
+    folder_editor: Option<Entity<FolderEditor>>,
+    collapsed_project_folders: HashSet<String>,
+    project_settings_panel: Option<Entity<ProjectSettingsPanel>>,
+    file_explorer: Option<Entity<FileExplorer>>,
+    locked_panes: Option<HashSet<PaneId>>,
+    carry_layout: Option<ProjectLayout>,
     layout: Layout,
     layout_ready: bool,
     panes: BTreeMap<PaneId, Pane>,
@@ -190,9 +230,12 @@ struct Workspace {
     next_pane_id: PaneId,
     next_tab_id: TabId,
     layouts: LayoutStore,
+    restore_layout: Option<ProjectLayout>,
+    restore_focus: Option<(bool, bool)>,
     settings_store: SettingsStore,
     settings_panel: Entity<SettingsPanel>,
     settings: Settings,
+    appearance: Appearance,
     window_size: Option<WindowSize>,
     window_size_save: Option<gpui::Task<()>>,
     store: Store,
@@ -205,6 +248,14 @@ struct Workspace {
     shells: Vec<ShellSession>,
     shell_cwds: BTreeMap<String, PathBuf>,
     metrics: BTreeMap<String, SessionMetrics>,
+    session_refresh_pending: bool,
+    session_refresh_generation: u64,
+    agent_activity: BTreeMap<String, AgentActivity>,
+    activity_tracker: Option<ActivityTracker>,
+    project_last_edits: BTreeMap<String, u64>,
+    project_recency_pending: bool,
+    project_recency_sampled_at: Option<Instant>,
+    project_sort_menu_open: bool,
     claude_usage: BTreeMap<String, ProviderUsage>,
     refresh_count: u64,
     syncing_project_ids: HashSet<String>,
@@ -246,10 +297,79 @@ fn utf16_to_byte(text: &str, offset: usize) -> usize {
     text.len()
 }
 
+fn file_explorer_root(
+    state: &State,
+    project_id: &str,
+    selected_worktree_id: Option<&str>,
+) -> Option<ExplorerRoot> {
+    let project = state
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)?;
+    if let Some(id) = selected_worktree_id {
+        let worktree = state
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.id == id && worktree.project_id == project_id)?;
+        Some(ExplorerRoot {
+            path: worktree.path.clone(),
+            label: format!("{} · {}", project.name, worktree.branch),
+        })
+    } else {
+        Some(ExplorerRoot {
+            path: project.root.clone(),
+            label: project.name.clone(),
+        })
+    }
+}
+
+fn project_recency_sources(state: &State) -> BTreeMap<String, Vec<PathBuf>> {
+    let mut sources: BTreeMap<_, _> = state
+        .projects
+        .iter()
+        .map(|project| {
+            let mut roots = project.repository_roots.clone();
+            roots.push(project.root.clone());
+            (project.id.clone(), roots)
+        })
+        .collect();
+    for worktree in &state.worktrees {
+        if let Some(roots) = sources.get_mut(&worktree.project_id) {
+            roots.push(worktree.path.clone());
+        }
+    }
+    for roots in sources.values_mut() {
+        roots.sort();
+        roots.dedup();
+    }
+    sources
+}
+
+fn contextual_shell_title(
+    title: String,
+    shell: &ShellSession,
+    project_id: &str,
+    state: &State,
+) -> String {
+    match shell.project_id.as_deref().filter(|id| *id != project_id) {
+        Some(id) => {
+            let name = state
+                .projects
+                .iter()
+                .find(|project| project.id == id)
+                .map(|project| project.name.as_str())
+                .unwrap_or(id);
+            format!("{name} · {title}")
+        }
+        None => title,
+    }
+}
+
 impl Workspace {
     fn new(
         startup_path: Option<PathBuf>,
         fallback_cwd: PathBuf,
+        restore: Option<runtime::RuntimeWindow>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -257,8 +377,18 @@ impl Workspace {
         let layouts = LayoutStore::open_default().expect("open RiWork layout store");
         let settings_store = SettingsStore::open_default().expect("open RiWork settings store");
         let settings = cx.global::<Settings>().clone();
+        let appearance = cx.global::<Appearance>().clone();
         let settings_panel = cx.new(|cx| SettingsPanel::new(settings_store.clone(), cx));
+        cx.subscribe(&settings_panel, |workspace, _, event, cx| match event {
+            SettingsEvent::OrcaImported => {
+                workspace.refresh_project_metadata(cx);
+                workspace.notice = Some("Orca import completed".to_owned());
+                cx.notify();
+            }
+        })
+        .detach();
         let sessions = SessionManager::open_default().expect("open RiWork shell registry");
+        let activity_tracker = ActivityTracker::at(sessions.state_home().to_path_buf());
         let initial = store.snapshot().expect("read RiWork project store");
         let project = if let Some(path) = startup_path {
             let root = path.canonicalize().expect("resolve project path");
@@ -302,6 +432,12 @@ impl Workspace {
         );
         let mut workspace = Self {
             project_creator: None,
+            folder_editor: None,
+            collapsed_project_folders: HashSet::new(),
+            project_settings_panel: None,
+            file_explorer: None,
+            locked_panes: None,
+            carry_layout: None,
             layout: Layout::Pane(1),
             layout_ready: false,
             panes,
@@ -309,9 +445,14 @@ impl Workspace {
             next_pane_id: 2,
             next_tab_id: 1,
             layouts,
+            restore_layout: restore.as_ref().and_then(|window| window.layout.clone()),
+            restore_focus: restore
+                .as_ref()
+                .map(|window| (window.focus_mode, window.focus_centered)),
             settings_store,
             settings_panel,
             settings,
+            appearance,
             window_size: None,
             window_size_save: None,
             store,
@@ -324,6 +465,14 @@ impl Workspace {
             shells: Vec::new(),
             shell_cwds: BTreeMap::new(),
             metrics: BTreeMap::new(),
+            session_refresh_pending: false,
+            session_refresh_generation: 0,
+            agent_activity: BTreeMap::new(),
+            activity_tracker: Some(activity_tracker),
+            project_last_edits: BTreeMap::new(),
+            project_recency_pending: false,
+            project_recency_sampled_at: None,
+            project_sort_menu_open: false,
             claude_usage: BTreeMap::new(),
             refresh_count: 0,
             syncing_project_ids: HashSet::new(),
@@ -344,6 +493,13 @@ impl Workspace {
             focus: cx.focus_handle(),
         };
         workspace.load_project(window, cx);
+        workspace.refresh_project_recency(cx);
+        if cua::CuaManager::open_default()
+            .and_then(|manager| manager.driver_path())
+            .is_err()
+        {
+            workspace.open_panel(PanelKind::Settings, workspace.active_pane, window, cx);
+        }
         cx.observe_window_bounds(window, |workspace, window, cx| {
             workspace.remember_window_size(window, cx);
         })
@@ -352,9 +508,27 @@ impl Workspace {
             workspace.apply_settings(window, cx);
         })
         .detach();
+        cx.observe_global_in::<Appearance>(window, |workspace, window, cx| {
+            workspace.apply_settings(window, cx);
+        })
+        .detach();
+        cx.observe_global::<settings::CodexAccountsState>(|_, cx| {
+            request_codex_usage(false, cx);
+            cx.notify();
+        })
+        .detach();
         cx.on_release(|workspace, _| workspace.save_layout())
             .detach();
         request_codex_usage(false, cx);
+        for home in workspace
+            .shells
+            .iter()
+            .filter(|shell| shell.alive && shell.harness == Some(HarnessKind::Codex))
+            .filter_map(|shell| shell.codex_home.clone())
+            .collect::<HashSet<_>>()
+        {
+            request_codex_usage_at(home, false, cx);
+        }
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
@@ -370,36 +544,26 @@ impl Workspace {
         workspace
     }
 
-    fn terminal_options(command: String, cwd: PathBuf, use_riwork_colors: bool) -> TerminalOptions {
+    fn terminal_options(
+        command: String,
+        cwd: PathBuf,
+        theme: Option<TerminalTheme>,
+    ) -> TerminalOptions {
         let mut options = TerminalOptions::new(command, cwd);
         options.quiet_login = true;
-        options.configuration = if use_riwork_colors {
-            TerminalConfiguration::UserDefaultWithOverride(TerminalTheme::new(
-                TerminalColor::new(0x09, 0x0d, 0x14),
-                TerminalColor::new(0xd3, 0xe1, 0xe6),
-                [
-                    TerminalColor::new(0x13, 0x1b, 0x25),
-                    TerminalColor::new(0xf0, 0x73, 0x8b),
-                    TerminalColor::new(0x61, 0xd5, 0xae),
-                    TerminalColor::new(0xf4, 0xbf, 0x75),
-                    TerminalColor::new(0x78, 0xa9, 0xff),
-                    TerminalColor::new(0xce, 0x78, 0xef),
-                    TerminalColor::new(0x55, 0xe6, 0xdc),
-                    TerminalColor::new(0xd3, 0xe1, 0xe6),
-                    TerminalColor::new(0x58, 0x70, 0x7b),
-                    TerminalColor::new(0xff, 0x8b, 0xa0),
-                    TerminalColor::new(0x83, 0xeb, 0xc3),
-                    TerminalColor::new(0xff, 0xd1, 0x91),
-                    TerminalColor::new(0x9b, 0xc0, 0xff),
-                    TerminalColor::new(0xdf, 0xa3, 0xf7),
-                    TerminalColor::new(0x84, 0xf3, 0xea),
-                    TerminalColor::new(0xff, 0xff, 0xff),
-                ],
-            ))
-        } else {
-            TerminalConfiguration::UserDefault
-        };
+        options.configuration = theme.map_or(
+            TerminalConfiguration::UserDefault,
+            TerminalConfiguration::UserDefaultWithOverride,
+        );
         options
+    }
+
+    fn terminal_theme(settings: &Settings, appearance: &Appearance) -> Option<TerminalTheme> {
+        appearance.terminal.or_else(|| {
+            settings
+                .use_riwork_colors
+                .then(theme::riwork_terminal_theme)
+        })
     }
 
     fn spawn_tab(
@@ -426,7 +590,70 @@ impl Workspace {
         if let Ok(shells) = self.sessions.list() {
             self.shells = shells;
         }
+        self.refresh_agent_activity(cx);
         result
+    }
+
+    fn refresh_agent_activity(&mut self, cx: &mut Context<Self>) {
+        if let Some(mut tracker) = self.activity_tracker.take() {
+            let shells = self.shells.clone();
+            let home = self.sessions.state_home().to_path_buf();
+            let work = cx.background_executor().spawn(async move {
+                let activity = tracker.sample(&shells);
+                for completion in tracker.take_completions() {
+                    if let Err(error) = notifications::record_completion(
+                        &home,
+                        &completion.shell_id,
+                        &completion.event_id,
+                        HarnessKind::Codex,
+                    ) {
+                        eprintln!("riwork notifications: {error}");
+                    }
+                }
+                (tracker, activity)
+            });
+            cx.spawn(async move |this, cx| {
+                let (tracker, activity) = work.await;
+                let _ = this.update(cx, |workspace, cx| {
+                    workspace.activity_tracker = Some(tracker);
+                    workspace.agent_activity = activity;
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    fn refresh_project_recency(&mut self, cx: &mut Context<Self>) {
+        if self.project_recency_pending
+            || self
+                .project_recency_sampled_at
+                .is_some_and(|sampled| sampled.elapsed() < Duration::from_secs(30))
+        {
+            return;
+        }
+        self.project_recency_pending = true;
+        self.project_recency_sampled_at = Some(Instant::now());
+        let state = self.state.clone();
+        let sources = project_recency_sources(&state);
+        let work = cx.background_executor().spawn(async move {
+            let edits = project_recency::scan(&state);
+            (sources, edits)
+        });
+        cx.spawn(async move |this, cx| {
+            let (sources, edits) = work.await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.project_recency_pending = false;
+                if project_recency_sources(&workspace.state) == sources {
+                    workspace.project_last_edits = edits;
+                } else {
+                    // A project or worktree moved while scanning; sample its new roots.
+                    workspace.project_recency_sampled_at = None;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn attach_session(
@@ -438,7 +665,11 @@ impl Workspace {
     ) -> Result<(), String> {
         let command = self.sessions.attach_command(&shell.id)?;
         let terminal = Terminal::spawn(
-            Self::terminal_options(command, shell.cwd.clone(), self.settings.use_riwork_colors),
+            Self::terminal_options(
+                command,
+                shell.cwd.clone(),
+                Self::terminal_theme(&self.settings, &self.appearance),
+            ),
             window,
             cx,
         )?;
@@ -455,6 +686,17 @@ impl Workspace {
             })
             .map(|worktree| worktree.branch.as_str())
             .unwrap_or("root");
+        let title = if shell.kind == ShellKind::Orchestrator {
+            orchestrator_tab_title(&shell)
+        } else {
+            format!(
+                "{} {:02} · {}",
+                shell.harness.map(harness_name).unwrap_or(&self.shell_name),
+                tab_id,
+                worktree_name
+            )
+        };
+        let title = contextual_shell_title(title, &shell, &self.project_id, &self.state);
         let pane = self
             .panes
             .get_mut(&pane_id)
@@ -464,16 +706,7 @@ impl Workspace {
         }
         pane.tabs.push(Tab {
             id: tab_id,
-            title: if shell.kind == ShellKind::Orchestrator {
-                orchestrator_tab_title(&shell)
-            } else {
-                format!(
-                    "{} {:02} · {}",
-                    shell.harness.map(harness_name).unwrap_or(&self.shell_name),
-                    tab_id,
-                    worktree_name
-                )
-            },
+            title,
             content: TabContent::Shell {
                 shell_id: shell.id,
                 worktree_id: shell.worktree_id,
@@ -483,6 +716,10 @@ impl Workspace {
         pane.active = pane.tabs.len() - 1;
         self.active_pane = pane_id;
         self.notice = None;
+        self.session_refresh_generation = self.session_refresh_generation.wrapping_add(1);
+        if self.layout_ready {
+            self.remember_active_worktree(cx);
+        }
         cx.notify();
         Ok(())
     }
@@ -511,16 +748,34 @@ impl Workspace {
 
     fn apply_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = cx.global::<Settings>().clone();
-        let colors_changed = settings.use_riwork_colors != self.settings.use_riwork_colors;
+        if settings.project_order != self.settings.project_order {
+            self.project_sort_menu_open = false;
+        }
+        if cx.global::<Appearance>().selected != settings.theme {
+            sync_appearance(cx);
+        }
+        let appearance = cx.global::<Appearance>().clone();
+        let previous_theme = Self::terminal_theme(&self.settings, &self.appearance);
+        let next_theme = Self::terminal_theme(&settings, &appearance);
+        let colors_changed = previous_theme != next_theme
+            || (next_theme.is_none() && self.appearance.ghostty != appearance.ghostty);
+        let restore_terminal_focus = next_theme.is_none()
+            && self.project_creator.is_none()
+            && !self.search_focused
+            && self.panel_menu.is_none()
+            && !self.tab_dragging
+            && self
+                .panes
+                .get(&self.active_pane)
+                .and_then(|pane| pane.tabs.get(pane.active))
+                .is_some_and(|tab| tab.terminal().is_some());
         let remember_changed = settings.remember_window_size != self.settings.remember_window_size;
         self.settings = settings;
+        self.appearance = appearance;
         if remember_changed && self.settings.remember_window_size {
             self.remember_window_size(window, cx);
         }
         if colors_changed {
-            // Reconnect only the display clients; the tmux shells and harnesses stay alive.
-            // Replacing a client's configuration also removes old palette overrides completely.
-            let colors = self.settings.use_riwork_colors;
             let mut error = None;
             for pane in self.panes.values_mut() {
                 for tab in &mut pane.tabs {
@@ -530,13 +785,24 @@ impl Workspace {
                     else {
                         continue;
                     };
+                    if let Some(theme) = next_theme {
+                        // Ghostty can apply palette overrides without replacing the client.
+                        if let Err(message) =
+                            terminal.update(cx, |terminal, _| terminal.update_theme(theme))
+                        {
+                            error = Some(message);
+                        }
+                        continue;
+                    }
+                    // Returning to the native Ghostty config removes every override.
+                    // Only display clients reconnect; tmux shells and harnesses stay alive.
                     let replacement = (|| {
                         let shell = self.sessions.get(shell_id)?;
                         if !shell.alive {
                             return Ok(None);
                         }
                         let command = self.sessions.attach_command(shell_id)?;
-                        let mut options = Self::terminal_options(command, shell.cwd, colors);
+                        let mut options = Self::terminal_options(command, shell.cwd, None);
                         options.focus_on_spawn = false;
                         Terminal::spawn(options, window, cx).map(Some)
                     })();
@@ -555,7 +821,9 @@ impl Workspace {
             if let Some(error) = error {
                 self.notice = Some(error);
             }
-            self.focus_active(window, cx);
+            if restore_terminal_focus {
+                self.focus_active(window, cx);
+            }
         }
         cx.notify();
     }
@@ -564,14 +832,22 @@ impl Workspace {
         match panel {
             PanelKind::Projects => "PROJECTS",
             PanelKind::Worktrees => "WORKTREES",
+            PanelKind::Files => "FILES",
             PanelKind::Tasks => "TASKS",
             PanelKind::Shells => "SHELLS",
             PanelKind::Usage => "USAGE",
             PanelKind::Settings => "SETTINGS",
+            PanelKind::ProjectSettings => "PROJECT SETTINGS",
         }
     }
 
     fn attach_panel(&mut self, pane_id: PaneId, panel: PanelKind, cx: &mut Context<Self>) {
+        if panel == PanelKind::ProjectSettings {
+            self.ensure_project_settings(cx);
+        }
+        if panel == PanelKind::Files {
+            self.ensure_file_explorer(cx);
+        }
         if let Some(pane) = self.panes.get_mut(&pane_id) {
             for tab in &pane.tabs {
                 tab.set_visible(false, cx);
@@ -599,6 +875,7 @@ impl Workspace {
         );
         for panel in [
             PanelKind::Projects,
+            PanelKind::Files,
             PanelKind::Worktrees,
             PanelKind::Tasks,
             PanelKind::Shells,
@@ -644,7 +921,146 @@ impl Workspace {
 
     fn panel_action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
+            PanelAction::ToggleProjectSortMenu => {
+                self.project_sort_menu_open = !self.project_sort_menu_open;
+                if self.project_sort_menu_open {
+                    self.panel_menu = None;
+                    self.finish_tab_drag(cx);
+                    self.focus.focus(window, cx);
+                } else {
+                    self.focus_active(window, cx);
+                }
+                cx.notify();
+            }
+            PanelAction::CloseProjectSortMenu => {
+                self.project_sort_menu_open = false;
+                self.focus_active(window, cx);
+                cx.notify();
+            }
+            PanelAction::SetProjectOrder(order) => {
+                self.project_sort_menu_open = false;
+                match self
+                    .settings_store
+                    .update(|settings| settings.project_order = order)
+                {
+                    Ok(settings) => {
+                        self.notice = None;
+                        cx.set_global(settings);
+                    }
+                    Err(error) => self.notice = Some(error),
+                }
+                self.focus_active(window, cx);
+                cx.notify();
+            }
             PanelAction::CreateProject => self.begin_project_creation(window, cx),
+            PanelAction::CreateFolder => self.begin_folder_edit(None, window, cx),
+            PanelAction::CreateSubfolder(id) => {
+                self.begin_folder_edit_in(None, Some(&id), window, cx)
+            }
+            PanelAction::EditFolder(id) => self.begin_folder_edit(Some(&id), window, cx),
+            PanelAction::BeginProjectDrag => {
+                self.panel_menu = None;
+                self.project_sort_menu_open = false;
+                self.search_focused = false;
+                self.begin_tab_drag(cx);
+            }
+            PanelAction::MoveProject {
+                project_id,
+                folder_id,
+            } => {
+                match self
+                    .store
+                    .move_project_to_folder(&project_id, folder_id.as_deref())
+                {
+                    Ok(_) => {
+                        self.notice = None;
+                        self.refresh_project_metadata(cx);
+                        self.expand_project_folder(folder_id.as_deref());
+                    }
+                    Err(error) => self.notice = Some(error),
+                }
+                self.finish_tab_drag(cx);
+                cx.notify();
+            }
+            PanelAction::MoveFolder {
+                folder_id,
+                parent_id,
+            } => {
+                match self
+                    .store
+                    .move_project_folder(&folder_id, parent_id.as_deref())
+                {
+                    Ok(_) => {
+                        self.notice = None;
+                        self.refresh_project_metadata(cx);
+                        self.expand_project_folder(parent_id.as_deref());
+                    }
+                    Err(error) => self.notice = Some(error),
+                }
+                self.finish_tab_drag(cx);
+                cx.notify();
+            }
+            PanelAction::RemoveFolder(id) => {
+                match self.store.remove_project_folder(&id) {
+                    Ok(()) => {
+                        self.collapsed_project_folders.remove(&id);
+                        self.refresh_project_metadata(cx);
+                    }
+                    Err(error) => self.notice = Some(error),
+                }
+                cx.notify();
+            }
+            PanelAction::ToggleFolder(id) => {
+                if !self.collapsed_project_folders.remove(&id) {
+                    self.collapsed_project_folders.insert(id);
+                }
+                cx.notify();
+            }
+            PanelAction::ProjectSettings(id) => {
+                self.activate_project(&id, true, window, cx);
+                if self.project_id != id {
+                    return;
+                }
+                let pane_id = self
+                    .panes
+                    .iter()
+                    .rev()
+                    .find(|(_, pane)| pane.tabs.iter().any(|tab| tab.terminal().is_some()))
+                    .map(|(id, _)| *id)
+                    .unwrap_or(self.active_pane);
+                self.open_panel(PanelKind::ProjectSettings, pane_id, window, cx);
+            }
+            PanelAction::ToggleProjectNotifications(id) => {
+                let enabled = match self.store.snapshot().and_then(|state| {
+                    state
+                        .project(&id)
+                        .map(|project| !project.notify_on_agent_done)
+                }) {
+                    Ok(enabled) => enabled,
+                    Err(error) => {
+                        self.notice = Some(error);
+                        cx.notify();
+                        return;
+                    }
+                };
+                match self.store.set_project_notifications(&id, enabled) {
+                    Ok(project) => {
+                        if enabled {
+                            notifications::show_enabled(&project, cx);
+                        } else if let Err(error) =
+                            notifications::cancel_pending(self.sessions.state_home(), &id)
+                        {
+                            self.notice = Some(error);
+                        }
+                        self.refresh_project_metadata(cx);
+                        cx.refresh_windows();
+                    }
+                    Err(error) => {
+                        self.notice = Some(error);
+                        cx.notify();
+                    }
+                }
+            }
             PanelAction::Project(id) => self.activate_project(&id, true, window, cx),
             PanelAction::OpenProject(id) => self.open_project_window(&id, cx),
             PanelAction::Worktree(id) => self.select_worktree(&id, window, cx),
@@ -656,6 +1072,182 @@ impl Workspace {
                 cx.notify();
             }
         }
+    }
+
+    fn refresh_project_metadata(&mut self, cx: &mut Context<Self>) {
+        match self.store.snapshot() {
+            Ok(state) => self.state = state,
+            Err(error) => self.notice = Some(error),
+        }
+        self.project_recency_sampled_at = None;
+        self.refresh_project_recency(cx);
+        if let Some(panel) = &self.project_settings_panel {
+            panel.update(cx, |panel, cx| panel.refresh_folders(cx));
+        }
+        cx.notify();
+    }
+
+    fn ensure_project_settings(&mut self, cx: &mut Context<Self>) {
+        if self.project_settings_panel.is_some() {
+            return;
+        }
+        let Ok(project) = self.state.project(&self.project_id).cloned() else {
+            return;
+        };
+        let store = self.store.clone();
+        let panel = cx.new(|cx| ProjectSettingsPanel::new(store, project, cx));
+        cx.subscribe(&panel, |workspace, _, event, cx| {
+            if let ProjectSettingsEvent::Saved(project) = event {
+                workspace.notice = Some(format!("Saved {}", project.name));
+            }
+            workspace.refresh_project_metadata(cx);
+        })
+        .detach();
+        self.project_settings_panel = Some(panel);
+    }
+
+    fn ensure_file_explorer(&mut self, cx: &mut Context<Self>) {
+        if self.file_explorer.is_none() {
+            let panel = cx.new(FileExplorer::new);
+            cx.subscribe(&panel, |workspace, _, event, cx| match event {
+                FileExplorerEvent::Open(path) => cx.open_with_system(path),
+                FileExplorerEvent::Reveal(path) => cx.reveal_path(path),
+                FileExplorerEvent::CopyRelativePath(path) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        path.to_string_lossy().into_owned(),
+                    ));
+                    workspace.notice = Some(format!("Copied {}", path.display()));
+                    cx.notify();
+                }
+            })
+            .detach();
+            self.file_explorer = Some(panel);
+        }
+        self.sync_file_explorer(cx);
+    }
+
+    fn sync_file_explorer(&mut self, cx: &mut Context<Self>) {
+        if let Some(panel) = &self.file_explorer {
+            let root = file_explorer_root(
+                &self.state,
+                &self.project_id,
+                self.selected_worktree_id.as_deref(),
+            );
+            panel.update(cx, |panel, cx| panel.set_root(root, cx));
+        }
+    }
+
+    fn remember_active_worktree(&mut self, cx: &mut Context<Self>) {
+        let worktree_id = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .and_then(|tab| match &tab.content {
+                TabContent::Shell {
+                    shell_id,
+                    worktree_id,
+                    ..
+                } => {
+                    let assigned = worktree_id.as_ref().and_then(|id| {
+                        self.state
+                            .worktrees
+                            .iter()
+                            .find(|worktree| worktree.id == *id)
+                    });
+                    if assigned.is_some_and(|worktree| worktree.project_id != self.project_id) {
+                        return None;
+                    }
+                    let project_scoped = self.shells.iter().any(|shell| {
+                        shell.id == *shell_id
+                            && shell.project_id.as_deref() == Some(self.project_id.as_str())
+                    });
+                    if let Some(id) = worktree_id.as_ref().filter(|_| assigned.is_none()) {
+                        return project_scoped.then(|| id.clone());
+                    }
+                    if assigned.is_none() && !project_scoped {
+                        return None;
+                    }
+                    // A removed launch worktree remains an explicit unavailable context.
+                    let current = self.shell_cwds.get(shell_id).and_then(|cwd| {
+                        self.state
+                            .worktrees
+                            .iter()
+                            .filter(|worktree| {
+                                worktree.project_id == self.project_id
+                                    && cwd.starts_with(&worktree.path)
+                            })
+                            .max_by_key(|worktree| worktree.path.components().count())
+                    });
+                    current
+                        .map(|worktree| worktree.id.clone())
+                        .or_else(|| worktree_id.clone())
+                }
+                _ => None,
+            });
+        if let Some(id) = worktree_id {
+            self.selected_worktree_id = Some(id);
+        }
+        self.sync_file_explorer(cx);
+    }
+
+    fn begin_folder_edit(&mut self, id: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_folder_edit_in(id, None, window, cx);
+    }
+
+    fn expand_project_folder(&mut self, id: Option<&str>) {
+        let mut current = id.map(str::to_owned);
+        let mut seen = HashSet::new();
+        while let Some(id) = current {
+            if !seen.insert(id.clone()) {
+                break;
+            }
+            self.collapsed_project_folders.remove(&id);
+            current = self
+                .state
+                .project_folders
+                .iter()
+                .find(|folder| folder.id == id)
+                .and_then(|folder| folder.parent_id.clone());
+        }
+    }
+
+    fn begin_folder_edit_in(
+        &mut self,
+        id: Option<&str>,
+        parent_id: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.folder_editor.is_some() || self.project_creator.is_some() {
+            return;
+        }
+        let folder = id
+            .and_then(|id| self.state.project_folder(id).ok())
+            .cloned();
+        self.search_focused = false;
+        self.panel_menu = None;
+        self.notice = None;
+        self.begin_tab_drag(cx);
+        let store = self.store.clone();
+        let parent_id = parent_id.map(str::to_owned);
+        let editor = cx.new(|cx| match parent_id {
+            Some(parent_id) => FolderEditor::new_in(store, folder, Some(parent_id), cx),
+            None => FolderEditor::new(store, folder, cx),
+        });
+        editor.update(cx, |editor, cx| editor.focus(window, cx));
+        cx.subscribe_in(&editor, window, |workspace, _, event, window, cx| {
+            workspace.folder_editor = None;
+            workspace.finish_tab_drag(cx);
+            if let FolderEditorEvent::Saved(folder) = event {
+                workspace.refresh_project_metadata(cx);
+                workspace.expand_project_folder(Some(&folder.id));
+            }
+            workspace.focus_active(window, cx);
+            cx.notify();
+        })
+        .detach();
+        self.folder_editor = Some(editor);
+        cx.notify();
     }
 
     fn move_tab(
@@ -891,6 +1483,8 @@ impl Workspace {
     }
 
     fn load_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_refresh_generation = self.session_refresh_generation.wrapping_add(1);
+        self.project_sort_menu_open = false;
         if self.focus_mode {
             self.set_focus_mode(false, window, cx);
         }
@@ -924,7 +1518,12 @@ impl Workspace {
                 return;
             }
         };
-        let saved = match self.layouts.load(&self.project_id) {
+        let saved_layout = if let Some(layout) = self.restore_layout.clone() {
+            Ok(Some(layout))
+        } else {
+            self.layouts.load(&self.project_id)
+        };
+        let mut saved = match saved_layout {
             Ok(saved) => saved,
             Err(error) => {
                 self.notice = Some(error);
@@ -932,6 +1531,47 @@ impl Workspace {
                 return;
             }
         };
+        let destination_missing = saved.is_none();
+        if let Some(previous) = &self.carry_layout {
+            let destination = saved.clone().unwrap_or_else(|| ProjectLayout {
+                layout: Layout::Pane(1),
+                panes: BTreeMap::from([(1, SavedPane::default())]),
+                active_pane: 1,
+                panels_initialized: true,
+                detached_shell_ids: HashSet::new(),
+                selected_worktree_id: self.selected_worktree_id.clone(),
+                selected_task_id: None,
+                sidebar_visible: true,
+                window_size: None,
+                locked_panes: None,
+            });
+            match destination.carry_locked_regions_from(previous) {
+                Ok(layout) => saved = Some(layout),
+                Err(error) => {
+                    self.notice = Some(error);
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        let locked_ids = saved
+            .as_ref()
+            .map(ProjectLayout::effective_locked_panes)
+            .unwrap_or_default();
+        let locked_shell_ids: HashSet<_> = saved
+            .as_ref()
+            .into_iter()
+            .flat_map(|layout| locked_ids.iter().filter_map(|id| layout.panes.get(id)))
+            .flat_map(|pane| {
+                pane.tabs.iter().filter_map(|tab| match tab {
+                    SavedTab::Shell { shell_id } => Some(shell_id.clone()),
+                    _ => None,
+                })
+            })
+            .collect();
+        self.locked_panes = saved
+            .as_ref()
+            .and_then(|layout| layout.locked_panes.clone());
         self.window_size = if self.settings.remember_window_size {
             match window.window_bounds() {
                 WindowBounds::Windowed(bounds) => {
@@ -944,7 +1584,11 @@ impl Workspace {
         };
         let live_shells = shells
             .iter()
-            .filter(|shell| session_belongs_to_workspace(shell, &self.project_id) && shell.alive)
+            .filter(|shell| {
+                (session_belongs_to_workspace(shell, &self.project_id)
+                    || locked_shell_ids.contains(&shell.id))
+                    && shell.alive
+            })
             .map(|shell| (shell.id.clone(), shell.clone()))
             .collect::<BTreeMap<_, _>>();
         self.layout = saved
@@ -969,6 +1613,9 @@ impl Workspace {
             .filter(|id| self.panes.contains_key(id))
             .unwrap_or_else(|| self.layout.first_pane());
         self.active_pane = active_pane;
+        let shell_pane = (!locked_ids.contains(&active_pane))
+            .then_some(active_pane)
+            .or_else(|| pane_ids.iter().copied().find(|id| !locked_ids.contains(id)));
         self.detached_shell_ids = saved
             .as_ref()
             .map(|saved| saved.detached_shell_ids.clone())
@@ -979,9 +1626,13 @@ impl Workspace {
         if let Some(saved) = &saved {
             self.sidebar_visible = saved.sidebar_visible;
             if let Some(worktree_id) = &saved.selected_worktree_id {
-                if self.state.worktrees.iter().any(|worktree| {
-                    &worktree.id == worktree_id && worktree.project_id == self.project_id
-                }) {
+                if self
+                    .state
+                    .worktrees
+                    .iter()
+                    .find(|worktree| &worktree.id == worktree_id)
+                    .is_none_or(|worktree| worktree.project_id == self.project_id)
+                {
                     self.selected_worktree_id = Some(worktree_id.clone());
                 }
             }
@@ -1021,18 +1672,23 @@ impl Workspace {
                 && live_shells.contains_key(&shell.id)
                 && !known_shell_ids.contains(&shell.id)
             {
-                if let Err(error) = self.attach_session(active_pane, shell.clone(), window, cx) {
-                    restore_error = Some(error);
+                if let Some(shell_pane) = shell_pane {
+                    if let Err(error) = self.attach_session(shell_pane, shell.clone(), window, cx) {
+                        restore_error = Some(error);
+                    }
                 }
             }
         }
-        if saved.is_none()
-            && !live_shells
-                .values()
-                .any(|shell| shell.kind == ShellKind::Project)
+        if destination_missing
+            && !live_shells.values().any(|shell| {
+                shell.kind == ShellKind::Project
+                    && session_belongs_to_workspace(shell, &self.project_id)
+            })
         {
-            if let Err(error) = self.spawn_tab(active_pane, window, cx) {
-                restore_error = Some(error);
+            if let Some(shell_pane) = shell_pane {
+                if let Err(error) = self.spawn_tab(shell_pane, window, cx) {
+                    restore_error = Some(error);
+                }
             }
         }
         for (pane_id, pane) in &mut self.panes {
@@ -1065,6 +1721,12 @@ impl Workspace {
             self.notice = Some(error);
         } else {
             self.layout_ready = true;
+            self.restore_layout = None;
+            self.carry_layout = None;
+            if let Some((mode, centered)) = self.restore_focus.take() {
+                self.focus_centered = centered;
+                self.set_focus_mode(mode, window, cx);
+            }
             self.notice = None;
             self.save_layout();
         }
@@ -1078,11 +1740,11 @@ impl Workspace {
         self.layout_ready
     }
 
-    fn save_layout(&mut self) {
+    fn layout_snapshot(&self) -> Option<ProjectLayout> {
         if !self.layout_ready {
-            return;
+            return None;
         }
-        let saved = ProjectLayout {
+        Some(ProjectLayout {
             layout: self.layout.clone(),
             panes: self
                 .panes
@@ -1114,9 +1776,40 @@ impl Workspace {
             sidebar_visible: self.sidebar_visible,
             panels_initialized: true,
             window_size: self.window_size,
+            locked_panes: self.locked_panes.clone(),
+        })
+    }
+
+    fn save_layout(&mut self) {
+        let Some(saved) = self.layout_snapshot() else {
+            return;
         };
         if let Err(error) = self.layouts.save(&self.project_id, &saved) {
             self.notice = Some(error);
+        }
+    }
+
+    fn runtime_window(&self, window: &Window) -> runtime::RuntimeWindow {
+        let window_bounds = window.window_bounds();
+        let mode = match window_bounds {
+            WindowBounds::Windowed(_) => runtime::WindowMode::Windowed,
+            WindowBounds::Maximized(_) => runtime::WindowMode::Maximized,
+            WindowBounds::Fullscreen(_) => runtime::WindowMode::Fullscreen,
+        };
+        let bounds = window_bounds.get_bounds();
+        runtime::RuntimeWindow {
+            project_id: Some(self.project_id.clone()),
+            path: self.cwd.clone(),
+            bounds: Some(runtime::WindowGeometry {
+                x: bounds.origin.x.as_f32(),
+                y: bounds.origin.y.as_f32(),
+                width: bounds.size.width.as_f32(),
+                height: bounds.size.height.as_f32(),
+            }),
+            mode,
+            layout: self.layout_snapshot(),
+            focus_mode: self.focus_mode,
+            focus_centered: self.focus_centered,
         }
     }
 
@@ -1155,7 +1848,13 @@ impl Workspace {
             return;
         }
         self.save_layout();
+        if let Some(layout) = self.layout_snapshot() {
+            self.carry_layout = Some(layout);
+        }
+        self.restore_layout = None;
         self.project_id = project.id;
+        self.project_settings_panel = None;
+        self.file_explorer = None;
         window.set_window_title(&format!("RiWork · {}", project.name));
         self.cwd = project.root;
         self.selected_worktree_id = self
@@ -1236,6 +1935,7 @@ impl Workspace {
             .clone()
             .or(self.selected_worktree_id.clone());
         self.selected_task_id = Some(task.id);
+        self.sync_file_explorer(cx);
         self.save_layout();
         cx.notify();
     }
@@ -1331,34 +2031,101 @@ impl Workspace {
             Ok(state) => self.state = state,
             Err(error) => self.notice = Some(error),
         }
+        self.refresh_project_recency(cx);
+        if let Ok(project) = self.state.project(&self.project_id) {
+            window.set_window_title(&format!("RiWork · {}", project.name));
+        }
+        if let Some(panel) = &self.project_settings_panel {
+            panel.update(cx, |panel, cx| panel.refresh_folders(cx));
+        }
         if !self.layout_ready {
             self.load_project(window, cx);
         }
-        if let Ok(metrics) = self.sessions.metrics_snapshot() {
-            self.metrics = metrics;
-        }
-        if let Ok(shells) = self.sessions.list() {
-            self.shells = shells;
-        }
+        self.refresh_sessions(cx);
         request_codex_usage(false, cx);
-        self.claude_usage.clear();
-        for shell in &self.shells {
-            if shell.harness == Some(HarnessKind::Claude)
-                && shell.project_id.as_deref() == Some(self.project_id.as_str())
-            {
-                if let Ok(Some(snapshot)) = usage::read_claude_usage(&shell.id) {
-                    self.claude_usage.insert(shell.id.clone(), snapshot);
-                }
+        self.remember_active_worktree(cx);
+        let files_visible = self.panes.values().any(|pane| {
+            pane.tabs
+                .get(pane.active)
+                .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)))
+        });
+        if files_visible {
+            if let Some(panel) = &self.file_explorer {
+                panel.update(cx, |panel, cx| panel.refresh(cx));
             }
         }
-        self.shell_cwds.clear();
-        for shell in &self.shells {
-            if shell.alive {
-                if let Ok(cwd) = self.sessions.current_directory(&shell.id) {
-                    self.shell_cwds.insert(shell.id.clone(), cwd);
+        self.refresh_shell_titles();
+        cx.notify();
+    }
+
+    fn refresh_sessions(&mut self, cx: &mut Context<Self>) {
+        if self.session_refresh_pending {
+            return;
+        }
+        self.session_refresh_pending = true;
+        let project_id = self.project_id.clone();
+        let generation = self.session_refresh_generation;
+        let sessions = self.sessions.clone();
+        let work_project_id = project_id.clone();
+        let work = cx.background_executor().spawn(async move {
+            let shells = sessions.list()?;
+            let metrics = sessions.metrics_snapshot().ok();
+            let cwds = sessions.current_directories(&shells).ok();
+            let mut claude_usage = BTreeMap::new();
+            for shell in &shells {
+                if shell.harness == Some(HarnessKind::Claude)
+                    && shell.project_id.as_deref() == Some(work_project_id.as_str())
+                {
+                    if let Ok(Some(snapshot)) =
+                        usage::read_claude_usage_at(sessions.state_home(), &shell.id)
+                    {
+                        claude_usage.insert(shell.id.clone(), snapshot);
+                    }
                 }
             }
-        }
+            Ok::<_, String>((shells, metrics, cwds, claude_usage))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.session_refresh_pending = false;
+                // Project switches and local launches invalidate an older snapshot,
+                // including a switch away from and back to the same project.
+                if workspace.project_id != project_id
+                    || workspace.session_refresh_generation != generation
+                {
+                    return;
+                }
+                let Ok((shells, metrics, cwds, claude_usage)) = result else {
+                    return;
+                };
+                workspace.shells = shells;
+                if let Some(metrics) = metrics {
+                    workspace.metrics = metrics;
+                }
+                if let Some(cwds) = cwds {
+                    workspace.shell_cwds = cwds;
+                }
+                workspace.claude_usage = claude_usage;
+                for home in workspace
+                    .shells
+                    .iter()
+                    .filter(|shell| shell.alive && shell.harness == Some(HarnessKind::Codex))
+                    .filter_map(|shell| shell.codex_home.clone())
+                    .collect::<HashSet<_>>()
+                {
+                    request_codex_usage_at(home, false, cx);
+                }
+                workspace.refresh_agent_activity(cx);
+                workspace.remember_active_worktree(cx);
+                workspace.refresh_shell_titles();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn refresh_shell_titles(&mut self) {
         for pane in self.panes.values_mut() {
             for tab in &mut pane.tabs {
                 if let Some(shell) = tab
@@ -1366,15 +2133,27 @@ impl Workspace {
                     .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
                     .filter(|shell| shell.kind == ShellKind::Orchestrator)
                 {
-                    tab.title = orchestrator_tab_title(shell);
+                    tab.title = contextual_shell_title(
+                        orchestrator_tab_title(shell),
+                        shell,
+                        &self.project_id,
+                        &self.state,
+                    );
                     continue;
                 }
                 if let Some(cwd) = tab.shell_id().and_then(|id| self.shell_cwds.get(id)) {
+                    let shell = self
+                        .shells
+                        .iter()
+                        .find(|shell| tab.shell_id() == Some(&shell.id));
+                    let project_id = shell
+                        .and_then(|shell| shell.project_id.as_deref())
+                        .unwrap_or(&self.project_id);
                     let worktree = self
                         .state
                         .worktrees
                         .iter()
-                        .filter(|worktree| worktree.project_id == self.project_id)
+                        .filter(|worktree| worktree.project_id == project_id)
                         .filter(|worktree| cwd.starts_with(&worktree.path))
                         .max_by_key(|worktree| worktree.path.as_os_str().len());
                     let label = worktree
@@ -1387,11 +2166,20 @@ impl Workspace {
                         .and_then(|shell| shell.harness)
                         .map(harness_name)
                         .unwrap_or(&self.shell_name);
-                    tab.title = format!("{} {:02} · {}", program, tab.id, label);
+                    let title = format!("{} {:02} · {}", program, tab.id, label);
+                    tab.title = shell
+                        .map(|shell| {
+                            contextual_shell_title(
+                                title.clone(),
+                                shell,
+                                &self.project_id,
+                                &self.state,
+                            )
+                        })
+                        .unwrap_or(title);
                 }
             }
         }
-        cx.notify();
     }
 
     fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1435,6 +2223,35 @@ impl Workspace {
     }
 
     fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.remember_active_worktree(cx);
+        let files_active = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)));
+        if files_active {
+            self.search_focused = false;
+            self.ensure_file_explorer(cx);
+            if let Some(panel) = &self.file_explorer {
+                panel.update(cx, |panel, cx| panel.focus(window, cx));
+            }
+            return;
+        }
+        let project_settings_active = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .is_some_and(|tab| {
+                matches!(tab.content, TabContent::Panel(PanelKind::ProjectSettings))
+            });
+        if project_settings_active {
+            self.search_focused = false;
+            self.ensure_project_settings(cx);
+            if let Some(panel) = &self.project_settings_panel {
+                panel.update(cx, |panel, cx| panel.focus(window, cx));
+            }
+            return;
+        }
         let settings_active = self
             .panes
             .get(&self.active_pane)
@@ -1569,6 +2386,9 @@ impl Workspace {
             cx.notify();
             return;
         }
+        if let Some(locked) = &mut self.locked_panes {
+            locked.remove(&pane_id);
+        }
         let was_active = self.active_pane == pane_id;
         if let Some(pane) = self.panes.remove(&pane_id) {
             for tab in pane.tabs {
@@ -1587,6 +2407,40 @@ impl Workspace {
             self.save_layout();
             cx.notify();
         }
+    }
+
+    fn pane_is_locked(&self, pane_id: PaneId) -> bool {
+        match &self.locked_panes {
+            Some(locked) => locked.contains(&pane_id),
+            None => {
+                self.layout.first_pane() == pane_id
+                    && self.panes.get(&pane_id).is_some_and(|pane| {
+                        pane.tabs.iter().any(|tab| {
+                            matches!(
+                                tab.content,
+                                TabContent::Panel(
+                                    PanelKind::Projects | PanelKind::Worktrees | PanelKind::Files
+                                )
+                            )
+                        })
+                    })
+            }
+        }
+    }
+
+    fn toggle_pane_lock(&mut self, pane_id: PaneId, cx: &mut Context<Self>) {
+        let mut locked: HashSet<_> = self
+            .panes
+            .keys()
+            .copied()
+            .filter(|id| self.pane_is_locked(*id))
+            .collect();
+        if !locked.remove(&pane_id) {
+            locked.insert(pane_id);
+        }
+        self.locked_panes = Some(locked);
+        self.save_layout();
+        cx.notify();
     }
 
     fn new_tab_action(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -1612,7 +2466,7 @@ impl Workspace {
                 return;
             }
         };
-        if let Err(error) = open_workspace_window(Some(path), self.cwd.clone(), cx) {
+        if let Err(error) = open_workspace_window(Some(path), self.cwd.clone(), None, cx) {
             self.notice = Some(error);
         }
         cx.notify();
@@ -1672,6 +2526,7 @@ impl Workspace {
     }
 
     fn toggle_panel_menu(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        self.project_sort_menu_open = false;
         self.active_pane = pane_id;
         self.panel_menu = if self.panel_menu == Some(pane_id) {
             None
@@ -1741,17 +2596,50 @@ impl Workspace {
         self.open_panel(PanelKind::Settings, self.active_pane, window, cx);
     }
 
+    fn open_files_action(&mut self, _: &OpenFiles, window: &mut Window, cx: &mut Context<Self>) {
+        let pane_id = self
+            .panes
+            .iter()
+            .find_map(|(id, pane)| {
+                pane.tabs
+                    .iter()
+                    .any(|tab| {
+                        matches!(
+                            tab.content,
+                            TabContent::Panel(
+                                PanelKind::Projects | PanelKind::Worktrees | PanelKind::Files
+                            )
+                        )
+                    })
+                    .then_some(*id)
+            })
+            .unwrap_or(self.active_pane);
+        self.open_panel(PanelKind::Files, pane_id, window, cx);
+    }
+
     fn focus_search_action(
         &mut self,
         _: &FocusSearch,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let files_active = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)));
+        if files_active {
+            self.ensure_file_explorer(cx);
+            if let Some(panel) = &self.file_explorer {
+                panel.update(cx, |panel, cx| panel.focus_search(window, cx));
+            }
+            return;
+        }
         let active_panel = self
             .panes
             .get(&self.active_pane)
             .and_then(|pane| pane.tabs.get(pane.active))
-            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(kind) if kind != PanelKind::Settings && kind != PanelKind::Usage));
+            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(kind) if kind != PanelKind::Settings && kind != PanelKind::ProjectSettings && kind != PanelKind::Usage));
         if !active_panel {
             self.open_panel(PanelKind::Projects, self.active_pane, window, cx);
         }
@@ -1770,7 +2658,7 @@ impl Workspace {
     }
 
     fn begin_project_creation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.project_creator.is_some() {
+        if self.project_creator.is_some() || self.folder_editor.is_some() {
             return;
         }
         let directory = match paths::ensure_default_projects_directory() {
@@ -1923,6 +2811,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.keystroke.key == "escape" && self.project_sort_menu_open {
+            self.project_sort_menu_open = false;
+            self.focus_active(window, cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if event.keystroke.key == "escape" && cx.has_active_drag() {
             cx.stop_active_drag(window);
             self.finish_tab_drag(cx);
@@ -1992,6 +2887,7 @@ impl Workspace {
         at_window_top: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let colors = theme::palette(cx);
         match layout {
             Layout::Pane(id) => self.render_pane(*id, width, x, at_window_top, cx),
             Layout::Split {
@@ -2009,8 +2905,8 @@ impl Workspace {
                 let divider = div()
                     .id(format!("divider-{path:?}"))
                     .flex_none()
-                    .bg(rgb(DIVIDER))
-                    .hover(|style| style.bg(rgb(CYAN)))
+                    .bg(rgb(colors.divider))
+                    .hover(|style| style.bg(rgb(colors.cyan)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |workspace, _, _, cx| {
@@ -2107,22 +3003,21 @@ impl Workspace {
         at_window_top: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let colors = theme::palette(cx);
         let Some(pane) = self.panes.get(&pane_id) else {
             return div().into_any_element();
         };
         let selected = self.active_pane == pane_id;
-        let active_is_panel = pane
-            .tabs
-            .get(pane.active)
-            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(_)));
-        let compact = pane_width < 260.0;
         let window_drag_enabled = at_window_top;
         let control_inset = if at_window_top && x < WINDOW_CONTROLS_CONTENT_INSET {
-            (WINDOW_CONTROLS_CONTENT_INSET - x).min(pane_width)
+            // Keep the pane menu and a fixed drag area outside the scrolling tabs.
+            (WINDOW_CONTROLS_CONTENT_INSET - x).min((pane_width - 40.0).max(0.0))
         } else {
             0.0
         };
-        let last_pane = self.layout.pane_ids().last() == Some(&pane_id);
+        let header_width = pane_width - control_inset;
+        let show_lock = header_width >= 108.0;
+        let show_focus = header_width >= 180.0;
         let tabs = pane
             .tabs
             .iter()
@@ -2142,26 +3037,37 @@ impl Workspace {
                     .gap(px(6.0))
                     .border_r_1()
                     .border_b_1()
-                    .border_color(rgb(if active { CYAN } else { DIVIDER }))
-                    .bg(rgb(if active { PANEL_ACTIVE } else { PANEL }))
-                    .text_color(rgb(if active {
-                        if panel { MAGENTA } else { TEXT }
+                    .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                    .bg(rgb(if active {
+                        colors.panel_active
                     } else {
-                        MUTED
+                        colors.panel
+                    }))
+                    .text_color(rgb(if active {
+                        if panel { colors.magenta } else { colors.text }
+                    } else {
+                        colors.muted
                     }))
                     .text_size(px(if panel { 9.0 } else { 10.0 }))
                     .cursor_grab()
-                    .hover(|style| style.bg(rgb(PANEL_ACTIVE)))
-                    .drag_over::<DraggedTab>(|style, _, _, _| {
-                        style.border_l_2().border_color(rgb(CYAN))
+                    .hover(|style| style.bg(rgb(colors.panel_active)))
+                    .drag_over::<DraggedTab>(move |style, _, _, _| {
+                        style.border_l_2().border_color(rgb(colors.cyan))
                     })
                     .child(tab.title.clone())
                     .children(active.then(|| {
                         div()
                             .id(("close-tab", tab_id))
-                            .text_color(rgb(MUTED))
-                            .hover(|style| style.text_color(rgb(MAGENTA)))
-                            .child("×")
+                            .size(px(18.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .rounded(px(3.0))
+                            .hover(|style| style.bg(rgb(colors.divider)))
+                            .child(icons::icon(Icon::Close, colors.muted))
+                            .tooltip(|_, cx| cx.new(|_| PaneActionTooltip("Close tab · ⌘W")).into())
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |workspace, _, window, cx| {
                                 cx.stop_propagation();
@@ -2203,9 +3109,13 @@ impl Workspace {
             .flex()
             .min_w_0()
             .items_center()
-            .bg(rgb(PANEL))
+            .bg(rgb(colors.panel))
             .border_b_1()
-            .border_color(rgb(if selected { CYAN } else { DIVIDER }))
+            .border_color(rgb(if selected {
+                colors.cyan
+            } else {
+                colors.divider
+            }))
             .pl(px(control_inset))
             .child(
                 div()
@@ -2242,17 +3152,11 @@ impl Workspace {
             )
             .children(window_drag_enabled.then(|| {
                 div()
-                    .id(("window-drag-grip", pane_id))
+                    .id(("window-drag-handle", pane_id))
                     .flex_none()
-                    .w(px(16.0))
+                    .w(px(12.0))
                     .h_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(rgb(MUTED))
                     .cursor_grab()
-                    .hover(|style| style.bg(rgb(PANEL_ACTIVE)).text_color(rgb(CYAN)))
-                    .child("⋮")
                     .on_mouse_down(MouseButton::Left, start_window_drag)
             }))
             .child(
@@ -2260,77 +3164,51 @@ impl Workspace {
                     .flex()
                     .h_full()
                     .flex_none()
-                    .children((!compact).then(|| {
+                    .children(show_lock.then(|| {
                         self.pane_button(
                             pane_id,
-                            "new",
-                            "+",
-                            CYAN,
+                            "lock",
+                            if self.pane_is_locked(pane_id) {
+                                Icon::Lock
+                            } else {
+                                Icon::Unlock
+                            },
+                            if self.pane_is_locked(pane_id) {
+                                colors.cyan
+                            } else {
+                                colors.muted
+                            },
+                            |workspace, id, _, cx| workspace.toggle_pane_lock(id, cx),
+                            cx,
+                        )
+                    }))
+                    .children(show_focus.then(|| {
+                        self.pane_button(
+                            pane_id,
+                            "focus",
+                            Icon::Focus,
+                            colors.muted,
                             |workspace, id, window, cx| {
-                                workspace.toggle_panel_menu(id, window, cx);
+                                workspace.active_pane = id;
+                                workspace.set_focus_mode(true, window, cx);
                             },
                             cx,
                         )
                     }))
                     .child(self.pane_button(
                         pane_id,
-                        "focus",
-                        "⛶",
-                        CYAN,
-                        |workspace, id, window, cx| {
-                            workspace.active_pane = id;
-                            workspace.set_focus_mode(true, window, cx);
+                        "menu",
+                        Icon::More,
+                        if self.panel_menu == Some(pane_id) {
+                            colors.cyan
+                        } else {
+                            colors.muted
                         },
-                        cx,
-                    ))
-                    .child(self.pane_button(
-                        pane_id,
-                        "views",
-                        "▤",
-                        MAGENTA,
                         |workspace, id, window, cx| {
                             workspace.toggle_panel_menu(id, window, cx);
                         },
                         cx,
-                    ))
-                    .children((!active_is_panel && !compact).then(|| {
-                        self.pane_button(
-                            pane_id,
-                            "split",
-                            "║",
-                            MUTED,
-                            |workspace, id, window, cx| {
-                                workspace.active_pane = id;
-                                workspace.add_split(Axis::SideBySide, window, cx);
-                            },
-                            cx,
-                        )
-                    }))
-                    .children((!active_is_panel && !compact).then(|| {
-                        self.pane_button(
-                            pane_id,
-                            "stack",
-                            "═",
-                            MUTED,
-                            |workspace, id, window, cx| {
-                                workspace.active_pane = id;
-                                workspace.add_split(Axis::Stacked, window, cx);
-                            },
-                            cx,
-                        )
-                    }))
-                    .children((!compact).then(|| {
-                        self.pane_button(
-                            pane_id,
-                            "close",
-                            "×",
-                            MUTED,
-                            |workspace, id, window, cx| {
-                                workspace.remove_pane(id, window, cx);
-                            },
-                            cx,
-                        )
-                    })),
+                    )),
             );
         let skill_upgrade = pane
             .tabs
@@ -2351,7 +3229,7 @@ impl Workspace {
                 if self.tab_dragging {
                     match snapshot {
                         Some(snapshot) => img(snapshot.clone()).size_full().into_any_element(),
-                        None => div().size_full().bg(rgb(BG)).into_any_element(),
+                        None => div().size_full().bg(rgb(colors.bg)).into_any_element(),
                     }
                 } else {
                     terminal.clone().into_any_element()
@@ -2361,6 +3239,16 @@ impl Workspace {
             Some(TabContent::Panel(PanelKind::Settings)) => {
                 self.settings_panel.clone().into_any_element()
             }
+            Some(TabContent::Panel(PanelKind::Files)) => self
+                .file_explorer
+                .as_ref()
+                .map(|panel| panel.clone().into_any_element())
+                .unwrap_or_else(|| div().into_any_element()),
+            Some(TabContent::Panel(PanelKind::ProjectSettings)) => self
+                .project_settings_panel
+                .as_ref()
+                .map(|panel| panel.clone().into_any_element())
+                .unwrap_or_else(|| div().into_any_element()),
             Some(TabContent::Panel(panel)) => panels::render_panel(
                 *panel,
                 PanelData {
@@ -2371,18 +3259,24 @@ impl Workspace {
                     shells: &self.shells,
                     shell_cwds: &self.shell_cwds,
                     metrics: &self.metrics,
+                    activity: &self.agent_activity,
                     query: &self.search,
                     search_focused: self.search_focused && selected,
                     focus: self.focus.clone(),
                     control_inset: 0.0,
+                    collapsed_folders: &self.collapsed_project_folders,
+                    state_home: self.sessions.state_home(),
+                    project_order: self.settings.project_order,
+                    project_last_edits: &self.project_last_edits,
+                    project_sort_menu_open: self.project_sort_menu_open,
                 },
                 Self::panel_action,
                 cx,
             ),
             None => div()
                 .p(px(14.0))
-                .text_color(rgb(MUTED))
-                .child("DROP A TAB HERE  ·  + SHELL  ·  ▤ VIEWS")
+                .text_color(rgb(colors.muted))
+                .child("Drop a tab here or use the pane menu")
                 .into_any_element(),
         };
         let body_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
@@ -2395,7 +3289,7 @@ impl Workspace {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .bg(rgb(BG))
+            .bg(rgb(colors.bg))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |workspace, _, window, cx| {
@@ -2451,10 +3345,10 @@ impl Workspace {
             if let Some((_, side)) = self.drop_target.filter(|(id, _)| *id == pane_id) {
                 let overlay = div()
                     .absolute()
-                    .bg(rgb(CYAN))
+                    .bg(rgb(colors.cyan))
                     .opacity(0.13)
                     .border_1()
-                    .border_color(rgb(CYAN));
+                    .border_color(rgb(colors.cyan));
                 let overlay = match side {
                     Some(DockSide::Left) => {
                         overlay.top_0().bottom_0().left_0().w(gpui::relative(0.5))
@@ -2495,16 +3389,16 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .px(px(10.0))
-                    .bg(rgb(PANEL_ACTIVE))
+                    .bg(rgb(colors.panel_active))
                     .border_b_1()
-                    .border_color(rgb(DIVIDER))
-                    .text_color(rgb(MUTED))
+                    .border_color(rgb(colors.divider))
+                    .text_color(rgb(colors.muted))
                     .child("ORCHESTRATOR SKILL UPDATE AVAILABLE")
                     .child(div().flex_1())
                     .child(
                         div()
                             .id(("load-orchestrator-skill", pane_id))
-                            .text_color(rgb(GOLD))
+                            .text_color(rgb(colors.gold))
                             .cursor_pointer()
                             .child("LOAD SKILL")
                             .on_click(cx.listener(move |workspace, _, _, cx| {
@@ -2522,29 +3416,6 @@ impl Workspace {
                     )
             }))
             .child(body);
-        let container = if last_pane && !self.focus_mode {
-            container.child(
-                div()
-                    .id(("bottom-status-space", pane_id))
-                    .h(px(22.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .bg(rgb(PANEL))
-                    .border_t_1()
-                    .border_color(rgb(DIVIDER))
-                    .child(
-                        div()
-                            .id(("bottom-status-fill", pane_id))
-                            .flex_1()
-                            .min_w_0()
-                            .h_full(),
-                    )
-                    .child(self.render_status(pane_width, cx)),
-            )
-        } else {
-            container
-        };
         container
             .children(
                 (!self.focus_mode && self.panel_menu == Some(pane_id)).then(|| {
@@ -2552,201 +3423,355 @@ impl Workspace {
                         .id(("view-menu", pane_id))
                         .absolute()
                         .top(px(30.0))
-                        .right(px(12.0))
-                        .w(px(185.0))
+                        .right(px(6.0))
+                        .w(px(248.0_f32.min((pane_width - 12.0).max(0.0))))
                         .max_h(gpui::relative(0.9))
                         .overflow_y_scroll()
-                        .bg(rgb(PANEL_ACTIVE))
+                        .bg(rgb(colors.panel_active))
                         .border_1()
-                        .border_color(rgb(MAGENTA))
+                        .border_color(rgb(colors.magenta))
                         .p(px(3.0))
-                        .on_mouse_down_out(cx.listener(|workspace, _, _, cx| {
+                        .on_mouse_down_out(cx.listener(|workspace, _, window, cx| {
                             workspace.panel_menu = None;
                             workspace.finish_tab_drag(cx);
+                            workspace.focus_active(window, cx);
                             cx.notify();
                         }));
-                    menu.children(
-                        [
-                            PanelKind::Projects,
-                            PanelKind::Worktrees,
-                            PanelKind::Tasks,
-                            PanelKind::Shells,
-                            PanelKind::Usage,
-                            PanelKind::Settings,
-                        ]
-                        .into_iter()
-                        .map(|kind| {
-                            div()
-                                .id(format!("open-{}-{pane_id}", Self::panel_title(kind)))
-                                .px(px(10.0))
-                                .py(px(7.0))
-                                .text_color(rgb(TEXT))
-                                .hover(|style| style.bg(rgb(DIVIDER)))
-                                .child(Self::panel_title(kind))
-                                .on_click(cx.listener(move |workspace, _, window, cx| {
-                                    workspace.open_panel(kind, pane_id, window, cx)
-                                }))
-                        }),
-                    )
-                    .children(
-                        [
-                            ("+ SHELL", 0),
-                            ("CODEX", 1),
-                            ("CLAUDE", 2),
-                            ("CODEX · UNRESTRICTED", 3),
-                            ("CLAUDE · UNRESTRICTED", 4),
-                            ("GLOBAL ORCHESTRATOR", 6),
-                            ("PROJECT ORCHESTRATOR", 7),
-                            ("FOCUS TAB · ⌘⇧F", 8),
-                            ("CLOSE TAB", 5),
-                        ]
-                        .into_iter()
-                        .map(|(label, action)| {
-                            div()
-                                .id(format!("pane-menu-{pane_id}-{action}"))
-                                .px(px(10.0))
-                                .py(px(7.0))
-                                .border_t_1()
-                                .border_color(rgb(DIVIDER))
-                                .text_color(rgb(MUTED))
-                                .hover(|style| style.bg(rgb(DIVIDER)).text_color(rgb(CYAN)))
-                                .child(label)
-                                .on_click(cx.listener(move |workspace, _, window, cx| {
-                                    workspace.panel_menu = None;
-                                    workspace.active_pane = pane_id;
-                                    match action {
-                                        0 => workspace.add_tab(window, cx),
-                                        1 => workspace.add_harness(
-                                            HarnessKind::Codex,
-                                            false,
-                                            window,
-                                            cx,
-                                        ),
-                                        2 => workspace.add_harness(
-                                            HarnessKind::Claude,
-                                            false,
-                                            window,
-                                            cx,
-                                        ),
-                                        3 => workspace.add_harness(
-                                            HarnessKind::Codex,
-                                            true,
-                                            window,
-                                            cx,
-                                        ),
-                                        4 => workspace.add_harness(
-                                            HarnessKind::Claude,
-                                            true,
-                                            window,
-                                            cx,
-                                        ),
-                                        5 => {
-                                            if let Some(tab_id) = workspace
-                                                .panes
-                                                .get(&pane_id)
-                                                .and_then(|pane| pane.tabs.get(pane.active))
-                                                .map(|tab| tab.id)
-                                            {
-                                                workspace.remove_tab(pane_id, tab_id, window, cx);
-                                            }
-                                        }
-                                        6 => workspace.open_scoped_orchestrator(None, window, cx),
-                                        7 => workspace.open_scoped_orchestrator(
-                                            Some(workspace.project_id.clone()),
-                                            window,
-                                            cx,
-                                        ),
-                                        8 => workspace.set_focus_mode(true, window, cx),
-                                        _ => {}
-                                    }
-                                }))
-                        }),
-                    )
+                    menu.child(pane_menu_heading("NEW TAB", colors))
+                        .children(
+                            [
+                                ("Shell", "⌘T", Some(Icon::Add), PaneMenuAction::Shell),
+                                (
+                                    "Codex",
+                                    "⌘⇧C",
+                                    None,
+                                    PaneMenuAction::Harness(HarnessKind::Codex, false),
+                                ),
+                                (
+                                    "Claude",
+                                    "⌘⇧L",
+                                    None,
+                                    PaneMenuAction::Harness(HarnessKind::Claude, false),
+                                ),
+                                (
+                                    "Codex · unrestricted",
+                                    "",
+                                    None,
+                                    PaneMenuAction::Harness(HarnessKind::Codex, true),
+                                ),
+                                (
+                                    "Claude · unrestricted",
+                                    "",
+                                    None,
+                                    PaneMenuAction::Harness(HarnessKind::Claude, true),
+                                ),
+                                (
+                                    "Global orchestrator",
+                                    "⌘⇧O",
+                                    None,
+                                    PaneMenuAction::Orchestrator(false),
+                                ),
+                                (
+                                    "Project orchestrator",
+                                    "⌘⌥O",
+                                    None,
+                                    PaneMenuAction::Orchestrator(true),
+                                ),
+                            ]
+                            .into_iter()
+                            .map(|(label, shortcut, icon, action)| {
+                                self.pane_menu_row(pane_id, label, shortcut, icon, action, cx)
+                            }),
+                        )
+                        .child(pane_menu_heading("VIEWS", colors))
+                        .children(
+                            [
+                                PanelKind::Projects,
+                                PanelKind::Files,
+                                PanelKind::Worktrees,
+                                PanelKind::Tasks,
+                                PanelKind::Shells,
+                                PanelKind::Usage,
+                                PanelKind::ProjectSettings,
+                                PanelKind::Settings,
+                            ]
+                            .into_iter()
+                            .map(|kind| {
+                                self.pane_menu_row(
+                                    pane_id,
+                                    Self::panel_title(kind),
+                                    match kind {
+                                        PanelKind::Files => "⌘⇧E",
+                                        PanelKind::Settings => "⌘,",
+                                        _ => "",
+                                    },
+                                    None,
+                                    PaneMenuAction::View(kind),
+                                    cx,
+                                )
+                            }),
+                        )
+                        .child(pane_menu_heading("PANE", colors))
+                        .children(
+                            [
+                                (
+                                    "Split right",
+                                    "⌘D",
+                                    Icon::SplitRight,
+                                    PaneMenuAction::Split(Axis::SideBySide),
+                                ),
+                                (
+                                    "Split down",
+                                    "⌘⇧D",
+                                    Icon::SplitDown,
+                                    PaneMenuAction::Split(Axis::Stacked),
+                                ),
+                                ("Close pane", "⌘⇧W", Icon::Close, PaneMenuAction::Close),
+                            ]
+                            .into_iter()
+                            .map(|(label, shortcut, icon, action)| {
+                                self.pane_menu_row(pane_id, label, shortcut, Some(icon), action, cx)
+                            }),
+                        )
+                        .children((!show_lock).then(|| {
+                            let locked = self.pane_is_locked(pane_id);
+                            self.pane_menu_row(
+                                pane_id,
+                                if locked { "Unlock pane" } else { "Lock pane" },
+                                "",
+                                Some(if locked { Icon::Lock } else { Icon::Unlock }),
+                                PaneMenuAction::Lock,
+                                cx,
+                            )
+                        }))
+                        .children((!show_focus).then(|| {
+                            self.pane_menu_row(
+                                pane_id,
+                                "Focus tab",
+                                "⌘⇧F",
+                                Some(Icon::Focus),
+                                PaneMenuAction::Focus,
+                                cx,
+                            )
+                        }))
                 }),
             )
             .into_any_element()
     }
 
-    fn render_status(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
-        let (live, cpu, ram) = self
-            .shells
-            .iter()
-            .filter(|shell| {
-                shell.project_id.as_deref() == Some(self.project_id.as_str()) && shell.alive
-            })
-            .fold((0_usize, 0.0_f32, 0_u64), |(count, cpu, ram), shell| {
-                let metrics = self.metrics.get(&shell.id).copied().unwrap_or_default();
-                (
-                    count + 1,
-                    cpu + metrics.cpu_percent,
-                    ram + metrics.ram_bytes,
-                )
-            });
-        let active_shell_id = self
-            .panes
-            .get(&self.active_pane)
-            .and_then(|pane| pane.tabs.get(pane.active))
-            .and_then(|tab| tab.shell_id())
-            .map(str::to_owned);
-        let label = if width > 480.0 {
-            format!("{live} LIVE CPU {cpu:.1}% RAM {}", format_bytes(ram))
-        } else {
-            format!("{cpu:.0}% {}M", ram / (1024 * 1024))
-        };
+    fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        use status_bar::StatusSide;
+        let colors = theme::palette(cx);
+        let settings = &self.settings.status_bar;
         div()
-            .id("status-island")
-            .h(px(20.0))
+            .id("status-items")
+            .size_full()
+            .min_w_0()
             .flex()
-            .flex_none()
             .items_center()
             .gap(px(8.0))
-            .px(px(7.0))
-            .rounded(px(4.0))
-            .bg(rgb(PANEL_ACTIVE))
+            .px(px(8.0))
             .text_size(px(9.0))
-            .text_color(rgb(MUTED))
-            .child(label)
-            .children((width > 360.0).then(|| self.render_usage_chip(cx)))
-            .children(
-                (width > 600.0)
-                    .then_some(active_shell_id)
-                    .flatten()
-                    .map(|id| {
-                        div()
-                            .id("copy-active-shell-id")
-                            .text_color(rgb(CYAN))
-                            .child(id[..8].to_owned())
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(id.clone()))
-                            }))
-                    }),
-            )
+            .text_color(rgb(colors.muted))
             .child(
                 div()
-                    .id("top-orchestrator")
-                    .text_color(rgb(MAGENTA))
-                    .child("G·ORCH")
-                    .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.open_orchestrator(window, cx)
-                    })),
+                    .id("status-left")
+                    .flex()
+                    .min_w_0()
+                    .items_center()
+                    .gap(px(10.0))
+                    .overflow_x_scroll()
+                    .children(
+                        settings
+                            .visible_items(StatusSide::Left)
+                            .into_iter()
+                            .map(|kind| self.render_status_item(kind, cx)),
+                    ),
             )
+            .child(div().flex_1().min_w(px(4.0)))
             .child(
                 div()
-                    .id("project-orchestrator")
-                    .text_color(rgb(CYAN))
-                    .child("P·ORCH")
-                    .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.open_scoped_orchestrator(
-                            Some(workspace.project_id.clone()),
-                            window,
-                            cx,
-                        )
-                    })),
+                    .id("status-right")
+                    .flex()
+                    .min_w_0()
+                    .items_center()
+                    .gap(px(10.0))
+                    .overflow_x_scroll()
+                    .children(
+                        settings
+                            .visible_items(StatusSide::Right)
+                            .into_iter()
+                            .map(|kind| self.render_status_item(kind, cx)),
+                    ),
             )
             .into_any_element()
     }
 
+    fn render_status_item(
+        &self,
+        kind: status_bar::StatusItemKind,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use status_bar::StatusItemKind;
+        let colors = theme::palette(cx);
+        match kind {
+            StatusItemKind::Project => {
+                let name = self
+                    .state
+                    .project(&self.project_id)
+                    .map(|project| project.name.clone())
+                    .unwrap_or_else(|_| "Project unavailable".to_owned());
+                div()
+                    .id("status-current-project")
+                    .max_w(px(240.0))
+                    .min_w_0()
+                    .text_ellipsis()
+                    .overflow_hidden()
+                    .text_color(rgb(colors.cyan))
+                    .cursor_pointer()
+                    .child(name)
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.open_panel(
+                            PanelKind::ProjectSettings,
+                            workspace.active_pane,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element()
+            }
+            StatusItemKind::Worktree => {
+                let branch = self
+                    .selected_worktree_id
+                    .as_ref()
+                    .and_then(|id| {
+                        self.state.worktrees.iter().find(|worktree| {
+                            &worktree.id == id && worktree.project_id == self.project_id
+                        })
+                    })
+                    .map(|worktree| worktree.branch.clone())
+                    .unwrap_or_else(|| "No worktree".to_owned());
+                div()
+                    .id("status-current-worktree")
+                    .max_w(px(220.0))
+                    .min_w_0()
+                    .text_ellipsis()
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .child(branch)
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.open_panel(
+                            PanelKind::Worktrees,
+                            workspace.active_pane,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element()
+            }
+            StatusItemKind::AgentActivity => {
+                let counts = activity::ActivityCounts::for_project(
+                    &self.project_id,
+                    &self.shells,
+                    &self.agent_activity,
+                );
+                div()
+                    .id("status-agent-activity")
+                    .max_w(px(250.0))
+                    .min_w_0()
+                    .text_ellipsis()
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .text_color(rgb(if counts.working > 0 {
+                        colors.cyan
+                    } else {
+                        colors.muted
+                    }))
+                    .child(counts.summary().unwrap_or_else(|| "Agents · —".to_owned()))
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.open_panel(PanelKind::Shells, workspace.active_pane, window, cx);
+                    }))
+                    .into_any_element()
+            }
+            StatusItemKind::LiveSessions => div()
+                .flex_none()
+                .child(format!(
+                    "{} LIVE",
+                    self.shells
+                        .iter()
+                        .filter(
+                            |shell| shell.project_id.as_deref() == Some(&self.project_id)
+                                && shell.alive
+                        )
+                        .count()
+                ))
+                .into_any_element(),
+            StatusItemKind::Resources => {
+                let (cpu, ram) = self
+                    .shells
+                    .iter()
+                    .filter(|shell| {
+                        shell.project_id.as_deref() == Some(&self.project_id) && shell.alive
+                    })
+                    .fold((0.0_f32, 0_u64), |(cpu, ram), shell| {
+                        let metrics = self.metrics.get(&shell.id).copied().unwrap_or_default();
+                        (cpu + metrics.cpu_percent, ram + metrics.ram_bytes)
+                    });
+                div()
+                    .flex_none()
+                    .child(format!("CPU {cpu:.1}% RAM {}", format_bytes(ram)))
+                    .into_any_element()
+            }
+            StatusItemKind::Usage => self.render_usage_chip(cx),
+            StatusItemKind::SessionId => {
+                let id = self
+                    .panes
+                    .get(&self.active_pane)
+                    .and_then(|pane| pane.tabs.get(pane.active))
+                    .and_then(Tab::shell_id)
+                    .map(str::to_owned);
+                div()
+                    .id("copy-active-shell-id")
+                    .flex_none()
+                    .text_color(rgb(colors.cyan))
+                    .when_some(id, |item, id| {
+                        item.cursor_pointer()
+                            .child(id.chars().take(8).collect::<String>())
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(id.clone()))
+                            }))
+                    })
+                    .into_any_element()
+            }
+            StatusItemKind::GlobalOrchestrator => div()
+                .id("top-orchestrator")
+                .flex_none()
+                .text_color(rgb(colors.magenta))
+                .cursor_pointer()
+                .child("G·ORCH")
+                .on_click(
+                    cx.listener(|workspace, _, window, cx| workspace.open_orchestrator(window, cx)),
+                )
+                .into_any_element(),
+            StatusItemKind::ProjectOrchestrator => div()
+                .id("project-orchestrator")
+                .flex_none()
+                .text_color(rgb(colors.cyan))
+                .cursor_pointer()
+                .child("P·ORCH")
+                .on_click(cx.listener(|workspace, _, window, cx| {
+                    workspace.open_scoped_orchestrator(
+                        Some(workspace.project_id.clone()),
+                        window,
+                        cx,
+                    );
+                }))
+                .into_any_element(),
+        }
+    }
+
     fn render_usage_chip(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
         let active_shell = self
             .panes
             .get(&self.active_pane)
@@ -2762,12 +3787,21 @@ impl Workspace {
                 .map(|snapshot| usage_summary("CLAUDE", snapshot))
                 .unwrap_or_else(|| "CLAUDE · WAITING".to_owned())
         } else {
-            cache
-                .codex
-                .as_ref()
+            let profile = if let Some(shell) =
+                active_shell.filter(|shell| shell.harness == Some(HarnessKind::Codex))
+            {
+                shell.codex_home.clone()
+            } else {
+                selected_codex_home(cx)
+            };
+            let entry = profile.as_ref().and_then(|home| cache.codex.get(home));
+            entry
+                .and_then(|entry| entry.codex.as_ref())
                 .map(|snapshot| usage_summary("CODEX", snapshot))
                 .unwrap_or_else(|| {
-                    if cache.pending {
+                    if profile.is_none() {
+                        "CODEX · ACCOUNT UNKNOWN"
+                    } else if entry.is_some_and(|entry| entry.pending) {
                         "USAGE · LOADING"
                     } else {
                         "USAGE · —"
@@ -2780,9 +3814,9 @@ impl Workspace {
             .max_w(px(180.0))
             .overflow_hidden()
             .text_ellipsis()
-            .text_color(rgb(CYAN))
+            .text_color(rgb(colors.cyan))
             .cursor_pointer()
-            .hover(|style| style.text_color(rgb(MAGENTA)))
+            .hover(|style| style.text_color(rgb(colors.magenta)))
             .child(label)
             .on_click(cx.listener(|workspace, _, window, cx| {
                 workspace.open_panel(PanelKind::Usage, workspace.active_pane, window, cx);
@@ -2791,38 +3825,61 @@ impl Workspace {
     }
 
     fn render_usage_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
         let cache = cx.global::<AccountUsage>();
-        let codex = cache.codex.clone();
-        let error = cache.codex_error.clone();
-        let pending = cache.pending;
+        let pending = cache.codex.values().any(|entry| entry.pending);
         let mut cards = Vec::new();
-        if let Some(snapshot) = codex.as_ref() {
-            cards.push(render_provider_usage(snapshot, "CODEX"));
-        } else {
-            cards.push(
-                div()
-                    .p(px(12.0))
-                    .text_color(rgb(MUTED))
-                    .child(if pending {
-                        "Reading Codex usage…".to_owned()
-                    } else {
-                        error
-                            .clone()
-                            .unwrap_or_else(|| "Codex usage is unavailable".to_owned())
-                    })
-                    .into_any_element(),
-            );
-        }
-        if codex.is_some()
-            && let Some(error) = error
+        let mut profiles = codex_usage_profiles(cx);
+        for shell in self
+            .shells
+            .iter()
+            .filter(|shell| shell.harness == Some(HarnessKind::Codex))
         {
-            cards.push(
-                div()
-                    .px(px(12.0))
-                    .text_color(rgb(GOLD))
-                    .child(format!("Last refresh: {error}"))
-                    .into_any_element(),
-            );
+            if let Some(home) = &shell.codex_home {
+                profiles.entry(home.clone()).or_insert_with(|| {
+                    shell
+                        .codex_account_label
+                        .clone()
+                        .unwrap_or_else(|| "Session account".to_owned())
+                });
+            }
+        }
+        for (home, label) in profiles {
+            let entry = cache.codex.get(&home);
+            let title = format!("CODEX · {label}");
+            if let Some(snapshot) = entry.and_then(|entry| entry.codex.as_ref()) {
+                cards.push(render_provider_usage(snapshot, &title, colors));
+            } else {
+                cards.push(
+                    div()
+                        .p(px(12.0))
+                        .border_t_1()
+                        .border_color(rgb(colors.divider))
+                        .child(title)
+                        .child(div().mt(px(6.0)).text_color(rgb(colors.muted)).child(
+                            if entry.is_some_and(|entry| entry.pending) {
+                                "Reading account usage…".to_owned()
+                            } else {
+                                entry
+                                    .and_then(|entry| entry.codex_error.clone())
+                                    .unwrap_or_else(|| "Account usage is unavailable".to_owned())
+                            },
+                        ))
+                        .into_any_element(),
+                );
+            }
+            if let Some(error) = entry
+                .filter(|entry| entry.codex.is_some())
+                .and_then(|entry| entry.codex_error.as_ref())
+            {
+                cards.push(
+                    div()
+                        .px(px(12.0))
+                        .text_color(rgb(colors.gold))
+                        .child(format!("Last refresh: {error}"))
+                        .into_any_element(),
+                );
+            }
         }
         let claude_shells = self.shells.iter().filter(|shell| {
             shell.project_id.as_deref() == Some(self.project_id.as_str())
@@ -2833,18 +3890,18 @@ impl Workspace {
             has_claude = true;
             let title = format!("CLAUDE · {}", &shell.id[..8]);
             if let Some(snapshot) = self.claude_usage.get(&shell.id) {
-                cards.push(render_provider_usage(snapshot, &title));
+                cards.push(render_provider_usage(snapshot, &title, colors));
             } else {
                 cards.push(
                     div()
                         .p(px(12.0))
                         .border_t_1()
-                        .border_color(rgb(DIVIDER))
+                        .border_color(rgb(colors.divider))
                         .child(title)
                         .child(
                             div()
                                 .mt(px(6.0))
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(colors.muted))
                                 .child("Waiting for Claude usage after its first response"),
                         )
                         .into_any_element(),
@@ -2855,27 +3912,33 @@ impl Workspace {
             cards.push(
                 div()
                     .p(px(12.0))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .child("Open a Claude session to see its usage here")
                     .into_any_element(),
             );
         }
-        div().size_full().flex().flex_col().min_h_0().bg(rgb(PANEL))
+        div().size_full().flex().flex_col().min_h_0().bg(rgb(colors.panel))
             .child(div().h(px(32.0)).flex_none().flex().items_center().px(px(10.0)).justify_between()
-                .border_b_1().border_color(rgb(DIVIDER)).child("ACCOUNT USAGE")
-                .child(div().id("refresh-account-usage").text_color(rgb(CYAN)).cursor_pointer()
+                .border_b_1().border_color(rgb(colors.divider)).child("ACCOUNT USAGE")
+                .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan)).cursor_pointer()
                     .child(if pending { "REFRESHING…" } else { "↻ REFRESH" })
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         request_codex_usage(true, cx);
+                        for home in workspace.shells.iter()
+                            .filter(|shell| shell.harness == Some(HarnessKind::Codex))
+                            .filter_map(|shell| shell.codex_home.clone()).collect::<HashSet<_>>() {
+                            request_codex_usage_at(home, true, cx);
+                        }
                         workspace.refresh(window, cx);
                     }))))
             .child(div().id("usage-panel-scroll").flex_1().min_h_0().overflow_y_scroll().children(cards))
-            .child(div().flex_none().p(px(10.0)).border_t_1().border_color(rgb(DIVIDER)).text_color(rgb(MUTED)).text_size(px(9.0))
+            .child(div().flex_none().p(px(10.0)).border_t_1().border_color(rgb(colors.divider)).text_color(rgb(colors.muted)).text_size(px(9.0))
                 .child("Quota is shared by all sessions on the same account. Missing windows are unavailable. Claude subscription quota requires a supported Pro/Max account."))
             .into_any_element()
     }
 
     fn render_focus(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
         let viewport = window.viewport_size();
         let width = viewport.width.as_f32();
         let height = viewport.height.as_f32();
@@ -2895,9 +3958,9 @@ impl Workspace {
             .pl(px(WINDOW_CONTROLS_CONTENT_INSET))
             .pr(px(12.0))
             .gap(px(12.0))
-            .bg(rgb(PANEL))
+            .bg(rgb(colors.panel))
             .border_b_1()
-            .border_color(rgb(DIVIDER))
+            .border_color(rgb(colors.divider))
             .child(
                 div()
                     .id("focus-window-drag-space")
@@ -2910,13 +3973,17 @@ impl Workspace {
                     .cursor_grab()
                     .on_mouse_down(MouseButton::Left, start_window_drag)
                     .children((width >= 720.0).then(|| {
-                        div().flex_none().text_color(rgb(CYAN)).child(if centered {
-                            "CENTER FOCUS"
-                        } else {
-                            "FOCUS"
-                        })
+                        div()
+                            .flex_none()
+                            .text_color(rgb(colors.cyan))
+                            .child(if centered { "CENTER FOCUS" } else { "FOCUS" })
                     }))
-                    .child(div().text_ellipsis().text_color(rgb(MUTED)).child(title)),
+                    .child(
+                        div()
+                            .text_ellipsis()
+                            .text_color(rgb(colors.muted))
+                            .child(title),
+                    ),
             )
             .child(
                 div()
@@ -2925,8 +3992,12 @@ impl Workspace {
                     .px(px(8.0))
                     .py(px(5.0))
                     .cursor_pointer()
-                    .text_color(rgb(MUTED))
-                    .hover(|style| style.bg(rgb(PANEL_ACTIVE)).text_color(rgb(CYAN)))
+                    .text_color(rgb(colors.muted))
+                    .hover(|style| {
+                        style
+                            .bg(rgb(colors.panel_active))
+                            .text_color(rgb(colors.cyan))
+                    })
                     .child(if centered {
                         "⛶ FILL WINDOW"
                     } else {
@@ -2945,11 +4016,11 @@ impl Workspace {
                     .px(px(10.0))
                     .py(px(5.0))
                     .border_1()
-                    .border_color(rgb(DIVIDER))
-                    .bg(rgb(PANEL_ACTIVE))
-                    .text_color(rgb(CYAN))
+                    .border_color(rgb(colors.divider))
+                    .bg(rgb(colors.panel_active))
+                    .text_color(rgb(colors.cyan))
                     .cursor_pointer()
-                    .hover(|style| style.border_color(rgb(CYAN)))
+                    .hover(|style| style.border_color(rgb(colors.cyan)))
                     .child(if width >= 600.0 {
                         "↙ RESTORE  ⌘⇧F"
                     } else {
@@ -2976,7 +4047,7 @@ impl Workspace {
                         .w(px(content_width))
                         .h_full()
                         .border_1()
-                        .border_color(rgb(DIVIDER))
+                        .border_color(rgb(colors.divider))
                         .child(self.render_pane(
                             self.active_pane,
                             content_width - 2.0,
@@ -3007,32 +4078,115 @@ impl Workspace {
         &self,
         pane_id: PaneId,
         key: &'static str,
-        label: &str,
+        icon: Icon,
         color: u32,
         action: impl Fn(&mut Self, PaneId, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let colors = theme::palette(cx);
         div()
             .id(format!("pane-{pane_id}-{key}"))
             .h_full()
-            .w(px(20.0))
+            .w(px(28.0))
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .text_color(rgb(color))
-            .hover(|style| style.bg(rgb(DIVIDER)).text_color(rgb(CYAN)))
-            .child(label.to_owned())
-            .when(key == "focus", |button| {
-                button.tooltip(|_, cx| cx.new(|_| FocusModeTooltip).into())
-            })
+            .cursor_pointer()
+            .when(
+                key == "menu" && self.panel_menu == Some(pane_id),
+                |button| button.bg(rgb(colors.divider)),
+            )
+            .hover(|style| style.bg(rgb(colors.divider)))
+            .child(icons::icon(icon, color))
+            .when(
+                key != "menu" || self.panel_menu != Some(pane_id),
+                |button| {
+                    let label = match key {
+                        "lock" if self.pane_is_locked(pane_id) => {
+                            "Locked across project switches · click to unlock"
+                        }
+                        "lock" => "Lock this pane across project switches",
+                        "focus" => "Focus this tab · ⌘⇧F",
+                        _ => "Add tabs and manage this pane",
+                    };
+                    button.tooltip(move |_, cx| cx.new(|_| PaneActionTooltip(label)).into())
+                },
+            )
             .on_click(
                 cx.listener(move |workspace, _, window, cx| action(workspace, pane_id, window, cx)),
             )
             .into_any_element()
     }
 
+    fn pane_menu_row(
+        &self,
+        pane_id: PaneId,
+        label: &'static str,
+        shortcut: &'static str,
+        icon: Option<Icon>,
+        action: PaneMenuAction,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme::palette(cx);
+        div()
+            .id(format!("pane-menu-{pane_id}-{label}"))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(8.0))
+            .py(px(5.0))
+            .text_size(px(10.0))
+            .text_color(rgb(colors.text))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan)))
+            .child(
+                div()
+                    .w(px(14.0))
+                    .flex_none()
+                    .children(icon.map(|icon| icons::icon(icon, colors.muted))),
+            )
+            .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+            .children((!shortcut.is_empty()).then(|| {
+                div()
+                    .flex_none()
+                    .text_size(px(9.0))
+                    .text_color(rgb(colors.muted))
+                    .child(shortcut)
+            }))
+            .on_click(cx.listener(move |workspace, _, window, cx| {
+                workspace.panel_menu = None;
+                workspace.finish_tab_drag(cx);
+                workspace.active_pane = pane_id;
+                match action {
+                    PaneMenuAction::Shell => workspace.add_tab(window, cx),
+                    PaneMenuAction::Harness(kind, unrestricted) => {
+                        workspace.add_harness(kind, unrestricted, window, cx);
+                    }
+                    PaneMenuAction::Orchestrator(project_scoped) => {
+                        let project_id = project_scoped.then(|| workspace.project_id.clone());
+                        workspace.open_scoped_orchestrator(project_id, window, cx);
+                    }
+                    PaneMenuAction::View(kind) => workspace.open_panel(kind, pane_id, window, cx),
+                    PaneMenuAction::Split(axis) => workspace.add_split(axis, window, cx),
+                    PaneMenuAction::Close => workspace.remove_pane(pane_id, window, cx),
+                    PaneMenuAction::Lock => {
+                        workspace.toggle_pane_lock(pane_id, cx);
+                        workspace.focus_active(window, cx);
+                    }
+                    PaneMenuAction::Focus => workspace.set_focus_mode(true, window, cx),
+                }
+            }))
+            .into_any_element()
+    }
+
     fn render_root_dock(&self, side: DockSide, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
+        let footer_height = if self.focus_mode || !self.settings.status_bar.enabled {
+            0.0
+        } else {
+            STATUS_BAR_HEIGHT
+        };
         let target = div()
             .id(match side {
                 DockSide::Left => "root-left",
@@ -3041,9 +4195,9 @@ impl Workspace {
                 DockSide::Bottom => "root-bottom",
             })
             .absolute()
-            .bg(rgb(PANEL_ACTIVE))
+            .bg(rgb(colors.panel_active))
             .opacity(0.75)
-            .drag_over::<DraggedTab>(|style, _, _, _| style.bg(rgb(CYAN)))
+            .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(rgb(colors.cyan)))
             .on_drop(
                 cx.listener(move |workspace, drag: &DraggedTab, window, cx| {
                     workspace.dock_tab(drag, None, side, window, cx);
@@ -3051,10 +4205,22 @@ impl Workspace {
                 }),
             );
         match side {
-            DockSide::Left => target.left_0().top(px(30.0)).bottom(px(12.0)).w(px(12.0)),
-            DockSide::Right => target.right_0().top(px(12.0)).bottom(px(12.0)).w(px(12.0)),
+            DockSide::Left => target
+                .left_0()
+                .top(px(30.0))
+                .bottom(px(12.0 + footer_height))
+                .w(px(12.0)),
+            DockSide::Right => target
+                .right_0()
+                .top(px(12.0))
+                .bottom(px(12.0 + footer_height))
+                .w(px(12.0)),
             DockSide::Top => target.top_0().left(px(80.0)).right_0().h(px(12.0)),
-            DockSide::Bottom => target.bottom_0().left_0().right_0().h(px(12.0)),
+            DockSide::Bottom => target
+                .bottom(px(footer_height))
+                .left_0()
+                .right_0()
+                .h(px(12.0)),
         }
         .into_any_element()
     }
@@ -3158,9 +4324,14 @@ impl EntityInputHandler for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::palette(cx);
         if !cx.has_active_drag() {
             self.drop_target = None;
-            if self.tab_dragging && self.panel_menu.is_none() && self.project_creator.is_none() {
+            if self.tab_dragging
+                && self.panel_menu.is_none()
+                && self.project_creator.is_none()
+                && self.folder_editor.is_none()
+            {
                 self.finish_tab_drag(cx);
             }
         }
@@ -3192,6 +4363,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::previous_tab_action))
             .on_action(cx.listener(Self::toggle_sidebar_action))
             .on_action(cx.listener(Self::open_settings_action))
+            .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::focus_search_action))
             .on_action(cx.listener(Self::toggle_focus_mode_action))
             .on_action(cx.listener(Self::open_orchestrator_action))
@@ -3211,23 +4383,48 @@ impl Render for Workspace {
                 cx.listener(|workspace, _, window, cx| workspace.end_resize(window, cx)),
             )
             .size_full()
-            .bg(rgb(BG))
-            .text_color(rgb(TEXT))
+            .flex()
+            .flex_col()
+            .bg(rgb(colors.bg))
+            .text_color(rgb(colors.text))
             .font_family("Menlo")
             .text_size(px(10.0))
-            .child(if self.focus_mode {
-                self.render_focus(window, cx)
-            } else {
-                self.render_layout(
-                    &self.layout,
-                    Vec::new(),
-                    window.viewport_size().width.as_f32(),
-                    0.0,
-                    true,
-                    cx,
-                )
-            })
-            .child(window_controls_island())
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(if self.focus_mode {
+                        self.render_focus(window, cx)
+                    } else {
+                        self.render_layout(
+                            &self.layout,
+                            Vec::new(),
+                            window.viewport_size().width.as_f32(),
+                            0.0,
+                            true,
+                            cx,
+                        )
+                    }),
+            )
+            .children(
+                (!self.focus_mode && self.settings.status_bar.enabled).then(|| {
+                    div()
+                        .id("bottom-status-bar")
+                        .w_full()
+                        .h(px(STATUS_BAR_HEIGHT))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .bg(rgb(colors.panel))
+                        .border_t_1()
+                        .border_color(rgb(colors.divider))
+                        .child(self.render_status(cx))
+                }),
+            )
+            .child(window_controls_island(cx))
             .children(self.project_creator.as_ref().map(|creator| {
                 div()
                     .absolute()
@@ -3241,6 +4438,19 @@ impl Render for Workspace {
                     .occlude()
                     .child(creator.clone())
             }))
+            .children(self.folder_editor.as_ref().map(|editor| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .p(px(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgba(0x00000099))
+                    .occlude()
+                    .child(editor.clone())
+            }))
             .children(self.notice.as_ref().map(|notice| {
                 div()
                     .absolute()
@@ -3248,8 +4458,8 @@ impl Render for Workspace {
                     .right(px(8.0))
                     .max_w(px(520.0))
                     .p(px(8.0))
-                    .bg(rgb(PANEL_ACTIVE))
-                    .text_color(rgb(GOLD))
+                    .bg(rgb(colors.panel_active))
+                    .text_color(rgb(colors.gold))
                     .child(notice.clone())
             }))
             .children(
@@ -3270,22 +4480,36 @@ impl Render for Workspace {
     }
 }
 
-struct FocusModeTooltip;
-impl Render for FocusModeTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+fn pane_menu_heading(label: &'static str, colors: Palette) -> AnyElement {
+    div()
+        .px(px(8.0))
+        .py(px(6.0))
+        .border_t_1()
+        .border_color(rgb(colors.divider))
+        .text_color(rgb(colors.muted))
+        .text_size(px(9.0))
+        .child(label)
+        .into_any_element()
+}
+
+struct PaneActionTooltip(&'static str);
+impl Render for PaneActionTooltip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::palette(cx);
         div()
             .px(px(9.0))
             .py(px(6.0))
-            .bg(rgb(PANEL_ACTIVE))
+            .bg(rgb(colors.panel_active))
             .border_1()
-            .border_color(rgb(DIVIDER))
-            .text_color(rgb(TEXT))
+            .border_color(rgb(colors.divider))
+            .text_color(rgb(colors.text))
             .text_size(px(11.0))
-            .child("Center this tab · ⌘⇧F to focus or restore")
+            .child(self.0)
     }
 }
 
-fn window_controls_island() -> impl IntoElement {
+fn window_controls_island(cx: &App) -> impl IntoElement {
+    let colors = theme::palette(cx);
     div()
         .id("window-controls-island")
         .absolute()
@@ -3294,10 +4518,10 @@ fn window_controls_island() -> impl IntoElement {
         .w(px(WINDOW_CONTROLS_WIDTH))
         .h(px(28.0))
         .rounded_br(px(8.0))
-        .bg(rgb(PANEL_ACTIVE))
+        .bg(rgb(colors.panel_active))
         .border_r_1()
         .border_b_1()
-        .border_color(rgb(DIVIDER))
+        .border_color(rgb(colors.divider))
         .on_mouse_down(MouseButton::Left, start_window_drag)
 }
 
@@ -3339,9 +4563,56 @@ fn unix_time() -> u64 {
 }
 
 fn request_codex_usage(force: bool, cx: &mut App) {
+    for home in codex_usage_profiles(cx).into_keys() {
+        request_codex_usage_at(home, force, cx);
+    }
+}
+
+fn selected_codex_home(cx: &App) -> Option<PathBuf> {
+    let selected = cx.global::<Settings>().selected_codex_account.as_deref();
+    if let Some(snapshot) = &cx.global::<settings::CodexAccountsState>().snapshot {
+        snapshot
+            .accounts
+            .iter()
+            .find(|account| {
+                account.available
+                    && match selected {
+                        Some(id) => account.id == id,
+                        None => account.is_system_default,
+                    }
+            })
+            .map(|account| account.home.clone())
+    } else if selected.is_none() {
+        codex_accounts::default_codex_home().ok()
+    } else {
+        None
+    }
+}
+
+fn codex_usage_profiles(cx: &App) -> BTreeMap<PathBuf, String> {
+    if let Some(snapshot) = &cx.global::<settings::CodexAccountsState>().snapshot {
+        snapshot
+            .accounts
+            .iter()
+            .filter(|account| account.available)
+            .map(|account| (account.home.clone(), account.label.clone()))
+            .collect()
+    } else {
+        codex_accounts::default_codex_home()
+            .ok()
+            .map(|home| BTreeMap::from([(home, "System default".to_owned())]))
+            .unwrap_or_default()
+    }
+}
+
+fn request_codex_usage_at(home: PathBuf, force: bool, cx: &mut App) {
     let now = unix_time();
     {
-        let cache = cx.global_mut::<AccountUsage>();
+        let cache = cx
+            .global_mut::<AccountUsage>()
+            .codex
+            .entry(home.clone())
+            .or_default();
         let interval = if cache.codex.is_some() { 15 * 60 } else { 60 };
         if cache.pending
             || (!force
@@ -3353,13 +4624,18 @@ fn request_codex_usage(force: bool, cx: &mut App) {
         cache.pending = true;
         cache.last_attempt = now;
     }
+    let read_home = home.clone();
     let task = cx
         .background_executor()
-        .spawn(async { usage::read_codex_usage() });
+        .spawn(async move { usage::read_codex_usage_at(&read_home) });
     cx.spawn(async move |cx| {
         let result = task.await;
         let _ = cx.update(|cx| {
-            let cache = cx.global_mut::<AccountUsage>();
+            let cache = cx
+                .global_mut::<AccountUsage>()
+                .codex
+                .entry(home)
+                .or_default();
             cache.pending = false;
             match result {
                 Ok(snapshot) => {
@@ -3416,7 +4692,7 @@ fn reset_summary(resets_at: Option<u64>) -> String {
     }
 }
 
-fn render_provider_usage(snapshot: &ProviderUsage, title: &str) -> AnyElement {
+fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette) -> AnyElement {
     let age = unix_time().saturating_sub(snapshot.updated_at_unix);
     let limits = snapshot
         .windows
@@ -3434,17 +4710,21 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str) -> AnyElement {
                         .child(format!("{} · {:.0}% left", window.label, remaining))
                         .child(
                             div()
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(colors.muted))
                                 .text_size(px(9.0))
                                 .child(reset_summary(window.resets_at)),
                         ),
                 )
                 .child(
-                    div().mt(px(5.0)).h(px(3.0)).bg(rgb(DIVIDER)).child(
+                    div().mt(px(5.0)).h(px(3.0)).bg(rgb(colors.divider)).child(
                         div()
                             .h_full()
                             .w(gpui::relative((remaining / 100.0) as f32))
-                            .bg(rgb(if remaining < 15.0 { MAGENTA } else { CYAN })),
+                            .bg(rgb(if remaining < 15.0 {
+                                colors.magenta
+                            } else {
+                                colors.cyan
+                            })),
                     ),
                 )
                 .into_any_element()
@@ -3453,18 +4733,18 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str) -> AnyElement {
     div()
         .p(px(12.0))
         .border_t_1()
-        .border_color(rgb(DIVIDER))
-        .child(div().text_color(rgb(CYAN)).child(title.to_owned()))
+        .border_color(rgb(colors.divider))
+        .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
         .children(snapshot.account_label.as_ref().map(|label| {
             div()
                 .mt(px(4.0))
-                .text_color(rgb(MUTED))
+                .text_color(rgb(colors.muted))
                 .child(label.clone())
         }))
         .child(
             div()
                 .mt(px(4.0))
-                .text_color(rgb(if age > 900 { GOLD } else { MUTED }))
+                .text_color(rgb(if age > 900 { colors.gold } else { colors.muted }))
                 .text_size(px(9.0))
                 .child(format!(
                     "{}Updated {}m ago",
@@ -3476,22 +4756,35 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str) -> AnyElement {
         .children(snapshot.windows.is_empty().then(|| {
             div()
                 .mt(px(8.0))
-                .text_color(rgb(MUTED))
+                .text_color(rgb(colors.muted))
                 .child("Quota windows unavailable")
         }))
         .children(snapshot.context_used_percent.map(|used| {
             div()
                 .mt(px(10.0))
-                .text_color(rgb(MUTED))
+                .text_color(rgb(colors.muted))
                 .child(format!("Context · {used:.0}% used"))
         }))
         .children(snapshot.session_cost_usd.map(|cost| {
             div()
                 .mt(px(5.0))
-                .text_color(rgb(MUTED))
+                .text_color(rgb(colors.muted))
                 .child(format!("Estimated session cost · ${cost:.2}"))
         }))
         .into_any_element()
+}
+
+fn sync_appearance(cx: &mut App) {
+    let selected = cx.global::<Settings>().theme;
+    // Presets are static; native configuration is resolved again to pick up edits,
+    // including recursive config files and custom theme files.
+    if selected != ThemeChoice::Ghostty && cx.global::<Appearance>().selected == selected {
+        return;
+    }
+    let appearance = Appearance::resolve(selected);
+    if &appearance != cx.global::<Appearance>() {
+        cx.set_global(appearance);
+    }
 }
 
 fn main() {
@@ -3518,16 +4811,63 @@ fn main() {
                 .filter(|path| path.is_dir())
         })
         .unwrap_or_else(|| PathBuf::from("."));
+    let runtime = runtime::RuntimeManager::open_default().expect("open RiWork runtime registry");
+    let restore = runtime
+        .restore_from_env()
+        .expect("read RiWork reload snapshot");
+    let state_home = SessionManager::open_default()
+        .expect("open RiWork sessions")
+        .state_home()
+        .to_path_buf();
+    let mut registration = runtime
+        .register(state_home.clone())
+        .expect("register RiWork app");
 
     application().run(move |cx: &mut App| {
+        cx.set_app_identity("dev.riwork.shell", "RiWork");
+        notifications::start(state_home, cx);
+        cx.on_system_notification_response(|response, cx| {
+            if response.action_id.as_ref().is_some_and(|action| action.as_ref() != "open") { return; }
+            if let Some((project_id, shell_id)) = notifications::response_target(&response.tag) {
+                if let Err(error) = open_completed_agent(project_id, shell_id, cx) {
+                    eprintln!("riwork notifications: {error}");
+                }
+            }
+        });
         cx.set_global(AccountUsage::default());
+        cx.set_global(settings::CodexAccountsState::default());
+        cx.set_global(CuaSetupState::default());
+        settings::refresh_cua_status(cx);
         let settings = SettingsStore::open_default()
             .and_then(|store| store.load())
             .unwrap_or_else(|error| {
                 eprintln!("riwork: {error}");
                 Settings::default()
             });
+        cx.set_global(Appearance::resolve(settings.theme));
         cx.set_global(settings);
+        settings::refresh_codex_accounts(cx);
+        cx.spawn(async move |cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                cx.update(sync_appearance);
+            }
+        })
+        .detach();
+        cx.spawn(async move |cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(15))
+                    .await;
+                cx.update(|cx| {
+                    let state = cx.global::<CuaSetupState>();
+                    if state.status.as_ref().is_none_or(|status| !status.ready) {
+                        settings::refresh_cua_status(cx);
+                    }
+                });
+            }
+        })
+        .detach();
         cx.on_action(|_: &Quit, cx| {
             for handle in cx.windows() {
                 if let Some(handle) = handle.downcast::<Workspace>() {
@@ -3538,6 +4878,7 @@ fn main() {
         });
         cx.bind_keys([
             KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("cmd-shift-e", OpenFiles, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-n", CreateProject, None),
             KeyBinding::new("cmd-t", NewTab, None),
@@ -3567,15 +4908,150 @@ fn main() {
             }
         })
         .detach();
-        open_workspace_window(startup_path.clone(), fallback_cwd.clone(), cx)
-            .expect("open RiWork window");
+        if let Some(snapshot) = &restore {
+            for window in &snapshot.windows {
+                open_workspace_window(
+                    Some(window.path.clone()),
+                    fallback_cwd.clone(),
+                    Some(window.clone()),
+                    cx,
+                )
+                .expect("restore RiWork window");
+            }
+        } else {
+            open_workspace_window(startup_path.clone(), fallback_cwd.clone(), None, cx)
+                .expect("open RiWork window");
+        }
+        registration
+            .publish_windows(runtime_windows(cx, false))
+            .expect("publish RiWork windows");
+        cx.spawn(async move |cx| {
+            let mut reload = None;
+            let mut restore = restore;
+            let restore_started = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                let _ = cx.update(|cx| {
+                    if let Some(snapshot) = &restore {
+                        if restore_started.elapsed() > Duration::from_secs(20) {
+                            eprintln!("riwork: window restoration timed out; keeping the previous app open");
+                            cx.quit();
+                            return;
+                        }
+                        let windows = runtime_windows(cx, false);
+                        if windows.len() == snapshot.windows.len()
+                            && windows.iter().all(|window| window.layout.is_some())
+                        {
+                            if let Err(error) = registration
+                                .publish_windows(windows)
+                                .and_then(|_| runtime.mark_restore_ready(snapshot, &registration))
+                            {
+                                eprintln!("riwork: {error}");
+                                cx.quit();
+                                return;
+                            }
+                            restore = None;
+                        } else {
+                            return;
+                        }
+                    }
+                    if let Some(launch) = &reload {
+                        match registration.reload_ready(launch) {
+                            Ok(true) => cx.quit(),
+                            Ok(false) => {}
+                            Err(error) => {
+                                eprintln!("riwork: {error}");
+                                reload = None;
+                            }
+                        }
+                        return;
+                    }
+                    if let Err(error) = registration.publish_windows(runtime_windows(cx, false)) {
+                        eprintln!("riwork: {error}");
+                    }
+                    match registration.pending_reload() {
+                        Ok(Some(request)) => {
+                            match registration.launch_reload(&request, runtime_windows(cx, true)) {
+                                Ok(launch) => reload = Some(launch),
+                                Err(error) => {
+                                    let _ = registration.fail_reload(&request, &error);
+                                    eprintln!("riwork: {error}");
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("riwork: {error}"),
+                    }
+                });
+            }
+        })
+        .detach();
         cx.activate(true);
     });
+}
+
+fn open_completed_agent(project_id: &str, shell_id: &str, cx: &mut App) -> Result<(), String> {
+    let project = Store::open_default()?
+        .snapshot()?
+        .project(project_id)?
+        .clone();
+    let session = SessionManager::open_default()?.registered_session(shell_id)?;
+    if session.project_id.as_deref() != Some(project_id) {
+        return Err("This agent no longer belongs to that project".to_owned());
+    }
+    for handle in cx.windows() {
+        let Some(handle) = handle.downcast::<Workspace>() else {
+            continue;
+        };
+        let opened = handle
+            .update(cx, |workspace, window, cx| {
+                if workspace.project_id != project_id {
+                    return false;
+                }
+                workspace.show_shell(shell_id, window, cx);
+                window.activate_window();
+                true
+            })
+            .map_err(|error| error.to_string())?;
+        if opened {
+            cx.activate(true);
+            return Ok(());
+        }
+    }
+    let handle = open_workspace_window(Some(project.root.clone()), project.root, None, cx)?;
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.show_shell(shell_id, window, cx);
+            window.activate_window();
+        })
+        .map_err(|error| error.to_string())?;
+    cx.activate(true);
+    Ok(())
+}
+
+fn runtime_windows(cx: &mut App, save: bool) -> Vec<runtime::RuntimeWindow> {
+    cx.windows()
+        .into_iter()
+        .filter_map(|handle| {
+            let handle = handle.downcast::<Workspace>()?;
+            handle
+                .update(cx, |workspace, window, _| {
+                    if save {
+                        workspace.save_layout();
+                    }
+                    workspace.runtime_window(window)
+                })
+                .ok()
+        })
+        .collect()
 }
 
 fn open_workspace_window(
     startup_path: Option<PathBuf>,
     fallback_cwd: PathBuf,
+    restore: Option<runtime::RuntimeWindow>,
     cx: &mut App,
 ) -> Result<WindowHandle<Workspace>, String> {
     let saved_size = if cx.global::<Settings>().remember_window_size {
@@ -3618,9 +5094,22 @@ fn open_workspace_window(
     let offset = px((cx.windows().len() % 5) as f32 * 22.0);
     bounds.origin.x += offset;
     bounds.origin.y += offset;
+    if let Some(saved) = restore.as_ref().and_then(|window| window.bounds.as_ref()) {
+        bounds.origin = point(px(saved.x), px(saved.y));
+        bounds.size = size(px(saved.width), px(saved.height));
+    }
+    let window_bounds = match restore
+        .as_ref()
+        .map(|window| window.mode)
+        .unwrap_or_default()
+    {
+        runtime::WindowMode::Windowed => WindowBounds::Windowed(bounds),
+        runtime::WindowMode::Maximized => WindowBounds::Maximized(bounds),
+        runtime::WindowMode::Fullscreen => WindowBounds::Fullscreen(bounds),
+    };
     cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_bounds: Some(window_bounds),
             titlebar: Some(TitlebarOptions {
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(10.0), px(8.0))),
@@ -3630,7 +5119,7 @@ fn open_workspace_window(
             window_min_size: Some(size(px(640.0), px(400.0))),
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| Workspace::new(startup_path, fallback_cwd, window, cx)),
+        |window, cx| cx.new(|cx| Workspace::new(startup_path, fallback_cwd, restore, window, cx)),
     )
     .map_err(|error| error.to_string())
 }
@@ -3640,15 +5129,86 @@ mod workspace_tab_tests {
     use super::*;
 
     #[test]
+    fn files_follow_the_selected_worktree_and_never_fall_back_from_an_unavailable_selection() {
+        let state: State = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "active_project_id": "atlas",
+            "projects": [
+                {"id":"atlas", "name":"Atlas", "root":"/projects/atlas", "created_at":0},
+                {"id":"beacon", "name":"Beacon", "root":"/projects/beacon", "created_at":0}
+            ],
+            "worktrees": [
+                {"id":"main", "project_id":"atlas", "branch":"main", "path":"/projects/atlas", "is_primary":true,"created_at":0},
+                {"id":"feature", "project_id":"atlas", "branch":"feature", "path":"/worktrees/feature", "created_at":0},
+                {"id":"other", "project_id":"beacon", "branch":"main", "path":"/projects/beacon", "created_at":0}
+            ],
+            "tasks": []
+        })).unwrap();
+        assert_eq!(
+            file_explorer_root(&state, "atlas", Some("feature"))
+                .unwrap()
+                .path,
+            PathBuf::from("/worktrees/feature")
+        );
+        assert_eq!(
+            file_explorer_root(&state, "beacon", Some("other"))
+                .unwrap()
+                .label,
+            "Beacon · main"
+        );
+        assert!(file_explorer_root(&state, "atlas", Some("other")).is_none());
+        assert!(file_explorer_root(&state, "atlas", Some("removed")).is_none());
+        assert!(file_explorer_root(&state, "removed", None).is_none());
+        assert_eq!(
+            file_explorer_root(&state, "atlas", None).unwrap().path,
+            PathBuf::from("/projects/atlas")
+        );
+    }
+
+    #[test]
     fn terminal_palette_override_is_opt_in_and_preserves_user_configuration() {
-        let original =
-            Workspace::terminal_options("shell".to_owned(), PathBuf::from("/tmp"), false);
+        let original = Workspace::terminal_options("shell".to_owned(), PathBuf::from("/tmp"), None);
         assert_eq!(original.configuration, TerminalConfiguration::UserDefault);
-        let themed = Workspace::terminal_options("shell".to_owned(), PathBuf::from("/tmp"), true);
+        let themed = Workspace::terminal_options(
+            "shell".to_owned(),
+            PathBuf::from("/tmp"),
+            Some(theme::riwork_terminal_theme()),
+        );
         assert!(matches!(
             themed.configuration,
             TerminalConfiguration::UserDefaultWithOverride(_)
         ));
+    }
+
+    #[test]
+    fn selected_theme_controls_terminals_and_keeps_legacy_preferences() {
+        let mut settings = Settings::default();
+        for selected in ThemeChoice::ALL
+            .into_iter()
+            .filter(|theme| *theme != ThemeChoice::Ghostty)
+        {
+            settings.theme = selected;
+            let appearance = Appearance::resolve(selected);
+            assert_eq!(
+                Workspace::terminal_theme(&settings, &appearance),
+                appearance.terminal
+            );
+            settings.use_riwork_colors = true;
+            assert_eq!(
+                Workspace::terminal_theme(&settings, &appearance),
+                appearance.terminal
+            );
+        }
+        let mut appearance = Appearance::resolve(ThemeChoice::RiWork);
+        appearance.selected = ThemeChoice::Ghostty;
+        appearance.terminal = None;
+        settings.theme = ThemeChoice::Ghostty;
+        assert_eq!(
+            Workspace::terminal_theme(&settings, &appearance),
+            Some(theme::riwork_terminal_theme())
+        );
+        settings.use_riwork_colors = false;
+        assert_eq!(Workspace::terminal_theme(&settings, &appearance), None);
     }
 
     fn session(kind: ShellKind, project: Option<&str>) -> ShellSession {
@@ -3660,6 +5220,9 @@ mod workspace_tab_tests {
             cwd: PathBuf::from("/tmp"),
             command: None,
             harness: None,
+            codex_account_id: None,
+            codex_account_label: None,
+            codex_home: None,
             unrestricted: false,
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,

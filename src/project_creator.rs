@@ -10,9 +10,8 @@ use gpui::{
 };
 
 use crate::{
-    BG, CYAN, DIVIDER, GOLD, MAGENTA, MUTED, PANEL, PANEL_ACTIVE, TEXT,
     store::{Project, ProjectInspection, Store},
-    utf16_to_byte,
+    theme, utf16_to_byte,
 };
 
 pub enum ProjectCreationEvent {
@@ -85,6 +84,8 @@ impl ProjectCreator {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
+            .detach();
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let path = format!("{}/", default_directory.display());
@@ -416,6 +417,7 @@ impl ProjectCreator {
         placeholder: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let colors = theme::palette(cx);
         let input = match field {
             Field::Path => &self.path,
             Field::Name => &self.name,
@@ -447,7 +449,7 @@ impl ProjectCreator {
                 highlights.push((
                     cursor..cursor + '▌'.len_utf8(),
                     HighlightStyle {
-                        color: Some(rgb(CYAN).into()),
+                        color: Some(rgb(colors.cyan).into()),
                         ..Default::default()
                     },
                 ));
@@ -455,8 +457,8 @@ impl ProjectCreator {
                 highlights.push((
                     input.selection.clone(),
                     HighlightStyle {
-                        background_color: Some(rgb(DIVIDER).into()),
-                        color: Some(rgb(CYAN).into()),
+                        background_color: Some(rgb(colors.divider).into()),
+                        color: Some(rgb(colors.cyan).into()),
                         ..Default::default()
                     },
                 ));
@@ -468,7 +470,7 @@ impl ProjectCreator {
             .gap(px(5.0))
             .child(
                 div()
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .text_size(px(9.0))
                     .child(label.to_owned()),
             )
@@ -485,10 +487,14 @@ impl ProjectCreator {
                     .flex()
                     .items_center()
                     .min_w_0()
-                    .bg(rgb(BG))
+                    .bg(rgb(colors.bg))
                     .border_1()
-                    .border_color(rgb(if active { CYAN } else { DIVIDER }))
-                    .text_color(rgb(if input.text.is_empty() { MUTED } else { TEXT }))
+                    .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                    .text_color(rgb(if input.text.is_empty() {
+                        colors.muted
+                    } else {
+                        colors.text
+                    }))
                     .child(
                         div()
                             .flex_1()
@@ -510,6 +516,7 @@ impl ProjectCreator {
 
 impl Render for ProjectCreator {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::palette(cx);
         let ready = !self.creating && !self.inspecting && self.inspection.is_some();
         let can_init = self
             .inspection
@@ -571,21 +578,21 @@ impl Render for ProjectCreator {
             .flex()
             .flex_col()
             .gap(px(14.0))
-            .bg(rgb(PANEL))
+            .bg(rgb(colors.panel))
             .border_1()
-            .border_color(rgb(MAGENTA))
+            .border_color(rgb(colors.magenta))
             .text_size(px(11.0))
             .child(
                 div()
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(div().text_color(rgb(MAGENTA)).child("NEW PROJECT"))
+                    .child(div().text_color(rgb(colors.magenta)).child("NEW PROJECT"))
                     .child(
                         div()
                             .id("cancel-project-x")
                             .cursor_pointer()
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors.muted))
                             .child("×")
                             .on_click(cx.listener(|form, _, _, cx| {
                                 if !form.creating {
@@ -614,8 +621,8 @@ impl Render for ProjectCreator {
                             .items_center()
                             .cursor_pointer()
                             .border_1()
-                            .border_color(rgb(DIVIDER))
-                            .text_color(rgb(CYAN))
+                            .border_color(rgb(colors.divider))
+                            .text_color(rgb(colors.cyan))
                             .child("BROWSE…")
                             .on_click(cx.listener(|form, _, window, cx| form.browse(window, cx))),
                     ),
@@ -636,7 +643,7 @@ impl Render for ProjectCreator {
             ))
             .child(
                 div()
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors.muted))
                     .text_size(px(10.0))
                     .child(summary),
             )
@@ -644,7 +651,7 @@ impl Render for ProjectCreator {
                 self.inspection
                     .as_ref()
                     .and_then(|value| value.warning.as_ref())
-                    .map(|warning| div().text_color(rgb(GOLD)).child(warning.clone())),
+                    .map(|warning| div().text_color(rgb(colors.gold)).child(warning.clone())),
             )
             .children(can_init.then(|| {
                 div()
@@ -653,7 +660,7 @@ impl Render for ProjectCreator {
                     .gap(px(8.0))
                     .items_center()
                     .cursor_pointer()
-                    .text_color(rgb(CYAN))
+                    .text_color(rgb(colors.cyan))
                     .child(if self.init_git { "[✓]" } else { "[ ]" })
                     .child("Initialize Git  [CMD+G]")
                     .on_click(cx.listener(|form, _, _, cx| {
@@ -669,7 +676,7 @@ impl Render for ProjectCreator {
                     .filter(|value| value.repository_count > 0)
                     .map(|_| {
                         div()
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors.muted))
                             .text_size(px(10.0))
                             .child("Use existing repositories")
                     }),
@@ -677,7 +684,7 @@ impl Render for ProjectCreator {
             .children(
                 self.error
                     .as_ref()
-                    .map(|error| div().text_color(rgb(GOLD)).child(error.clone())),
+                    .map(|error| div().text_color(rgb(colors.gold)).child(error.clone())),
             )
             .child(
                 div()
@@ -690,7 +697,7 @@ impl Render for ProjectCreator {
                             .px(px(12.0))
                             .py(px(8.0))
                             .cursor_pointer()
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors.muted))
                             .child("CANCEL")
                             .on_click(cx.listener(|form, _, _, cx| {
                                 if !form.creating {
@@ -704,10 +711,10 @@ impl Render for ProjectCreator {
                             .px(px(12.0))
                             .py(px(8.0))
                             .cursor_pointer()
-                            .bg(rgb(PANEL_ACTIVE))
+                            .bg(rgb(colors.panel_active))
                             .border_1()
-                            .border_color(rgb(if ready { CYAN } else { DIVIDER }))
-                            .text_color(rgb(if ready { CYAN } else { MUTED }))
+                            .border_color(rgb(if ready { colors.cyan } else { colors.divider }))
+                            .text_color(rgb(if ready { colors.cyan } else { colors.muted }))
                             .child(if self.creating {
                                 "CREATING…"
                             } else {

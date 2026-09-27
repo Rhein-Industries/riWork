@@ -1,7 +1,7 @@
 //! Durable per-project tabs and split geometry, independent of shell lifetimes.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, VecDeque},
     env, fs,
     fs::{File, OpenOptions},
     io::Write,
@@ -222,10 +222,12 @@ fn normalized_ratio(ratio: f32) -> f32 {
 pub enum PanelKind {
     Projects,
     Worktrees,
+    Files,
     Tasks,
     Shells,
     Usage,
     Settings,
+    ProjectSettings,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,10 +246,12 @@ impl SavedTab {
                 match panel {
                     PanelKind::Projects => "projects",
                     PanelKind::Worktrees => "worktrees",
+                    PanelKind::Files => "files",
                     PanelKind::Tasks => "tasks",
                     PanelKind::Shells => "shells",
                     PanelKind::Usage => "usage",
                     PanelKind::Settings => "settings",
+                    PanelKind::ProjectSettings => "project_settings",
                 }
             ),
         }
@@ -279,6 +283,10 @@ pub struct ProjectLayout {
     #[serde(default)]
     pub panes: BTreeMap<PaneId, SavedPane>,
     pub active_pane: PaneId,
+    /// None chooses the left navigation pane automatically; Some(empty) is
+    /// the user's explicit choice to carry no regions across project switches.
+    #[serde(default)]
+    pub locked_panes: Option<HashSet<PaneId>>,
     #[serde(default)]
     pub panels_initialized: bool,
     #[serde(default)]
@@ -319,6 +327,164 @@ fn sidebar_visible_default() -> bool {
 }
 
 impl ProjectLayout {
+    pub fn effective_locked_panes(&self) -> HashSet<PaneId> {
+        let ids = self.layout.pane_ids().into_iter().collect::<HashSet<_>>();
+        if let Some(locked) = &self.locked_panes {
+            return locked.intersection(&ids).copied().collect();
+        }
+        let first = self.layout.first_pane();
+        self.panes
+            .get(&first)
+            .filter(|pane| {
+                pane.tabs.iter().any(|tab| {
+                    matches!(
+                        tab,
+                        SavedTab::Panel {
+                            panel: PanelKind::Projects | PanelKind::Worktrees | PanelKind::Files
+                        }
+                    )
+                })
+            })
+            .map(|_| HashSet::from([first]))
+            .unwrap_or_default()
+    }
+
+    /// Keep the previous window's locked regions while loading this project's
+    /// unlocked regions. This changes only saved geometry and tab metadata.
+    pub fn carry_locked_regions_from(
+        &self,
+        previous: &ProjectLayout,
+    ) -> Result<ProjectLayout, String> {
+        let mut destination = self.clone();
+        destination.normalize()?;
+        let mut previous = previous.clone();
+        previous.normalize()?;
+        let locked = previous.effective_locked_panes();
+        if locked.is_empty() {
+            destination.locked_panes = previous.locked_panes;
+            destination.normalize()?;
+            return Ok(destination);
+        }
+
+        let mut slots = 0;
+        let scaffold = LockedScaffold::new(&previous.layout, &locked, &mut slots);
+        let mut panes = previous
+            .panes
+            .iter()
+            .filter(|(id, _)| locked.contains(id))
+            .map(|(id, pane)| (*id, pane.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut used_ids = locked.clone();
+        let mut used_keys = panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .map(SavedTab::key)
+            .collect::<HashSet<_>>();
+        let destination_active_key = destination
+            .panes
+            .get(&destination.active_pane)
+            .and_then(|pane| pane.active_tab_key.clone());
+        let destination_shell_ids = destination
+            .panes
+            .values()
+            .flat_map(|pane| {
+                pane.tabs.iter().filter_map(|tab| match tab {
+                    SavedTab::Shell { shell_id } => Some(shell_id.clone()),
+                    SavedTab::Panel { .. } => None,
+                })
+            })
+            .collect::<HashSet<_>>();
+
+        // The destination's own navigation/locked regions are replaced by the
+        // carried ones. Recover their unique tabs rather than losing sessions.
+        let destination_locked = destination.effective_locked_panes();
+        let mut recovered = Vec::new();
+        let mut excluded = destination_locked.clone();
+        for id in destination.layout.pane_ids() {
+            let pane = destination
+                .panes
+                .get_mut(&id)
+                .expect("normalized pane exists");
+            let had_tabs = !pane.tabs.is_empty();
+            pane.tabs.retain(|tab| used_keys.insert(tab.key()));
+            if destination_locked.contains(&id) {
+                recovered.append(&mut pane.tabs);
+            } else if had_tabs && pane.tabs.is_empty() {
+                excluded.insert(id);
+            }
+            sync_saved_pane(pane);
+        }
+        let mut content = without_panes(destination.layout.clone(), &excluded);
+        if !recovered.is_empty() {
+            let id = content
+                .as_ref()
+                .map(Layout::first_pane)
+                .unwrap_or(destination.layout.first_pane());
+            let pane = destination.panes.entry(id).or_default();
+            pane.tabs.extend(recovered);
+            if destination_active_key
+                .as_ref()
+                .is_some_and(|key| pane.tabs.iter().any(|tab| tab.key() == *key))
+            {
+                pane.active_tab_key = destination_active_key.clone();
+            }
+            sync_saved_pane(pane);
+            if content.is_none() {
+                content = Some(Layout::Pane(id));
+            }
+        }
+
+        let mut fragments = content
+            .map(|layout| partition_layout(layout, slots.max(1)))
+            .unwrap_or_default();
+        let mut mapping = BTreeMap::new();
+        for fragment in &mut fragments {
+            remap_layout(fragment, &mut used_ids, &mut mapping)?;
+        }
+        for (source, target) in &mapping {
+            panes.insert(*target, destination.panes[source].clone());
+        }
+        let layout = scaffold.fill(&mut fragments.into(), &mut panes, &mut used_ids)?;
+
+        let active_pane = if slots == 0 {
+            previous.active_pane
+        } else {
+            // A removed destination navigation pane may have selected a tab
+            // retained by a locked region, or recovered in a different pane.
+            destination_active_key
+                .as_ref()
+                .and_then(|key| {
+                    panes
+                        .iter()
+                        .find(|(_, pane)| pane.active_tab_key.as_ref() == Some(key))
+                        .map(|(id, _)| *id)
+                })
+                .or_else(|| mapping.get(&destination.active_pane).copied())
+                .or_else(|| {
+                    layout
+                        .pane_ids()
+                        .into_iter()
+                        .find(|id| !locked.contains(id))
+                })
+                .unwrap_or(layout.first_pane())
+        };
+        let mut result = destination;
+        result.layout = layout;
+        result.panes = panes;
+        result.active_pane = active_pane;
+        result.locked_panes = previous.locked_panes;
+        result.panels_initialized = result.panels_initialized || previous.panels_initialized;
+        result.sidebar_visible = previous.sidebar_visible;
+        result.window_size = previous.window_size;
+        // If every region was locked, destination sessions remain recoverable
+        // through the shell browser even though no unlocked slot is available.
+        if slots == 0 {
+            result.detached_shell_ids.extend(destination_shell_ids);
+        }
+        result.normalize()?;
+        Ok(result)
+    }
+
     /// Repair recoverable geometry and selection errors without touching sessions.
     pub fn normalize(&mut self) -> Result<(), String> {
         self.layout.validate_size()?;
@@ -329,6 +495,9 @@ impl ProjectLayout {
         let ordered_pane_ids = self.layout.pane_ids();
         pane_ids = ordered_pane_ids.iter().copied().collect();
         self.panes.retain(|id, _| pane_ids.contains(id));
+        if let Some(locked) = &mut self.locked_panes {
+            locked.retain(|id| pane_ids.contains(id));
+        }
 
         let mut shell_ids = HashSet::new();
         let mut panel_kinds = HashSet::new();
@@ -388,6 +557,172 @@ impl ProjectLayout {
             .retain(|id| !id.is_empty() && !shell_ids.contains(id));
         Ok(())
     }
+}
+
+enum LockedScaffold {
+    Locked(PaneId),
+    Slot(PaneId),
+    Split {
+        axis: Axis,
+        ratio: f32,
+        first: Box<Self>,
+        second: Box<Self>,
+    },
+}
+
+impl LockedScaffold {
+    fn new(layout: &Layout, locked: &HashSet<PaneId>, slots: &mut usize) -> Self {
+        if !layout.pane_ids().iter().any(|id| locked.contains(id)) {
+            *slots += 1;
+            return Self::Slot(layout.first_pane());
+        }
+        match layout {
+            Layout::Pane(id) => Self::Locked(*id),
+            Layout::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => Self::Split {
+                axis: *axis,
+                ratio: *ratio,
+                first: Box::new(Self::new(first, locked, slots)),
+                second: Box::new(Self::new(second, locked, slots)),
+            },
+        }
+    }
+
+    fn fill(
+        self,
+        fragments: &mut VecDeque<Layout>,
+        panes: &mut BTreeMap<PaneId, SavedPane>,
+        used: &mut HashSet<PaneId>,
+    ) -> Result<Layout, String> {
+        match self {
+            Self::Locked(id) => Ok(Layout::Pane(id)),
+            Self::Slot(preferred) => {
+                if let Some(fragment) = fragments.pop_front() {
+                    Ok(fragment)
+                } else {
+                    let id = available_pane_id(preferred, used)?;
+                    panes.insert(id, SavedPane::default());
+                    Ok(Layout::Pane(id))
+                }
+            }
+            Self::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => Ok(Layout::Split {
+                axis,
+                ratio,
+                first: Box::new(first.fill(fragments, panes, used)?),
+                second: Box::new(second.fill(fragments, panes, used)?),
+            }),
+        }
+    }
+}
+
+fn without_panes(layout: Layout, removed: &HashSet<PaneId>) -> Option<Layout> {
+    match layout {
+        Layout::Pane(id) => (!removed.contains(&id)).then_some(Layout::Pane(id)),
+        Layout::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => match (
+            without_panes(*first, removed),
+            without_panes(*second, removed),
+        ) {
+            (Some(first), Some(second)) => Some(Layout::Split {
+                axis,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }),
+            (Some(remaining), None) | (None, Some(remaining)) => Some(remaining),
+            (None, None) => None,
+        },
+    }
+}
+
+/// Cut only outer splits when several unlocked regions surround locked panes.
+/// Original axes and ratios inside each resulting fragment remain untouched.
+fn partition_layout(layout: Layout, slots: usize) -> Vec<Layout> {
+    let mut fragments = vec![layout];
+    while fragments.len() < slots {
+        let Some(index) = fragments
+            .iter()
+            .position(|layout| matches!(layout, Layout::Split { .. }))
+        else {
+            break;
+        };
+        let Layout::Split { first, second, .. } = fragments.remove(index) else {
+            unreachable!()
+        };
+        fragments.insert(index, *second);
+        fragments.insert(index, *first);
+    }
+    fragments
+}
+
+fn available_pane_id(preferred: PaneId, used: &mut HashSet<PaneId>) -> Result<PaneId, String> {
+    if preferred > 0 && preferred < MAX_PANE_ID && used.insert(preferred) {
+        return Ok(preferred);
+    }
+    for id in 1..MAX_PANE_ID {
+        if used.insert(id) {
+            return Ok(id);
+        }
+    }
+    Err("No pane ID is available for the unlocked layout".to_owned())
+}
+
+fn remap_layout(
+    layout: &mut Layout,
+    used: &mut HashSet<PaneId>,
+    mapping: &mut BTreeMap<PaneId, PaneId>,
+) -> Result<(), String> {
+    match layout {
+        Layout::Pane(id) => {
+            let original = *id;
+            *id = available_pane_id(original, used)?;
+            mapping.insert(original, *id);
+        }
+        Layout::Split { first, second, .. } => {
+            remap_layout(first, used, mapping)?;
+            remap_layout(second, used, mapping)?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_saved_pane(pane: &mut SavedPane) {
+    if !pane
+        .active_tab_key
+        .as_ref()
+        .is_some_and(|key| pane.tabs.iter().any(|tab| tab.key() == *key))
+    {
+        pane.active_tab_key = pane.tabs.first().map(SavedTab::key);
+    }
+    pane.shell_ids = pane
+        .tabs
+        .iter()
+        .filter_map(|tab| match tab {
+            SavedTab::Shell { shell_id } => Some(shell_id.clone()),
+            SavedTab::Panel { .. } => None,
+        })
+        .collect();
+    pane.active_shell_id = pane.tabs.iter().find_map(|tab| match tab {
+        SavedTab::Shell { shell_id }
+            if pane.active_tab_key.as_deref() == Some(tab.key().as_str()) =>
+        {
+            Some(shell_id.clone())
+        }
+        _ => None,
+    });
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -570,6 +905,7 @@ mod tests {
                 (15, SavedPane::default()),
             ]),
             active_pane: 8,
+            locked_panes: None,
             panels_initialized: false,
             detached_shell_ids: HashSet::from(["shell-detached".to_owned()]),
             selected_worktree_id: Some("worktree-selected".to_owned()),
@@ -628,6 +964,127 @@ mod tests {
                 .filter(|tab| tab.key() == "panel:settings")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn project_settings_tabs_restore_independently_for_each_project() {
+        let directory = TestDirectory::new();
+        let settings = SavedTab::Panel {
+            panel: PanelKind::ProjectSettings,
+        };
+        for project in ["project-a", "project-b"] {
+            let mut layout = saved_layout();
+            layout
+                .panes
+                .get_mut(&4)
+                .unwrap()
+                .tabs
+                .push(settings.clone());
+            layout
+                .panes
+                .get_mut(&8)
+                .unwrap()
+                .tabs
+                .push(settings.clone());
+            layout.panes.get_mut(&4).unwrap().active_tab_key = Some(settings.key());
+            layout
+                .panes
+                .get_mut(&4)
+                .unwrap()
+                .tabs
+                .push(SavedTab::Panel {
+                    panel: PanelKind::Settings,
+                });
+            layout.active_pane = 4;
+            layout.normalize().unwrap();
+            directory.store().save(project, &layout).unwrap();
+            let restored = directory.store().load(project).unwrap().unwrap();
+            assert_eq!(restored, layout);
+            assert_eq!(
+                restored.panes[&4].active_tab_key.as_deref(),
+                Some("panel:project_settings")
+            );
+            assert_eq!(
+                restored
+                    .panes
+                    .values()
+                    .flat_map(|pane| &pane.tabs)
+                    .filter(|tab| tab.key() == "panel:project_settings")
+                    .count(),
+                1
+            );
+            assert!(
+                restored.panes[&4]
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.key() == "panel:settings")
+            );
+        }
+    }
+
+    #[test]
+    fn files_tabs_restore_per_project_with_independent_selected_worktrees() {
+        let directory = TestDirectory::new();
+        let files = SavedTab::Panel {
+            panel: PanelKind::Files,
+        };
+        let mut expected = BTreeMap::new();
+        for (project, worktree, active_pane, duplicate_pane) in [
+            ("project-a", "worktree-a", 4, 8),
+            ("project-b", "worktree-b", 8, 15),
+        ] {
+            let mut layout = saved_layout();
+            layout.selected_worktree_id = Some(worktree.to_owned());
+            layout
+                .panes
+                .get_mut(&active_pane)
+                .unwrap()
+                .tabs
+                .push(files.clone());
+            layout.panes.get_mut(&active_pane).unwrap().active_tab_key = Some(files.key());
+            layout
+                .panes
+                .get_mut(&duplicate_pane)
+                .unwrap()
+                .tabs
+                .push(files.clone());
+            layout.active_pane = active_pane;
+            layout.normalize().unwrap();
+            directory.store().save(project, &layout).unwrap();
+            expected.insert(project, layout);
+        }
+        for (project, layout) in &expected {
+            let restored = directory.store().load(project).unwrap().unwrap();
+            assert_eq!(&restored, layout);
+            assert_eq!(
+                restored.panes[&restored.active_pane]
+                    .active_tab_key
+                    .as_deref(),
+                Some("panel:files")
+            );
+            assert_eq!(
+                restored
+                    .panes
+                    .values()
+                    .flat_map(|pane| &pane.tabs)
+                    .filter(|tab| matches!(
+                        tab,
+                        SavedTab::Panel {
+                            panel: PanelKind::Files
+                        }
+                    ))
+                    .count(),
+                1
+            );
+        }
+        let mut first = expected["project-a"].clone();
+        first.selected_worktree_id = Some("worktree-a-next".to_owned());
+        directory.store().save("project-a", &first).unwrap();
+        assert_eq!(directory.store().load("project-a").unwrap().unwrap(), first);
+        assert_eq!(
+            directory.store().load("project-b").unwrap().unwrap(),
+            expected["project-b"]
         );
     }
 
@@ -921,5 +1378,243 @@ mod tests {
         let mut layout = saved_layout();
         layout.layout = balanced_layout(1, MAX_PANES + 1);
         assert!(layout.normalize().unwrap_err().contains("panes"));
+    }
+
+    fn pane(tabs: Vec<SavedTab>, selected: usize) -> SavedPane {
+        let mut pane = SavedPane {
+            active_tab_key: tabs.get(selected).map(SavedTab::key),
+            tabs,
+            ..SavedPane::default()
+        };
+        sync_saved_pane(&mut pane);
+        pane
+    }
+
+    fn shell(id: &str) -> SavedTab {
+        SavedTab::Shell {
+            shell_id: id.into(),
+        }
+    }
+    fn panel(kind: PanelKind) -> SavedTab {
+        SavedTab::Panel { panel: kind }
+    }
+
+    #[test]
+    fn left_navigation_locks_by_default_but_explicit_unlock_survives_round_trip() {
+        let directory = TestDirectory::new();
+        let mut previous = saved_layout();
+        assert!(previous.effective_locked_panes().is_empty());
+        previous
+            .panes
+            .get_mut(&4)
+            .unwrap()
+            .tabs
+            .push(panel(PanelKind::Projects));
+        assert_eq!(previous.effective_locked_panes(), HashSet::from([4]));
+        previous.locked_panes = Some(HashSet::new());
+        assert!(previous.effective_locked_panes().is_empty());
+        directory.store().save("unlocked", &previous).unwrap();
+        let restored = directory.store().load("unlocked").unwrap().unwrap();
+        assert_eq!(restored.locked_panes, Some(HashSet::new()));
+        let mut destination = saved_layout();
+        destination
+            .panes
+            .get_mut(&4)
+            .unwrap()
+            .tabs
+            .push(panel(PanelKind::Projects));
+        let carried = destination.carry_locked_regions_from(&previous).unwrap();
+        assert_eq!(carried.layout, destination.layout);
+        assert!(carried.effective_locked_panes().is_empty());
+        assert_eq!(carried.locked_panes, Some(HashSet::new()));
+    }
+
+    #[test]
+    fn carry_preserves_locked_tabs_ratios_and_maps_colliding_destination_ids() {
+        let mut previous = saved_layout();
+        previous.layout.set_ratio(&[], 0.27);
+        previous.panes.insert(
+            4,
+            pane(
+                vec![
+                    panel(PanelKind::Projects),
+                    panel(PanelKind::Files),
+                    shell("global"),
+                ],
+                1,
+            ),
+        );
+        previous.active_pane = 4;
+        let mut destination = saved_layout();
+        destination.layout.set_ratio(&[], 0.61);
+        destination.layout.set_ratio(&[true], 0.72);
+        destination
+            .panes
+            .insert(4, pane(vec![shell("destination-a")], 0));
+        destination.panes.insert(
+            8,
+            pane(vec![panel(PanelKind::Files), shell("destination-b")], 1),
+        );
+        destination.active_pane = 4;
+        destination.selected_worktree_id = Some("destination-worktree".into());
+        let carried = destination.carry_locked_regions_from(&previous).unwrap();
+        assert_eq!(carried.panes[&4], previous.panes[&4]);
+        assert_eq!(carried.layout.ratio_at(&[]), Some(0.27));
+        assert_eq!(carried.layout.ratio_at(&[true]), Some(0.61));
+        assert_eq!(carried.layout.ratio_at(&[true, true]), Some(0.72));
+        assert_ne!(carried.active_pane, 4);
+        assert_eq!(
+            carried.panes[&carried.active_pane]
+                .active_tab_key
+                .as_deref(),
+            Some("shell:destination-a")
+        );
+        assert_eq!(
+            carried.selected_worktree_id,
+            destination.selected_worktree_id
+        );
+        let keys = carried
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .map(SavedTab::key)
+            .collect::<Vec<_>>();
+        assert_eq!(keys.iter().filter(|key| *key == "panel:files").count(), 1);
+        assert!(keys.contains(&"shell:destination-b".to_owned()));
+    }
+
+    #[test]
+    fn destination_locked_pane_sessions_are_recovered_into_unlocked_region() {
+        let mut previous = saved_layout();
+        previous.panes.insert(
+            4,
+            pane(vec![panel(PanelKind::Projects), shell("global")], 0),
+        );
+        let mut destination = saved_layout();
+        destination.panes.insert(
+            4,
+            pane(
+                vec![
+                    panel(PanelKind::Projects),
+                    panel(PanelKind::Files),
+                    shell("destination-left"),
+                    shell("global"),
+                ],
+                2,
+            ),
+        );
+        destination
+            .panes
+            .insert(8, pane(vec![shell("destination-right")], 0));
+        destination.active_pane = 4;
+        let carried = destination.carry_locked_regions_from(&previous).unwrap();
+        assert_eq!(carried.panes[&4], previous.panes[&4]);
+        assert_eq!(
+            carried.panes[&carried.active_pane]
+                .active_tab_key
+                .as_deref(),
+            Some("shell:destination-left")
+        );
+        let tabs = carried
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .map(SavedTab::key)
+            .collect::<Vec<_>>();
+        assert!(tabs.contains(&"shell:destination-left".into()));
+        assert!(tabs.contains(&"shell:destination-right".into()));
+        assert!(tabs.contains(&"panel:files".into()));
+        assert_eq!(tabs.iter().filter(|key| *key == "shell:global").count(), 1);
+        assert_eq!(
+            tabs.iter().filter(|key| *key == "panel:projects").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn multiple_locked_regions_preserve_scaffold_and_destination_active_pane() {
+        let mut previous = saved_layout();
+        previous.layout = Layout::Split {
+            axis: Axis::SideBySide,
+            ratio: 0.25,
+            first: Box::new(Layout::Pane(4)),
+            second: Box::new(Layout::Split {
+                axis: Axis::Stacked,
+                ratio: 0.4,
+                first: Box::new(Layout::Pane(8)),
+                second: Box::new(Layout::Split {
+                    axis: Axis::SideBySide,
+                    ratio: 0.7,
+                    first: Box::new(Layout::Pane(15)),
+                    second: Box::new(Layout::Pane(21)),
+                }),
+            }),
+        };
+        previous.panes.insert(21, SavedPane::default());
+        previous.locked_panes = Some(HashSet::from([4, 15]));
+        let mut destination = saved_layout();
+        destination.layout = Layout::Split {
+            axis: Axis::Stacked,
+            ratio: 0.62,
+            first: Box::new(Layout::Pane(4)),
+            second: Box::new(Layout::Pane(15)),
+        };
+        destination.panes.insert(4, pane(vec![shell("new-a")], 0));
+        destination.panes.insert(15, pane(vec![shell("new-b")], 0));
+        destination.active_pane = 15;
+        let carried = destination.carry_locked_regions_from(&previous).unwrap();
+        assert_eq!(carried.layout.ratio_at(&[]), Some(0.25));
+        assert_eq!(carried.layout.ratio_at(&[true]), Some(0.4));
+        assert_eq!(carried.layout.ratio_at(&[true, true]), Some(0.7));
+        assert_eq!(carried.panes[&4], previous.panes[&4]);
+        assert_eq!(carried.panes[&15], previous.panes[&15]);
+        assert_eq!(
+            carried.panes[&carried.active_pane]
+                .active_tab_key
+                .as_deref(),
+            Some("shell:new-b")
+        );
+        assert_eq!(carried.effective_locked_panes(), HashSet::from([4, 15]));
+        assert_eq!(carried.layout.pane_ids().len(), 4);
+    }
+
+    #[test]
+    fn surplus_unlocked_slots_remain_empty_and_all_locked_keeps_sessions_recoverable() {
+        let mut previous = saved_layout();
+        previous.locked_panes = Some(HashSet::from([8]));
+        let mut destination = saved_layout();
+        destination.layout = Layout::Pane(4);
+        destination.panes = BTreeMap::from([(4, pane(vec![shell("new")], 0))]);
+        destination.active_pane = 4;
+        let carried = destination.carry_locked_regions_from(&previous).unwrap();
+        assert_eq!(carried.layout.pane_ids().len(), 3);
+        assert_eq!(
+            carried
+                .panes
+                .values()
+                .filter(|pane| pane.tabs.is_empty())
+                .count(),
+            1
+        );
+        assert_eq!(carried.panes[&8], previous.panes[&8]);
+
+        previous.locked_panes = Some(previous.layout.pane_ids().into_iter().collect());
+        let carried = destination.carry_locked_regions_from(&previous).unwrap();
+        assert_eq!(carried.layout, previous.layout);
+        assert_eq!(carried.panes, previous.panes);
+        assert_eq!(carried.active_pane, previous.active_pane);
+        assert!(carried.detached_shell_ids.contains("new"));
+    }
+
+    #[test]
+    fn stale_lock_ids_are_removed_without_reenabling_auto_lock() {
+        let mut layout = saved_layout();
+        layout.locked_panes = Some(HashSet::from([99]));
+        layout.normalize().unwrap();
+        assert_eq!(layout.locked_panes, Some(HashSet::new()));
+        let mut json = serde_json::to_value(&layout).unwrap();
+        json.as_object_mut().unwrap().remove("locked_panes");
+        let legacy: ProjectLayout = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.locked_panes, None);
     }
 }

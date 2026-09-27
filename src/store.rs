@@ -21,6 +21,20 @@ pub struct Project {
     pub root: PathBuf,
     #[serde(default)]
     pub repository_roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    #[serde(default)]
+    pub notify_on_agent_done: bool,
+    pub created_at: u64,
+}
+
+/// An organizational group in RiWork, independent of directories on disk.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectFolder {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
     pub created_at: u64,
 }
 
@@ -112,8 +126,12 @@ pub struct State {
     pub schema_version: u32,
     pub active_project_id: Option<String>,
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub project_folders: Vec<ProjectFolder>,
     pub worktrees: Vec<Worktree>,
     pub tasks: Vec<Task>,
+    #[serde(default)]
+    pub orca_import: Option<crate::orca_import::ImportReceipt>,
 }
 
 impl Default for State {
@@ -122,8 +140,10 @@ impl Default for State {
             schema_version: 1,
             active_project_id: None,
             projects: Vec::new(),
+            project_folders: Vec::new(),
             worktrees: Vec::new(),
             tasks: Vec::new(),
+            orca_import: None,
         }
     }
 }
@@ -137,6 +157,52 @@ pub enum SearchHit {
 }
 
 impl State {
+    pub fn project_folder(&self, selector: &str) -> Result<&ProjectFolder, String> {
+        let selector = selector.trim();
+        if let Some(folder) = self
+            .project_folders
+            .iter()
+            .find(|folder| folder.id == selector)
+        {
+            return Ok(folder);
+        }
+        let name = selector.to_lowercase();
+        let path = normalized_folder_path(selector);
+        resolve_one(
+            self.project_folders.iter().filter(|folder| {
+                id_prefix(&folder.id, selector)
+                    || folder.name.to_lowercase() == name
+                    || (selector.contains('/')
+                        && normalized_folder_path(&self.project_folder_path(&folder.id)) == path)
+            }),
+            "project folder",
+            selector,
+        )
+    }
+
+    /// A breadcrumb for display and disambiguating equal leaf names. Invalid
+    /// externally edited ancestry is bounded so it cannot hang the UI.
+    pub fn project_folder_path(&self, folder_id: &str) -> String {
+        let mut names = Vec::new();
+        let mut current = Some(folder_id);
+        let mut visited = HashSet::new();
+        while let Some(id) = current {
+            if !visited.insert(id) {
+                break;
+            }
+            let Some(folder) = self.project_folders.iter().find(|folder| folder.id == id) else {
+                break;
+            };
+            names.push(folder.name.as_str());
+            current = folder.parent_id.as_deref();
+        }
+        if names.is_empty() {
+            return folder_id.to_owned();
+        }
+        names.reverse();
+        names.join(" / ")
+    }
+
     pub fn active_project(&self) -> Option<&Project> {
         self.active_project_id
             .as_ref()
@@ -267,6 +333,65 @@ fn id_prefix(id: &str, selector: &str) -> bool {
     selector.len() >= 8 && id.starts_with(selector)
 }
 
+fn project_folder_name(
+    state: &State,
+    name: &str,
+    parent_id: Option<&str>,
+    current_folder_id: Option<&str>,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Project folder name cannot be empty".to_owned());
+    }
+    if name.contains('/') {
+        return Err("Project folder names cannot contain '/'".to_owned());
+    }
+    let folded_name = name.to_lowercase();
+    if state.project_folders.iter().any(|folder| {
+        Some(folder.id.as_str()) != current_folder_id
+            && folder.parent_id.as_deref() == parent_id
+            && folder.name.to_lowercase() == folded_name
+    }) {
+        return Err(format!(
+            "A project folder named '{name}' already exists in this folder"
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+fn normalized_folder_path(path: &str) -> String {
+    path.split('/')
+        .map(|part| part.trim().to_lowercase())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn validate_project_folder_parent(
+    state: &State,
+    folder_id: &str,
+    parent_id: Option<&str>,
+) -> Result<(), String> {
+    let mut current = parent_id;
+    let mut visited = HashSet::new();
+    while let Some(id) = current {
+        if id == folder_id {
+            return Err(
+                "A project folder cannot be moved into itself or one of its subfolders".to_owned(),
+            );
+        }
+        if !visited.insert(id) {
+            return Err("The destination folder has invalid circular ancestry".to_owned());
+        }
+        let folder = state
+            .project_folders
+            .iter()
+            .find(|folder| folder.id == id)
+            .ok_or("The destination folder has a missing parent")?;
+        current = folder.parent_id.as_deref();
+    }
+    Ok(())
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -303,15 +428,26 @@ impl Store {
         self.read_state()
     }
 
-    fn transaction<T>(
+    pub(crate) fn transaction<T>(
         &self,
         operation: impl FnOnce(&mut State) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.transaction_if_changed(|state| operation(state).map(|result| (result, true)))
+    }
+
+    /// Import can race with another completed import. In that case, return the
+    /// saved receipt without replacing an otherwise unchanged state file.
+    pub(crate) fn transaction_if_changed<T>(
+        &self,
+        operation: impl FnOnce(&mut State) -> Result<(T, bool), String>,
     ) -> Result<T, String> {
         let lock = self.lock_file()?;
         FileExt::lock_exclusive(&lock).map_err(|error| format!("Cannot lock store: {error}"))?;
         let mut state = self.read_state()?;
-        let result = operation(&mut state)?;
-        self.write_state(&state)?;
+        let (result, changed) = operation(&mut state)?;
+        if changed {
+            self.write_state(&state)?;
+        }
         Ok(result)
     }
 
@@ -585,6 +721,8 @@ impl Store {
                     name,
                     root: root.clone(),
                     repository_roots: inspection.repository_roots.clone(),
+                    folder_id: None,
+                    notify_on_agent_done: false,
                     created_at: now(),
                 };
                 if state.active_project_id.is_none() {
@@ -604,6 +742,194 @@ impl Store {
             let project = state.project(selector)?.clone();
             state.active_project_id = Some(project.id.clone());
             Ok(project)
+        })
+    }
+
+    pub fn create_project_folder(&self, name: &str) -> Result<ProjectFolder, String> {
+        self.create_project_folder_in(name, None)
+    }
+
+    pub fn create_project_folder_in(
+        &self,
+        name: &str,
+        parent: Option<&str>,
+    ) -> Result<ProjectFolder, String> {
+        self.transaction(|state| {
+            let parent_id = parent
+                .map(|selector| {
+                    state
+                        .project_folder(selector)
+                        .map(|folder| folder.id.clone())
+                })
+                .transpose()?;
+            let id = Uuid::new_v4().to_string();
+            validate_project_folder_parent(state, &id, parent_id.as_deref())?;
+            let name = project_folder_name(state, name, parent_id.as_deref(), None)?;
+            let folder = ProjectFolder {
+                id,
+                name,
+                parent_id,
+                created_at: now(),
+            };
+            state.project_folders.push(folder.clone());
+            Ok(folder)
+        })
+    }
+
+    pub fn rename_project_folder(
+        &self,
+        selector: &str,
+        name: &str,
+    ) -> Result<ProjectFolder, String> {
+        self.transaction(|state| {
+            let folder = state.project_folder(selector)?.clone();
+            let folder_id = folder.id;
+            let name =
+                project_folder_name(state, name, folder.parent_id.as_deref(), Some(&folder_id))?;
+            let folder = state
+                .project_folders
+                .iter_mut()
+                .find(|folder| folder.id == folder_id)
+                .expect("resolved folder remains in the transaction");
+            folder.name = name;
+            Ok(folder.clone())
+        })
+    }
+
+    pub fn move_project_folder(
+        &self,
+        selector: &str,
+        parent: Option<&str>,
+    ) -> Result<ProjectFolder, String> {
+        self.transaction(|state| {
+            let folder = state.project_folder(selector)?.clone();
+            let parent_id = parent
+                .map(|selector| {
+                    state
+                        .project_folder(selector)
+                        .map(|parent| parent.id.clone())
+                })
+                .transpose()?;
+            validate_project_folder_parent(state, &folder.id, parent_id.as_deref())?;
+            project_folder_name(state, &folder.name, parent_id.as_deref(), Some(&folder.id))?;
+            let folder = state
+                .project_folders
+                .iter_mut()
+                .find(|item| item.id == folder.id)
+                .expect("resolved folder remains in the transaction");
+            folder.parent_id = parent_id;
+            Ok(folder.clone())
+        })
+    }
+
+    /// Promote direct projects and subfolders to the removed folder's parent;
+    /// nothing on disk is removed or relocated, and descendants retain their IDs.
+    pub fn remove_project_folder(&self, selector: &str) -> Result<(), String> {
+        self.transaction(|state| {
+            let removed = state.project_folder(selector)?.clone();
+            let mut promoted_names = HashSet::new();
+            for child in state.project_folders.iter().filter(|folder| folder.parent_id.as_deref() == Some(&removed.id)) {
+                let name = child.name.to_lowercase();
+                if !promoted_names.insert(name.clone()) || state.project_folders.iter().any(|sibling| {
+                    sibling.id != removed.id
+                        && sibling.id != child.id
+                        && sibling.parent_id == removed.parent_id
+                        && sibling.name.to_lowercase() == name
+                }) {
+                    return Err(format!("Cannot remove folder '{}': promoting subfolder '{}' would duplicate a folder in its parent. Move or rename the conflicting folder first.", removed.name, child.name));
+                }
+            }
+            state
+                .project_folders
+                .retain(|folder| folder.id != removed.id);
+            for folder in &mut state.project_folders {
+                if folder.parent_id.as_deref() == Some(&removed.id) {
+                    folder.parent_id = removed.parent_id.clone();
+                }
+            }
+            for project in &mut state.projects {
+                if project.folder_id.as_deref() == Some(&removed.id) {
+                    project.folder_id = removed.parent_id.clone();
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Reassign only organization metadata inside the transaction, preserving
+    /// the latest project name even if another window just renamed it.
+    pub fn move_project_to_folder(
+        &self,
+        project_selector: &str,
+        folder: Option<&str>,
+    ) -> Result<Project, String> {
+        self.transaction(|state| {
+            let project_id = state.project(project_selector)?.id.clone();
+            let folder_id = folder
+                .map(|selector| {
+                    state
+                        .project_folder(selector)
+                        .map(|folder| folder.id.clone())
+                })
+                .transpose()?;
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|project| project.id == project_id)
+                .expect("resolved project remains in the transaction");
+            project.folder_id = folder_id;
+            Ok(project.clone())
+        })
+    }
+
+    /// Update display metadata only; the project's directory and worktrees stay put.
+    pub fn update_project_metadata(
+        &self,
+        project_selector: &str,
+        name: &str,
+        folder_id: Option<&str>,
+    ) -> Result<Project, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Project name cannot be empty".to_owned());
+        }
+        self.transaction(|state| {
+            let project_id = state.project(project_selector)?.id.clone();
+            let folder_id = folder_id
+                .map(|selector| {
+                    state
+                        .project_folder(selector)
+                        .map(|folder| folder.id.clone())
+                })
+                .transpose()?;
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|project| project.id == project_id)
+                .expect("resolved project remains in the transaction");
+            project.name = name.to_owned();
+            project.folder_id = folder_id;
+            Ok(project.clone())
+        })
+    }
+
+    /// Change only this project's completion notification preference, keeping
+    /// the latest display metadata and workspace records from every window.
+    pub fn set_project_notifications(
+        &self,
+        selector: &str,
+        enabled: bool,
+    ) -> Result<Project, String> {
+        self.transaction_if_changed(|state| {
+            let project_id = state.project(selector)?.id.clone();
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|project| project.id == project_id)
+                .expect("resolved project remains in the transaction");
+            let changed = project.notify_on_agent_done != enabled;
+            project.notify_on_agent_done = enabled;
+            Ok((project.clone(), changed))
         })
     }
 

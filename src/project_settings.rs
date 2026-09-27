@@ -1,0 +1,1070 @@
+//! Project metadata lives in a project tab; virtual folders never move files.
+
+use std::{collections::BTreeMap, ops::Range};
+
+use gpui::{
+    AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
+    EntityInputHandler, EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent,
+    MouseButton, Pixels, Point, Render, StyledText, UTF16Selection, Window, canvas, div,
+    prelude::*, px, rgb,
+};
+
+use crate::{
+    store::{Project, ProjectFolder, State, Store},
+    theme::{self, Palette},
+    utf16_to_byte,
+};
+
+pub enum ProjectSettingsEvent {
+    Saved(Project),
+    FolderChanged,
+}
+
+pub enum FolderEditorEvent {
+    Saved(ProjectFolder),
+    Cancelled,
+}
+
+#[derive(Default)]
+struct Input {
+    text: String,
+    selection: Range<usize>,
+    reversed: bool,
+    marked: Option<Range<usize>>,
+}
+
+impl Input {
+    fn new(text: String) -> Self {
+        let end = text.len();
+        Self {
+            text,
+            selection: end..end,
+            ..Default::default()
+        }
+    }
+
+    fn cursor(&self) -> usize {
+        if self.reversed {
+            self.selection.start
+        } else {
+            self.selection.end
+        }
+    }
+
+    fn replace(&mut self, range: Option<Range<usize>>, text: &str) {
+        let range = range
+            .map(|range| {
+                utf16_to_byte(&self.text, range.start)..utf16_to_byte(&self.text, range.end)
+            })
+            .or(self.marked.take())
+            .unwrap_or_else(|| self.selection.clone());
+        let text = text.replace(['\n', '\r'], "");
+        self.text.replace_range(range.clone(), &text);
+        let end = range.start + text.len();
+        self.selection = end..end;
+        self.reversed = false;
+    }
+
+    fn key(&mut self, event: &KeyDownEvent, cx: &mut App) -> bool {
+        let platform = event.keystroke.modifiers.platform;
+        match event.keystroke.key.as_str() {
+            "a" if platform => {
+                self.selection = 0..self.text.len();
+                self.reversed = false;
+            }
+            "c" | "x" if platform => {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    self.text[self.selection.clone()].to_owned(),
+                ));
+                if event.keystroke.key == "x" {
+                    self.replace(None, "");
+                }
+            }
+            "v" if platform => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    self.replace(None, &text);
+                }
+            }
+            "backspace" | "delete" => {
+                if self.selection.is_empty() {
+                    let cursor = self.cursor();
+                    self.selection = if event.keystroke.key == "backspace" {
+                        self.text[..cursor]
+                            .char_indices()
+                            .next_back()
+                            .map(|(offset, _)| offset)
+                            .unwrap_or(0)..cursor
+                    } else {
+                        cursor
+                            ..self.text[cursor..]
+                                .chars()
+                                .next()
+                                .map(|ch| cursor + ch.len_utf8())
+                                .unwrap_or(cursor)
+                    };
+                }
+                self.replace(None, "");
+            }
+            "left" | "right" | "home" | "end" => {
+                let cursor = self.cursor();
+                let offset = match event.keystroke.key.as_str() {
+                    "home" => 0,
+                    "end" => self.text.len(),
+                    "left" if platform => 0,
+                    "right" if platform => self.text.len(),
+                    "left" if !event.keystroke.modifiers.shift && !self.selection.is_empty() => {
+                        self.selection.start
+                    }
+                    "right" if !event.keystroke.modifiers.shift && !self.selection.is_empty() => {
+                        self.selection.end
+                    }
+                    "left" => self.text[..cursor]
+                        .char_indices()
+                        .next_back()
+                        .map(|(offset, _)| offset)
+                        .unwrap_or(0),
+                    _ => self.text[cursor..]
+                        .chars()
+                        .next()
+                        .map(|ch| cursor + ch.len_utf8())
+                        .unwrap_or(cursor),
+                };
+                if event.keystroke.modifiers.shift {
+                    let anchor = if self.reversed {
+                        self.selection.end
+                    } else {
+                        self.selection.start
+                    };
+                    self.selection = anchor.min(offset)..anchor.max(offset);
+                    self.reversed = offset < anchor;
+                } else {
+                    self.selection = offset..offset;
+                    self.reversed = false;
+                }
+                self.marked = None;
+            }
+            _ => return false,
+        }
+        true
+    }
+}
+
+fn input_content<T: EntityInputHandler>(
+    input: &Input,
+    active: bool,
+    placeholder: &str,
+    focus: &FocusHandle,
+    entity: Entity<T>,
+    colors: Palette,
+) -> AnyElement {
+    let handler = active.then(|| {
+        let focus = focus.clone();
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
+            },
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
+    });
+    let mut text = if input.text.is_empty() {
+        placeholder.to_owned()
+    } else {
+        input.text.clone()
+    };
+    let mut highlights = Vec::new();
+    if active {
+        if input.selection.is_empty() {
+            let cursor = input.cursor();
+            text.insert(cursor, '▌');
+            highlights.push((
+                cursor..cursor + '▌'.len_utf8(),
+                HighlightStyle {
+                    color: Some(rgb(colors.cyan).into()),
+                    ..Default::default()
+                },
+            ));
+        } else {
+            highlights.push((
+                input.selection.clone(),
+                HighlightStyle {
+                    color: Some(rgb(colors.cyan).into()),
+                    background_color: Some(rgb(colors.divider).into()),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    div()
+        .relative()
+        .h(px(34.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .min_w_0()
+        .bg(rgb(colors.bg))
+        .border_1()
+        .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+        .text_color(rgb(if input.text.is_empty() {
+            colors.muted
+        } else {
+            colors.text
+        }))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(StyledText::new(text).with_highlights(highlights)),
+        )
+        .children(handler)
+        .into_any_element()
+}
+
+fn section(label: &str, colors: Palette) -> AnyElement {
+    div()
+        .pb(px(8.0))
+        .border_b_1()
+        .border_color(rgb(colors.divider))
+        .text_size(px(10.0))
+        .text_color(rgb(colors.cyan))
+        .child(label.to_owned())
+        .into_any_element()
+}
+
+fn folder_choices(state: &State) -> (Vec<ProjectFolder>, BTreeMap<String, String>) {
+    let paths = state
+        .project_folders
+        .iter()
+        .map(|folder| (folder.id.clone(), state.project_folder_path(&folder.id)))
+        .collect::<BTreeMap<_, _>>();
+    let mut folders = state.project_folders.clone();
+    folders.sort_by(|left, right| {
+        paths[&left.id]
+            .to_lowercase()
+            .cmp(&paths[&right.id].to_lowercase())
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    (folders, paths)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Name,
+    Folder(usize),
+    FolderName,
+    AddFolder,
+    Save,
+}
+
+pub struct ProjectSettingsPanel {
+    store: Store,
+    project: Project,
+    name: Input,
+    folder_name: Input,
+    folders: Vec<ProjectFolder>,
+    folder_paths: BTreeMap<String, String>,
+    folder_id: Option<String>,
+    active: Field,
+    focus: FocusHandle,
+    error: Option<String>,
+    saved: bool,
+}
+
+impl EventEmitter<ProjectSettingsEvent> for ProjectSettingsPanel {}
+
+impl ProjectSettingsPanel {
+    pub fn new(store: Store, project: Project, cx: &mut Context<Self>) -> Self {
+        cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
+            .detach();
+        let snapshot = store.snapshot();
+        let error = snapshot.as_ref().err().cloned();
+        let (folders, folder_paths) = snapshot
+            .map(|state| folder_choices(&state))
+            .unwrap_or_default();
+        Self {
+            name: Input::new(project.name.clone()),
+            folder_id: project.folder_id.clone(),
+            project,
+            store,
+            folders,
+            folder_paths,
+            folder_name: Input::default(),
+            active: Field::Name,
+            focus: cx.focus_handle(),
+            error,
+            saved: false,
+        }
+    }
+
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus.focus(window, cx);
+    }
+
+    /// Refresh choices without replacing the user's partially edited project name.
+    pub fn refresh_folders(&mut self, cx: &mut Context<Self>) {
+        match self.store.snapshot() {
+            Ok(state) => {
+                let focused_folder = match self.active {
+                    Field::Folder(index) => index
+                        .checked_sub(1)
+                        .and_then(|index| self.folders.get(index))
+                        .map(|folder| folder.id.clone()),
+                    _ => None,
+                };
+                let (folders, folder_paths) = folder_choices(&state);
+                if let Some(project) = state
+                    .projects
+                    .into_iter()
+                    .find(|project| project.id == self.project.id)
+                {
+                    if self.name.text.trim() == self.project.name
+                        && project.name != self.project.name
+                    {
+                        self.name = Input::new(project.name.clone());
+                    }
+                    if self.folder_id == self.project.folder_id {
+                        self.folder_id = project.folder_id.clone();
+                    }
+                    self.project = project;
+                }
+                self.folders = folders;
+                self.folder_paths = folder_paths;
+                if self
+                    .folder_id
+                    .as_ref()
+                    .is_some_and(|id| !self.folders.iter().any(|folder| &folder.id == id))
+                {
+                    self.folder_id = None;
+                }
+                if let Some(id) = focused_folder {
+                    self.active = Field::Folder(
+                        self.folders
+                            .iter()
+                            .position(|folder| folder.id == id)
+                            .map(|index| index + 1)
+                            .unwrap_or(0),
+                    );
+                } else if matches!(self.active, Field::Folder(index) if index > self.folders.len())
+                {
+                    self.active = Field::Folder(0);
+                }
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn input(&self) -> &Input {
+        match self.active {
+            Field::FolderName => &self.folder_name,
+            _ => &self.name,
+        }
+    }
+
+    fn input_mut(&mut self) -> &mut Input {
+        match self.active {
+            Field::FolderName => &mut self.folder_name,
+            _ => &mut self.name,
+        }
+    }
+
+    fn edited(&mut self, cx: &mut Context<Self>) {
+        self.saved = false;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn accepts_input(&self) -> bool {
+        matches!(self.active, Field::Name | Field::FolderName)
+    }
+
+    fn activate(&mut self, cx: &mut Context<Self>) {
+        match self.active {
+            Field::Name | Field::Save => self.save(cx),
+            Field::FolderName | Field::AddFolder => self.create_folder(cx),
+            Field::Folder(index) => {
+                self.folder_id = index
+                    .checked_sub(1)
+                    .and_then(|index| self.folders.get(index))
+                    .map(|folder| folder.id.clone());
+                self.edited(cx);
+            }
+        }
+    }
+
+    fn save(&mut self, cx: &mut Context<Self>) {
+        match self.store.update_project_metadata(
+            &self.project.id,
+            self.name.text.trim(),
+            self.folder_id.as_deref(),
+        ) {
+            Ok(project) => {
+                self.name = Input::new(project.name.clone());
+                self.project = project.clone();
+                self.error = None;
+                self.saved = true;
+                cx.emit(ProjectSettingsEvent::Saved(project));
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn create_folder(&mut self, cx: &mut Context<Self>) {
+        match self
+            .store
+            .create_project_folder_in(self.folder_name.text.trim(), self.folder_id.as_deref())
+        {
+            Ok(folder) => {
+                self.folder_id = Some(folder.id.clone());
+                self.folder_name = Input::default();
+                self.folders.push(folder);
+                self.active = Field::Name;
+                self.error = None;
+                self.saved = false;
+                self.refresh_folders(cx);
+                cx.emit(ProjectSettingsEvent::FolderChanged);
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let handled = match event.keystroke.key.as_str() {
+            "enter" | "return" => {
+                self.activate(cx);
+                true
+            }
+            "space" if !self.accepts_input() => {
+                self.activate(cx);
+                true
+            }
+            "left" | "up" if matches!(self.active, Field::Folder(_)) => {
+                if let Field::Folder(index) = self.active {
+                    self.active = Field::Folder(index.checked_sub(1).unwrap_or(self.folders.len()));
+                }
+                true
+            }
+            "right" | "down" if matches!(self.active, Field::Folder(_)) => {
+                if let Field::Folder(index) = self.active {
+                    self.active = Field::Folder((index + 1) % (self.folders.len() + 1));
+                }
+                true
+            }
+            "s" if event.keystroke.modifiers.platform => {
+                self.save(cx);
+                true
+            }
+            "tab" => {
+                let last_folder = self.folders.len();
+                self.active = if event.keystroke.modifiers.shift {
+                    match self.active {
+                        Field::Name => Field::Save,
+                        Field::Folder(0) => Field::Name,
+                        Field::Folder(index) => Field::Folder(index - 1),
+                        Field::FolderName => Field::Folder(last_folder),
+                        Field::AddFolder => Field::FolderName,
+                        Field::Save => Field::AddFolder,
+                    }
+                } else {
+                    match self.active {
+                        Field::Name => Field::Folder(0),
+                        Field::Folder(index) if index < last_folder => Field::Folder(index + 1),
+                        Field::Folder(_) => Field::FolderName,
+                        Field::FolderName => Field::AddFolder,
+                        Field::AddFolder => Field::Save,
+                        Field::Save => Field::Name,
+                    }
+                };
+                self.focus.focus(window, cx);
+                true
+            }
+            _ => {
+                let handled = self.accepts_input() && self.input_mut().key(event, cx);
+                if handled {
+                    self.edited(cx);
+                }
+                handled
+            }
+        };
+        if handled {
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn field(&self, field: Field, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
+        let (input, placeholder, id) = match field {
+            Field::Name => (&self.name, "Project name", "project-settings-name"),
+            Field::FolderName => (
+                &self.folder_name,
+                if self.folder_id.is_some() {
+                    "New subfolder"
+                } else {
+                    "New virtual folder"
+                },
+                "project-settings-new-folder",
+            ),
+            _ => unreachable!("Only text fields render an input"),
+        };
+        div()
+            .id(id)
+            .flex_1()
+            .min_w_0()
+            .child(input_content(
+                input,
+                self.active == field && self.focus.is_focused(window),
+                placeholder,
+                &self.focus,
+                cx.entity(),
+                colors,
+            ))
+            .on_click(cx.listener(move |form, _, window, cx| {
+                form.active = field;
+                form.focus.focus(window, cx);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+}
+
+impl Render for ProjectSettingsPanel {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::palette(cx);
+        let dirty =
+            self.name.text.trim() != self.project.name || self.folder_id != self.project.folder_id;
+        let focused = self.focus.is_focused(window);
+        let mut folders = div().flex().flex_wrap().gap(px(6.0)).child(
+            div()
+                .id("project-folder-unfiled")
+                .px(px(10.0))
+                .py(px(7.0))
+                .cursor_pointer()
+                .border_1()
+                .border_color(rgb(if focused && self.active == Field::Folder(0) {
+                    colors.gold
+                } else if self.folder_id.is_none() {
+                    colors.cyan
+                } else {
+                    colors.divider
+                }))
+                .bg(rgb(if self.folder_id.is_none() {
+                    colors.panel_active
+                } else {
+                    colors.bg
+                }))
+                .text_color(rgb(if self.folder_id.is_none() {
+                    colors.cyan
+                } else {
+                    colors.muted
+                }))
+                .child("UNFILED")
+                .on_click(cx.listener(|form, _, window, cx| {
+                    form.active = Field::Folder(0);
+                    form.focus.focus(window, cx);
+                    form.folder_id = None;
+                    form.edited(cx);
+                })),
+        );
+        for (index, folder) in self.folders.iter().enumerate() {
+            let id = folder.id.clone();
+            let selected = self.folder_id.as_deref() == Some(folder.id.as_str());
+            folders = folders.child(
+                div()
+                    .id(format!("project-folder-{}", folder.id))
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(rgb(if focused && self.active == Field::Folder(index + 1) {
+                        colors.gold
+                    } else if selected {
+                        colors.magenta
+                    } else {
+                        colors.divider
+                    }))
+                    .bg(rgb(if selected {
+                        colors.panel_active
+                    } else {
+                        colors.bg
+                    }))
+                    .text_color(rgb(if selected {
+                        colors.magenta
+                    } else {
+                        colors.text
+                    }))
+                    .child(
+                        self.folder_paths
+                            .get(&folder.id)
+                            .cloned()
+                            .unwrap_or_else(|| folder.name.clone()),
+                    )
+                    .on_click(cx.listener(move |form, _, window, cx| {
+                        form.active = Field::Folder(index + 1);
+                        form.focus.focus(window, cx);
+                        form.folder_id = Some(id.clone());
+                        form.edited(cx);
+                    })),
+            );
+        }
+        let mut repositories = div().flex().flex_col().gap(px(6.0));
+        if self.project.repository_roots.is_empty() {
+            repositories = repositories.child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .child("No Git repositories detected"),
+            );
+        } else {
+            for root in &self.project.repository_roots {
+                repositories = repositories.child(
+                    div()
+                        .px(px(10.0))
+                        .py(px(8.0))
+                        .bg(rgb(colors.bg))
+                        .border_l_1()
+                        .border_color(rgb(colors.magenta))
+                        .child(root.to_string_lossy().into_owned()),
+                );
+            }
+        }
+        div()
+            .id("project-settings-panel")
+            .size_full().min_w_0().track_focus(&self.focus).key_context("ProjectSettings")
+            .on_key_down(cx.listener(Self::key_down)).overflow_y_scroll()
+            .bg(rgb(colors.bg)).text_color(rgb(colors.text)).font_family("Menlo").text_size(px(11.0))
+            .p(px(20.0))
+            .child(
+                div().w_full().min_w_0().max_w(px(760.0)).flex().flex_col().gap(px(18.0))
+                    .child(
+                        div().flex().flex_wrap().min_w_0().justify_between().items_center().gap(px(12.0))
+                            .border_l_2().border_color(rgb(colors.cyan)).pl(px(12.0)).py(px(6.0))
+                            .child(div().min_w_0().flex().flex_col().gap(px(5.0))
+                                .child(div().text_color(rgb(colors.cyan)).text_size(px(16.0)).child("PROJECT SETTINGS"))
+                                .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(rgb(colors.muted)).text_size(px(10.0)).child(self.project.name.clone())))
+                            .child(div().px(px(8.0)).py(px(4.0)).border_1().border_color(rgb(colors.divider))
+                                .text_size(px(9.0)).text_color(rgb(if dirty { colors.magenta } else { colors.muted }))
+                                .child(if dirty { "UNSAVED" } else { "LOCAL PROJECT" })),
+                    )
+                    .child(
+                        div().p(px(14.0)).flex().flex_col().gap(px(12.0)).bg(rgb(colors.panel))
+                            .border_1().border_color(rgb(colors.divider))
+                            .child(section("01  IDENTITY", colors))
+                            .child(div().text_color(rgb(colors.muted)).text_size(px(10.0)).child("PROJECT NAME"))
+                            .child(self.field(Field::Name, window, cx)),
+                    )
+                    .child(
+                        div().p(px(14.0)).flex().flex_col().gap(px(12.0)).bg(rgb(colors.panel))
+                            .border_1().border_color(rgb(colors.divider))
+                            .child(section("02  VIRTUAL FOLDER", colors))
+                            .child(folders)
+                            .child(div().text_color(rgb(colors.muted)).text_size(px(10.0)).child("Group projects in the browser. Files stay in their current locations."))
+                            .children(self.folder_id.as_ref().and_then(|id| self.folder_paths.get(id)).map(|path| {
+                                div().text_color(rgb(colors.magenta)).text_size(px(10.0)).child(format!("NEW SUBFOLDER UNDER  /  {path}"))
+                            }))
+                            .child(div().flex().flex_wrap().min_w_0().items_center().gap(px(8.0))
+                                .child(self.field(Field::FolderName, window, cx))
+                                .child(div().id("project-settings-create-folder").h(px(34.0)).px(px(12.0))
+                                    .flex_none().flex().items_center().cursor_pointer().border_1()
+                                    .border_color(rgb(if focused && self.active == Field::AddFolder { colors.gold } else { colors.magenta }))
+                                    .text_color(rgb(colors.magenta)).child(if self.folder_id.is_some() { "+ SUBFOLDER" } else { "+ FOLDER" })
+                                    .on_click(cx.listener(|form, _, window, cx| {
+                                        form.active = Field::AddFolder;
+                                        form.focus.focus(window, cx);
+                                        form.create_folder(cx);
+                                    })))),
+                    )
+                    .child(
+                        div().flex().flex_wrap().min_w_0().items_center().justify_between().gap(px(10.0))
+                            .child(div().min_w_0().text_size(px(10.0)).text_color(rgb(if self.error.is_some() { colors.gold } else { colors.muted }))
+                                .child(self.error.clone().unwrap_or_else(|| if self.saved { "Settings saved".into() } else { "Save changes  ↵ / CMD+S".into() })))
+                            .child(div().id("project-settings-save").flex_none().px(px(14.0)).py(px(10.0)).cursor_pointer()
+                                .bg(rgb(colors.panel_active)).border_1()
+                                .border_color(rgb(if focused && self.active == Field::Save { colors.gold } else { colors.cyan }))
+                                .text_color(rgb(colors.cyan)).child("SAVE PROJECT")
+                                .on_click(cx.listener(|form, _, window, cx| {
+                                    form.active = Field::Save;
+                                    form.focus.focus(window, cx);
+                                    form.save(cx);
+                                }))),
+                    )
+                    .child(
+                        div().p(px(14.0)).flex().flex_col().gap(px(12.0)).bg(rgb(colors.panel))
+                            .border_1().border_color(rgb(colors.divider))
+                            .child(section("03  LOCATIONS", colors))
+                            .child(div().text_color(rgb(colors.muted)).text_size(px(10.0)).child("PROJECT ROOT"))
+                            .child(div().px(px(10.0)).py(px(8.0)).bg(rgb(colors.bg)).border_l_1()
+                                .border_color(rgb(colors.cyan)).child(self.project.root.to_string_lossy().into_owned()))
+                            .child(div().text_color(rgb(colors.muted)).text_size(px(10.0))
+                                .child(format!("REPOSITORIES  /  {:02}", self.project.repository_roots.len())))
+                            .child(repositories)
+                            .child(div().text_color(rgb(colors.muted)).text_size(px(9.0)).child(format!("PROJECT ID  /  {}", self.project.id))),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+pub struct FolderEditor {
+    store: Store,
+    folder: Option<ProjectFolder>,
+    parent_id: Option<String>,
+    parent_path: Option<String>,
+    name: Input,
+    focus: FocusHandle,
+    active: usize,
+    error: Option<String>,
+}
+
+impl EventEmitter<FolderEditorEvent> for FolderEditor {}
+
+impl FolderEditor {
+    pub fn new(store: Store, folder: Option<ProjectFolder>, cx: &mut Context<Self>) -> Self {
+        Self::new_in(store, folder, None, cx)
+    }
+
+    pub fn new_in(
+        store: Store,
+        folder: Option<ProjectFolder>,
+        parent_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
+            .detach();
+        let parent_id = match &folder {
+            Some(folder) => folder.parent_id.clone(),
+            None => parent_id,
+        };
+        let snapshot = store.snapshot();
+        let error = snapshot.as_ref().err().cloned();
+        let parent_path = parent_id.as_ref().map(|id| {
+            snapshot
+                .as_ref()
+                .map(|state| state.project_folder_path(id))
+                .unwrap_or_else(|_| id.clone())
+        });
+        Self {
+            name: Input::new(
+                folder
+                    .as_ref()
+                    .map(|folder| folder.name.clone())
+                    .unwrap_or_default(),
+            ),
+            store,
+            folder,
+            parent_id,
+            parent_path,
+            focus: cx.focus_handle(),
+            active: 0,
+            error,
+        }
+    }
+
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus.focus(window, cx);
+    }
+
+    fn input(&self) -> &Input {
+        &self.name
+    }
+    fn input_mut(&mut self) -> &mut Input {
+        &mut self.name
+    }
+    fn accepts_input(&self) -> bool {
+        self.active == 0
+    }
+    fn edited(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        cx.notify();
+    }
+
+    fn submit(&mut self, cx: &mut Context<Self>) {
+        let result = match &self.folder {
+            Some(folder) => self
+                .store
+                .rename_project_folder(&folder.id, self.name.text.trim()),
+            None => self
+                .store
+                .create_project_folder_in(self.name.text.trim(), self.parent_id.as_deref()),
+        };
+        match result {
+            Ok(folder) => cx.emit(FolderEditorEvent::Saved(folder)),
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let handled = match event.keystroke.key.as_str() {
+            "escape" => {
+                cx.emit(FolderEditorEvent::Cancelled);
+                true
+            }
+            "enter" | "return" => {
+                if self.active == 1 {
+                    cx.emit(FolderEditorEvent::Cancelled);
+                } else {
+                    self.submit(cx);
+                }
+                true
+            }
+            "space" if !self.accepts_input() => {
+                if self.active == 1 {
+                    cx.emit(FolderEditorEvent::Cancelled);
+                } else {
+                    self.submit(cx);
+                }
+                true
+            }
+            "tab" => {
+                self.active = (self.active
+                    + if event.keystroke.modifiers.shift {
+                        2
+                    } else {
+                        1
+                    })
+                    % 3;
+                true
+            }
+            _ => {
+                let handled = self.accepts_input() && self.name.key(event, cx);
+                if handled {
+                    self.edited(cx);
+                }
+                handled
+            }
+        };
+        if handled {
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+}
+
+impl Render for FolderEditor {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::palette(cx);
+        div()
+            .id("virtual-folder-editor")
+            .occlude()
+            .track_focus(&self.focus)
+            .key_context("FolderEditor")
+            .on_key_down(cx.listener(Self::key_down))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .w(px(440.0))
+            .max_w_full()
+            .max_h(gpui::relative(0.9))
+            .overflow_y_scroll()
+            .p(px(18.0))
+            .flex()
+            .flex_col()
+            .gap(px(14.0))
+            .font_family("Menlo")
+            .bg(rgb(colors.panel))
+            .border_1()
+            .border_color(rgb(colors.magenta))
+            .text_color(rgb(colors.text))
+            .text_size(px(11.0))
+            .child(
+                div()
+                    .text_color(rgb(colors.cyan))
+                    .child(if self.folder.is_some() {
+                        "RENAME VIRTUAL FOLDER"
+                    } else if self.parent_id.is_some() {
+                        "NEW SUBFOLDER"
+                    } else {
+                        "NEW VIRTUAL FOLDER"
+                    }),
+            )
+            .child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .text_size(px(10.0))
+                    .child("Group projects without moving their files."),
+            )
+            .children(self.parent_path.as_ref().map(|path| {
+                div()
+                    .text_color(rgb(colors.magenta))
+                    .text_size(px(10.0))
+                    .child(format!("PARENT  /  {path}"))
+            }))
+            .child(
+                div()
+                    .id("virtual-folder-name")
+                    .child(input_content(
+                        &self.name,
+                        self.active == 0 && self.focus.is_focused(window),
+                        "Folder name",
+                        &self.focus,
+                        cx.entity(),
+                        colors,
+                    ))
+                    .on_click(cx.listener(|form, _, window, cx| {
+                        form.active = 0;
+                        form.focus.focus(window, cx);
+                        cx.notify();
+                    })),
+            )
+            .children(
+                self.error
+                    .as_ref()
+                    .map(|error| div().text_color(rgb(colors.gold)).child(error.clone())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .id("cancel-virtual-folder")
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(rgb(
+                                if self.active == 1 && self.focus.is_focused(window) {
+                                    colors.gold
+                                } else {
+                                    colors.panel
+                                },
+                            ))
+                            .text_color(rgb(colors.muted))
+                            .child("CANCEL")
+                            .on_click(
+                                cx.listener(|_, _, _, cx| cx.emit(FolderEditorEvent::Cancelled)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("save-virtual-folder")
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .cursor_pointer()
+                            .bg(rgb(colors.panel_active))
+                            .border_1()
+                            .border_color(rgb(
+                                if self.active == 2 && self.focus.is_focused(window) {
+                                    colors.gold
+                                } else {
+                                    colors.cyan
+                                },
+                            ))
+                            .text_color(rgb(colors.cyan))
+                            .child("SAVE FOLDER  ↵")
+                            .on_click(cx.listener(|form, _, _, cx| form.submit(cx))),
+                    ),
+            )
+    }
+}
+
+macro_rules! impl_input_handler {
+    ($view:ty) => {
+        impl EntityInputHandler for $view {
+            fn text_for_range(
+                &mut self,
+                range: Range<usize>,
+                actual: &mut Option<Range<usize>>,
+                _: &mut Window,
+                _: &mut Context<Self>,
+            ) -> Option<String> {
+                let input = self.input();
+                let start = utf16_to_byte(&input.text, range.start);
+                let end = utf16_to_byte(&input.text, range.end);
+                *actual = Some(
+                    input.text[..start].encode_utf16().count()
+                        ..input.text[..end].encode_utf16().count(),
+                );
+                Some(input.text[start..end].to_owned())
+            }
+            fn selected_text_range(
+                &mut self,
+                _: bool,
+                _: &mut Window,
+                _: &mut Context<Self>,
+            ) -> Option<UTF16Selection> {
+                let input = self.input();
+                Some(UTF16Selection {
+                    range: input.text[..input.selection.start].encode_utf16().count()
+                        ..input.text[..input.selection.end].encode_utf16().count(),
+                    reversed: input.reversed,
+                })
+            }
+            fn marked_text_range(
+                &self,
+                _: &mut Window,
+                _: &mut Context<Self>,
+            ) -> Option<Range<usize>> {
+                let input = self.input();
+                input.marked.as_ref().map(|range| {
+                    input.text[..range.start].encode_utf16().count()
+                        ..input.text[..range.end].encode_utf16().count()
+                })
+            }
+            fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+                self.input_mut().marked = None;
+            }
+            fn replace_text_in_range(
+                &mut self,
+                range: Option<Range<usize>>,
+                text: &str,
+                _: &mut Window,
+                cx: &mut Context<Self>,
+            ) {
+                self.input_mut().replace(range, text);
+                self.edited(cx);
+            }
+            fn replace_and_mark_text_in_range(
+                &mut self,
+                range: Option<Range<usize>>,
+                text: &str,
+                _: Option<Range<usize>>,
+                _: &mut Window,
+                cx: &mut Context<Self>,
+            ) {
+                self.input_mut().replace(range, text);
+                let input = self.input_mut();
+                let length = text.replace(['\n', '\r'], "").len();
+                let end = input.selection.end;
+                input.marked = (length > 0).then_some(end - length..end);
+                self.edited(cx);
+            }
+            fn bounds_for_range(
+                &mut self,
+                _: Range<usize>,
+                bounds: Bounds<Pixels>,
+                _: &mut Window,
+                _: &mut Context<Self>,
+            ) -> Option<Bounds<Pixels>> {
+                Some(bounds)
+            }
+            fn character_index_for_point(
+                &mut self,
+                _: Point<Pixels>,
+                _: &mut Window,
+                _: &mut Context<Self>,
+            ) -> Option<usize> {
+                Some(self.input().text.encode_utf16().count())
+            }
+            fn text_length_utf16(
+                &mut self,
+                _: &mut Window,
+                _: &mut Context<Self>,
+            ) -> Option<usize> {
+                Some(self.input().text.encode_utf16().count())
+            }
+            fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
+                self.accepts_input()
+            }
+        }
+    };
+}
+
+impl_input_handler!(ProjectSettingsPanel);
+impl_input_handler!(FolderEditor);

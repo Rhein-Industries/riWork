@@ -17,6 +17,16 @@ use uuid::Uuid;
 
 const HISTORY_LINES: usize = 100_000;
 const ORCHESTRATOR_SKILL: &str = include_str!("../skills/riwork-orchestrator/SKILL.md");
+/// Additive session guidance shared by both supported coding harnesses.
+const CUA_GUIDANCE: &str = "RiWork provides Cua.ai Driver through the cua-driver MCP server. \
+    Use this server for desktop screenshots, application inspection, and desktop interaction. \
+    This is the Cua.ai product installed by RiWork setup. Keep this desktop automation \
+    preference for the entire session and any delegated work. If the driver is unavailable \
+    or reports missing macOS permissions, explain the reported problem and direct the user \
+    to RiWork's Cua setup; do not silently switch to another computer-use provider. \
+    Read the driver's tool descriptions and current state before interacting. \
+    These instructions choose a desktop automation provider; they do not authorize new \
+    tasks or change the user's permission policy.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +64,14 @@ pub struct ShellSession {
     pub harness: Option<HarnessKind>,
     #[serde(default)]
     pub unrestricted: bool,
+    /// The account chosen when this Codex process started. Changing the
+    /// preference only affects subsequent launches, never an existing agent.
+    #[serde(default)]
+    pub codex_account_id: Option<String>,
+    #[serde(default)]
+    pub codex_account_label: Option<String>,
+    #[serde(default)]
+    pub codex_home: Option<PathBuf>,
     #[serde(default)]
     pub orchestrator_skill_loaded: bool,
     #[serde(default)]
@@ -178,6 +196,7 @@ impl SessionManager {
 
     /// Return this project's orchestrator. It has project ownership but no
     /// worktree ownership, and cannot replace another project's singleton.
+    /// The default Codex launcher runs unrestricted.
     pub fn orchestrator_create_for_project(
         &self,
         project_id: String,
@@ -235,18 +254,28 @@ impl SessionManager {
                     })
             })
             .transpose()?;
+        let id = Uuid::new_v4().to_string();
         let default_codex = command.is_none();
+        let unrestricted = default_codex && project_id.is_some();
+        let binding = if default_codex {
+            Some(selected_codex_binding(&self.home)?)
+        } else {
+            None
+        };
         let (cwd, command) = if default_codex {
+            let cua = crate::cua::CuaManager::at(self.home.clone())?;
+            cua.driver_path()?;
+            let executable = env::current_exe()
+                .map_err(|error| format!("resolve RiWork executable: {error}"))?;
+            let shim_directory = cua.ensure_harness_shims(&executable)?;
             let skill_path = if project_id.is_none() {
                 self.orchestrator_skill_path()?
             } else {
                 self.orchestrator_skill_path_scoped(project_id.as_deref())?
             };
             let context = orchestrator_context(&self.home, project_id.as_deref());
-            let program =
-                find_program("codex").ok_or("codex is not installed or is not on PATH")?;
-            let executable = env::current_exe()
-                .map_err(|error| format!("resolve RiWork executable: {error}"))?;
+            let program = find_harness_program(HarnessKind::Codex, &shim_directory)
+                .ok_or("codex is not installed or is not on PATH")?;
             let command = orchestrator_command(
                 &program,
                 &context,
@@ -255,29 +284,24 @@ impl SessionManager {
                 &executable,
                 project_id.as_deref(),
                 project_root.as_deref(),
+                &id,
+                binding.as_ref().map(|binding| binding.home.as_path()),
             );
-            let profiles = ["CODEX_HOME", "CLAUDE_CONFIG_DIR"]
-                .map(|variable| (variable, env::var_os(variable)));
-            (context, without_stale_profiles(&command, &profiles))
+            (context, command)
         } else {
             let command = command.expect("custom command is present");
-            let command = if command == "codex" {
-                find_program("codex")
-                    .map(|path| quote_arg(&path.to_string_lossy()))
-                    .unwrap_or(command)
-            } else {
-                command
-            };
             (cwd, command)
         };
         let mut session = self.new_tmux_session(
+            id,
             project_id,
             None,
             ShellKind::Orchestrator,
             cwd,
             Some(command),
             None,
-            false,
+            unrestricted,
+            binding,
         )?;
         session.orchestrator_project_root = project_root;
         if default_codex {
@@ -424,6 +448,150 @@ impl SessionManager {
             .ok_or_else(|| format!("unknown shell {id}"))
     }
 
+    /// Saved attribution does not depend on tmux still being alive after a
+    /// harness finishes. Completion hooks use this metadata-only lookup.
+    pub fn registered_session(&self, id: &str) -> Result<ShellSession, String> {
+        validate_uuid(id)?;
+        self.read_registry()?
+            .sessions
+            .into_iter()
+            .find(|session| session.id == id)
+            .ok_or_else(|| format!("unknown shell {id}"))
+    }
+
+    pub fn state_home(&self) -> &Path {
+        &self.home
+    }
+
+    fn record_codex_launch(
+        &self,
+        id: &str,
+        binding: &crate::codex_accounts::CodexAccountBinding,
+        arguments: &[String],
+        resumed: bool,
+    ) -> Result<(), String> {
+        validate_uuid(id)?;
+        let _lock = self.lock_registry()?;
+        let mut registry = self.read_registry()?;
+        let session = registry
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+            .ok_or_else(|| format!("unknown shell {id}"))?;
+        session.harness = Some(HarnessKind::Codex);
+        session.codex_account_id = binding.id.clone();
+        session.codex_account_label = binding.label.clone();
+        session.codex_home = Some(binding.home.clone());
+        if !resumed {
+            session.unrestricted = arguments
+                .iter()
+                .take_while(|argument| argument.as_str() != "--")
+                .any(|argument| {
+                    matches!(
+                        argument.as_str(),
+                        "--dangerously-bypass-approvals-and-sandbox" | "--yolo"
+                    )
+                });
+        }
+        self.write_registry(&registry)?;
+        if !resumed {
+            let path = self.home.join("agent-activity").join(format!("{id}.json"));
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Cannot reset activity for the new Codex launch: {error}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A notification can identify a legacy pane's actual log home without
+    /// guessing from the current selection or moving its authenticated process.
+    pub fn freeze_codex_home_if_unknown(&self, id: &str, log_home: &Path) -> Result<(), String> {
+        validate_uuid(id)?;
+        let _lock = self.lock_registry()?;
+        let mut registry = self.read_registry()?;
+        let Some(session) = registry
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+        else {
+            return Ok(());
+        };
+        if session.codex_home.is_some() {
+            return Ok(());
+        }
+        session.codex_home = Some(
+            log_home
+                .canonicalize()
+                .map_err(|error| format!("Cannot resolve this Codex session's home: {error}"))?,
+        );
+        session.harness = Some(HarnessKind::Codex);
+        self.write_registry(&registry)
+    }
+
+    /// Resume an explicitly selected Codex conversation in its existing pane.
+    /// The caller must first wait for that conversation's active turn to finish.
+    pub fn respawn_command(&self, id: &str, command: &str) -> Result<ShellSession, String> {
+        validate_uuid(id)?;
+        if command.trim().is_empty() {
+            return Err("reload command cannot be empty".to_owned());
+        }
+        let _lock = self.lock_registry()?;
+        let mut registry = self.read_registry()?;
+        let session = registry
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+            .ok_or_else(|| format!("unknown shell {id}"))?;
+        if session.harness != Some(HarnessKind::Codex) || !self.is_alive(id) {
+            return Err("session reload requires a live RiWork Codex pane".to_owned());
+        }
+        let cwd = self.current_directory(id)?;
+        let executable =
+            env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+        let cua = crate::cua::CuaManager::at(self.home.clone())?;
+        cua.driver_path()?;
+        let shims = cua.ensure_harness_shims(&executable)?;
+        let managed_path = path_with_harness_shims(&shims)?;
+        let mut args = vec![
+            "respawn-pane".to_owned(),
+            "-k".to_owned(),
+            "-t".to_owned(),
+            pane_target(id),
+            "-c".to_owned(),
+            cwd.to_string_lossy().into_owned(),
+            "-e".to_owned(),
+            format!("RIWORK_HOME={}", self.home.display()),
+            "-e".to_owned(),
+            format!("RIWORK_SHELL_ID={id}"),
+            "-e".to_owned(),
+            format!("PATH={}", managed_path.to_string_lossy()),
+        ];
+        if let Some(home) = &session.codex_home {
+            args.extend([
+                "-e".to_owned(),
+                format!("CODEX_HOME={}", home.display()),
+                "-e".to_owned(),
+                format!("RIWORK_CODEX_ACCOUNT_HOME={}", home.display()),
+            ]);
+        }
+        args.push(command.to_owned());
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.tmux_checked(&borrowed)?;
+        session.command = Some(command.to_owned());
+        session.alive = true;
+        let result = session.clone();
+        self.write_registry(&registry).map_err(|error| {
+            format!("Codex pane restarted, but metadata update failed: {error}")
+        })?;
+        Ok(result)
+    }
+
     /// The command to pass as `TerminalOptions.command` in gpui-libghostty.
     /// Ghostty parses the command into argv and renders the tmux client.
     pub fn attach_command(&self, id: &str) -> Result<String, String> {
@@ -491,6 +659,33 @@ impl SessionManager {
             return Err(format!("tmux did not report a directory for shell {id}"));
         }
         Ok(PathBuf::from(path))
+    }
+
+    /// Collect the owned 0.0 pane's directory for every live shell in one query.
+    /// Periodic UI sampling already has a live shell snapshot; rechecking every
+    /// shell separately would reread the registry and spawn two tmux clients.
+    pub fn current_directories(
+        &self,
+        shells: &[ShellSession],
+    ) -> Result<BTreeMap<String, PathBuf>, String> {
+        let live: HashSet<&str> = shells
+            .iter()
+            .filter(|shell| shell.alive)
+            .map(|shell| shell.id.as_str())
+            .collect();
+        if live.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let output = self.tmux_checked(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_current_path}",
+        ])?;
+        Ok(pane_directories(
+            &String::from_utf8_lossy(&output.stdout),
+            &live,
+        ))
     }
 
     pub fn metrics(&self, id: &str) -> Result<SessionMetrics, String> {
@@ -581,6 +776,7 @@ impl SessionManager {
         let _lock = self.lock_registry()?;
         let mut registry = self.read_registry()?;
         let session = self.new_tmux_session(
+            Uuid::new_v4().to_string(),
             project_id,
             worktree_id,
             kind,
@@ -588,6 +784,7 @@ impl SessionManager {
             command,
             harness,
             unrestricted,
+            None,
         )?;
         registry.sessions.push(session.clone());
         if let Err(error) = self.write_registry(&registry) {
@@ -599,6 +796,7 @@ impl SessionManager {
 
     fn new_tmux_session(
         &self,
+        id: String,
         project_id: Option<String>,
         worktree_id: Option<String>,
         kind: ShellKind,
@@ -606,38 +804,80 @@ impl SessionManager {
         command: Option<String>,
         harness: Option<HarnessKind>,
         unrestricted: bool,
+        binding: Option<crate::codex_accounts::CodexAccountBinding>,
     ) -> Result<ShellSession, String> {
+        let binding = match binding {
+            Some(binding) => Some(binding),
+            None if harness == Some(HarnessKind::Codex) => {
+                Some(selected_codex_binding(&self.home)?)
+            }
+            None => None,
+        };
         let cwd = cwd
             .canonicalize()
             .map_err(|error| format!("resolve {}: {error}", cwd.display()))?;
         if !cwd.is_dir() {
             return Err(format!("{} is not a directory", cwd.display()));
         }
-        let id = Uuid::new_v4().to_string();
-        let profile_locations =
-            ["CODEX_HOME", "CLAUDE_CONFIG_DIR"].map(|variable| (variable, env::var_os(variable)));
+        let plain_codex_home = if binding.is_none() && harness.is_none() {
+            Some(
+                crate::codex_accounts::resolve_launch_binding(&self.home, None)?
+                    .home
+                    .into_os_string(),
+            )
+        } else {
+            None
+        };
+        let profile_locations = [
+            (
+                "CODEX_HOME",
+                binding
+                    .as_ref()
+                    .map(|binding| binding.home.clone().into_os_string())
+                    .or(plain_codex_home)
+                    .or_else(|| env::var_os("CODEX_HOME")),
+            ),
+            ("CLAUDE_CONFIG_DIR", env::var_os("CLAUDE_CONFIG_DIR")),
+        ];
+        let executable =
+            env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+        let cua = crate::cua::CuaManager::at(self.home.clone())?;
+        let shim_directory = cua.ensure_harness_shims(&executable)?;
+        let managed_path = path_with_harness_shims(&shim_directory)?;
+        let shell = self.default_command_shell();
+        let zsh_environment = if shell.file_name().is_some_and(|name| name == "zsh") {
+            let directory = install_zsh_startup_forwarding(&self.home, &shim_directory)?;
+            zsh_startup_environment(&directory, env::var_os("ZDOTDIR").as_deref())
+        } else {
+            Vec::new()
+        };
         let mut command = match harness {
             Some(harness) => {
-                let program = find_program(harness.program()).ok_or_else(|| {
+                cua.driver_path()?;
+                let program = find_harness_program(harness, &shim_directory).ok_or_else(|| {
                     format!("{} is not installed or is not on PATH", harness.program())
                 })?;
-                let telemetry_exe = if harness == HarnessKind::Claude {
-                    Some(env::current_exe().map_err(|error| {
-                        format!("resolve RiWork executable for Claude telemetry: {error}")
-                    })?)
-                } else {
-                    None
-                };
                 let command = harness_command(
                     harness,
                     unrestricted,
                     &program,
-                    telemetry_exe.as_deref(),
+                    &executable,
+                    &self.home,
                     &id,
+                    binding.as_ref().map(|binding| binding.home.as_path()),
                 )?;
                 Some(without_stale_profiles(&command, &profile_locations))
             }
-            None => command,
+            None => command.map(|command| {
+                if let Some(binding) = &binding {
+                    without_stale_profiles(
+                        &with_codex_home(&command, &binding.home),
+                        &profile_locations,
+                    )
+                } else {
+                    command
+                }
+            }),
         };
         if kind == ShellKind::Orchestrator && project_id.is_none() {
             command = command.map(|command| {
@@ -664,7 +904,25 @@ impl SessionManager {
             format!("RIWORK_HOME={}", self.home.display()),
             "-e".to_owned(),
             format!("RIWORK_SHELL_ID={id}"),
+            "-e".to_owned(),
+            format!("PATH={}", managed_path.to_string_lossy()),
         ];
+        args.extend([
+            "-e".to_owned(),
+            "RIWORK_CODEX_SHELL_ID=".to_owned(),
+            "-e".to_owned(),
+            format!(
+                "RIWORK_CODEX_ACCOUNT_HOME={}",
+                binding
+                    .as_ref()
+                    .map(|binding| binding.home.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+        ]);
+        for (variable, value) in zsh_environment {
+            args.push("-e".to_owned());
+            args.push(format!("{variable}={value}"));
+        }
         if kind == ShellKind::Orchestrator {
             for (variable, value) in orchestrator_environment(project_id.as_deref()) {
                 args.push("-e".to_owned());
@@ -714,6 +972,9 @@ impl SessionManager {
             command,
             harness,
             unrestricted,
+            codex_account_id: binding.as_ref().and_then(|binding| binding.id.clone()),
+            codex_account_label: binding.as_ref().and_then(|binding| binding.label.clone()),
+            codex_home: binding.map(|binding| binding.home),
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
             orchestrator_project_root: None,
@@ -802,6 +1063,7 @@ impl SessionManager {
             .arg("/dev/null")
             .args(args)
             .env_remove("TMUX")
+            .env_remove("RIWORK_RESTORE_TICKET")
             .env("PATH", effective_path())
             .output()
             .map_err(|error| format!("run {}: {error}", self.tmux.display()))
@@ -882,46 +1144,321 @@ fn find_tmux() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
-fn find_program(name: &str) -> Option<PathBuf> {
-    executable_dirs()
+fn selected_codex_binding(
+    home: &Path,
+) -> Result<crate::codex_accounts::CodexAccountBinding, String> {
+    let settings = crate::settings::SettingsStore::open(home)?.load()?;
+    crate::codex_accounts::resolve_launch_binding(home, settings.selected_codex_account.as_deref())
+}
+
+/// Keep the profile on the command as well as tmux's session environment:
+/// login-shell startup files must not redirect a managed agent to another home.
+fn with_codex_home(command: &str, home: &Path) -> String {
+    format!(
+        "exec /usr/bin/env {} {}",
+        quote_arg(&format!("CODEX_HOME={}", home.display())),
+        command.strip_prefix("exec ").unwrap_or(command)
+    )
+}
+
+fn codex_account_environment_arguments(home: &Path) -> Vec<String> {
+    ["CODEX_HOME", "RIWORK_CODEX_ACCOUNT_HOME"]
         .into_iter()
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
-        .and_then(|path| path.canonicalize().ok())
+        .flat_map(|key| {
+            [
+                "-c".to_owned(),
+                format!(
+                    "shell_environment_policy.set.{key}={}",
+                    toml_string(&home.to_string_lossy())
+                ),
+            ]
+        })
+        .collect()
 }
 
 fn harness_command(
     harness: HarnessKind,
     unrestricted: bool,
     program: &Path,
-    telemetry_exe: Option<&Path>,
+    executable: &Path,
+    state_home: &Path,
     shell_id: &str,
+    codex_home: Option<&Path>,
 ) -> Result<String, String> {
-    let mut arguments = vec![quote_arg(&program.to_string_lossy())];
+    let mut arguments = vec![program.to_string_lossy().into_owned()];
+    arguments.extend(cua_harness_arguments(harness, executable, state_home));
     match harness {
         HarnessKind::Codex => {
+            arguments.extend(codex_shell_environment_arguments(
+                state_home,
+                Some(shell_id),
+            ));
+            arguments.extend(codex_activity_arguments(
+                executable,
+                state_home,
+                Some(shell_id),
+                &[],
+                codex_home,
+            ));
+            if let Some(home) = codex_home {
+                arguments.extend(codex_account_environment_arguments(home));
+            }
             if unrestricted {
                 arguments.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
             }
+            arguments.push(cua_startup_prompt());
         }
         HarnessKind::Claude => {
             if unrestricted {
                 arguments.push("--dangerously-skip-permissions".to_owned());
             }
-            let telemetry_exe = telemetry_exe.ok_or("Claude telemetry executable is missing")?;
             let telemetry_command = format!(
                 "{} telemetry claude {}",
-                quote_arg(&telemetry_exe.to_string_lossy()),
+                quote_arg(&executable.to_string_lossy()),
+                quote_arg(shell_id)
+            );
+            let hook_command = format!(
+                "{} agent-hook claude {} {}",
+                quote_arg(&executable.to_string_lossy()),
+                quote_arg(&state_home.to_string_lossy()),
                 quote_arg(shell_id)
             );
             let settings = serde_json::json!({
-                "statusLine": { "type": "command", "command": telemetry_command }
+                "statusLine": { "type": "command", "command": telemetry_command },
+                "hooks": {
+                    "UserPromptSubmit": [{"hooks":[{"type":"command","command":hook_command,"timeout":10}]}],
+                    "Stop": [{"hooks":[{"type":"command","command":hook_command,"timeout":10}]}]
+                }
             });
             arguments.push("--settings".to_owned());
-            arguments.push(quote_arg(&settings.to_string()));
+            arguments.push(settings.to_string());
         }
     }
-    Ok(format!("exec {}", arguments.join(" ")))
+    let command = format!(
+        "exec {}",
+        arguments
+            .iter()
+            .map(|argument| quote_arg(argument))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    Ok(match codex_home.filter(|_| harness == HarnessKind::Codex) {
+        Some(home) => with_codex_home(&command, home),
+        None => command,
+    })
+}
+
+fn cua_startup_prompt() -> String {
+    format!(
+        "Load the following RiWork desktop automation guidance for this session. \
+         This startup message only loads guidance. Briefly acknowledge readiness \
+         and wait for the user's objective.\n\n{CUA_GUIDANCE}"
+    )
+}
+
+/// Return actual CLI arguments so wrappers and tmux launches share one MCP
+/// target without replacing the user's profile, authentication, or model.
+fn cua_harness_arguments(
+    harness: HarnessKind,
+    executable: &Path,
+    state_home: &Path,
+) -> Vec<String> {
+    match harness {
+        HarnessKind::Codex => {
+            let overrides = [
+                format!(
+                    "mcp_servers.cua-driver.command={}",
+                    toml_string(&executable.to_string_lossy())
+                ),
+                "mcp_servers.cua-driver.args=[\"cua\",\"mcp\"]".to_owned(),
+                format!(
+                    "mcp_servers.cua-driver.env.RIWORK_HOME={}",
+                    toml_string(&state_home.to_string_lossy())
+                ),
+                "mcp_servers.cua-driver.enabled=true".to_owned(),
+                "mcp_servers.cua-driver.required=true".to_owned(),
+                "mcp_servers.cua-driver.startup_timeout_sec=120".to_owned(),
+            ];
+            let mut arguments = vec!["--disable".to_owned(), "computer_use".to_owned()];
+            for value in overrides {
+                arguments.extend(["-c".to_owned(), value]);
+            }
+            arguments
+        }
+        HarnessKind::Claude => {
+            let config = serde_json::json!({
+                "mcpServers": {
+                    "cua-driver": {
+                        "type": "stdio",
+                        "command": executable.to_string_lossy(),
+                        "args": ["cua", "mcp"],
+                        "env": { "RIWORK_HOME": state_home.to_string_lossy() }
+                    }
+                }
+            });
+            vec![
+                "--mcp-config".to_owned(),
+                config.to_string(),
+                "--append-system-prompt".to_owned(),
+                CUA_GUIDANCE.to_owned(),
+            ]
+        }
+    }
+}
+
+fn toml_string(value: &str) -> String {
+    // JSON basic-string escaping is also valid for these TOML string values,
+    // including literal quotes, backslashes, and newlines in installed paths.
+    serde_json::to_string(value).expect("serializing a string cannot fail")
+}
+
+/// Bind tools to the launching client even when Codex reuses an app server
+/// whose process environment belongs to a different RiWork pane. Dotted
+/// overrides retain the user's remaining environment settings. The marker is
+/// deliberately a thread config value, never a daemon environment variable.
+fn codex_shell_environment_arguments(state_home: &Path, shell_id: Option<&str>) -> Vec<String> {
+    let shell_id = shell_id.unwrap_or("");
+    let values = [
+        ("RIWORK_HOME", state_home.to_string_lossy().into_owned()),
+        ("RIWORK_SHELL_ID", shell_id.to_owned()),
+        ("RIWORK_CODEX_SHELL_ID", shell_id.to_owned()),
+    ];
+    values
+        .into_iter()
+        .flat_map(|(key, value)| {
+            [
+                "-c".to_owned(),
+                format!("shell_environment_policy.set.{key}={}", toml_string(&value)),
+            ]
+        })
+        .collect()
+}
+
+fn codex_activity_arguments(
+    executable: &Path,
+    state_home: &Path,
+    shell_id: Option<&str>,
+    arguments: &[String],
+    explicit_home: Option<&Path>,
+) -> Vec<String> {
+    let log_home = explicit_home.map(Path::to_path_buf).or_else(|| {
+        env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+    });
+    let system_configs = [
+        PathBuf::from("/etc/codex/config.toml"),
+        PathBuf::from("/Library/Managed Preferences/com.openai.codex.plist"),
+        PathBuf::from("/Library/Preferences/com.openai.codex.plist"),
+    ];
+    log_home
+        .map(|home| {
+            codex_activity_arguments_at(
+                executable,
+                state_home,
+                shell_id,
+                arguments,
+                &home,
+                &system_configs,
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn codex_activity_arguments_at(
+    executable: &Path,
+    state_home: &Path,
+    shell_id: Option<&str>,
+    arguments: &[String],
+    log_home: &Path,
+    system_configs: &[PathBuf],
+) -> Vec<String> {
+    let Some(shell_id) =
+        shell_id.filter(|id| Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
+    else {
+        return Vec::new();
+    };
+    // Conservatively defer to any existing notification configuration. The
+    // pane's exact resume binding still supplies activity when a user hook exists.
+    if arguments.iter().any(|argument| argument.contains("notify")) {
+        return Vec::new();
+    }
+    let mut configs = vec![log_home.join("config.toml")];
+    configs.extend_from_slice(system_configs);
+    match fs::read_dir(log_home) {
+        Ok(entries) => {
+            for (index, entry) in entries.enumerate() {
+                if index >= 512 {
+                    return Vec::new();
+                }
+                let Ok(entry) = entry else {
+                    return Vec::new();
+                };
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".config.toml")
+                {
+                    configs.push(entry.path());
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Vec::new(),
+    }
+    for config in configs {
+        match fs::metadata(&config) {
+            Ok(metadata) if metadata.len() > 1024 * 1024 => return Vec::new(),
+            // Managed plist encodings vary; do not override an unknown managed
+            // notification policy merely because its binary keys are unreadable.
+            Ok(_)
+                if config
+                    .extension()
+                    .is_some_and(|extension| extension == "plist") =>
+            {
+                return Vec::new();
+            }
+            Ok(_) => match fs::read(&config) {
+                Ok(contents)
+                    if !contents
+                        .windows(b"notify".len())
+                        .any(|part| part == b"notify") => {}
+                _ => return Vec::new(),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Vec::new(),
+        }
+    }
+    let command = [
+        executable.to_string_lossy().into_owned(),
+        "agent-notify".to_owned(),
+        state_home.to_string_lossy().into_owned(),
+        shell_id.to_owned(),
+    ];
+    vec![
+        "-c".to_owned(),
+        format!(
+            "notify={}",
+            serde_json::to_string(&command).expect("serializing argv cannot fail")
+        ),
+    ]
+}
+
+fn pane_directories(output: &str, live: &HashSet<&str>) -> BTreeMap<String, PathBuf> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(4, '\t');
+            let (id, window, pane, path) = (
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+            );
+            (live.contains(id) && window == "0" && pane == "0" && !path.is_empty())
+                .then(|| (id.to_owned(), PathBuf::from(path)))
+        })
+        .collect()
 }
 
 fn orchestrator_skill_version() -> String {
@@ -995,11 +1532,12 @@ fn orchestrator_prompt(
          This startup message only loads the skill. Do not inspect projects, create tasks, \
          modify repositories, delegate work, submit input to other harnesses, or create schedules. \
          After loading, briefly acknowledge readiness and wait for the user's objective.\n\n\
-         <riwork-orchestrator-skill>\n{}\n</riwork-orchestrator-skill>",
+         <riwork-orchestrator-skill>\n{}\n</riwork-orchestrator-skill>\n\n{}",
         quote_arg(&skill_path.to_string_lossy()),
         quote_arg(&executable.to_string_lossy()),
         scope,
-        ORCHESTRATOR_SKILL
+        ORCHESTRATOR_SKILL,
+        CUA_GUIDANCE
     )
 }
 
@@ -1011,17 +1549,35 @@ fn orchestrator_command(
     executable: &Path,
     project_id: Option<&str>,
     project_root: Option<&Path>,
+    shell_id: &str,
+    codex_home: Option<&Path>,
 ) -> String {
     let mut arguments = vec![
         program.to_string_lossy().into_owned(),
         "--cd".to_owned(),
         context.to_string_lossy().into_owned(),
-        "--add-dir".to_owned(),
-        state_home.to_string_lossy().into_owned(),
     ];
-    if let Some(root) = project_root {
-        arguments.push("--add-dir".to_owned());
-        arguments.push(root.to_string_lossy().into_owned());
+    if project_id.is_some() {
+        arguments.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+    }
+    arguments.extend(cua_harness_arguments(
+        HarnessKind::Codex,
+        executable,
+        state_home,
+    ));
+    arguments.extend(codex_shell_environment_arguments(
+        state_home,
+        Some(shell_id),
+    ));
+    arguments.extend(codex_activity_arguments(
+        executable,
+        state_home,
+        Some(shell_id),
+        &[],
+        codex_home,
+    ));
+    if let Some(home) = codex_home {
+        arguments.extend(codex_account_environment_arguments(home));
     }
     arguments.push(orchestrator_prompt(
         skill_path,
@@ -1029,14 +1585,18 @@ fn orchestrator_command(
         project_id,
         project_root,
     ));
-    format!(
+    let command = format!(
         "exec {}",
         arguments
             .iter()
             .map(|argument| quote_arg(argument))
             .collect::<Vec<_>>()
             .join(" ")
-    )
+    );
+    match codex_home {
+        Some(home) => with_codex_home(&command, home),
+        None => command,
+    }
 }
 
 /// A tmux server retains its original environment. Remove profile variables
@@ -1084,6 +1644,455 @@ fn executable_dirs() -> Vec<PathBuf> {
 
 fn effective_path() -> std::ffi::OsString {
     env::join_paths(executable_dirs()).unwrap_or_else(|_| env::var_os("PATH").unwrap_or_default())
+}
+
+fn path_with_harness_shims(shim_directory: &Path) -> Result<std::ffi::OsString, String> {
+    let mut directories = vec![shim_directory.to_path_buf()];
+    directories.extend(
+        executable_dirs()
+            .into_iter()
+            .filter(|directory| directory != shim_directory),
+    );
+    env::join_paths(directories).map_err(|error| format!("construct RiWork harness PATH: {error}"))
+}
+
+fn zsh_startup_environment(
+    directory: &Path,
+    original_zdotdir: Option<&std::ffi::OsStr>,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("ZDOTDIR", directory.to_string_lossy().into_owned()),
+        (
+            "RIWORK_USER_ZDOTDIR",
+            original_zdotdir
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        ),
+        (
+            "RIWORK_USER_ZDOTDIR_SET",
+            if original_zdotdir.is_some() { "1" } else { "0" }.to_owned(),
+        ),
+        (
+            "RIWORK_USER_ZDOTDIR_EXPORT",
+            if original_zdotdir.is_some() { "1" } else { "0" }.to_owned(),
+        ),
+    ]
+}
+
+/// macOS login zsh runs path_helper and user startup files after tmux passes
+/// PATH. Forward those files, then restore the managed CLI prefix. The user's
+/// files stay in place, and their final ZDOTDIR and Ghostty hooks are retained.
+fn install_zsh_startup_forwarding(home: &Path, shim_directory: &Path) -> Result<PathBuf, String> {
+    let directory = home.join("cua/shell-integration/zsh");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let restore = r#"if [[ "${RIWORK_USER_ZDOTDIR_SET:-0}" == 1 ]]; then
+    'builtin' 'typeset' -g ZDOTDIR="$RIWORK_USER_ZDOTDIR"
+    if [[ "${RIWORK_USER_ZDOTDIR_EXPORT:-0}" == 1 ]]; then
+        'builtin' 'export' ZDOTDIR
+    else
+        'builtin' 'typeset' +x ZDOTDIR
+    fi
+else
+    'builtin' 'unset' ZDOTDIR
+fi
+"#;
+    let capture = r#"if [[ -n "${ZDOTDIR+x}" ]]; then
+    'builtin' 'export' RIWORK_USER_ZDOTDIR="$ZDOTDIR" RIWORK_USER_ZDOTDIR_SET=1
+    if [[ "${parameters[ZDOTDIR]}" == *export* ]]; then
+        'builtin' 'export' RIWORK_USER_ZDOTDIR_EXPORT=1
+    else
+        'builtin' 'export' RIWORK_USER_ZDOTDIR_EXPORT=0
+    fi
+else
+    'builtin' 'export' RIWORK_USER_ZDOTDIR='' RIWORK_USER_ZDOTDIR_SET=0 RIWORK_USER_ZDOTDIR_EXPORT=0
+fi
+"#;
+    for stage in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
+        let mut content = format!("# RiWork session-scoped zsh startup forwarding\n{restore}");
+        if stage == ".zshrc" {
+            // Apple's /etc/zshrc derives its default history location from
+            // ZDOTDIR before this file runs. Preserve that original default.
+            content.push_str(&format!(
+                "if [[ \"${{HISTFILE-}}\" == {} ]]; then\n    HISTFILE=\"${{ZDOTDIR-$HOME}}/.zsh_history\"\nfi\n",
+                quote_arg(&directory.join(".zsh_history").to_string_lossy())
+            ));
+        }
+        content.push_str(&format!(
+            "'builtin' 'typeset' _riwork_rc_path=\"${{ZDOTDIR-$HOME}}/{stage}\"\n\
+             if [[ -r \"$_riwork_rc_path\" && ! -d \"$_riwork_rc_path\" ]]; then\n\
+                 'builtin' 'source' '--' \"$_riwork_rc_path\"\n\
+             fi\n'builtin' 'unset' _riwork_rc_path\n{capture}"
+        ));
+        let shim = quote_arg(&shim_directory.to_string_lossy());
+        content.push_str(&format!(
+            "if [[ \"$PATH\" != {shim}:* && \"$PATH\" != {shim} ]]; then\n    'builtin' 'export' PATH={shim}:\"$PATH\"\nfi\n"
+        ));
+        let later_files = match stage {
+            ".zshenv" => Some("-o rcs && ( -o login || -o interactive )"),
+            ".zprofile" | ".zshrc" => Some("-o rcs && -o login"),
+            _ => None,
+        };
+        if let Some(condition) = later_files {
+            content.push_str(&format!(
+                "if [[ {condition} ]]; then\n    'builtin' 'export' ZDOTDIR={}\nfi\n",
+                quote_arg(&directory.to_string_lossy())
+            ));
+        }
+        let path = directory.join(stage);
+        if fs::read(&path).is_ok_and(|existing| existing == content.as_bytes()) {
+            continue;
+        }
+        let temporary = directory.join(format!(".{stage}-{}.tmp", Uuid::new_v4()));
+        fs::write(&temporary, content)
+            .map_err(|error| format!("write {}: {error}", temporary.display()))?;
+        if let Err(error) = fs::rename(&temporary, &path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("install {}: {error}", path.display()));
+        }
+    }
+    Ok(directory)
+}
+
+fn find_harness_program(harness: HarnessKind, shim_directory: &Path) -> Option<PathBuf> {
+    let shim_directory = shim_directory
+        .canonicalize()
+        .unwrap_or_else(|_| shim_directory.to_owned());
+    executable_dirs().into_iter().find_map(|directory| {
+        let candidate = directory.join(harness.program());
+        let path = candidate.canonicalize().ok()?;
+        if !path.is_file() || path.parent() == Some(shim_directory.as_path()) {
+            return None;
+        }
+        // Ignore wrappers from another RiWork state directory as well. Read
+        // only a small prefix, never an entire official CLI binary.
+        use std::io::Read;
+        let mut prefix = [0; 512];
+        if let Ok(mut file) = File::open(&path) {
+            if let Ok(length) = file.read(&mut prefix) {
+                if String::from_utf8_lossy(&prefix[..length]).contains("# RiWork Cua harness shim")
+                {
+                    return None;
+                }
+            }
+        }
+        Some(path)
+    })
+}
+
+fn harness_utility_invocation(harness: HarnessKind, arguments: &[String]) -> bool {
+    if arguments
+        .iter()
+        .take_while(|argument| argument.as_str() != "--")
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+    {
+        return true;
+    }
+    if harness == HarnessKind::Claude && arguments.first().is_some_and(|argument| argument == "-v")
+    {
+        return true;
+    }
+    let first = if harness == HarnessKind::Codex {
+        codex_first_command(arguments).map(|(command, _)| command)
+    } else {
+        arguments.first().map(String::as_str)
+    };
+    let Some(first) = first else {
+        return false;
+    };
+    match harness {
+        HarnessKind::Codex => matches!(
+            first,
+            "help"
+                | "login"
+                | "logout"
+                | "mcp"
+                | "plugin"
+                | "features"
+                | "doctor"
+                | "completion"
+                | "update"
+                | "app-server"
+        ),
+        HarnessKind::Claude => matches!(
+            first,
+            "help"
+                | "auth"
+                | "login"
+                | "logout"
+                | "mcp"
+                | "plugin"
+                | "plugins"
+                | "doctor"
+                | "install"
+                | "setup-token"
+                | "update"
+                | "upgrade"
+        ),
+    }
+}
+
+/// Entry point for the managed PATH wrappers. Preserve arguments as argv,
+/// including supplied prompts, and replace this process with the real CLI.
+fn cua_proxy_arguments(
+    harness: HarnessKind,
+    arguments: &[String],
+    executable: &Path,
+    home: &Path,
+    shell_id: Option<&str>,
+    codex_home: Option<&Path>,
+) -> Vec<String> {
+    if harness_utility_invocation(harness, arguments) {
+        return arguments.to_vec();
+    }
+    let mut additions = cua_harness_arguments(harness, executable, home);
+    if harness == HarnessKind::Codex {
+        additions.extend(codex_shell_environment_arguments(home, shell_id));
+        additions.extend(codex_activity_arguments(
+            executable, home, shell_id, arguments, codex_home,
+        ));
+        if let Some(home) = codex_home {
+            additions.extend(codex_account_environment_arguments(home));
+        }
+    }
+    let mut result = match harness {
+        HarnessKind::Codex => {
+            // Codex combines global and subcommand config tables by replacing
+            // nested tables. Put Cua options in the innermost supplied command
+            // so local -c flags cannot discard the driver's transport fields.
+            let separator = arguments
+                .iter()
+                .position(|argument| argument == "--")
+                .unwrap_or(arguments.len());
+            let mut result = arguments[..separator].to_vec();
+            result.extend(additions);
+            result.extend_from_slice(&arguments[separator..]);
+            result
+        }
+        HarnessKind::Claude => {
+            let mut result = additions;
+            result.extend_from_slice(arguments);
+            result
+        }
+    };
+    if arguments.is_empty() && harness == HarnessKind::Codex {
+        result.push(cua_startup_prompt());
+    }
+    result
+}
+
+/// Identify a subcommand without interpreting a prompt or flag value as one.
+fn codex_first_command(arguments: &[String]) -> Option<(&str, &[String])> {
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--" {
+            return None;
+        }
+        if matches!(
+            argument.as_str(),
+            "-c" | "--config"
+                | "-p"
+                | "--profile"
+                | "-m"
+                | "--model"
+                | "-C"
+                | "--cd"
+                | "-i"
+                | "--image"
+                | "--add-dir"
+                | "--remote"
+                | "--remote-id"
+                | "-a"
+                | "--ask-for-approval"
+                | "-s"
+                | "--sandbox"
+                | "--enable"
+                | "--disable"
+                | "--local-provider"
+                | "--output-schema"
+                | "--output-last-message"
+                | "-o"
+                | "--color"
+                | "--plugin-dir"
+        ) {
+            index += 2;
+            continue;
+        }
+        index += 1;
+        if argument.starts_with('-') {
+            continue;
+        }
+        return Some((argument, &arguments[index..]));
+    }
+    None
+}
+
+/// A fork also starts from an existing account's persisted thread.
+fn codex_resumes_existing(arguments: &[String]) -> bool {
+    match codex_first_command(arguments) {
+        Some(("resume" | "fork", _)) => true,
+        Some(("exec" | "e", remaining)) => codex_resumes_existing(remaining),
+        _ => false,
+    }
+}
+
+/// A managed agent and its tool/delegated children always retain their account.
+/// A plain shell's next new Codex invocation follows the current preference.
+fn proxy_uses_frozen_account(arguments: &[String], pinned_home: Option<&Path>) -> bool {
+    pinned_home.is_some() || codex_resumes_existing(arguments)
+}
+
+fn legacy_codex_child(shell_id: Option<&str>, thread_shell_id: Option<&str>) -> bool {
+    shell_id
+        .zip(thread_shell_id)
+        .is_some_and(|(shell, thread)| {
+            !shell.is_empty() && shell == thread && validate_uuid(shell).is_ok()
+        })
+}
+
+fn codex_proxy_binding(
+    state_home: &Path,
+    arguments: &[String],
+    pinned_home: Option<&Path>,
+    saved: Option<&ShellSession>,
+) -> Result<crate::codex_accounts::CodexAccountBinding, String> {
+    if proxy_uses_frozen_account(arguments, pinned_home) {
+        let home = pinned_home
+            .map(Path::to_path_buf)
+            .or_else(|| saved.and_then(|session| session.codex_home.clone()));
+        if let Some(home) = home {
+            let saved = saved.filter(|session| session.codex_home.as_ref() == Some(&home));
+            return Ok(crate::codex_accounts::CodexAccountBinding {
+                home,
+                id: saved.and_then(|session| session.codex_account_id.clone()),
+                label: saved.and_then(|session| session.codex_account_label.clone()),
+            });
+        }
+        // Legacy resume requests retain their explicit or inherited environment.
+        return crate::codex_accounts::resolve_launch_binding(state_home, None);
+    }
+    selected_codex_binding(state_home)
+}
+
+pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(), String> {
+    let home = match env::var_os("RIWORK_HOME") {
+        Some(home) => PathBuf::from(home),
+        None => PathBuf::from(env::var_os("HOME").ok_or("HOME is not set; set RIWORK_HOME")?)
+            .join(".local/share/riwork"),
+    };
+    let cua = crate::cua::CuaManager::at(home.clone())?;
+    let home = home
+        .canonicalize()
+        .map_err(|error| format!("resolve RiWork state: {error}"))?;
+    let executable =
+        env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+    let shim_directory = cua.ensure_harness_shims(&executable)?;
+    let program = find_harness_program(harness, &shim_directory).ok_or_else(|| {
+        format!(
+            "{} is not installed or is not on PATH outside RiWork's Cua wrappers",
+            harness.program()
+        )
+    })?;
+    let mut command = Command::new(program);
+    if !harness_utility_invocation(harness, arguments) {
+        cua.driver_path()?;
+    }
+    let shell_id =
+        if harness == HarnessKind::Codex && !harness_utility_invocation(harness, arguments) {
+            match env::var("RIWORK_SHELL_ID") {
+                Ok(value) => Some(value),
+                Err(env::VarError::NotPresent) => None,
+                Err(env::VarError::NotUnicode(_)) => {
+                    return Err("RIWORK_SHELL_ID is not valid UTF-8".to_owned());
+                }
+            }
+        } else {
+            None
+        };
+    let pinned_home = env::var_os("RIWORK_CODEX_ACCOUNT_HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    let account =
+        if harness == HarnessKind::Codex && !harness_utility_invocation(harness, arguments) {
+            let manager = shell_id
+                .as_ref()
+                .map(|_| SessionManager::at(home.clone()))
+                .transpose()?;
+            let saved = manager
+                .as_ref()
+                .zip(shell_id.as_ref())
+                .map(|(manager, id)| manager.get(id))
+                .transpose()?;
+            let legacy_child = legacy_codex_child(
+                shell_id.as_deref(),
+                env::var("RIWORK_CODEX_SHELL_ID").ok().as_deref(),
+            );
+            let pinned_home = if pinned_home.is_none() && legacy_child {
+                Some(
+                    saved
+                        .as_ref()
+                        .and_then(|session| session.codex_home.clone())
+                        .map(Ok)
+                        .unwrap_or_else(|| {
+                            crate::codex_accounts::resolve_launch_binding(&home, None)
+                                .map(|binding| binding.home)
+                        })?,
+                )
+            } else {
+                pinned_home.clone()
+            };
+            let binding =
+                codex_proxy_binding(&home, arguments, pinned_home.as_deref(), saved.as_ref())?;
+            if legacy_child {
+                if let Some((manager, id)) = manager.as_ref().zip(shell_id.as_ref()) {
+                    if binding.home.is_dir() {
+                        manager.freeze_codex_home_if_unknown(id, &binding.home)?;
+                    }
+                }
+            }
+            if pinned_home.is_none() {
+                if let Some((manager, id)) = manager.as_ref().zip(shell_id.as_ref()) {
+                    manager.record_codex_launch(
+                        id,
+                        &binding,
+                        arguments,
+                        codex_resumes_existing(arguments),
+                    )?;
+                }
+            }
+            command
+                .env("CODEX_HOME", &binding.home)
+                .env("RIWORK_CODEX_ACCOUNT_HOME", &binding.home);
+            Some(binding)
+        } else {
+            None
+        };
+    command
+        .args(cua_proxy_arguments(
+            harness,
+            arguments,
+            &executable,
+            &home,
+            shell_id.as_deref(),
+            account.as_ref().map(|binding| binding.home.as_path()),
+        ))
+        .env("RIWORK_HOME", &home);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        Err(format!("launch {}: {}", harness.program(), command.exec()))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command
+            .status()
+            .map_err(|error| format!("launch {}: {error}", harness.program()))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("{} exited with {status}", harness.program()))
+        }
+    }
 }
 
 fn validate_uuid(id: &str) -> Result<(), String> {
@@ -1186,6 +2195,510 @@ fn read_processes() -> Result<HashMap<u32, ProcessInfo>, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    #[cfg(unix)]
+    fn directory_sampling_batches_live_shells_and_uses_the_owned_pane() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = AccountFixture::new();
+        let alpha = "00000000-0000-4000-8000-000000000010";
+        let beta = "00000000-0000-4000-8000-000000000011";
+        let dead = "00000000-0000-4000-8000-000000000012";
+        let panes = fixture.0.join("panes");
+        let calls = fixture.0.join("calls");
+        let tmux = fixture.0.join("fake-tmux");
+        fs::write(
+            &panes,
+            format!(
+                "{alpha}\t0\t0\t/project with spaces\n\
+                 {alpha}\t0\t1\t/other-pane\n\
+                 {beta}\t0\t0\t/project\twith-tab\n\
+                 {beta}\t1\t0\t/other-window\n\
+                 {dead}\t0\t0\t/dead-shell\n\
+                 unregistered\t0\t0\t/unregistered-shell\n\
+                 incomplete\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &tmux,
+            format!(
+                "#!/bin/sh\nprintf 'called\\n' >> {}\ncat {}\n",
+                quote_arg(&calls.to_string_lossy()),
+                quote_arg(&panes.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
+        let manager = SessionManager {
+            home: fixture.0.clone(),
+            tmux,
+            socket_name: "isolated-fake".into(),
+        };
+        let shells = [(alpha, true), (beta, true), (dead, false)].map(|(id, alive)| {
+            let mut shell = scope_session(ShellKind::Project, None);
+            shell.id = id.into();
+            shell.alive = alive;
+            shell
+        });
+        assert_eq!(
+            manager.current_directories(&shells).unwrap(),
+            BTreeMap::from([
+                (alpha.into(), PathBuf::from("/project with spaces")),
+                (beta.into(), PathBuf::from("/project\twith-tab")),
+            ])
+        );
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "called\n");
+        assert!(manager.current_directories(&[]).unwrap().is_empty());
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "called\n");
+    }
+
+    struct AccountFixture(PathBuf);
+
+    impl AccountFixture {
+        fn new() -> Self {
+            if let Some(root) = env::var_os("RIWORK_TEST_ACCOUNT_FIXTURE") {
+                return Self(PathBuf::from(root));
+            }
+            let root = env::temp_dir().join(format!("riwork-account-launch-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            Self(root.canonicalize().unwrap())
+        }
+        /// Only the isolated child sees the fake Orca profile override. This
+        /// preserves the real cache's profile validation and avoids mutating
+        /// environment variables shared with other tests or user processes.
+        fn run_in_child(&self, name: &str) -> bool {
+            if env::var_os("RIWORK_TEST_ACCOUNT_FIXTURE").is_some() {
+                return true;
+            }
+            let output = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("sessions::tests::{name}"),
+                    "--nocapture",
+                ])
+                .env("RIWORK_TEST_ACCOUNT_FIXTURE", &self.0)
+                .env(
+                    "ORCA_USER_DATA_PATH",
+                    self.0.join("Orca's `profiles` $(touch injected)"),
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            false
+        }
+
+        fn selected(&self, id: &str) -> PathBuf {
+            let state = self.0.join("state");
+            let user_data = self.0.join("Orca's `profiles` $(touch injected)");
+            for account in ["account-a", "account-b"] {
+                fs::create_dir_all(user_data.join("codex-accounts").join(account).join("home"))
+                    .unwrap();
+            }
+            fs::create_dir_all(&state).unwrap();
+            fs::write(
+                state.join("codex-accounts.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1,
+                    "user_data": user_data,
+                    "accounts": [
+                        {"id":"account-a","email":"a@example.test","managedHomeRuntime":"host"},
+                        {"id":"account-b","email":"b@example.test","managedHomeRuntime":"host"}
+                    ],
+                    "source_active_id": "account-a"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(
+                    state.join("codex-accounts.json"),
+                    fs::Permissions::from_mode(0o600),
+                )
+                .unwrap();
+            }
+            crate::settings::SettingsStore::open(&state)
+                .unwrap()
+                .update(|settings| {
+                    settings.selected_codex_account = Some(id.to_owned());
+                })
+                .unwrap();
+            state
+        }
+    }
+    impl Drop for AccountFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn plain_shell_new_launch_selects_b_while_managed_children_and_resume_keep_a() {
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child(
+            "plain_shell_new_launch_selects_b_while_managed_children_and_resume_keep_a",
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-b");
+        let binding_a =
+            crate::codex_accounts::resolve_launch_binding(&state, Some("account-a")).unwrap();
+        let mut saved = scope_session(ShellKind::Project, None);
+        saved.codex_account_id = binding_a.id.clone();
+        saved.codex_account_label = binding_a.label.clone();
+        saved.codex_home = Some(binding_a.home.clone());
+        let new = codex_proxy_binding(&state, &[], None, Some(&saved)).unwrap();
+        assert_eq!(new.id.as_deref(), Some("account-b"));
+        assert_ne!(new.home, binding_a.home);
+        let child = codex_proxy_binding(
+            &state,
+            &["exec".into(), "new work".into()],
+            Some(&binding_a.home),
+            Some(&saved),
+        )
+        .unwrap();
+        assert_eq!(child, binding_a);
+        for command in ["resume", "fork"] {
+            let resumed = codex_proxy_binding(
+                &state,
+                &[
+                    "--profile".into(),
+                    "work".into(),
+                    command.into(),
+                    Uuid::new_v4().to_string(),
+                ],
+                None,
+                Some(&saved),
+            )
+            .unwrap();
+            assert_eq!(resumed, binding_a);
+        }
+        crate::settings::SettingsStore::open(&state)
+            .unwrap()
+            .update(|settings| settings.selected_codex_account = Some("missing".into()))
+            .unwrap();
+        assert!(codex_proxy_binding(&state, &[], None, Some(&saved)).is_err());
+        assert_eq!(
+            codex_proxy_binding(&state, &[], Some(&binding_a.home), Some(&saved)).unwrap(),
+            binding_a
+        );
+        assert!(!codex_resumes_existing(&[
+            "--model".into(),
+            "resume".into(),
+            "new prompt".into()
+        ]));
+        assert!(!codex_resumes_existing(&["--".into(), "resume".into()]));
+        assert!(legacy_codex_child(Some(&saved.id), Some(&saved.id)));
+        assert!(!legacy_codex_child(Some(&saved.id), Some("different-pane")));
+        assert!(!legacy_codex_child(Some(&saved.id), None));
+        assert!(!legacy_codex_child(None, Some(&saved.id)));
+        assert!(codex_resumes_existing(&[
+            "exec".into(),
+            "-c".into(),
+            "name=resume".into(),
+            "resume".into(),
+            "--last".into()
+        ]));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tmux_launch_receives_account_environment_and_registry_keeps_frozen_binding() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child(
+            "tmux_launch_receives_account_environment_and_registry_keeps_frozen_binding",
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-b");
+        let binding = selected_codex_binding(&state).unwrap();
+        let tmux = fixture.0.join("fake-tmux");
+        let capture = fixture.0.join("tmux-argv");
+        fs::write(
+            &tmux,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
+                quote_arg(&capture.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
+        let manager = SessionManager {
+            home: state,
+            tmux,
+            socket_name: "isolated-fake".into(),
+        };
+        let session = manager
+            .new_tmux_session(
+                Uuid::new_v4().to_string(),
+                None,
+                None,
+                ShellKind::Project,
+                fixture.0.clone(),
+                Some("exec /fake/codex".into()),
+                None,
+                false,
+                Some(binding.clone()),
+            )
+            .unwrap();
+        assert_eq!(session.codex_home.as_ref(), Some(&binding.home));
+        assert_eq!(session.codex_account_id, binding.id);
+        let args = fs::read_to_string(capture).unwrap();
+        assert!(
+            args.lines()
+                .any(|argument| argument == format!("CODEX_HOME={}", binding.home.display()))
+        );
+        assert!(
+            args.lines().any(|argument| argument
+                == format!("RIWORK_CODEX_ACCOUNT_HOME={}", binding.home.display()))
+        );
+        let argv = shell_arguments(session.command.as_deref().unwrap());
+        assert!(argv.contains(&format!("CODEX_HOME={}", binding.home.display())));
+        assert!(!fixture.0.join("injected").exists());
+        let restored: ShellSession =
+            serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+        assert_eq!(restored.codex_home, session.codex_home);
+        assert_eq!(restored.codex_account_id, session.codex_account_id);
+    }
+
+    #[test]
+    fn notification_freezes_legacy_home_without_rebinding_an_existing_account() {
+        let fixture = AccountFixture::new();
+        if !fixture
+            .run_in_child("notification_freezes_legacy_home_without_rebinding_an_existing_account")
+        {
+            return;
+        }
+        let state = fixture.selected("account-b");
+        let binding_a =
+            crate::codex_accounts::resolve_launch_binding(&state, Some("account-a")).unwrap();
+        let binding_b = selected_codex_binding(&state).unwrap();
+        let manager = SessionManager {
+            home: state,
+            tmux: PathBuf::from("/unused/tmux"),
+            socket_name: "unused".into(),
+        };
+        let legacy = scope_session(ShellKind::Project, None);
+        manager
+            .write_registry(&Registry {
+                sessions: vec![legacy.clone()],
+            })
+            .unwrap();
+        manager
+            .freeze_codex_home_if_unknown(&legacy.id, &binding_a.home)
+            .unwrap();
+        let frozen = manager.read_registry().unwrap().sessions.remove(0);
+        assert_eq!(frozen.codex_home, Some(binding_a.home.clone()));
+        assert_eq!(frozen.codex_account_id, None);
+        manager
+            .freeze_codex_home_if_unknown(&legacy.id, &binding_b.home)
+            .unwrap();
+        assert_eq!(
+            manager.read_registry().unwrap().sessions[0].codex_home,
+            Some(binding_a.home)
+        );
+    }
+
+    #[test]
+    fn plain_shell_permission_mode_ignores_prompt_tokens_and_survives_resume() {
+        let fixture = AccountFixture::new();
+        let manager = SessionManager {
+            home: fixture.0.clone(),
+            tmux: PathBuf::from("/unused/tmux"),
+            socket_name: "unused".into(),
+        };
+        let session = scope_session(ShellKind::Project, None);
+        manager
+            .write_registry(&Registry {
+                sessions: vec![session.clone()],
+            })
+            .unwrap();
+        let binding = crate::codex_accounts::CodexAccountBinding {
+            id: Some("account-a".into()),
+            label: None,
+            home: fixture.0.clone(),
+        };
+        manager
+            .record_codex_launch(
+                &session.id,
+                &binding,
+                &["--".into(), "--yolo".into()],
+                false,
+            )
+            .unwrap();
+        assert!(!manager.read_registry().unwrap().sessions[0].unrestricted);
+        manager
+            .record_codex_launch(&session.id, &binding, &["--yolo".into()], false)
+            .unwrap();
+        assert!(manager.read_registry().unwrap().sessions[0].unrestricted);
+        manager
+            .record_codex_launch(
+                &session.id,
+                &binding,
+                &["resume".into(), "--last".into()],
+                true,
+            )
+            .unwrap();
+        assert!(manager.read_registry().unwrap().sessions[0].unrestricted);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn official_harness_receives_literal_selected_home_even_with_a_stale_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child(
+            "official_harness_receives_literal_selected_home_even_with_a_stale_environment",
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-b");
+        let binding = selected_codex_binding(&state).unwrap();
+        let program = fixture.0.join("fake codex's CLI");
+        fs::write(
+            &program,
+            "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME\" \"$@\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let command = harness_command(
+            HarnessKind::Codex,
+            false,
+            &program,
+            Path::new("/fake/riwork"),
+            &state,
+            "uuid",
+            Some(&binding.home),
+        )
+        .unwrap();
+        let result = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&command)
+            .env("CODEX_HOME", "stale profile")
+            .current_dir(&fixture.0)
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        let output = String::from_utf8(result.stdout).unwrap();
+        assert_eq!(
+            output.lines().next().unwrap(),
+            binding.home.to_string_lossy()
+        );
+        let arguments = shell_arguments(&command);
+        assert!(arguments.contains(&format!(
+            "shell_environment_policy.set.CODEX_HOME={}",
+            toml_string(&binding.home.to_string_lossy())
+        )));
+        assert!(arguments.contains(&format!(
+            "shell_environment_policy.set.RIWORK_CODEX_ACCOUNT_HOME={}",
+            toml_string(&binding.home.to_string_lossy())
+        )));
+        assert!(!fixture.0.join("injected").exists());
+    }
+
+    #[test]
+    fn account_probe_and_auth_utilities_do_not_choose_a_managed_account() {
+        for arguments in [
+            vec!["app-server".into(), "--stdio".into()],
+            vec!["login".into(), "status".into()],
+            vec!["logout".into()],
+            vec![
+                "--profile".into(),
+                "work".into(),
+                "login".into(),
+                "status".into(),
+            ],
+        ] {
+            assert!(harness_utility_invocation(HarnessKind::Codex, &arguments));
+            assert_eq!(
+                cua_proxy_arguments(
+                    HarnessKind::Codex,
+                    &arguments,
+                    Path::new("/fake/riwork"),
+                    Path::new("/fake/state"),
+                    None,
+                    Some(Path::new("/another/account"))
+                ),
+                arguments
+            );
+        }
+    }
+
+    #[test]
+    fn activity_notification_preserves_user_profile_and_command_line_hooks() {
+        let temporary = env::temp_dir().join(format!("riwork-notify-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&temporary).unwrap();
+        let shell_id = Uuid::new_v4().to_string();
+        let executable = Path::new("/Applications/RiWork's App/riwork");
+        let home = temporary.join("state");
+        let arguments =
+            codex_activity_arguments_at(executable, &home, Some(&shell_id), &[], &temporary, &[]);
+        assert_eq!(arguments[0], "-c");
+        let notification: Vec<String> =
+            serde_json::from_str(arguments[1].strip_prefix("notify=").unwrap()).unwrap();
+        assert_eq!(
+            notification,
+            [
+                executable.to_string_lossy().into_owned(),
+                "agent-notify".into(),
+                home.to_string_lossy().into_owned(),
+                shell_id.clone()
+            ]
+        );
+        let configured = vec!["-c".to_owned(), "notify=[\"user-hook\"]".to_owned()];
+        assert!(
+            codex_activity_arguments_at(
+                executable,
+                &home,
+                Some(&shell_id),
+                &configured,
+                &temporary,
+                &[]
+            )
+            .is_empty()
+        );
+        let global = temporary.join("config.toml");
+        fs::write(&global, "notify = [\"user-global-hook\"]\n").unwrap();
+        let before = fs::read(&global).unwrap();
+        assert!(
+            codex_activity_arguments_at(executable, &home, Some(&shell_id), &[], &temporary, &[])
+                .is_empty()
+        );
+        assert_eq!(fs::read(&global).unwrap(), before);
+        fs::remove_file(global).unwrap();
+        let profile = temporary.join("work.config.toml");
+        fs::write(&profile, "notify = [\"user-profile-hook\"]\n").unwrap();
+        assert!(
+            codex_activity_arguments_at(executable, &home, Some(&shell_id), &[], &temporary, &[])
+                .is_empty()
+        );
+        fs::remove_file(profile).unwrap();
+        let managed = temporary.join("managed.plist");
+        fs::write(&managed, b"binary-managed-settings").unwrap();
+        assert!(
+            codex_activity_arguments_at(
+                executable,
+                &home,
+                Some(&shell_id),
+                &[],
+                &temporary,
+                &[managed]
+            )
+            .is_empty()
+        );
+        assert!(
+            codex_activity_arguments_at(executable, &home, None, &[], &temporary, &[]).is_empty()
+        );
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
     fn shell_arguments(command: &str) -> Vec<String> {
         // Parse only: the command becomes positional arguments and is never
         // executed. This verifies settings JSON survives the shell boundary.
@@ -1222,23 +2735,47 @@ mod tests {
         assert!(!session.orchestrator_skill_loaded);
         assert_eq!(session.orchestrator_skill_version, None);
         assert_eq!(session.orchestrator_project_root, None);
+        assert_eq!(session.codex_account_id, None);
+        assert_eq!(session.codex_account_label, None);
+        assert_eq!(session.codex_home, None);
         assert!(!session.alive);
     }
 
     #[test]
     fn codex_permission_bypass_requires_explicit_selection() {
         let program = Path::new("/Applications/Codex CLI/codex");
-        let normal = harness_command(HarnessKind::Codex, false, program, None, "uuid").unwrap();
-        assert_eq!(shell_arguments(&normal), [program.to_string_lossy()]);
-        let unrestricted =
-            harness_command(HarnessKind::Codex, true, program, None, "uuid").unwrap();
-        assert_eq!(
-            shell_arguments(&unrestricted),
-            [
-                program.to_string_lossy().into_owned(),
-                "--dangerously-bypass-approvals-and-sandbox".to_owned()
-            ]
-        );
+        let executable = Path::new("/Applications/RiWork's App/riwork");
+        let home = Path::new("/Users/test/RiWork's State");
+        for unrestricted in [false, true] {
+            let command = harness_command(
+                HarnessKind::Codex,
+                unrestricted,
+                program,
+                executable,
+                home,
+                "uuid",
+                None,
+            )
+            .unwrap();
+            let arguments = shell_arguments(&command);
+            assert_eq!(arguments[0], program.to_string_lossy());
+            assert_eq!(
+                arguments
+                    .iter()
+                    .any(|argument| argument == "--dangerously-bypass-approvals-and-sandbox"),
+                unrestricted
+            );
+            assert_codex_cua_arguments(&arguments, executable, home);
+            assert_codex_shell_environment(&arguments, home, "uuid");
+            assert!(arguments.last().unwrap().contains(CUA_GUIDANCE));
+            assert!(
+                arguments
+                    .last()
+                    .unwrap()
+                    .contains("wait for the user's objective")
+            );
+            assert!(!arguments.iter().any(|argument| argument == "--profile"));
+        }
     }
 
     #[test]
@@ -1251,8 +2788,10 @@ mod tests {
                 HarnessKind::Claude,
                 unrestricted,
                 program,
-                Some(telemetry),
+                telemetry,
+                Path::new("/Users/test/RiWork's State"),
                 id,
+                None,
             )
             .unwrap();
             let arguments = shell_arguments(&command);
@@ -1267,9 +2806,50 @@ mod tests {
                 .iter()
                 .position(|arg| arg == "--settings")
                 .unwrap();
+            let mcp_index = arguments
+                .iter()
+                .position(|arg| arg == "--mcp-config")
+                .unwrap();
+            let mcp: serde_json::Value = serde_json::from_str(&arguments[mcp_index + 1]).unwrap();
+            assert_eq!(
+                mcp["mcpServers"]["cua-driver"]["command"],
+                telemetry.to_string_lossy().as_ref()
+            );
+            assert_eq!(
+                mcp["mcpServers"]["cua-driver"]["args"],
+                serde_json::json!(["cua", "mcp"])
+            );
+            assert_eq!(
+                mcp["mcpServers"]["cua-driver"]["env"]["RIWORK_HOME"],
+                "/Users/test/RiWork's State"
+            );
+            let prompt_index = arguments
+                .iter()
+                .position(|arg| arg == "--append-system-prompt")
+                .unwrap();
+            assert_eq!(arguments[prompt_index + 1], CUA_GUIDANCE);
+            assert!(
+                !arguments
+                    .iter()
+                    .any(|argument| argument == "--strict-mcp-config")
+            );
             let settings: serde_json::Value =
                 serde_json::from_str(&arguments[settings_index + 1]).unwrap();
             assert_eq!(settings["statusLine"]["type"], "command");
+            for event in ["UserPromptSubmit", "Stop"] {
+                let hook = settings["hooks"][event][0]["hooks"][0].as_object().unwrap();
+                assert_eq!(hook["type"], "command");
+                assert_eq!(
+                    shell_arguments(hook["command"].as_str().unwrap()),
+                    [
+                        telemetry.to_string_lossy().into_owned(),
+                        "agent-hook".into(),
+                        "claude".into(),
+                        "/Users/test/RiWork's State".into(),
+                        id.into()
+                    ]
+                );
+            }
             let telemetry_command = settings["statusLine"]["command"].as_str().unwrap();
             assert_eq!(
                 shell_arguments(telemetry_command),
@@ -1281,6 +2861,462 @@ mod tests {
                 ]
             );
         }
+    }
+
+    fn assert_codex_cua_arguments(arguments: &[String], executable: &Path, home: &Path) {
+        let overrides = arguments
+            .windows(2)
+            .filter(|pair| pair[0] == "-c")
+            .map(|pair| pair[1].as_str())
+            .collect::<Vec<_>>();
+        let value = |key: &str| {
+            overrides
+                .iter()
+                .find_map(|value| value.strip_prefix(&format!("{key}=")))
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(
+            serde_json::from_str::<String>(&value("mcp_servers.cua-driver.command")).unwrap(),
+            executable.to_string_lossy()
+        );
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&value("mcp_servers.cua-driver.args")).unwrap(),
+            ["cua", "mcp"]
+        );
+        assert_eq!(
+            serde_json::from_str::<String>(&value("mcp_servers.cua-driver.env.RIWORK_HOME"))
+                .unwrap(),
+            home.to_string_lossy()
+        );
+        assert_eq!(value("mcp_servers.cua-driver.enabled"), "true");
+        assert_eq!(value("mcp_servers.cua-driver.required"), "true");
+        assert_eq!(value("mcp_servers.cua-driver.startup_timeout_sec"), "120");
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["--disable", "computer_use"])
+        );
+        assert!(
+            !cua_harness_arguments(HarnessKind::Codex, executable, home)
+                .iter()
+                .any(|value| value.starts_with("model=")
+                    || value.starts_with("developer_instructions="))
+        );
+    }
+
+    fn assert_codex_shell_environment(arguments: &[String], home: &Path, shell_id: &str) {
+        for (key, expected) in [
+            ("RIWORK_HOME", home.to_string_lossy().as_ref()),
+            ("RIWORK_SHELL_ID", shell_id),
+            ("RIWORK_CODEX_SHELL_ID", shell_id),
+        ] {
+            let prefix = format!("shell_environment_policy.set.{key}=");
+            let values = arguments
+                .windows(2)
+                .filter(|pair| pair[0] == "-c")
+                .filter_map(|pair| pair[1].strip_prefix(&prefix))
+                .collect::<Vec<_>>();
+            let actual = serde_json::from_str::<String>(values.last().unwrap()).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn cua_configuration_survives_shell_and_toml_quoting() {
+        let executable = Path::new("/Applications/RiWork's $App/\"quoted\"/riwork");
+        let home = Path::new("/Users/test/line\nbreak\\state $(false)");
+        for harness in [HarnessKind::Codex, HarnessKind::Claude] {
+            let command = harness_command(
+                harness,
+                false,
+                Path::new("/opt/bin/cli"),
+                executable,
+                home,
+                "uuid",
+                None,
+            )
+            .unwrap();
+            let arguments = shell_arguments(&command);
+            if harness == HarnessKind::Codex {
+                assert_codex_cua_arguments(&arguments, executable, home);
+                assert_codex_shell_environment(&arguments, home, "uuid");
+            } else {
+                let index = arguments
+                    .iter()
+                    .position(|arg| arg == "--mcp-config")
+                    .unwrap();
+                let config: serde_json::Value =
+                    serde_json::from_str(&arguments[index + 1]).unwrap();
+                assert_eq!(
+                    config["mcpServers"]["cua-driver"]["command"],
+                    executable.to_string_lossy().as_ref()
+                );
+                assert_eq!(
+                    config["mcpServers"]["cua-driver"]["env"]["RIWORK_HOME"],
+                    home.to_string_lossy().as_ref()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn managed_wrappers_pass_utilities_through_but_integrate_sessions() {
+        for harness in [HarnessKind::Codex, HarnessKind::Claude] {
+            for argument in ["--help", "--version", "mcp", "login"] {
+                assert!(harness_utility_invocation(harness, &[argument.to_owned()]));
+            }
+            for arguments in [
+                vec![],
+                vec!["--resume".to_owned(), "session".to_owned()],
+                vec!["implement this".to_owned()],
+            ] {
+                assert!(!harness_utility_invocation(harness, &arguments));
+            }
+        }
+        for argument in ["exec", "review", "resume", "fork"] {
+            assert!(!harness_utility_invocation(
+                HarnessKind::Codex,
+                &[argument.to_owned()]
+            ));
+        }
+    }
+
+    #[test]
+    fn codex_proxy_places_mcp_options_with_local_subcommand_overrides() {
+        let executable = Path::new("/Applications/RiWork's App/riwork");
+        let home = Path::new("/Users/test/RiWork State");
+        for original in [
+            vec![
+                "exec",
+                "-c",
+                "mcp_servers.cua-driver.enabled_tools=[\"health_report\"]",
+                "inspect health",
+            ],
+            vec![
+                "exec",
+                "resume",
+                "session",
+                "-c",
+                "model=\"user-model\"",
+                "continue the task",
+            ],
+            vec!["--model", "user-model", "a positional prompt"],
+            vec!["exec", "--", "--literal prompt"],
+            vec!["exec", "resume", "session", "--", "--help"],
+        ] {
+            let original = original.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let result = cua_proxy_arguments(
+                HarnessKind::Codex,
+                &original,
+                executable,
+                home,
+                Some("frontend-pane"),
+                None,
+            );
+            let separator = original
+                .iter()
+                .position(|argument| argument == "--")
+                .unwrap_or(original.len());
+            let mut additions = cua_harness_arguments(HarnessKind::Codex, executable, home);
+            additions.extend(codex_shell_environment_arguments(
+                home,
+                Some("frontend-pane"),
+            ));
+            assert_eq!(&result[..separator], &original[..separator]);
+            assert_eq!(&result[separator..separator + additions.len()], additions);
+            assert_eq!(
+                &result[separator + additions.len()..],
+                &original[separator..]
+            );
+            assert_codex_cua_arguments(&result, executable, home);
+            assert_codex_shell_environment(&result, home, "frontend-pane");
+            assert!(
+                !result
+                    .iter()
+                    .any(|argument| argument.contains("wait for the user's objective"))
+            );
+        }
+        for original in [
+            vec!["mcp", "get", "cua-driver", "--json"],
+            vec!["exec", "--help"],
+        ] {
+            let original = original.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                cua_proxy_arguments(
+                    HarnessKind::Codex,
+                    &original,
+                    executable,
+                    home,
+                    Some("frontend-pane"),
+                    None
+                ),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn codex_proxy_binds_frontend_without_replacing_user_environment_settings() {
+        let executable = Path::new("/Applications/RiWork/riwork");
+        let home = Path::new("/Users/test/RiWork's \"State\"\n");
+        let shell_id = "pane-'quoted'-\"id\"\n";
+        let original = [
+            "exec",
+            "-c",
+            "shell_environment_policy.set.USER_FLAG=\"keep-me\"",
+            "-c",
+            "shell_environment_policy.inherit=\"core\"",
+            "-c",
+            "shell_environment_policy.set.RIWORK_SHELL_ID=\"stale-pane\"",
+            "inspect this",
+        ]
+        .map(str::to_owned);
+        let result = cua_proxy_arguments(
+            HarnessKind::Codex,
+            &original,
+            executable,
+            home,
+            Some(shell_id),
+            None,
+        );
+        assert_eq!(&result[..original.len()], original);
+        assert_codex_shell_environment(&result, home, shell_id);
+        assert!(
+            !result
+                .iter()
+                .any(|value| value == "shell_environment_policy.set={}")
+        );
+        let ownerless = cua_proxy_arguments(HarnessKind::Codex, &[], executable, home, None, None);
+        assert_codex_shell_environment(&ownerless, home, "");
+        let claude = cua_proxy_arguments(
+            HarnessKind::Claude,
+            &[],
+            executable,
+            home,
+            Some(shell_id),
+            None,
+        );
+        assert!(
+            !claude
+                .iter()
+                .any(|value| value.starts_with("shell_environment_policy."))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn login_zsh_keeps_cua_wrappers_after_profile_path_changes() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(tmux) = find_tmux() else {
+            return;
+        };
+        if !Path::new("/bin/zsh").is_file() {
+            return;
+        }
+        struct IsolatedTmux {
+            program: PathBuf,
+            socket: String,
+            directory: PathBuf,
+        }
+        impl IsolatedTmux {
+            fn run(&self, arguments: &[String]) {
+                let output = Command::new(&self.program)
+                    .args(["-L", &self.socket, "-f", "/dev/null"])
+                    .args(arguments)
+                    .env_remove("TMUX")
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+        impl Drop for IsolatedTmux {
+            fn drop(&mut self) {
+                let _ = Command::new(&self.program)
+                    .args(["-L", &self.socket, "kill-server"])
+                    .output();
+                let _ = fs::remove_dir_all(&self.directory);
+            }
+        }
+        let temporary = env::temp_dir().join(format!("riwork-zsh-cua-{}", Uuid::new_v4()));
+        let test = IsolatedTmux {
+            program: tmux,
+            socket: format!("riwork-zsh-{}", Uuid::new_v4()),
+            directory: temporary.clone(),
+        };
+        let managed = temporary.join("managed binaries");
+        let official = temporary.join("official binaries");
+        let initial = temporary.join("initial startup");
+        let profile = temporary.join("dynamic profile");
+        let final_directory = temporary.join("dynamic login");
+        for directory in [&managed, &official, &initial, &profile, &final_directory] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        for (directory, label) in [(&managed, "managed"), (&official, "official")] {
+            for harness in ["codex", "claude"] {
+                let path = directory.join(harness);
+                fs::write(
+                    &path,
+                    format!("#!/bin/sh\nprintf '%s:%s\\n' '{label}-{harness}' \"$1\"\n"),
+                )
+                .unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        fs::write(
+            initial.join(".zshenv"),
+            format!(
+                "export RIWORK_TEST_STARTUP_STAGES=env\nZDOTDIR={}\n\
+             riwork_test_ghostty_hook() {{ :; }}\nprecmd_functions+=(riwork_test_ghostty_hook)\n",
+                quote_arg(&profile.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        fs::write(profile.join(".zprofile"), format!(
+            "export RIWORK_TEST_STARTUP_STAGES=\"$RIWORK_TEST_STARTUP_STAGES profile\"\nexport ZDOTDIR={}\nexport PATH={}:$PATH\n",
+            quote_arg(&final_directory.to_string_lossy()), quote_arg(&official.to_string_lossy())
+        )).unwrap();
+        fs::write(final_directory.join(".zshrc"), format!(
+            "export RIWORK_TEST_STARTUP_STAGES=\"$RIWORK_TEST_STARTUP_STAGES rc\"\nexport PATH={}:$PATH\n",
+            quote_arg(&official.to_string_lossy())
+        )).unwrap();
+        fs::write(final_directory.join(".zlogin"), format!(
+            "export RIWORK_TEST_STARTUP_STAGES=\"$RIWORK_TEST_STARTUP_STAGES login\"\nexport PATH={}:$PATH\n",
+            quote_arg(&official.to_string_lossy())
+        )).unwrap();
+        let integration = install_zsh_startup_forwarding(&temporary, &managed).unwrap();
+        test.run(&[
+            "new-session".to_owned(),
+            "-d".to_owned(),
+            "-s".to_owned(),
+            "anchor".to_owned(),
+            "-e".to_owned(),
+            format!("ZDOTDIR={}", initial.display()),
+            "/bin/sleep 20".to_owned(),
+        ]);
+        test.run(&[
+            "set-option".to_owned(),
+            "-g".to_owned(),
+            "default-shell".to_owned(),
+            "/bin/zsh".to_owned(),
+        ]);
+        for fixed in [false, true] {
+            let name = if fixed { "fixed" } else { "baseline" };
+            let mut arguments = vec![
+                "new-session".to_owned(),
+                "-d".to_owned(),
+                "-s".to_owned(),
+                name.to_owned(),
+                "-e".to_owned(),
+                format!(
+                    "PATH={}:{}:/usr/bin:/bin",
+                    managed.display(),
+                    official.display()
+                ),
+            ];
+            let environment = if fixed {
+                zsh_startup_environment(&integration, Some(initial.as_os_str()))
+            } else {
+                vec![("ZDOTDIR", initial.to_string_lossy().into_owned())]
+            };
+            for (variable, value) in environment {
+                arguments.extend(["-e".to_owned(), format!("{variable}={value}")]);
+            }
+            test.run(&arguments);
+            let output_file = temporary.join(format!("{name}.txt"));
+            let script = format!(
+                "{{ command -v codex; codex 'a b'; command -v claude; claude 'x$y'; \
+                 printf '%s\\n' \"$ZDOTDIR\" \"$HISTFILE\" \"$RIWORK_TEST_STARTUP_STAGES\" \
+                 \"${{precmd_functions[(I)riwork_test_ghostty_hook]}}\"; }} > {}; exit",
+                quote_arg(&output_file.to_string_lossy())
+            );
+            test.run(&[
+                "send-keys".to_owned(),
+                "-t".to_owned(),
+                format!("{name}:0.0"),
+                "-l".to_owned(),
+                script,
+            ]);
+            test.run(&[
+                "send-keys".to_owned(),
+                "-t".to_owned(),
+                format!("{name}:0.0"),
+                "Enter".to_owned(),
+            ]);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+            let result = loop {
+                if let Ok(result) = fs::read_to_string(&output_file) {
+                    if result.lines().count() == 8 {
+                        break result;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "zsh startup test timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            let lines = result.lines().collect::<Vec<_>>();
+            let expected_directory = if fixed { &managed } else { &official };
+            let expected_label = if fixed { "managed" } else { "official" };
+            assert_eq!(lines[0], expected_directory.join("codex").to_string_lossy());
+            assert_eq!(lines[1], format!("{expected_label}-codex:a b"));
+            assert_eq!(
+                lines[2],
+                expected_directory.join("claude").to_string_lossy()
+            );
+            assert_eq!(lines[3], format!("{expected_label}-claude:x$y"));
+            assert_eq!(lines[4], final_directory.to_string_lossy());
+            assert_eq!(
+                lines[5],
+                final_directory.join(".zsh_history").to_string_lossy()
+            );
+            assert_eq!(lines[6], "env profile rc login");
+            assert_ne!(
+                lines[7], "0",
+                "existing Ghostty-style prompt hook must survive"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zsh_forwarding_restores_unset_and_unexported_user_zdotdir() {
+        if !Path::new("/bin/zsh").is_file() {
+            return;
+        }
+        let temporary = env::temp_dir().join(format!("riwork-zsh-environment-{}", Uuid::new_v4()));
+        fs::create_dir_all(&temporary).unwrap();
+        let shim = temporary.join("managed");
+        let original = temporary.join("original");
+        fs::create_dir_all(&original).unwrap();
+        let integration = install_zsh_startup_forwarding(&temporary, &shim).unwrap();
+        for source in ["unset ZDOTDIR\n", "typeset +x ZDOTDIR\n"] {
+            fs::write(original.join(".zshenv"), source).unwrap();
+            let environment = zsh_startup_environment(&integration, Some(original.as_os_str()));
+            // Noninteractive startup only reads .zshenv; it must restore the
+            // exact user result even when no profile/rc/login file runs.
+            let output = Command::new("/bin/zsh")
+                .args([
+                    "-c",
+                    "printf '%s\\n' ${ZDOTDIR+x} ${parameters[ZDOTDIR]-unset}; command -v codex",
+                ])
+                .envs(environment)
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .unwrap();
+            let result = String::from_utf8(output.stdout).unwrap();
+            if source.starts_with("unset") {
+                assert!(result.starts_with("unset\n"), "{result:?}");
+            } else {
+                assert!(result.starts_with("x\nscalar\n"), "{result:?}");
+            }
+        }
+        fs::remove_dir_all(temporary).unwrap();
     }
 
     #[test]
@@ -1347,6 +3383,45 @@ mod tests {
         assert_eq!(without_stale_profiles(command, &both), command);
     }
 
+    fn assert_codex_user_permissions_preserved(arguments: &[String]) {
+        // The final argument is the skill prompt, which discusses permissions
+        // but must not be mistaken for a CLI option or configuration override.
+        let options = &arguments[..arguments.len() - 1];
+        for argument in options {
+            assert!(
+                !matches!(
+                    argument.as_str(),
+                    "--add-dir"
+                        | "--sandbox"
+                        | "-s"
+                        | "--ask-for-approval"
+                        | "-a"
+                        | "--approve-for-me"
+                        | "--full-auto"
+                        | "--dangerously-bypass-approvals-and-sandbox"
+                        | "--yolo"
+                ),
+                "orchestrator must retain the user's permission policy: {argument}"
+            );
+        }
+        for pair in options.windows(2).filter(|pair| pair[0] == "-c") {
+            let key = pair[1].split('=').next().unwrap().trim();
+            for permission_key in [
+                "sandbox_mode",
+                "sandbox_permissions",
+                "sandbox_workspace_write",
+                "approval_policy",
+                "default_permissions",
+                "permissions",
+            ] {
+                assert!(
+                    key != permission_key && !key.starts_with(&format!("{permission_key}.")),
+                    "orchestrator must retain the user's permission configuration: {key}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn orchestrator_startup_loads_the_complete_skill_as_one_prompt() {
         let context = Path::new("/Users/test/RiWork's State/orchestrator");
@@ -1361,26 +3436,25 @@ mod tests {
             executable,
             None,
             None,
+            "global-orchestrator-pane",
+            None,
         );
         let arguments = shell_arguments(&command);
-        assert_eq!(arguments.len(), 6);
         assert_eq!(arguments[0], "/opt/bin/codex");
         assert_eq!(arguments[1], "--cd");
         assert_eq!(arguments[2], context.to_string_lossy());
-        assert_eq!(arguments[3], "--add-dir");
-        assert_eq!(arguments[4], state_home.to_string_lossy());
-        let prompt = &arguments[5];
+        assert_codex_user_permissions_preserved(&arguments);
+        assert_codex_cua_arguments(&arguments, executable, state_home);
+        assert_codex_shell_environment(&arguments, state_home, "global-orchestrator-pane");
+        let prompt = arguments.last().unwrap();
         assert!(prompt.starts_with("$riwork-orchestrator\n"));
         assert!(prompt.contains(ORCHESTRATOR_SKILL));
+        assert!(prompt.contains(CUA_GUIDANCE));
         assert!(prompt.contains("wait for the user's objective"));
         assert!(prompt.contains(&quote_arg(&skill.to_string_lossy())));
         assert!(prompt.contains(&quote_arg(&executable.to_string_lossy())));
         assert!(prompt.contains("Scope: global."));
-        assert!(
-            !arguments
-                .iter()
-                .any(|argument| argument == "--dangerously-bypass-approvals-and-sandbox")
-        );
+        assert!(prompt.contains("You have no project or worktree ownership."));
     }
 
     fn scope_session(kind: ShellKind, project_id: Option<&str>) -> ShellSession {
@@ -1426,17 +3500,19 @@ mod tests {
     }
 
     #[test]
-    fn project_orchestrator_preserves_root_and_scope_across_serialization() {
+    fn project_orchestrator_preserves_root_scope_and_unrestricted_mode_across_serialization() {
         let project = "00000000-0000-4000-8000-000000000010";
         let mut session = scope_session(ShellKind::Orchestrator, Some(project));
         session.orchestrator_project_root = Some(PathBuf::from("/Users/test/wrapper project"));
         session.orchestrator_skill_loaded = true;
         session.orchestrator_skill_version = Some(orchestrator_skill_version());
+        session.unrestricted = true;
         let bytes = serde_json::to_vec(&session).unwrap();
         let restored: ShellSession = serde_json::from_slice(&bytes).unwrap();
         assert!(matches_orchestrator_scope(&restored, Some(project)));
         assert!(!matches_orchestrator_scope(&restored, None));
         assert_eq!(restored.worktree_id, None);
+        assert!(restored.unrestricted);
         assert_eq!(
             restored.orchestrator_project_root,
             session.orchestrator_project_root
@@ -1448,7 +3524,7 @@ mod tests {
     }
 
     #[test]
-    fn project_context_prompt_and_environment_are_distinct_from_global() {
+    fn project_context_prompt_environment_and_unrestricted_mode_are_distinct_from_global() {
         let home = Path::new("/Users/test/RiWork's State");
         let alpha = "00000000-0000-4000-8000-000000000010";
         let beta = "00000000-0000-4000-8000-000000000011";
@@ -1467,17 +3543,36 @@ mod tests {
             Path::new("/Applications/RiWork App/Contents/MacOS/riwork"),
             Some(alpha),
             Some(project_root),
+            "project-orchestrator-pane",
+            None,
         );
         let arguments = shell_arguments(&command);
+        assert_eq!(arguments[0], "/opt/bin/codex");
         assert_eq!(arguments[1], "--cd");
         assert_eq!(arguments[2], context.to_string_lossy());
-        assert_eq!(arguments[5], "--add-dir");
-        assert_eq!(arguments[6], project_root.to_string_lossy());
+        assert_eq!(
+            arguments
+                .iter()
+                .filter(|argument| argument.as_str() == "--dangerously-bypass-approvals-and-sandbox")
+                .count(),
+            1
+        );
+        assert_codex_cua_arguments(
+            &arguments,
+            Path::new("/Applications/RiWork App/Contents/MacOS/riwork"),
+            home,
+        );
+        assert_codex_shell_environment(&arguments, home, "project-orchestrator-pane");
         let prompt = arguments.last().unwrap();
         assert!(prompt.contains("Scope: project."));
         assert!(prompt.contains(alpha));
         assert!(!prompt.contains(beta));
         assert!(prompt.contains(&quote_arg(&project_root.to_string_lossy())));
+        assert!(
+            prompt.contains(
+                "Your isolated orchestration context is not the project's repository root."
+            )
+        );
         assert!(prompt.contains(ORCHESTRATOR_SKILL));
         assert_eq!(
             orchestrator_environment(Some(alpha)),

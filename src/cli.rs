@@ -5,12 +5,14 @@ use std::{
     io::{self, Read},
     path::PathBuf,
     process::{Command, Stdio},
+    time::Duration,
 };
 
 use serde::Serialize;
 use serde_json::json;
 
 use crate::{
+    cua::{CuaManager, CuaStatus},
     sessions::{HarnessKind, SessionManager, ShellKind, ShellSession},
     store::{SearchHit, State, Store, Task, TaskStatus, Worktree},
 };
@@ -18,11 +20,23 @@ use crate::{
 const HELP: &str = "\
 riwork [PROJECT_PATH]                  Open the GPUI workspace
 riwork open [PROJECT_OR_PATH]           Open an independent project window
+riwork reload [--all] [--session] [--shell ID]   Reload windows; optionally resume a Codex session
+riwork update [--source PATH] [--release | --debug] [--no-reload]   Build release by default, install, and reload all windows
+riwork instances                        List running RiWork apps and their windows
 riwork usage [--shell ID]               Read harness subscription usage
+riwork setup                            Install and start Cua.ai Driver
+riwork cua setup|status|permissions      Manage native computer use
+riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
+riwork cua harness codex|claude -- ARG...   Start a harness with shared Cua
+riwork import orca [--preview]          Import local Orca projects and worktrees once
 riwork project add PATH [--name NAME]   Register a project and its root worktree
 riwork project create [PATH] [--name NAME] [--no-git]   Create a project (Git by default)
 riwork project inspect PATH            Inspect contained repositories
 riwork project list|show|use [ID]       List, inspect, or switch projects
+riwork project update ID [--name NAME] [--folder ID | --ungrouped]   Edit project display metadata
+riwork project folder create NAME [--parent ID]   Create a virtual folder or subfolder
+riwork project folder move ID (--parent ID | --root)   Move a virtual folder
+riwork project folder list|rename|remove   Manage virtual project folders
 riwork project tasks [ID]              Show tasks for a project
 riwork worktree create BRANCH [--project ID] [--repo PATH] [--path PATH] [--base REF]
 riwork worktree list [--project ID] [--all]
@@ -65,12 +79,18 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         return Ok(false);
     }
     let mut args = args.to_vec();
-    let send_command = matches!(
+    let literal_arguments = matches!(
         args.first().map(String::as_str),
         Some("shell" | "orchestrator")
-    ) && args.get(1).map(String::as_str) == Some("send");
-    let json = if send_command {
-        // Everything after `send` is literal input, including `--json`.
+    ) && args.get(1).map(String::as_str) == Some("send")
+        || args.first().map(String::as_str) == Some("cua")
+            && args.get(1).map(String::as_str) == Some("harness")
+        || matches!(
+            args.first().map(String::as_str),
+            Some("agent-notify" | "agent-hook")
+        );
+    let json = if literal_arguments {
+        // Forwarded harness options and sent shell input must remain literal.
         false
     } else {
         take_flag(&mut args, "--json")
@@ -79,6 +99,10 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
     if !matches!(
         command.as_str(),
         "open"
+            | "reload"
+            | "update"
+            | "instances"
+            | "reload-session-worker"
             | "project"
             | "projects"
             | "worktree"
@@ -90,7 +114,12 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "search"
             | "usage"
             | "telemetry"
+            | "agent-notify"
+            | "agent-hook"
             | "mcp"
+            | "setup"
+            | "cua"
+            | "import"
             | "help"
             | "-h"
             | "--help"
@@ -101,8 +130,47 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
     match command.as_str() {
         "help" | "-h" | "--help" => print!("{HELP}"),
         "open" => open_command(args, json)?,
+        "reload" => reload_command(args, json)?,
+        "update" => update_command(args, json)?,
+        "instances" => {
+            ensure_empty(&args)?;
+            let instances = crate::runtime::RuntimeManager::open_default()?.instances()?;
+            if json {
+                print_json(&instances)?;
+            } else {
+                for instance in instances {
+                    println!(
+                        "{}  {} windows  {}",
+                        instance.pid,
+                        instance.windows.len(),
+                        instance.executable.display()
+                    );
+                }
+            }
+        }
+        "reload-session-worker" => {
+            let path = take_single(args, "reload-session-worker REQUEST")?;
+            crate::session_reload::run_reload_worker(std::path::Path::new(&path))?;
+        }
         "usage" => usage_command(args, json)?,
+        "setup" => {
+            ensure_empty(&args)?;
+            print_cua_status(&CuaManager::open_default()?.setup()?, json)?;
+        }
+        "cua" => cua_command(args, json)?,
+        "import" => import_command(args, json)?,
         "telemetry" => telemetry_command(args)?,
+        "agent-hook" => agent_hook_command(args, io::stdin().lock())?,
+        "agent-notify" => {
+            if args.len() != 3 {
+                return Err("Usage: riwork agent-notify STATE_HOME SHELL_UUID JSON".to_owned());
+            }
+            crate::activity::record_codex_notification(
+                std::path::Path::new(&args[0]),
+                &args[1],
+                &args[2],
+            )?;
+        }
         "project" | "projects" => project_command(args, json)?,
         "worktree" | "worktrees" => worktree_command(args, json)?,
         "task" | "tasks" => task_command(args, json)?,
@@ -116,6 +184,228 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         _ => unreachable!(),
     }
     Ok(true)
+}
+
+fn import_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
+    let preview_only = take_flag(&mut args, "--preview");
+    if args.first().map(String::as_str) != Some("orca") {
+        return Err("Usage: riwork import orca [--preview] [--json]".to_owned());
+    }
+    args.remove(0);
+    ensure_empty(&args)?;
+    let manager = crate::orca_import::ImportManager::open_default()?;
+    let preview = manager.inspect()?;
+    if preview_only {
+        if json {
+            print_json(&preview)?;
+        } else if let Some(receipt) = &preview.already_imported {
+            println!(
+                "Orca import already completed: {} projects and {} worktrees.",
+                receipt.project_count, receipt.worktree_count
+            );
+        } else {
+            println!(
+                "Orca import will add {} projects and {} worktrees.",
+                preview.project_count, preview.worktree_count
+            );
+            for warning in &preview.warnings {
+                println!("{warning}");
+            }
+        }
+        return Ok(());
+    }
+    let receipt = manager.import(&preview)?;
+    if json {
+        print_json(&receipt)?;
+    } else {
+        println!(
+            "Orca import completed: {} projects and {} worktrees.",
+            receipt.project_count, receipt.worktree_count
+        );
+        for warning in &preview.warnings {
+            println!("{warning}");
+        }
+    }
+    Ok(())
+}
+
+fn gui_executable() -> Result<PathBuf, String> {
+    if let Some(executable) =
+        crate::runtime::RuntimeManager::open_default()?.installed_executable()?
+    {
+        return Ok(executable);
+    }
+    let executable =
+        env::current_exe().map_err(|error| format!("Cannot locate RiWork: {error}"))?;
+    Ok(executable
+        .parent()
+        .map(|parent| parent.join("RiWork.app/Contents/MacOS/riwork"))
+        .filter(|path| path.is_file())
+        .unwrap_or(executable))
+}
+
+fn reload_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
+    take_flag(&mut args, "--all");
+    let session = take_flag(&mut args, "--session");
+    let shell = take_option(&mut args, "--shell")?;
+    ensure_empty(&args)?;
+    if shell.is_some() && !session {
+        return Err("--shell requires --session".to_owned());
+    }
+    if session {
+        crate::session_reload::validate_reload_for_shell(shell.as_deref())?;
+    }
+    let executable = gui_executable()?;
+    let manager = crate::runtime::RuntimeManager::open_default()?;
+    let report = manager.reload_all(&executable)?;
+    let report = manager.wait_for_reload(report, Duration::from_secs(30))?;
+    if report.failed > 0 || report.pending > 0 {
+        if json {
+            print_json(&json!({"reload":report,"session":null}))?;
+        }
+        return Err(format!(
+            "Reload incomplete: {} restored, {} failed, {} pending. Existing apps remain open where restoration failed.",
+            report.reloaded, report.failed, report.pending
+        ));
+    }
+    let session = if session {
+        Some(crate::session_reload::queue_reload_for_shell(
+            &executable,
+            shell.as_deref(),
+        )?)
+    } else {
+        None
+    };
+    if json {
+        print_json(&json!({"reload":report,"session":session}))?;
+    } else {
+        print_reload_report(&report);
+        if session.is_some() {
+            println!(
+                "This Codex conversation will resume with Cua after its active turn finishes."
+            );
+        }
+    }
+    Ok(())
+}
+
+fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
+    let source = take_option(&mut args, "--source")?.map(PathBuf::from);
+    let profile = take_update_profile(&mut args)?;
+    let no_reload = take_flag(&mut args, "--no-reload");
+    ensure_empty(&args)?;
+    let source = crate::update::resolve_source(source.as_deref())?;
+    eprintln!("Building RiWork from {}…", source.display());
+    let build = crate::update::build_update(&source, profile)?;
+    let reload_result = (|| {
+        let manager = crate::runtime::RuntimeManager::open_default()?;
+        let executable = build.bundle.join("Contents/MacOS/riwork");
+        manager.record_installed_build(&executable)?;
+        if no_reload {
+            return Ok(None);
+        }
+        let report = manager.reload_all(&executable)?;
+        let report = manager.wait_for_reload(report, Duration::from_secs(30))?;
+        if report.failed > 0 || report.pending > 0 {
+            return Err(format!(
+                "{} restored, {} failed, {} pending",
+                report.reloaded, report.failed, report.pending
+            ));
+        }
+        Ok(Some(report))
+    })();
+    let reload = match reload_result {
+        Ok(reload) => reload,
+        Err(error) => {
+            if json {
+                print_json(&json!({"build":build,"reload_error":error}))?;
+            }
+            return Err(format!(
+                "Installed {}, but reload failed: {error}. Retry `riwork reload`. Build log: {}",
+                build.bundle.display(),
+                build.log_path.display()
+            ));
+        }
+    };
+    if json {
+        print_json(&json!({"build":build,"reload":reload}))?;
+    } else {
+        println!("Installed {}", build.bundle.display());
+        if let Some(reload) = reload {
+            print_reload_report(&reload);
+        }
+    }
+    Ok(())
+}
+
+fn take_update_profile(args: &mut Vec<String>) -> Result<Option<&'static str>, String> {
+    match (take_flag(args, "--release"), take_flag(args, "--debug")) {
+        (true, true) => {
+            Err("Choose either --release or --debug for an update, not both.".to_owned())
+        }
+        (true, false) => Ok(Some("release")),
+        (false, true) => Ok(Some("debug")),
+        (false, false) => Ok(None),
+    }
+}
+
+fn print_reload_report(report: &crate::runtime::ReloadReport) {
+    if report.instances.is_empty() {
+        println!("No registered RiWork apps are open.");
+    } else {
+        let windows: usize = report
+            .instances
+            .iter()
+            .map(|instance| instance.window_count)
+            .sum();
+        println!(
+            "Reloaded {} RiWork apps ({} windows). Running shells and agents were preserved.",
+            report.reloaded, windows
+        );
+    }
+}
+
+fn cua_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
+    let command = args.first().cloned().unwrap_or_else(|| "status".to_owned());
+    if !args.is_empty() {
+        args.remove(0);
+    }
+    if command == "harness" {
+        let harness = match args.first().map(String::as_str) {
+            Some("codex") => HarnessKind::Codex,
+            Some("claude") => HarnessKind::Claude,
+            _ => return Err("Usage: riwork cua harness codex|claude -- ARG...".to_owned()),
+        };
+        args.remove(0);
+        if args.first().map(String::as_str) == Some("--") {
+            args.remove(0);
+        }
+        return crate::sessions::run_cua_harness(harness, &args);
+    }
+    ensure_empty(&args)?;
+    let manager = CuaManager::open_default()?;
+    match command.as_str() {
+        "setup" => print_cua_status(&manager.setup()?, json),
+        "status" => print_cua_status(&manager.status()?, json),
+        "permissions" => print_cua_status(&manager.request_permissions()?, json),
+        "mcp" => manager.run_mcp(),
+        _ => Err("Usage: riwork cua setup|status|permissions|mcp [--json]".to_owned()),
+    }
+}
+
+fn print_cua_status(status: &CuaStatus, json: bool) -> Result<(), String> {
+    if json {
+        print_json(status)?;
+    } else {
+        if let Some(version) = &status.version {
+            println!("{version}");
+        }
+        if let Some(path) = &status.driver_path {
+            println!("Driver: {}", path.display());
+        }
+        println!("{}", status.message);
+    }
+    Ok(())
 }
 
 fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
@@ -159,17 +449,11 @@ fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
             root.display()
         ));
     }
-    let current_executable = env::current_exe()
-        .map_err(|error| format!("Cannot locate the RiWork executable: {error}"))?;
-    let adjacent_bundle = current_executable
-        .parent()
-        .map(|parent| parent.join("RiWork.app/Contents/MacOS/riwork"));
-    let executable = adjacent_bundle
-        .filter(|path| path.is_file())
-        .unwrap_or(current_executable);
+    let executable = gui_executable()?;
     let mut command = Command::new(executable);
     command
         .arg(&root)
+        .env_remove("RIWORK_RESTORE_TICKET")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -199,7 +483,9 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     let usage = if let Some(shell_id) = shell_id {
         let shell = SessionManager::open_default()?.get(&shell_id)?;
-        if let Some(usage) = crate::usage::read_claude_usage(&shell_id)? {
+        if shell.harness == Some(HarnessKind::Codex) {
+            crate::usage::read_codex_usage_at(frozen_codex_usage_home(&shell)?)?
+        } else if let Some(usage) = crate::usage::read_claude_usage(&shell_id)? {
             usage
         } else if matches!(shell.harness, Some(HarnessKind::Claude))
             || shell
@@ -214,7 +500,7 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 .as_deref()
                 .is_some_and(|command| command.contains("codex"))
         {
-            crate::usage::read_codex_usage()?
+            crate::usage::read_codex_usage_at(frozen_codex_usage_home(&shell)?)?
         } else {
             return Err(
                 "This shell has no harness usage data. Launch it with a Codex or Claude preset."
@@ -222,7 +508,13 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             );
         }
     } else {
-        crate::usage::read_codex_usage()?
+        let manager = SessionManager::open_default()?;
+        let settings = crate::settings::SettingsStore::open_default()?.load()?;
+        let binding = crate::codex_accounts::resolve_launch_binding(
+            manager.state_home(),
+            settings.selected_codex_account.as_deref(),
+        )?;
+        crate::usage::read_codex_usage_at(&binding.home)?
     };
     if json {
         print_json(&usage)?;
@@ -265,6 +557,31 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             println!("Session cost estimate: ${cost:.2}");
         }
     }
+    Ok(())
+}
+
+fn frozen_codex_usage_home(shell: &ShellSession) -> Result<&std::path::Path, String> {
+    let home = shell.codex_home.as_deref().ok_or_else(|| {
+        "This Codex session's account is unknown; its usage cannot be attributed safely.".to_owned()
+    })?;
+    if !home.is_absolute() || !home.is_dir() {
+        return Err("This Codex session's account home is unavailable.".to_owned());
+    }
+    Ok(home)
+}
+
+/// Claude treats exit 2 from UserPromptSubmit/Stop as a blocking decision.
+/// Delivery is optional: every input, I/O, and queue failure must stay silent
+/// and successful so notifications cannot alter the agent's work.
+fn agent_hook_command(args: Vec<String>, input: impl io::Read) -> Result<(), String> {
+    if args.len() != 3 || args[0] != "claude" {
+        return Ok(());
+    }
+    let mut body = String::new();
+    if input.take(1_048_577).read_to_string(&mut body).is_err() || body.len() > 1_048_576 {
+        return Ok(());
+    }
+    let _ = crate::agent_hooks::record_claude_hook(std::path::Path::new(&args[1]), &args[2], &body);
     Ok(())
 }
 
@@ -391,6 +708,45 @@ fn project_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 println!("Active project: {} ({})", project.name, project.id);
             }
         }
+        "update" => {
+            let name = take_option(&mut args, "--name")?;
+            let folder = take_option(&mut args, "--folder")?;
+            let ungrouped = take_flag(&mut args, "--ungrouped");
+            if folder.is_some() && ungrouped {
+                return Err("Use --folder or --ungrouped, not both".to_owned());
+            }
+            let selector = take_single(
+                args,
+                "project update ID [--name NAME] [--folder ID | --ungrouped]",
+            )?;
+            if name.is_none() && (folder.is_some() || ungrouped) {
+                let project = store.move_project_to_folder(&selector, folder.as_deref())?;
+                if json {
+                    print_json(&project)?;
+                } else {
+                    println!("Updated project: {} ({})", project.name, project.id);
+                }
+                return Ok(());
+            }
+            let state = store.snapshot()?;
+            let existing = state.project(&selector)?;
+            let folder = if ungrouped {
+                None
+            } else {
+                folder.as_deref().or(existing.folder_id.as_deref())
+            };
+            let project = store.update_project_metadata(
+                &existing.id,
+                name.as_deref().unwrap_or(&existing.name),
+                folder,
+            )?;
+            if json {
+                print_json(&project)?;
+            } else {
+                println!("Updated project: {} ({})", project.name, project.id);
+            }
+        }
+        "folder" | "folders" => project_folder_command(&store, args, json)?,
         "tasks" => {
             let state = store.snapshot()?;
             let selector = optional_single(args, "project tasks [ID]")?;
@@ -402,6 +758,87 @@ fn project_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             print_tasks(&tasks, json)?;
         }
         _ => return Err(format!("Unknown project command '{operation}'\n{HELP}")),
+    }
+    Ok(())
+}
+
+fn project_folder_command(store: &Store, mut args: Vec<String>, json: bool) -> Result<(), String> {
+    let operation = pop_command(&mut args, "list");
+    match operation.as_str() {
+        "list" => {
+            ensure_empty(&args)?;
+            let state = store.snapshot()?;
+            if json {
+                print_json(&state.project_folders)?;
+            } else {
+                for folder in &state.project_folders {
+                    let count = state
+                        .projects
+                        .iter()
+                        .filter(|project| project.folder_id.as_deref() == Some(&folder.id))
+                        .count();
+                    println!(
+                        "{}  {}  {} projects",
+                        folder.id,
+                        state.project_folder_path(&folder.id),
+                        count
+                    );
+                }
+            }
+        }
+        "create" | "rename" => {
+            let folder = if operation == "create" {
+                let parent = take_option(&mut args, "--parent")?;
+                let name = take_single(args, "project folder create NAME [--parent ID]")?;
+                if let Some(parent) = parent {
+                    store.create_project_folder_in(&name, Some(&parent))?
+                } else {
+                    store.create_project_folder(&name)?
+                }
+            } else {
+                if args.len() != 2 {
+                    return Err("Usage: riwork project folder rename ID NAME".to_owned());
+                }
+                store.rename_project_folder(&args[0], &args[1])?
+            };
+            if json {
+                print_json(&folder)?;
+            } else {
+                let state = store.snapshot()?;
+                println!("{}  {}", folder.id, state.project_folder_path(&folder.id));
+            }
+        }
+        "move" => {
+            let parent = take_option(&mut args, "--parent")?;
+            let root = take_flag(&mut args, "--root");
+            if parent.is_some() == root {
+                return Err("Choose --parent ID or --root".to_owned());
+            }
+            let selector = take_single(args, "project folder move ID (--parent ID | --root)")?;
+            let folder = store.move_project_folder(&selector, parent.as_deref())?;
+            if json {
+                print_json(&folder)?;
+            } else {
+                let state = store.snapshot()?;
+                println!("{}  {}", folder.id, state.project_folder_path(&folder.id));
+            }
+        }
+        "remove" => {
+            let selector = take_single(args, "project folder remove ID")?;
+            store.remove_project_folder(&selector)?;
+            if json {
+                print_json(&json!({"removed": selector}))?;
+            } else {
+                println!(
+                    "Removed project folder; its projects and subfolders moved to its parent."
+                );
+            }
+        }
+        _ => {
+            return Err(format!(
+                "Unknown project folder command '{operation}'; use list, create, rename, move, or remove"
+            ));
+        }
     }
     Ok(())
 }
@@ -1086,10 +1523,135 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::take_orchestrator_project;
+    use super::{
+        agent_hook_command, frozen_codex_usage_home, take_orchestrator_project, take_update_profile,
+    };
+    use crate::sessions::ShellSession;
+    use crate::store::Store;
+    use std::io;
+
+    #[test]
+    fn claude_notification_input_failures_always_return_nonblocking_success() {
+        struct FailedRead;
+        impl io::Read for FailedRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("simulated input failure"))
+            }
+        }
+        let home = std::env::temp_dir().join(format!("riwork-hook-input-{}", uuid::Uuid::new_v4()));
+        let args = vec![
+            "claude".into(),
+            home.to_string_lossy().into_owned(),
+            uuid::Uuid::new_v4().to_string(),
+        ];
+        assert!(agent_hook_command(args.clone(), "invalid JSON".as_bytes()).is_ok());
+        assert!(agent_hook_command(args.clone(), vec![b'x'; 1_048_577].as_slice()).is_ok());
+        assert!(agent_hook_command(args, FailedRead).is_ok());
+        assert!(agent_hook_command(Vec::new(), "invalid invocation".as_bytes()).is_ok());
+        assert!(!home.exists());
+    }
+
+    #[test]
+    fn failed_claude_completion_queue_never_returns_a_blocking_cli_error() {
+        let home = std::env::temp_dir().join(format!("riwork-hook-queue-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join("project")).unwrap();
+        let store = Store::open(home.clone()).unwrap();
+        let project = store
+            .add_project(home.join("project"), Some("Hook test"))
+            .unwrap();
+        store.set_project_notifications(&project.id, true).unwrap();
+        let shell = uuid::Uuid::new_v4().to_string();
+        std::fs::write(
+            home.join("sessions.json"),
+            serde_json::json!({"sessions":[{
+                "id":shell,"project_id":project.id,"worktree_id":null,"kind":"project",
+                "cwd":project.root,"command":null,"harness":"claude","created_at_unix":1
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let args = vec![
+            "claude".into(),
+            home.to_string_lossy().into_owned(),
+            shell.clone(),
+        ];
+        let payload = |event| {
+            serde_json::json!({"session_id":"test-session","prompt_id":"test-prompt","hook_event_name":event}).to_string()
+        };
+        assert!(agent_hook_command(args.clone(), payload("UserPromptSubmit").as_bytes()).is_ok());
+        std::fs::write(home.join("agent-notifications.json"), "broken queue").unwrap();
+        assert!(agent_hook_command(args, payload("Stop").as_bytes()).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(home.join("agent-notifications.json")).unwrap(),
+            "broken queue"
+        );
+        let cursor: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                home.join("agent-hooks/claude")
+                    .join(format!("{shell}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cursor["completed"], false);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn codex_shell(home: Option<std::path::PathBuf>) -> ShellSession {
+        serde_json::from_value(serde_json::json!({
+            "id":"fixture-shell", "project_id":null, "worktree_id":null,
+            "kind":"project", "cwd":"/", "command":"codex", "harness":"codex",
+            "codex_account_id":"original-account", "codex_home":home,
+            "created_at_unix":1
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn shell_usage_reads_only_its_frozen_account_home() {
+        let home = std::env::temp_dir().join(format!("riwork-cli-usage-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let shell = codex_shell(Some(home.clone()));
+        assert_eq!(frozen_codex_usage_home(&shell).unwrap(), home);
+        std::fs::remove_dir_all(home).unwrap();
+        assert!(
+            frozen_codex_usage_home(&shell)
+                .unwrap_err()
+                .contains("unavailable")
+        );
+    }
+
+    #[test]
+    fn legacy_or_relative_shell_home_never_falls_back_to_another_account() {
+        assert!(
+            frozen_codex_usage_home(&codex_shell(None))
+                .unwrap_err()
+                .contains("unknown")
+        );
+        assert!(
+            frozen_codex_usage_home(&codex_shell(Some("relative".into())))
+                .unwrap_err()
+                .contains("unavailable")
+        );
+    }
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn update_profile_flags_keep_default_and_explicit_builds_separate() {
+        let mut default = args(&["--no-reload"]);
+        assert_eq!(take_update_profile(&mut default).unwrap(), None);
+        assert_eq!(default, args(&["--no-reload"]));
+        for (flag, profile) in [("--debug", "debug"), ("--release", "release")] {
+            let mut input = args(&[flag, "--no-reload"]);
+            assert_eq!(take_update_profile(&mut input).unwrap(), Some(profile));
+            assert_eq!(input, args(&["--no-reload"]));
+        }
+        for values in [["--debug", "--release"], ["--release", "--debug"]] {
+            assert!(take_update_profile(&mut args(&values)).is_err());
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 **RiWork is in beta.**
 
-A compact cyberpunk GPUI workspace with native Ghostty terminals on macOS. Tabs and split panes attach to shells in a dedicated tmux server, so shells and their output remain available when the UI closes. Projects own shells and worktrees; tasks belong to projects and can be assigned to worktrees.
+A compact, themeable GPUI workspace with native Ghostty terminals on macOS. Tabs and split panes attach to shells in a dedicated tmux server, so shells and their output remain available when the UI closes. Projects own shells and worktrees; tasks belong to projects and can be assigned to worktrees.
 
 ## Requirements
 
@@ -10,28 +10,74 @@ A compact cyberpunk GPUI workspace with native Ghostty terminals on macOS. Tabs 
 - Rust 1.95 (selected by `rust-toolchain.toml`)
 - Zig 0.16 for the Ghostty native build
 - tmux (`brew install tmux`) for persistent shells
+- macOS 14 or later for Cua.ai desktop control; RiWork setup installs Cua Driver
 
 ## Build and run
 
 ```sh
-ZIG=/path/to/zig-0.16/zig cargo build
-ZIG=/path/to/zig-0.16/zig sh scripts/bundle-macos.sh
-open target/debug/RiWork.app --args /path/to/project
+ZIG=/path/to/zig-0.16/zig cargo build --release
+ZIG=/path/to/zig-0.16/zig sh scripts/bundle-macos.sh release
+open target/release/RiWork.app --args /path/to/project
 ```
 
-The project path is optional. Without one, RiWork reopens the active project, or registers the current directory on first launch. The bundle includes Ghostty terminfo and shell integration. For an unbundled `cargo run`, set `GHOSTTY_RESOURCES_DIR` to the bundle's `Contents/Resources/ghostty` directory.
+The project path is optional. Without one, RiWork reopens the active project, or registers the current directory on first launch. The bundle includes Ghostty terminfo and shell integration, and copies the named theme catalog from `/Applications/Ghostty.app` when installed. Set `GHOSTTY_THEMES_DIR` while bundling to use another catalog directory. Custom themes in your Ghostty configuration directory also work. For an unbundled `cargo run`, set `GHOSTTY_RESOURCES_DIR` to the bundle's `Contents/Resources/ghostty` directory.
+
+Use the release build for normal use. For development, `cargo build` and `sh scripts/bundle-macos.sh debug` create artifacts under `target/debug`; `cargo run -- /path/to/project` starts an unbundled development window.
 
 To make the CLI available everywhere, link the built executable into a directory on your `PATH`:
 
 ```sh
-ln -sfn "$PWD/target/debug/riwork" "$HOME/.local/bin/riwork"
+ln -sfn "$PWD/target/release/riwork" "$HOME/.local/bin/riwork"
 ```
 
 Run `riwork help` for the full command list. Data defaults to `~/.local/share/riwork`; set `RIWORK_HOME` to use a separate store and tmux server.
 
+## Update and reload
+
+```sh
+riwork update                 # Build release, install it, and reload all open RiWorks
+riwork update --debug         # Explicit development build
+riwork reload                 # Reload all open windows using the installed build
+riwork instances --json       # Inspect running apps and their windows
+riwork reload --session       # Also resume this RiWork-hosted Codex conversation with Cua
+```
+
+Reloads preserve each window's project, layout, position, and persistent shells. The old app exits only after its replacement has restored the windows. Running agents stay attached to their existing tmux sessions. Apps opened before reload support was installed need one normal quit and reopen first.
+
+`update` builds and packages your local source in a staging directory, then installs the executable and app together. It defaults to an optimized release build, including when run from a debug CLI. Use `--source /path/to/riWork` to choose a checkout, `--debug` for a development build, or `--no-reload` to install without reopening windows. `--release` selects the default explicitly; it cannot be combined with `--debug`. The command does not fetch or change Git history. Later `open` and `reload` commands use the latest successfully installed app, including when its profile or source checkout differs from the CLI's. Build failures keep the installed app running and retain a diagnostic log.
+
+`--session` applies to the current RiWork Codex pane. It waits for the active turn to finish, then resumes the same conversation UUID through RiWork's Cua launcher. Other agents keep running. New RiWork launches bind tool commands to their own terminal even when Codex shares a backend. For an older launch without that binding, use `riwork reload --session --shell SHELL_UUID`, selecting the conversation's terminal UUID from RiWork. Use it after installing a new harness integration; reopening the app alone cannot replace the tools of an already running agent.
+
+## Cua.ai setup and computer use
+
+RiWork uses [Cua.ai's Cua Driver](https://cua.ai/cua-driver) for computer use across Codex, Claude, and the global and project orchestrators. On a machine without the driver, the app opens Settings with **SET UP CUA**. Setup downloads Cua's official stable installer, installs the signed `CuaDriver.app`, and prepares the shared connection. You can also run:
+
+```sh
+riwork setup
+riwork cua status --json
+riwork cua permissions
+```
+
+Select **GRANT MACOS ACCESS**, then enable **CuaDriver** in macOS **Privacy & Security → Accessibility** and **Screen & System Audio Recording**. These permissions belong to CuaDriver and need to be enabled once in System Settings. Approve CuaDriver's direct screen capture prompt when macOS shows it. Settings reports the grants and capture verification, and offers **CHECK AGAIN** after enabling them. RiWork launches its driver in standard permission mode. The explicit grant action restarts the shared service with Cua's permission onboarding so updated grants are read by a fresh process.
+
+New RiWork Codex and Claude launches receive the same `cua-driver` MCP connection and computer-use instructions. Codex's OpenAI computer-use feature is disabled for these launches. Existing model, account, and harness permission preferences are retained. New plain shell tabs include RiWork's Codex and Claude launchers on their `PATH`, so starting either CLI from a shell tab uses the same integration. An absolute path to a separately installed CLI bypasses those launchers. Existing running harnesses need to be restarted to load the new connection; closing and reopening a terminal tab only reattaches its running session.
+
+The MCP connection runs through `riwork cua mcp`, which resolves the installed driver without depending on the agent's `PATH`. For a custom driver installation or isolated tests, set `RIWORK_CUA_DRIVER` to its executable. Setup keeps its managed launchers under `RIWORK_HOME/cua` and does not edit your global Codex or Claude configuration or shell startup files. RiWork's zsh tabs forward your startup files through a session directory and restore the launcher prefix after their PATH changes. Custom shells, aliases, and nested shells can override that PATH; direct RiWork harness launches always receive the connection.
+
 RiWork also serves a local MCP connection over stdio with `riwork mcp`. Configure an MCP client to launch that command to give Codex or Claude project, worktree, task, and shell inspection tools. The server uses the same state as the CLI and GPUI app.
 
 ## Projects, worktrees, and tasks
+
+Settings → **Import from Orca** offers a one-time preview and import of local
+projects and worktrees through the installed Orca CLI. Keep Orca running while
+previewing and importing. Existing paths retain their RiWork names and grouping;
+the import records completion and is safe to invoke again. The current Orca CLI
+does not export folder names or nesting. You can also use:
+
+```sh
+riwork import orca --preview --json
+riwork import orca --json
+```
 
 ```sh
 riwork project add /path/to/repo --name my-project
@@ -56,7 +102,32 @@ riwork search search
 
 Projects, Worktrees, Tasks, and Shells each have a searchable panel tab. Projects lists all projects; the other panels show the active project's items. RiWork discovers Git worktrees created outside the CLI during refresh. A removed worktree stays registered so task and shell references keep their UUIDs; its path is marked `[missing]`. Use `riwork worktree forget ID` after its tasks and shells are gone to remove the stale record.
 
+Use the Projects sort selector beside the project count to choose **Last edited**, **Name**, **Date added**, or **Live sessions**. The arrow reverses the order. Projects sort within their virtual folders while the folder hierarchy stays intact; search and collapsed folders keep working. The preference is saved and shared across windows. Last edited defaults to newest first and reads the latest source-file modification time across each project's roots and registered worktrees, respecting Git ignores and excluding common build and dependency directories. Background scans refresh every 30 seconds. Unavailable or incomplete dates sort last; commit dates, deleted files, and task activity are not used as file-edit timestamps.
+
+Press **Cmd+Shift+E**, or choose **FILES** under **Views** in a pane's **…** actions menu, to browse the current worktree. The explorer follows the focused shell's worktree, including moving into another registered worktree with `cd`, and retains that selection while you use other panels. Expand folders to load their contents, click a file to open it in its default application, or use the selected file's controls to reveal it and copy its relative path. **Refresh** updates the tree, **Hidden** includes dotfiles, and **Cmd+F** filters files in directories already loaded. Files tabs restore with each project's layout.
+
+Each pane has a **lock** control. Locked panes keep their tabs, selected tab, and surrounding split sizes across project switches; panel contents still follow the selected project. The left navigation pane is locked by default. Unlock it to let that region use each project's saved layout. Locked shell tabs keep their original shell session and project context.
+
+Projects and Worktrees show Codex activity: **working** during an active turn, **done** after its completion, and **waiting** while idle. **Unknown** means an exact conversation binding or complete lifecycle read is not available yet. New managed Codex sessions bind on their first completion; exact resumed sessions can be tracked immediately. Existing notification settings are preserved.
+
+The **bell** beside each project controls macOS completion alerts. Alerts are off by default: a cyan bell means on, and a muted crossed-out bell means off. While RiWork is open, completed Codex turns and completed turns in newly launched RiWork Claude sessions send one alert per turn across all windows and processes. Click the notification or **Open agent** to open that project's completed agent.
+
+Initial **Done** states, historical completions, aborted turns, and ordinary shell exits do not alert. Existing Codex sessions with an exact conversation binding also work; start a new Claude session to load its completion hooks. macOS asks for permission when you first enable a bell, and **System Settings → Notifications** controls delivery. Native alerts require the packaged RiWork app; unbundled `cargo run` launches cannot send them.
+
 Click a project row to switch the current window, or **↗** to open that project in another window. Cmd+Shift+N opens a new project window; `riwork open PROJECT_OR_PATH` opens one from the CLI. Each window keeps its own project. `riwork project use ID` selects the default for subsequent windows.
+
+Use **+ FOLDER** to create virtual folders in Projects, or a folder's **+** to create a subfolder. Drag a project onto a folder to file it there. Drag a folder onto another folder to nest it, or onto **UNFILED** to move it to the top level. Dropping a project onto **UNFILED** removes its folder assignment. Folder headers expand or collapse their whole subtree; **✎** renames a folder and **×** removes it, promoting its projects and subfolders to its parent. Virtual folders organize the browser without moving files.
+
+Click a project's **⚙** to open its **PROJECT SETTINGS** tab, where you can edit its name, select a folder by its full breadcrumb, and inspect its root and repository paths. **SAVE PROJECT**, Enter, or Cmd+S applies name and folder changes. Settings tabs restore with each project's layout. App-wide themes, Cua, and window preferences remain in **SETTINGS**.
+
+```sh
+riwork project folder create "Personal"
+riwork project folder create "Tools" --parent "Personal"
+riwork project update PROJECT_ID --folder "Personal / Tools"
+riwork project folder move "Personal / Tools" --root
+riwork project folder rename "Personal" "Side projects"
+riwork project update PROJECT_ID --ungrouped
+```
 
 ## Persistent shells
 
@@ -81,13 +152,13 @@ Mouse-wheel and trackpad scrolling use tmux's scrollback. Scrolling up enters co
 
 Each project remembers its split layout and sizes, mixed panel/shell tab order, active selections, and selected worktree/task across project switches and UI restarts. Closed shell tabs stay detached; click their shell in the Shells panel to reattach them. Exited shells are skipped during restoration, and new CLI-created shells join the active pane when the project next opens. An intentionally empty workspace stays empty. Layouts are saved separately in `layouts.json` under the same data directory.
 
-The compact bottom-right status island shows CPU and resident RAM for the active project's sessions, the active shell UUID, **G·ORCH**, and **P·ORCH**. The Shells panel shows worker shells with their metrics and current worktree when their working directory matches a known worktree. Click the status UUID to copy it.
+The full-width bottom status bar shows the current project on the left and live sessions, CPU, resident RAM, usage, the active shell UUID, **G·ORCH**, and **P·ORCH** on the right by default. Click the status UUID to copy it. Configure its items in **Settings → Status bar**. The Shells panel shows worker shells with their metrics and current worktree when their working directory matches a known worktree.
 
 ## Harness launches and usage
 
-The **+** and **▤** menus launch a shell, Codex, or Claude in the selected worktree. Normal presets use the CLI's usual permissions. Explicit **UNRESTRICTED** presets pass its permission bypass flag. Cmd+Shift+C opens Codex; Cmd+Shift+L opens Claude.
+The **New Tab** section of a pane's **…** actions menu launches a shell, Codex, or Claude in the selected worktree. Normal presets use the CLI's usual permissions. Explicit **unrestricted** presets pass its permission bypass flag. Cmd+Shift+C opens Codex; Cmd+Shift+L opens Claude.
 
-Click the bottom usage readout, or open **USAGE** from the views menu, for remaining quota, reset countdowns, and update times. Codex reads its official app-server account endpoint on a worker with a timeout, refreshing every 15 minutes or on demand. Claude sends documented statusline JSON through settings passed only to that invocation; global Claude settings are unchanged. Claude quota appears after a response on supported Pro/Max accounts and versions. Context usage and estimated session cost appear separately. Missing quota windows stay unavailable; old snapshots are marked stale. Quota is shared by sessions on the same account.
+Click the bottom usage readout, or open **USAGE** under **Views** in a pane's **…** actions menu, for remaining quota, reset countdowns, and update times. Codex reads its official app-server account endpoint on a worker with a timeout, refreshing every 15 minutes or on demand. Claude sends documented statusline JSON through settings passed only to that invocation; global Claude settings are unchanged. Claude quota appears after a response on supported Pro/Max accounts and versions. Context usage and estimated session cost appear separately. Missing quota windows stay unavailable; old snapshots are marked stale. Quota is shared by sessions on the same account.
 
 ```sh
 riwork usage --json
@@ -102,9 +173,11 @@ Project windows and independently launched app processes keep their own selected
 
 The global orchestrator coordinates objectives and dependencies across projects. Each project's orchestrator manages its tasks, repositories, worktrees, and Codex/Claude workers. They have separate persistent shells and ordinary workspace tabs; project orchestrators belong to their project and have no worktree, while the global orchestrator has neither project nor worktree ownership.
 
-Click **G·ORCH** or press Cmd+Shift+O for the global orchestrator tab. Click **P·ORCH** or press Cmd+Alt+O for the current project's orchestrator tab. Both are also in the **+ / ▤** menus. Opening a scope selects its existing tab in this window, or attaches its persistent session to the active pane. Orchestrator tabs drag, split, close, and restore like shell tabs. Closing a tab detaches its terminal and preserves the session. No separate orchestrator window is created.
+Click **G·ORCH** or press Cmd+Shift+O for the global orchestrator tab. Click **P·ORCH** or press Cmd+Alt+O for the current project's orchestrator tab. Both are also under **New Tab** in a pane's **…** actions menu. Opening a scope selects its existing tab in this window, or attaches its persistent session to the active pane. Orchestrator tabs drag, split, close, and restore like shell tabs. Closing a tab detaches its terminal and preserves the session. No separate orchestrator window is created.
 
 New default orchestrators start the official `codex` CLI, install and explicitly load the embedded **riwork-orchestrator** skill, and receive their scope, project UUID, and project root as appropriate. Global context is `RIWORK_HOME/orchestrator`; project contexts are `RIWORK_HOME/orchestrators/projects/PROJECT_UUID`. Each waits for an objective. The skill covers global coordination, repository selection, task assignment, bounded delegation, progress inspection, and completion checks. Existing sessions show **LOAD SKILL** for a one-time upgrade that preserves their conversation. Custom commands do not receive the skill automatically. Loading the skill does not schedule work.
+
+Default project orchestrators launch Codex in unrestricted mode, with approval prompts and sandboxing disabled. This mode is saved with the session and preserved when its conversation is reloaded. Existing project orchestrators keep their startup mode; close and recreate them to use the new default. Global orchestrators retain the selected Codex account's permission and approval settings. Custom commands run as supplied. On a global orchestrator's first launch, Codex may ask you to trust its context folder; answer that prompt in the terminal before the startup skill loads.
 
 ```sh
 riwork orchestrator create --json
@@ -140,15 +213,20 @@ Panel tabs start in a left pane. Every pane's tab strip stays at the top, and ev
 - Drag a tab along a strip to reorder it, or onto another strip or pane center to move it into that pane.
 - Drop on a pane edge to create a split. Drop within 12 px of a window edge to dock across the entire workspace.
 - Drag the 5 px split dividers to resize panes.
-- Drag empty strip space or the **⋮** grip on a strip touching the window's top edge to move the window; double-click that area to zoom. The grip stays reachable when tabs overflow.
-- **▤** opens the views menu to reopen panel tabs, add a shell, or close the active tab.
-- **⛶** or Cmd+Shift+F focuses the active tab in any pane, hiding tab strips, other panes, and the status island. Centered focus caps the content at 1,100 px and leaves 30% of the window clear below it so terminal input sits higher on screen. The top bar keeps native window controls, **RESTORE**, and a **FILL WINDOW / CENTER FOCUS** toggle visible. Click **RESTORE** or press Cmd+Shift+F again to restore the same split layout and sizes. Ctrl+Tab and Ctrl+Shift+Tab still cycle tabs within the focused pane. Focus mode is temporary and does not rewrite the saved split tree.
+- Drag empty strip space on a strip touching the window's top edge to move the window; double-click that area to zoom. A blank drag area beside the pane controls stays reachable when tabs overflow.
+- The **…** actions menu groups **New Tab** launches, **Views** for panel tabs, and **Pane** actions for splitting or closing the pane. The tab's **X** closes only that tab; the labelled **Close pane** action closes its region. Both preserve shell sessions.
+- The lock icon keeps a pane across project switches. The focus icon or Cmd+Shift+F focuses the active tab in any pane, hiding tab strips, other panes, and the status bar. Narrow panes keep lock and focus actions in the **…** menu. Centered focus caps the content at 1,100 px and leaves 30% of the window clear below it so terminal input sits higher on screen. The top bar keeps native window controls, **RESTORE**, and a **FILL WINDOW / CENTER FOCUS** toggle visible. Click **RESTORE** or press Cmd+Shift+F again to restore the same split layout and sizes. Ctrl+Tab and Ctrl+Shift+Tab still cycle tabs within the focused pane. Focus mode is temporary and does not rewrite the saved split tree.
 
-The workspace fills the top and bottom of the window around a 78 × 28 px native close/minimize/maximize island and the status island. The installed `riwork-workspaces` skill teaches Codex the CLI workflow for project tasks, batched worktree assignments, and shell inspection.
+The workspace fills the window around a 78 × 28 px native close/minimize/maximize island and the full-width status bar. The installed `riwork-workspaces` skill teaches Codex the CLI workflow for project tasks, batched worktree assignments, and shell inspection.
 
 ## Settings
 
-Open **RiWork → Settings…**, press Cmd+, or choose **SETTINGS** from a pane's **+ / ▤** menu. Settings opens as a normal workspace tab: drag, split, close, and restore it like the other panel tabs. Preferences save automatically to `settings.json` under the RiWork data directory and are shared across open windows and app processes.
+Open **RiWork → Settings…**, press Cmd+, or choose **SETTINGS** under **Views** in a pane's **…** actions menu. Settings opens as a normal workspace tab: drag, split, close, and restore it like the other panel tabs. Preferences save automatically to `settings.json` under the RiWork data directory and are shared across open windows and app processes.
 
-- **Use RiWork terminal colors** is off by default. Terminals load your Ghostty configuration and palette; turn this on to use RiWork's colors while retaining your other Ghostty preferences. Changing it reconnects terminal display clients and preserves the running shells, Codex/Claude sessions, tabs, and splits.
+- **Codex accounts** detects the current Codex profile and saved accounts from Orca. Use **REFRESH ACCOUNTS** to check again, then select an account for new Codex sessions, including new Codex orchestrators. Existing sessions and resumed conversations keep their original account. Quota is read separately for each account and follows the active Codex session's saved account.
+- **Status bar** lets you show or hide the entire bar, choose visible items, move each item left or right, and change its order with the arrow buttons. The current project appears on the left by default. Worktree and agent activity are optional; **RESET DEFAULTS** restores the original arrangement. Preferences apply across windows.
+- **Theme** defaults to **Follow Ghostty**: panels, tabs, menus, and terminals share your Ghostty palette. RiWork uses Ghostty's own configuration loader, including recursive files and custom themes, and picks up palette changes within a few seconds. **RiWork**, **Catppuccin Mocha**, **Tokyo Night**, and **Gruvbox Light** apply matching workspace and terminal colors while retaining your other Ghostty preferences. Preferences are shared across windows and app processes. Selecting a RiWork theme does not edit the standalone Ghostty app's configuration.
+- **Use RiWork terminal colors** remains available under Follow Ghostty for existing preferences and is off by default. Turn it on to keep RiWork's original terminal palette. Theme changes preserve running shells, Codex/Claude sessions, tabs, and splits; returning to Ghostty's colors reconnects only terminal display clients.
 - **Remember project window size** is on by default. New or reopened project windows restore the last normal window size, constrained to the current display. Maximizing or entering fullscreen does not overwrite it. Switching projects in an existing window keeps that window's size. Older layouts use the default size until opened and saved by this version.
+
+The embedded Ghostty adapter currently uses the light variant of a paired `light:…,dark:…` theme and does not follow macOS appearance changes. A single Ghostty theme or an explicit RiWork theme applies consistently.

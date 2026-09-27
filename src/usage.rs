@@ -42,15 +42,21 @@ pub struct UsageWindow {
     pub window_minutes: Option<u64>,
 }
 
-/// Blocking, bounded read. Call from a worker, never GPUI's render thread.
+/// Read the account and its quota through Codex's app-server under this exact
+/// home. The child override does not change this process's environment.
+/// Blocking and bounded: call from a worker, never GPUI's render thread.
 /// No thread, turn, model, login, or shell input request is sent to Codex.
-pub fn read_codex_usage() -> Result<ProviderUsage, String> {
+pub fn read_codex_usage_at(home: &Path) -> Result<ProviderUsage, String> {
     let executable = find_codex().ok_or("Codex is not installed or is not on PATH")?;
-    read_codex_usage_with(&executable, CODEX_TIMEOUT)
+    read_codex_usage_with(&executable, Some(home), CODEX_TIMEOUT)
 }
 
-fn read_codex_usage_with(executable: &Path, timeout: Duration) -> Result<ProviderUsage, String> {
-    let mut server = CodexServer::start(executable)?;
+fn read_codex_usage_with(
+    executable: &Path,
+    home: Option<&Path>,
+    timeout: Duration,
+) -> Result<ProviderUsage, String> {
+    let mut server = CodexServer::start(executable, home)?;
     let deadline = Instant::now() + timeout;
     server.send(json!({
         "id": 1,
@@ -428,13 +434,18 @@ struct CodexServer {
 }
 
 impl CodexServer {
-    fn start(executable: &Path) -> Result<Self, String> {
+    fn start(executable: &Path, home: Option<&Path>) -> Result<Self, String> {
         let mut command = Command::new(executable);
         command
             .args(["app-server", "--stdio"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        if let Some(home) = home {
+            // Override an inherited account binding only for this read. Passing
+            // the path as an environment value also preserves spaces verbatim.
+            command.env("CODEX_HOME", home);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -691,7 +702,7 @@ while IFS= read -r line; do
 done
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let usage = read_codex_usage_with(&executable, Duration::from_secs(2)).unwrap();
+        let usage = read_codex_usage_with(&executable, None, Duration::from_secs(2)).unwrap();
         assert_eq!(usage.windows[0].label, "2h");
         assert_eq!(usage.windows[0].used_percent, 8.0);
         assert_eq!(
@@ -707,10 +718,140 @@ done
         )
         .unwrap();
         let started = Instant::now();
-        let error = read_codex_usage_with(&executable, Duration::from_millis(100)).unwrap_err();
+        let error =
+            read_codex_usage_with(&executable, None, Duration::from_millis(100)).unwrap_err();
         assert!(error.contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(2));
         fs::remove_file(executable).unwrap();
         fs::remove_dir(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    struct FakeCodex {
+        directory: PathBuf,
+        executable: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl FakeCodex {
+        fn new(script: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let directory = env::temp_dir().join(format!("riwork-usage-home-{}", Uuid::new_v4()));
+            fs::create_dir(&directory).unwrap();
+            let executable = directory.join("codex fixture");
+            fs::write(&executable, script).unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            Self {
+                directory,
+                executable,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for FakeCodex {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_usage_forces_each_supplied_home_without_changing_parent_environment() {
+        let fixture = FakeCodex::new(
+            r#"#!/bin/sh
+record_dir=${0%/*}
+printf '%s' "$CODEX_HOME" > "$record_dir/received-home"
+: > "$record_dir/requests"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$record_dir/requests"
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"account/read"'*)
+      printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":"fixture@example.test","planType":"pro"}}}' ;;
+    *'"method":"account/rateLimits/read"'*)
+      printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":8,"windowDurationMins":120}}}}' ;;
+  esac
+done
+"#,
+        );
+        let inherited_home = env::var_os("CODEX_HOME");
+        for name in ["Account One", "Account Two"] {
+            let home = fixture.directory.join(name);
+            let usage =
+                read_codex_usage_with(&fixture.executable, Some(&home), Duration::from_secs(2))
+                    .unwrap();
+            assert_eq!(
+                fs::read_to_string(fixture.directory.join("received-home")).unwrap(),
+                home.to_string_lossy()
+            );
+            assert_eq!(env::var_os("CODEX_HOME"), inherited_home);
+            assert_eq!(
+                usage.account_label.as_deref(),
+                Some("fixture@example.test · pro")
+            );
+            assert_eq!(usage.windows[0].used_percent, 8.0);
+
+            let requests: Vec<Value> = fs::read_to_string(fixture.directory.join("requests"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(
+                requests
+                    .iter()
+                    .map(|request| request["method"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                [
+                    "initialize",
+                    "initialized",
+                    "account/read",
+                    "account/rateLimits/read"
+                ]
+            );
+            assert_eq!(requests[2]["params"]["refreshToken"], false);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn account_scoped_usage_errors_never_expose_server_auth_details() {
+        for (code, expected) in [
+            (
+                -32000,
+                "Codex could not read subscription usage; check its sign-in or try again",
+            ),
+            (
+                -32601,
+                "Installed Codex does not support subscription usage; update Codex",
+            ),
+        ] {
+            let response = json!({"id": 3, "error": {"code": code, "message": "Bearer never-expose-this-token", "data": {"private_path": "/private/auth.json", "email": "private@example.test"}}}).to_string();
+            let script = r#"#!/bin/sh
+printf '%s\n' 'never-expose-this-stderr' >&2
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"account/read"'*)
+      printf '%s\n' '{"id":2,"error":{"code":-32000,"message":"never-expose-account-auth"}}' ;;
+    *'"method":"account/rateLimits/read"'*)
+      printf '%s\n' '__ERROR_RESPONSE__' ;;
+  esac
+done
+"#
+            .replace("__ERROR_RESPONSE__", &response);
+            let fixture = FakeCodex::new(&script);
+            let home = fixture.directory.join("private account home");
+            let error =
+                read_codex_usage_with(&fixture.executable, Some(&home), Duration::from_secs(2))
+                    .unwrap_err();
+            assert_eq!(error, expected);
+            assert!(!error.contains("never-expose"));
+            assert!(!error.contains("auth.json"));
+            assert!(!error.contains("private@example.test"));
+            assert!(!error.contains(home.to_str().unwrap()));
+        }
     }
 }

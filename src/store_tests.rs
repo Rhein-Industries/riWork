@@ -93,6 +93,696 @@ fn project_worktree(store: &Store, project_id: &str, path: &Path) -> Worktree {
 }
 
 #[test]
+fn virtual_folders_extend_schema_one_without_requiring_a_migration() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("legacy-project");
+    let project_id = Uuid::new_v4().to_string();
+    let legacy = serde_json::json!({
+        "schema_version": 1,
+        "active_project_id": project_id,
+        "projects": [{"id": project_id, "name": "Legacy", "root": root, "created_at": 7}],
+        "worktrees": [],
+        "tasks": [],
+    });
+    fs::write(
+        store.dir.join("state.json"),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+
+    let state = store.snapshot().unwrap();
+    assert!(state.project_folders.is_empty());
+    assert_eq!(state.projects[0].folder_id, None);
+    assert!(!state.projects[0].notify_on_agent_done);
+    assert!(state.projects[0].repository_roots.is_empty());
+    let folder = store.create_project_folder("  Personal  ").unwrap();
+    store
+        .update_project_metadata(&project_id, "Legacy", Some(&folder.id))
+        .unwrap();
+
+    let reopened = Store::open(fixture.path("state"))
+        .unwrap()
+        .snapshot()
+        .unwrap();
+    assert_eq!(reopened.schema_version, 1);
+    assert_eq!(
+        reopened.active_project_id.as_deref(),
+        Some(project_id.as_str())
+    );
+    assert_eq!(reopened.project_folders[0].name, "Personal");
+    assert_eq!(
+        reopened.projects[0].folder_id.as_deref(),
+        Some(folder.id.as_str())
+    );
+    assert_eq!(reopened.projects[0].root, root);
+    assert!(!reopened.projects[0].notify_on_agent_done);
+}
+
+#[test]
+fn completion_notifications_are_project_scoped_and_preserve_workspace_metadata() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let main = store
+        .add_project(fixture.directory("main"), Some("Main"))
+        .unwrap();
+    let other = store
+        .add_project(fixture.directory("other"), Some("Other"))
+        .unwrap();
+    assert!(!main.notify_on_agent_done);
+    assert!(!other.notify_on_agent_done);
+    let folder = store.create_project_folder("Work").unwrap();
+    let main = store
+        .update_project_metadata(&main.id, "Main", Some(&folder.id))
+        .unwrap();
+    store
+        .add_task(&main.id, "Keep this task", "Details")
+        .unwrap();
+    let before = store.snapshot().unwrap();
+    let enabled = store.set_project_notifications("Main", true).unwrap();
+    assert!(enabled.notify_on_agent_done);
+    assert_eq!(enabled.id, main.id);
+    assert_eq!(enabled.root, main.root);
+    assert_eq!(enabled.folder_id, main.folder_id);
+    assert_eq!(enabled.created_at, main.created_at);
+    let reopened = fixture.store().snapshot().unwrap();
+    assert!(reopened.project(&main.id).unwrap().notify_on_agent_done);
+    assert!(!reopened.project(&other.id).unwrap().notify_on_agent_done);
+    assert_eq!(reopened.active_project_id, before.active_project_id);
+    assert_eq!(
+        serde_json::to_value(&reopened.worktrees).unwrap(),
+        serde_json::to_value(&before.worktrees).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&reopened.tasks).unwrap(),
+        serde_json::to_value(&before.tasks).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&reopened.project_folders).unwrap(),
+        serde_json::to_value(&before.project_folders).unwrap()
+    );
+
+    // Existing names, folders, and re-registration cannot reset the preference.
+    let renamed = store
+        .update_project_metadata(&main.id, "Renamed", None)
+        .unwrap();
+    assert!(renamed.notify_on_agent_done);
+    assert!(
+        store
+            .add_project(&main.root, None)
+            .unwrap()
+            .notify_on_agent_done
+    );
+    let state_path = store.dir.join("state.json");
+    let unchanged = fs::read(&state_path).unwrap();
+    assert!(
+        store
+            .set_project_notifications(&main.id, true)
+            .unwrap()
+            .notify_on_agent_done
+    );
+    assert_eq!(fs::read(&state_path).unwrap(), unchanged);
+    assert!(store.set_project_notifications("missing", true).is_err());
+    assert_eq!(fs::read(&state_path).unwrap(), unchanged);
+    assert!(
+        !store
+            .set_project_notifications(&main.id, false)
+            .unwrap()
+            .notify_on_agent_done
+    );
+}
+
+#[test]
+fn concurrent_notification_and_display_updates_preserve_each_other() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let project = store
+        .add_project(fixture.directory("project"), Some("Original"))
+        .unwrap();
+    let folder = store.create_project_folder("Work").unwrap();
+    let start = Arc::new(Barrier::new(2));
+    let notify_store = store.clone();
+    let notify_id = project.id.clone();
+    let notify_start = start.clone();
+    let notifications = thread::spawn(move || {
+        notify_start.wait();
+        for _ in 0..32 {
+            notify_store
+                .set_project_notifications(&notify_id, true)
+                .unwrap();
+        }
+    });
+    let metadata_store = store.clone();
+    let metadata_id = project.id.clone();
+    let folder_id = folder.id.clone();
+    let metadata = thread::spawn(move || {
+        start.wait();
+        for index in 0..32 {
+            metadata_store
+                .update_project_metadata(
+                    &metadata_id,
+                    &format!("Renamed {index}"),
+                    Some(&folder_id),
+                )
+                .unwrap();
+        }
+    });
+    notifications.join().unwrap();
+    metadata.join().unwrap();
+    let reopened = fixture.store().snapshot().unwrap();
+    let saved = reopened.project(&project.id).unwrap();
+    assert!(saved.notify_on_agent_done);
+    assert_eq!(saved.name, "Renamed 31");
+    assert_eq!(saved.folder_id.as_deref(), Some(folder.id.as_str()));
+    assert_eq!(saved.root, project.root);
+    assert_eq!(saved.created_at, project.created_at);
+}
+
+#[test]
+fn virtual_folder_names_and_assignments_validate_before_persisting() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("project");
+    let project = store.add_project(&root, Some("Original")).unwrap();
+    let folder = store.create_project_folder("  Äpp Projects  ").unwrap();
+    let other = store.create_project_folder("Work").unwrap();
+    let state = store.snapshot().unwrap();
+    assert_eq!(state.project_folder("äpp projects").unwrap().id, folder.id);
+    assert_eq!(state.project_folder(&folder.id[..8]).unwrap().id, folder.id);
+    assert!(state.project_folder("missing").is_err());
+    assert!(state.project_folder(&folder.id[..7]).is_err());
+
+    let before = fs::read(store.dir.join("state.json")).unwrap();
+    for invalid in ["", " \n "] {
+        assert!(store.create_project_folder(invalid).is_err());
+        assert!(store.rename_project_folder(&folder.id, invalid).is_err());
+        assert!(
+            store
+                .update_project_metadata(&project.id, invalid, None)
+                .is_err()
+        );
+    }
+    assert!(store.create_project_folder("äpp projects").is_err());
+    assert!(
+        store
+            .rename_project_folder(&other.id, " ÄPP PROJECTS ")
+            .is_err()
+    );
+    assert!(
+        store
+            .update_project_metadata(&project.id, "Changed", Some("missing"))
+            .is_err()
+    );
+    assert!(
+        store
+            .update_project_metadata("missing", "Changed", Some(&folder.id))
+            .is_err()
+    );
+    assert!(store.rename_project_folder("missing", "Changed").is_err());
+    assert!(store.remove_project_folder("missing").is_err());
+    assert_eq!(fs::read(store.dir.join("state.json")).unwrap(), before);
+
+    let renamed = store
+        .rename_project_folder(&folder.id, " ÄPP PROJECTS ")
+        .unwrap();
+    assert_eq!(renamed.id, folder.id);
+    assert_eq!(renamed.name, "ÄPP PROJECTS");
+    let assigned = store
+        .update_project_metadata(&project.id, "  Updated  ", Some("work"))
+        .unwrap();
+    assert_eq!(assigned.name, "Updated");
+    assert_eq!(assigned.folder_id, Some(other.id));
+    let unassigned = store
+        .update_project_metadata(&project.id, "Updated", None)
+        .unwrap();
+    assert_eq!(unassigned.folder_id, None);
+}
+
+#[test]
+fn virtual_folder_rename_and_delete_preserve_projects_worktrees_and_files() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let first_root = fixture.directory("first");
+    fs::write(first_root.join("keep.txt"), "keep this file").unwrap();
+    let first = store.add_project(&first_root, Some("First")).unwrap();
+    let second_root = fixture.directory("second");
+    let second = store.add_project(&second_root, Some("Second")).unwrap();
+    let third_root = fixture.directory("third");
+    let third = store.add_project(&third_root, Some("Third")).unwrap();
+    let folder = store.create_project_folder("Clients").unwrap();
+    let other = store.create_project_folder("Personal").unwrap();
+    for project in [&first, &second] {
+        store
+            .update_project_metadata(&project.id, &project.name, Some(&folder.id))
+            .unwrap();
+    }
+    store
+        .update_project_metadata(&third.id, &third.name, Some(&other.id))
+        .unwrap();
+    let task = store.add_task(&first.id, "Keep task", "Details").unwrap();
+    let worktree = project_worktree(&store, &first.id, &first_root);
+    store
+        .assign_tasks(&worktree.id, &[task.id.clone()])
+        .unwrap();
+    let before = store.snapshot().unwrap();
+    let renamed = store.rename_project_folder("clients", "Customers").unwrap();
+    assert_eq!(renamed.id, folder.id);
+    assert_eq!(renamed.created_at, folder.created_at);
+    assert_eq!(
+        store.snapshot().unwrap().projects[0].folder_id.as_deref(),
+        Some(folder.id.as_str())
+    );
+
+    // Group operations must also work when a project's directory is unavailable.
+    fs::remove_dir(&second_root).unwrap();
+    store.remove_project_folder(&folder.id[..8]).unwrap();
+    let after = store.snapshot().unwrap();
+    assert_eq!(after.projects.len(), 3);
+    assert_eq!(after.project_folders.len(), 1);
+    assert_eq!(after.project_folders[0].id, other.id);
+    for project in [&first, &second] {
+        let updated = after.project(&project.id).unwrap();
+        assert_eq!(updated.id, project.id);
+        assert_eq!(updated.name, project.name);
+        assert_eq!(updated.root, project.root);
+        assert_eq!(updated.created_at, project.created_at);
+        assert_eq!(updated.folder_id, None);
+    }
+    assert_eq!(
+        after.project(&third.id).unwrap().folder_id.as_deref(),
+        Some(other.id.as_str())
+    );
+    assert_eq!(after.active_project_id, before.active_project_id);
+    assert_eq!(
+        serde_json::to_value(&after.worktrees).unwrap(),
+        serde_json::to_value(&before.worktrees).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&after.tasks).unwrap(),
+        serde_json::to_value(&before.tasks).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(first_root.join("keep.txt")).unwrap(),
+        "keep this file"
+    );
+    assert!(third_root.is_dir());
+    assert!(!second_root.exists());
+    assert!(!fixture.path("Customers").exists());
+}
+
+#[test]
+fn project_registration_preserves_virtual_folder_assignment() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("project");
+    let project = store.add_project(&root, Some("Original")).unwrap();
+    let folder = store.create_project_folder("Group").unwrap();
+    store
+        .update_project_metadata(&project.id, "Updated", Some(&folder.id))
+        .unwrap();
+    for registered in [
+        store.add_project(&root, None).unwrap(),
+        store.create_project(&root, Some("Again"), false).unwrap(),
+    ] {
+        assert_eq!(registered.id, project.id);
+        assert_eq!(registered.folder_id.as_deref(), Some(folder.id.as_str()));
+    }
+    let reopened = fixture.store().snapshot().unwrap();
+    assert_eq!(reopened.projects.len(), 1);
+    assert_eq!(reopened.projects[0].name, "Again");
+    assert_eq!(reopened.projects[0].folder_id, Some(folder.id));
+}
+
+#[test]
+fn nested_folders_resolve_breadcrumbs_and_allow_leaf_names_in_different_parents() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let work = store.create_project_folder("Work").unwrap();
+    let personal = store.create_project_folder("Personal").unwrap();
+    let first = store
+        .create_project_folder_in("Archive", Some(&work.id))
+        .unwrap();
+    let second = store
+        .create_project_folder_in("archive", Some("personal"))
+        .unwrap();
+    let leaf = store
+        .create_project_folder_in("2026", Some("WORK / Archive"))
+        .unwrap();
+    let state = store.snapshot().unwrap();
+    assert_eq!(state.project_folder_path(&leaf.id), "Work / Archive / 2026");
+    assert_eq!(
+        state.project_folder(" work/archive /2026 ").unwrap().id,
+        leaf.id
+    );
+    assert_eq!(state.project_folder("work/ARCHIVE").unwrap().id, first.id);
+    assert_eq!(
+        state.project_folder("personal / archive").unwrap().id,
+        second.id
+    );
+    assert_eq!(state.project_folder(&first.id[..8]).unwrap().id, first.id);
+    assert!(
+        state
+            .project_folder("archive")
+            .unwrap_err()
+            .contains("More than one")
+    );
+    assert_eq!(first.parent_id.as_deref(), Some(work.id.as_str()));
+    assert_eq!(second.parent_id.as_deref(), Some(personal.id.as_str()));
+
+    let before = fs::read(store.dir.join("state.json")).unwrap();
+    assert!(
+        store
+            .create_project_folder_in(" ARCHIVE ", Some(&work.id))
+            .is_err()
+    );
+    assert!(
+        store
+            .create_project_folder_in("invalid/name", Some(&work.id))
+            .is_err()
+    );
+    assert!(
+        store
+            .create_project_folder_in("New", Some("missing"))
+            .is_err()
+    );
+    assert_eq!(fs::read(store.dir.join("state.json")).unwrap(), before);
+
+    // Older virtual folders did not encode ancestry; they remain root folders.
+    let mut legacy: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    for item in legacy["project_folders"].as_array_mut().unwrap() {
+        if item["id"] == work.id || item["id"] == personal.id {
+            item.as_object_mut().unwrap().remove("parent_id");
+        }
+    }
+    fs::write(
+        store.dir.join("state.json"),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+    let reopened = fixture.store().snapshot().unwrap();
+    assert_eq!(reopened.project_folder(&work.id).unwrap().parent_id, None);
+    assert_eq!(
+        reopened.project_folder_path(&leaf.id),
+        "Work / Archive / 2026"
+    );
+    assert_eq!(reopened.schema_version, 1);
+}
+
+#[test]
+fn moving_folders_preserves_descendants_and_rejects_cycles_or_sibling_collisions_atomically() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let work = store.create_project_folder("Work").unwrap();
+    let personal = store.create_project_folder("Personal").unwrap();
+    let archive = store
+        .create_project_folder_in("Archive", Some(&work.id))
+        .unwrap();
+    let leaf = store
+        .create_project_folder_in("Invoices", Some(&archive.id))
+        .unwrap();
+    store
+        .create_project_folder_in("ARCHIVE", Some(&personal.id))
+        .unwrap();
+    store
+        .create_project_folder_in("Other", Some(&work.id))
+        .unwrap();
+    let project = store
+        .add_project(fixture.directory("project"), Some("Project"))
+        .unwrap();
+    store
+        .move_project_to_folder(&project.id, Some(&leaf.id))
+        .unwrap();
+    let before = fs::read(store.dir.join("state.json")).unwrap();
+    for (source, parent) in [
+        (&work.id, work.id.as_str()),
+        (&work.id, leaf.id.as_str()),
+        (&archive.id, leaf.id.as_str()),
+        (&archive.id, personal.id.as_str()),
+        (&archive.id, "missing"),
+    ] {
+        assert!(store.move_project_folder(source, Some(parent)).is_err());
+    }
+    assert!(store.move_project_folder("missing", None).is_err());
+    assert!(store.rename_project_folder(&archive.id, " OTHER ").is_err());
+    assert!(
+        store
+            .rename_project_folder(&archive.id, "invalid/name")
+            .is_err()
+    );
+    assert_eq!(fs::read(store.dir.join("state.json")).unwrap(), before);
+
+    let moved = store.move_project_folder("Work / Archive", None).unwrap();
+    assert_eq!(moved.id, archive.id);
+    assert_eq!(moved.parent_id, None);
+    assert_eq!(moved.created_at, archive.created_at);
+    let state = store.snapshot().unwrap();
+    assert_eq!(state.project_folder_path(&leaf.id), "Archive / Invoices");
+    assert_eq!(
+        state.project_folder(&leaf.id).unwrap().parent_id.as_deref(),
+        Some(archive.id.as_str())
+    );
+    assert_eq!(
+        state.project(&project.id).unwrap().folder_id.as_deref(),
+        Some(leaf.id.as_str())
+    );
+    store
+        .move_project_folder(&archive.id, Some(&work.id))
+        .unwrap();
+    assert_eq!(
+        fixture
+            .store()
+            .snapshot()
+            .unwrap()
+            .project_folder_path(&leaf.id),
+        "Work / Archive / Invoices"
+    );
+}
+
+#[test]
+fn removing_nested_folders_promotes_direct_children_and_projects_without_touching_descendants() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let work = store.create_project_folder("Work").unwrap();
+    let clients = store
+        .create_project_folder_in("Clients", Some(&work.id))
+        .unwrap();
+    let active = store
+        .create_project_folder_in("Active", Some(&clients.id))
+        .unwrap();
+    let deep = store
+        .create_project_folder_in("Deep", Some(&active.id))
+        .unwrap();
+    let personal = store
+        .create_project_folder_in("Personal", Some(&work.id))
+        .unwrap();
+    let roots: Vec<_> = ["direct", "child", "deep"]
+        .into_iter()
+        .map(|name| fixture.directory(name))
+        .collect();
+    let projects: Vec<_> = roots
+        .iter()
+        .map(|root| store.add_project(root, None).unwrap())
+        .collect();
+    fs::write(roots[0].join("keep.txt"), "keep").unwrap();
+    for (project, folder) in projects.iter().zip([&clients, &active, &deep]) {
+        store
+            .move_project_to_folder(&project.id, Some(&folder.id))
+            .unwrap();
+    }
+    let task = store
+        .add_task(&projects[0].id, "Keep task", "Details")
+        .unwrap();
+    let worktree = project_worktree(&store, &projects[0].id, &roots[0]);
+    store.assign_tasks(&worktree.id, &[task.id]).unwrap();
+    let before = store.snapshot().unwrap();
+    store.remove_project_folder(&clients.id).unwrap();
+    let promoted = store.snapshot().unwrap();
+    assert!(promoted.project_folder(&clients.id).is_err());
+    assert_eq!(
+        promoted
+            .project_folder(&active.id)
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some(work.id.as_str())
+    );
+    assert_eq!(
+        promoted
+            .project_folder(&deep.id)
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some(active.id.as_str())
+    );
+    assert_eq!(
+        promoted.project_folder_path(&deep.id),
+        "Work / Active / Deep"
+    );
+    assert_eq!(
+        promoted
+            .project(&projects[0].id)
+            .unwrap()
+            .folder_id
+            .as_deref(),
+        Some(work.id.as_str())
+    );
+    assert_eq!(
+        promoted
+            .project(&projects[1].id)
+            .unwrap()
+            .folder_id
+            .as_deref(),
+        Some(active.id.as_str())
+    );
+    assert_eq!(
+        promoted
+            .project(&projects[2].id)
+            .unwrap()
+            .folder_id
+            .as_deref(),
+        Some(deep.id.as_str())
+    );
+
+    store.remove_project_folder(&work.id).unwrap();
+    let after = fixture.store().snapshot().unwrap();
+    assert_eq!(after.project_folder(&active.id).unwrap().parent_id, None);
+    assert_eq!(after.project_folder(&personal.id).unwrap().parent_id, None);
+    assert_eq!(
+        after.project_folder(&deep.id).unwrap().parent_id.as_deref(),
+        Some(active.id.as_str())
+    );
+    assert_eq!(after.project(&projects[0].id).unwrap().folder_id, None);
+    assert_eq!(after.projects.len(), projects.len());
+    assert_eq!(after.active_project_id, before.active_project_id);
+    assert_eq!(
+        serde_json::to_value(&after.worktrees).unwrap(),
+        serde_json::to_value(&before.worktrees).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&after.tasks).unwrap(),
+        serde_json::to_value(&before.tasks).unwrap()
+    );
+    for (project, root) in projects.iter().zip(&roots) {
+        assert_eq!(after.project(&project.id).unwrap().root, *root);
+        assert!(root.is_dir());
+    }
+    assert_eq!(
+        fs::read_to_string(roots[0].join("keep.txt")).unwrap(),
+        "keep"
+    );
+}
+
+#[test]
+fn folder_removal_fails_without_writes_when_promoting_children_would_collide() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let work = store.create_project_folder("Work").unwrap();
+    let parent = store
+        .create_project_folder_in("Container", Some(&work.id))
+        .unwrap();
+    let child = store
+        .create_project_folder_in("Archive", Some(&parent.id))
+        .unwrap();
+    let conflicting = store
+        .create_project_folder_in("ARCHIVE", Some(&work.id))
+        .unwrap();
+    let project = store
+        .add_project(fixture.directory("project"), None)
+        .unwrap();
+    store
+        .move_project_to_folder(&project.id, Some(&parent.id))
+        .unwrap();
+    let before = fs::read(store.dir.join("state.json")).unwrap();
+    let error = store.remove_project_folder(&parent.id).unwrap_err();
+    assert!(
+        error.contains("Archive") && error.contains("duplicate"),
+        "{error}"
+    );
+    assert_eq!(fs::read(store.dir.join("state.json")).unwrap(), before);
+    store
+        .rename_project_folder(&conflicting.id, "Old archive")
+        .unwrap();
+    store.remove_project_folder(&parent.id).unwrap();
+    let state = store.snapshot().unwrap();
+    assert_eq!(
+        state
+            .project_folder(&child.id)
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some(work.id.as_str())
+    );
+    assert_eq!(
+        state.project(&project.id).unwrap().folder_id.as_deref(),
+        Some(work.id.as_str())
+    );
+
+    // The removed folder's name is available to a promoted child of the same name.
+    let same_name = store.create_project_folder("Same").unwrap();
+    let same_child = store
+        .create_project_folder_in("Same", Some(&same_name.id))
+        .unwrap();
+    store.remove_project_folder(&same_name.id).unwrap();
+    assert_eq!(
+        store.snapshot().unwrap().project_folder("Same").unwrap().id,
+        same_child.id
+    );
+}
+
+#[test]
+fn moving_projects_changes_only_assignment_and_preserves_the_latest_name() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let project = store
+        .add_project(fixture.directory("project"), Some("Original"))
+        .unwrap();
+    let parent = store.create_project_folder("Work").unwrap();
+    let child = store
+        .create_project_folder_in("Clients", Some(&parent.id))
+        .unwrap();
+    // A drag can retain an old UI record while another window saves a newer name.
+    store
+        .update_project_metadata(&project.id, "Renamed elsewhere", None)
+        .unwrap();
+    let moved = store
+        .move_project_to_folder(&project.id, Some("Work / Clients"))
+        .unwrap();
+    assert_eq!(moved.name, "Renamed elsewhere");
+    assert_eq!(moved.folder_id.as_deref(), Some(child.id.as_str()));
+    assert_eq!(moved.root, project.root);
+    assert_eq!(moved.id, project.id);
+    assert_eq!(moved.created_at, project.created_at);
+    assert_eq!(moved.repository_roots, project.repository_roots);
+    let before = fs::read(store.dir.join("state.json")).unwrap();
+    assert!(
+        store
+            .move_project_to_folder(&project.id, Some("missing"))
+            .is_err()
+    );
+    assert!(
+        store
+            .move_project_to_folder("missing", Some(&child.id))
+            .is_err()
+    );
+    assert_eq!(fs::read(store.dir.join("state.json")).unwrap(), before);
+    let unfiled = store.move_project_to_folder(&project.id, None).unwrap();
+    assert_eq!(unfiled.folder_id, None);
+    assert_eq!(unfiled.name, "Renamed elsewhere");
+    assert_eq!(
+        fixture
+            .store()
+            .snapshot()
+            .unwrap()
+            .project(&project.id)
+            .unwrap()
+            .name,
+        "Renamed elsewhere"
+    );
+}
+
+#[test]
 fn project_creation_initializes_existing_and_missing_plain_directories() {
     let fixture = Fixture::new();
     let store = fixture.store();
