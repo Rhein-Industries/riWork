@@ -17,7 +17,7 @@ use crate::{
     store::State,
 };
 
-const MAX_POLL_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_POLL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_BINDING_BYTES: u64 = 16 * 1024;
 
@@ -375,6 +375,63 @@ impl ActivityTracker {
         std::mem::take(&mut self.completions)
     }
 
+    /// Bind only a rollout proven open by the selected pane's own Codex PID.
+    /// This preserves custom notification hooks; no directory-wide discovery.
+    pub fn bind_schedule_rollout(
+        &self,
+        shell: &ShellSession,
+        path: &Path,
+    ) -> Result<String, String> {
+        let log_home = shell
+            .codex_home
+            .as_ref()
+            .ok_or("Codex account home is unknown")?;
+        if !path.starts_with(log_home.join("sessions")) {
+            return Err("Rollout is outside the pinned Codex home".into());
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("Invalid rollout filename")?;
+        let stem = name
+            .strip_suffix(".jsonl")
+            .ok_or("Invalid rollout filename")?;
+        let thread = stem
+            .get(stem.len().saturating_sub(36)..)
+            .filter(|id| valid_uuid(id))
+            .ok_or("Invalid rollout thread UUID")?;
+        let mut cursor = RolloutCursor::new(thread.into());
+        cursor.read(path)?;
+        if !cursor.valid_session {
+            return Err("Rollout is not a primary interactive Codex session".into());
+        }
+        bind_codex_thread(&self.home, &shell.id, thread, log_home)?;
+        Ok(thread.into())
+    }
+
+    pub fn schedule_identity(&self, shell: &ShellSession) -> Option<String> {
+        self.read_binding(&shell.id)
+            .map(|b| b.thread_id)
+            .or_else(|| resume_thread(shell))
+    }
+
+    pub fn schedule_idle_token(
+        &mut self,
+        shell: &ShellSession,
+        expected_session: &str,
+    ) -> Option<String> {
+        if self.sample(std::slice::from_ref(shell)).get(&shell.id) != Some(&AgentActivity::Done) {
+            return None;
+        }
+        self.completions.clear();
+        let cursor = self.cursors.get(&shell.id)?;
+        (cursor.binding.thread_id == expected_session
+            && cursor.rollout.caught_up
+            && cursor.rollout.valid_session)
+            .then(|| cursor.rollout.completed_turn.clone())
+            .flatten()
+    }
+
     fn read_binding(&self, shell_id: &str) -> Option<Binding> {
         if !valid_uuid(shell_id) {
             return None;
@@ -728,6 +785,63 @@ mod tests {
             .unwrap()
             .write_all(value.as_bytes())
             .unwrap();
+    }
+
+    #[test]
+    fn scheduled_readiness_cannot_transfer_to_a_replacement_provider_thread() {
+        let fixture = Fixture::new();
+        let mut session = shell(Some(HarnessKind::Codex));
+        session.codex_home = Some(fixture.log_home.clone());
+        let first = Uuid::new_v4().to_string();
+        fixture.log(
+            &first,
+            &(meta(&first) + &event("task_started", "turn-1") + &event("task_complete", "turn-1")),
+        );
+        bind_codex_thread(&fixture.home, &session.id, &first, &fixture.log_home).unwrap();
+        let mut tracker = fixture.tracker();
+        assert_eq!(
+            tracker.schedule_idle_token(&session, &first),
+            Some("turn-1".into())
+        );
+
+        let replacement = Uuid::new_v4().to_string();
+        fixture.log(
+            &replacement,
+            &(meta(&replacement)
+                + &event("task_started", "turn-2")
+                + &event("task_complete", "turn-2")),
+        );
+        bind_codex_thread(&fixture.home, &session.id, &replacement, &fixture.log_home).unwrap();
+        assert_eq!(tracker.schedule_idle_token(&session, &first), None);
+        assert_eq!(
+            tracker.schedule_idle_token(&session, &replacement),
+            Some("turn-2".into())
+        );
+    }
+
+    #[test]
+    fn scheduling_rollout_binding_requires_the_pinned_home_and_primary_cli_identity() {
+        let fixture = Fixture::new();
+        let thread = Uuid::new_v4().to_string();
+        let path = fixture.log(
+            &thread,
+            &(meta(&thread) + &event("task_started", "turn") + &event("task_complete", "turn")),
+        );
+        let mut session = shell(Some(HarnessKind::Codex));
+        session.codex_home = Some(fixture.log_home.clone());
+        let tracker = fixture.tracker();
+        assert_eq!(
+            tracker.bind_schedule_rollout(&session, &path).unwrap(),
+            thread
+        );
+        assert_eq!(tracker.schedule_identity(&session), Some(thread.clone()));
+        session.codex_home = Some(fixture.home.clone());
+        assert!(tracker.bind_schedule_rollout(&session, &path).is_err());
+        session.codex_home = Some(fixture.log_home.clone());
+        let noninteractive = Uuid::new_v4().to_string();
+        let path = fixture.log(&noninteractive, &format!("{}\n", serde_json::json!({"type":"session_meta", "payload":{"id":noninteractive,"source":"exec"}})));
+        assert!(tracker.bind_schedule_rollout(&session, &path).is_err());
+        assert_eq!(tracker.schedule_identity(&session), Some(thread));
     }
 
     #[test]

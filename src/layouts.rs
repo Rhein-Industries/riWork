@@ -228,6 +228,7 @@ pub enum PanelKind {
     Usage,
     Settings,
     ProjectSettings,
+    Schedules,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +253,7 @@ impl SavedTab {
                     PanelKind::Usage => "usage",
                     PanelKind::Settings => "settings",
                     PanelKind::ProjectSettings => "project_settings",
+                    PanelKind::Schedules => "schedules",
                 }
             ),
         }

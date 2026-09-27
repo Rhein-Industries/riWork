@@ -637,6 +637,254 @@ impl SessionManager {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// A pane identity changes on respawn, even when its RiWork UUID is retained.
+    pub(crate) fn schedule_pane_identity(&self, id: &str) -> Result<String, String> {
+        validate_uuid(id)?;
+        self.tmux_text(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane_target(id),
+            "#{pane_id}|#{pane_pid}|#{pane_start_command}",
+        ])
+    }
+
+    pub(crate) fn schedule_provider_identity(
+        &self,
+        shell: &ShellSession,
+    ) -> Result<String, String> {
+        match shell.harness {
+            Some(HarnessKind::Codex) => {
+                let tracker = crate::activity::ActivityTracker::at(self.home.clone());
+                let bound = tracker.schedule_identity(shell);
+                // Normal RiWork launches exec Codex in the pane. A wrapper or
+                // shared server without exact descriptor proof stays unknown.
+                let descriptor = self.schedule_codex_rollout(&shell.id)?;
+                match (bound, descriptor) {
+                    (Some(bound), Some(path)) => {
+                        let home = shell.codex_home.as_ref().ok_or("Codex account home is unknown")?;
+                        if !path.starts_with(home.join("sessions")) { return Err("Codex rollout moved outside the pinned account home".into()); }
+                        let name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+                        if !name.ends_with(&bound) { return Err("Codex thread changed in the selected pane".into()); }
+                        Ok(bound)
+                    },
+                    (Some(bound), None) => Ok(bound),
+                    (None, Some(path)) => tracker.bind_schedule_rollout(shell, &path),
+                    (None, None) => Err("Codex thread identity is not yet known; complete a turn or use a directly launched RiWork Codex pane".into()),
+                }
+            }
+            Some(HarnessKind::Claude) => crate::agent_hooks::schedule_state(&self.home, &shell.id)
+                .map(|(id, _)| id)
+                .ok_or(
+                    "Claude session identity is not yet known; wait for a completed turn".into(),
+                ),
+            None => Err("Scheduling requires Codex or Claude".into()),
+        }
+    }
+
+    fn schedule_codex_rollout(&self, id: &str) -> Result<Option<PathBuf>, String> {
+        let pane = self.tmux_text(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane_target(id),
+            "#{pane_pid}|#{pane_current_command}",
+        ])?;
+        let (pid, command) = pane
+            .trim()
+            .split_once('|')
+            .ok_or("Cannot identify the harness process")?;
+        if command != "codex" || pid.parse::<u32>().is_err() {
+            return Ok(None);
+        }
+        // A bounded child query, never a scan of another pane's files/processes.
+        let mut child = Command::new("/usr/sbin/lsof")
+            .args(["-nP", "-a", "-p", pid, "-Fn"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Cannot inspect Codex rollout identity: {e}"))?;
+        let started = std::time::Instant::now();
+        loop {
+            if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+                break;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(2) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Codex descriptor identity check timed out".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err("Cannot verify Codex descriptor identity".into());
+        }
+        let paths: HashSet<_> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix('n'))
+            .filter(|path| path.contains("/rollout-") && path.ends_with(".jsonl"))
+            .map(PathBuf::from)
+            .collect();
+        if paths.len() != 1 {
+            return Err("Codex has no unique open primary rollout; scheduling is deferred".into());
+        }
+        Ok(paths.into_iter().next())
+    }
+
+    /// The scheduling gate and normal `send` share the input lock. The registry
+    /// lock also excludes RiWork close/respawn while checking and submitting.
+    pub(crate) fn send_scheduled(
+        &self,
+        target: &crate::schedules::Target,
+        state: &crate::store::State,
+        text: &str,
+        tracker: &mut crate::activity::ActivityTracker,
+        claim: &mut dyn FnMut(&str) -> Result<bool, String>,
+    ) -> Result<crate::schedules::Delivery, String> {
+        use crate::schedules::{Delivery, Scope};
+        let _registry = self.lock_registry()?;
+        let shell = match self.get(&target.shell_id) { Ok(s) if s.alive => s, _ => return Ok(Delivery::Failed("Target session no longer exists or has exited; select an existing target explicitly.".into())) };
+        if !target.matches(state, &shell)
+            || self.schedule_pane_identity(&shell.id)? != target.pane_identity
+            || self.schedule_provider_identity(&shell).ok().as_ref()
+                != Some(&target.provider_session)
+        {
+            return Ok(Delivery::Failed(
+                "Target identity changed; edit and explicitly select the intended session.".into(),
+            ));
+        }
+        if let Scope::Workspace { worktree_id, .. } = &target.scope {
+            let workspace = state
+                .worktrees
+                .iter()
+                .find(|w| &w.id == worktree_id)
+                .ok_or("Workspace is missing")?;
+            if !self
+                .current_directory(&shell.id)?
+                .starts_with(&workspace.path)
+            {
+                return Ok(Delivery::Failed(
+                    "Worker left the selected workspace.".into(),
+                ));
+            }
+        }
+        let mut gate_outcome = None;
+        let mut claim_error = None;
+        let mut claimed = false;
+        let result = crate::session_input::submit_checked(
+            &self.home,
+            &shell.id,
+            text,
+            &|args| self.tmux_text(args),
+            || {
+                let token = match shell.harness {
+                    Some(HarnessKind::Codex) => {
+                        tracker.schedule_idle_token(&shell, &target.provider_session)
+                    }
+                    Some(HarnessKind::Claude) => {
+                        crate::agent_hooks::schedule_state(&self.home, &shell.id)
+                            .filter(|(id, _)| id == &target.provider_session)
+                            .and_then(|(_, token)| token)
+                    }
+                    None => None,
+                };
+                let ready = (|| {
+                    let token =
+                        token.ok_or("Harness is busy, blocked or its idle lifecycle is unknown")?;
+                    let first = self.schedule_prompt_screen(&shell)?;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    if first != self.schedule_prompt_screen(&shell)? {
+                        return Err("Harness prompt is changing".to_owned());
+                    }
+                    let second_token = match shell.harness {
+                        Some(HarnessKind::Codex) => {
+                            tracker.schedule_idle_token(&shell, &target.provider_session)
+                        }
+                        Some(HarnessKind::Claude) => {
+                            crate::agent_hooks::schedule_state(&self.home, &shell.id)
+                                .filter(|(id, _)| id == &target.provider_session)
+                                .and_then(|(_, t)| t)
+                        }
+                        None => None,
+                    };
+                    if second_token.as_ref() != Some(&token) {
+                        return Err("Harness lifecycle changed while checking readiness".into());
+                    }
+                    if self.schedule_provider_identity(&shell)? != target.provider_session {
+                        return Err("Provider identity changed while checking readiness".into());
+                    }
+                    Ok(format!("{}:{token}", target.provider_session))
+                })();
+                let token = match ready {
+                    Ok(token) => token,
+                    Err(error) => {
+                        gate_outcome = Some(Delivery::Deferred(error));
+                        return Err("schedule gate deferred".into());
+                    }
+                };
+                match claim(&token) {
+                    Ok(true) => {
+                        claimed = true;
+                        Ok(())
+                    }
+                    Ok(false) => {
+                        gate_outcome = Some(Delivery::Deferred("Waiting for a fresh completed turn or the four-attempts-per-minute delivery limit.".into()));
+                        Err("schedule gate deferred".into())
+                    }
+                    Err(error) => {
+                        claim_error = Some(error.clone());
+                        Err(error)
+                    }
+                }
+            },
+        );
+        if let Some(error) = claim_error {
+            return Err(error);
+        }
+        if let Some(outcome) = gate_outcome {
+            return Ok(outcome);
+        }
+        Ok(match result {
+            Ok(()) => Delivery::Submitted,
+            Err(error) if claimed => Delivery::Uncertain(format!(
+                "Terminal delivery may be partial: {error}. Review the target; no automatic retry."
+            )),
+            Err(error) => Delivery::Deferred(format!("Terminal input unavailable: {error}")),
+        })
+    }
+
+    fn schedule_prompt_screen(&self, shell: &ShellSession) -> Result<String, String> {
+        let pane = pane_target(&shell.id);
+        let cursor = self.tmux_text(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            "#{cursor_y}|#{cursor_x}|#{pane_dead}",
+        ])?;
+        let fields: Vec<_> = cursor.trim().split('|').collect();
+        let row = fields
+            .first()
+            .and_then(|v| v.parse::<usize>().ok())
+            .ok_or("Cannot read harness cursor")?;
+        if fields.get(2) != Some(&"0") {
+            return Err("Harness has exited".into());
+        }
+        let screen = self.tmux_text(&["capture-pane", "-p", "-e", "-t", &pane])?;
+        let column = fields
+            .get(1)
+            .and_then(|v| v.parse::<usize>().ok())
+            .ok_or("Cannot read harness cursor")?;
+        if !schedule_empty_prompt_at(shell.harness, &screen, row, column) {
+            return Err(
+                "Harness is not at an empty prompt (busy, approval, trust, login or draft input)"
+                    .into(),
+            );
+        }
+        Ok(format!("{cursor}{screen}"))
+    }
+
     /// Send literal text followed by Return to an existing shell.
     pub fn send(&self, id: &str, text: &str) -> Result<(), String> {
         self.require_live(id)?;
@@ -2203,6 +2451,72 @@ fn read_processes() -> Result<HashMap<u32, ProcessInfo>, String> {
     Ok(processes)
 }
 
+fn schedule_empty_prompt_at(
+    harness: Option<HarnessKind>,
+    screen: &str,
+    cursor_row: usize,
+    cursor_column: usize,
+) -> bool {
+    let raw_line = screen.lines().nth(cursor_row).unwrap_or("");
+    let plain = strip_schedule_sgr(screen);
+    let line = plain.lines().nth(cursor_row).unwrap_or("").trim();
+    let expected = match harness {
+        Some(HarnessKind::Codex) => "›",
+        Some(HarnessKind::Claude) => "❯",
+        None => return false,
+    };
+    // Codex paints its empty composer placeholder dim, at the initial cursor.
+    // A typed lookalike without the dim span is a draft and must never be sent.
+    let codex_placeholder = harness == Some(HarnessKind::Codex)
+        && cursor_column == 2
+        && line == "› Ask Codex to do anything"
+        && raw_line.contains("\x1b[2mAsk Codex to do anything\x1b[");
+    if line != expected && !codex_placeholder {
+        return false;
+    }
+    if cursor_column != 2 {
+        return false;
+    }
+    // Everything above the cursor's composer may be completed conversation,
+    // including quoted login/approval screens. It is not readiness evidence.
+    // Ongoing tasks are gated by the exact structured lifecycle in send_scheduled.
+    // Only current controls/status below this composer can additionally veto it.
+    !plain.lines().skip(cursor_row + 1).any(|line| {
+        let status = line.trim().to_lowercase();
+        status.contains("esc to interrupt")
+            || status.contains("esc to cancel")
+            || [
+                "approval required",
+                "allow once",
+                "sign in to continue",
+                "log in to continue",
+                "do you trust this",
+                "trust this directory",
+                "yes, proceed",
+                "select an option",
+            ]
+            .iter()
+            .any(|control| status.starts_with(control))
+    })
+}
+fn strip_schedule_sgr(text: &str) -> String {
+    let mut output = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for code in chars.by_ref() {
+                if code.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3620,5 +3934,86 @@ mod tests {
                 custom
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod scheduling_readiness_tests {
+    use super::*;
+    #[test]
+    fn only_an_empty_harness_prompt_accepts_automated_input() {
+        assert!(schedule_empty_prompt_at(
+            Some(HarnessKind::Codex),
+            "ready\n› \nfooter",
+            1,
+            2
+        ));
+        assert!(schedule_empty_prompt_at(
+            Some(HarnessKind::Claude),
+            "ready\n❯ \nfooter",
+            1,
+            2
+        ));
+        for screen in [
+            "ready\n› \nWorking (1s • esc to interrupt)",
+            "ready\nDo you trust this directory?\n❯ Yes, proceed",
+            "ready\nApproval required\n❯ Allow once",
+            "ready\nSign in to continue\n❯ Log in",
+            "ready\n› existing draft\n",
+            "ready\n$ \n",
+        ] {
+            assert!(
+                !schedule_empty_prompt_at(Some(HarnessKind::Codex), screen, 1, 2),
+                "{screen}"
+            );
+        }
+        assert!(schedule_empty_prompt_at(
+            Some(HarnessKind::Codex),
+            "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m",
+            0,
+            2
+        ));
+        assert!(!schedule_empty_prompt_at(
+            Some(HarnessKind::Codex),
+            "› Ask Codex to do anything",
+            0,
+            2
+        ));
+        assert!(!schedule_empty_prompt_at(
+            Some(HarnessKind::Codex),
+            "› ",
+            0,
+            5
+        ));
+        assert!(!schedule_empty_prompt_at(None, "› \n", 0, 2));
+    }
+
+    #[test]
+    fn completed_reply_history_is_not_an_interactive_blocker() {
+        let history = "• Thinking about login: approve the login fix.\n  Sign in to continue was the old error.\n  Approval required and esc to interrupt were quoted UI text.\n\n";
+        for (harness, composer) in [
+            (HarnessKind::Codex, "› "),
+            (
+                HarnessKind::Codex,
+                "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m",
+            ),
+            (HarnessKind::Claude, "❯ "),
+        ] {
+            let screen = format!("{history}{composer}\n? for shortcuts");
+            assert!(schedule_empty_prompt_at(Some(harness), &screen, 4, 2));
+        }
+        for status in [
+            "Working (1s • esc to interrupt)",
+            "Approval required",
+            "Sign in to continue",
+            "Do you trust this directory?",
+        ] {
+            assert!(!schedule_empty_prompt_at(
+                Some(HarnessKind::Codex),
+                &format!("{history}› \n{status}"),
+                4,
+                2
+            ));
+        }
     }
 }

@@ -8,6 +8,17 @@ pub fn submit(
     text: &str,
     t: &crate::session_viewport::Tmux<'_>,
 ) -> Result<(), String> {
+    submit_checked(home, id, text, t, || Ok(()))
+}
+
+/// Run the scheduling gate inside the very same lock as ordinary `send`.
+pub fn submit_checked(
+    home: &Path,
+    id: &str,
+    text: &str,
+    t: &crate::session_viewport::Tmux<'_>,
+    gate: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     let _lock = crate::session_viewport::lock(home, id, "input")?;
     let pane = format!("{id}:0.0");
     let status = t(&[
@@ -20,6 +31,7 @@ pub fn submit(
     if status.trim() != "0|0" {
         return Err("leave copy mode and enable terminal input before submitting".into());
     }
+    gate()?;
     // tmux does not retain an empty set-buffer. Preserve Return-only submission
     // under the same lock and mode checks without attempting an empty paste.
     if text.is_empty() {

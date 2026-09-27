@@ -26,15 +26,15 @@ pub enum FolderEditorEvent {
 }
 
 #[derive(Default)]
-struct Input {
-    text: String,
-    selection: Range<usize>,
-    reversed: bool,
-    marked: Option<Range<usize>>,
+pub(crate) struct Input {
+    pub(crate) text: String,
+    pub(crate) selection: Range<usize>,
+    pub(crate) reversed: bool,
+    pub(crate) marked: Option<Range<usize>>,
 }
 
 impl Input {
-    fn new(text: String) -> Self {
+    pub(crate) fn new(text: String) -> Self {
         let end = text.len();
         Self {
             text,
@@ -51,7 +51,7 @@ impl Input {
         }
     }
 
-    fn replace(&mut self, range: Option<Range<usize>>, text: &str) {
+    pub(crate) fn replace(&mut self, range: Option<Range<usize>>, text: &str) {
         let range = range
             .map(|range| {
                 utf16_to_byte(&self.text, range.start)..utf16_to_byte(&self.text, range.end)
@@ -65,7 +65,7 @@ impl Input {
         self.reversed = false;
     }
 
-    fn key(&mut self, event: &KeyDownEvent, cx: &mut App) -> bool {
+    pub(crate) fn key(&mut self, event: &KeyDownEvent, cx: &mut App) -> bool {
         let platform = event.keystroke.modifiers.platform;
         match event.keystroke.key.as_str() {
             "a" if platform => {
@@ -149,7 +149,7 @@ impl Input {
     }
 }
 
-fn input_content<T: EntityInputHandler>(
+pub(crate) fn input_content<T: EntityInputHandler>(
     input: &Input,
     active: bool,
     placeholder: &str,
@@ -1068,3 +1068,5 @@ macro_rules! impl_input_handler {
 
 impl_input_handler!(ProjectSettingsPanel);
 impl_input_handler!(FolderEditor);
+
+pub(crate) use impl_input_handler;

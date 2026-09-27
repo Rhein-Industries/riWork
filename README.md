@@ -259,3 +259,9 @@ Open **RiWork → Settings…**, press Cmd+, or choose **SETTINGS** under **View
 - **Remember project window size** is on by default. New or reopened project windows restore the last normal window size, constrained to the current display. Maximizing or entering fullscreen does not overwrite it. Switching projects in an existing window keeps that window's size. Older layouts use the default size until opened and saved by this version.
 
 The embedded Ghostty adapter currently uses the light variant of a paired `light:…,dark:…` theme and does not follow macOS appearance changes. A single Ghostty theme or an explicit RiWork theme applies consistently.
+
+## Scheduled prompts
+
+Open **SCHEDULES** from the pane **+ / ▤** menu, **RiWork → Schedules**, or **Cmd+Shift+S**. App schedules target the existing global orchestrator, project schedules target their existing project orchestrator, and workspace schedules target an explicitly selected worker in a worktree. The compact native panel supports quick future first-run choices with local timezone previews, optional exact date/time entry, one-time or elapsed-time recurring prompts, edit/pause/delete, and visible next/last outcomes.
+
+Scheduling runs while RiWork is open. Busy or blocked targets defer for up to five minutes; older occurrences are skipped. There is no overdue replay or automatic retry of uncertain delivery. Targets remain pinned across windows and restart; failed or uncertain schedules pause for review. See [timing, lifecycle, persistence, and verification](docs/scheduling.md).

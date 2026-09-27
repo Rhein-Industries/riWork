@@ -427,10 +427,15 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
         PanelKind::Usage => "usage",
         PanelKind::Settings => "settings",
         PanelKind::ProjectSettings => "project_settings",
+        PanelKind::Schedules => "schedules",
     };
 
     match kind {
-        PanelKind::Files | PanelKind::Usage | PanelKind::Settings | PanelKind::ProjectSettings => {}
+        PanelKind::Files
+        | PanelKind::Usage
+        | PanelKind::Settings
+        | PanelKind::ProjectSettings
+        | PanelKind::Schedules => {}
         PanelKind::Projects => {
             total = data.state.projects.len();
             let order = sorted_project_indices(

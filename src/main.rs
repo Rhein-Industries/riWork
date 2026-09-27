@@ -17,6 +17,8 @@ mod project_settings;
 mod project_sort;
 mod remote_cli;
 mod runtime;
+mod schedule_panel;
+mod schedules;
 mod session_input;
 mod session_reload;
 mod session_viewport;
@@ -88,6 +90,7 @@ actions!(
         CreateProject,
         ToggleFocusMode,
         OpenSettings,
+        OpenSchedules,
         OpenFiles,
         Quit
     ]
@@ -223,6 +226,7 @@ struct Workspace {
     folder_editor: Option<Entity<FolderEditor>>,
     collapsed_project_folders: HashSet<String>,
     project_settings_panel: Option<Entity<ProjectSettingsPanel>>,
+    schedule_panel: Option<Entity<schedule_panel::SchedulePanel>>,
     file_explorer: Option<Entity<FileExplorer>>,
     locked_panes: Option<HashSet<PaneId>>,
     carry_layout: Option<ProjectLayout>,
@@ -438,6 +442,7 @@ impl Workspace {
             folder_editor: None,
             collapsed_project_folders: HashSet::new(),
             project_settings_panel: None,
+            schedule_panel: None,
             file_explorer: None,
             locked_panes: None,
             carry_layout: None,
@@ -840,11 +845,21 @@ impl Workspace {
             PanelKind::Shells => "SHELLS",
             PanelKind::Usage => "USAGE",
             PanelKind::Settings => "SETTINGS",
+            PanelKind::Schedules => "SCHEDULES",
             PanelKind::ProjectSettings => "PROJECT SETTINGS",
         }
     }
 
     fn attach_panel(&mut self, pane_id: PaneId, panel: PanelKind, cx: &mut Context<Self>) {
+        if panel == PanelKind::Schedules && self.schedule_panel.is_none() {
+            let store = self.store.clone();
+            let sessions = self.sessions.clone();
+            let project = self.project_id.clone();
+            let workspace = self.selected_worktree_id.clone();
+            self.schedule_panel = Some(cx.new(|cx| {
+                schedule_panel::SchedulePanel::new(store, sessions, project, workspace, cx)
+            }));
+        }
         if panel == PanelKind::ProjectSettings {
             self.ensure_project_settings(cx);
         }
@@ -1857,6 +1872,7 @@ impl Workspace {
         self.restore_layout = None;
         self.project_id = project.id;
         self.project_settings_panel = None;
+        self.schedule_panel = None;
         self.file_explorer = None;
         window.set_window_title(&format!("RiWork · {}", project.name));
         self.cwd = project.root;
@@ -2255,6 +2271,18 @@ impl Workspace {
             }
             return;
         }
+        let schedules_active = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Schedules)));
+        if schedules_active {
+            self.search_focused = false;
+            if let Some(panel) = &self.schedule_panel {
+                panel.update(cx, |panel, cx| panel.focus(window, cx));
+            }
+            return;
+        }
         let settings_active = self
             .panes
             .get(&self.active_pane)
@@ -2590,6 +2618,15 @@ impl Workspace {
         self.open_panel(PanelKind::Projects, self.active_pane, window, cx);
     }
 
+    fn open_schedules_action(
+        &mut self,
+        _: &OpenSchedules,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_panel(PanelKind::Schedules, self.active_pane, window, cx);
+    }
+
     fn open_settings_action(
         &mut self,
         _: &OpenSettings,
@@ -2642,7 +2679,7 @@ impl Workspace {
             .panes
             .get(&self.active_pane)
             .and_then(|pane| pane.tabs.get(pane.active))
-            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(kind) if kind != PanelKind::Settings && kind != PanelKind::ProjectSettings && kind != PanelKind::Usage));
+            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(kind) if kind != PanelKind::Settings && kind != PanelKind::ProjectSettings && kind != PanelKind::Usage && kind != PanelKind::Schedules));
         if !active_panel {
             self.open_panel(PanelKind::Projects, self.active_pane, window, cx);
         }
@@ -3239,6 +3276,11 @@ impl Workspace {
                 }
             }
             Some(TabContent::Panel(PanelKind::Usage)) => self.render_usage_panel(cx),
+            Some(TabContent::Panel(PanelKind::Schedules)) => self
+                .schedule_panel
+                .as_ref()
+                .map(|panel| panel.clone().into_any_element())
+                .unwrap_or_else(|| div().into_any_element()),
             Some(TabContent::Panel(PanelKind::Settings)) => {
                 self.settings_panel.clone().into_any_element()
             }
@@ -3495,6 +3537,7 @@ impl Workspace {
                                 PanelKind::Tasks,
                                 PanelKind::Shells,
                                 PanelKind::Usage,
+                                PanelKind::Schedules,
                                 PanelKind::ProjectSettings,
                                 PanelKind::Settings,
                             ]
@@ -3506,6 +3549,7 @@ impl Workspace {
                                     match kind {
                                         PanelKind::Files => "⌘⇧E",
                                         PanelKind::Settings => "⌘,",
+                                        PanelKind::Schedules => "⌘⇧S",
                                         _ => "",
                                     },
                                     None,
@@ -4366,6 +4410,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::previous_tab_action))
             .on_action(cx.listener(Self::toggle_sidebar_action))
             .on_action(cx.listener(Self::open_settings_action))
+            .on_action(cx.listener(Self::open_schedules_action))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::focus_search_action))
             .on_action(cx.listener(Self::toggle_focus_mode_action))
@@ -4828,6 +4873,7 @@ fn main() {
 
     application().run(move |cx: &mut App| {
         cx.set_app_identity("dev.riwork.shell", "RiWork");
+        schedules::start(state_home.clone(), cx);
         notifications::start(state_home, cx);
         cx.on_system_notification_response(|response, cx| {
             if response.action_id.as_ref().is_some_and(|action| action.as_ref() != "open") { return; }
@@ -4881,6 +4927,7 @@ fn main() {
         });
         cx.bind_keys([
             KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("cmd-shift-s", OpenSchedules, None),
             KeyBinding::new("cmd-shift-e", OpenFiles, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-n", CreateProject, None),
@@ -4902,6 +4949,7 @@ fn main() {
         ]);
         cx.set_menus([Menu::new("RiWork").items([
             MenuItem::action("Settings…", OpenSettings),
+            MenuItem::action("Schedules", OpenSchedules),
             MenuItem::separator(),
             MenuItem::action("Quit RiWork", Quit),
         ])]);

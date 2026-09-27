@@ -4290,6 +4290,7 @@ dependencies = [
 name = "riwork"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "fs2",
  "gpui-libghostty",
  "gpui-pre",
