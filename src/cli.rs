@@ -49,6 +49,7 @@ riwork task unassign TASK_ID...         Remove worktree assignment
 riwork task status TASK_ID todo|in_progress|done
 riwork search QUERY                     Search projects, worktrees, and tasks
 riwork mcp                              Serve workspace tools over MCP stdio
+riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork shell create [--project ID | --worktree ID] [--command CMD]
 riwork shell create [--worktree ID] --harness codex|claude [--unrestricted]
 riwork shell list [--project ID | --all]
@@ -77,6 +78,10 @@ Explicit project paths remain relative to the current directory when needed.
 pub fn run_cli(args: &[String]) -> Result<bool, String> {
     if args.is_empty() {
         return Ok(false);
+    }
+    if args.first().map(String::as_str) == Some("remote") {
+        crate::remote_cli::forward(&args[1..])?;
+        return Ok(true);
     }
     let mut args = args.to_vec();
     let literal_arguments = matches!(

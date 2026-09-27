@@ -32,6 +32,29 @@ ln -sfn "$PWD/target/release/riwork" "$HOME/.local/bin/riwork"
 
 Run `riwork help` for the full command list. Data defaults to `~/.local/share/riwork`; set `RIWORK_HOME` to use a separate store and tmux server.
 
+## Encrypted iOS access
+
+The standalone `riwork-remote` relay and outbound desktop connector let paired
+mobile devices inspect existing projects/tasks/worktrees, read persistent shell
+and orchestrator output, and submit a line to an explicitly selected existing
+session. Each device has independent endpoint secrets and revocable access; the
+relay routes encrypted frames without session content or pairing secrets.
+
+```sh
+cargo build --locked --release --manifest-path remote/Cargo.toml
+export RIWORK_REMOTE_BIN="$PWD/remote/target/release/riwork-remote"
+riwork remote --help
+riwork remote start --riwork /absolute/path/to/riwork
+```
+
+Build the standalone binary before bundling to include it beside the desktop
+CLI. `RIWORK_HOME` is retained. Stopping the transport preserves tmux and harness
+state. Follow [pairing and test instructions](remote/README.md), the
+[frozen mobile protocol](docs/remote-protocol.md), and
+[TLS relay deployment](docs/remote-deployment.md). v1 supports captured terminal
+text and single-line input, with persistent request deduplication and explicit
+unknown-outcome errors.
+
 ## Update and reload
 
 ```sh

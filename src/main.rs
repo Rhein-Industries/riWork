@@ -15,6 +15,7 @@ mod project_creator;
 mod project_recency;
 mod project_settings;
 mod project_sort;
+mod remote_cli;
 mod runtime;
 mod session_reload;
 mod sessions;
