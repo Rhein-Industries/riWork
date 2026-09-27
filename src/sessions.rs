@@ -2477,24 +2477,27 @@ fn schedule_empty_prompt_at(
     if cursor_column != 2 {
         return false;
     }
-    let lower = plain.to_lowercase();
-    ![
-        "esc to interrupt",
-        "working (",
-        "thinking",
-        "do you trust",
-        "trust this",
-        "approve",
-        "approval required",
-        "allow once",
-        "sign in",
-        "log in",
-        "login",
-        "yes, proceed",
-        "select an option",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
+    // Everything above the cursor's composer may be completed conversation,
+    // including quoted login/approval screens. It is not readiness evidence.
+    // Ongoing tasks are gated by the exact structured lifecycle in send_scheduled.
+    // Only current controls/status below this composer can additionally veto it.
+    !plain.lines().skip(cursor_row + 1).any(|line| {
+        let status = line.trim().to_lowercase();
+        status.contains("esc to interrupt")
+            || status.contains("esc to cancel")
+            || [
+                "approval required",
+                "allow once",
+                "sign in to continue",
+                "log in to continue",
+                "do you trust this",
+                "trust this directory",
+                "yes, proceed",
+                "select an option",
+            ]
+            .iter()
+            .any(|control| status.starts_with(control))
+    })
 }
 fn strip_schedule_sgr(text: &str) -> String {
     let mut output = String::new();
@@ -3952,10 +3955,10 @@ mod scheduling_readiness_tests {
             2
         ));
         for screen in [
-            "Working (1s • esc to interrupt)\n› \n",
-            "Do you trust this directory?\n› \n",
-            "Approval required\n› \n",
-            "Sign in to continue\n› \n",
+            "ready\n› \nWorking (1s • esc to interrupt)",
+            "ready\nDo you trust this directory?\n❯ Yes, proceed",
+            "ready\nApproval required\n❯ Allow once",
+            "ready\nSign in to continue\n❯ Log in",
             "ready\n› existing draft\n",
             "ready\n$ \n",
         ] {
@@ -3983,5 +3986,34 @@ mod scheduling_readiness_tests {
             5
         ));
         assert!(!schedule_empty_prompt_at(None, "› \n", 0, 2));
+    }
+
+    #[test]
+    fn completed_reply_history_is_not_an_interactive_blocker() {
+        let history = "• Thinking about login: approve the login fix.\n  Sign in to continue was the old error.\n  Approval required and esc to interrupt were quoted UI text.\n\n";
+        for (harness, composer) in [
+            (HarnessKind::Codex, "› "),
+            (
+                HarnessKind::Codex,
+                "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m",
+            ),
+            (HarnessKind::Claude, "❯ "),
+        ] {
+            let screen = format!("{history}{composer}\n? for shortcuts");
+            assert!(schedule_empty_prompt_at(Some(harness), &screen, 4, 2));
+        }
+        for status in [
+            "Working (1s • esc to interrupt)",
+            "Approval required",
+            "Sign in to continue",
+            "Do you trust this directory?",
+        ] {
+            assert!(!schedule_empty_prompt_at(
+                Some(HarnessKind::Codex),
+                &format!("{history}› \n{status}"),
+                4,
+                2
+            ));
+        }
     }
 }

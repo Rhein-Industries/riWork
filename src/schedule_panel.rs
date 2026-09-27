@@ -20,6 +20,8 @@ enum Control {
     Target(String),
     Workspace(String),
     Repeat(u64),
+    FirstIn(u64),
+    ExactTime,
     Save,
     Cancel,
     New,
@@ -33,6 +35,8 @@ struct Editor {
     target_id: Option<String>,
     pinned: Option<Target>,
     repeat: u64,
+    first_quick: Option<u64>,
+    exact_time: bool,
     fields: [Input; 4],
 }
 impl Editor {
@@ -43,6 +47,8 @@ impl Editor {
             target_id: None,
             pinned: None,
             repeat: 0,
+            first_quick: Some(600),
+            exact_time: false,
             fields: [
                 Input::default(),
                 Input::default(),
@@ -50,6 +56,11 @@ impl Editor {
                 Input::new("60".into()),
             ],
         }
+    }
+
+    fn first_in(&mut self, seconds: u64, now: u64) {
+        self.fields[2] = Input::new(format_time(now + seconds));
+        self.first_quick = Some(seconds);
     }
 }
 pub struct SchedulePanel {
@@ -189,6 +200,11 @@ impl SchedulePanel {
             && matches!(self.controls.get(self.active), Some(Control::Field(_)))
     }
     fn edited(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.controls.get(self.active), Some(Control::Field(2)))
+            && let Some(editor) = &mut self.editor
+        {
+            editor.first_quick = None;
+        }
         self.error = None;
         cx.notify();
     }
@@ -222,8 +238,12 @@ impl SchedulePanel {
             }
             "enter" if self.editor.is_some() => self.save(cx),
             _ if self.accepts_input() => {
+                let before = self.input().text.clone();
                 if !self.input_mut().key(event, cx) {
                     return;
+                }
+                if self.input().text != before {
+                    self.edited(cx);
                 }
             }
             _ => return,
@@ -274,6 +294,16 @@ impl SchedulePanel {
                     e.repeat = seconds;
                 }
             }
+            Control::FirstIn(seconds) => {
+                if let Some(e) = &mut self.editor {
+                    e.first_in(seconds, schedules::now());
+                }
+            }
+            Control::ExactTime => {
+                if let Some(e) = &mut self.editor {
+                    e.exact_time = !e.exact_time;
+                }
+            }
             Control::Save => self.save(cx),
             Control::Edit(id) => {
                 if let Some(s) = self.rows.iter().find(|s| s.id == id).cloned() {
@@ -305,6 +335,8 @@ impl SchedulePanel {
                         scope,
                         target_id: Some(s.target.shell_id.clone()),
                         pinned: Some(s.target.clone()),
+                        first_quick: None,
+                        exact_time: true,
                         repeat: if matches!(repeat, 0 | 3600 | 86400 | 604800) {
                             repeat
                         } else {
@@ -538,6 +570,15 @@ impl Render for SchedulePanel {
             let repeat = editor.repeat;
             let selected = editor.target_id.clone();
             let editing = editor.previous.is_some();
+            let first_quick = editor.first_quick;
+            let exact_time = editor.exact_time;
+            let first_display = DateTime::parse_from_rfc3339(&editor.fields[2].text)
+                .map(|at| {
+                    at.with_timezone(&Local)
+                        .format("%Y-%m-%d %H:%M:%S %:z")
+                        .to_string()
+                })
+                .unwrap_or_else(|_| "Choose a quick time or enter an exact date/time".into());
             let mut form = div()
                 .flex()
                 .flex_col()
@@ -625,12 +666,50 @@ impl Render for SchedulePanel {
                         .child(format!("PINNED TARGET  /  {id}")),
                 );
             }
-            form = form.child(choices).child(self.field(
-                2,
-                "FIRST RUN · ISO DATE / TIME WITH UTC OFFSET",
+            let mut first_choices = div().flex().flex_wrap().gap(px(5.0));
+            for (seconds, label) in [
+                (600, "IN 10 MIN"),
+                (1800, "IN 30 MIN"),
+                (3600, "IN 1 HOUR"),
+                (86400, "IN 1 DAY"),
+            ] {
+                first_choices = first_choices.child(self.button(
+                    label,
+                    Control::FirstIn(seconds),
+                    first_quick == Some(seconds),
+                    window,
+                    cx,
+                ));
+            }
+            first_choices = first_choices.child(self.button(
+                "EXACT TIME…",
+                Control::ExactTime,
+                exact_time,
                 window,
                 cx,
             ));
+            form = form
+                .child(choices)
+                .child(
+                    div()
+                        .text_color(rgb(colors.muted))
+                        .text_size(px(9.0))
+                        .child("FIRST RUN"),
+                )
+                .child(first_choices)
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .child(format!("LOCAL  {first_display}")),
+                );
+            if exact_time {
+                form = form.child(self.field(
+                    2,
+                    "EXACT DATE / TIME · ISO WITH UTC OFFSET",
+                    window,
+                    cx,
+                ));
+            }
             let mut presets = div().flex().flex_wrap().gap(px(5.0));
             for (seconds, label) in [
                 (0, "ONCE"),
@@ -827,6 +906,31 @@ fn selected_timing(repeat: u64, at: u64, minutes: &str) -> Result<Timing, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_first_run_choices_select_future_instants_without_editing_other_fields() {
+        let mut editor = Editor::new();
+        editor.fields[0] = Input::new("Title".into());
+        editor.fields[1] = Input::new("Prompt".into());
+        editor.target_id = Some("00000000-0000-4000-8000-000000000123".into());
+        let now = 1_790_000_000;
+        for seconds in [600, 1800, 3600, 86400] {
+            editor.first_in(seconds, now);
+            assert_eq!(
+                DateTime::parse_from_rfc3339(&editor.fields[2].text)
+                    .unwrap()
+                    .timestamp() as u64,
+                now + seconds
+            );
+            assert_eq!(editor.fields[0].text, "Title");
+            assert_eq!(editor.fields[1].text, "Prompt");
+            assert_eq!(
+                editor.target_id.as_deref(),
+                Some("00000000-0000-4000-8000-000000000123")
+            );
+            assert!(!editor.exact_time);
+        }
+    }
 
     #[test]
     fn custom_zero_minutes_cannot_become_a_one_time_schedule() {

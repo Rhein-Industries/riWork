@@ -389,13 +389,23 @@ impl RealFixture {
             .unwrap();
         let state = store.snapshot().unwrap();
         let script = f.home.join("harness.py");
-        fs::write(&script,r#"import os,sys,tty
+        fs::write(&script,r#"import os,sys,tty,select
 from pathlib import Path
 tty.setraw(0)
 prompt='❯' if '--claude' in sys.argv else '›'
 os.write(1,('\x1b[2J\x1b[H'+prompt+' ').encode())
 buf=b''
+home=Path(os.environ['RIWORK_HOME'])
+screen_path=home/('screen-'+os.environ['RIWORK_SHELL_ID'])
+last_screen=None
 while True:
+ if screen_path.exists():
+  screen=screen_path.read_bytes()
+  if screen!=last_screen:
+   os.write(1,screen)
+   last_screen=screen
+   (home/('painted-'+os.environ['RIWORK_SHELL_ID'])).write_bytes(screen)
+ if not select.select([0],[],[],0.02)[0]: continue
  b=os.read(0,1)
  if b in (b'\r',b'\n'):
   with open(Path(os.environ['RIWORK_HOME'])/('received-'+os.environ['RIWORK_SHELL_ID']), 'ab') as f: f.write(buf+b'\n')
@@ -485,6 +495,24 @@ while True:
             records,
         )
         .unwrap();
+    }
+    fn paint(&self, id: &str, screen: &str, row: usize, column: usize) {
+        let painted = screen.replace('\n', "\r\n");
+        let bytes = format!("\x1b[2J\x1b[H{painted}\x1b[{};{}H", row + 1, column + 1);
+        fs::write(self.f.home.join(format!("screen-{id}")), &bytes).unwrap();
+        for _ in 0..150 {
+            if fs::read(self.f.home.join(format!("painted-{id}")))
+                .is_ok_and(|b| b == bytes.as_bytes())
+                && self
+                    .sessions
+                    .capture(id, 100)
+                    .is_ok_and(|s| s.contains(screen.lines().next().unwrap()))
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("Disposable terminal did not paint its fixture screen");
     }
     fn scopes(&self) -> Vec<Scope> {
         let project = self.state.projects[0].id.clone();
@@ -618,6 +646,198 @@ fn global_delivery_limit_bounds_simultaneous_due_schedules() {
             .count(),
         4
     );
+}
+
+#[test]
+fn real_dispatch_accepts_completed_history_and_refuses_current_interaction() {
+    let history = "• Thinking about login: approve the login fix.\n  Sign in to continue was the old error.\n  Approval required and esc to interrupt were quoted UI text.\n\n";
+    let cases = [
+        (format!("{history}› \n? for shortcuts"), 4, 2, false, true),
+        (
+            format!(
+                "{history}\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m\n? for shortcuts"
+            ),
+            4,
+            2,
+            false,
+            true,
+        ),
+        (
+            "• Working (1s • esc to interrupt)\n\n› \n? for shortcuts".into(),
+            2,
+            2,
+            true,
+            false,
+        ),
+        (
+            "Busy UI transition\n› \nEsc to interrupt".into(),
+            1,
+            2,
+            false,
+            false,
+        ),
+        (
+            "Do you trust this directory?\n❯ 1. Yes, proceed\n  2. No".into(),
+            1,
+            2,
+            false,
+            false,
+        ),
+        (
+            "Sign in to continue\nEmail: \nPress Enter".into(),
+            1,
+            7,
+            false,
+            false,
+        ),
+        (
+            "Approval required\n❯ 1. Allow once\n  2. Reject".into(),
+            1,
+            2,
+            false,
+            false,
+        ),
+        (
+            "Existing draft\n› existing draft\n? for shortcuts".into(),
+            1,
+            16,
+            false,
+            false,
+        ),
+        (
+            "Typed placeholder draft\n› Ask Codex to do anything\n? for shortcuts".into(),
+            1,
+            2,
+            false,
+            false,
+        ),
+    ];
+    for (screen, row, column, busy, accepts) in cases {
+        let f = RealFixture::new();
+        let id = &f.ids[2];
+        if busy {
+            f.lifecycle(id, "busy-turn", false);
+        }
+        let target = Target::bind(f.scopes().remove(2), &f.state, &f.sessions, id).unwrap();
+        let identity = target.pane_identity.clone();
+        f.paint(id, &screen, row, column);
+        f.f.store
+            .save(
+                None,
+                "Current surface".into(),
+                "literal fixture acceptance".into(),
+                target,
+                Timing::Once { at: 1000 },
+                999,
+            )
+            .unwrap();
+        let mut trackers = Default::default();
+        f.f.store.tick_tracked(1000, &mut trackers).unwrap();
+        let run = f.f.row().last_run.unwrap();
+        assert_eq!(
+            run.outcome,
+            if accepts {
+                Outcome::Submitted
+            } else {
+                Outcome::Deferred
+            },
+            "{screen}: {}; pane: {}",
+            run.message,
+            f.sessions.capture(id, 100).unwrap()
+        );
+        let received = f.f.home.join(format!("received-{id}"));
+        if accepts {
+            for _ in 0..150 {
+                if received.exists() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(
+                fs::read_to_string(&received).unwrap(),
+                "literal fixture acceptance\n"
+            );
+            f.f.store.tick_tracked(1015, &mut trackers).unwrap();
+            assert_eq!(
+                fs::read_to_string(&received).unwrap(),
+                "literal fixture acceptance\n"
+            );
+        } else {
+            assert!(!received.exists(), "blocked terminal received test input");
+        }
+        assert_eq!(f.sessions.schedule_pane_identity(id).unwrap(), identity);
+    }
+}
+
+#[test]
+fn tracked_scheduler_catches_up_large_rollout_without_startup_alerts_or_duplicate() {
+    let f = RealFixture::new();
+    let id = &f.ids[2];
+    let target = Target::bind(f.scopes().remove(2), &f.state, &f.sessions, id).unwrap();
+    let identity = target.pane_identity.clone();
+    let provider = target.provider_session.clone();
+    let path =
+        f.f.home
+            .join("codex/sessions/2026/09/27")
+            .join(format!("rollout-fixture-{provider}.jsonl"));
+    let mut log = OpenOptions::new().append(true).open(&path).unwrap();
+    write!(
+        log,
+        "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"content\":\"{}\"}}}}\n",
+        "x".repeat(crate::activity::MAX_POLL_BYTES * 2 + 4096)
+    )
+    .unwrap();
+    for event in ["task_started", "task_complete"] {
+        writeln!(log, "{}", serde_json::json!({"type":"event_msg","payload":{"type":event,"turn_id":"latest-history-turn"}})).unwrap();
+    }
+    drop(log);
+    assert!(fs::metadata(&path).unwrap().len() > crate::activity::MAX_POLL_BYTES as u64);
+    f.f.store
+        .save(
+            None,
+            "Large history".into(),
+            "large rollout fixture dispatch".into(),
+            target,
+            Timing::Once { at: 1000 },
+            999,
+        )
+        .unwrap();
+    let mut trackers = std::collections::HashMap::new();
+    let received = f.f.home.join(format!("received-{id}"));
+    for at in [1000, 1015] {
+        f.f.store.tick_tracked(at, &mut trackers).unwrap();
+        assert_eq!(f.f.row().last_run.unwrap().outcome, Outcome::Deferred);
+        assert!(!received.exists());
+        assert!(trackers.get_mut(id).unwrap().take_completions().is_empty());
+    }
+    f.f.store.tick_tracked(1030, &mut trackers).unwrap();
+    assert_eq!(f.f.row().last_run.unwrap().outcome, Outcome::Submitted);
+    assert!(trackers.get_mut(id).unwrap().take_completions().is_empty());
+    assert!(!f.f.home.join("agent-notifications.json").exists());
+    assert!(
+        crate::notifications::claim_pending(&f.f.home)
+            .unwrap()
+            .is_empty()
+    );
+    for _ in 0..150 {
+        if received.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        fs::read_to_string(&received).unwrap(),
+        "large rollout fixture dispatch\n"
+    );
+    for at in [1045, 1100, 1500] {
+        f.f.store.tick_tracked(at, &mut trackers).unwrap();
+    }
+    assert_eq!(
+        fs::read_to_string(received).unwrap(),
+        "large rollout fixture dispatch\n"
+    );
+    assert_eq!(f.sessions.schedule_pane_identity(id).unwrap(), identity);
+    assert_eq!(f.f.row().target.provider_session, provider);
 }
 
 /// Opt-in provider acceptance. The caller must provision a fresh disposable

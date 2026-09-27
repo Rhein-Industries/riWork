@@ -17,7 +17,7 @@ use crate::{
     store::State,
 };
 
-const MAX_POLL_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_POLL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_BINDING_BYTES: u64 = 16 * 1024;
 
