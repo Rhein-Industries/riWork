@@ -97,7 +97,8 @@ new envelope/counter and the original request UUID.
 Limits: text WS message <=262144 bytes, decrypted JSON <=131072 bytes, shell line
 <=8192 UTF-8 bytes, output lines 1..2000 (default 200), handshake <=10 seconds.
 Relay defaults: <=256 sockets total, <=128 configured routes, outgoing queue <=16
-messages/socket, no payload logging. RPC processing is serial per device.
+messages/socket, no payload logging. RPC processing is serial per device; terminal input is additionally serialized per
+selected shell across devices and local CLI callers.
 
 ## Encrypted RPC JSON
 
@@ -116,6 +117,8 @@ are correlated by UUID; no unsolicited response except handshake `ready`.
 | `orchestrators.list` | `{}` | `{"orchestrators":[Session]}` (global + project) |
 | `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200` | `{"shell_id":"UUID","output":"terminal text"}` |
 | `shell.input` | `{"shell_id":"UUID","line":"one physical line"}` | `{"shell_id":"UUID","status":"sent"}` |
+| `shell.resize` | `{"shell_id":"UUID","columns":43,"rows":17}` | `{"shell_id":"UUID","columns":43,"rows":17}` |
+| `shell.resize.clear` | `{"shell_id":"UUID"}` | `{"shell_id":"UUID","status":"cleared"}` |
 
 Project fields: `id,name,root` strings; `created_at` Unix seconds number.
 Worktree: `id,project_id,branch,path` strings; `is_primary` boolean; `created_at`.
@@ -132,6 +135,55 @@ submits terminal input followed by Return and can run commands in the selected
 shell; clients must show the selected shell before sending. CR, LF, NUL and other
 Unicode control characters are forbidden. v1 supports line submission only (no
 terminal action method). Use CLI argv directly, never an intermediate shell.
+
+### Mobile terminal viewport extension (v1, 2026-09-27)
+
+The iOS flow chooses a project, lists its existing open terminal sessions, and
+shows one existing shell per tab, with a single visible terminal and no splits.
+Use `shells.list` with an explicit project UUID; project orchestrators may be
+included from `orchestrators.list` by matching `project_id`. Each tab retains its
+original full shell UUID. No session/pane is created when a tab is opened.
+
+`columns` and `rows` are **integer character-cell counts**, not pixels or points.
+Both are required: columns **20..300**, rows **8..160**. Unknown fields, nulls,
+floats, out-of-range values and malformed shell UUIDs fail `invalid_request`.
+Compute cells from the actual visible iOS terminal area and its monospace font,
+clamp to these bounds, and send `shell.resize` on tab selection, rotation or
+keyboard/viewport change. Success reports the actual effective tmux pane cells;
+the process in the existing PTY receives the resize (SIGWINCH). Its shell UUID,
+pane identity and process remain unchanged. Ghostty renders this same tmux grid;
+this does not resize the native macOS app window or create a split layout.
+
+The desktop temporarily pins that existing terminal's tmux window to the mobile
+size, saving its prior dimensions and explicit/inherited `window-size` policy.
+Only the RiWork-owned single pane in window 0 is supported; a terminal with an
+unexpected split/layout fails `viewport_unsupported` rather than altering it.
+There is at most **one overridden shell per authenticated mobile connection**.
+Resizing a different tab first releases that connection's prior override. Repeated
+resize of the same tab updates its size without replacing the saved baseline.
+
+Ownership is bound to the authenticated device **and fresh connection**, never a
+caller-supplied owner or lease token. A different device cannot overwrite or clear
+an active override: it receives `viewport_busy`. Both RPCs are idempotent state
+operations and may be retried with a fresh RPC UUID; they do not enter the input
+outcome ledger. A retry/late clear from an old connection cannot clear the new
+connection's override. Input request UUID deduplication is unchanged.
+
+`shell.resize.clear` releases only the current connection's
+override on `shell_id`. It does **not** clear terminal output/history, send input,
+close/detach a process, or change session identity. It succeeds with `cleared` when
+already clear; another active owner's override fails `viewport_busy`. On release,
+restore the previous local/inherited sizing policy. With desktop clients attached,
+that policy chooses their current size; with no attached client, restore saved
+rows/columns. Clients clear the previous tab on deselection/background/disconnect
+when possible. Desktop also releases on peer loss, authentication failure,
+revocation and connector shutdown; a crash-recovery lease restores it within
+**15 seconds** even if orderly cleanup cannot run. Reconnect starts clear; iOS
+must reissue resize for its currently selected tab after authenticating ready.
+
+Validated before publication against isolated tmux 3.6a: 120x40 -> 43x17 ->
+120x40 with identical session UUID, pane `%0`, and process PID. No user sessions
+were touched. Root/connector integration verification follows implementation.
 
 Input deduplication: UUIDs are unique per device and logical operation. Desktop
 persists (device ID, request ID, canonical request, state/result) **before** sending
@@ -158,10 +210,16 @@ never kill/recreate/close a tmux or harness session.
 transcript, salt, directional keys, session ID, nonce, AAD and encrypted request/
 ready response. Values are test-only and must never provision production devices.
 
-- 2026-09-27: v1 frozen before implementation. No wire changes yet.
+- 2026-09-27: v1 frozen before initial implementation.
+- 2026-09-27 follow-up, task ae291d60-f96a-4ffe-af40-a81a8fde9a51: user-authorized
+  additive `shell.resize` / `shell.resize.clear` extension, validated ranges,
+  connection ownership, restoration and errors published before implementation.
+  Existing routing/crypto/RPC fields and fixture bytes are unchanged.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),
 [CryptoKit ChaChaPoly](https://developer.apple.com/documentation/cryptokit/chachapoly),
 [RustCrypto ChaCha20Poly1305](https://docs.rs/chacha20poly1305/0.10.1/chacha20poly1305/),
 [RustCrypto HKDF](https://docs.rs/hkdf/0.12.4/hkdf/).
+
+Viewport reference: [official tmux manual](https://raw.githubusercontent.com/tmux/tmux/master/tmux.1).
