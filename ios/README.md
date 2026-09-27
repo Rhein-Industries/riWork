@@ -4,6 +4,12 @@ Choose a paired RiWork desktop and project, then switch between tabs for its
 existing open terminals. One terminal fills the screen at a time. The app never
 creates, splits, closes or replaces a desktop session.
 
+The interface follows RiWork’s compact desktop layout: flat rows and tab strips,
+thin dividers, Menlo text and a small workspace bar. Light appearance uses the
+desktop’s Gruvbox Light palette; dark appearance uses its RiWork palette. Buttons
+retain 44-point touch targets, accessible labels and text scaling. v1 does not
+export desktop theme preferences, so automatic theme synchronization is not available.
+
 ## Open, build and install
 
 Open `ios/RiWorkRemote.xcodeproj` in Xcode 26, select `RiWorkRemote`, and choose an
@@ -26,7 +32,7 @@ signing enabled. `CODE_SIGNING_ALLOWED=NO` compiles but cannot use Keychain (-34
 
 ## Pair and connect
 
-Follow `remote/README.md` and `docs/remote-deployment.md` in the relay branch.
+Follow `remote/README.md` and `docs/remote-deployment.md` in the combined repository.
 Create a device pairing, provision its route hashes on the relay, and run the
 desktop connector with the rebuilt RiWork CLI and its existing `RIWORK_HOME`.
 Terminal fitting requires the published `shell.resize` extension and the new
@@ -46,15 +52,23 @@ directly to the intended device and remove it after import.
 Pairing keys, relay tokens, selections and unconfirmed input are stored only in
 device-local Keychain (`WhenUnlockedThisDeviceOnly`). The app does not use
 UserDefaults for secrets, save terminal output to disk, or log pairing/frames.
-Rename/remove a desktop through its context menu or swipe actions. Removal keeps
+Rename/remove a desktop through its row’s options menu, context menu or swipe actions. Removal keeps
 desktop sessions running; revoke the device on the desktop to deny access.
 
 ## Project and terminal tabs
 
 Select a project, then choose a worker, shell or orchestrator tab. Tabs show actual
-session UUIDs and worktree branches. Ended sessions are excluded from open tabs;
-an unavailable selected session retains its stale-output indication. Each project
-remembers its selected terminal. Refresh or follow output from the toolbar.
+short session IDs and worktree branches. **Session info** exposes the full UUID,
+kind and working directory. The compact status row keeps snapshot freshness,
+connection state and measured terminal dimensions visible.
+
+Each project remembers its selected terminal. On refresh/reconnect, a saved tab
+that is closed or absent falls back to an available live project tab; selection
+clears if none remain. Old draft/output state clears on fallback. Pending input
+stays attached to its original shell and is never resent or moved to the new tab.
+If output returns `not_found`, the app refreshes project sessions once, reconciles,
+and stops polling that UUID. Explicit refresh or reconnect can check it again.
+Refresh or follow output from the toolbar.
 
 The visible terminal measures its character cells and calls the exact v1
 `shell.resize` RPC before reading output. Selecting a tab, rotating the device,
@@ -65,9 +79,11 @@ Reconnect authenticates with fresh keys before reapplying the selected tab's gri
 The server also releases lost connections and recovers a connector crash within
 15 seconds. Another device's active override produces a useful error.
 
-Input is one control-free physical line, at most 8192 UTF-8 bytes. Tap the arrow
-to review the exact session UUID, directory and line, then explicitly submit.
-The desktop sends that line followed by Return. The app persists its request UUID
+Input is one control-free physical line, at most 8192 UTF-8 bytes. Tap **Send**
+(the upward arrow) to submit directly to the visibly selected tab. Send captures
+that shell ID and the current line; a changed selection prevents delivery to a
+different tab. The desktop sends that line followed by Return. The app persists
+its request UUID
 and line before sending. An uncertain result blocks further submission and
 survives reconnect/app restart. Review the indicated session before acknowledging
 the warning. Acknowledgement does not submit or retry anything.
@@ -95,11 +111,14 @@ python3 ios/scripts/local-smoke.py \
 The runner creates a temporary registry, Git project, task, zsh shell and
 zsh-backed orchestrator, then starts a real Rust relay/connector. The Swift tool
 uses the app's transport/crypto to list entities, read the existing session,
-submit one line, reconnect with fresh keys, explicitly repeat the same UUID to
+validate eight concurrent read RPCs on one authenticated connection, submit one
+line, reconnect with fresh keys, explicitly repeat the same UUID to
 check deduplication, verify exactly one execution and shell survival, and verify
 revoked-device denial. With `--viewport`, the real shell's `stty size` must report
 17 rows / 43 columns, then desktop dimensions must return to their baseline with
 the same pane and process after peer loss. Cleanup closes only recorded fixture sessions/processes.
+The eight-request batch stays within the relay's 16-message queue and exercises
+actual encrypted send ordering/counters, rather than a mock transport.
 Parent `RIWORK_HOME` stays unchanged. `--hold SECONDS` keeps the disposable
 fixture available for simulator inspection.
 Send SIGUSR1 to the reported fixture runner PID to finish the hold early, verify

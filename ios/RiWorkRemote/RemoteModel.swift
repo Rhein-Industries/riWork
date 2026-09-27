@@ -41,6 +41,8 @@ enum ConnectionState: Equatable {
     @ObservationIgnored private var polling: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var wantsConnection = false
+    // A not_found UUID is excluded until an explicit refresh or fresh connection.
+    private var missingSessionIDs: Set<String> = []
     @ObservationIgnored private var viewportBusy = false
     @ObservationIgnored private var viewportWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var viewportUpdateScheduled = false
@@ -67,9 +69,10 @@ enum ConnectionState: Equatable {
             return $0.created_at_unix > $1.created_at_unix
         }
     }
+    var openSessions: [RemoteSession] { sessions.filter { $0.alive && !missingSessionIDs.contains($0.id) } }
     var viewportReady: Bool { !terminalVisible || (viewportSessionID == sessionID && appliedViewport == terminalViewport && terminalViewport != nil) }
     // Keep focus/keyboard stable while fitting the terminal. Submission still waits for its grid.
-    var canEditDraft: Bool { state == .connected && session?.alive == true && !sending && pendingInput == nil }
+    var canEditDraft: Bool { state == .connected && session?.alive == true && !missingSessionIDs.contains(sessionID ?? "") && !sending && pendingInput == nil }
     var canSend: Bool { canEditDraft && !snapshotStale && viewportError == nil && viewportReady }
     func reportViewport(_ viewport: TerminalViewport?) {
         guard let viewport, viewport != terminalViewport else { return }
@@ -176,6 +179,7 @@ enum ConnectionState: Equatable {
         polling?.cancel()
         generation = UUID(); let token = generation
         viewportSessionID = nil; appliedViewport = nil; failedViewport = nil; viewportError = nil
+        missingSessionIDs = []
         state = .connecting; error = nil; snapshotStale = true
         do {
             try await client.connect(pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment)
@@ -207,7 +211,7 @@ enum ConnectionState: Equatable {
     private func clearSnapshot() { projects = []; worktrees = []; tasks = []; shells = []; orchestrators = []; output = ""; outputSessionID = nil; lastOutputAt = nil; snapshotStale = true }
     func refresh() async {
         guard state == .connected else { return }
-        failedViewport = nil; viewportError = nil
+        failedViewport = nil; viewportError = nil; missingSessionIDs = []
         do { try await refresh(token: generation) } catch { handle(error) }
     }
     private func rpc(_ method: String, _ params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
@@ -238,7 +242,10 @@ enum ConnectionState: Equatable {
             }
             output = ""; outputSessionID = nil; lastOutputAt = nil; draft = ""; deliveryNotice = nil
             worktrees = []; tasks = []; shells = []; snapshotStale = true
-            if state == .connected { try await loadProject(id, token: generation) }
+            if state == .connected {
+                try await loadProject(id, token: generation)
+                await readOutput()
+            }
         } catch { handle(error) }
     }
     private func loadProject(_ id: String, token: UUID) async throws {
@@ -247,9 +254,30 @@ enum ConnectionState: Equatable {
         let jobs = try await rpc("tasks.list", params)["tasks"].decode([RemoteTask].self)
         let workers = try await rpc("shells.list", params)["shells"].decode([RemoteSession].self)
         guard generation == token, projectID == id else { return }
-        worktrees = trees; tasks = jobs; shells = workers; snapshotStale = false
+        worktrees = trees; tasks = jobs; shells = workers
+        try reconcileSelectedSession()
+        if sessionID == nil { try await synchronizeViewport(token: token) }
+    }
+    /// Metadata refresh selects only an existing live tab. Never submits or retries input.
+    private func reconcileSelectedSession() throws {
+        let selected = sessionID
+        if let selected, openSessions.contains(where: { $0.id == selected }) { return }
+        let replacement = openSessions.first?.id
+        guard selected != replacement else { return }
+        try updateDesktop {
+            $0.selectedSessionID = replacement
+            if let project = $0.selectedProjectID {
+                var selections = $0.projectSessionIDs ?? [:]
+                selections[project] = replacement
+                $0.projectSessionIDs = selections
+            }
+            // pendingInput belongs to its original shell, even if that tab has closed.
+        }
+        output = ""; outputSessionID = nil; lastOutputAt = nil; snapshotStale = true
+        draft = ""; deliveryNotice = nil; error = nil; viewportError = nil; failedViewport = nil
     }
     func chooseSession(_ session: RemoteSession) async {
+        guard openSessions.contains(where: { $0.id == session.id }) else { return }
         do {
             try updateDesktop {
                 $0.selectedSessionID = session.id
@@ -262,8 +290,9 @@ enum ConnectionState: Equatable {
             await readOutput()
         } catch { handle(error) }
     }
-    func readOutput() async {
-        guard state == .connected, let id = sessionID else { return }
+    func readOutput() async { await readOutput(recoverMissing: true) }
+    private func readOutput(recoverMissing: Bool) async {
+        guard state == .connected, let id = sessionID, !missingSessionIDs.contains(id) else { return }
         let token = generation
         do {
             try await synchronizeViewport(token: token)
@@ -272,7 +301,25 @@ enum ConnectionState: Equatable {
             guard result["shell_id"].string == id, let text = result["output"].string else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
             guard generation == token, sessionID == id else { return }
             output = TerminalText.readable(text); outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
-        } catch { if generation == token, sessionID == id { handle(error) } }
+        } catch {
+            guard generation == token, sessionID == id else { return }
+            if case RemoteError.rpc("not_found", _) = error {
+                missingSessionIDs.insert(id); snapshotStale = true
+                do {
+                    if recoverMissing, let project = projectID {
+                        // Refresh project sessions once. The failed UUID cannot be polled again.
+                        let managers = try await rpc("orchestrators.list")["orchestrators"].decode([RemoteSession].self)
+                        guard generation == token, projectID == project else { return }
+                        orchestrators = managers
+                        try await loadProject(project, token: token)
+                    } else {
+                        try reconcileSelectedSession()
+                        if sessionID == nil { try await synchronizeViewport(token: token) }
+                    }
+                    if recoverMissing, sessionID != nil { await readOutput(recoverMissing: false) }
+                } catch { handle(error) }
+            } else { handle(error) }
+        }
     }
     func submit(expectedSessionID: String? = nil, line: String? = nil) async {
         guard canSend, let session, let desktopID = selectedDesktopID,

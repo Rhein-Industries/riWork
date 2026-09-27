@@ -9,6 +9,10 @@ private actor FixtureTransport: RemoteTransport {
     var inputUncertain = false
     var events: [String] = []
     var inputLines: [String] = []
+    var listedShells: [RemoteSession]?
+    var missingOutputs: Set<String> = []
+    func setSessions(_ sessions: [RemoteSession]) { listedShells = sessions }
+    func setMissing(_ id: String) { missingOutputs.insert(id) }
     func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws { connected = true; connections += 1 }
     func disconnect() async { connected = false }
     func isConnected() async -> Bool { connected }
@@ -26,8 +30,17 @@ private actor FixtureTransport: RemoteTransport {
         case "worktrees.list": raw = "{\"worktrees\":[]}"
         case "tasks.list": raw = "{\"tasks\":[]}"
         case "orchestrators.list": raw = "{\"orchestrators\":[]}"
-        case "shells.list": raw = "{\"shells\":[{\"id\":\"44444444-4444-4444-8444-444444444444\",\"project_id\":\"11111111-1111-4111-8111-111111111111\",\"worktree_id\":null,\"kind\":\"project\",\"cwd\":\"/fixture\",\"harness\":\"codex\",\"alive\":true,\"created_at_unix\":1}]}"
-        case "shell.output": return .object(["shell_id": params["shell_id"]!, "output": .string("existing session output")])
+        case "shells.list":
+            if let listedShells {
+                let encoded = try JSONEncoder().encode(listedShells)
+                return .object(["shells": try JSONDecoder().decode(JSONValue.self, from: encoded)])
+            }
+            raw = "{\"shells\":[{\"id\":\"44444444-4444-4444-8444-444444444444\",\"project_id\":\"11111111-1111-4111-8111-111111111111\",\"worktree_id\":null,\"kind\":\"project\",\"cwd\":\"/fixture\",\"harness\":\"codex\",\"alive\":true,\"created_at_unix\":1}]}"
+        case "shell.output":
+            if let shell = params["shell_id"]?.string, missingOutputs.contains(shell) {
+                throw RemoteError.rpc(code: "not_found", message: "Selected session is unavailable.")
+            }
+            return .object(["shell_id": params["shell_id"]!, "output": .string("existing session output")])
         case "shell.input":
             inputs.append(id)
             inputLines.append(params["line"]!.string!)
@@ -153,18 +166,18 @@ private actor FixtureTransport: RemoteTransport {
         XCTAssertEqual(inputCount.1.count, 0)
         await model.disconnect()
     }
-    func testSubmissionUsesReviewedLineAndRejectsChangedSelection() async throws {
+    func testDirectSendUsesCapturedLineAndRejectsChangedSelection() async throws {
         let keychain = try makeStore(); defer { try? keychain.delete() }
         let transport = FixtureTransport()
         let model = RemoteModel(client: transport, keychain: keychain)
         await model.connect()
-        model.draft = "unreviewed edit"
-        await model.submit(expectedSessionID: "55555555-5555-4555-8555-555555555555", line: "reviewed line")
+        model.draft = "edit made after Send"
+        await model.submit(expectedSessionID: "55555555-5555-4555-8555-555555555555", line: "line captured on Send")
         let rejected = await transport.counts()
         XCTAssertTrue(rejected.1.isEmpty)
-        await model.submit(expectedSessionID: shell, line: "reviewed line")
+        await model.submit(expectedSessionID: shell, line: "line captured on Send")
         let submitted = await transport.lines()
-        XCTAssertEqual(submitted, ["reviewed line"])
+        XCTAssertEqual(submitted, ["line captured on Send"])
         await model.disconnect()
     }
     func testTabSwitchRestoresPreviousShellBeforeResizingAndReadingChosenShell() async throws {
@@ -191,4 +204,100 @@ private actor FixtureTransport: RemoteTransport {
         XCTAssertTrue(inputs.1.isEmpty)
         await model.disconnect()
     }
+    private func session(_ id: String, alive: Bool = true) throws -> RemoteSession {
+        try JSONDecoder().decode(RemoteSession.self, from: Data("""
+        {"id":"\(id)","project_id":"\(project)","kind":"project","cwd":"/fixture","alive":\(alive),"created_at_unix":2}
+        """.utf8))
+    }
+    func testRestoredAbsentSelectionFallsBackAndPersistsWithoutInput() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let transport = FixtureTransport()
+        let other = try session("55555555-5555-4555-8555-555555555555")
+        await transport.setSessions([other])
+        let model = RemoteModel(client: transport, keychain: keychain)
+        model.draft = "belongs to the absent tab"
+        model.deliveryNotice = "old notice"
+        model.output = "old output"; model.outputSessionID = shell; model.lastOutputAt = Date()
+        await model.connect()
+        XCTAssertEqual(model.sessionID, other.id)
+        XCTAssertEqual(model.outputSessionID, other.id)
+        XCTAssertEqual(model.draft, "")
+        XCTAssertNil(model.deliveryNotice)
+        XCTAssertTrue(model.canSend)
+        let restored = RemoteModel(client: transport, keychain: keychain)
+        XCTAssertEqual(restored.sessionID, other.id)
+        XCTAssertEqual(restored.desktop?.projectSessionIDs?[project], other.id)
+        let operations = await transport.operations()
+        XCTAssertFalse(operations.contains("shell.output:\(shell)"))
+        XCTAssertFalse(operations.contains(where: { $0.hasPrefix("shell.input:") }))
+        await model.disconnect()
+    }
+    func testClosedLastTabClearsSelectionDraftOutputAndViewportRetainsPending() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let transport = FixtureTransport()
+        let model = RemoteModel(client: transport, keychain: keychain)
+        model.reportViewport(TerminalViewport(columns: 43, rows: 17)); model.setTerminalVisible(true)
+        await model.connect()
+        let pending = try PendingInput(shellID: shell, line: "unconfirmed original input")
+        model.desktops[0].pendingInput = pending; try model.persist()
+        model.draft = "old tab draft"; model.deliveryNotice = "old tab notice"
+        await transport.setSessions([try session(shell, alive: false)])
+        await model.refresh()
+        XCTAssertNil(model.sessionID)
+        XCTAssertNil(model.desktop?.projectSessionIDs?[project])
+        XCTAssertEqual(model.output, ""); XCTAssertNil(model.outputSessionID); XCTAssertNil(model.lastOutputAt)
+        XCTAssertEqual(model.draft, ""); XCTAssertNil(model.deliveryNotice)
+        XCTAssertNil(model.viewportSessionID); XCTAssertNil(model.appliedViewport)
+        XCTAssertFalse(model.canSend)
+        XCTAssertEqual(model.pendingInput, pending)
+        let restored = RemoteModel(client: transport, keychain: keychain)
+        XCTAssertNil(restored.sessionID); XCTAssertEqual(restored.pendingInput, pending)
+        let operations = await transport.operations()
+        XCTAssertTrue(operations.contains("shell.resize.clear:\(shell)"))
+        XCTAssertFalse(operations.contains(where: { $0.hasPrefix("shell.input:") }))
+        await model.disconnect()
+    }
+    func testNotFoundRefreshesProjectOnceFallsBackWithoutResendingPending() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let transport = FixtureTransport()
+        let model = RemoteModel(client: transport, keychain: keychain)
+        await model.connect()
+        let other = try session("55555555-5555-4555-8555-555555555555")
+        // A raced or stale list can still claim the missing UUID is alive.
+        await transport.setSessions([try session(shell), other])
+        await transport.setMissing(shell)
+        let pending = try PendingInput(shellID: shell, line: "pending on missing shell")
+        model.desktops[0].pendingInput = pending; try model.persist()
+        model.draft = "old draft"; model.deliveryNotice = "old notice"
+        let before = await transport.operations().count
+        await model.readOutput()
+        for _ in 0..<3 { await model.readOutput() }
+        XCTAssertEqual(model.sessionID, other.id); XCTAssertEqual(model.outputSessionID, other.id)
+        XCTAssertEqual(model.draft, ""); XCTAssertNil(model.deliveryNotice)
+        XCTAssertEqual(model.pendingInput, pending); XCTAssertFalse(model.canSend)
+        XCTAssertEqual(model.openSessions.map(\.id), [other.id])
+        let operations = Array(await transport.operations().dropFirst(before))
+        XCTAssertEqual(operations.filter { $0 == "shells.list:" }.count, 1)
+        XCTAssertEqual(operations.filter { $0 == "orchestrators.list:" }.count, 1)
+        XCTAssertEqual(operations.filter { $0 == "shell.output:\(shell)" }.count, 1)
+        XCTAssertFalse(operations.contains(where: { $0.hasPrefix("shell.input:") }))
+        await model.disconnect()
+    }
+    func testNotFoundLastTabIsNotRepeatedlyPolled() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let transport = FixtureTransport()
+        await transport.setMissing(shell)
+        let model = RemoteModel(client: transport, keychain: keychain)
+        await model.connect()
+        for _ in 0..<3 { await model.readOutput() }
+        XCTAssertEqual(model.state, .connected)
+        XCTAssertNil(model.sessionID); XCTAssertTrue(model.openSessions.isEmpty)
+        XCTAssertEqual(model.output, ""); XCTAssertFalse(model.canSend)
+        let operations = await transport.operations()
+        XCTAssertEqual(operations.filter { $0 == "shells.list:" }.count, 2, "Initial listing plus one recovery refresh")
+        XCTAssertEqual(operations.filter { $0 == "shell.output:\(shell)" }.count, 1)
+        XCTAssertFalse(operations.contains(where: { $0.hasPrefix("shell.input:") }))
+        await model.disconnect()
+    }
+
 }

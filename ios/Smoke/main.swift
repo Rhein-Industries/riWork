@@ -47,6 +47,27 @@ import RiWorkCore
                 let before = try await client.request(method: "shell.output", params: params)
                 guard before["shell_id"].string == shell, let output = before["output"].string else { throw RemoteError.protocolViolation("Output ID mismatch.") }
                 print("Existing session \(shell):\n\(TerminalText.readable(output))")
+                // Eight real overlapping actor requests exercise sendTail / wire counter ordering.
+                // The relay's per-socket queue is 16; only one bounded batch is outstanding.
+                let concurrentReads = try await withThrowingTaskGroup(of: Int.self) { group in
+                    for index in 0..<8 {
+                        group.addTask {
+                            let result = try await client.request(method: "shell.output", params: params)
+                            guard result["shell_id"].string == shell,
+                                  let text = result["output"].string, !text.isEmpty else {
+                                throw RemoteError.protocolViolation("Concurrent output identity or content mismatch.")
+                            }
+                            return index
+                        }
+                    }
+                    var completed: Set<Int> = []
+                    for try await index in group { completed.insert(index) }
+                    return completed
+                }
+                guard concurrentReads == Set(0..<8), await client.isConnected() else {
+                    throw RemoteError.protocolViolation("Concurrent read batch did not complete on the authenticated connection.")
+                }
+                print("Concurrent wire reads: 8/8 validated on one authenticated connection")
                 var inputID: String?
                 if let line = value("--send") {
                     try InputValidation.validate(line)
