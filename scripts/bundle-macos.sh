@@ -7,6 +7,11 @@ profile=${1:-debug}
 binary="target/$profile/riwork"
 bundle="target/$profile/RiWork.app"
 resources="$bundle/Contents/Resources"
+app_icon="assets/app-icon/RiWork.icns"
+app_macos_major=$(/usr/bin/sw_vers -productVersion | /usr/bin/cut -d. -f1)
+if [ "$app_macos_major" -lt 26 ]; then
+    app_icon="assets/app-icon/RiWork-legacy.icns"
+fi
 zig=${ZIG:-zig}
 
 if [ ! -x "$binary" ]; then
@@ -15,6 +20,11 @@ if [ ! -x "$binary" ]; then
     else
         echo "Build RiWork first: cargo build --profile $profile" >&2
     fi
+    exit 1
+fi
+
+if [ ! -f "$app_icon" ]; then
+    echo "RiWork app icon is missing: $app_icon" >&2
     exit 1
 fi
 
@@ -64,6 +74,7 @@ ZIG
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$resources/terminfo" "$resources/ghostty"
 cp "$binary" "$bundle/Contents/MacOS/riwork"
+cp "$app_icon" "$resources/RiWork.icns"
 tic -x -o "$resources/terminfo" "$work/ghostty.terminfo"
 cp -R "$ghostty_source/shell-integration" "$resources/ghostty/"
 if [ -d "$themes" ]; then
@@ -85,6 +96,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>RiWork</string>
     <key>CFBundleDisplayName</key><string>RiWork</string>
+    <key>CFBundleIconFile</key><string>RiWork.icns</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>

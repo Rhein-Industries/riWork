@@ -60,7 +60,13 @@ fn validate_source(source: &Path) -> Result<PathBuf, String> {
     let source = source
         .canonicalize()
         .map_err(|error| format!("Cannot resolve source {}: {error}", source.display()))?;
-    for relative in ["Cargo.toml", "src/main.rs", "scripts/bundle-macos.sh"] {
+    for relative in [
+        "Cargo.toml",
+        "src/main.rs",
+        "scripts/bundle-macos.sh",
+        "assets/app-icon/RiWork.icns",
+        "assets/app-icon/RiWork-legacy.icns",
+    ] {
         if !source.join(relative).is_file() {
             return Err(format!(
                 "{} is not a RiWork checkout: missing {relative}",
@@ -158,12 +164,7 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
 
     // The existing bundler removes target/<profile>/RiWork.app. Run an exact
     // copy in a disposable checkout layout so it can never remove a live app.
-    let scripts = staging.path.join("scripts");
-    fs::create_dir_all(&scripts)
-        .map_err(|error| format!("Cannot create staging scripts: {error}"))?;
-    let bundler = scripts.join("bundle-macos.sh");
-    fs::copy(source.join("scripts/bundle-macos.sh"), &bundler)
-        .map_err(|error| format!("Cannot stage macOS bundler: {error}"))?;
+    let bundler = stage_bundle_inputs(&source, &staging.path)?;
     let mut bundle_command = Command::new("/bin/sh");
     bundle_command
         .arg(&bundler)
@@ -212,6 +213,21 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
         bundle,
         log_path,
     })
+}
+
+fn stage_bundle_inputs(source: &Path, staging: &Path) -> Result<PathBuf, String> {
+    for relative in [
+        "scripts/bundle-macos.sh",
+        "assets/app-icon/RiWork.icns",
+        "assets/app-icon/RiWork-legacy.icns",
+    ] {
+        let destination = staging.join(relative);
+        fs::create_dir_all(destination.parent().unwrap())
+            .map_err(|error| format!("Cannot create staging directory for {relative}: {error}"))?;
+        fs::copy(source.join(relative), &destination)
+            .map_err(|error| format!("Cannot stage {relative}: {error}"))?;
+    }
+    Ok(staging.join("scripts/bundle-macos.sh"))
 }
 
 fn update_lock(target: &Path) -> Result<File, String> {
@@ -408,6 +424,7 @@ fn validate_artifacts(executable: &Path, bundle: &Path) -> Result<(), String> {
         }
     }
     for relative in [
+        "Contents/Resources/RiWork.icns",
         "Contents/Resources/terminfo/78/xterm-ghostty",
         "Contents/Resources/ghostty/shell-integration/zsh/ghostty-integration",
     ] {
@@ -517,6 +534,7 @@ mod tests {
         let source = parent.join(name);
         fs::create_dir_all(source.join("src")).unwrap();
         fs::create_dir_all(source.join("scripts")).unwrap();
+        fs::create_dir_all(source.join("assets/app-icon")).unwrap();
         fs::write(
             source.join("Cargo.toml"),
             "[package]\nname = \"riwork\"\nversion = \"0.1.0\"\n",
@@ -524,6 +542,12 @@ mod tests {
         .unwrap();
         fs::write(source.join("src/main.rs"), "fn main() {}\n").unwrap();
         fs::write(source.join("scripts/bundle-macos.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(source.join("assets/app-icon/RiWork.icns"), b"icon fixture").unwrap();
+        fs::write(
+            source.join("assets/app-icon/RiWork-legacy.icns"),
+            b"legacy icon fixture",
+        )
+        .unwrap();
         source
     }
 
@@ -559,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn source_validation_rejects_another_package_and_missing_bundler() {
+    fn source_validation_rejects_another_package_and_missing_bundle_inputs() {
         let temporary = StagingDirectory::new(
             env::temp_dir().join(format!("riwork-update-validation-{}", Uuid::new_v4())),
         )
@@ -586,6 +610,15 @@ mod tests {
                 .unwrap_err()
                 .contains("scripts/bundle-macos.sh")
         );
+        fs::write(source.join("scripts/bundle-macos.sh"), "#!/bin/sh\n").unwrap();
+        for relative in [
+            "assets/app-icon/RiWork.icns",
+            "assets/app-icon/RiWork-legacy.icns",
+        ] {
+            fs::remove_file(source.join(relative)).unwrap();
+            assert!(validate_source(&source).unwrap_err().contains(relative));
+            fs::write(source.join(relative), b"icon fixture").unwrap();
+        }
         for profile in ["../release", "release; false", "", "/tmp", "custom"] {
             assert!(update_profile(Some(profile)).is_err());
         }
@@ -594,6 +627,51 @@ mod tests {
         assert_eq!(update_profile(Some("release")).unwrap(), "release");
         // Updates optimize the app even when invoked by a development CLI.
         assert_eq!(update_profile(None).unwrap(), "release");
+    }
+
+    #[test]
+    fn bundle_staging_transports_app_icon_and_validation_requires_it() {
+        let temporary = StagingDirectory::new(
+            env::temp_dir().join(format!("riwork-update-icon-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let source = fixture(&temporary.path, "source");
+        let staging = temporary.path.join("staging");
+        let bundler = stage_bundle_inputs(&source, &staging).unwrap();
+        assert_eq!(fs::read_to_string(bundler).unwrap(), "#!/bin/sh\n");
+        assert_eq!(
+            fs::read(staging.join("assets/app-icon/RiWork.icns")).unwrap(),
+            b"icon fixture"
+        );
+        assert_eq!(
+            fs::read(staging.join("assets/app-icon/RiWork-legacy.icns")).unwrap(),
+            b"legacy icon fixture"
+        );
+
+        let executable = staging.join("riwork");
+        let bundle = staging.join("RiWork.app");
+        fs::write(&executable, "executable fixture").unwrap();
+        for relative in [
+            "Contents/MacOS/riwork",
+            "Contents/Info.plist",
+            "Contents/Resources/terminfo/78/xterm-ghostty",
+            "Contents/Resources/ghostty/shell-integration/zsh/ghostty-integration",
+        ] {
+            let file = bundle.join(relative);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "fixture").unwrap();
+        }
+        assert!(
+            validate_artifacts(&executable, &bundle)
+                .unwrap_err()
+                .contains("Contents/Resources/RiWork.icns")
+        );
+        fs::copy(
+            staging.join("assets/app-icon/RiWork.icns"),
+            bundle.join("Contents/Resources/RiWork.icns"),
+        )
+        .unwrap();
+        validate_artifacts(&executable, &bundle).unwrap();
     }
 
     #[cfg(target_os = "macos")]
