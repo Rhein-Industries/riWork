@@ -1,0 +1,6 @@
+.build/
+.derivedData*/
+*.xcuserstate
+xcuserdata/
+*.pairing.json
+Verification/
