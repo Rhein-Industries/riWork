@@ -439,6 +439,7 @@ mod tests {
                 unrestricted: false,
                 codex_account_id: None,
                 codex_account_label: None,
+                codex_account_email: None,
                 codex_home: None,
                 orchestrator_skill_loaded: false,
                 orchestrator_skill_version: None,

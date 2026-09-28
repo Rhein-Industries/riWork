@@ -1619,11 +1619,9 @@ mod tests {
             loaded.status_bar.visible_items(StatusSide::Left),
             [StatusItemKind::Project]
         );
-        assert!(
-            loaded
-                .status_bar
-                .visible_items(StatusSide::Right)
-                .is_empty()
+        assert_eq!(
+            loaded.status_bar.visible_items(StatusSide::Right),
+            [StatusItemKind::CodexAccount]
         );
         store
             .update(|settings| settings.remember_window_size = false)

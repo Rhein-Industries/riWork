@@ -32,6 +32,8 @@ const CACHE_NAME: &str = "codex-accounts.json";
 pub struct CodexAccount {
     pub id: String,
     pub label: String,
+    /// Email supplied by Orca's public account list, if it is usable.
+    pub email: Option<String>,
     pub home: PathBuf,
     pub available: bool,
     pub unavailable_reason: Option<String>,
@@ -50,6 +52,7 @@ pub struct AccountsSnapshot {
 pub struct CodexAccountBinding {
     pub id: Option<String>,
     pub label: Option<String>,
+    pub email: Option<String>,
     pub home: PathBuf,
 }
 
@@ -141,6 +144,7 @@ pub fn resolve_launch_binding(
         return Ok(CodexAccountBinding {
             id: None,
             label: None,
+            email: None,
             home: default_codex_home()?,
         });
     };
@@ -152,6 +156,39 @@ pub fn resolve_launch_binding(
             .to_owned()
     })?;
     resolve_cached_binding(&cache, selected)
+}
+
+pub fn resolve_project_launch_binding(
+    state_home: &Path,
+    project_id: &str,
+) -> Result<CodexAccountBinding, String> {
+    let store = crate::store::Store::open(state_home)?;
+    let state = store.snapshot()?;
+    let project = state.project(project_id)?;
+    let app_selected = if matches!(
+        project.codex_account,
+        crate::store::ProjectCodexAccount::Inherit
+    ) {
+        crate::settings::SettingsStore::open(state_home)?
+            .load()?
+            .selected_codex_account
+    } else {
+        None
+    };
+    resolve_project_choice_binding(state_home, &project.codex_account, app_selected.as_deref())
+}
+
+pub fn resolve_project_choice_binding(
+    state_home: &Path,
+    choice: &crate::store::ProjectCodexAccount,
+    app_selected: Option<&str>,
+) -> Result<CodexAccountBinding, String> {
+    use crate::store::ProjectCodexAccount;
+    match choice {
+        ProjectCodexAccount::Inherit => resolve_launch_binding(state_home, app_selected),
+        ProjectCodexAccount::SystemDefault => resolve_launch_binding(state_home, None),
+        ProjectCodexAccount::Saved(id) => resolve_launch_binding(state_home, Some(id)),
+    }
 }
 
 fn resolve_cached_binding(
@@ -167,6 +204,7 @@ fn resolve_cached_binding(
     Ok(CodexAccountBinding {
         id: Some(account.id.clone()),
         label: Some(account_label(account)),
+        email: account_email(account),
         home,
     })
 }
@@ -181,6 +219,7 @@ fn snapshot(
         Ok(home) => accounts.push(CodexAccount {
             id: SYSTEM_DEFAULT_ID.into(),
             label: "System default".into(),
+            email: None,
             home,
             available: true,
             unavailable_reason: None,
@@ -201,6 +240,7 @@ fn snapshot(
                 .join("home");
             accounts.push(CodexAccount {
                 label: account_label(&metadata),
+                email: account_email(&metadata),
                 id: metadata.id,
                 home: result.as_ref().cloned().unwrap_or(home),
                 available: result.is_ok(),
@@ -224,6 +264,13 @@ fn account_label(account: &AccountMetadata) -> String {
         Some(workspace) => format!("{email} · {workspace}"),
         None => email,
     }
+}
+
+fn account_email(account: &AccountMetadata) -> Option<String> {
+    clean_label(account.email.as_deref()).filter(|email| {
+        let (local, domain) = email.split_once('@').unwrap_or(("", ""));
+        !local.is_empty() && domain.contains('.') && !email.chars().any(char::is_whitespace)
+    })
 }
 
 fn clean_label(value: Option<&str>) -> Option<String> {
@@ -794,5 +841,14 @@ mod tests {
             account_label(&metadata),
             "name@example.test · Personal (Pro)"
         );
+        assert_eq!(
+            account_email(&metadata).as_deref(),
+            Some("name@example.test")
+        );
+        let unknown = AccountMetadata {
+            email: Some("Saved account".into()),
+            ..metadata
+        };
+        assert_eq!(account_email(&unknown), None);
     }
 }

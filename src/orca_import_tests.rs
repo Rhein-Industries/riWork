@@ -93,6 +93,7 @@ sys.stdout.write((root / (name + '.json')).read_text())
                     repository_roots: vec![],
                     folder_id: Some("folder".into()),
                     notify_on_agent_done: false,
+                    codex_account: crate::store::ProjectCodexAccount::default(),
                     created_at: 8,
                 });
                 if let Some(path) = worktree {
@@ -392,6 +393,7 @@ fn explicit_nested_project_root_wins_and_worktree_dedup_is_per_project() {
                 repository_roots: vec![child.clone()],
                 folder_id: None,
                 notify_on_agent_done: false,
+                codex_account: crate::store::ProjectCodexAccount::default(),
                 created_at: 11,
             });
             Ok(())

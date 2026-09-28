@@ -152,6 +152,7 @@ mod tests {
             repository_roots: Vec::new(),
             folder_id: None,
             notify_on_agent_done: false,
+            codex_account: crate::store::ProjectCodexAccount::default(),
             created_at: added,
         }
     }
@@ -246,6 +247,7 @@ mod tests {
             harness: None,
             codex_account_id: None,
             codex_account_label: None,
+            codex_account_email: None,
             codex_home: None,
             unrestricted: false,
             orchestrator_skill_loaded: false,

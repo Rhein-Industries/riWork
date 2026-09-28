@@ -34,7 +34,7 @@ mod usage;
 
 use std::{
     cell::Cell,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     env,
     ops::Range,
     path::{Path, PathBuf},
@@ -66,7 +66,7 @@ use project_settings::{
 };
 use sessions::{HarnessKind, SessionManager, SessionMetrics, ShellKind, ShellSession};
 use settings::{CuaSetupState, Settings, SettingsEvent, SettingsPanel, SettingsStore};
-use store::{SearchHit, State, Store};
+use store::{Project, ProjectCodexAccount, SearchHit, State, Store};
 use theme::{Appearance, Palette, ThemeChoice};
 use usage::ProviderUsage;
 
@@ -93,6 +93,7 @@ actions!(
         CreateProject,
         ToggleFocusMode,
         OpenSettings,
+        OpenProjectSettings,
         OpenSchedules,
         OpenFiles,
         Quit
@@ -403,6 +404,112 @@ fn contextual_shell_title(
         }
         None => title,
     }
+}
+
+/// Account numbers are derived from frozen homes across all live shells in
+/// each project, so separate windows and tab layouts agree on the same number.
+fn codex_account_numbers(shells: &[ShellSession]) -> BTreeMap<String, usize> {
+    let mut homes = BTreeMap::<&str, BTreeSet<&Path>>::new();
+    for shell in shells
+        .iter()
+        .filter(|shell| shell.alive && shell.harness == Some(HarnessKind::Codex))
+    {
+        if let (Some(project_id), Some(home)) =
+            (shell.project_id.as_deref(), shell.codex_home.as_deref())
+        {
+            homes.entry(project_id).or_default().insert(home);
+        }
+    }
+    let mut numbers = BTreeMap::new();
+    for shell in shells
+        .iter()
+        .filter(|shell| shell.alive && shell.harness == Some(HarnessKind::Codex))
+    {
+        let (Some(project_id), Some(home)) =
+            (shell.project_id.as_deref(), shell.codex_home.as_deref())
+        else {
+            continue;
+        };
+        let Some(project_homes) = homes.get(project_id).filter(|homes| homes.len() > 1) else {
+            continue;
+        };
+        if let Some(index) = project_homes
+            .iter()
+            .position(|candidate| *candidate == home)
+        {
+            numbers.insert(shell.id.clone(), index + 1);
+        }
+    }
+    numbers
+}
+
+fn codex_tab_title(
+    title: &str,
+    shell: Option<&ShellSession>,
+    numbers: &BTreeMap<String, usize>,
+) -> String {
+    match shell.and_then(|shell| numbers.get(&shell.id)) {
+        Some(number) => format!("{title} · A{number}"),
+        None => title.to_owned(),
+    }
+}
+
+fn verified_shell_email(
+    shell: &ShellSession,
+    snapshot: Option<&codex_accounts::AccountsSnapshot>,
+) -> Option<String> {
+    shell.codex_account_email.clone().or_else(|| {
+        snapshot?
+            .accounts
+            .iter()
+            .find(|account| {
+                shell.codex_account_id.as_deref() == Some(account.id.as_str())
+                    && shell.codex_home.as_ref() == Some(&account.home)
+            })?
+            .email
+            .clone()
+    })
+}
+
+fn codex_session_status_label(
+    shell: &ShellSession,
+    numbers: &BTreeMap<String, usize>,
+    snapshot: Option<&codex_accounts::AccountsSnapshot>,
+) -> String {
+    let email = verified_shell_email(shell, snapshot).unwrap_or_else(|| "Email unknown".to_owned());
+    match numbers.get(&shell.id) {
+        Some(number) => format!("CODEX A{number} · {email}"),
+        None => format!("CODEX · {email}"),
+    }
+}
+
+fn project_default_account_label(
+    project: Option<&Project>,
+    app_selected: Option<&str>,
+    snapshot: Option<&codex_accounts::AccountsSnapshot>,
+) -> String {
+    let choice = project.map(|project| &project.codex_account);
+    let (source, selected) = match choice {
+        Some(ProjectCodexAccount::Saved(id)) => ("PROJECT", Some(id.as_str())),
+        Some(ProjectCodexAccount::SystemDefault) => ("SYSTEM", None),
+        _ => (
+            "APP",
+            app_selected.filter(|id| *id != codex_accounts::SYSTEM_DEFAULT_ID),
+        ),
+    };
+    let account =
+        selected.and_then(|id| snapshot?.accounts.iter().find(|account| account.id == id));
+    let detail = match (selected, account) {
+        (None, _) => "System default · email unknown".to_owned(),
+        (Some(_), Some(account)) if account.available => account
+            .email
+            .clone()
+            .unwrap_or_else(|| "Email unknown".to_owned()),
+        (Some(_), Some(_)) => "Account unavailable".to_owned(),
+        (Some(_), None) if snapshot.is_none() => "Email unknown".to_owned(),
+        (Some(_), None) => "Account unavailable".to_owned(),
+    };
+    format!("DEFAULT ({source}) · {detail}")
 }
 
 impl Workspace {
@@ -2819,6 +2926,15 @@ impl Workspace {
         self.open_panel(PanelKind::Settings, self.active_pane, window, cx);
     }
 
+    fn open_project_settings_action(
+        &mut self,
+        _: &OpenProjectSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_panel(PanelKind::ProjectSettings, self.active_pane, window, cx);
+    }
+
     fn open_files_action(&mut self, _: &OpenFiles, window: &mut Window, cx: &mut Context<Self>) {
         let pane_id = self
             .panes
@@ -3241,6 +3357,7 @@ impl Workspace {
         let header_width = pane_width - control_inset;
         let show_lock = header_width >= 108.0;
         let show_focus = header_width >= 180.0;
+        let account_numbers = codex_account_numbers(&self.shells);
         let tabs = pane
             .tabs
             .iter()
@@ -3250,6 +3367,10 @@ impl Workspace {
                 let active = index == pane.active;
                 let panel = matches!(tab.content, TabContent::Panel(_));
                 let workspace = cx.entity();
+                let shell = tab
+                    .shell_id()
+                    .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
+                let display_title = codex_tab_title(&tab.title, shell, &account_numbers);
                 div()
                     .id(("tab", tab_id))
                     .flex()
@@ -3277,7 +3398,7 @@ impl Workspace {
                     .drag_over::<DraggedTab>(move |style, _, _, _| {
                         style.border_l_2().border_color(rgb(colors.cyan))
                     })
-                    .child(tab.title.clone())
+                    .child(display_title.clone())
                     .children(active.then(|| {
                         div()
                             .id(("close-tab", tab_id))
@@ -3305,7 +3426,7 @@ impl Workspace {
                             pane_id,
                             tab_id,
                             project_id: self.project_id.clone(),
-                            title: tab.title.clone(),
+                            title: display_title,
                         },
                         move |drag, _, _, cx| {
                             workspace.update(cx, |workspace, cx| {
@@ -3965,6 +4086,7 @@ impl Workspace {
                     .into_any_element()
             }
             StatusItemKind::Usage => self.render_usage_chip(cx),
+            StatusItemKind::CodexAccount => self.render_codex_account_status(cx),
             StatusItemKind::SessionId => {
                 let id = self
                     .panes
@@ -4012,6 +4134,51 @@ impl Workspace {
         }
     }
 
+    fn render_codex_account_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
+        let snapshot = cx
+            .global::<settings::CodexAccountsState>()
+            .snapshot
+            .as_ref();
+        let active = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .and_then(Tab::shell_id)
+            .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
+            .filter(|shell| shell.harness == Some(HarnessKind::Codex));
+        let label = if let Some(shell) = active {
+            codex_session_status_label(shell, &codex_account_numbers(&self.shells), snapshot)
+        } else {
+            project_default_account_label(
+                self.state
+                    .projects
+                    .iter()
+                    .find(|project| project.id == self.project_id),
+                self.settings.selected_codex_account.as_deref(),
+                snapshot,
+            )
+        };
+        div()
+            .id("status-codex-account")
+            .max_w(px(300.0))
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+            .text_color(rgb(colors.cyan))
+            .cursor_pointer()
+            .child(label)
+            .on_click(cx.listener(|workspace, _, window, cx| {
+                workspace.open_panel(
+                    PanelKind::ProjectSettings,
+                    workspace.active_pane,
+                    window,
+                    cx,
+                );
+            }))
+            .into_any_element()
+    }
+
     fn render_usage_chip(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
         let active_shell = self
@@ -4034,7 +4201,7 @@ impl Workspace {
             {
                 shell.codex_home.clone()
             } else {
-                selected_codex_home(cx)
+                project_selected_codex_home(self, cx)
             };
             let entry = profile.as_ref().and_then(|home| cache.codex.get(home));
             entry
@@ -4615,6 +4782,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::previous_tab_action))
             .on_action(cx.listener(Self::toggle_sidebar_action))
             .on_action(cx.listener(Self::open_settings_action))
+            .on_action(cx.listener(Self::open_project_settings_action))
             .on_action(cx.listener(Self::open_schedules_action))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::focus_search_action))
@@ -4844,6 +5012,27 @@ fn selected_codex_home(cx: &App) -> Option<PathBuf> {
         codex_accounts::default_codex_home().ok()
     } else {
         None
+    }
+}
+
+fn project_selected_codex_home(workspace: &Workspace, cx: &App) -> Option<PathBuf> {
+    match workspace
+        .state
+        .projects
+        .iter()
+        .find(|project| project.id == workspace.project_id)
+        .map(|project| &project.codex_account)
+    {
+        Some(ProjectCodexAccount::SystemDefault) => codex_accounts::default_codex_home().ok(),
+        Some(ProjectCodexAccount::Saved(id)) => cx
+            .global::<settings::CodexAccountsState>()
+            .snapshot
+            .as_ref()?
+            .accounts
+            .iter()
+            .find(|account| account.available && account.id == *id)
+            .map(|account| account.home.clone()),
+        _ => selected_codex_home(cx),
     }
 }
 
@@ -5139,6 +5328,7 @@ fn main() {
         });
         cx.bind_keys([
             KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("cmd-alt-a", OpenProjectSettings, None),
             KeyBinding::new("cmd-shift-s", OpenSchedules, None),
             KeyBinding::new("cmd-shift-e", OpenFiles, None),
             KeyBinding::new("cmd-q", Quit, None),
@@ -5162,6 +5352,7 @@ fn main() {
         ]);
         cx.set_menus([Menu::new("RiWork").items([
             MenuItem::action("Settings…", OpenSettings),
+            MenuItem::action("Project Settings…", OpenProjectSettings),
             MenuItem::action("Schedules", OpenSchedules),
             MenuItem::separator(),
             MenuItem::action("Quit RiWork", Quit),
@@ -5562,6 +5753,7 @@ mod workspace_tab_tests {
             harness: None,
             codex_account_id: None,
             codex_account_label: None,
+            codex_account_email: None,
             codex_home: None,
             unrestricted: false,
             orchestrator_skill_loaded: false,
@@ -5598,5 +5790,116 @@ mod workspace_tab_tests {
             &session(ShellKind::Project, None),
             "alpha"
         ));
+    }
+
+    #[test]
+    fn codex_tabs_and_status_share_deterministic_project_account_numbers() {
+        let mut first = session(ShellKind::Project, Some("alpha"));
+        first.id = "first".into();
+        first.harness = Some(HarnessKind::Codex);
+        first.codex_account_id = Some("a".into());
+        first.codex_account_email = Some("a@example.test".into());
+        first.codex_home = Some(PathBuf::from("/managed/a"));
+        let mut second = first.clone();
+        second.id = "second".into();
+        second.codex_account_id = Some("b".into());
+        second.codex_account_email = Some("b@example.test".into());
+        second.codex_home = Some(PathBuf::from("/managed/b"));
+        let mut same_account = first.clone();
+        same_account.id = "same-account".into();
+        let mut other_project = second.clone();
+        other_project.id = "other-project".into();
+        other_project.project_id = Some("beta".into());
+        let mut global = first.clone();
+        global.id = "global".into();
+        global.project_id = None;
+        global.kind = ShellKind::Orchestrator;
+        let shells = [
+            second.clone(),
+            global.clone(),
+            other_project.clone(),
+            same_account.clone(),
+            first.clone(),
+        ];
+        let numbers = codex_account_numbers(&shells);
+        assert_eq!(numbers.get("first"), Some(&1));
+        assert_eq!(numbers.get("same-account"), Some(&1));
+        assert_eq!(numbers.get("second"), Some(&2));
+        assert!(!numbers.contains_key("other-project"));
+        assert!(!numbers.contains_key("global"));
+        assert_eq!(
+            codex_tab_title("codex 01 · main", Some(&first), &numbers),
+            "codex 01 · main · A1"
+        );
+        assert_eq!(
+            codex_session_status_label(&first, &numbers, None),
+            "CODEX A1 · a@example.test"
+        );
+        assert_eq!(
+            codex_session_status_label(&second, &numbers, None),
+            "CODEX A2 · b@example.test"
+        );
+        let mut unknown = first.clone();
+        unknown.codex_account_email = None;
+        assert_eq!(
+            codex_session_status_label(&unknown, &numbers, None),
+            "CODEX A1 · Email unknown"
+        );
+        let remaining = codex_account_numbers(&[first.clone(), same_account]);
+        assert!(remaining.is_empty());
+        assert_eq!(
+            codex_tab_title("claude 03 · main", None, &remaining),
+            "claude 03 · main"
+        );
+    }
+
+    #[test]
+    fn status_uses_only_public_verified_email_and_marks_project_defaults() {
+        let snapshot = codex_accounts::AccountsSnapshot {
+            accounts: vec![codex_accounts::CodexAccount {
+                id: "a".into(),
+                label: "a@example.test · Workspace".into(),
+                email: Some("a@example.test".into()),
+                home: PathBuf::from("/managed/a"),
+                available: true,
+                unavailable_reason: None,
+                is_system_default: false,
+            }],
+            ..Default::default()
+        };
+        let mut old_shell = session(ShellKind::Project, Some("alpha"));
+        old_shell.harness = Some(HarnessKind::Codex);
+        old_shell.codex_account_id = Some("a".into());
+        old_shell.codex_account_label = Some("Workspace".into());
+        old_shell.codex_home = Some(PathBuf::from("/managed/a"));
+        assert_eq!(
+            verified_shell_email(&old_shell, Some(&snapshot)).as_deref(),
+            Some("a@example.test")
+        );
+        old_shell.codex_home = Some(PathBuf::from("/managed/other"));
+        assert_eq!(verified_shell_email(&old_shell, Some(&snapshot)), None);
+        let mut project: Project = serde_json::from_value(serde_json::json!({
+            "id":"alpha", "name":"Alpha", "root":"/alpha", "created_at":1
+        }))
+        .unwrap();
+        assert_eq!(
+            project_default_account_label(Some(&project), Some("a"), Some(&snapshot)),
+            "DEFAULT (APP) · a@example.test"
+        );
+        project.codex_account = ProjectCodexAccount::Saved("a".into());
+        assert_eq!(
+            project_default_account_label(Some(&project), Some("missing"), Some(&snapshot)),
+            "DEFAULT (PROJECT) · a@example.test"
+        );
+        project.codex_account = ProjectCodexAccount::SystemDefault;
+        assert_eq!(
+            project_default_account_label(Some(&project), Some("a"), Some(&snapshot)),
+            "DEFAULT (SYSTEM) · System default · email unknown"
+        );
+        project.codex_account = ProjectCodexAccount::Saved("missing".into());
+        assert_eq!(
+            project_default_account_label(Some(&project), None, Some(&snapshot)),
+            "DEFAULT (PROJECT) · Account unavailable"
+        );
     }
 }
