@@ -848,7 +848,7 @@ fn tools() -> Vec<Value> {
         tool(
             "riwork_shell_create",
             "Create shell",
-            "Start a persistent project shell in a project or worktree. Set command to codex or claude to launch an official CLI session.",
+            "Start a persistent project shell in a project or worktree. Set command to codex, claude, or grok to launch an official CLI session.",
             json!({"project_id":{"type":"string"},"worktree_id":{"type":"string"},"command":{"type":"string"}}),
             &[],
             false,

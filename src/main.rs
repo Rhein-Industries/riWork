@@ -89,6 +89,7 @@ actions!(
         NewProjectWindow,
         OpenCodex,
         OpenClaude,
+        OpenGrok,
         CreateProject,
         ToggleFocusMode,
         OpenSettings,
@@ -2689,6 +2690,10 @@ impl Workspace {
         self.add_harness(HarnessKind::Claude, false, window, cx);
     }
 
+    fn open_grok_action(&mut self, _: &OpenGrok, window: &mut Window, cx: &mut Context<Self>) {
+        self.add_harness(HarnessKind::Grok, false, window, cx);
+    }
+
     fn add_harness(
         &mut self,
         harness: HarnessKind,
@@ -3677,6 +3682,12 @@ impl Workspace {
                                     PaneMenuAction::Harness(HarnessKind::Claude, false),
                                 ),
                                 (
+                                    "Grok",
+                                    "⌘⇧G",
+                                    None,
+                                    PaneMenuAction::Harness(HarnessKind::Grok, false),
+                                ),
+                                (
                                     "Codex · unrestricted",
                                     "",
                                     None,
@@ -3687,6 +3698,12 @@ impl Workspace {
                                     "",
                                     None,
                                     PaneMenuAction::Harness(HarnessKind::Claude, true),
+                                ),
+                                (
+                                    "Grok · unrestricted",
+                                    "",
+                                    None,
+                                    PaneMenuAction::Harness(HarnessKind::Grok, true),
                                 ),
                                 (
                                     "Global orchestrator",
@@ -4589,6 +4606,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_project_window_action))
             .on_action(cx.listener(Self::open_codex_action))
             .on_action(cx.listener(Self::open_claude_action))
+            .on_action(cx.listener(Self::open_grok_action))
             .on_action(cx.listener(Self::split_right_action))
             .on_action(cx.listener(Self::split_down_action))
             .on_action(cx.listener(Self::close_tab_action))
@@ -4791,6 +4809,7 @@ fn harness_name(harness: HarnessKind) -> &'static str {
     match harness {
         HarnessKind::Codex => "codex",
         HarnessKind::Claude => "claude",
+        HarnessKind::Grok => "grok",
     }
 }
 
@@ -5139,6 +5158,7 @@ fn main() {
             KeyBinding::new("cmd-shift-n", NewProjectWindow, None),
             KeyBinding::new("cmd-shift-c", OpenCodex, None),
             KeyBinding::new("cmd-shift-l", OpenClaude, None),
+            KeyBinding::new("cmd-shift-g", OpenGrok, None),
         ]);
         cx.set_menus([Menu::new("RiWork").items([
             MenuItem::action("Settings…", OpenSettings),

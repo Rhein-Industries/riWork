@@ -1,6 +1,6 @@
 ---
 name: riwork-orchestrator
-description: Coordinate RiWork work with a global orchestrator and one orchestrator per project. Use to delegate project objectives, manage project tasks across repositories and worktrees, inspect persistent Codex or Claude CLI sessions, and verify completed tasks.
+description: Coordinate RiWork work with a global orchestrator and one orchestrator per project. Use to delegate project objectives, manage project tasks across repositories and worktrees, inspect persistent Codex, Claude, or Grok CLI sessions, and verify completed tasks.
 ---
 
 # RiWork orchestration
@@ -29,7 +29,7 @@ Read your startup scope and `RIWORK_ORCHESTRATOR_SCOPE`. A project orchestrator 
 
 1. Translate the objective into project tasks with a clear outcome and acceptance checks. Read existing tasks first so repeated check-ins do not duplicate work.
 2. Choose or create the correct repository's worktree. Batch assignments with `riwork task assign WORKTREE_ID TASK_ID...`; then inspect `riwork worktree tasks WORKTREE_ID --json`.
-3. Reuse an appropriate live harness when possible. Otherwise create one with `riwork shell create --worktree WORKTREE_ID --harness codex --json` or `--harness claude`. Normal presets use the harness's configured permissions. Do not choose `--unrestricted` unless the user requests it.
+3. Reuse an appropriate live harness when possible. Otherwise create one with `riwork shell create --worktree WORKTREE_ID --harness codex --json`, `--harness claude`, or `--harness grok`. Normal presets use the harness's configured permissions. Do not choose `--unrestricted` unless the user requests it.
 4. Read `riwork shell cwd SHELL_UUID --json` and `riwork shell output SHELL_UUID --lines 120 --json` before sending input. Confirm the session is in the intended worktree and at an input prompt. If it is still working, inspect progress instead of submitting another task. A terminal capture is its rendered screen, not a guaranteed complete conversation transcript.
 5. Use `riwork shell send SHELL_UUID TEXT` to submit one clear assignment. It presses Return. Include task IDs, repository/worktree path, scope, constraints, acceptance checks, and the expected report. Use one physical line of text (join sections with spaces) and quote the whole prompt as one shell argument: embedded newlines are terminal key input and can submit fragments. Do not send input to a plain shell as if it were a harness, or answer a trust/login/approval prompt as if it were a task prompt.
 6. Mark delegated tasks `in_progress` after successful submission. Give agents separate worktrees for overlapping edits, and state any dependencies before starting dependent work.

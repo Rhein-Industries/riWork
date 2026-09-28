@@ -99,6 +99,9 @@ impl Target {
         let harness = shell
             .harness
             .ok_or("Scheduling requires an existing Codex or Claude session")?;
+        if harness == HarnessKind::Grok {
+            return Err("Grok scheduling is not yet supported".into());
+        }
         Ok(Self {
             scope,
             shell_id: id.into(),

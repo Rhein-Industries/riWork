@@ -393,7 +393,7 @@ impl CuaManager {
         let bin = self.home.join("cua/harness-bin");
         fs::create_dir_all(&bin)
             .map_err(|error| format!("Cannot create Cua harness directory: {error}"))?;
-        for harness in ["codex", "claude"] {
+        for harness in ["codex", "claude", "grok"] {
             let content = format!(
                 "#!/bin/sh\n# RiWork Cua harness shim\nexec {quoted_executable} cua harness {harness} -- \"$@\"\n"
             );
@@ -910,15 +910,17 @@ mod tests {
         fake_driver(&executable, "printf '%s\\n' \"$@\"");
         let manager = manager(temp.path.clone());
         let bin = manager.ensure_harness_shims(&executable).unwrap();
-        let output = Command::new(bin.join("codex"))
-            .args(["--json", "a b", "$(literal)"])
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            "cua\nharness\ncodex\n--\n--json\na b\n$(literal)\n"
-        );
+        for harness in ["codex", "grok"] {
+            let output = Command::new(bin.join(harness))
+                .args(["--json", "a b", "$(literal)"])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("cua\nharness\n{harness}\n--\n--json\na b\n$(literal)\n")
+            );
+        }
         assert!(
             fs::read_to_string(bin.join("claude"))
                 .unwrap()

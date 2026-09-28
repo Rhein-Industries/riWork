@@ -59,6 +59,7 @@ impl CompletionNotice {
         let agent = match self.provider {
             HarnessKind::Codex => "Codex",
             HarnessKind::Claude => "Claude",
+            HarnessKind::Grok => "Grok",
         };
         let scope = self
             .worktree

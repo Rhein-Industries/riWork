@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 const HISTORY_LINES: usize = 100_000;
 const ORCHESTRATOR_SKILL: &str = include_str!("../skills/riwork-orchestrator/SKILL.md");
-/// Additive session guidance shared by both supported coding harnesses.
+/// Additive session guidance shared by the supported coding harnesses.
 const CUA_GUIDANCE: &str = "RiWork provides Cua.ai Driver through the cua-driver MCP server. \
     Use this server for desktop screenshots, application inspection, and desktop interaction. \
     This is the Cua.ai product installed by RiWork setup. Keep this desktop automation \
@@ -41,6 +41,7 @@ pub enum ShellKind {
 pub enum HarnessKind {
     Codex,
     Claude,
+    Grok,
 }
 
 impl HarnessKind {
@@ -48,6 +49,7 @@ impl HarnessKind {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::Grok => "grok",
         }
     }
 }
@@ -713,6 +715,7 @@ impl SessionManager {
                 .ok_or(
                     "Claude session identity is not yet known; wait for a completed turn".into(),
                 ),
+            Some(HarnessKind::Grok) => Err("Grok scheduling is not yet supported".into()),
             None => Err("Scheduling requires Codex or Claude".into()),
         }
     }
@@ -822,6 +825,7 @@ impl SessionManager {
                             .filter(|(id, _)| id == &target.provider_session)
                             .and_then(|(_, token)| token)
                     }
+                    Some(HarnessKind::Grok) => None,
                     None => None,
                 };
                 let ready = (|| {
@@ -841,6 +845,7 @@ impl SessionManager {
                                 .filter(|(id, _)| id == &target.provider_session)
                                 .and_then(|(_, t)| t)
                         }
+                        Some(HarnessKind::Grok) => None,
                         None => None,
                     };
                     if second_token.as_ref() != Some(&token) {
@@ -1154,6 +1159,7 @@ impl SessionManager {
                     .or_else(|| env::var_os("CODEX_HOME")),
             ),
             ("CLAUDE_CONFIG_DIR", env::var_os("CLAUDE_CONFIG_DIR")),
+            ("GROK_HOME", env::var_os("GROK_HOME")),
         ];
         let executable =
             env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
@@ -1173,6 +1179,9 @@ impl SessionManager {
                 let program = find_harness_program(harness, &shim_directory).ok_or_else(|| {
                     format!("{} is not installed or is not on PATH", harness.program())
                 })?;
+                if harness == HarnessKind::Grok {
+                    ensure_grok_agent(&self.home, &executable)?;
+                }
                 let command = harness_command(
                     harness,
                     unrestricted,
@@ -1552,6 +1561,11 @@ fn harness_command(
             arguments.push("--settings".to_owned());
             arguments.push(settings.to_string());
         }
+        HarnessKind::Grok => {
+            if unrestricted {
+                arguments.push("--always-approve".to_owned());
+            }
+        }
     }
     let command = format!(
         "exec {}",
@@ -1622,7 +1636,62 @@ fn cua_harness_arguments(
                 CUA_GUIDANCE.to_owned(),
             ]
         }
+        HarnessKind::Grok => vec![
+            "--agent".to_owned(),
+            grok_agent_path(state_home, executable)
+                .to_string_lossy()
+                .into_owned(),
+        ],
     }
+}
+
+fn grok_agent_path(state_home: &Path, executable: &Path) -> PathBuf {
+    state_home.join(format!(
+        "cua/grok-agent-{:016x}.md",
+        stable_hash(executable.to_string_lossy().as_bytes())
+    ))
+}
+
+/// Grok's active agent can supply an MCP server for this session. An agent
+/// definition in RiWork state avoids modifying the user's Grok config or the
+/// project repository, while its ordinary config and login remain available.
+fn grok_agent_definition(executable: &Path, state_home: &Path) -> String {
+    format!(
+        concat!(
+            "---\n",
+            "name: riwork-cua\n",
+            "description: Grok Build with RiWork desktop automation\n",
+            "mcpServers:\n",
+            "  - name: cua-driver\n",
+            "    command: {}\n",
+            "    args: [\"cua\", \"mcp\"]\n",
+            "    env:\n",
+            "      RIWORK_HOME: {}\n",
+            "---\n",
+            "{}\n"
+        ),
+        toml_string(&executable.to_string_lossy()),
+        toml_string(&state_home.to_string_lossy()),
+        CUA_GUIDANCE
+    )
+}
+
+fn ensure_grok_agent(state_home: &Path, executable: &Path) -> Result<(), String> {
+    let path = grok_agent_path(state_home, executable);
+    let directory = path.parent().expect("Grok agent has a parent directory");
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("create Grok Cua agent directory: {error}"))?;
+    let content = grok_agent_definition(executable, state_home);
+    if fs::read_to_string(&path).ok().as_deref() == Some(&content) {
+        return Ok(());
+    }
+    let temporary = directory.join(format!("grok-agent-{}.tmp", Uuid::new_v4()));
+    fs::write(&temporary, content).map_err(|error| format!("write Grok Cua agent: {error}"))?;
+    if let Err(error) = fs::rename(&temporary, &path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("install Grok Cua agent: {error}"));
+    }
+    Ok(())
 }
 
 fn toml_string(value: &str) -> String {
@@ -1952,7 +2021,11 @@ fn executable_dirs() -> Vec<PathBuf> {
         }
     }
     if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
-        for path in [home.join(".local/bin"), home.join(".cargo/bin")] {
+        for path in [
+            home.join(".local/bin"),
+            home.join(".cargo/bin"),
+            home.join(".grok/bin"),
+        ] {
             if !dirs.contains(&path) {
                 dirs.push(path);
             }
@@ -2103,7 +2176,10 @@ fn harness_utility_invocation(harness: HarnessKind, arguments: &[String]) -> boo
     if arguments
         .iter()
         .take_while(|argument| argument.as_str() != "--")
-        .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+        .any(|argument| {
+            matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V")
+                || (harness == HarnessKind::Grok && argument == "-v")
+        })
     {
         return true;
     }
@@ -2148,6 +2224,33 @@ fn harness_utility_invocation(harness: HarnessKind, arguments: &[String]) -> boo
                 | "update"
                 | "upgrade"
         ),
+        HarnessKind::Grok => matches!(
+            first,
+            "help"
+                | "agent"
+                | "clone"
+                | "completions"
+                | "cursor-worker"
+                | "doctor"
+                | "du"
+                | "export"
+                | "inspect"
+                | "leader"
+                | "login"
+                | "logout"
+                | "mcp"
+                | "memory"
+                | "models"
+                | "plugin"
+                | "sessions"
+                | "setup"
+                | "trace"
+                | "update"
+                | "usage"
+                | "version"
+                | "worktree"
+                | "wrap"
+        ),
     }
 }
 
@@ -2189,6 +2292,11 @@ fn cua_proxy_arguments(
             result
         }
         HarnessKind::Claude => {
+            let mut result = additions;
+            result.extend_from_slice(arguments);
+            result
+        }
+        HarnessKind::Grok => {
             let mut result = additions;
             result.extend_from_slice(arguments);
             result
@@ -2294,6 +2402,14 @@ fn codex_proxy_binding(
 }
 
 pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(), String> {
+    if harness == HarnessKind::Grok
+        && !harness_utility_invocation(harness, arguments)
+        && arguments
+            .iter()
+            .any(|argument| argument == "--agent" || argument.starts_with("--agent="))
+    {
+        return Err("RiWork's Grok launcher uses --agent for its Cua connection; a second --agent cannot be combined with it".to_owned());
+    }
     let home = match env::var_os("RIWORK_HOME") {
         Some(home) => PathBuf::from(home),
         None => PathBuf::from(env::var_os("HOME").ok_or("HOME is not set; set RIWORK_HOME")?)
@@ -2315,6 +2431,9 @@ pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(),
     let mut command = Command::new(program);
     if !harness_utility_invocation(harness, arguments) {
         cua.driver_path()?;
+        if harness == HarnessKind::Grok {
+            ensure_grok_agent(&home, &executable)?;
+        }
     }
     let shell_id =
         if harness == HarnessKind::Codex && !harness_utility_invocation(harness, arguments) {
@@ -2522,6 +2641,7 @@ fn schedule_empty_prompt_at(
     let expected = match harness {
         Some(HarnessKind::Codex) => "›",
         Some(HarnessKind::Claude) => "❯",
+        Some(HarnessKind::Grok) => return false,
         None => return false,
     };
     // Codex paints its empty composer placeholder dim, at the initial cursor.
@@ -3375,7 +3495,7 @@ mod tests {
 
     #[test]
     fn managed_wrappers_pass_utilities_through_but_integrate_sessions() {
-        for harness in [HarnessKind::Codex, HarnessKind::Claude] {
+        for harness in [HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok] {
             for argument in ["--help", "--version", "mcp", "login"] {
                 assert!(harness_utility_invocation(harness, &[argument.to_owned()]));
             }
@@ -3393,6 +3513,52 @@ mod tests {
                 &[argument.to_owned()]
             ));
         }
+        for argument in ["inspect", "models", "usage", "update"] {
+            assert!(harness_utility_invocation(
+                HarnessKind::Grok,
+                &[argument.to_owned()]
+            ));
+        }
+    }
+
+    #[test]
+    fn grok_launch_uses_a_session_scoped_cua_agent() {
+        let executable = Path::new("/Applications/RiWork's App/riwork");
+        let home = Path::new("/Users/test/RiWork State");
+        for unrestricted in [false, true] {
+            let command = harness_command(
+                HarnessKind::Grok,
+                unrestricted,
+                Path::new("/Users/test/.grok/bin/grok"),
+                executable,
+                home,
+                "shell-id",
+                None,
+            )
+            .unwrap();
+            let arguments = shell_arguments(&command);
+            assert_eq!(arguments[0], "/Users/test/.grok/bin/grok");
+            assert_eq!(arguments[1], "--agent");
+            assert_eq!(
+                arguments[2],
+                grok_agent_path(home, executable).to_string_lossy()
+            );
+            assert_eq!(
+                arguments.contains(&"--always-approve".to_owned()),
+                unrestricted
+            );
+        }
+        let definition = grok_agent_definition(executable, home);
+        assert!(definition.contains("mcpServers:\n  - name: cua-driver\n"));
+        assert!(definition.contains(&format!(
+            "    command: {}\n",
+            toml_string(&executable.to_string_lossy())
+        )));
+        assert!(definition.contains(&format!(
+            "      RIWORK_HOME: {}\n",
+            toml_string(&home.to_string_lossy())
+        )));
+        assert!(definition.contains(CUA_GUIDANCE));
     }
 
     #[test]
@@ -3570,7 +3736,7 @@ mod tests {
             fs::create_dir_all(directory).unwrap();
         }
         for (directory, label) in [(&managed, "managed"), (&official, "official")] {
-            for harness in ["codex", "claude"] {
+            for harness in ["codex", "claude", "grok"] {
                 let path = directory.join(harness);
                 fs::write(
                     &path,
@@ -3643,6 +3809,7 @@ mod tests {
             let output_file = temporary.join(format!("{name}.txt"));
             let script = format!(
                 "{{ command -v codex; codex 'a b'; command -v claude; claude 'x$y'; \
+                 command -v grok; grok 'z z'; \
                  printf '%s\\n' \"$ZDOTDIR\" \"$HISTFILE\" \"$RIWORK_TEST_STARTUP_STAGES\" \
                  \"${{precmd_functions[(I)riwork_test_ghostty_hook]}}\"; }} > {}; exit",
                 quote_arg(&output_file.to_string_lossy())
@@ -3663,7 +3830,7 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
             let result = loop {
                 if let Ok(result) = fs::read_to_string(&output_file) {
-                    if result.lines().count() == 8 {
+                    if result.lines().count() == 10 {
                         break result;
                     }
                 }
@@ -3683,14 +3850,16 @@ mod tests {
                 expected_directory.join("claude").to_string_lossy()
             );
             assert_eq!(lines[3], format!("{expected_label}-claude:x$y"));
-            assert_eq!(lines[4], final_directory.to_string_lossy());
+            assert_eq!(lines[4], expected_directory.join("grok").to_string_lossy());
+            assert_eq!(lines[5], format!("{expected_label}-grok:z z"));
+            assert_eq!(lines[6], final_directory.to_string_lossy());
             assert_eq!(
-                lines[5],
+                lines[7],
                 final_directory.join(".zsh_history").to_string_lossy()
             );
-            assert_eq!(lines[6], "env profile rc login");
+            assert_eq!(lines[8], "env profile rc login");
             assert_ne!(
-                lines[7], "0",
+                lines[9], "0",
                 "existing Ghostty-style prompt hook must survive"
             );
         }

@@ -31,7 +31,7 @@ riwork usage [--shell ID]               Read harness subscription usage
 riwork setup                            Install and start Cua.ai Driver
 riwork cua setup|status|permissions      Manage native computer use
 riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
-riwork cua harness codex|claude -- ARG...   Start a harness with shared Cua
+riwork cua harness codex|claude|grok -- ARG...   Start a harness with shared Cua
 riwork import orca [--preview]          Import local Orca projects and worktrees once
 riwork project add PATH [--name NAME]   Register a project and its root worktree
 riwork project create [PATH] [--name NAME] [--no-git]   Create a project (Git by default)
@@ -56,7 +56,7 @@ riwork mcp                              Serve workspace tools over MCP stdio
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork remote --help                    Pairing, relay and connector command options
 riwork shell create [--project ID | --worktree ID] [--command CMD]
-riwork shell create [--worktree ID] --harness codex|claude [--unrestricted]
+riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted]
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N]      Read current shell output by UUID
 riwork shell send ID TEXT               Paste a complete line and submit once
@@ -419,7 +419,8 @@ fn cua_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         let harness = match args.first().map(String::as_str) {
             Some("codex") => HarnessKind::Codex,
             Some("claude") => HarnessKind::Claude,
-            _ => return Err("Usage: riwork cua harness codex|claude -- ARG...".to_owned()),
+            Some("grok") => HarnessKind::Grok,
+            _ => return Err("Usage: riwork cua harness codex|claude|grok -- ARG...".to_owned()),
         };
         args.remove(0);
         if args.first().map(String::as_str) == Some("--") {
@@ -530,6 +531,8 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         let shell = SessionManager::open_default()?.get(&shell_id)?;
         if shell.harness == Some(HarnessKind::Codex) {
             crate::usage::read_codex_usage_at(frozen_codex_usage_home(&shell)?)?
+        } else if shell.harness == Some(HarnessKind::Grok) {
+            return Err("Grok usage is available through the official grok usage command; RiWork does not yet show it in the usage panel.".to_owned());
         } else if let Some(usage) = crate::usage::read_claude_usage(&shell_id)? {
             usage
         } else if matches!(shell.harness, Some(HarnessKind::Claude))
@@ -1117,7 +1120,8 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 .map(|value| match value.as_str() {
                     "codex" => Ok(HarnessKind::Codex),
                     "claude" => Ok(HarnessKind::Claude),
-                    _ => Err("--harness must be codex or claude".to_owned()),
+                    "grok" => Ok(HarnessKind::Grok),
+                    _ => Err("--harness must be codex, claude, or grok".to_owned()),
                 })
                 .transpose()?;
             let unrestricted = take_flag(&mut args, "--unrestricted");

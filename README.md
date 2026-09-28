@@ -80,7 +80,7 @@ Reloads preserve each window's project, layout, position, and persistent shells.
 
 ## Cua.ai setup and computer use
 
-RiWork uses [Cua.ai's Cua Driver](https://cua.ai/cua-driver) for computer use across Codex, Claude, and the global and project orchestrators. On a machine without the driver, the app opens Settings with **SET UP CUA**. Setup downloads Cua's official stable installer, installs the signed `CuaDriver.app`, and prepares the shared connection. You can also run:
+RiWork uses [Cua.ai's Cua Driver](https://cua.ai/cua-driver) for computer use across Codex, Claude, Grok, and the global and project orchestrators. On a machine without the driver, the app opens Settings with **SET UP CUA**. Setup downloads Cua's official stable installer, installs the signed `CuaDriver.app`, and prepares the shared connection. You can also run:
 
 ```sh
 riwork setup
@@ -90,11 +90,11 @@ riwork cua permissions
 
 Select **GRANT MACOS ACCESS**, then enable **CuaDriver** in macOS **Privacy & Security → Accessibility** and **Screen & System Audio Recording**. These permissions belong to CuaDriver and need to be enabled once in System Settings. Approve CuaDriver's direct screen capture prompt when macOS shows it. Settings reports the grants and capture verification, and offers **CHECK AGAIN** after enabling them. RiWork launches its driver in standard permission mode. The explicit grant action restarts the shared service with Cua's permission onboarding so updated grants are read by a fresh process.
 
-New RiWork Codex and Claude launches receive the same `cua-driver` MCP connection and computer-use instructions. Codex's OpenAI computer-use feature is disabled for these launches. Existing model, account, and harness permission preferences are retained. New plain shell tabs include RiWork's Codex and Claude launchers on their `PATH`, so starting either CLI from a shell tab uses the same integration. An absolute path to a separately installed CLI bypasses those launchers. Existing running harnesses need to be restarted to load the new connection; closing and reopening a terminal tab only reattaches its running session.
+New RiWork Codex, Claude, and Grok launches receive the same `cua-driver` MCP connection and computer-use instructions. Codex's OpenAI computer-use feature is disabled for these launches. Existing model, account, and harness permission preferences are retained. New plain shell tabs include RiWork's Codex, Claude, and Grok launchers on their `PATH`, so starting any CLI from a shell tab uses the same integration. An absolute path to a separately installed CLI bypasses those launchers. Existing running harnesses need to be restarted to load the new connection; closing and reopening a terminal tab only reattaches its running session.
 
-The MCP connection runs through `riwork cua mcp`, which resolves the installed driver without depending on the agent's `PATH`. For a custom driver installation or isolated tests, set `RIWORK_CUA_DRIVER` to its executable. Setup keeps its managed launchers under `RIWORK_HOME/cua` and does not edit your global Codex or Claude configuration or shell startup files. RiWork's zsh tabs forward your startup files through a session directory and restore the launcher prefix after their PATH changes. Custom shells, aliases, and nested shells can override that PATH; direct RiWork harness launches always receive the connection.
+The MCP connection runs through `riwork cua mcp`, which resolves the installed driver without depending on the agent's `PATH`. For a custom driver installation or isolated tests, set `RIWORK_CUA_DRIVER` to its executable. Setup keeps its managed launchers under `RIWORK_HOME/cua` and does not edit your global Codex, Claude, or Grok configuration or shell startup files. Grok receives a session-scoped agent definition from `RIWORK_HOME/cua/grok-agent-*.md`; its model and login still come from Grok's own profile, while RiWork's agent definition replaces Grok's default agent selection for that session. RiWork's zsh tabs forward your startup files through a session directory and restore the launcher prefix after their PATH changes. Custom shells, aliases, and nested shells can override that PATH; direct RiWork harness launches always receive the connection.
 
-RiWork also serves a local MCP connection over stdio with `riwork mcp`. Configure an MCP client to launch that command to give Codex or Claude project, worktree, task, and shell inspection tools. The server uses the same state as the CLI and GPUI app.
+RiWork also serves a local MCP connection over stdio with `riwork mcp`. Configure an MCP client to launch that command to give Codex, Claude, or Grok project, worktree, task, and shell inspection tools. The server uses the same state as the CLI and GPUI app.
 
 ## Projects, worktrees, and tasks
 
@@ -169,6 +169,7 @@ RiWork creates `~/Documents/riwork` at app startup if needed. Use **+ PROJECT** 
 riwork shell create --worktree WORKTREE_ID
 riwork shell create --worktree WORKTREE_ID --harness codex
 riwork shell create --worktree WORKTREE_ID --harness claude
+riwork shell create --worktree WORKTREE_ID --harness grok
 riwork shell create --harness codex --unrestricted
 riwork shell list --all --json
 riwork shell output SHELL_UUID --lines 100
@@ -188,7 +189,7 @@ The full-width bottom status bar shows the current project on the left and live 
 
 ## Harness launches and usage
 
-The **New Tab** section of a pane's **…** actions menu launches a shell, Codex, or Claude in the selected worktree. Normal presets use the CLI's usual permissions. Explicit **unrestricted** presets pass its permission bypass flag. Cmd+Shift+C opens Codex; Cmd+Shift+L opens Claude.
+The **New Tab** section of a pane's **…** actions menu launches a shell, Codex, Claude, or Grok in the selected worktree. Normal presets use the CLI's usual permissions. Explicit **unrestricted** presets pass each CLI's permission bypass flag. Cmd+Shift+C opens Codex; Cmd+Shift+L opens Claude; Cmd+Shift+G opens Grok. Grok scheduling, RiWork activity and completion alerts, and RiWork quota display are not yet supported.
 
 Click the bottom usage readout, or open **USAGE** under **Views** in a pane's **…** actions menu, for remaining quota, reset countdowns, and update times. Codex reads its official app-server account endpoint on a worker with a timeout, refreshing every 15 minutes or on demand. Claude sends documented statusline JSON through settings passed only to that invocation; global Claude settings are unchanged. Claude quota appears after a response on supported Pro/Max accounts and versions. Context usage and estimated session cost appear separately. Missing quota windows stay unavailable; old snapshots are marked stale. Quota is shared by sessions on the same account.
 
@@ -203,7 +204,7 @@ Project windows and independently launched app processes keep their own selected
 
 ## Orchestrator
 
-The global orchestrator coordinates objectives and dependencies across projects. Each project's orchestrator manages its tasks, repositories, worktrees, and Codex/Claude workers. They have separate persistent shells and ordinary workspace tabs; project orchestrators belong to their project and have no worktree, while the global orchestrator has neither project nor worktree ownership.
+The global orchestrator coordinates objectives and dependencies across projects. Each project's orchestrator manages its tasks, repositories, worktrees, and Codex, Claude, or Grok workers. They have separate persistent shells and ordinary workspace tabs; project orchestrators belong to their project and have no worktree, while the global orchestrator has neither project nor worktree ownership.
 
 Click **G·ORCH** or press Cmd+Shift+O for the global orchestrator tab. Click **P·ORCH** or press Cmd+Alt+O for the current project's orchestrator tab. Both are also under **New Tab** in a pane's **…** actions menu. Opening a scope selects its existing tab in this window, or attaches its persistent session to the active pane. Orchestrator tabs drag, split, close, and restore like shell tabs. Closing a tab detaches its terminal and preserves the session. No separate orchestrator window is created.
 
@@ -238,7 +239,7 @@ All orchestrator operations use the global scope when `--project` is omitted. `r
 | Open / select Projects panel | Cmd+B |
 | Open global / project orchestrator tab | Cmd+Shift+O / Cmd+Alt+O |
 | Focus current tab / restore workspace | Cmd+Shift+F |
-| Open Codex / Claude | Cmd+Shift+C / Cmd+Shift+L |
+| Open Codex / Claude / Grok | Cmd+Shift+C / Cmd+Shift+L / Cmd+Shift+G |
 
 Panel tabs start in a left pane. Every pane's tab strip stays at the top, and every panel and shell tab can move, close, or share a split:
 
@@ -258,7 +259,7 @@ Open **RiWork → Settings…**, press Cmd+, or choose **SETTINGS** under **View
 - **Codex accounts** detects the current Codex profile and saved accounts from Orca. Use **REFRESH ACCOUNTS** to check again, then select an account for new Codex sessions, including new Codex orchestrators. Existing sessions and resumed conversations keep their original account. Quota is read separately for each account and follows the active Codex session's saved account.
 - **Status bar** lets you show or hide the entire bar, choose visible items, move each item left or right, and change its order with the arrow buttons. The current project appears on the left by default. Worktree and agent activity are optional; **RESET DEFAULTS** restores the original arrangement. Preferences apply across windows.
 - **Theme** defaults to **Follow Ghostty**: panels, tabs, menus, and terminals share your Ghostty palette. RiWork uses Ghostty's own configuration loader, including recursive files and custom themes, and picks up palette changes within a few seconds. **RiWork**, **Catppuccin Mocha**, **Tokyo Night**, and **Gruvbox Light** apply matching workspace and terminal colors while retaining your other Ghostty preferences. Preferences are shared across windows and app processes. Selecting a RiWork theme does not edit the standalone Ghostty app's configuration.
-- **Use RiWork terminal colors** remains available under Follow Ghostty for existing preferences and is off by default. Turn it on to keep RiWork's original terminal palette. Theme changes preserve running shells, Codex/Claude sessions, tabs, and splits; returning to Ghostty's colors reconnects only terminal display clients.
+- **Use RiWork terminal colors** remains available under Follow Ghostty for existing preferences and is off by default. Turn it on to keep RiWork's original terminal palette. Theme changes preserve running shells, Codex/Claude/Grok sessions, tabs, and splits; returning to Ghostty's colors reconnects only terminal display clients.
 - **Remember project window size** is on by default. New or reopened project windows restore the last normal window size, constrained to the current display. Maximizing or entering fullscreen does not overwrite it. Switching projects in an existing window keeps that window's size. Older layouts use the default size until opened and saved by this version.
 
 The embedded Ghostty adapter currently uses the light variant of a paired `light:…,dark:…` theme and does not follow macOS appearance changes. A single Ghostty theme or an explicit RiWork theme applies consistently.

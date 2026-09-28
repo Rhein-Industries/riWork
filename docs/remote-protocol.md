@@ -125,7 +125,7 @@ Worktree: `id,project_id,branch,path` strings; `is_primary` boolean; `created_at
 Task: `id,project_id,title,details` strings; `status` `todo|in_progress|done`;
 `worktree_id` UUID or null; `created_at,updated_at` Unix seconds.
 Session: `id` UUID, `project_id,worktree_id` UUID or null, `kind` `project|orchestrator`,
-`cwd` string, `harness` `codex|claude|null`, `alive` boolean, `created_at_unix` number.
+`cwd` string, `harness` `codex|claude|grok|null`, `alive` boolean, `created_at_unix` number.
 Clients tolerate additive result/entity fields but must reject unknown protocol
 versions. Lists expose existing CLI entities; output/input resolve a full shell
 UUID against existing project shells **and** orchestrators. Dead/missing sessions
