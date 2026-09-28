@@ -2,14 +2,33 @@
 
 The flat monochrome block hammer is RiWork's macOS app icon. The artwork is drawn directly as SVG paths, with no text or embedded bitmap.
 
-- `riwork-hammer.svg`: editable 1024 × 1024 full-bleed artwork for Icon Composer.
-- `hammer-mark.svg`: transparent foreground artwork for Icon Composer.
-- `RiWork.icns`: compiled full-bleed icon for Icon Composer workflows.
-- `riwork-hammer-legacy.svg` and `RiWork-legacy.icns`: rounded icon bundled on every supported macOS version. The filenames retain their original "legacy" name.
+- `riwork-hammer-legacy.svg` and `RiWork-legacy.icns`: the rounded icon RiWork ships on every supported macOS version. The filenames retain their original "legacy" name. This is the only icon the bundle script reads.
+- `riwork-hammer.svg`: editable 1024 × 1024 full-bleed artwork, a square `#222222` tile with the hammer on it. It is the source for `RiWork.icns`.
+- `RiWork.icns`: compiled full-bleed icon. It is not bundled; macOS supplies the rounded mask for full-bleed icons, so it is kept for Icon Composer-style workflows.
+- `hammer-mark.svg`: transparent foreground artwork, the layer to import into Icon Composer.
 
-The bundle script copies the rounded icon to `Contents/Resources/RiWork.icns` and declares it with `CFBundleIconFile`. Local updates stage both icon resources before packaging.
+The bundle script copies `RiWork-legacy.icns` to `Contents/Resources/RiWork.icns` and declares it with `CFBundleIconFile`. Local updates stage only that rounded icon before packaging, so a checkout without `RiWork.icns` still builds and updates.
 
-To regenerate the `.icns`, render `riwork-hammer.svg` at the pixel sizes below into a directory named `RiWork.iconset`, then run `iconutil -c icns -o RiWork.icns RiWork.iconset`. An SVG renderer such as `rsvg-convert` can render each PNG directly from the source.
+## Regenerating the `.icns` files
+
+Render the SVG at the pixel sizes below into a directory named `<name>.iconset`, then run `iconutil -c icns` on it. This shell function does both with `rsvg-convert` (`brew install librsvg`); any SVG renderer that keeps transparency works in its place. Run it from this directory.
+
+```sh
+render_icns() { # render_icns SOURCE.svg OUTPUT.icns
+    iconset="$(mktemp -d)/$(basename "$2" .icns).iconset"
+    mkdir "$iconset"
+    for spec in 16:icon_16x16 32:icon_16x16@2x 32:icon_32x32 64:icon_32x32@2x \
+        128:icon_128x128 256:icon_128x128@2x 256:icon_256x256 512:icon_256x256@2x \
+        512:icon_512x512 1024:icon_512x512@2x; do
+        rsvg-convert --width "${spec%%:*}" --height "${spec%%:*}" "$1" \
+            --output "$iconset/${spec#*:}.png"
+    done
+    iconutil -c icns -o "$2" "$iconset"
+}
+
+render_icns riwork-hammer-legacy.svg RiWork-legacy.icns   # the shipped rounded icon
+render_icns riwork-hammer.svg RiWork.icns                 # the full-bleed export
+```
 
 | Filename | Pixels |
 | --- | --- |
@@ -24,4 +43,8 @@ To regenerate the `.icns`, render `riwork-hammer.svg` at the pixel sizes below i
 | `icon_512x512.png` | 512 |
 | `icon_512x512@2x.png` | 1024 |
 
-For Icon Composer, import `hammer-mark.svg` and set a solid charcoal background (`#222222`) in Composer. Its system mask supplies the rounded tile; the full-bleed export avoids a second, smaller tile inside the system frame.
+The rounded source keeps its transparent margin around the tile, so its PNGs must keep their alpha channel.
+
+## Icon Composer
+
+Import `hammer-mark.svg` and set a solid charcoal background (`#222222`) in Composer. Its system mask supplies the rounded tile; a full-bleed export such as `RiWork.icns` avoids a second, smaller tile inside the system frame. Do not import `riwork-hammer-legacy.svg` there, because it already draws its own rounded tile.
