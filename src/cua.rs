@@ -85,16 +85,11 @@ pub fn driver_override_for_harness() -> Option<PathBuf> {
 
 impl CuaManager {
     pub fn open_default() -> Result<Self, String> {
-        let home = match env::var_os("RIWORK_HOME") {
-            Some(path) => PathBuf::from(path),
-            None => PathBuf::from(env::var_os("HOME").ok_or("HOME is not set; set RIWORK_HOME")?)
-                .join(".local/share/riwork"),
-        };
-        Self::at(home)
+        Self::at(crate::paths::riwork_home()?)
     }
 
     pub fn at(home: PathBuf) -> Result<Self, String> {
-        fs::create_dir_all(&home)
+        crate::paths::create_private_dir(&home)
             .map_err(|error| format!("Cannot create {}: {error}", home.display()))?;
         let home = home
             .canonicalize()
@@ -1228,6 +1223,22 @@ mod tests {
     fn fake_driver(path: &Path, body: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         atomic_executable(path, format!("#!/bin/sh\n{body}\n").as_bytes()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_state_directory_is_owner_only_and_an_existing_one_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-test").unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let fresh = temp.path.join("parent/state");
+        CuaManager::at(fresh.clone()).unwrap();
+        assert_eq!(mode(&fresh), 0o700);
+        let shared = temp.path.join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+        CuaManager::at(shared.clone()).unwrap();
+        assert_eq!(mode(&shared), 0o755);
     }
 
     #[test]
