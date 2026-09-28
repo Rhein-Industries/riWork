@@ -154,3 +154,153 @@ async fn persistent_cached_conflicting_pending_and_capacity_outcomes_never_execu
         .unwrap();
     assert_eq!(full["error"]["code"], "cache_full");
 }
+
+/// A scripted stand-in for the RiWork CLI that logs every invocation. `shell` is
+/// the one live shell it reports (until a `dead` file appears beside the log);
+/// its `shell output` floods stdout past the limit.
+#[cfg(unix)]
+fn fake_cli(dir: &std::path::Path, shell: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let log = dir.join("cli.log");
+    let cli = dir.join("fake-riwork");
+    std::fs::write(
+        &cli,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1 $2\" in\n\
+             'shell list') if [ -e '{}' ]; then echo '[]'; else printf '[{{\"id\":\"{shell}\",\"alive\":true}}]'; fi;;\n\
+             'orchestrator list') echo '[]';;\n\
+             'shell output') head -c 200000 /dev/zero | tr '\\0' a;;\nesac\n",
+            log.display(),
+            dir.join("dead").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+    (cli, log)
+}
+#[cfg(unix)]
+fn calls(log: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+#[tokio::test]
+async fn malformed_request_ids_get_an_error_response_instead_of_dropping_the_session() {
+    let (_tmp, rpc, device) = fixture();
+    for value in [
+        json!({"v":1,"type":"request","method":"projects.list","params":{}}),
+        json!({"v":1,"type":"request","id":7,"method":"projects.list","params":{}}),
+        json!({"v":1,"type":"request","id":null,"method":"projects.list","params":{}}),
+        json!({"v":1,"type":"request","id":"x".repeat(65),"method":"projects.list","params":{}}),
+        json!("not an object"),
+        Value::Null,
+    ] {
+        let response = rpc.handle(&device, value).await.unwrap();
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(response["error"]["code"], "invalid_request", "{response}");
+        assert_eq!(response["id"], Value::Null, "{response}");
+    }
+    // A string ID that is not a UUID is still echoed so the caller can correlate.
+    let response = rpc
+        .handle(
+            &device,
+            json!({"v":1,"type":"request","id":"not-a-uuid","method":"projects.list","params":{}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response["error"]["code"], "invalid_request");
+    assert_eq!(response["id"], "not-a-uuid");
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_output_over_the_limit_is_response_too_large_not_cli_error() {
+    let (tmp, _, device) = fixture();
+    let shell = uuid::Uuid::new_v4().to_string();
+    let (cli, _log) = fake_cli(tmp.path(), &shell);
+    let rpc = Rpc::new(cli, Storage::at(tmp.path().into()).unwrap());
+    let response = rpc
+        .handle(&device, req("shell.output", json!({"shell_id":shell})))
+        .await
+        .unwrap();
+    assert_eq!(
+        response["error"]["code"], "response_too_large",
+        "{response}"
+    );
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn resize_clear_checks_the_session_before_reaching_the_cli() {
+    let (tmp, _, device) = fixture();
+    let live = uuid::Uuid::new_v4().to_string();
+    let (cli, log) = fake_cli(tmp.path(), &live);
+    let rpc = Rpc::new(cli.clone(), Storage::at(tmp.path().into()).unwrap());
+    let mut viewport = Viewport::new(cli, device.clone());
+    // Each fresh UUID would leave a permanent lock file in the CLI's terminal-control dir.
+    for _ in 0..3 {
+        let unknown = uuid::Uuid::new_v4().to_string();
+        let response = rpc
+            .handle_in(
+                &device,
+                req("shell.resize.clear", json!({"shell_id":unknown})),
+                Some(&mut viewport),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response["error"]["code"], "not_found", "{response}");
+    }
+    assert!(
+        calls(&log).iter().all(|c| !c.contains("resize-clear")),
+        "{:?}",
+        calls(&log)
+    );
+    // A live shell reaches the CLI (idempotent clear).
+    let response = rpc
+        .handle_in(
+            &device,
+            req("shell.resize.clear", json!({"shell_id":live})),
+            Some(&mut viewport),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response["result"]["status"], "cleared", "{response}");
+    assert_eq!(
+        calls(&log)
+            .iter()
+            .filter(|c| c.contains("resize-clear"))
+            .count(),
+        1
+    );
+    // A shell this connection pinned and that has since died can still be released.
+    let response = rpc
+        .handle_in(
+            &device,
+            req(
+                "shell.resize",
+                json!({"shell_id":live,"columns":43,"rows":17}),
+            ),
+            Some(&mut viewport),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response["ok"], true, "{response}");
+    std::fs::write(tmp.path().join("dead"), "").unwrap();
+    let before = calls(&log).len();
+    let response = rpc
+        .handle_in(
+            &device,
+            req("shell.resize.clear", json!({"shell_id":live})),
+            Some(&mut viewport),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response["result"]["status"], "cleared", "{response}");
+    assert!(
+        calls(&log)[before..]
+            .iter()
+            .all(|c| c.starts_with("shell resize-clear")),
+        "an owned clear needs no session lookup: {:?}",
+        calls(&log)
+    );
+}

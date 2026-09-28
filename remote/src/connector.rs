@@ -4,6 +4,7 @@ use crate::{
     crypto::{
         ClientFinish, ClientHello, Envelope, Pending, Session, accept_hello, decode, random32,
     },
+    log_safe,
     rpc::Rpc,
     viewport::Viewport,
 };
@@ -56,7 +57,11 @@ pub async fn connect_registered(
         Duration::from_secs(HANDSHAKE_SECONDS),
         receive_json(&mut ws),
     )
-    .await??;
+    .await
+    .context("relay did not acknowledge the registration in time")?
+    .context(
+        "relay closed the connection during registration (credentials rejected, duplicate registration, or relay full)",
+    )?;
     ensure!(
         value["v"] == 1 && value["type"] == "registered",
         "relay registration rejected"
@@ -73,8 +78,17 @@ pub async fn send_json(ws: &mut Socket, v: &impl serde::Serialize) -> Result<()>
     Ok(())
 }
 pub async fn receive_json(ws: &mut Socket) -> Result<Value> {
+    receive_json_seen(ws, &mut Instant::now()).await
+}
+/// Like `receive_json`, but stamps `seen` for every frame including ping/pong,
+/// which is what proves the relay path is alive.
+async fn receive_json_seen(ws: &mut Socket, seen: &mut Instant) -> Result<Value> {
     loop {
-        match ws.next().await {
+        let frame = ws.next().await;
+        if matches!(frame, Some(Ok(_))) {
+            *seen = Instant::now();
+        }
+        match frame {
             Some(Ok(Message::Text(text))) => {
                 ensure!(text.len() <= MAX_FRAME, "frame limit");
                 return Ok(serde_json::from_str(&text)?);
@@ -112,9 +126,11 @@ pub async fn start(storage: Storage, cli: PathBuf) -> Result<()> {
                 }};
                 let active:HashMap<_,_>=cfg.devices.into_iter().filter(|d|!d.revoked).map(|d|(d.pairing.device_id.clone(),d)).collect();
                 let removed=running.keys().filter(|id|!active.contains_key(*id)).cloned().collect::<Vec<_>>();
-                for id in removed {if let Some((cancel,_))=running.remove(&id){let _=cancel.send(true);}}
+                for id in removed {if let Some((cancel,_))=running.remove(&id){let _=cancel.send(true);eprintln!("Remote device {id} was removed or revoked; connection closed.");}}
                 for (id,device) in active {
                     if let std::collections::hash_map::Entry::Vacant(entry) = running.entry(id) {
+                        // A pairing made by any local process is adopted here within a tick.
+                        eprintln!("Remote device {} ({}) enabled.",device.pairing.device_id,log_safe(&device.pairing.device_name));
                         let (cancel,rx)=watch::channel(false); let rpc=rpc.clone();
                         let handle=tokio::spawn(async move{supervise(device,rpc,rx).await;});
                         entry.insert((cancel,handle));
@@ -129,7 +145,35 @@ pub async fn start(storage: Storage, cli: PathBuf) -> Result<()> {
     }
     Ok(())
 }
+/// Repeats of one failure (relay down, rejected registration) log once a minute.
+#[derive(Default)]
+struct FailureLog {
+    last: Option<(String, Instant)>,
+    suppressed: u32,
+}
+impl FailureLog {
+    fn note(&mut self, device: &str, error: &anyhow::Error) {
+        let reason = log_safe(&format!("{error:#}"));
+        if let Some((last, at)) = &self.last
+            && *last == reason
+            && at.elapsed() < Duration::from_secs(60)
+        {
+            self.suppressed += 1;
+            return;
+        }
+        let more = match self.suppressed {
+            0 => String::new(),
+            n => format!(" ({n} identical failures not logged)"),
+        };
+        eprintln!(
+            "Remote device {device} disconnected: {reason}{more}; reconnecting (no payload logged)."
+        );
+        self.last = Some((reason, Instant::now()));
+        self.suppressed = 0;
+    }
+}
 async fn supervise(device: Device, rpc: Arc<Rpc>, mut cancel: watch::Receiver<bool>) {
+    let mut failures = FailureLog::default();
     loop {
         if *cancel.borrow() {
             return;
@@ -139,13 +183,52 @@ async fn supervise(device: Device, rpc: Arc<Rpc>, mut cancel: watch::Receiver<bo
         tokio::select! {
             _=cancel.changed()=>return,
             result=run_device(&device,&rpc)=>{
-                if result.is_err(){eprintln!("Remote device {} disconnected; reconnecting (no payload logged).",device.pairing.device_id);}
+                if let Err(e)=result{failures.note(&device.pairing.device_id,&e);}
             }
         }
         tokio::select! {_=cancel.changed()=>return,_=sleep(Duration::from_secs(1))=>{}}
     }
 }
+/// Liveness and lease timing; tests shorten these.
+#[derive(Clone, Copy)]
+pub(crate) struct Timing {
+    ping: Duration,
+    /// Nothing from the relay (its pings and pongs count) for this long means the
+    /// path is dead, e.g. after a network switch or sleep.
+    idle: Duration,
+    renew: Duration,
+    /// The viewport lease is renewed only while the phone was heard from this
+    /// recently, so a vanished phone stops holding the desktop terminal at its size.
+    mobile_active: Duration,
+}
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            ping: Duration::from_secs(20),
+            idle: Duration::from_secs(60),
+            renew: Duration::from_secs(3),
+            mobile_active: Duration::from_secs(20),
+        }
+    }
+}
+/// Records the handshake off the async threads; a failure only costs the audit trail.
+fn record_authentication(storage: Storage, id: String, name: String) {
+    tokio::task::spawn_blocking(move || {
+        let name = log_safe(&name);
+        match storage.record_authentication(&id, Duration::from_secs(2)) {
+            Ok(true) => eprintln!("Remote device {id} ({name}) authenticated for the first time."),
+            Ok(false) => eprintln!("Remote device {id} ({name}) authenticated."),
+            Err(e) => eprintln!(
+                "Remote device {id} ({name}) authenticated; recording it failed: {}",
+                log_safe(&format!("{e:#}"))
+            ),
+        }
+    });
+}
 async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
+    run_device_with(device, rpc, Timing::default()).await
+}
+pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) -> Result<()> {
     let p = &device.pairing;
     p.validate(device.allow_insecure_loopback)?;
     let (mut ws, online) =
@@ -157,15 +240,29 @@ async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
     let mut viewport: Option<Viewport> = None;
     let mut deadline: Option<Instant> =
         online.then(|| Instant::now() + Duration::from_secs(HANDSHAKE_SECONDS));
-    let mut heartbeat = interval(Duration::from_secs(20));
-    let mut renew = interval(Duration::from_secs(3));
+    let mut heartbeat = interval(timing.ping);
+    let mut renew = interval(timing.renew);
     heartbeat.tick().await;
+    let mut last_rx = Instant::now();
+    let mut last_mobile = Instant::now();
     loop {
+        let idle_at = last_rx + timing.idle;
+        // Biased: frames already waiting after a slow RPC must be read before the
+        // idle deadline is judged. Ticks come first so a busy peer cannot starve them.
         let value = tokio::select! {
-            _=renew.tick()=>{if let Some(v)=&viewport {rpc.renew_viewport(v).await?;}continue;},
-            _=heartbeat.tick()=>{ws.send(Message::Ping(vec![].into())).await?;continue;},
+            biased;
+            _=renew.tick()=>{
+                if let Some(v)=&viewport && last_mobile.elapsed()<=timing.mobile_active {rpc.renew_viewport(v).await?;}
+                continue;
+            },
+            _=heartbeat.tick()=>{timeout(Duration::from_secs(10),ws.send(Message::Ping(vec![].into()))).await??;continue;},
+            value=receive_json_seen(&mut ws,&mut last_rx)=>value?,
+            _=tokio::time::sleep_until(idle_at)=>{
+                // The receive branch above may have consumed a pong in this very poll.
+                if last_rx.elapsed()>=timing.idle {bail!("relay silent past the liveness deadline");}
+                continue;
+            },
             _=async {if let Some(t)=deadline {tokio::time::sleep_until(t).await;}else{std::future::pending::<()>().await;}}=>bail!("handshake timeout"),
-            value=receive_json(&mut ws)=>value?,
         };
         ensure!(value["v"] == 1, "unsupported version");
         match value["type"].as_str() {
@@ -201,6 +298,12 @@ async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
                 session = Some(s);
                 viewport = Some(Viewport::new(rpc.cli.clone(), p.device_id.clone()));
                 deadline = None;
+                last_mobile = Instant::now();
+                record_authentication(
+                    rpc.storage.clone(),
+                    p.device_id.clone(),
+                    p.device_name.clone(),
+                );
             }
             Some("encrypted") => {
                 let s = session
@@ -208,12 +311,11 @@ async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
                     .context("RPC before authenticated handshake")?;
                 let envelope: Envelope = serde_json::from_value(value)?;
                 let plaintext = s.open("c2d", &envelope)?;
+                last_mobile = Instant::now();
+                // Unparseable plaintext is answered as an invalid request, not a dropped session.
+                let request = serde_json::from_slice(&plaintext).unwrap_or(Value::Null);
                 let response = rpc
-                    .handle_in(
-                        &p.device_id,
-                        serde_json::from_slice(&plaintext)?,
-                        viewport.as_mut(),
-                    )
+                    .handle_in(&p.device_id, request, viewport.as_mut())
                     .await?;
                 ensure!(
                     rpc.storage.authorized(&p.device_id)?,
@@ -224,5 +326,218 @@ async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
             }
             _ => bail!("unexpected endpoint frame"),
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::{
+        config::{Pairing, private_read},
+        crypto::{ServerHello, accept_server, client_hello},
+        relay::{Relay, Routes},
+    };
+    use std::path::Path;
+
+    /// Stand-in RiWork CLI: logs each call and reports one live shell.
+    fn scripted_cli(dir: &Path, shell: &str) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let (cli, log) = (dir.join("fake-riwork"), dir.join("cli.log"));
+        std::fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1 $2\" in\n\
+                 'shell list') printf '[{{\"id\":\"{shell}\",\"alive\":true}}]';;\n\
+                 'orchestrator list'|'project list') echo '[]';;\nesac\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        (cli, log)
+    }
+    /// Polls a condition instead of trusting a fixed sleep on a loaded machine.
+    async fn eventually(mut condition: impl FnMut() -> bool) {
+        for _ in 0..250 {
+            if condition() {
+                return;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        panic!("condition not reached within 5 seconds");
+    }
+    fn renewals(log: &Path) -> usize {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("shell resize "))
+            .count()
+    }
+    async fn paired(dir: &Path, relay_url: &str) -> (Storage, Device, PathBuf) {
+        let storage = Storage::at(dir.to_path_buf()).unwrap();
+        let routes = dir.join("routes.json");
+        storage
+            .pair(
+                relay_url.into(),
+                "phone".into(),
+                true,
+                &dir.join("pairing.json"),
+                Some(&routes),
+            )
+            .unwrap();
+        let device = storage.config().unwrap().devices.remove(0);
+        (storage, device, routes)
+    }
+    async fn mobile(p: &Pairing) -> (Socket, Session) {
+        let (mut ws, online) = loop {
+            match connect_registered(&p.relay_url, &p.route_id, "mobile", &p.relay_token).await {
+                Ok(s) => break s,
+                Err(_) => sleep(Duration::from_millis(20)).await,
+            }
+        };
+        if !online {
+            let peer = receive_json(&mut ws).await.unwrap();
+            assert_eq!(peer["online"], true);
+        }
+        let (nonce, secret) = (random32(), decode::<32>(&p.pairing_secret).unwrap());
+        send_json(
+            &mut ws,
+            &client_hello(&p.identity(), &secret, nonce).unwrap(),
+        )
+        .await
+        .unwrap();
+        let hello: ServerHello =
+            serde_json::from_value(receive_json(&mut ws).await.unwrap()).unwrap();
+        let (finish, mut session) = accept_server(&p.identity(), &secret, &nonce, &hello).unwrap();
+        send_json(&mut ws, &finish).await.unwrap();
+        let ready: Envelope = serde_json::from_value(receive_json(&mut ws).await.unwrap()).unwrap();
+        session.open("d2c", &ready).unwrap();
+        (ws, session)
+    }
+    async fn call(ws: &mut Socket, s: &mut Session, method: &str, params: Value) -> Value {
+        let request = json!({"v":1,"type":"request","id":uuid::Uuid::new_v4().to_string(),"method":method,"params":params});
+        send_json(
+            ws,
+            &s.seal("c2d", &serde_json::to_vec(&request).unwrap())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let reply = timeout(Duration::from_secs(15), receive_json(ws))
+            .await
+            .expect("connector answers")
+            .unwrap();
+        let reply: Envelope = serde_json::from_value(reply).unwrap();
+        serde_json::from_slice(&s.open("d2c", &reply).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn lease_renewal_needs_recent_phone_traffic_and_auth_is_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/ws", listener.local_addr().unwrap());
+        let (storage, device, routes) = paired(tmp.path(), &url).await;
+        let relay = Relay::new(private_read::<Routes>(&routes, 1 << 20).unwrap(), 8).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, relay.router()).await });
+        let shell = uuid::Uuid::new_v4().to_string();
+        let (cli, log) = scripted_cli(tmp.path(), &shell);
+        let rpc = Rpc::new(cli, storage.clone());
+        // Short enough to test. Pings every 100 ms against a 1 s idle deadline also
+        // prove a healthy but quiet connection is not mistaken for a dead one.
+        let timing = Timing {
+            ping: Duration::from_millis(100),
+            idle: Duration::from_secs(1),
+            renew: Duration::from_millis(50),
+            mobile_active: Duration::from_secs(1),
+        };
+        let pairing = device.pairing.clone();
+        let connector = tokio::spawn(async move { run_device_with(&device, &rpc, timing).await });
+
+        let (mut ws, mut session) = mobile(&pairing).await;
+        let resized = call(
+            &mut ws,
+            &mut session,
+            "shell.resize",
+            json!({"shell_id":shell,"columns":43,"rows":17}),
+        )
+        .await;
+        assert_eq!(resized["ok"], true, "{resized}");
+        // While the phone keeps talking, the lease is renewed. (Traffic is repeated
+        // so a slow machine cannot outrun the 1 s window before renewals happen.)
+        for _ in 0..100 {
+            if renewals(&log) >= 3 {
+                break;
+            }
+            let listed = call(&mut ws, &mut session, "projects.list", json!({})).await;
+            assert_eq!(listed["ok"], true, "{listed}");
+            sleep(Duration::from_millis(50)).await;
+        }
+        assert!(renewals(&log) >= 3, "renews while the phone is active");
+        for _ in 0..50 {
+            if storage.config().unwrap().devices[0]
+                .last_authenticated_unix
+                .is_some()
+            {
+                break;
+            }
+            sleep(Duration::from_millis(40)).await;
+        }
+        let recorded = storage.config().unwrap().devices.remove(0);
+        assert!(
+            recorded.first_authenticated_unix.is_some()
+                && recorded.last_authenticated_unix.is_some()
+        );
+
+        // The phone goes quiet (still connected at transport level): renewals stop.
+        sleep(Duration::from_millis(3000)).await;
+        let stopped = renewals(&log);
+        sleep(Duration::from_millis(1000)).await;
+        assert_eq!(renewals(&log), stopped, "no renewal without phone traffic");
+        assert!(
+            !connector.is_finished(),
+            "a quiet, healthy connection stays up"
+        );
+
+        // Any authenticated request revives it.
+        let listed = call(&mut ws, &mut session, "projects.list", json!({})).await;
+        assert_eq!(listed["ok"], true, "{listed}");
+        eventually(|| renewals(&log) > stopped).await;
+        connector.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn connector_gives_up_on_a_relay_that_stops_answering() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/ws", listener.local_addr().unwrap());
+        // Registers the connector, then black-holes: never reads, pongs or writes.
+        let hole = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let _register = ws.next().await;
+            let ack = r#"{"v":1,"type":"registered","peer_online":false}"#;
+            ws.send(Message::Text(ack.into())).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let (storage, device, _) = paired(tmp.path(), &url).await;
+        let (cli, _) = scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string());
+        let rpc = Rpc::new(cli, storage);
+        let timing = Timing {
+            ping: Duration::from_millis(100),
+            idle: Duration::from_millis(400),
+            ..Timing::default()
+        };
+        let started = Instant::now();
+        let outcome = timeout(
+            Duration::from_secs(5),
+            run_device_with(&device, &rpc, timing),
+        )
+        .await
+        .expect("must not wait forever on a silent relay");
+        let error = format!("{:#}", outcome.unwrap_err());
+        assert!(error.contains("liveness deadline"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        hole.abort();
     }
 }

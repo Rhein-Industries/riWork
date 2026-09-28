@@ -8,8 +8,19 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
+
+/// `pair`, `revoke` and the connector's audit record share config.lock. They
+/// hold it for milliseconds, so waiting is bounded rather than failing spuriously.
+const CONFIG_LOCK_WAIT: Duration = Duration::from_secs(10);
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,6 +64,14 @@ pub struct Device {
     pub desktop_token: String,
     pub allow_insecure_loopback: bool,
     pub revoked: bool,
+    // Unix seconds. Absent in configs written before these were recorded, and
+    // `first`/`last` stay absent until the device completes a handshake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired_at_unix: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_authenticated_unix: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_authenticated_unix: Option<u64>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,6 +163,12 @@ pub fn private_read<T: DeserializeOwned>(path: &Path, max: u64) -> Result<T> {
 }
 pub fn private_write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let parent = path.parent().context("file parent missing")?;
+    // A bare relative name has the empty path as parent, which cannot be opened.
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
     let tmp = parent.join(format!(".remote-{}.tmp", Uuid::new_v4()));
     let result = (|| {
         let mut f = options().write(true).create_new(true).open(&tmp)?;
@@ -165,18 +190,28 @@ pub fn private_export<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .create_new(true)
         .open(path)
         .with_context(|| format!("create {} (must not already exist)", path.display()))?;
-    serde_json::to_writer_pretty(&mut f, value)?;
-    f.write_all(b"\n")?;
-    f.sync_all()?;
-    Ok(())
+    // create_new means this file is ours; do not leave a partial secret behind.
+    let written = (|| {
+        serde_json::to_writer_pretty(&mut f, value)?;
+        f.write_all(b"\n")?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    written
 }
 impl Storage {
     pub fn from_env() -> Result<Self> {
-        let home = env::var_os("RIWORK_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(".local/share/riwork")
-            });
+        let home = match env::var_os("RIWORK_HOME") {
+            Some(home) => PathBuf::from(home),
+            // Never fall back to the working directory: this tree holds the PSKs.
+            None => match env::var_os("HOME").filter(|h| !h.is_empty()) {
+                Some(home) => PathBuf::from(home).join(".local/share/riwork"),
+                None => anyhow::bail!("HOME is not set; set RIWORK_HOME"),
+            },
+        };
         ensure!(!home.as_os_str().is_empty(), "set RIWORK_HOME");
         fs::create_dir_all(&home)?;
         Self::at(home)
@@ -186,7 +221,7 @@ impl Storage {
         private_dir(&dir)?;
         Ok(Self { dir })
     }
-    pub fn lock(&self, name: &str) -> Result<File> {
+    fn open_lock(&self, name: &str) -> Result<File> {
         let f = options()
             .read(true)
             .write(true)
@@ -201,9 +236,31 @@ impl Storage {
                 "lock must have mode 600"
             );
         }
+        Ok(f)
+    }
+    pub fn lock(&self, name: &str) -> Result<File> {
+        let f = self.open_lock(name)?;
         f.try_lock_exclusive()
             .context("another remote process is using this storage")?;
         Ok(f)
+    }
+    /// Like `lock`, but waits up to `wait` for a holder to finish.
+    pub fn lock_wait(&self, name: &str, wait: Duration) -> Result<File> {
+        let f = self.open_lock(name)?;
+        let end = Instant::now() + wait;
+        loop {
+            match f.try_lock_exclusive() {
+                Ok(()) => return Ok(f),
+                Err(e) if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                    ensure!(
+                        Instant::now() < end,
+                        "timed out waiting for another remote process using this storage"
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => return Err(e).context("lock remote storage"),
+            }
+        }
     }
     pub fn config(&self) -> Result<Config> {
         private_dir(&self.dir)?;
@@ -266,7 +323,7 @@ impl Storage {
             !name.is_empty() && name.len() <= 128,
             "device name needs 1..128 bytes"
         );
-        let _lock = self.lock("config.lock")?;
+        let _lock = self.lock_wait("config.lock", CONFIG_LOCK_WAIT)?;
         let mut c = self.config()?;
         // Revoked identities can never authorize again; keep outcome files for
         // review, but release their bounded live configuration slots.
@@ -283,38 +340,71 @@ impl Storage {
             relay_token: b64(&random32()),
         };
         let desktop_token = b64(&random32());
-        if let Some(path) = routes {
-            let mut r: crate::relay::Routes = if path.exists() {
-                private_read(path, 1024 * 1024)?
-            } else {
-                crate::relay::Routes {
-                    v: 1,
-                    routes: vec![],
-                }
-            };
-            r.validate()?;
-            ensure!(r.routes.len() < 128, "relay route limit");
-            r.routes.push(crate::relay::Route {
-                route_id: p.route_id.clone(),
-                desktop_token_sha256: hex::encode(Sha256::digest(decode::<32>(&desktop_token)?)),
-                mobile_token_sha256: hex::encode(Sha256::digest(decode::<32>(&p.relay_token)?)),
-            });
-            private_write(path, &r)?;
-        }
+        // Stage the route in memory so every validation happens before any file
+        // changes. Commit order is then export, routes, config; a failure undoes
+        // what came before it, so retrying never accumulates orphan routes.
+        let staged = match routes {
+            Some(path) => {
+                let existed = path.exists();
+                let mut r: crate::relay::Routes = if existed {
+                    private_read(path, 1024 * 1024)?
+                } else {
+                    crate::relay::Routes {
+                        v: 1,
+                        routes: vec![],
+                    }
+                };
+                r.validate()?;
+                ensure!(r.routes.len() < 128, "relay route limit");
+                r.routes.push(crate::relay::Route {
+                    route_id: p.route_id.clone(),
+                    desktop_token_sha256: hex::encode(Sha256::digest(decode::<32>(
+                        &desktop_token,
+                    )?)),
+                    mobile_token_sha256: hex::encode(Sha256::digest(decode::<32>(&p.relay_token)?)),
+                });
+                r.validate()?;
+                Some((path, r, existed))
+            }
+            None => None,
+        };
         // The export can be shown/scanned only by its owner; never overwrite an existing file.
+        // It fails most often (missing directory, existing file), so it goes first.
         private_export(out, &p)?;
+        if let Some((path, r, _)) = &staged
+            && let Err(e) = private_write(path, r)
+        {
+            let _ = fs::remove_file(out);
+            return Err(e);
+        }
         c.devices.push(Device {
             pairing: p.clone(),
             desktop_token,
             allow_insecure_loopback: dev,
             revoked: false,
+            paired_at_unix: Some(now_unix()),
+            first_authenticated_unix: None,
+            last_authenticated_unix: None,
         });
-        self.save(&c)?;
+        if let Err(e) = self.save(&c) {
+            let _ = fs::remove_file(out);
+            if let Some((path, _, existed)) = staged
+                && let Err(undo) = remove_route(path, &p.route_id, existed)
+            {
+                return Err(e.context(format!(
+                    "relay routes {} were not restored ({undo:#}); remove route {}",
+                    path.display(),
+                    p.route_id
+                )));
+            }
+            return Err(e);
+        }
         Ok(p)
     }
     pub fn revoke(&self, id: &str) -> Result<()> {
         uuid(id)?;
-        let _lock = self.lock("config.lock")?;
+        // Emergency path: wait for a concurrent pair/audit write rather than fail.
+        let _lock = self.lock_wait("config.lock", CONFIG_LOCK_WAIT)?;
         let mut c = self.config()?;
         let d = c
             .devices
@@ -327,4 +417,34 @@ impl Storage {
         d.desktop_token.clear();
         self.save(&c)
     }
+    /// Records a completed endpoint handshake and reports whether it was the
+    /// device's first. Waits for config.lock so it cannot overwrite (or resurrect
+    /// a device from) a concurrent pair/revoke.
+    pub fn record_authentication(&self, id: &str, wait: Duration) -> Result<bool> {
+        let _lock = self.lock_wait("config.lock", wait)?;
+        let mut c = self.config()?;
+        let d = c
+            .devices
+            .iter_mut()
+            .find(|d| d.pairing.device_id == id && !d.revoked)
+            .context("device not found")?;
+        let now = now_unix();
+        let first = d.first_authenticated_unix.is_none();
+        d.first_authenticated_unix.get_or_insert(now);
+        d.last_authenticated_unix = Some(now);
+        self.save(&c)?;
+        Ok(first)
+    }
+}
+
+/// Undo of the route `pair` added; removes the manifest again if `pair` created it.
+fn remove_route(path: &Path, route_id: &str, existed: bool) -> Result<()> {
+    let mut r: crate::relay::Routes = private_read(path, 1024 * 1024)?;
+    r.routes.retain(|x| x.route_id != route_id);
+    if r.routes.is_empty() && !existed {
+        fs::remove_file(path)?;
+    } else {
+        private_write(path, &r)?;
+    }
+    Ok(())
 }

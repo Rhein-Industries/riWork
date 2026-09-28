@@ -2,10 +2,14 @@
 
 Contract owner: `feature/encrypted-relay`. This is the interoperability contract for
 `ios/`. No silent wire changes. Changes require an explicit dated note below and
-agreement with the iOS worker. v1 supports existing sessions only; it never creates
-projects, shells, workers, schedules or tasks. All JSON is UTF-8; object key order
-is immaterial. Integers below are JSON numbers except frame counters (strings).
-Base64 is URL-safe, **without padding**. UUIDs are full lowercase canonical UUIDs.
+agreement with the iOS worker. v1 has no RPC that creates projects, shells, workers,
+schedules or tasks; it works on existing sessions. That is an API-level limit only:
+`shell.input` reaches every live project shell and orchestrator, including
+unrestricted harness sessions and editor (Vim) tabs, so a paired device can run
+arbitrary commands as the desktop user and can have a harness create anything it
+can. Treat pairing as full remote control of the desktop's terminals. All JSON is
+UTF-8; object key order is immaterial. Integers below are JSON numbers except
+frame counters (strings). Base64 is URL-safe, **without padding**. UUIDs are full lowercase canonical UUIDs.
 
 ## Pairing and routing
 
@@ -31,7 +35,8 @@ permits denial of service/metadata access, not endpoint authentication/decryptio
 
 WebSocket endpoint is **`/v1/ws`**. Production requires `wss://`; explicitly enabled
 plaintext development requires `ws://127.0.0.1:PORT/v1/ws` or `[::1]`/`localhost`.
-First WebSocket **text** message within 10 seconds:
+First WebSocket **text** message within 3 seconds of the upgrade (was 10 seconds
+until 2026-09-28; clients register immediately after connecting):
 
 ```json
 {"v":1,"type":"register","route_id":"UUID","role":"mobile","token":"BASE64URL_32_BYTES"}
@@ -42,11 +47,22 @@ First WebSocket **text** message within 10 seconds:
 `{"v":1,"type":"peer","online":true}` / `false`. One socket per role per route;
 a duplicate is rejected, not allowed to replace a live socket. Unauthorized,
 malformed, unavailable peer, full queue, oversized/binary frames close the socket.
+A relay at its authenticated-socket limit closes a valid registration the same way.
 No relay buffering across disconnects. On peer loss discard handshake/session
 keys and counters. On peer availability mobile starts a fresh handshake. Relay
 forwards each endpoint text frame **unchanged**, one message in/one message out,
 without wrapping it. Transport ping/pong is allowed and has no protocol meaning.
 Relay controls are not endpoint authenticated and must never authorize an RPC.
+
+Liveness: the relay sends a transport ping about every 20 seconds and closes a
+socket it has received nothing from (pongs and endpoint frames count) for 60
+seconds; the desktop connector likewise abandons a relay that is silent for 60
+seconds. WebSocket stacks answer pings automatically. A registration that
+authenticates with the role's token **replaces** an existing registration for the
+same route and role that has been silent for 30 seconds: the old socket is closed
+and the other role sees `peer` `online:false` then `online:true`, so it resets its
+session. A registration that is not silent is still rejected as a duplicate, and
+a failed authentication never displaces anyone.
 
 ## Authenticated reconnect handshake
 
@@ -96,17 +112,23 @@ new envelope/counter and the original request UUID.
 
 Limits: text WS message <=262144 bytes, decrypted JSON <=131072 bytes, shell line
 <=8192 UTF-8 bytes, output lines 1..2000 (default 200), handshake <=10 seconds.
-Relay defaults: <=256 sockets total, <=128 configured routes, outgoing queue <=16
-messages/socket, no payload logging. RPC processing is serial per device; terminal input is additionally serialized per
-selected shell across devices and local CLI callers.
+Relay defaults: <=256 authenticated sockets, <=128 configured routes, outgoing queue
+<=16 messages/socket, no payload logging. Sockets that have not yet registered have
+a separate budget of 16; a newcomer beyond it drops the oldest, so idle unauthenticated
+sockets cannot lock out a real registration. RPC processing is serial per device;
+terminal input is additionally serialized per selected shell across devices and
+local CLI callers.
 
 ## Encrypted RPC JSON
 
 Request: `{"v":1,"type":"request","id":"UUID","method":"projects.list","params":{}}`.
 Success: `{"v":1,"type":"response","id":"SAME_UUID","ok":true,"result":{...}}`.
 Error: `{"v":1,"type":"response","id":"SAME_UUID","ok":false,"error":{"code":"invalid_request","message":"Human readable"}}`.
-Unknown methods/fields, malformed UUIDs/params fail `invalid_request`. Responses
-are correlated by UUID; no unsolicited response except handshake `ready`.
+Unknown methods/fields, malformed UUIDs/params fail `invalid_request`. A request
+that is not a JSON object, or whose `id` is missing, not a string or longer than 64
+bytes, also fails `invalid_request`; with nothing to correlate, that response has
+`"id":null`, and the session stays open. Responses are correlated by UUID; no
+unsolicited response except handshake `ready`.
 
 | Method | Exact params | Result |
 | --- | --- | --- |
@@ -132,7 +154,8 @@ UUID against existing project shells **and** orchestrators. Dead/missing session
 fail clearly. No project default, command construction from arbitrary CLI text,
 creation, close, tmux attachment or free-form CLI RPC. `shell.input` intentionally
 submits terminal input followed by Return and can run commands in the selected
-shell; clients must show the selected shell before sending. CR, LF, NUL and other
+shell (an unrestricted harness, a Vim tab, a plain shell prompt); clients must show
+the selected shell before sending. CR, LF, NUL and other
 Unicode control characters are forbidden. v1 supports line submission only (no
 terminal action method). Use CLI argv directly, never an intermediate shell.
 
@@ -172,14 +195,21 @@ connection's override. Input request UUID deduplication is unchanged.
 `shell.resize.clear` releases only the current connection's
 override on `shell_id`. It does **not** clear terminal output/history, send input,
 close/detach a process, or change session identity. It succeeds with `cleared` when
-already clear; another active owner's override fails `viewport_busy`. On release,
+already clear; another active owner's override fails `viewport_busy`. The shell must
+exist and be alive (`not_found` otherwise) unless this connection holds an override
+on it, which can always be released, even after the shell died. On release,
 restore the previous local/inherited sizing policy. With desktop clients attached,
 that policy chooses their current size; with no attached client, restore saved
 rows/columns. Clients clear the previous tab on deselection/background/disconnect
 when possible. Desktop also releases on peer loss, authentication failure,
 revocation and connector shutdown; a crash-recovery lease restores it within
-**15 seconds** even if orderly cleanup cannot run. Reconnect starts clear; iOS
-must reissue resize for its currently selected tab after authenticating ready.
+**15 seconds** even if orderly cleanup cannot run. The desktop renews that lease
+only while it has authenticated a request from the connection within the last 20
+seconds, so a phone that vanished stops pinning the terminal; a client keeps
+sending requests while it holds an override (the iOS client polls `shell.output`
+every 3 seconds) and reissues `shell.resize` to resume after a lapse. Reconnect
+starts clear; iOS must reissue resize for its currently selected tab after
+authenticating ready.
 
 Validated before publication against isolated tmux 3.6a: 120x40 -> 43x17 ->
 120x40 with identical session UUID, pane `%0`, and process PID. No user sessions
@@ -198,7 +228,8 @@ UUID/line and warn on unknown outcomes, never generate a fresh UUID to auto-retr
 No eviction: max 4096 recorded inputs/device; capacity returns `cache_full` before
 sending. Re-pair with a new device after reviewing old outcomes to reset capacity.
 Reads may repeat safely. Errors also include `not_found`, `cli_error`,
-`response_too_large`. Error messages are diagnostic, not machine enums beyond code.
+`response_too_large` (also returned when the CLI's own output exceeds 128 KiB).
+Error messages are diagnostic, not machine enums beyond code.
 
 Revocation: local `revoke DEVICE_UUID` removes/marks the device revoked in the
 protected desktop config. Running connector notices within 1 second, closes its
@@ -218,6 +249,25 @@ ready response. Values are test-only and must never provision production devices
   additive `shell.resize` / `shell.resize.clear` extension, validated ranges,
   connection ownership, restoration and errors published before implementation.
   Existing routing/crypto/RPC fields and fixture bytes are unchanged.
+- 2026-09-28: `grok` was added to the Session `harness` values
+  (`codex|claude|grok|null`) by commit 02c4054 without a note; recorded here.
+  Additive: the client `harness` field is a free-form string, so no client change.
+- 2026-09-28, remote hardening (routing behavior and RPC error handling; handshake,
+  envelope, fixture bytes and method params are unchanged). Needs the iOS worker's
+  agreement; checked against `ios/Core/RelayClient.swift`, which registers
+  immediately after `resume()`, polls output every 3 seconds and lets URLSession
+  answer pings, so no client change is required:
+  registration window 10 s -> 3 s; relay pings ~20 s and closes sockets silent for
+  60 s; a silent (30 s) registration is replaced by a same-credential registration
+  instead of being rejected as a duplicate; only authenticated sockets count toward
+  the 256 limit, and a full relay now closes after registration instead of failing
+  the HTTP upgrade with 503; a request without a usable `id` gets
+  `invalid_request` with `"id":null` instead of ending the session; CLI output over
+  128 KiB returns `response_too_large` instead of `cli_error`; `shell.resize.clear`
+  on an unknown/dead shell the connection does not hold returns `not_found`
+  instead of `cleared`; the viewport lease is renewed only within 20 seconds of
+  authenticated phone traffic. The API-level wording in the introduction now states
+  that `shell.input` amounts to arbitrary command execution (documentation only).
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),
