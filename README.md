@@ -249,7 +249,7 @@ Panel tabs start in a left pane. Every pane's tab strip stays at the top, and ev
 - The **…** actions menu groups **New Tab** launches, **Views** for panel tabs, and **Pane** actions for splitting or closing the pane. The tab's **X** closes only that tab; the labelled **Close pane** action closes its region. Both preserve shell sessions.
 - The lock icon keeps a pane across project switches. The focus icon or Cmd+Shift+F focuses the active tab in any pane, hiding tab strips, other panes, and the status bar. Narrow panes keep lock and focus actions in the **…** menu. Centered focus caps the content at 1,100 px and leaves 30% of the window clear below it so terminal input sits higher on screen. The top bar keeps native window controls, **RESTORE**, and a **FILL WINDOW / CENTER FOCUS** toggle visible. Click **RESTORE** or press Cmd+Shift+F again to restore the same split layout and sizes. Ctrl+Tab and Ctrl+Shift+Tab still cycle tabs within the focused pane. Focus mode is temporary and does not rewrite the saved split tree.
 
-The workspace fills the window around a 78 × 28 px native close/minimize/maximize island and the full-width status bar. The installed `riwork-workspaces` skill teaches Codex the CLI workflow for project tasks, batched worktree assignments, and shell inspection.
+The workspace fills the window around a 78 × 28 px native close/minimize/maximize island and the full-width status bar. In macOS full screen, the custom island is hidden and the native controls appear when the menu bar drops down; maximized windows keep the island. The installed `riwork-workspaces` skill teaches Codex the CLI workflow for project tasks, batched worktree assignments, and shell inspection.
 
 ## Settings
 

@@ -4164,6 +4164,7 @@ impl Workspace {
 
     fn render_focus(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
+        let show_window_controls = window_controls_visible(window);
         let viewport = window.viewport_size();
         let width = viewport.width.as_f32();
         let height = viewport.height.as_f32();
@@ -4180,7 +4181,11 @@ impl Workspace {
             .flex_none()
             .items_center()
             .h(px(FOCUS_TOOLBAR_HEIGHT))
-            .pl(px(WINDOW_CONTROLS_CONTENT_INSET))
+            .pl(px(if show_window_controls {
+                WINDOW_CONTROLS_CONTENT_INSET
+            } else {
+                12.0
+            }))
             .pr(px(12.0))
             .gap(px(12.0))
             .bg(rgb(colors.panel))
@@ -4195,8 +4200,11 @@ impl Workspace {
                     .h_full()
                     .items_center()
                     .gap(px(12.0))
-                    .cursor_grab()
-                    .on_mouse_down(MouseButton::Left, start_window_drag)
+                    .when(show_window_controls, |space| {
+                        space
+                            .cursor_grab()
+                            .on_mouse_down(MouseButton::Left, start_window_drag)
+                    })
                     .children((width >= 720.0).then(|| {
                         div()
                             .flex_none()
@@ -4550,6 +4558,7 @@ impl EntityInputHandler for Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
+        let show_window_controls = window_controls_visible(window);
         if !cx.has_active_drag() {
             self.drop_target = None;
             if self.tab_dragging
@@ -4630,7 +4639,7 @@ impl Render for Workspace {
                             Vec::new(),
                             window.viewport_size().width.as_f32(),
                             0.0,
-                            true,
+                            show_window_controls,
                             cx,
                         )
                     }),
@@ -4650,7 +4659,7 @@ impl Render for Workspace {
                         .child(self.render_status(cx))
                 }),
             )
-            .child(window_controls_island(cx))
+            .children(show_window_controls.then(|| window_controls_island(cx)))
             .children(self.project_creator.as_ref().map(|creator| {
                 div()
                     .absolute()
@@ -4732,6 +4741,10 @@ impl Render for PaneActionTooltip {
             .text_size(px(11.0))
             .child(self.0)
     }
+}
+
+fn window_controls_visible(window: &Window) -> bool {
+    !matches!(window.window_bounds(), WindowBounds::Fullscreen(_))
 }
 
 fn window_controls_island(cx: &App) -> impl IntoElement {
