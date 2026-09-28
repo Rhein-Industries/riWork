@@ -8,9 +8,14 @@ use std::{
     path::Path,
 };
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
+    schedule_service::{
+        CreateRequest, RepeatChange, ScheduleError, ScheduleKey, ScheduleService, ScopeInput,
+        UpdateRequest,
+    },
     sessions::{SessionManager, ShellKind},
     store::{State, Store, TaskStatus},
 };
@@ -81,7 +86,7 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion":version,
         "capabilities":{"tools":{"listChanged":false}},
         "serverInfo":{"name":"riwork","title":"RiWork Workspaces","version":env!("CARGO_PKG_VERSION")},
-        "instructions":"Use these tools to manage RiWork projects, Git worktrees, and tasks. Shell output and metrics are snapshots of persistent local tmux sessions."
+        "instructions":"Use these tools to manage RiWork projects, Git worktrees, tasks, and desktop schedules. Schedule mutations require full UUIDs, explicit scope, and a current revision; dispatch occurs only while the desktop app is open."
     })
 }
 
@@ -99,6 +104,11 @@ fn tool_error(message: &str) -> Value {
     json!({"content":[{"type":"text","text":message}],"isError":true})
 }
 
+fn schedule_tool_error(error: ScheduleError) -> Value {
+    let text = error.message.clone();
+    json!({"content":[{"type":"text","text":text}],"structuredContent":{"error":error},"isError":true})
+}
+
 fn call_tool(params: &Value) -> Result<Value, String> {
     let name = required_str(params, "name")?;
     if !tools()
@@ -112,12 +122,183 @@ fn call_tool(params: &Value) -> Result<Value, String> {
         .cloned()
         .unwrap_or_else(|| json!({}));
     if !args.is_object() {
+        if name.starts_with("riwork_schedule_") {
+            return Ok(schedule_tool_error(schedule_argument(
+                "Tool arguments must be a JSON object",
+            )));
+        }
         return Err("Tool arguments must be a JSON object".to_owned());
+    }
+    if name.starts_with("riwork_schedule_") {
+        return Ok(match execute_schedule_tool(name, &args) {
+            Ok(value) => tool_result(value),
+            Err(error) => schedule_tool_error(error),
+        });
     }
     Ok(match execute_tool(name, &args) {
         Ok(value) => tool_result(value),
         Err(error) => tool_error(&error),
     })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScheduleArguments {
+    scope: Option<String>,
+    project_id: Option<String>,
+    worktree_id: Option<String>,
+    shell_id: Option<String>,
+    schedule_id: Option<String>,
+    revision: Option<u64>,
+    title: Option<String>,
+    prompt: Option<String>,
+    at: Option<String>,
+    every_minutes: Option<u64>,
+    once: Option<bool>,
+}
+
+impl ScheduleArguments {
+    fn scope(&self) -> Result<ScopeInput, ScheduleError> {
+        Ok(ScopeInput {
+            scope: self
+                .scope
+                .clone()
+                .ok_or_else(|| schedule_argument("scope is required"))?,
+            project_id: self.project_id.clone(),
+            worktree_id: self.worktree_id.clone(),
+        })
+    }
+    fn key(&self) -> Result<ScheduleKey, ScheduleError> {
+        Ok(ScheduleKey {
+            id: self
+                .schedule_id
+                .clone()
+                .ok_or_else(|| schedule_argument("schedule_id is required"))?,
+            revision: self
+                .revision
+                .ok_or_else(|| schedule_argument("revision is required"))?,
+            scope: self.scope()?,
+            shell_id: self
+                .shell_id
+                .clone()
+                .ok_or_else(|| schedule_argument("shell_id is required"))?,
+        })
+    }
+}
+
+fn schedule_argument(message: impl Into<String>) -> ScheduleError {
+    ScheduleError {
+        code: "invalid_argument",
+        message: message.into(),
+        current: None,
+    }
+}
+
+fn execute_schedule_tool(name: &str, args: &Value) -> Result<Value, ScheduleError> {
+    let allowed: &[&str] = match name {
+        "riwork_schedule_list" => &["scope", "project_id", "worktree_id"],
+        "riwork_schedule_show" => &["schedule_id"],
+        "riwork_schedule_create" => &[
+            "scope",
+            "project_id",
+            "worktree_id",
+            "shell_id",
+            "title",
+            "prompt",
+            "at",
+            "every_minutes",
+        ],
+        "riwork_schedule_update" => &[
+            "schedule_id",
+            "revision",
+            "scope",
+            "project_id",
+            "worktree_id",
+            "shell_id",
+            "title",
+            "prompt",
+            "at",
+            "every_minutes",
+            "once",
+        ],
+        "riwork_schedule_pause" | "riwork_schedule_resume" | "riwork_schedule_delete" => &[
+            "schedule_id",
+            "revision",
+            "scope",
+            "project_id",
+            "worktree_id",
+            "shell_id",
+        ],
+        _ => return Err(schedule_argument(format!("Unknown schedule tool '{name}'"))),
+    };
+    if let Some(key) = args
+        .as_object()
+        .and_then(|map| map.keys().find(|key| !allowed.contains(&key.as_str())))
+    {
+        return Err(schedule_argument(format!(
+            "'{key}' is not accepted by {name}"
+        )));
+    }
+    let args: ScheduleArguments = serde_json::from_value(args.clone())
+        .map_err(|error| schedule_argument(format!("Invalid schedule arguments: {error}")))?;
+    let service = ScheduleService::open_default()?;
+    let required = |value: Option<String>, name: &str| {
+        value.ok_or_else(|| schedule_argument(format!("{name} is required")))
+    };
+    match name {
+        "riwork_schedule_list" => {
+            let scope = if args.scope.is_some() {
+                Some(args.scope()?)
+            } else {
+                if args.project_id.is_some() || args.worktree_id.is_some() {
+                    return Err(schedule_argument(
+                        "scope is required with project_id or worktree_id",
+                    ));
+                }
+                None
+            };
+            Ok(json!({"items":service.list(scope.as_ref())?}))
+        }
+        "riwork_schedule_show" => {
+            Ok(json!({"schedule":service.show(&required(args.schedule_id, "schedule_id")?)?}))
+        }
+        "riwork_schedule_create" => {
+            if args.once == Some(true) {
+                return Err(schedule_argument("once is only valid for update"));
+            }
+            Ok(json!({"schedule":service.create(CreateRequest {
+                scope: args.scope()?,
+                shell_id: required(args.shell_id, "shell_id")?,
+                title: required(args.title, "title")?,
+                prompt: required(args.prompt, "prompt")?,
+                at: required(args.at, "at")?,
+                every_minutes: args.every_minutes,
+            })?}))
+        }
+        "riwork_schedule_update" => {
+            if args.once == Some(true) && args.every_minutes.is_some() {
+                return Err(schedule_argument("Choose once or every_minutes"));
+            }
+            let repeat = if args.once == Some(true) {
+                RepeatChange::Once
+            } else if let Some(minutes) = args.every_minutes {
+                RepeatChange::EveryMinutes(minutes)
+            } else {
+                RepeatChange::Keep
+            };
+            Ok(json!({"schedule":service.update(UpdateRequest {
+                key: args.key()?, title: args.title, prompt: args.prompt,
+                at: required(args.at, "at")?, repeat,
+            })?}))
+        }
+        "riwork_schedule_pause" | "riwork_schedule_resume" => {
+            Ok(json!({"schedule":service.pause(&args.key()?, name.ends_with("pause"))?}))
+        }
+        "riwork_schedule_delete" => {
+            Ok(json!({"deleted":true,"schedule":service.delete(&args.key()?)?}))
+        }
+        _ => Err(schedule_argument(format!("Unknown schedule tool '{name}'"))),
+    }
 }
 
 fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
@@ -444,8 +625,114 @@ fn tool(
     })
 }
 
+fn schedule_tool(
+    name: &str,
+    title: &str,
+    description: &str,
+    required: &[&str],
+    read_only: bool,
+) -> Value {
+    let mut properties = json!({
+        "scope":{"type":"string","enum":["app","project","workspace"],"description":"Explicit scope. Project requires project_id; workspace requires project_id and worktree_id."},
+        "project_id":{"type":"string","format":"uuid","description":"Full canonical project UUID for project/workspace scope."},
+        "worktree_id":{"type":"string","format":"uuid","description":"Full canonical worktree UUID for workspace scope."},
+        "shell_id":{"type":"string","format":"uuid","description":"Full canonical UUID of the existing pinned session."},
+        "schedule_id":{"type":"string","format":"uuid","description":"Full canonical schedule UUID."},
+        "revision":{"type":"integer","minimum":1,"description":"Current revision returned by list/show; required for every mutation after create."},
+        "title":{"type":"string","minLength":1,"maxLength":120},
+        "prompt":{"type":"string","minLength":1,"maxLength":16384,"description":"Single line, no control characters."},
+        "at":{"type":"string","format":"date-time","description":"Exact future RFC 3339 instant with seconds and timezone, e.g. 2026-10-05T09:00:00+02:00."},
+        "every_minutes":{"type":"integer","minimum":5,"maximum":525600,"description":"Optional elapsed-time recurrence, whole minutes from 5 to 525600."},
+        "once":{"type":"boolean","description":"On update, set true to clear recurrence. Omit to retain existing recurrence."}
+    });
+    let allowed: &[&str] = match name {
+        "riwork_schedule_list" => &["scope", "project_id", "worktree_id"],
+        "riwork_schedule_show" => &["schedule_id"],
+        "riwork_schedule_create" => &[
+            "scope",
+            "project_id",
+            "worktree_id",
+            "shell_id",
+            "title",
+            "prompt",
+            "at",
+            "every_minutes",
+        ],
+        "riwork_schedule_update" => &[
+            "schedule_id",
+            "revision",
+            "scope",
+            "project_id",
+            "worktree_id",
+            "shell_id",
+            "title",
+            "prompt",
+            "at",
+            "every_minutes",
+            "once",
+        ],
+        _ => &[
+            "schedule_id",
+            "revision",
+            "scope",
+            "project_id",
+            "worktree_id",
+            "shell_id",
+        ],
+    };
+    properties
+        .as_object_mut()
+        .unwrap()
+        .retain(|key, _| allowed.contains(&key.as_str()));
+    let mut value = tool(name, title, description, properties, required, read_only);
+    if name != "riwork_schedule_show" {
+        value["inputSchema"]["allOf"] = json!([
+            {"if":{"properties":{"scope":{"const":"project"}},"required":["scope"]},"then":{"required":["project_id"]}},
+            {"if":{"properties":{"scope":{"const":"workspace"}},"required":["scope"]},"then":{"required":["project_id","worktree_id"]}}
+        ]);
+    }
+    let scope = json!({"oneOf":[
+        {"type":"object","properties":{"scope":{"const":"app"}},"required":["scope"]},
+        {"type":"object","properties":{"scope":{"const":"project"},"project_id":{"type":"string","format":"uuid"}},"required":["scope","project_id"]},
+        {"type":"object","properties":{"scope":{"const":"workspace"},"project_id":{"type":"string","format":"uuid"},"worktree_id":{"type":"string","format":"uuid"}},"required":["scope","project_id","worktree_id"]}
+    ]});
+    let timing = json!({"oneOf":[
+        {"type":"object","properties":{"kind":{"const":"once"},"at":{"type":"integer","minimum":0}},"required":["kind","at"]},
+        {"type":"object","properties":{"kind":{"const":"interval"},"first":{"type":"integer","minimum":0},"seconds":{"type":"integer","minimum":300,"maximum":31536000}},"required":["kind","first","seconds"]}
+    ]});
+    let target = json!({"type":"object","properties":{
+        "scope":scope,"shell_id":{"type":"string","format":"uuid"},
+        "created_at":{"type":"integer","minimum":0},"command":{"type":["string","null"]},
+        "harness":{"type":"string","enum":["codex","claude"]},
+        "codex_home":{"type":["string","null"]},"pane_identity":{"type":"string"},
+        "provider_session":{"type":"string"}
+    },"required":["scope","shell_id","created_at","command","harness","codex_home","pane_identity","provider_session"]});
+    let run = json!({"type":["object","null"],"properties":{
+        "due_at":{"type":"integer","minimum":0},"observed_at":{"type":"integer","minimum":0},
+        "outcome":{"type":"string","enum":["dispatching","submitted","deferred","missed","failed","uncertain"]},
+        "message":{"type":"string"}
+    }});
+    let schedule = json!({"type":"object","properties":{
+        "id":{"type":"string","format":"uuid"},"revision":{"type":"integer","minimum":1},
+        "title":{"type":"string"},"prompt":{"type":"string"},
+        "target":target,"timing":timing,
+        "paused":{"type":"boolean"},"review_required":{"type":"boolean"},
+        "next_run":{"type":["integer","null"]},"last_run":run,
+        "check_after":{"type":"integer","minimum":0}
+    },"required":["id","revision","title","prompt","target","timing","paused","review_required","next_run","last_run","check_after"]});
+    value["outputSchema"] = if name.ends_with("list") {
+        json!({"type":"object","properties":{"items":{"type":"array","items":schedule}},"required":["items"]})
+    } else if name.ends_with("delete") {
+        json!({"type":"object","properties":{"deleted":{"type":"boolean"},"schedule":schedule},"required":["deleted","schedule"]})
+    } else {
+        json!({"type":"object","properties":{"schedule":schedule},"required":["schedule"]})
+    };
+    value["annotations"]["destructiveHint"] = json!(name.ends_with("delete"));
+    value
+}
+
 fn tools() -> Vec<Value> {
-    vec![
+    let mut items = vec![
         tool(
             "riwork_project_list",
             "List projects",
@@ -614,5 +901,15 @@ fn tools() -> Vec<Value> {
             &[],
             true,
         ),
-    ]
+    ];
+    items.extend([
+        schedule_tool("riwork_schedule_list", "List schedules", "List schedules in the configured RIWORK_HOME ledger; omit scope for all, or filter by explicit app/project/workspace identity. No sessions are opened or dispatched.", &[], true),
+        schedule_tool("riwork_schedule_show", "Show schedule", "Read one schedule by its full UUID, including current revision, pinned target and latest outcome.", &["schedule_id"], true),
+        schedule_tool("riwork_schedule_create", "Create schedule", "Bind an existing live Codex/Claude session in the explicit scope and schedule a future prompt. Dispatch occurs only while RiWork desktop is open.", &["scope","shell_id","title","prompt","at"], false),
+        schedule_tool("riwork_schedule_update", "Update schedule", "Edit a pinned schedule with its full UUID, current revision, explicit scope and shell UUID. Provide a new exact future at; omit recurrence to retain it, use once=true to clear it.", &["schedule_id","revision","scope","shell_id","at"], false),
+        schedule_tool("riwork_schedule_pause", "Pause schedule", "Pause a schedule using its full UUID, current revision, explicit scope and pinned shell UUID.", &["schedule_id","revision","scope","shell_id"], false),
+        schedule_tool("riwork_schedule_resume", "Resume schedule", "Resume a schedule using its full UUID, current revision, explicit scope and pinned shell UUID. Failed/uncertain outcomes require a future edit first.", &["schedule_id","revision","scope","shell_id"], false),
+        schedule_tool("riwork_schedule_delete", "Delete schedule", "Delete a schedule using its full UUID, current revision, explicit scope and pinned shell UUID.", &["schedule_id","revision","scope","shell_id"], false),
+    ]);
+    items
 }

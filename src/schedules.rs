@@ -340,7 +340,13 @@ impl ScheduleStore {
             Ok(schedule)
         })
     }
-    pub fn pause(&self, id: &str, revision: u64, paused: bool, now: u64) -> Result<(), String> {
+    pub fn pause(
+        &self,
+        id: &str,
+        revision: u64,
+        paused: bool,
+        now: u64,
+    ) -> Result<Schedule, String> {
         self.mutate(|l| {
             let s = l
                 .schedules
@@ -365,7 +371,7 @@ impl ScheduleStore {
             s.paused = paused;
             s.check_after = 0;
             s.revision += 1;
-            Ok(())
+            Ok(s.clone())
         })
     }
     pub fn delete(&self, id: &str, revision: u64) -> Result<(), String> {

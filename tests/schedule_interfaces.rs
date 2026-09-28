@@ -1,0 +1,583 @@
+//! Real CLI and MCP stdio acceptance in a fresh child RIWORK_HOME.
+//! Fixture shells are inert `/bin/cat` processes; no desktop scheduler runs.
+
+use chrono::{Duration, FixedOffset, SecondsFormat, Utc};
+use serde_json::{Value, json};
+use std::{
+    fs,
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
+use uuid::Uuid;
+
+struct Fixture {
+    home: PathBuf,
+    project_id: String,
+    worktree_id: String,
+    shells: [String; 3],
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let home =
+            std::env::temp_dir().join(format!("riwork-schedule-interface-{}", Uuid::new_v4()));
+        let root = home.join("project");
+        fs::create_dir_all(&root).unwrap();
+        let mut fixture = Self {
+            home,
+            project_id: String::new(),
+            worktree_id: String::new(),
+            shells: std::array::from_fn(|_| String::new()),
+        };
+        let project = fixture.cli_ok(&["project", "add", root.to_str().unwrap(), "--json"]);
+        fixture.project_id = project["id"].as_str().unwrap().to_owned();
+        let worktrees = fixture.cli_ok(&[
+            "worktree",
+            "list",
+            "--project",
+            &fixture.project_id,
+            "--json",
+        ]);
+        fixture.worktree_id = worktrees.as_array().unwrap()[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let app = fixture.cli_ok(&[
+            "orchestrator",
+            "create",
+            "--cwd",
+            root.to_str().unwrap(),
+            "--command",
+            "/bin/cat",
+            "--json",
+        ]);
+        let project = fixture.cli_ok(&[
+            "orchestrator",
+            "create",
+            "--project",
+            &fixture.project_id,
+            "--command",
+            "/bin/cat",
+            "--json",
+        ]);
+        let worker = fixture.cli_ok(&[
+            "shell",
+            "create",
+            "--worktree",
+            &fixture.worktree_id,
+            "--command",
+            "/bin/cat",
+            "--json",
+        ]);
+        fixture.shells =
+            [app, project, worker].map(|value| value["id"].as_str().unwrap().to_owned());
+
+        // The disposable sessions have exact, fixture-only provider identities.
+        // This avoids launching or inspecting any authenticated agent process.
+        let registry = fixture.home.join("sessions.json");
+        let mut sessions: Value = serde_json::from_slice(&fs::read(&registry).unwrap()).unwrap();
+        for session in sessions["sessions"].as_array_mut().unwrap() {
+            session["harness"] = json!("claude");
+        }
+        fs::write(registry, serde_json::to_vec(&sessions).unwrap()).unwrap();
+        let hooks = fixture.home.join("agent-hooks/claude");
+        fs::create_dir_all(&hooks).unwrap();
+        for shell in &fixture.shells {
+            fs::write(hooks.join(format!("{shell}.json")), json!({
+                "session_id":format!("fixture-{shell}"),"turn_id":"completed-fixture-turn","completed":true
+            }).to_string()).unwrap();
+        }
+        fixture
+    }
+
+    fn command(&self, args: &[&str]) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_riwork"))
+            .args(args)
+            .env("RIWORK_HOME", &self.home)
+            .env("RIWORK_RUNTIME_DIR", self.home.join("runtime"))
+            .output()
+            .unwrap()
+    }
+
+    fn cli_ok(&self, args: &[&str]) -> Value {
+        let output = self.command(args);
+        assert!(
+            output.status.success(),
+            "CLI {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn cli_error(&self, args: &[&str], code: &str) -> Value {
+        let output = self.command(args);
+        assert!(
+            !output.status.success(),
+            "CLI unexpectedly succeeded: {args:?}"
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["code"], code, "{value}");
+        value
+    }
+
+    fn mcp(&self, calls: &[Value]) -> Vec<Value> {
+        let mut process = Command::new(env!("CARGO_BIN_EXE_riwork"))
+            .arg("mcp")
+            .env("RIWORK_HOME", &self.home)
+            .env("RIWORK_RUNTIME_DIR", self.home.join("runtime"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let mut input = process.stdin.take().unwrap();
+            for call in calls {
+                writeln!(input, "{call}").unwrap();
+            }
+        }
+        let output = process.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "MCP: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "MCP wrote stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+            .collect()
+    }
+
+    fn tool(&self, name: &str, arguments: Value) -> Value {
+        let responses = self.mcp(&[json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments}
+        })]);
+        assert_eq!(responses.len(), 1);
+        responses.into_iter().next().unwrap()["result"].clone()
+    }
+
+    fn tool_ok(&self, name: &str, arguments: Value) -> Value {
+        let result = self.tool(name, arguments);
+        assert_eq!(result["isError"], false, "{result}");
+        result["structuredContent"].clone()
+    }
+
+    fn tool_error(&self, name: &str, arguments: Value, code: &str) -> Value {
+        let result = self.tool(name, arguments);
+        assert_eq!(result["isError"], true, "{result}");
+        assert_eq!(
+            result["structuredContent"]["error"]["code"], code,
+            "{result}"
+        );
+        result["structuredContent"]["error"].clone()
+    }
+
+    fn scope_args(&self, index: usize) -> Vec<&str> {
+        match index {
+            0 => vec!["--scope", "app", "--shell", &self.shells[0]],
+            1 => vec![
+                "--scope",
+                "project",
+                "--project",
+                &self.project_id,
+                "--shell",
+                &self.shells[1],
+            ],
+            2 => vec![
+                "--scope",
+                "workspace",
+                "--project",
+                &self.project_id,
+                "--worktree",
+                &self.worktree_id,
+                "--shell",
+                &self.shells[2],
+            ],
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        for shell in &self.shells {
+            if !shell.is_empty() {
+                let _ = self.command(&["shell", "close", shell]);
+            }
+        }
+        let _ = fs::remove_dir_all(&self.home);
+    }
+}
+
+fn future_at(days: i64) -> String {
+    (Utc::now() + Duration::days(days))
+        .with_timezone(&FixedOffset::east_opt(2 * 3600).unwrap())
+        .to_rfc3339_opts(SecondsFormat::Secs, false)
+}
+
+#[test]
+fn cli_and_mcp_share_three_scope_lifecycle_and_stdio_protocol() {
+    let fixture = Fixture::new();
+    let protocol = fixture.mcp(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+    ]);
+    assert_eq!(protocol.len(), 2, "Notifications must not write to stdout");
+    assert_eq!(protocol[0]["result"]["protocolVersion"], "2025-11-25");
+    let tools = protocol[1]["result"]["tools"].as_array().unwrap();
+    for name in [
+        "list", "show", "create", "update", "pause", "resume", "delete",
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == format!("riwork_schedule_{name}"))
+            .unwrap();
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert!(tool["outputSchema"].is_object());
+        if name == "create" {
+            assert_eq!(
+                tool["inputSchema"]["properties"]["at"]["format"],
+                "date-time"
+            );
+            assert_eq!(
+                tool["inputSchema"]["properties"]["every_minutes"]["minimum"],
+                5
+            );
+            assert_eq!(tool["outputSchema"]["properties"]["schedule"]["properties"]["target"]["properties"]["scope"]["oneOf"].as_array().unwrap().len(), 3);
+        }
+    }
+
+    let at = future_at(7);
+    let mut app_create = vec!["schedule", "create"];
+    app_create.extend(fixture.scope_args(0));
+    app_create.extend([
+        "--title",
+        "App check",
+        "--prompt",
+        "Fixture app prompt",
+        "--at",
+        &at,
+        "--json",
+    ]);
+    let app = fixture.cli_ok(&app_create)["schedule"].clone();
+    let project = fixture.tool_ok(
+        "riwork_schedule_create",
+        json!({
+            "scope":"project","project_id":fixture.project_id,"shell_id":fixture.shells[1],
+            "title":"Project check","prompt":"Fixture project prompt","at":at
+        }),
+    )["schedule"]
+        .clone();
+    let mut workspace_create = vec!["schedule", "create"];
+    workspace_create.extend(fixture.scope_args(2));
+    workspace_create.extend([
+        "--title",
+        "Workspace check",
+        "--prompt",
+        "Fixture workspace prompt",
+        "--at",
+        &at,
+        "--every-minutes",
+        "60",
+        "--json",
+    ]);
+    let workspace = fixture.cli_ok(&workspace_create)["schedule"].clone();
+    assert_eq!(workspace["timing"]["seconds"], 3600);
+    for (index, item) in [&app, &project, &workspace].into_iter().enumerate() {
+        assert_eq!(item["target"]["shell_id"], fixture.shells[index]);
+        assert_eq!(item["revision"], 1);
+        assert!(!item["target"]["pane_identity"].as_str().unwrap().is_empty());
+        assert_eq!(
+            item["target"]["provider_session"],
+            format!("fixture-{}", fixture.shells[index])
+        );
+    }
+    assert_eq!(
+        fixture.cli_ok(&["schedule", "list", "--json"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        fixture.tool_ok("riwork_schedule_list", json!({}))["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(fixture.tool_ok("riwork_schedule_list", json!({"scope":"workspace","project_id":fixture.project_id,"worktree_id":fixture.worktree_id}))["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        fixture.cli_ok(&["schedule", "show", app["id"].as_str().unwrap(), "--json"])["schedule"]["id"],
+        app["id"]
+    );
+
+    let app_id = app["id"].as_str().unwrap();
+    let app_paused = fixture.tool_ok(
+        "riwork_schedule_pause",
+        json!({"schedule_id":app_id,"revision":1,"scope":"app","shell_id":fixture.shells[0]}),
+    )["schedule"]
+        .clone();
+    assert_eq!(app_paused["revision"], 2);
+    assert_eq!(app_paused["paused"], true);
+    let stale = fixture.tool_error(
+        "riwork_schedule_resume",
+        json!({"schedule_id":app_id,"revision":1,"scope":"app","shell_id":fixture.shells[0]}),
+        "revision_conflict",
+    );
+    assert_eq!(stale["current"]["revision"], 2);
+    let mut app_resume = vec!["schedule", "resume", app_id, "--revision", "2"];
+    app_resume.extend(fixture.scope_args(0));
+    app_resume.push("--json");
+    let resumed = fixture.cli_ok(&app_resume)["schedule"].clone();
+    assert_eq!(resumed["revision"], 3);
+    assert_eq!(resumed["paused"], false);
+
+    let project_id = project["id"].as_str().unwrap();
+    let edited = fixture.tool_ok("riwork_schedule_update", json!({
+        "schedule_id":project_id,"revision":1,"scope":"project","project_id":fixture.project_id,
+        "shell_id":fixture.shells[1],"title":"Edited project","at":future_at(8),"every_minutes":5
+    }))["schedule"].clone();
+    assert_eq!(edited["revision"], 2);
+    assert_eq!(edited["target"], project["target"]);
+    assert_eq!(edited["timing"]["seconds"], 300);
+    let mut project_pause = vec!["schedule", "pause", project_id, "--revision", "2"];
+    project_pause.extend(fixture.scope_args(1));
+    project_pause.push("--json");
+    let paused = fixture.cli_ok(&project_pause)["schedule"].clone();
+    assert_eq!(paused["paused"], true);
+    let continued = fixture.tool_ok("riwork_schedule_resume", json!({
+        "schedule_id":project_id,"revision":3,"scope":"project","project_id":fixture.project_id,"shell_id":fixture.shells[1]
+    }))["schedule"].clone();
+    assert_eq!(continued["revision"], 4);
+
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let mut workspace_edit = vec!["schedule", "update", workspace_id, "--revision", "1"];
+    workspace_edit.extend(fixture.scope_args(2));
+    let later = future_at(9);
+    workspace_edit.extend(["--at", &later, "--once", "--json"]);
+    let workspace_edited = fixture.cli_ok(&workspace_edit)["schedule"].clone();
+    assert_eq!(workspace_edited["timing"]["kind"], "once");
+    assert_eq!(workspace_edited["target"], workspace["target"]);
+    let mut workspace_delete = vec!["schedule", "delete", workspace_id, "--revision", "2"];
+    workspace_delete.extend(fixture.scope_args(2));
+    workspace_delete.push("--json");
+    assert_eq!(fixture.cli_ok(&workspace_delete)["deleted"], true);
+    assert_eq!(fixture.tool_ok("riwork_schedule_delete", json!({
+        "schedule_id":project_id,"revision":4,"scope":"project","project_id":fixture.project_id,"shell_id":fixture.shells[1]
+    }))["deleted"], true);
+    assert_eq!(
+        fixture.tool_ok(
+            "riwork_schedule_delete",
+            json!({
+                "schedule_id":app_id,"revision":3,"scope":"app","shell_id":fixture.shells[0]
+            })
+        )["deleted"],
+        true
+    );
+    assert!(
+        fixture.cli_ok(&["schedule", "list", "--json"])["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let ledger: Value =
+        serde_json::from_slice(&fs::read(fixture.home.join("schedules.json")).unwrap()).unwrap();
+    assert!(ledger["schedules"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn invalid_ids_scope_time_revision_and_target_are_structured_errors() {
+    let fixture = Fixture::new();
+    let at = future_at(7);
+    let app = fixture.tool_ok("riwork_schedule_create", json!({
+        "scope":"app","shell_id":fixture.shells[0],"title":"Safe fixture","prompt":"Fixture prompt","at":at
+    }))["schedule"].clone();
+    let id = app["id"].as_str().unwrap();
+    fixture.tool_error("riwork_schedule_create", json!([]), "invalid_argument");
+    fixture.tool_error(
+        "riwork_schedule_show",
+        json!({"schedule_id":id,"at":at}),
+        "invalid_argument",
+    );
+    fixture.tool_error(
+        "riwork_schedule_show",
+        json!({"schedule_id":&id[..8]}),
+        "invalid_argument",
+    );
+    fixture.tool_error(
+        "riwork_schedule_create",
+        json!({
+            "scope":"app","project_id":fixture.project_id,"shell_id":fixture.shells[0],
+            "title":"Bad scope","prompt":"Fixture","at":at
+        }),
+        "invalid_argument",
+    );
+    fixture.tool_error(
+        "riwork_schedule_create",
+        json!({
+            "scope":"workspace","project_id":fixture.project_id,"worktree_id":Uuid::new_v4(),
+            "shell_id":fixture.shells[2],"title":"Bad target","prompt":"Fixture","at":at
+        }),
+        "binding_failed",
+    );
+    fixture.tool_error("riwork_schedule_create", json!({
+        "scope":"app","shell_id":fixture.shells[0],"title":"Bad time","prompt":"Fixture","at":"2030-01-01T09:00:00"
+    }), "invalid_argument");
+    fixture.tool_error("riwork_schedule_create", json!({
+        "scope":"app","shell_id":fixture.shells[0],"title":"Bad interval","prompt":"Fixture","at":at,"every_minutes":4
+    }), "invalid_argument");
+    fixture.tool_error("riwork_schedule_create", json!({
+        "scope":"app","shell_id":&fixture.shells[0][..8],"title":"Short shell","prompt":"Fixture","at":at
+    }), "invalid_argument");
+    fixture.tool_error(
+        "riwork_schedule_create",
+        json!({
+            "scope":"project","project_id":&fixture.project_id[..8],"shell_id":fixture.shells[1],
+            "title":"Short project","prompt":"Fixture","at":at
+        }),
+        "invalid_argument",
+    );
+    fixture.tool_error("riwork_schedule_create", json!({
+        "scope":"app","shell_id":fixture.shells[0],"title":"Past time","prompt":"Fixture","at":"2000-01-01T09:00:00+00:00"
+    }), "invalid_argument");
+    fixture.tool_error("riwork_schedule_pause", json!({
+        "schedule_id":id,"revision":1,"scope":"project","project_id":fixture.project_id,"shell_id":fixture.shells[0]
+    }), "target_mismatch");
+    fixture.tool_error(
+        "riwork_schedule_pause",
+        json!({
+            "schedule_id":id,"revision":1,"scope":"app","shell_id":fixture.shells[1]
+        }),
+        "target_mismatch",
+    );
+    fixture.tool_error(
+        "riwork_schedule_pause",
+        json!({
+            "schedule_id":id,"revision":0,"scope":"app","shell_id":fixture.shells[0]
+        }),
+        "invalid_argument",
+    );
+    let mut stale = vec!["schedule", "update", id, "--revision", "2"];
+    stale.extend(fixture.scope_args(0));
+    stale.extend(["--at", &at, "--json"]);
+    assert_eq!(
+        fixture.cli_error(&stale, "revision_conflict")["error"]["current"]["revision"],
+        1
+    );
+    let mut bad_id = vec!["schedule", "delete", &id[..8], "--revision", "1"];
+    bad_id.extend(fixture.scope_args(0));
+    bad_id.push("--json");
+    fixture.cli_error(&bad_id, "invalid_argument");
+    let mut bad_time = vec!["schedule", "update", id, "--revision", "1"];
+    bad_time.extend(fixture.scope_args(0));
+    bad_time.extend(["--at", "2030-01-01T09:00:00", "--json"]);
+    fixture.cli_error(&bad_time, "invalid_argument");
+    let bad_scope = vec![
+        "schedule",
+        "list",
+        "--project",
+        &fixture.project_id,
+        "--json",
+    ];
+    fixture.cli_error(&bad_scope, "invalid_argument");
+    assert!(
+        fixture
+            .command(&["shell", "close", &fixture.shells[2]])
+            .status
+            .success()
+    );
+    fixture.tool_error(
+        "riwork_schedule_create",
+        json!({
+            "scope":"workspace","project_id":fixture.project_id,"worktree_id":fixture.worktree_id,
+            "shell_id":fixture.shells[2],"title":"Exited worker","prompt":"Fixture","at":at
+        }),
+        "binding_failed",
+    );
+    assert_eq!(
+        fixture.tool_ok("riwork_schedule_list", json!({}))["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn two_cli_processes_cannot_apply_the_same_revision() {
+    let fixture = Fixture::new();
+    let created = fixture.tool_ok(
+        "riwork_schedule_create",
+        json!({
+            "scope":"app","shell_id":fixture.shells[0],"title":"Concurrent fixture",
+            "prompt":"Fixture prompt","at":future_at(7)
+        }),
+    )["schedule"]
+        .clone();
+    let id = created["id"].as_str().unwrap();
+    let args = [
+        "schedule",
+        "pause",
+        id,
+        "--revision",
+        "1",
+        "--scope",
+        "app",
+        "--shell",
+        &fixture.shells[0],
+        "--json",
+    ];
+    let spawn = || {
+        Command::new(env!("CARGO_BIN_EXE_riwork"))
+            .args(args)
+            .env("RIWORK_HOME", &fixture.home)
+            .env("RIWORK_RUNTIME_DIR", fixture.home.join("runtime"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let first = spawn();
+    let second = spawn();
+    let results = [
+        first.wait_with_output().unwrap(),
+        second.wait_with_output().unwrap(),
+    ];
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.status.success())
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| !result.status.success())
+            .count(),
+        1
+    );
+    for result in &results {
+        let value: Value = serde_json::from_slice(&result.stdout).unwrap();
+        if result.status.success() {
+            assert_eq!(value["schedule"]["revision"], 2);
+        } else {
+            assert_eq!(value["error"]["code"], "revision_conflict");
+            assert_eq!(value["error"]["current"]["revision"], 2);
+        }
+    }
+    let current = fixture.tool_ok("riwork_schedule_show", json!({"schedule_id":id}));
+    assert_eq!(current["schedule"]["revision"], 2);
+    assert_eq!(current["schedule"]["paused"], true);
+}

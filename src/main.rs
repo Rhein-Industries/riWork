@@ -18,6 +18,7 @@ mod project_sort;
 mod remote_cli;
 mod runtime;
 mod schedule_panel;
+mod schedule_service;
 mod schedules;
 mod session_input;
 mod session_reload;
@@ -4841,7 +4842,9 @@ fn main() {
         Ok(true) => return,
         Ok(false) => {}
         Err(error) => {
-            eprintln!("riwork: {error}");
+            if !error.is_empty() {
+                eprintln!("riwork: {error}");
+            }
             std::process::exit(2);
         }
     }

@@ -193,6 +193,65 @@ fn failure_and_uncertainty_pause_until_reviewed_future_edit() {
         assert!(!f.row().paused && !f.row().review_required);
     }
 }
+
+#[test]
+fn shared_service_requires_future_edit_before_failed_or_uncertain_rearm() {
+    use crate::schedule_service::{
+        RepeatChange, ScheduleKey, ScheduleService, ScopeInput, UpdateRequest,
+    };
+
+    for uncertain in [false, true] {
+        let f = Fixture::new();
+        f.add(Timing::Interval {
+            first: 1000,
+            seconds: 300,
+        });
+        f.store
+            .tick_with(1000, |_, _, claim| {
+                if uncertain {
+                    assert!(claim("fixture-turn")?);
+                    Ok(Delivery::Uncertain("fixture input may have arrived".into()))
+                } else {
+                    Ok(Delivery::Failed("fixture target failed".into()))
+                }
+            })
+            .unwrap();
+        let failed = f.row();
+        let key = ScheduleKey {
+            id: failed.id.clone(),
+            revision: failed.revision,
+            scope: ScopeInput {
+                scope: "app".into(),
+                project_id: None,
+                worktree_id: None,
+            },
+            shell_id: failed.target.shell_id.clone(),
+        };
+        let service = ScheduleService::at(f.home.clone()).unwrap();
+        let error = service.pause(&key, false).unwrap_err();
+        assert_eq!(error.code, "review_required");
+        let at = (chrono::Utc::now() + chrono::Duration::hours(1))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+        let rearmed = service
+            .update(UpdateRequest {
+                key,
+                title: None,
+                prompt: None,
+                at,
+                repeat: RepeatChange::Keep,
+            })
+            .unwrap();
+        assert_eq!(rearmed.target, failed.target);
+        assert!(!rearmed.paused && !rearmed.review_required);
+        assert_eq!(
+            rearmed.timing,
+            Timing::Interval {
+                first: rearmed.timing.first(),
+                seconds: 300
+            }
+        );
+    }
+}
 #[test]
 fn durable_inflight_claim_is_uncertain_after_owner_crash() {
     let f = Fixture::new();

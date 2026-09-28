@@ -33,6 +33,12 @@ Project and task data lives under `RIWORK_HOME`, or `~/.local/share/riwork` by d
 - `riwork shell send UUID TEXT` sends the text followed by Return, so use it only when executing that input is intended. `riwork shell attach UUID` prints the tmux attach command.
 - Shells run in a dedicated tmux server and survive closing tabs, switching projects, and restarting the UI. `riwork shell close UUID` **ends the shell process**; do not use it merely to dismiss a tab or change views.
 
+## Desktop schedules
+
+Use `riwork schedule help` for the current CLI syntax and [scheduling.md](../../docs/scheduling.md#cli-and-mcp-agent-configuration) for examples. `riwork schedule list|show|create|update|pause|resume|delete` and the matching `riwork_schedule_*` MCP tools configure the same schedules shown in the desktop panel. Dispatch only occurs while the desktop app is open. These commands do not launch a session.
+
+Create requires an explicit `app`, `project`, or `workspace` scope, full project/worktree UUIDs where applicable, a full live shell UUID, title, single-line prompt, and exact future RFC 3339 `--at` with timezone. `--every-minutes` is optional, from 5 to 525600 whole minutes. Read the schedule's full UUID and revision with `list --json` or `show --json`; every update/pause/resume/delete must supply both, its explicit scope, and its pinned shell UUID. Update needs a new future `--at`, retains the pinned target, and can clear recurrence with `--once`. A failed or uncertain attempt needs transcript review and a future update before resume. Test only in a fresh child `RIWORK_HOME` fixture.
+
 The UI saves each project's mixed panel/shell tabs, order, split sizes, and active selections. Closing a shell tab keeps its shell alive and detached across restarts; click it in the Shells panel to attach it again. A shell created through the CLI appears in the Shells panel during refresh and joins the saved active pane when that project next opens.
 
 ## GPUI views
