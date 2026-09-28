@@ -462,3 +462,398 @@ fn list_hides_the_codex_label_of_a_plain_shell_that_is_back_at_its_prompt() {
     fs::remove_file(fixture.root.join("panes")).unwrap();
     assert!(listed(&fixture).iter().all(has_label));
 }
+
+/// Start `command` as a plain project shell in `directory`, and return what
+/// `pwd -P` printed inside the pane.
+fn started_in(fixture: &Fixture, directory: &Path, index: usize) -> String {
+    let out = fixture.root.join(format!("pwd-{index}"));
+    let command = format!(
+        "pwd -P > {}; exec sleep 300",
+        quote_arg(&out.to_string_lossy())
+    );
+    fixture
+        .manager
+        .create(
+            Uuid::new_v4().to_string(),
+            None,
+            directory.to_owned(),
+            Some(command),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        // The shell writes the line and its newline in one call.
+        if let Ok(text) = fs::read_to_string(&out)
+            && let Some(text) = text.strip_suffix('\n')
+        {
+            return text.to_owned();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pane never printed its directory"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Directory names that tmux would read as formats or command separators.
+const AWKWARD_DIRECTORIES: &[&str] = &[
+    "C#Tools",
+    "a##b",
+    "#{pane_id}",
+    "#T and #H and #P",
+    "tail#",
+    "#(touch PWNED)",
+    "x;",
+    "x\\;",
+    "semi;colon",
+    "日本語 ✓ é",
+    "quote'd \"$x\" `y`",
+    "new\nline",
+];
+
+#[test]
+fn directories_tmux_would_reinterpret_are_started_in_exactly() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    for (index, name) in AWKWARD_DIRECTORIES.iter().enumerate() {
+        let directory = fixture.root.join("dirs").join(name);
+        fs::create_dir_all(&directory).unwrap();
+        assert_eq!(
+            started_in(&fixture, &directory, index),
+            directory.to_string_lossy(),
+            "{name:?}"
+        );
+        // A `#(...)` in a directory name must never run.
+        assert!(!fixture.root.join("dirs").join("PWNED").exists());
+        assert!(!directory.join("PWNED").exists());
+    }
+}
+
+#[test]
+fn a_respawned_pane_keeps_the_directory_it_was_in() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.recording_session();
+    for (index, name) in AWKWARD_DIRECTORIES.iter().enumerate() {
+        let directory = fixture.root.join("respawn").join(name);
+        fs::create_dir_all(&directory).unwrap();
+        let out = fixture.root.join(format!("respawned-{index}"));
+        let arguments = respawn_arguments(
+            &id,
+            &directory.to_string_lossy(),
+            &fixture.root,
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            None,
+            &format!(
+                "pwd -P > {}; exec sleep 300;",
+                quote_arg(&out.to_string_lossy())
+            ),
+        );
+        let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        fixture.manager.tmux_checked(&borrowed).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let printed = loop {
+            if let Some(text) = fs::read_to_string(&out)
+                .ok()
+                .and_then(|text| text.strip_suffix('\n').map(str::to_owned))
+            {
+                break text;
+            }
+            assert!(Instant::now() < deadline, "{name:?} never started");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(printed, directory.to_string_lossy(), "{name:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_directory_tmux_did_not_start_in_is_refused_and_its_session_removed() {
+    let calls = |root: &Path| root.join("calls");
+    let fixture = Fixture::new(|root| {
+        let tmux = root.join("fake-tmux");
+        // Reports the pane's directory as something else, as tmux does when it
+        // expands the name it was given.
+        Fixture::script(
+            &tmux,
+            &format!(
+                "echo \"$*\" >> {}\ncase \"$*\" in *new-session*) printf '/somewhere/else\\n';; esac",
+                quote_arg(&calls(root).to_string_lossy())
+            ),
+        );
+        tmux
+    });
+    let directory = fixture.root.join("project");
+    fs::create_dir(&directory).unwrap();
+    let error = fixture
+        .manager
+        .create(
+            Uuid::new_v4().to_string(),
+            None,
+            directory.clone(),
+            Some("sleep 1".into()),
+        )
+        .unwrap_err();
+    assert!(error.contains("/somewhere/else"), "{error}");
+    assert!(error.contains(&*directory.to_string_lossy()), "{error}");
+    let log = fs::read_to_string(calls(&fixture.root)).unwrap();
+    assert!(log.contains("kill-session"), "{log}");
+    assert!(fixture.manager.read_registry().unwrap().sessions.is_empty());
+}
+
+#[test]
+fn new_panes_keep_a_hundred_thousand_lines_of_history() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // A server that already exists, with tmux's own default of 2000 lines.
+    fixture
+        .manager
+        .tmux_checked(&["new-session", "-d", "-s", "older", "sleep 300"])
+        .unwrap();
+    let older = fixture
+        .manager
+        .tmux_text(&[
+            "display-message",
+            "-p",
+            "-t",
+            "older:0.0",
+            "#{history_limit}",
+        ])
+        .unwrap();
+    assert_eq!(older.trim(), "2000");
+
+    let session = fixture
+        .manager
+        .create(
+            Uuid::new_v4().to_string(),
+            None,
+            fixture.root.clone(),
+            Some("seq 1 6000; exec sleep 300".into()),
+        )
+        .unwrap();
+    let limit = fixture
+        .manager
+        .tmux_text(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane_target(&session.id),
+            "#{history_limit}",
+        ])
+        .unwrap();
+    assert_eq!(limit.trim(), HISTORY_LINES.to_string());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let captured = loop {
+        let text = fixture.manager.capture(&session.id, HISTORY_LINES).unwrap();
+        if text.lines().any(|line| line == "6000") || Instant::now() >= deadline {
+            break text;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let numbers: Vec<&str> = captured.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(numbers.len(), 6000, "kept {} of 6000 lines", numbers.len());
+    assert_eq!(numbers.first(), Some(&"1"));
+}
+
+#[test]
+fn stale_server_environment_does_not_reach_a_new_pane() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // A server started from another environment, still holding old values.
+    fixture
+        .manager
+        .tmux_checked(&["new-session", "-d", "-s", "older", "sleep 300"])
+        .unwrap();
+    let stale = ["CLAUDE_CONFIG_DIR", "GROK_HOME", "RIWORK_CUA_DRIVER"];
+    for variable in stale {
+        fixture
+            .manager
+            .tmux_checked(&["set-environment", "-g", variable, "/stale/value"])
+            .unwrap();
+    }
+    let out = fixture.root.join("environment");
+    fixture
+        .manager
+        .create(
+            Uuid::new_v4().to_string(),
+            None,
+            fixture.root.clone(),
+            Some(format!(
+                "env > {}; exec sleep 300",
+                quote_arg(&out.to_string_lossy())
+            )),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let environment = loop {
+        if let Ok(text) = fs::read_to_string(&out)
+            && text.lines().any(|line| line.starts_with("PATH="))
+        {
+            break text;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pane never printed its environment"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let inherited = |variable: &str| {
+        if variable == "RIWORK_CUA_DRIVER" {
+            return crate::cua::driver_override_for_harness()
+                .map(|path| path.to_string_lossy().into_owned());
+        }
+        env::var_os(variable).map(|value| value.to_string_lossy().into_owned())
+    };
+    for variable in stale {
+        let in_pane = environment
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{variable}=")));
+        assert_eq!(
+            in_pane.map(str::to_owned),
+            inherited(variable),
+            "{variable}"
+        );
+        // The server no longer offers the old value to later panes either.
+        let global = fixture
+            .manager
+            .tmux_text(&["show-environment", "-g", variable])
+            .unwrap_or_default();
+        if inherited(variable).is_none() {
+            assert!(!global.contains("/stale/value"), "{variable}: {global}");
+        }
+    }
+}
+
+/// tmux honours `TMUX_TMPDIR`, so a terminal that sets it and an app that does
+/// not would run two servers. RiWork clears it for every call and for the
+/// attach command.
+#[cfg(unix)]
+#[test]
+fn tmux_ignores_an_inherited_tmux_tmpdir() {
+    const NAME: &str = "sessions::tmux_tests::tmux_ignores_an_inherited_tmux_tmpdir";
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let Some(inherited) = env::var_os("RIWORK_TEST_TMUX_TMPDIR") else {
+        let output = Command::new(env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .env("RIWORK_TEST_TMUX_TMPDIR", fixture.root.join("elsewhere"))
+            .env("TMUX_TMPDIR", fixture.root.join("elsewhere"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let inherited = PathBuf::from(inherited);
+    fs::create_dir_all(&inherited).unwrap();
+    assert_eq!(env::var_os("TMUX_TMPDIR"), Some(inherited.clone().into()));
+    let id = fixture.recording_session();
+    fixture.registry(vec![shell(&id, None, None)]);
+    let socket = fixture
+        .manager
+        .tmux_text(&["display-message", "-p", "#{socket_path}"])
+        .unwrap();
+    assert!(
+        !Path::new(socket.trim()).starts_with(&inherited),
+        "{socket} is under {}",
+        inherited.display()
+    );
+    assert_eq!(fs::read_dir(&inherited).unwrap().count(), 0);
+    assert!(
+        fixture
+            .manager
+            .attach_command(&id)
+            .unwrap()
+            .contains(" -u TMUX_TMPDIR ")
+    );
+}
+
+#[test]
+fn no_server_at_all_means_no_sessions() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // The socket does not exist yet.
+    assert!(fixture.manager.live_session_names().unwrap().is_empty());
+    assert!(
+        !fixture
+            .manager
+            .is_alive(&Uuid::new_v4().to_string())
+            .unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_connection_that_is_not_a_missing_server_is_an_error() {
+    let fixture = Fixture::new(|root| {
+        let tmux = root.join("fake-tmux");
+        Fixture::script(
+            &tmux,
+            "echo 'error connecting to /a/long/path (File name too long)' >&2; exit 1",
+        );
+        tmux
+    });
+    let error = fixture.manager.live_session_names().unwrap_err();
+    assert!(error.contains("File name too long"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tmux_that_cannot_answer_does_not_make_a_session_dead() {
+    let orchestrator = "00000000-0000-4000-8000-0000000000c1";
+    let absent = "00000000-0000-4000-8000-0000000000c2";
+    let fixture = Fixture::new(|root| {
+        let tmux = root.join("fake-tmux");
+        Fixture::script(&tmux, &format!("printf '{orchestrator}\\n'"));
+        tmux
+    });
+    let mut row = shell(orchestrator, Some("codex"), None);
+    row.kind = ShellKind::Orchestrator;
+    fixture.registry(vec![row]);
+    let manager = &fixture.manager;
+    assert!(manager.is_alive(orchestrator).unwrap());
+    assert!(!manager.is_alive(absent).unwrap());
+
+    // The server is there but does not answer: nothing is dropped or replaced.
+    let calls = fixture.root.join("calls");
+    Fixture::script(
+        &manager.tmux,
+        &format!(
+            "echo \"$*\" >> {}\necho 'lost server connection' >&2; exit 1",
+            quote_arg(&calls.to_string_lossy())
+        ),
+    );
+    assert!(
+        manager
+            .is_alive(orchestrator)
+            .unwrap_err()
+            .contains("lost server connection")
+    );
+    let error = manager
+        .orchestrator_create(fixture.root.clone(), Some("sleep 1".into()))
+        .unwrap_err();
+    assert!(error.contains("lost server connection"), "{error}");
+    let error = manager.load_orchestrator_skill(orchestrator).unwrap_err();
+    assert!(error.contains("lost server connection"), "{error}");
+    let error = manager
+        .respawn_command(orchestrator, "codex resume x")
+        .unwrap_err();
+    assert!(error.contains("lost server connection"), "{error}");
+    let log = fs::read_to_string(&calls).unwrap();
+    assert!(!log.contains("new-session"), "{log}");
+    assert!(!log.contains("respawn-pane"), "{log}");
+    let saved = manager.read_registry().unwrap().sessions;
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].id, orchestrator);
+}

@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
-    env, fs,
+    fs,
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -900,13 +900,7 @@ pub struct LayoutStore {
 
 impl LayoutStore {
     pub fn open_default() -> Result<Self, String> {
-        let dir = if let Some(value) = env::var_os("RIWORK_HOME") {
-            PathBuf::from(value)
-        } else {
-            let home = env::var_os("HOME").ok_or("HOME is unset; set RIWORK_HOME")?;
-            PathBuf::from(home).join(".local/share/riwork")
-        };
-        Self::open(dir)
+        Self::open(crate::paths::riwork_home()?)
     }
 
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, String> {
@@ -1062,6 +1056,7 @@ impl LayoutStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     struct TestDirectory(PathBuf);
 

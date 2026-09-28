@@ -11,7 +11,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Output},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::OnceLock,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
@@ -126,18 +127,14 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn open_default() -> Result<Self, String> {
-        let home = match env::var_os("RIWORK_HOME") {
-            Some(path) => PathBuf::from(path),
-            None => PathBuf::from(env::var_os("HOME").ok_or("HOME is not set; set RIWORK_HOME")?)
-                .join(".local/share/riwork"),
-        };
-        Self::at(home)
+        Self::at(crate::paths::riwork_home()?)
     }
 
     /// Construct a manager with an alternate state directory. Useful for
     /// isolated installations and integration tests.
     pub fn at(home: PathBuf) -> Result<Self, String> {
-        fs::create_dir_all(&home).map_err(|error| format!("create {}: {error}", home.display()))?;
+        crate::paths::create_private_dir(&home)
+            .map_err(|error| format!("create {}: {error}", home.display()))?;
         let home = home
             .canonicalize()
             .map_err(|error| format!("resolve {}: {error}", home.display()))?;
@@ -277,7 +274,9 @@ impl SessionManager {
             .iter()
             .find(|session| matches_orchestrator_scope(session, project_id.as_deref()))
         {
-            if self.is_alive(&existing.id) {
+            // A tmux error is not "dead": dropping this row would start a second
+            // orchestrator beside one that is still running unregistered.
+            if self.is_alive(&existing.id)? {
                 let mut existing = existing.clone();
                 existing.alive = true;
                 return Ok(existing);
@@ -438,7 +437,7 @@ impl SessionManager {
         if session.kind != ShellKind::Orchestrator {
             return Err(format!("shell {id} is not the orchestrator"));
         }
-        if !self.is_alive(id) {
+        if !self.is_alive(id)? {
             return Err(format!("shell {id} has exited"));
         }
         session.alive = true;
@@ -472,6 +471,7 @@ impl SessionManager {
                 &executable,
                 session.project_id.as_deref(),
                 session.orchestrator_project_root.as_deref(),
+                true,
             ),
         )?;
         session.orchestrator_skill_loaded = true;
@@ -707,7 +707,7 @@ impl SessionManager {
             .iter_mut()
             .find(|session| session.id == id)
             .ok_or_else(|| format!("unknown shell {id}"))?;
-        if session.harness != Some(HarnessKind::Codex) || !self.is_alive(id) {
+        if session.harness != Some(HarnessKind::Codex) || !self.is_alive(id)? {
             return Err("session reload requires a live RiWork Codex pane".to_owned());
         }
         let cwd = self.current_directory(id)?;
@@ -716,30 +716,15 @@ impl SessionManager {
         let cua = crate::cua::CuaManager::at(self.home.clone())?;
         cua.driver_path()?;
         let shims = cua.ensure_harness_shims(&executable)?;
-        let managed_path = path_with_harness_shims(&shims)?;
-        let mut args = vec![
-            "respawn-pane".to_owned(),
-            "-k".to_owned(),
-            "-t".to_owned(),
-            pane_target(id),
-            "-c".to_owned(),
-            cwd.to_string_lossy().into_owned(),
-            "-e".to_owned(),
-            format!("RIWORK_HOME={}", self.home.display()),
-            "-e".to_owned(),
-            format!("RIWORK_SHELL_ID={id}"),
-            "-e".to_owned(),
-            format!("PATH={}", managed_path.to_string_lossy()),
-        ];
-        if let Some(home) = &session.codex_home {
-            args.extend([
-                "-e".to_owned(),
-                format!("CODEX_HOME={}", home.display()),
-                "-e".to_owned(),
-                format!("RIWORK_CODEX_ACCOUNT_HOME={}", home.display()),
-            ]);
-        }
-        args.push(command.to_owned());
+        let managed_path = path_with_harness_shims(&shims, login_shell_dirs())?;
+        let args = respawn_arguments(
+            id,
+            &cwd.to_string_lossy(),
+            &self.home,
+            &managed_path,
+            session.codex_home.as_deref(),
+            command,
+        );
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         self.tmux_checked(&borrowed)?;
         session.command = Some(command.to_owned());
@@ -760,7 +745,7 @@ impl SessionManager {
         // Set this per session as well, upgrading sessions made by older builds.
         self.configure_scrolling(id)?;
         Ok(format!(
-            "{} -u TMUX {} -L {} attach-session -t {}",
+            "{} -u TMUX -u TMUX_TMPDIR {} -L {} attach-session -t {}",
             quote_arg("/usr/bin/env"),
             quote_arg(&self.tmux.to_string_lossy()),
             quote_arg(&self.socket_name),
@@ -1344,6 +1329,17 @@ impl SessionManager {
         if !cwd.is_dir() {
             return Err(format!("{} is not a directory", cwd.display()));
         }
+        // A lossy conversion would name a different directory and tmux would
+        // fall back to $HOME without saying so.
+        let cwd_text = cwd
+            .to_str()
+            .ok_or_else(|| {
+                format!(
+                    "{} is not valid UTF-8 and cannot be passed to tmux",
+                    cwd.display()
+                )
+            })?
+            .to_owned();
         let plain_shell = binding.is_none()
             && harness.is_none()
             && kind == ShellKind::Project
@@ -1373,7 +1369,18 @@ impl SessionManager {
             env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
         let cua = crate::cua::CuaManager::at(self.home.clone())?;
         let shim_directory = cua.ensure_harness_shims(&executable)?;
-        let managed_path = path_with_harness_shims(&shim_directory)?;
+        // A plain shell's login startup files build its PATH; a harness runs
+        // under `zsh -c`, which reads only `.zshenv`.
+        let launches_harness =
+            harness.is_some() || (kind == ShellKind::Orchestrator && binding.is_some());
+        let managed_path = path_with_harness_shims(
+            &shim_directory,
+            if launches_harness {
+                login_shell_dirs()
+            } else {
+                &[]
+            },
+        )?;
         let shell = self.default_command_shell();
         let zsh_environment = if shell.file_name().is_some_and(|name| name == "zsh") {
             let directory = install_zsh_startup_forwarding(&self.home, &shim_directory)?;
@@ -1390,7 +1397,7 @@ impl SessionManager {
                 if harness == HarnessKind::Grok {
                     ensure_grok_agent(&self.home, &executable)?;
                 }
-                let command = harness_command(
+                Some(harness_command(
                     harness,
                     unrestricted,
                     &program,
@@ -1398,18 +1405,11 @@ impl SessionManager {
                     &self.home,
                     &id,
                     binding.as_ref().map(|binding| binding.home.as_path()),
-                )?;
-                Some(without_stale_profiles(&command, &profile_locations))
+                )?)
             }
-            None => command.map(|command| {
-                if let Some(binding) = &binding {
-                    without_stale_profiles(
-                        &with_codex_home(&command, &binding.home),
-                        &profile_locations,
-                    )
-                } else {
-                    command
-                }
+            None => command.map(|command| match &binding {
+                Some(binding) => with_codex_home(&command, &binding.home),
+                None => command,
             }),
         };
         if kind == ShellKind::Orchestrator && project_id.is_none() {
@@ -1425,10 +1425,13 @@ impl SessionManager {
         let mut args = vec![
             "new-session".to_owned(),
             "-d".to_owned(),
+            "-P".to_owned(),
+            "-F".to_owned(),
+            "#{pane_start_path}".to_owned(),
             "-s".to_owned(),
             id.clone(),
             "-c".to_owned(),
-            cwd.to_string_lossy().into_owned(),
+            tmux_directory(&cwd_text),
             "-x".to_owned(),
             "100".to_owned(),
             "-y".to_owned(),
@@ -1470,23 +1473,59 @@ impl SessionManager {
                 args.push(format!("{variable}={}", value.to_string_lossy()));
             }
         }
+        // Panes get their environment from the server, not from this client, so
+        // a plain shell that runs `codex` needs the override named explicitly.
+        let cua_driver = crate::cua::driver_override_for_harness();
+        if let Some(driver) = &cua_driver {
+            args.push("-e".to_owned());
+            args.push(format!("RIWORK_CUA_DRIVER={}", driver.to_string_lossy()));
+        }
         if let Some(command) = &command {
             if command.trim().is_empty() {
                 return Err("shell command cannot be empty".to_owned());
             }
             args.push(command.clone());
         }
-        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-        self.tmux_checked(&borrowed)?;
+        // Variables absent from this launch must not come back from the server's
+        // environment. Clearing them there, and not with `env -u` in the command,
+        // leaves the user's own startup files free to set them.
+        let mut absent = stale_profile_variables(&profile_locations);
+        if cua_driver.is_none() {
+            absent.push("RIWORK_CUA_DRIVER");
+        }
+        // history-limit applies only to panes created afterwards, so it is set
+        // in the same tmux invocation, ahead of the session's first pane.
+        let mut invocation = vec!["start-server".to_owned()];
+        for variable in &absent {
+            invocation.extend(
+                [";", "set-environment", "-gu", variable]
+                    .into_iter()
+                    .map(str::to_owned),
+            );
+        }
+        invocation.extend(
+            [";", "set-option", "-g", "history-limit"]
+                .into_iter()
+                .map(str::to_owned),
+        );
+        invocation.push(HISTORY_LINES.to_string());
+        invocation.push(";".to_owned());
+        invocation.extend(args.iter().map(|argument| tmux_argument(argument)));
+        let borrowed: Vec<&str> = invocation.iter().map(String::as_str).collect();
+        let created = self.tmux_checked_without(&borrowed, &absent)?;
+        // tmux silently starts the shell in $HOME when it cannot use the
+        // directory it was given. An empty report means this tmux cannot say.
+        let reported = String::from_utf8_lossy(&created.stdout);
+        let reported = reported.strip_suffix('\n').unwrap_or(&reported);
+        if !reported.is_empty() && reported != cwd_text {
+            let _ = self.kill_tmux_session(&id);
+            return Err(format!(
+                "tmux started the shell in {reported} instead of {cwd_text}; \
+                 this directory name cannot be passed to tmux"
+            ));
+        }
         let configured = self
-            .tmux_checked(&[
-                "set-window-option",
-                "-t",
-                &format!("{id}:0"),
-                "history-limit",
-                &HISTORY_LINES.to_string(),
-            ])
-            .and_then(|_| self.tmux_checked(&["set-option", "-g", "status", "off"]))
+            .tmux_checked(&["set-option", "-g", "status", "off"])
             .and_then(|_| self.configure_scrolling(&id));
         if let Err(error) = configured {
             let _ = self.kill_tmux_session(&id);
@@ -1526,9 +1565,10 @@ impl SessionManager {
         Ok(session)
     }
 
-    fn is_alive(&self, id: &str) -> bool {
-        self.tmux_command(&["has-session", "-t", &format!("={id}")])
-            .is_ok_and(|output| output.status.success())
+    /// Only a definite "no such session" (or no server at all) is "dead". A
+    /// tmux that cannot answer, for example because it timed out, is an error.
+    fn is_alive(&self, id: &str) -> Result<bool, String> {
+        Ok(self.live_session_names()?.contains(id))
     }
 
     fn live_session_names(&self) -> Result<HashSet<String>, String> {
@@ -1585,6 +1625,17 @@ impl SessionManager {
     /// freeze the caller (often the UI thread). Nothing sent through here is
     /// expected to block; no `wait-for`, `run-shell` or interactive attach.
     fn tmux_run(&self, args: &[&str], input: Option<&[u8]>) -> Result<Output, String> {
+        self.tmux_run_without(args, input, &[])
+    }
+
+    /// `removed` variables are hidden from the client. A client that starts the
+    /// server hands it its own environment as the server's global one.
+    fn tmux_run_without(
+        &self,
+        args: &[&str],
+        input: Option<&[u8]>,
+        removed: &[&str],
+    ) -> Result<Output, String> {
         let mut command = Command::new(&self.tmux);
         command
             .arg("-L")
@@ -1593,14 +1644,24 @@ impl SessionManager {
             .arg("/dev/null")
             .args(args)
             .env_remove("TMUX")
+            // The socket directory must not depend on who launched this
+            // process, or a terminal and the app would run separate servers.
+            // `attach_command` clears it for the same reason.
+            .env_remove("TMUX_TMPDIR")
             .env_remove("RIWORK_RESTORE_TICKET")
             .env("PATH", effective_path());
-        let label = format!("tmux {}", args.first().copied().unwrap_or_default());
-        run_bounded(command, input, TMUX_TIMEOUT, &label)
+        for variable in removed {
+            command.env_remove(variable);
+        }
+        run_bounded(command, input, TMUX_TIMEOUT, &tmux_label(args))
     }
 
     fn tmux_checked(&self, args: &[&str]) -> Result<Output, String> {
-        let output = self.tmux_command(args)?;
+        self.tmux_checked_without(args, &[])
+    }
+
+    fn tmux_checked_without(&self, args: &[&str], removed: &[&str]) -> Result<Output, String> {
+        let output = self.tmux_run_without(args, None, removed)?;
         if !output.status.success() {
             return Err(tmux_error(&output));
         }
@@ -1975,6 +2036,43 @@ fn codex_account_environment_arguments(home: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The tmux arguments that restart a Codex pane in the directory it is in.
+fn respawn_arguments(
+    id: &str,
+    cwd: &str,
+    state_home: &Path,
+    managed_path: &std::ffi::OsStr,
+    codex_home: Option<&Path>,
+    command: &str,
+) -> Vec<String> {
+    let mut args = vec![
+        "respawn-pane".to_owned(),
+        "-k".to_owned(),
+        "-t".to_owned(),
+        pane_target(id),
+        "-c".to_owned(),
+        tmux_directory(cwd),
+        "-e".to_owned(),
+        format!("RIWORK_HOME={}", state_home.display()),
+        "-e".to_owned(),
+        format!("RIWORK_SHELL_ID={id}"),
+        "-e".to_owned(),
+        format!("PATH={}", managed_path.to_string_lossy()),
+    ];
+    if let Some(home) = codex_home {
+        args.extend([
+            "-e".to_owned(),
+            format!("CODEX_HOME={}", home.display()),
+            "-e".to_owned(),
+            format!("RIWORK_CODEX_ACCOUNT_HOME={}", home.display()),
+        ]);
+    }
+    args.push(command.to_owned());
+    args.iter()
+        .map(|argument| tmux_argument(argument))
+        .collect()
+}
+
 fn harness_command(
     harness: HarnessKind,
     unrestricted: bool,
@@ -2168,6 +2266,10 @@ fn grok_agent_path(state_home: &Path, executable: &Path, custom_driver: Option<&
 /// Grok's active agent can supply an MCP server for this session. An agent
 /// definition in RiWork state avoids modifying the user's Grok config or the
 /// project repository, while its ordinary config and login remain available.
+/// Grok documents `startup_timeout_sec` only for `config.toml` servers, and
+/// `GROK_MCP_STARTUP_TIMEOUT_SECS` for all of them; agent frontmatter has no
+/// documented timeout field, so cua-driver keeps Grok's default of 30 seconds
+/// here rather than getting the 120 Codex is given.
 fn grok_agent_definition(
     executable: &Path,
     state_home: &Path,
@@ -2204,22 +2306,82 @@ fn grok_agent_definition(
 }
 
 fn ensure_grok_agent(state_home: &Path, executable: &Path) -> Result<(), String> {
-    let custom_driver = crate::cua::driver_override_for_harness();
-    let path = grok_agent_path(state_home, executable, custom_driver.as_deref());
+    ensure_grok_agent_with(
+        state_home,
+        executable,
+        crate::cua::driver_override_for_harness().as_deref(),
+        &|path, content| fs::write(path, content),
+        GROK_AGENT_MAX_AGE,
+    )
+}
+
+/// Definitions older than this are removed when a launch installs its own.
+/// Every launch refreshes the modification time of the one it uses, so only
+/// definitions of executables or drivers that have not been launched for this
+/// long can go; a build that returns simply writes its definition again.
+const GROK_AGENT_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+fn ensure_grok_agent_with(
+    state_home: &Path,
+    executable: &Path,
+    custom_driver: Option<&Path>,
+    write: &dyn Fn(&Path, &str) -> std::io::Result<()>,
+    max_age: Duration,
+) -> Result<(), String> {
+    let path = grok_agent_path(state_home, executable, custom_driver);
     let directory = path.parent().expect("Grok agent has a parent directory");
     fs::create_dir_all(directory)
         .map_err(|error| format!("create Grok Cua agent directory: {error}"))?;
-    let content = grok_agent_definition(executable, state_home, custom_driver.as_deref());
+    let content = grok_agent_definition(executable, state_home, custom_driver);
     if fs::read_to_string(&path).ok().as_deref() == Some(&content) {
-        return Ok(());
+        touch(&path);
+    } else {
+        let temporary = directory.join(format!("grok-agent-{}.tmp", Uuid::new_v4()));
+        if let Err(error) = write(&temporary, &content) {
+            // A failed write can still have created the file.
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("write Grok Cua agent: {error}"));
+        }
+        if let Err(error) = fs::rename(&temporary, &path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("install Grok Cua agent: {error}"));
+        }
     }
-    let temporary = directory.join(format!("grok-agent-{}.tmp", Uuid::new_v4()));
-    fs::write(&temporary, content).map_err(|error| format!("write Grok Cua agent: {error}"))?;
-    if let Err(error) = fs::rename(&temporary, &path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("install Grok Cua agent: {error}"));
-    }
+    prune_grok_agents(directory, &path, max_age);
     Ok(())
+}
+
+fn touch(path: &Path) {
+    if let Ok(file) = OpenOptions::new().write(true).open(path) {
+        let _ = file.set_modified(SystemTime::now());
+    }
+}
+
+/// Remove definitions (and temporary files a crash left behind) that were last
+/// used more than `max_age` ago, except `keep`. Housekeeping: errors are ignored.
+fn prune_grok_agents(directory: &Path, keep: &Path, max_age: Duration) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let ours =
+            name.starts_with("grok-agent-") && (name.ends_with(".md") || name.ends_with(".tmp"));
+        if !ours || path == keep {
+            continue;
+        }
+        let expired = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age > max_age);
+        if expired {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn toml_string(value: &str) -> String {
@@ -2440,7 +2602,7 @@ fn orchestrator_environment(project_id: Option<&str>) -> Vec<(&'static str, Stri
 
 fn without_project_environment(command: &str, shell: &Path) -> String {
     if command.starts_with("exec ") {
-        without_stale_profiles(command, &[("RIWORK_PROJECT_ID", None)])
+        unset_in_command(command, &["RIWORK_PROJECT_ID"])
     } else {
         // Preserve a custom script as one shell argument, including pipelines,
         // sequencing, and its original quoting. No server globals are changed.
@@ -2452,11 +2614,16 @@ fn without_project_environment(command: &str, shell: &Path) -> String {
     }
 }
 
+/// `inline_skill` puts the whole skill in the message, which suits a message
+/// pasted into a running pane. A launch must not: the message travels in tmux's
+/// command line, which tmux limits to about 16 KB, and the skill is already
+/// installed at `skill_path` for the agent to read.
 fn orchestrator_prompt(
     skill_path: &Path,
     executable: &Path,
     project_id: Option<&str>,
     project_root: Option<&Path>,
+    inline_skill: bool,
 ) -> String {
     let scope = match project_id {
         Some(project_id) => format!(
@@ -2475,20 +2642,33 @@ fn orchestrator_prompt(
                  Coordinate across project orchestrators according to the user's objective."
             .to_owned(),
     };
+    let (load, skill) = if inline_skill {
+        (
+            "Load the complete riwork-orchestrator skill below for this RiWork orchestrator session.",
+            format!(
+                "<riwork-orchestrator-skill>\n{ORCHESTRATOR_SKILL}\n</riwork-orchestrator-skill>\n\n"
+            ),
+        )
+    } else {
+        (
+            "Load the complete riwork-orchestrator skill for this RiWork orchestrator session: \
+             read its installed SKILL.md in full now, and follow it for the whole session.",
+            String::new(),
+        )
+    };
     format!(
         "$riwork-orchestrator\n\n\
-         Load the complete riwork-orchestrator skill below for this RiWork orchestrator session. \
+         {load} \
          Its installed source is {}. The installed RiWork CLI is {}: use this executable \
          for `riwork` commands if PATH does not resolve it, and retain RIWORK_HOME. \
          {} \
          This startup message only loads the skill. Do not inspect projects, create tasks, \
          modify repositories, delegate work, submit input to other harnesses, or create schedules. \
          After loading, briefly acknowledge readiness and wait for the user's objective.\n\n\
-         <riwork-orchestrator-skill>\n{}\n</riwork-orchestrator-skill>\n\n{}",
+         {skill}{}",
         quote_arg(&skill_path.to_string_lossy()),
         quote_arg(&executable.to_string_lossy()),
         scope,
-        ORCHESTRATOR_SKILL,
         CUA_GUIDANCE
     )
 }
@@ -2536,6 +2716,7 @@ fn orchestrator_command(
         executable,
         project_id,
         project_root,
+        false,
     ));
     let command = format!(
         "exec {}",
@@ -2551,27 +2732,35 @@ fn orchestrator_command(
     }
 }
 
-/// A tmux server retains its original environment. Remove profile variables
-/// missing from this launch before the CLI starts, without altering other
-/// sessions or the server's global environment.
-fn without_stale_profiles(
-    command: &str,
-    profile_locations: &[(&str, Option<std::ffi::OsString>)],
-) -> String {
-    let missing = profile_locations
+/// Run `command` without the named variables, for ones RiWork itself exports.
+/// This applies after the shell's startup files, so it must not name a
+/// variable the user may set there.
+fn unset_in_command(command: &str, variables: &[&str]) -> String {
+    if variables.is_empty() {
+        return command.to_owned();
+    }
+    let unset = variables
+        .iter()
+        .map(|variable| format!("-u {}", quote_arg(variable)))
+        .collect::<Vec<_>>();
+    format!(
+        "exec /usr/bin/env {} {}",
+        unset.join(" "),
+        command.strip_prefix("exec ").unwrap_or(command)
+    )
+}
+
+/// The profile variables this launch does not set. A tmux server retains the
+/// environment it started with, so these are cleared from its global
+/// environment before the session exists.
+fn stale_profile_variables<'a>(
+    profile_locations: &[(&'a str, Option<std::ffi::OsString>)],
+) -> Vec<&'a str> {
+    profile_locations
         .iter()
         .filter(|(_, value)| value.is_none())
-        .map(|(variable, _)| format!("-u {}", quote_arg(variable)))
-        .collect::<Vec<_>>();
-    if missing.is_empty() {
-        command.to_owned()
-    } else {
-        format!(
-            "exec /usr/bin/env {} {}",
-            missing.join(" "),
-            command.strip_prefix("exec ").unwrap_or(command)
-        )
-    }
+        .map(|(variable, _)| *variable)
+        .collect()
 }
 
 fn executable_dirs() -> Vec<PathBuf> {
@@ -2602,14 +2791,108 @@ fn effective_path() -> std::ffi::OsString {
     env::join_paths(executable_dirs()).unwrap_or_else(|_| env::var_os("PATH").unwrap_or_default())
 }
 
-fn path_with_harness_shims(shim_directory: &Path) -> Result<std::ffi::OsString, String> {
+/// The RiWork shim directory comes first, then the login shell's directories in
+/// the user's order, then this process's own.
+fn path_with_harness_shims(
+    shim_directory: &Path,
+    login_directories: &[PathBuf],
+) -> Result<std::ffi::OsString, String> {
     let mut directories = vec![shim_directory.to_path_buf()];
-    directories.extend(
-        executable_dirs()
-            .into_iter()
-            .filter(|directory| directory != shim_directory),
-    );
+    for directory in login_directories.iter().cloned().chain(executable_dirs()) {
+        if !directories.contains(&directory) {
+            directories.push(directory);
+        }
+    }
     env::join_paths(directories).map_err(|error| format!("construct RiWork harness PATH: {error}"))
+}
+
+/// A GUI launched from the Dock or Finder has launchd's minimal PATH, so CLIs
+/// that nvm, pnpm, bun, pyenv and similar tools install are invisible to it.
+/// The directories of the user's login shell are resolved once per process, and
+/// only when something needs them.
+fn login_shell_dirs() -> &'static [PathBuf] {
+    static DIRECTORIES: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    DIRECTORIES.get_or_init(|| {
+        // Unit tests must not depend on the developer's shell configuration.
+        if cfg!(test) {
+            return Vec::new();
+        }
+        let shell = env::var_os("SHELL")
+            .filter(|shell| !shell.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
+        login_shell_path(&shell, LOGIN_PATH_TIMEOUT)
+            .map(|path| {
+                env::split_paths(&path)
+                    .filter(|directory| directory.is_absolute())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Start resolving the login shell's directories without waiting for them, so
+/// the first harness launch does not pay for the shell's startup.
+pub fn prefetch_login_shell_dirs() {
+    std::thread::spawn(|| {
+        login_shell_dirs();
+    });
+}
+
+/// How long the user's shell gets to print its PATH. A profile that prompts or
+/// hangs costs this much once and is then ignored.
+const LOGIN_PATH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Ask `shell` for the PATH a terminal would give it: a login shell that is
+/// also interactive, since version managers usually initialise in `.zshrc`, but
+/// with no terminal, so nothing can wait for input. Startup noise on stdout is
+/// ignored by printing the value between unique markers. Failures give `None`.
+/// The output goes to a private file, not a pipe: a daemon the startup files
+/// leave running would hold a pipe open and hide what the shell printed.
+fn login_shell_path(shell: &Path, timeout: Duration) -> Option<std::ffi::OsString> {
+    use std::process::Stdio;
+    let marker = format!("__RIWORK_PATH_{}__", Uuid::new_v4().simple());
+    let capture = env::temp_dir().join(format!("riwork-login-path-{}", Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let output = options.open(&capture).ok()?;
+    let read = (|| {
+        let mut child = Command::new(shell)
+            .args(["-l", "-i", "-c"])
+            .arg(format!("printf '%s' \"{marker}$PATH\"\"{marker}\""))
+            .stdin(Stdio::null())
+            .stdout(output)
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
+        fs::read(&capture).ok()
+    })();
+    let _ = fs::remove_file(&capture);
+    let stdout = String::from_utf8_lossy(&read?).into_owned();
+    // The last pair wins, in case anything echoed the command line itself.
+    let end = stdout.rfind(&marker)?;
+    let start = stdout[..end].rfind(&marker)? + marker.len();
+    let path = &stdout[start..end];
+    (!path.is_empty()).then(|| std::ffi::OsString::from(path))
 }
 
 fn zsh_startup_environment(
@@ -2710,30 +2993,68 @@ fi
     Ok(directory)
 }
 
+/// The CLI a launch should run. This process's own PATH and the usual install
+/// directories come first; the login shell is asked only when they find nothing.
 fn find_harness_program(harness: HarnessKind, shim_directory: &Path) -> Option<PathBuf> {
+    find_harness_program_via(harness, shim_directory, executable_dirs(), || {
+        login_shell_dirs().to_vec()
+    })
+}
+
+fn find_harness_program_via(
+    harness: HarnessKind,
+    shim_directory: &Path,
+    directories: Vec<PathBuf>,
+    login_directories: impl FnOnce() -> Vec<PathBuf>,
+) -> Option<PathBuf> {
+    find_harness_program_in(harness, shim_directory, directories)
+        .or_else(|| find_harness_program_in(harness, shim_directory, login_directories()))
+}
+
+/// The path returned is the one found in the directory, not what it resolves
+/// to: multi-call shims (mise, Volta) choose the program by the name they were
+/// started under. Resolution serves only to recognise RiWork's own launchers.
+fn find_harness_program_in(
+    harness: HarnessKind,
+    shim_directory: &Path,
+    directories: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
     let shim_directory = shim_directory
         .canonicalize()
         .unwrap_or_else(|_| shim_directory.to_owned());
-    executable_dirs().into_iter().find_map(|directory| {
-        let candidate = directory.join(harness.program());
-        let path = candidate.canonicalize().ok()?;
-        if !path.is_file() || path.parent() == Some(shim_directory.as_path()) {
+    directories.into_iter().find_map(|directory| {
+        let candidate = std::path::absolute(directory.join(harness.program())).ok()?;
+        let resolved = candidate.canonicalize().ok()?;
+        if !executable_file(&resolved) || resolved.parent() == Some(shim_directory.as_path()) {
             return None;
         }
         // Ignore wrappers from another RiWork state directory as well. Read
         // only a small prefix, never an entire official CLI binary.
         use std::io::Read;
         let mut prefix = [0; 512];
-        if let Ok(mut file) = File::open(&path) {
-            if let Ok(length) = file.read(&mut prefix) {
-                if String::from_utf8_lossy(&prefix[..length]).contains("# RiWork Cua harness shim")
-                {
-                    return None;
-                }
-            }
+        if let Ok(mut file) = File::open(&resolved)
+            && let Ok(length) = file.read(&mut prefix)
+            && String::from_utf8_lossy(&prefix[..length]).contains("# RiWork Cua harness shim")
+        {
+            return None;
         }
-        Some(path)
+        Some(candidate)
     })
+}
+
+fn executable_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.is_file()
+    }
 }
 
 fn harness_utility_invocation(harness: HarnessKind, arguments: &[String]) -> bool {
@@ -2795,6 +3116,7 @@ fn harness_utility_invocation(harness: HarnessKind, arguments: &[String]) -> boo
                 | "clone"
                 | "completions"
                 | "cursor-worker"
+                | "disk-usage"
                 | "doctor"
                 | "du"
                 | "export"
@@ -2811,6 +3133,7 @@ fn harness_utility_invocation(harness: HarnessKind, arguments: &[String]) -> boo
                 | "trace"
                 | "update"
                 | "usage"
+                | "v"
                 | "version"
                 | "worktree"
                 | "wrap"
@@ -3032,11 +3355,7 @@ pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(),
     {
         return Err(managed_home_refusal(&command, &home));
     }
-    let home = match env::var_os("RIWORK_HOME") {
-        Some(home) => PathBuf::from(home),
-        None => PathBuf::from(env::var_os("HOME").ok_or("HOME is not set; set RIWORK_HOME")?)
-            .join(".local/share/riwork"),
-    };
+    let home = crate::paths::riwork_home()?;
     let cua = crate::cua::CuaManager::at(home.clone())?;
     let home = home
         .canonicalize()
@@ -3167,9 +3486,38 @@ fn pane_target(id: &str) -> String {
     format!("{id}:0.0")
 }
 
+/// Only "there is no server", not every failure to connect: a socket path that
+/// is too long, or one the user may not use, means tmux cannot be asked at all.
 fn no_tmux_server(output: &Output) -> bool {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    stderr.contains("no server running") || stderr.contains("error connecting to")
+    stderr.contains("no server running")
+        || (stderr.contains("error connecting to")
+            && stderr.contains("(No such file or directory)"))
+}
+
+/// The command a call is named after; chained commands are separated by `;`.
+fn tmux_label(args: &[&str]) -> String {
+    let last = args.rsplit(|argument| *argument == ";").next();
+    format!(
+        "tmux {}",
+        last.and_then(<[&str]>::first).copied().unwrap_or_default()
+    )
+}
+
+/// tmux reads an argument that ends in `;` as the end of a command, and one
+/// that ends in `\;` as a literal `;`. Every argument sent through
+/// `Command::args` therefore has its trailing `;` written as `\;`.
+fn tmux_argument(argument: &str) -> String {
+    match argument.strip_suffix(';') {
+        Some(rest) => format!("{rest}\\;"),
+        None => argument.to_owned(),
+    }
+}
+
+/// tmux expands formats in `-c`, so `#T` or `#{...}` in a directory name would
+/// name another directory. `##` is a literal `#`.
+fn tmux_directory(path: &str) -> String {
+    path.replace('#', "##")
 }
 
 /// Upper bound for any single tmux client. A healthy server answers in
@@ -3659,6 +4007,12 @@ mod tests {
         /// preserves the real cache's profile validation and avoids mutating
         /// environment variables shared with other tests or user processes.
         fn run_in_child(&self, name: &str) -> bool {
+            self.run_in_child_with(name, &[])
+        }
+
+        /// As `run_in_child`, with `changes` applied last: a value sets a
+        /// variable and `None` removes it.
+        fn run_in_child_with(&self, name: &str, changes: &[(&str, Option<&str>)]) -> bool {
             if env::var_os("RIWORK_TEST_ACCOUNT_FIXTURE").is_some() {
                 return true;
             }
@@ -3668,7 +4022,8 @@ mod tests {
                     .chain(env::var_os("PATH").iter().flat_map(env::split_paths)),
             )
             .unwrap();
-            let output = Command::new(env::current_exe().unwrap())
+            let mut child = Command::new(env::current_exe().unwrap());
+            child
                 .args([
                     "--exact",
                     &format!("sessions::tests::{name}"),
@@ -3683,9 +4038,14 @@ mod tests {
                 .env("RIWORK_CUA_DRIVER", self.0.join("fake-cua-driver"))
                 // A test may itself run inside a RiWork Codex session.
                 .env_remove("CODEX_HOME")
-                .env_remove("RIWORK_CODEX_ACCOUNT_HOME")
-                .output()
-                .unwrap();
+                .env_remove("RIWORK_CODEX_ACCOUNT_HOME");
+            for (variable, value) in changes {
+                match value {
+                    Some(value) => child.env(variable, value),
+                    None => child.env_remove(variable),
+                };
+            }
+            let output = child.output().unwrap();
             assert!(
                 output.status.success(),
                 "{}\n{}",
@@ -5312,53 +5672,36 @@ mod tests {
     }
 
     #[test]
-    fn harness_launch_removes_only_absent_profile_variables() {
+    fn only_profile_variables_absent_from_the_launch_are_cleared_from_the_server() {
+        let os = |value: &str| Some(std::ffi::OsString::from(value));
+        assert_eq!(
+            stale_profile_variables(&[("CODEX_HOME", None), ("CLAUDE_CONFIG_DIR", None)]),
+            ["CODEX_HOME", "CLAUDE_CONFIG_DIR"]
+        );
+        assert_eq!(
+            stale_profile_variables(&[
+                ("CODEX_HOME", os("/Users/test/codex A")),
+                ("CLAUDE_CONFIG_DIR", None)
+            ]),
+            ["CLAUDE_CONFIG_DIR"]
+        );
+        assert!(
+            stale_profile_variables(&[
+                ("CODEX_HOME", os("/Users/test/codex A")),
+                ("CLAUDE_CONFIG_DIR", os("/Users/test/claude A"))
+            ])
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn unsetting_in_the_command_names_only_the_variables_given() {
         let command = "exec /opt/bin/codex";
-        let none = [("CODEX_HOME", None), ("CLAUDE_CONFIG_DIR", None)];
+        assert_eq!(unset_in_command(command, &[]), command);
         assert_eq!(
-            shell_arguments(&without_stale_profiles(command, &none)),
-            [
-                "/usr/bin/env",
-                "-u",
-                "CODEX_HOME",
-                "-u",
-                "CLAUDE_CONFIG_DIR",
-                "/opt/bin/codex"
-            ]
+            shell_arguments(&unset_in_command(command, &["A", "B"])),
+            ["/usr/bin/env", "-u", "A", "-u", "B", "/opt/bin/codex"]
         );
-        let codex = [
-            (
-                "CODEX_HOME",
-                Some(std::ffi::OsString::from("/Users/test/codex A")),
-            ),
-            ("CLAUDE_CONFIG_DIR", None),
-        ];
-        assert_eq!(
-            shell_arguments(&without_stale_profiles(command, &codex)),
-            ["/usr/bin/env", "-u", "CLAUDE_CONFIG_DIR", "/opt/bin/codex"]
-        );
-        let claude = [
-            ("CODEX_HOME", None),
-            (
-                "CLAUDE_CONFIG_DIR",
-                Some(std::ffi::OsString::from("/Users/test/claude A")),
-            ),
-        ];
-        assert_eq!(
-            shell_arguments(&without_stale_profiles(command, &claude)),
-            ["/usr/bin/env", "-u", "CODEX_HOME", "/opt/bin/codex"]
-        );
-        let both = [
-            (
-                "CODEX_HOME",
-                Some(std::ffi::OsString::from("/Users/test/codex A")),
-            ),
-            (
-                "CLAUDE_CONFIG_DIR",
-                Some(std::ffi::OsString::from("/Users/test/claude A")),
-            ),
-        ];
-        assert_eq!(without_stale_profiles(command, &both), command);
     }
 
     fn assert_codex_user_permissions_preserved(arguments: &[String]) {
@@ -5401,7 +5744,7 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_startup_loads_the_complete_skill_as_one_prompt() {
+    fn orchestrator_startup_points_at_the_installed_skill_and_stays_small() {
         let context = Path::new("/Users/test/RiWork's State/orchestrator");
         let state_home = context.parent().unwrap();
         let skill = context.join(".agents/skills/riwork-orchestrator/SKILL.md");
@@ -5417,6 +5760,10 @@ mod tests {
             "global-orchestrator-pane",
             None,
         );
+        // tmux refuses a command line of about 16 KB. The skill used to be inlined,
+        // which left little room to grow; the launch must not depend on its size.
+        assert!(command.len() < 4 * 1024, "{} bytes", command.len());
+        assert!(!command.contains(ORCHESTRATOR_SKILL.lines().nth(5).unwrap()));
         let arguments = shell_arguments(&command);
         assert_eq!(arguments[0], "/opt/bin/codex");
         assert_eq!(arguments[1], "--cd");
@@ -5426,13 +5773,20 @@ mod tests {
         assert_codex_shell_environment(&arguments, state_home, "global-orchestrator-pane");
         let prompt = arguments.last().unwrap();
         assert!(prompt.starts_with("$riwork-orchestrator\n"));
-        assert!(prompt.contains(ORCHESTRATOR_SKILL));
+        assert!(!prompt.contains(ORCHESTRATOR_SKILL));
+        assert!(!prompt.contains("<riwork-orchestrator-skill>"));
+        assert!(prompt.contains("read its installed SKILL.md in full"));
         assert!(prompt.contains(CUA_GUIDANCE));
         assert!(prompt.contains("wait for the user's objective"));
         assert!(prompt.contains(&quote_arg(&skill.to_string_lossy())));
         assert!(prompt.contains(&quote_arg(&executable.to_string_lossy())));
         assert!(prompt.contains("Scope: global."));
         assert!(prompt.contains("You have no project or worktree ownership."));
+        // A pane that is already running receives the skill itself, by paste.
+        let pasted = orchestrator_prompt(&skill, executable, None, None, true);
+        assert!(pasted.contains(ORCHESTRATOR_SKILL));
+        assert!(pasted.contains("<riwork-orchestrator-skill>"));
+        assert!(pasted.contains(CUA_GUIDANCE));
     }
 
     fn scope_session(kind: ShellKind, project_id: Option<&str>) -> ShellSession {
@@ -5551,7 +5905,8 @@ mod tests {
                 "Your isolated orchestration context is not the project's repository root."
             )
         );
-        assert!(prompt.contains(ORCHESTRATOR_SKILL));
+        assert!(prompt.contains(&quote_arg(&skill.to_string_lossy())));
+        assert!(!prompt.contains(ORCHESTRATOR_SKILL));
         assert_eq!(
             orchestrator_environment(Some(alpha)),
             [
@@ -5586,6 +5941,604 @@ mod tests {
                 custom
             ]
         );
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let path = env::temp_dir().join(format!("riwork-{name}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        path.canonicalize().unwrap()
+    }
+
+    #[cfg(unix)]
+    fn executable_script(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn contains_sequence(arguments: &[String], sequence: &[&str]) -> bool {
+        arguments.windows(sequence.len()).any(|window| {
+            window
+                .iter()
+                .map(String::as_str)
+                .eq(sequence.iter().copied())
+        })
+    }
+
+    #[test]
+    fn tmux_arguments_escape_a_trailing_semicolon_and_directories_escape_hashes() {
+        for (argument, sent) in [
+            ("plain", "plain"),
+            ("x;", "x\\;"),
+            (";", "\\;"),
+            ("x\\;", "x\\\\;"),
+            ("a;b", "a;b"),
+            ("find . -exec ls {} \\;", "find . -exec ls {} \\\\;"),
+            ("ends with hash#", "ends with hash#"),
+        ] {
+            assert_eq!(tmux_argument(argument), sent, "{argument}");
+        }
+        for (path, sent) in [
+            ("/dev/C#Tools", "/dev/C##Tools"),
+            ("/dev/#{pane_id}", "/dev/##{pane_id}"),
+            ("/dev/##", "/dev/####"),
+            ("/dev/none", "/dev/none"),
+        ] {
+            assert_eq!(tmux_directory(path), sent);
+        }
+        // A directory's escapes compose: `#` first, then the trailing `;`.
+        assert_eq!(tmux_argument(&tmux_directory("/dev/#T;")), "/dev/##T\\;");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_missing_server_counts_as_no_tmux_server() {
+        use std::os::unix::process::ExitStatusExt;
+        let failed = |stderr: &str| Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        };
+        for stderr in [
+            "no server running on /private/tmp/tmux-501/riwork-0\n",
+            "error connecting to /private/tmp/tmux-501/riwork-0 (No such file or directory)\n",
+        ] {
+            assert!(no_tmux_server(&failed(stderr)), "{stderr}");
+        }
+        for stderr in [
+            "error connecting to /very/long/path/tmux-501/riwork-0 (File name too long)\n",
+            "error connecting to /private/tmp/tmux-501/riwork-0 (Permission denied)\n",
+            "protocol version mismatch (client 8, server 7)\n",
+            "",
+        ] {
+            assert!(!no_tmux_server(&failed(stderr)), "{stderr}");
+        }
+    }
+
+    #[test]
+    fn tmux_calls_are_named_after_the_last_chained_command() {
+        assert_eq!(
+            tmux_label(&["list-sessions", "-F", "#{session_name}"]),
+            "tmux list-sessions"
+        );
+        assert_eq!(
+            tmux_label(&[
+                "start-server",
+                ";",
+                "set-option",
+                "-g",
+                "x",
+                "1",
+                ";",
+                "new-session",
+                "-d"
+            ]),
+            "tmux new-session"
+        );
+        assert_eq!(tmux_label(&[]), "tmux ");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_state_directory_is_owner_only_and_an_existing_one_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        if find_tmux().is_none() {
+            return;
+        }
+        let root = scratch("private-state");
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let fresh = root.join("parent/state");
+        SessionManager::at(fresh.clone()).unwrap();
+        assert_eq!(mode(&fresh), 0o700);
+        let existing = root.join("shared");
+        fs::create_dir(&existing).unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+        SessionManager::at(existing.clone()).unwrap();
+        assert_eq!(mode(&existing), 0o755);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn harness_discovery_runs_the_path_entry_not_what_it_resolves_to() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = scratch("harness-discovery");
+        let shims = root.join("riwork-shims");
+        fs::create_dir(&shims).unwrap();
+        let directory = |name: &str| {
+            let path = root.join(name);
+            fs::create_dir(&path).unwrap();
+            path
+        };
+        // mise and Volta install `shims/codex -> mise` and choose the program
+        // by the name they are started under.
+        let mise_shims = directory("mise-shims");
+        let mise = root.join("mise");
+        executable_script(&mise, "basename \"$0\"");
+        symlink(&mise, mise_shims.join("codex")).unwrap();
+        let found =
+            find_harness_program_in(HarnessKind::Codex, &shims, [mise_shims.clone()]).unwrap();
+        assert_eq!(found, mise_shims.join("codex"));
+        assert_ne!(found.canonicalize().unwrap(), found);
+        let output = Command::new(&found).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "codex\n");
+
+        // Without the executable bit, a file is skipped in favour of a later one.
+        let plain = directory("not-executable");
+        fs::write(plain.join("codex"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(plain.join("codex"), fs::Permissions::from_mode(0o644)).unwrap();
+        let real = directory("real");
+        executable_script(&real.join("codex"), "exit 0");
+        assert_eq!(
+            find_harness_program_in(HarnessKind::Codex, &shims, [plain.clone(), real.clone()]),
+            Some(real.join("codex"))
+        );
+
+        // A directory, a link to RiWork's own launcher and another state
+        // directory's launcher are not the CLI.
+        let folder = directory("folder");
+        fs::create_dir(folder.join("codex")).unwrap();
+        executable_script(&shims.join("codex"), "# RiWork Cua harness shim");
+        let linked = directory("linked");
+        symlink(shims.join("codex"), linked.join("codex")).unwrap();
+        let foreign = directory("foreign");
+        executable_script(&foreign.join("codex"), "# RiWork Cua harness shim\nexit 1");
+        assert_eq!(
+            find_harness_program_in(
+                HarnessKind::Codex,
+                &shims,
+                [folder, linked, foreign, root.join("missing"), real.clone()]
+            ),
+            Some(real.join("codex"))
+        );
+        assert_eq!(
+            find_harness_program_in(HarnessKind::Codex, &shims, [root.join("missing")]),
+            None
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_login_shell_is_asked_only_when_the_usual_directories_find_nothing() {
+        let root = scratch("login-fallback");
+        let shims = root.join("riwork-shims");
+        let usual = root.join("usual");
+        let nvm = root.join("nvm/bin");
+        for directory in [&shims, &usual, &nvm] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        executable_script(&nvm.join("claude"), "exit 0");
+        let asked = std::cell::Cell::new(0);
+        let login = || {
+            asked.set(asked.get() + 1);
+            vec![nvm.clone()]
+        };
+        // Found where the app already looks: the shell is never started.
+        executable_script(&usual.join("codex"), "exit 0");
+        assert_eq!(
+            find_harness_program_via(HarnessKind::Codex, &shims, vec![usual.clone()], login),
+            Some(usual.join("codex"))
+        );
+        assert_eq!(asked.get(), 0);
+        // A CLI that only the login shell's PATH holds is found there.
+        assert_eq!(
+            find_harness_program_via(HarnessKind::Claude, &shims, vec![usual.clone()], login),
+            Some(nvm.join("claude"))
+        );
+        assert_eq!(asked.get(), 1);
+        assert_eq!(
+            find_harness_program_via(HarnessKind::Grok, &shims, vec![usual], login),
+            None
+        );
+        assert_eq!(asked.get(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_path_takes_the_value_between_markers() {
+        let root = scratch("login-path");
+        let shell = root.join("fake-shell");
+        // Chatty startup files, the command line echoed, and output after it.
+        executable_script(
+            &shell,
+            "echo 'welcome to my shell'\n\
+             [ \"$1 $2 $3\" = '-l -i -c' ] || { echo \"unexpected flags: $*\" >&2; exit 2; }\n\
+             echo \"$4\"\n\
+             PATH=\"/opt/nvm/bin:/opt/pnpm:$PATH\"\n\
+             eval \"$4\"\n\
+             echo 'trailing noise'",
+        );
+        let path = login_shell_path(&shell, Duration::from_secs(10)).unwrap();
+        let path = path.to_string_lossy();
+        assert!(path.starts_with("/opt/nvm/bin:/opt/pnpm:"), "{path}");
+        assert!(
+            !path.contains("noise") && !path.contains("__RIWORK_PATH_"),
+            "{path}"
+        );
+
+        // A daemon that the startup files leave running holds the shell's
+        // output open, and must not hide what the shell printed.
+        executable_script(
+            &shell,
+            "PATH=/opt/late:$PATH\neval \"$4\"\n(sleep 2 &)\necho later noise",
+        );
+        let path = login_shell_path(&shell, Duration::from_secs(10)).unwrap();
+        assert!(path.to_string_lossy().starts_with("/opt/late:"), "{path:?}");
+
+        // Failures are ignored, and a shell that hangs is stopped.
+        executable_script(&shell, "exit 3");
+        assert_eq!(login_shell_path(&shell, Duration::from_secs(10)), None);
+        executable_script(&shell, "exec sleep 30");
+        let started = std::time::Instant::now();
+        assert_eq!(login_shell_path(&shell, Duration::from_millis(300)), None);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            login_shell_path(&root.join("missing"), Duration::from_secs(1)),
+            None
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Runs the real zsh the way RiWork does: no terminal, login, interactive.
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_path_reads_a_real_zsh_startup_without_a_terminal() {
+        const NAME: &str = "login_shell_path_reads_a_real_zsh_startup_without_a_terminal";
+        if !Path::new("/bin/zsh").exists() {
+            return;
+        }
+        let Some(home) = env::var_os("RIWORK_TEST_ZSH_HOME") else {
+            let home = scratch("real-zsh");
+            fs::write(
+                home.join(".zshrc"),
+                "echo 'rc noise'\nexport PATH=\"/opt/fake-nvm/bin:$PATH\"\n",
+            )
+            .unwrap();
+            let output = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("sessions::tests::{NAME}"),
+                    "--nocapture",
+                ])
+                .env("RIWORK_TEST_ZSH_HOME", &home)
+                .env("HOME", &home)
+                .env_remove("ZDOTDIR")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            fs::remove_dir_all(home).unwrap();
+            return;
+        };
+        let _ = home;
+        let path = login_shell_path(Path::new("/bin/zsh"), Duration::from_secs(30)).unwrap();
+        let path = path.to_string_lossy();
+        assert!(path.starts_with("/opt/fake-nvm/bin:"), "{path}");
+        assert!(!path.contains("noise"), "{path}");
+    }
+
+    #[test]
+    fn harness_path_lists_shims_then_the_login_shell_then_this_process() {
+        let shim = Path::new("/state/cua/harness-bin");
+        let login = [
+            PathBuf::from("/Users/me/.nvm/versions/node/v22/bin"),
+            PathBuf::from("/opt/homebrew/bin"),
+            shim.to_path_buf(),
+        ];
+        let path = path_with_harness_shims(shim, &login).unwrap();
+        let directories: Vec<PathBuf> = env::split_paths(&path).collect();
+        assert_eq!(directories[0], shim);
+        assert_eq!(directories[1], login[0]);
+        assert_eq!(directories[2], login[1]);
+        for once in [shim, Path::new("/opt/homebrew/bin")] {
+            assert_eq!(
+                directories.iter().filter(|d| d.as_path() == once).count(),
+                1
+            );
+        }
+        for directory in executable_dirs() {
+            assert!(directories.contains(&directory), "{}", directory.display());
+        }
+        let without = path_with_harness_shims(shim, &[]).unwrap();
+        assert_eq!(env::split_paths(&without).next().unwrap(), shim);
+    }
+
+    #[test]
+    fn grok_utility_aliases_pass_through() {
+        for argument in ["v", "version", "disk-usage", "du", "--version", "-v"] {
+            assert!(
+                harness_utility_invocation(HarnessKind::Grok, &[argument.to_owned()]),
+                "{argument}"
+            );
+        }
+        // `v` is only Grok's alias for `version`.
+        assert!(!harness_utility_invocation(
+            HarnessKind::Codex,
+            &["v".to_owned()]
+        ));
+        assert!(!harness_utility_invocation(
+            HarnessKind::Claude,
+            &["v".to_owned()]
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grok_agent_install_cleans_up_a_failed_write_and_prunes_old_definitions() {
+        let root = scratch("grok-agent");
+        let executable = Path::new("/Applications/RiWork/riwork");
+        let directory = root.join("cua");
+        let current = grok_agent_path(&root, executable, None);
+        let names = |suffix: &str| -> Vec<String> {
+            fs::read_dir(&directory)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .filter(|name| name.ends_with(suffix))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let install = |write: &dyn Fn(&Path, &str) -> std::io::Result<()>| {
+            ensure_grok_agent_with(&root, executable, None, write, GROK_AGENT_MAX_AGE)
+        };
+
+        // A write that fails after creating the file leaves nothing behind.
+        let error = install(&|path, _| {
+            fs::write(path, "partial")?;
+            Err(std::io::Error::other("no space left"))
+        })
+        .unwrap_err();
+        assert!(error.contains("no space left"), "{error}");
+        assert!(names(".tmp").is_empty(), "{:?}", names(".tmp"));
+        assert!(!current.exists());
+        install(&|path, content| fs::write(path, content)).unwrap();
+        assert!(current.is_file());
+
+        // Definitions nobody launched with for a long time go; others stay.
+        let age = |path: &Path, days: u64| {
+            let modified = SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
+            OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+        let write = |name: &str, days: u64| {
+            let path = directory.join(name);
+            fs::write(&path, "x").unwrap();
+            age(&path, days);
+            path
+        };
+        let old = write("grok-agent-0000000000000001.md", 90);
+        let stale_temporary = write("grok-agent-abandoned.tmp", 90);
+        let recent = write("grok-agent-0000000000000002.md", 2);
+        let unrelated = write("notes.md", 90);
+        let other_kind = write("grok-agent-0000000000000003.json", 90);
+        age(&current, 90);
+        install(&|path, content| fs::write(path, content)).unwrap();
+        assert!(!old.exists() && !stale_temporary.exists());
+        assert!(recent.exists() && unrelated.exists() && other_kind.exists());
+        // The definition in use is never pruned, and its use refreshes it.
+        assert!(current.is_file());
+        let age_of_current = SystemTime::now()
+            .duration_since(fs::metadata(&current).unwrap().modified().unwrap())
+            .unwrap();
+        assert!(
+            age_of_current < Duration::from_secs(60 * 60),
+            "{age_of_current:?}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A launch with a stale server environment, a custom driver and awkward
+    /// names, as tmux would receive it. Nothing is started: tmux is a recorder.
+    #[test]
+    #[cfg(unix)]
+    fn a_launch_clears_stale_server_variables_and_escapes_what_tmux_would_reread() {
+        const NAME: &str =
+            "a_launch_clears_stale_server_variables_and_escapes_what_tmux_would_reread";
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child_with(
+            NAME,
+            &[
+                ("CLAUDE_CONFIG_DIR", None),
+                ("GROK_HOME", Some("/Users/test/grok home;")),
+            ],
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-a");
+        let (manager, capture) = recording_launcher(&fixture, &state);
+        executable_script(&fixture.0.join("bin/claude"), "exit 0");
+        let project = Uuid::new_v4().to_string();
+        let awkward = fixture.0.join("C#Tools;");
+        fs::create_dir(&awkward).unwrap();
+        let driver = fixture
+            .0
+            .join("fake-cua-driver")
+            .to_string_lossy()
+            .into_owned();
+
+        // A plain shell and a custom command are cleared like a harness is.
+        for command in [None, Some("sleep 60;".to_owned())] {
+            let session = manager
+                .create(project.clone(), None, awkward.clone(), command.clone())
+                .unwrap();
+            assert_eq!(session.command, command);
+            let arguments = take_recorded(&capture);
+            // One invocation clears the variables and then creates the session.
+            assert!(contains_sequence(
+                &arguments,
+                &["start-server", ";", "set-environment"]
+            ));
+            for stale in ["CLAUDE_CONFIG_DIR", "CODEX_HOME"] {
+                assert!(
+                    contains_sequence(&arguments, &[";", "set-environment", "-gu", stale]),
+                    "{stale}: {arguments:?}"
+                );
+            }
+            // GROK_HOME and RIWORK_CUA_DRIVER are set for this launch.
+            for kept in ["GROK_HOME", "RIWORK_CUA_DRIVER"] {
+                assert!(
+                    !contains_sequence(&arguments, &[";", "set-environment", "-gu", kept]),
+                    "{kept}: {arguments:?}"
+                );
+            }
+            assert!(contains_sequence(
+                &arguments,
+                &[
+                    ";",
+                    "set-option",
+                    "-g",
+                    "history-limit",
+                    "100000",
+                    ";",
+                    "new-session"
+                ]
+            ));
+            // `#` is doubled in the directory, and a trailing `;` is escaped in
+            // every argument that has one.
+            let cwd = format!("{}/C##Tools\\;", fixture.0.display());
+            assert!(
+                contains_sequence(&arguments, &["-c", &cwd]),
+                "{arguments:?}"
+            );
+            assert!(contains_sequence(
+                &arguments,
+                &["-e", "GROK_HOME=/Users/test/grok home\\;"]
+            ));
+            assert!(contains_sequence(
+                &arguments,
+                &["-e", &format!("RIWORK_CUA_DRIVER={driver}")]
+            ));
+            if command.is_some() {
+                assert!(arguments.iter().any(|argument| argument == "sleep 60\\;"));
+            }
+        }
+
+        // The user's own startup files must still decide these variables, so no
+        // `env -u` runs after them.
+        let session = manager
+            .create_harness(project, None, awkward, HarnessKind::Claude, false)
+            .unwrap();
+        let command = session.command.unwrap();
+        assert!(!command.contains("/usr/bin/env"), "{command}");
+        let arguments = take_recorded(&capture);
+        assert!(contains_sequence(
+            &arguments,
+            &[";", "set-environment", "-gu", "CLAUDE_CONFIG_DIR"]
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_launch_without_a_custom_driver_clears_the_servers_copy() {
+        const NAME: &str = "a_launch_without_a_custom_driver_clears_the_servers_copy";
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child_with(NAME, &[("RIWORK_CUA_DRIVER", None)]) {
+            return;
+        }
+        let state = fixture.selected("account-a");
+        let (manager, capture) = recording_launcher(&fixture, &state);
+        manager
+            .create(
+                Uuid::new_v4().to_string(),
+                None,
+                fixture.0.clone(),
+                Some("sleep 60".into()),
+            )
+            .unwrap();
+        let arguments = take_recorded(&capture);
+        assert!(contains_sequence(
+            &arguments,
+            &[";", "set-environment", "-gu", "RIWORK_CUA_DRIVER"]
+        ));
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.starts_with("RIWORK_CUA_DRIVER=")),
+            "{arguments:?}"
+        );
+    }
+
+    /// `RIWORK_HOME=` used to make the session manager (but not the store)
+    /// create its state in the working directory.
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_riwork_home_means_the_default_state_directory_everywhere() {
+        use std::os::unix::fs::PermissionsExt;
+        const NAME: &str = "an_empty_riwork_home_means_the_default_state_directory_everywhere";
+        if find_tmux().is_none() {
+            return;
+        }
+        let Some(home) = env::var_os("RIWORK_TEST_EMPTY_HOME") else {
+            let home = scratch("empty-riwork-home");
+            let output = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("sessions::tests::{NAME}"),
+                    "--nocapture",
+                ])
+                .env("RIWORK_TEST_EMPTY_HOME", &home)
+                .env("HOME", &home)
+                .env("RIWORK_HOME", "")
+                .current_dir(&home)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            // Nothing landed in the working directory.
+            let names: Vec<_> = fs::read_dir(&home)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, [".local"], "{names:?}");
+            fs::remove_dir_all(home).unwrap();
+            return;
+        };
+        let expected = PathBuf::from(home).join(".local/share/riwork");
+        let manager = SessionManager::open_default().unwrap();
+        assert_eq!(manager.state_home(), expected.canonicalize().unwrap());
+        assert_eq!(
+            fs::metadata(&expected).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        crate::cua::CuaManager::open_default().unwrap();
+        assert!(crate::layouts::LayoutStore::open_default().is_ok());
     }
 }
 

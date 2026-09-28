@@ -579,6 +579,7 @@ struct WorkspaceStartup {
 
 impl WorkspaceStartup {
     fn prepare(startup_path: Option<PathBuf>, fallback_cwd: PathBuf) -> Result<Self, String> {
+        sessions::prefetch_login_shell_dirs();
         Self::resolve(
             Store::open_default()?,
             LayoutStore::open_default()?,

@@ -371,10 +371,7 @@ fn managed_home(user_data: &Path, id: &str) -> Result<PathBuf, String> {
 }
 
 fn default_state_home() -> Result<PathBuf, String> {
-    match env::var_os("RIWORK_HOME") {
-        Some(home) => Ok(PathBuf::from(home)),
-        None => Ok(user_home()?.join(".local/share/riwork")),
-    }
+    crate::paths::riwork_home()
 }
 
 fn user_home() -> Result<PathBuf, String> {

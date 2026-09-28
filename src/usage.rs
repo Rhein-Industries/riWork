@@ -373,13 +373,7 @@ fn codex_account_label(value: &Value) -> Option<String> {
 }
 
 fn usage_home() -> Result<PathBuf, String> {
-    match env::var_os("RIWORK_HOME") {
-        Some(home) => Ok(PathBuf::from(home)),
-        None => Ok(
-            PathBuf::from(env::var_os("HOME").ok_or("HOME is unset; set RIWORK_HOME")?)
-                .join(".local/share/riwork"),
-        ),
-    }
+    crate::paths::riwork_home()
 }
 
 fn cache_path(home: &Path, shell_id: &str) -> Result<PathBuf, String> {
