@@ -370,3 +370,95 @@ fn pruning_never_waits_for_the_registry_lock_and_tolerates_tmux_failure() {
     assert!(fixture.manager.close(dead_editor).is_err());
     assert_eq!(fixture.manager.read_registry().unwrap().sessions.len(), 1);
 }
+
+/// A plain shell keeps the Codex label of its last `codex` launch, since the
+/// launcher execs Codex and nothing runs afterwards to clear it. A listing
+/// reports the label only while something else than the shell owns the pane.
+#[cfg(unix)]
+#[test]
+fn list_hides_the_codex_label_of_a_plain_shell_that_is_back_at_its_prompt() {
+    let ids: Vec<String> = (1..=6)
+        .map(|n| format!("00000000-0000-4000-8000-0000000000d{n}"))
+        .collect();
+    let [plain, running, wrapped, tab, claude, other] = &ids[..] else {
+        unreachable!()
+    };
+    let fixture = Fixture::new(|root| {
+        let tmux = root.join("fake-tmux");
+        let names: String = ids.iter().map(|id| format!("{id}\\n")).collect();
+        let panes = root.join("panes");
+        Fixture::script(
+            &tmux,
+            &format!(
+                "shift 4\ncase \"$1\" in\n  list-sessions) printf '{names}' ;;\n  show-options) echo /bin/sh ;;\n  list-panes) cat {} || exit 1 ;;\nesac",
+                quote_arg(&panes.to_string_lossy())
+            ),
+        );
+        tmux
+    });
+    let account = fixture.root.join("codex-a");
+    let labelled = |id: &str, harness: &str, command: Option<&str>| {
+        let mut session = shell(id, Some(harness), None);
+        session.command = command.map(str::to_owned);
+        session.unrestricted = harness == "codex";
+        session.codex_account_id = Some("account-a".into());
+        session.codex_account_label = Some("A".into());
+        session.codex_account_email = Some("a@example.test".into());
+        session.codex_home = Some(account.clone());
+        session
+    };
+    fixture.registry(vec![
+        labelled(plain, "codex", None),
+        labelled(running, "codex", None),
+        labelled(wrapped, "codex", None),
+        // A Codex tab or orchestrator is Codex whatever its pane shows.
+        labelled(tab, "codex", Some("exec codex")),
+        labelled(claude, "claude", None),
+        labelled(other, "codex", None),
+    ]);
+    let panes = |commands: [&str; 6]| {
+        let lines: String = ids
+            .iter()
+            .zip(commands)
+            .map(|(id, command)| format!("{id}\t0\t0\t{command}\n"))
+            .collect();
+        fs::write(fixture.root.join("panes"), lines).unwrap();
+    };
+    let has_label = |session: &ShellSession| {
+        session.harness.is_some()
+            || session.codex_home.is_some()
+            || session.codex_account_id.is_some()
+            || session.codex_account_label.is_some()
+            || session.codex_account_email.is_some()
+    };
+    let listed = |fixture: &Fixture| -> Vec<ShellSession> { fixture.manager.list().unwrap() };
+
+    // The first pane is idle at `sh`; a login shell may carry a leading dash.
+    panes(["sh", "codex", "node", "sh", "sh", "vim"]);
+    let sessions = listed(&fixture);
+    assert!(!has_label(&sessions[0]), "{:?}", sessions[0]);
+    assert!(!sessions[0].unrestricted);
+    assert!(sessions[0].alive);
+    for kept in &sessions[1..] {
+        assert!(has_label(kept), "{}", kept.id);
+    }
+    assert!(sessions[1].unrestricted && sessions[3].unrestricted);
+    // Only the listing changes: the saved row and `get` keep the account, so a
+    // `codex resume` typed in the idle shell finds it.
+    let saved = fixture.manager.read_registry().unwrap().sessions;
+    assert_eq!(saved[0].harness, Some(HarnessKind::Codex));
+    assert_eq!(saved[0].codex_home.as_ref(), Some(&account));
+    let got = fixture.manager.get(plain).unwrap();
+    assert_eq!(got.harness, Some(HarnessKind::Codex));
+    assert_eq!(got.codex_home.as_ref(), Some(&account));
+
+    // Starting Codex brings the label back; a dashed shell name is still idle.
+    panes(["codex", "-sh", "codex", "codex", "codex", "codex"]);
+    let sessions = listed(&fixture);
+    assert!(has_label(&sessions[0]));
+    assert!(!has_label(&sessions[1]));
+
+    // A tmux that cannot answer is not evidence that Codex exited.
+    fs::remove_file(fixture.root.join("panes")).unwrap();
+    assert!(listed(&fixture).iter().all(has_label));
+}

@@ -654,12 +654,20 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         }
     } else {
         let manager = SessionManager::open_default()?;
-        let settings = crate::settings::SettingsStore::open_default()?.load()?;
-        let binding = crate::codex_accounts::resolve_launch_binding(
-            manager.state_home(),
-            settings.selected_codex_account.as_deref(),
-        )?;
-        crate::usage::read_codex_usage_at(&binding.home)?
+        // A RiWork shell reports its own account, not the app-wide choice. The
+        // listing drops the account of a plain shell that is not running Codex.
+        let shell = match env::var("RIWORK_SHELL_ID") {
+            Ok(id) if !id.is_empty() => Some(
+                manager
+                    .list()?
+                    .into_iter()
+                    .find(|shell| shell.id == id)
+                    .ok_or_else(|| format!("unknown shell {id}"))?,
+            ),
+            _ => None,
+        };
+        let home = scoped_codex_usage_home(manager.state_home(), shell.as_ref())?;
+        crate::usage::read_codex_usage_at(&home)?
     };
     if json {
         print_json(&usage)?;
@@ -703,6 +711,29 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The account `riwork usage` reports without `--shell`: the calling shell's
+/// own frozen home, else its project's choice, else the app-wide choice.
+fn scoped_codex_usage_home(
+    state_home: &Path,
+    shell: Option<&ShellSession>,
+) -> Result<PathBuf, String> {
+    if let Some(shell) = shell {
+        if shell.codex_home.is_some() {
+            return frozen_codex_usage_home(shell).map(Path::to_path_buf);
+        }
+        if let Some(project_id) = shell.project_id.as_deref() {
+            return crate::codex_accounts::resolve_project_launch_binding(state_home, project_id)
+                .map(|binding| binding.home);
+        }
+    }
+    let settings = crate::settings::SettingsStore::open(state_home)?.load()?;
+    crate::codex_accounts::resolve_launch_binding(
+        state_home,
+        settings.selected_codex_account.as_deref(),
+    )
+    .map(|binding| binding.home)
 }
 
 /// Grok quota is only available through its own `grok usage` command.
@@ -1909,7 +1940,8 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 mod tests {
     use super::{
         agent_hook_command, frozen_codex_usage_home, grok_usage_unknown, opens_workspace,
-        take_orchestrator_project, take_update_profile, unknown_invocation,
+        scoped_codex_usage_home, take_orchestrator_project, take_update_profile,
+        unknown_invocation,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
@@ -2018,6 +2050,69 @@ mod tests {
                 .unwrap_err()
                 .contains("unavailable")
         );
+    }
+
+    #[test]
+    fn usage_without_a_shell_flag_reports_the_calling_shells_account() {
+        use crate::store::ProjectCodexAccount;
+        let home = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("riwork-cli-usage-scope-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join("project")).unwrap();
+        std::fs::create_dir_all(home.join("frozen")).unwrap();
+        let store = Store::open(home.clone()).unwrap();
+        let project = store
+            .add_project(home.join("project"), Some("Scoped"))
+            .unwrap();
+        // The app-wide choice cannot be resolved, so any answer that does not
+        // fail proves it was not consulted.
+        crate::settings::SettingsStore::open(&home)
+            .unwrap()
+            .update(|settings| settings.selected_codex_account = Some("app-account".into()))
+            .unwrap();
+        let shell =
+            |project_id: Option<&str>, codex_home: Option<&std::path::Path>| -> ShellSession {
+                serde_json::from_value(serde_json::json!({
+                    "id":"fixture-shell", "project_id":project_id, "worktree_id":null,
+                    "kind":"project", "cwd":"/", "command":null, "codex_home":codex_home,
+                    "created_at_unix":1
+                }))
+                .unwrap()
+            };
+        let system = crate::codex_accounts::default_codex_home().unwrap();
+
+        // No shell, or one outside any project: the app choice (unavailable here).
+        assert!(scoped_codex_usage_home(&home, None).is_err());
+        assert!(scoped_codex_usage_home(&home, Some(&shell(None, None))).is_err());
+        // A project that inherits follows the app choice, like a launch would.
+        assert!(scoped_codex_usage_home(&home, Some(&shell(Some(&project.id), None))).is_err());
+        // The project's own choice wins over the app's.
+        store
+            .set_project_codex_account(&project.id, ProjectCodexAccount::SystemDefault)
+            .unwrap();
+        assert_eq!(
+            scoped_codex_usage_home(&home, Some(&shell(Some(&project.id), None))).unwrap(),
+            system
+        );
+        // A shell's frozen account is what its Codex actually uses.
+        let frozen = home.join("frozen");
+        assert_eq!(
+            scoped_codex_usage_home(&home, Some(&shell(Some(&project.id), Some(&frozen)))).unwrap(),
+            frozen
+        );
+        assert_eq!(
+            scoped_codex_usage_home(&home, Some(&shell(None, Some(&frozen)))).unwrap(),
+            frozen
+        );
+        // Never another account when the frozen home is gone.
+        std::fs::remove_dir_all(&frozen).unwrap();
+        assert!(
+            scoped_codex_usage_home(&home, Some(&shell(Some(&project.id), Some(&frozen))))
+                .unwrap_err()
+                .contains("unavailable")
+        );
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     fn args(values: &[&str]) -> Vec<String> {

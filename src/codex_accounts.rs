@@ -154,10 +154,10 @@ pub fn resolve_launch_binding(
         });
     };
     if !safe_account_id(selected) {
-        return Err("The selected Codex account is invalid. Choose an account in Settings.".into());
+        return Err("The selected Codex account is invalid. Choose an account in Settings, or in Project Settings if this project sets its own.".into());
     }
     let cache = read_cache(state_home).map_err(|_| {
-        "The selected Codex account is unavailable. Refresh accounts in Settings before launching."
+        "The selected Codex account is unavailable. Refresh accounts in Settings (or Project Settings) before launching."
             .to_owned()
     })?;
     resolve_cached_binding(&cache, selected)
@@ -204,7 +204,7 @@ fn resolve_cached_binding(
         .accounts
         .iter()
         .find(|account| account.id == selected && host_account(account))
-        .ok_or("The selected Codex account was not found. Choose an account in Settings.")?;
+        .ok_or("The selected Codex account was not found. Choose an account in Settings, or in Project Settings if this project sets its own.")?;
     let home = managed_home(&cache.user_data, &account.id)?;
     Ok(CodexAccountBinding {
         id: Some(account.id.clone()),
@@ -496,6 +496,39 @@ fn injected_environment(
     names
 }
 
+/// This process's `CODEX_HOME` when it is the user's own, that is, not a home
+/// RiWork exported into the session that started it.
+pub fn user_codex_home_variable() -> Option<OsString> {
+    let home = env::var_os("CODEX_HOME")?;
+    let injected = injected_environment(
+        Some(&home),
+        env::var_os(PINNED_HOME_VARIABLE).as_deref(),
+        orca_user_data().ok().as_deref(),
+    )
+    .contains(&"CODEX_HOME");
+    (!injected).then_some(home)
+}
+
+/// The Orca-managed account home this process's `CODEX_HOME` points at, if any.
+/// Credential and configuration commands must not run against it: the home
+/// belongs to Orca, which is where its account is managed.
+pub fn managed_codex_home_in_use() -> Option<PathBuf> {
+    managed_home_variable(
+        env::var_os("CODEX_HOME"),
+        env::var_os(PINNED_HOME_VARIABLE),
+        orca_user_data().ok().as_deref(),
+    )
+}
+
+fn managed_home_variable(
+    codex_home: Option<OsString>,
+    pinned_home: Option<OsString>,
+    user_data: Option<&Path>,
+) -> Option<PathBuf> {
+    let home = absolute_path(PathBuf::from(codex_home.filter(|home| !home.is_empty())?)).ok()?;
+    riwork_injected_home(&home, pinned_home.as_deref(), user_data).then_some(home)
+}
+
 fn absolute_path(path: PathBuf) -> Result<PathBuf, String> {
     if path.is_absolute() {
         return Ok(path);
@@ -562,7 +595,7 @@ fn read_cache(state_home: &Path) -> Result<AccountCache, String> {
         || cache.accounts.len() > MAX_ACCOUNTS
     {
         return Err(
-            "Saved accounts belong to a different Orca profile. Refresh accounts in Settings."
+            "Saved accounts belong to a different Orca profile. Refresh accounts in Settings (or Project Settings)."
                 .into(),
         );
     }
@@ -1127,6 +1160,35 @@ mod tests {
         assert_eq!(
             injected_environment(None, None, Some(&profile)),
             ["RIWORK_CODEX_ACCOUNT_HOME", "RIWORK_CODEX_SHELL_ID"]
+        );
+    }
+
+    #[test]
+    fn only_an_orca_managed_home_counts_as_managed_by_orca() {
+        let fixture = Fixture::new();
+        let account = managed(&fixture, "local-1");
+        let profile = fixture.0.join("profile");
+        let own = fixture.0.join("my-codex");
+        let os = |path: &Path| Some(path.as_os_str().to_owned());
+        assert_eq!(
+            managed_home_variable(os(&account), None, Some(&profile)),
+            Some(account.clone())
+        );
+        // Found through the pin even when this process sees another profile.
+        assert_eq!(
+            managed_home_variable(os(&account), os(&account), None),
+            Some(account)
+        );
+        // The user's own home, including one a system-default pane pins.
+        assert_eq!(managed_home_variable(os(&own), None, Some(&profile)), None);
+        assert_eq!(
+            managed_home_variable(os(&own), os(&own), Some(&profile)),
+            None
+        );
+        assert_eq!(managed_home_variable(None, None, Some(&profile)), None);
+        assert_eq!(
+            managed_home_variable(Some("".into()), None, Some(&profile)),
+            None
         );
     }
 
