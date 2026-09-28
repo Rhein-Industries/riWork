@@ -1502,3 +1502,59 @@ fn worktree_creation_runs_git_and_its_hooks_outside_the_store_lock() {
     assert_eq!(recorded[0].id, created.id);
     assert_eq!(recorded[0].branch, "feature");
 }
+
+#[test]
+fn global_and_project_scoped_worktree_lookups_share_one_selector_rule() {
+    let fixture = Fixture::new();
+    let projects: [String; 2] = std::array::from_fn(|_| Uuid::new_v4().to_string());
+    let worktree = |project: &str, branch: &str, directory: &str| {
+        serde_json::json!({
+            "id":Uuid::new_v4().to_string(),"project_id":project,"branch":branch,
+            "path":fixture.directory(directory),"created_at":1
+        })
+    };
+    let state: State = serde_json::from_value(serde_json::json!({
+        "projects":projects.iter().map(|id| serde_json::json!({
+            "id":id,"name":id,"root":fixture.directory(id),"created_at":1
+        })).collect::<Vec<_>>(),
+        "worktrees":[
+            worktree(&projects[0], "main", "a-main"),
+            worktree(&projects[0], "feature", "a-feature"),
+            worktree(&projects[1], "main", "b-main"),
+        ],
+    }))
+    .unwrap();
+    let feature = state.worktree("feature").unwrap().clone();
+    let path = feature.path.to_string_lossy().into_owned();
+    // A path is canonicalized before it is compared, so a `..` detour matches.
+    let detour = format!("{path}/../a-feature");
+    for selector in [
+        feature.id.as_str(),
+        &feature.id[..8],
+        "feature",
+        path.as_str(),
+        detour.as_str(),
+    ] {
+        assert_eq!(
+            state.worktree(selector).unwrap().id,
+            feature.id,
+            "{selector}"
+        );
+        assert_eq!(
+            state
+                .worktree_in_project(&projects[0], selector)
+                .unwrap()
+                .id,
+            feature.id,
+            "{selector}"
+        );
+    }
+    // Both refuse an id prefix that is too short to be a safe abbreviation.
+    let short = &feature.id[..7];
+    assert!(state.worktree(short).is_err());
+    assert!(state.worktree_in_project(&projects[0], short).is_err());
+    // The scoped lookup narrows an ambiguous selector to the caller's project.
+    assert!(state.worktree("main").is_err());
+    let scoped = state.worktree_in_project(&projects[1], "main").unwrap();
+    assert_eq!(scoped.project_id, projects[1]);
+}
