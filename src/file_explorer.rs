@@ -1,29 +1,40 @@
 //! A lazy filesystem browser scoped to the workspace's selected worktree.
 
 use std::{
+    cell::Cell,
     cmp::Ordering,
     collections::{BTreeMap, HashSet},
     fs,
     ops::Range,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use gpui::{
     AnyElement, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, Pixels, Point, Render,
-    ScrollStrategy, StyledText, UTF16Selection, UniformListScrollHandle, Window, canvas, div,
-    prelude::*, px, rgb, uniform_list,
+    EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, MouseButton,
+    MouseMoveEvent, Pixels, Point, Render, ScrollStrategy, StyledText, UTF16Selection,
+    UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb, uniform_list,
 };
 
-use crate::{theme, utf16_to_byte};
+use crate::{
+    file_preview::{self, FileIdentity, PreviewContent},
+    theme, utf16_to_byte,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExplorerRoot {
     pub path: PathBuf,
     pub label: String,
+    pub worktree_id: Option<String>,
 }
 
 pub enum FileExplorerEvent {
+    Edit {
+        root: ExplorerRoot,
+        path: PathBuf,
+        identity: FileIdentity,
+    },
     Open(PathBuf),
     Reveal(PathBuf),
     /// The path is relative to the current worktree root.
@@ -44,6 +55,7 @@ struct Entry {
     name: String,
     kind: EntryKind,
     hidden: bool,
+    identity: Option<FileIdentity>,
 }
 
 /// Compare digit runs by magnitude, without parsing them into a bounded integer.
@@ -110,6 +122,15 @@ fn read_directory(path: &Path) -> Result<Vec<Entry>, String> {
             path: entry.path(),
             hidden: name.starts_with('.'),
             name,
+            identity: file_type
+                .is_file()
+                .then(|| {
+                    entry
+                        .metadata()
+                        .ok()
+                        .map(|metadata| FileIdentity::of(&metadata))
+                })
+                .flatten(),
             kind: if file_type.is_symlink() {
                 EntryKind::Symlink
             } else if file_type.is_dir() {
@@ -175,6 +196,7 @@ struct TreeRow {
     label: String,
     depth: usize,
     kind: RowKind,
+    identity: Option<FileIdentity>,
 }
 
 fn visible_rows(
@@ -225,6 +247,7 @@ fn visible_rows(
             label: entry.name,
             depth,
             kind: RowKind::Entry(entry.kind),
+            identity: entry.identity,
         });
         if entry.kind != EntryKind::Directory
             || (query.is_empty() && !expanded.contains(&entry.path))
@@ -242,6 +265,7 @@ fn visible_rows(
                     } else {
                         RowKind::Status
                     },
+                    identity: None,
                 });
             }
             for child in state.entries.iter().rev() {
@@ -256,22 +280,26 @@ fn visible_rows(
 enum Mode {
     Search,
     Tree,
+    Preview,
     Refresh,
     Hidden,
     RevealRoot,
     Copy,
     Reveal,
+    Edit,
     Open,
 }
 
-const FOCUS_ORDER: [Mode; 8] = [
+const FOCUS_ORDER: [Mode; 10] = [
     Mode::Search,
     Mode::Tree,
+    Mode::Preview,
     Mode::Refresh,
     Mode::Hidden,
     Mode::RevealRoot,
     Mode::Copy,
     Mode::Reveal,
+    Mode::Edit,
     Mode::Open,
 ];
 
@@ -307,8 +335,24 @@ pub struct FileExplorer {
     focus: FocusHandle,
     mode: Mode,
     scroll: UniformListScrollHandle,
+    preview_scroll: UniformListScrollHandle,
+    preview: PreviewState,
+    preview_request: u64,
+    preview_identity: Option<FileIdentity>,
+    preview_kind: Option<EntryKind>,
+    split_ratio: f32,
+    bounds: Rc<Cell<Bounds<Pixels>>>,
+    resizing: bool,
     generation: u64,
     next_request: u64,
+}
+
+#[derive(Clone)]
+enum PreviewState {
+    Empty,
+    Loading,
+    Ready(PreviewContent),
+    Error(String),
 }
 
 impl EventEmitter<FileExplorerEvent> for FileExplorer {}
@@ -327,6 +371,14 @@ impl FileExplorer {
             focus: cx.focus_handle(),
             mode: Mode::Tree,
             scroll: UniformListScrollHandle::new(),
+            preview_scroll: UniformListScrollHandle::new(),
+            preview: PreviewState::Empty,
+            preview_request: 0,
+            preview_identity: None,
+            preview_kind: None,
+            split_ratio: 0.36,
+            bounds: Rc::new(Cell::new(Bounds::default())),
+            resizing: false,
             generation: 0,
             next_request: 0,
         }
@@ -346,6 +398,10 @@ impl FileExplorer {
         self.directories.clear();
         self.expanded.clear();
         self.selected = None;
+        self.preview_request = self.preview_request.wrapping_add(1);
+        self.preview = PreviewState::Empty;
+        self.preview_identity = None;
+        self.preview_kind = None;
         self.filter = FilterInput::default();
         self.scroll = UniformListScrollHandle::new();
         if let Some(root) = &self.root {
@@ -456,11 +512,28 @@ impl FileExplorer {
                 explorer
                     .expanded
                     .retain(|child| !stale.iter().any(|stale| child.starts_with(stale)));
-                explorer.directories.insert(path, state);
+                explorer.directories.insert(path.clone(), state);
                 for path in reload {
                     explorer.load(path, cx);
                 }
-                explorer.ensure_selection();
+                explorer.ensure_selection(cx);
+                if explorer
+                    .selected
+                    .as_ref()
+                    .is_some_and(|selected| selected.parent() == Some(path.as_path()))
+                {
+                    let selected_row = explorer
+                        .rows()
+                        .into_iter()
+                        .find(|row| explorer.selected.as_ref() == Some(&row.path));
+                    if selected_row.as_ref().map(|row| row.identity)
+                        != Some(explorer.preview_identity)
+                        || selected_row.as_ref().map(|row| row.kind)
+                            != explorer.preview_kind.map(RowKind::Entry)
+                    {
+                        explorer.reload_preview(cx);
+                    }
+                }
                 cx.notify();
             });
         })
@@ -482,21 +555,144 @@ impl FileExplorer {
             .unwrap_or_default()
     }
 
-    fn ensure_selection(&mut self) {
+    fn ensure_selection(&mut self, cx: &mut Context<Self>) {
         let rows = self.rows();
         if !rows.iter().any(|row| {
             matches!(row.kind, RowKind::Entry(_)) && Some(&row.path) == self.selected.as_ref()
         }) {
-            self.selected = rows
+            let selected = rows
                 .iter()
                 .find(|row| matches!(row.kind, RowKind::Entry(_)))
-                .map(|row| row.path.clone());
+                .cloned();
+            self.select_row(selected.as_ref(), cx);
         }
+    }
+
+    fn select_row(&mut self, row: Option<&TreeRow>, cx: &mut Context<Self>) {
+        let path = row.map(|row| row.path.clone());
+        if self.selected == path {
+            return;
+        }
+        self.selected = path;
+        self.reload_preview(cx);
+    }
+
+    fn reload_preview(&mut self, cx: &mut Context<Self>) {
+        self.preview_request = self.preview_request.wrapping_add(1);
+        self.preview_scroll = UniformListScrollHandle::new();
+        let request = self.preview_request;
+        self.preview_identity = None;
+        self.preview_kind = None;
+        let Some(root) = &self.root else {
+            self.preview = PreviewState::Empty;
+            cx.notify();
+            return;
+        };
+        let Some(selected) = &self.selected else {
+            self.preview = PreviewState::Empty;
+            cx.notify();
+            return;
+        };
+        let root_path = root.path.clone();
+        let path = selected.clone();
+        let row = self
+            .rows()
+            .into_iter()
+            .find(|row| row.path == path && matches!(row.kind, RowKind::Entry(_)));
+        let Some(row) = row else {
+            self.preview = PreviewState::Empty;
+            cx.notify();
+            return;
+        };
+        self.preview_identity = row.identity;
+        self.preview_kind = match row.kind {
+            RowKind::Entry(kind) => Some(kind),
+            _ => None,
+        };
+        if row.kind != RowKind::Entry(EntryKind::File) {
+            self.preview = PreviewState::Ready(PreviewContent::Message(match row.kind {
+                RowKind::Entry(EntryKind::Directory) => {
+                    "Expand this folder to browse its files.".into()
+                }
+                RowKind::Entry(EntryKind::Symlink) => {
+                    "Symbolic links cannot be previewed. Use Open or Reveal instead.".into()
+                }
+                _ => "This item cannot be previewed.".into(),
+            }));
+            cx.notify();
+            return;
+        }
+        if row.identity.is_none() {
+            self.preview =
+                PreviewState::Error("Cannot verify this file. Refresh and try again.".into());
+            cx.notify();
+            return;
+        }
+        self.preview = PreviewState::Loading;
+        let work = cx
+            .background_executor()
+            .spawn(async move { file_preview::load(&root_path, &path, row.identity) });
+        let selected = selected.clone();
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |explorer, cx| {
+                if explorer.preview_request != request
+                    || explorer.selected.as_ref() != Some(&selected)
+                {
+                    return;
+                }
+                explorer.preview = match result {
+                    Ok(content) => PreviewState::Ready(content),
+                    Err(error) => PreviewState::Error(error),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn pdf_page(&mut self, page: usize, cx: &mut Context<Self>) {
+        let PreviewState::Ready(PreviewContent::Pdf { bytes, pages, .. }) = &self.preview else {
+            return;
+        };
+        if page == 0 || page > *pages {
+            return;
+        }
+        let bytes = bytes.clone();
+        let pages = *pages;
+        self.preview_request = self.preview_request.wrapping_add(1);
+        let request = self.preview_request;
+        let selected = self.selected.clone();
+        self.preview = PreviewState::Loading;
+        let work = cx.background_executor().spawn(async move {
+            file_preview::render_pdf(&bytes, page).map(|(image, _)| (bytes, image))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |explorer, cx| {
+                if explorer.preview_request != request || explorer.selected != selected {
+                    return;
+                }
+                explorer.preview = match result {
+                    Ok((bytes, image)) => PreviewState::Ready(PreviewContent::Pdf {
+                        bytes,
+                        image,
+                        page,
+                        pages,
+                    }),
+                    Err(error) => PreviewState::Error(error),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn toggle(&mut self, path: &Path, cx: &mut Context<Self>) {
         if self.expanded.remove(path) {
-            self.ensure_selection();
+            self.ensure_selection(cx);
         } else {
             self.expanded.insert(path.to_owned());
             if !self.directories.contains_key(path) {
@@ -509,22 +705,43 @@ impl FileExplorer {
     fn activate(&mut self, row: &TreeRow, cx: &mut Context<Self>) {
         match row.kind {
             RowKind::Entry(EntryKind::Directory) => self.toggle(&row.path, cx),
-            RowKind::Entry(_) => cx.emit(FileExplorerEvent::Open(row.path.clone())),
+            RowKind::Entry(_) => self.select_row(Some(row), cx),
             RowKind::Error => self.load(row.path.clone(), cx),
             RowKind::Status => {}
         }
     }
 
+    fn selected_editable(&self) -> Option<(PathBuf, FileIdentity)> {
+        let selected = self.selected.as_ref()?;
+        self.rows()
+            .into_iter()
+            .find(|row| &row.path == selected && row.kind == RowKind::Entry(EntryKind::File))
+            .and_then(|row| row.identity.map(|identity| (row.path, identity)))
+    }
+
     fn action(&mut self, mode: Mode, cx: &mut Context<Self>) {
         match mode {
-            Mode::Refresh => self.refresh(cx),
+            Mode::Refresh => {
+                self.refresh(cx);
+                self.reload_preview(cx);
+            }
             Mode::Hidden => {
                 self.show_hidden = !self.show_hidden;
-                self.ensure_selection();
+                self.ensure_selection(cx);
             }
             Mode::RevealRoot => {
                 if let Some(root) = &self.root {
                     cx.emit(FileExplorerEvent::Reveal(root.path.clone()));
+                }
+            }
+            Mode::Edit => {
+                if let (Some(root), Some((path, identity))) = (&self.root, self.selected_editable())
+                {
+                    cx.emit(FileExplorerEvent::Edit {
+                        root: root.clone(),
+                        path,
+                        identity,
+                    });
                 }
             }
             Mode::Open | Mode::Reveal | Mode::Copy => {
@@ -559,6 +776,10 @@ impl FileExplorer {
             self.refresh(cx);
         } else if platform && key == "." {
             self.action(Mode::Hidden, cx);
+        } else if platform && key == "o" && self.mode != Mode::Search {
+            self.action(Mode::Open, cx);
+        } else if platform && key == "e" && self.mode != Mode::Search {
+            self.action(Mode::Edit, cx);
         } else if key == "tab" {
             let index = FOCUS_ORDER
                 .iter()
@@ -573,11 +794,11 @@ impl FileExplorer {
         } else if key == "escape" && self.mode == Mode::Search {
             self.filter = FilterInput::default();
             self.mode = Mode::Tree;
-            self.ensure_selection();
+            self.ensure_selection(cx);
         } else if self.mode == Mode::Search {
             if key == "enter" || key == "down" {
                 self.mode = Mode::Tree;
-                self.ensure_selection();
+                self.ensure_selection(cx);
             } else if platform && key == "a" {
                 self.filter.selection = 0..self.filter.text.len();
             } else if platform && (key == "c" || key == "x") {
@@ -586,12 +807,12 @@ impl FileExplorer {
                 ));
                 if key == "x" {
                     self.filter.replace(None, "");
-                    self.ensure_selection();
+                    self.ensure_selection(cx);
                 }
             } else if platform && key == "v" {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     self.filter.replace(None, &text);
-                    self.ensure_selection();
+                    self.ensure_selection(cx);
                 }
             } else if key == "backspace" || key == "delete" {
                 if self.filter.selection.is_empty() {
@@ -612,7 +833,7 @@ impl FileExplorer {
                     };
                 }
                 self.filter.replace(None, "");
-                self.ensure_selection();
+                self.ensure_selection(cx);
             } else if matches!(key, "left" | "right" | "home" | "end") {
                 let cursor = self.filter.selection.end;
                 let offset = match key {
@@ -655,13 +876,17 @@ impl FileExplorer {
                         "home" => 0,
                         _ => navigable.len() - 1,
                     };
-                    self.selected = Some(navigable[index].1.path.clone());
+                    self.select_row(Some(navigable[index].1), cx);
                     self.scroll
                         .scroll_to_item(navigable[index].0, ScrollStrategy::Nearest);
                 }
                 "enter" | "space" => {
                     if let Some((_, row)) = navigable.get(index) {
-                        self.activate(row, cx);
+                        if key == "enter" && row.kind == RowKind::Entry(EntryKind::File) {
+                            self.action(Mode::Edit, cx);
+                        } else {
+                            self.activate(row, cx);
+                        }
                     }
                 }
                 "right" => {
@@ -673,7 +898,7 @@ impl FileExplorer {
                                 .get(index + 1)
                                 .filter(|(_, child)| child.depth > row.depth)
                             {
-                                self.selected = Some(child.path.clone());
+                                self.select_row(Some(child), cx);
                                 self.scroll
                                     .scroll_to_item(*row_index, ScrollStrategy::Nearest);
                             }
@@ -689,12 +914,27 @@ impl FileExplorer {
                             .parent()
                             .filter(|parent| navigable.iter().any(|(_, row)| row.path == *parent))
                         {
-                            self.selected = Some(parent.to_owned());
+                            let parent_row = navigable
+                                .iter()
+                                .find(|(_, row)| row.path == parent)
+                                .map(|(_, row)| *row);
+                            self.select_row(parent_row, cx);
                         }
                     }
                 }
                 "c" if platform => self.action(Mode::Copy, cx),
                 _ => return,
+            }
+        } else if self.mode == Mode::Preview && matches!(key, "left" | "right") {
+            if let PreviewState::Ready(PreviewContent::Pdf { page, .. }) = &self.preview {
+                self.pdf_page(
+                    if key == "left" {
+                        page.saturating_sub(1)
+                    } else {
+                        page + 1
+                    },
+                    cx,
+                );
             }
         } else if key == "enter" || key == "space" {
             self.action(self.mode, cx);
@@ -716,6 +956,7 @@ impl FileExplorer {
         let colors = theme::palette(cx);
         let active = self.focus.is_focused(window) && self.mode == mode;
         let available = match mode {
+            Mode::Edit => self.selected_editable().is_some(),
             Mode::Copy | Mode::Reveal | Mode::Open => self.selected.is_some(),
             _ => self.root.is_some(),
         };
@@ -890,13 +1131,268 @@ impl FileExplorer {
                     .text_color(rgb(colors.muted))
                     .child("LINK")
             }))
-            .on_click(cx.listener(move |view, _, window, cx| {
+            .on_click(cx.listener(move |view, event, window, cx| {
                 view.mode = Mode::Tree;
                 view.focus.focus(window, cx);
                 if matches!(clicked_row.kind, RowKind::Entry(_)) {
-                    view.selected = Some(clicked_row.path.clone());
+                    view.select_row(Some(&clicked_row), cx);
                 }
                 view.activate(&clicked_row, cx);
+                if matches!(event, gpui::ClickEvent::Mouse(mouse) if mouse.up.click_count == 2)
+                    && clicked_row.kind == RowKind::Entry(EntryKind::File)
+                {
+                    view.action(Mode::Edit, cx);
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    fn preview_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
+        let title = self
+            .selected
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "PREVIEW".into());
+        let content: AnyElement = match &self.preview {
+            PreviewState::Empty => div()
+                .p(px(18.0))
+                .text_color(rgb(colors.muted))
+                .child("Select a file to preview it here.")
+                .into_any_element(),
+            PreviewState::Loading => div()
+                .p(px(18.0))
+                .text_color(rgb(colors.muted))
+                .child("Loading preview…")
+                .into_any_element(),
+            PreviewState::Error(error) => div()
+                .p(px(18.0))
+                .text_color(rgb(colors.gold))
+                .child(error.clone())
+                .into_any_element(),
+            PreviewState::Ready(PreviewContent::Message(message)) => div()
+                .p(px(18.0))
+                .text_color(rgb(colors.muted))
+                .child(message.clone())
+                .into_any_element(),
+            PreviewState::Ready(PreviewContent::Text {
+                lines,
+                truncated,
+                markdown,
+            }) => {
+                let lines = lines.clone();
+                let count = lines.len();
+                let gold = colors.gold;
+                let muted = colors.muted;
+                let text = colors.text;
+                let markdown = *markdown;
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .text_size(px(9.0))
+                            .text_color(rgb(if *truncated { gold } else { muted }))
+                            .child(if *truncated {
+                                "PREVIEW TRUNCATED AT 1 MiB OR 10,000 LINES"
+                            } else if markdown {
+                                "MARKDOWN SOURCE · READ ONLY"
+                            } else {
+                                "TEXT · READ ONLY"
+                            }),
+                    )
+                    .child(
+                        uniform_list("file-preview-lines", count, move |range, _, _| {
+                            range
+                                .map(|index| {
+                                    let line = &lines[index];
+                                    let heading = markdown && line.trim_start().starts_with('#');
+                                    div()
+                                        .h(px(20.0))
+                                        .w_full()
+                                        .flex()
+                                        .items_center()
+                                        .px(px(10.0))
+                                        .child(
+                                            div()
+                                                .w(px(42.0))
+                                                .flex_none()
+                                                .text_color(rgb(muted))
+                                                .text_size(px(9.0))
+                                                .child(format!("{}", index + 1)),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .text_color(rgb(if heading { gold } else { text }))
+                                                .child(line.clone()),
+                                        )
+                                        .into_any_element()
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .flex_1()
+                        .min_h_0()
+                        .track_scroll(&self.preview_scroll),
+                    )
+                    .into_any_element()
+            }
+            PreviewState::Ready(PreviewContent::Image { image, description }) => div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex_none()
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .text_size(px(9.0))
+                        .text_color(rgb(colors.muted))
+                        .child(format!("{description} · READ ONLY")),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .p(px(12.0))
+                        .child(img(image.clone()).size_full()),
+                )
+                .into_any_element(),
+            PreviewState::Ready(PreviewContent::Pdf {
+                image, page, pages, ..
+            }) => {
+                let previous = *page - 1;
+                let next = *page + 1;
+                let can_previous = *page > 1;
+                let can_next = *page < *pages;
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .text_size(px(10.0))
+                            .child(
+                                div()
+                                    .id("file-preview-previous-page")
+                                    .text_color(rgb(if can_previous {
+                                        colors.cyan
+                                    } else {
+                                        colors.muted
+                                    }))
+                                    .cursor_pointer()
+                                    .child("‹ PREV")
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.mode = Mode::Preview;
+                                        view.focus.focus(window, cx);
+                                        if can_previous {
+                                            view.pdf_page(previous, cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(colors.text))
+                                    .child(format!("PAGE {page} OF {pages}")),
+                            )
+                            .child(
+                                div()
+                                    .id("file-preview-next-page")
+                                    .text_color(rgb(if can_next {
+                                        colors.cyan
+                                    } else {
+                                        colors.muted
+                                    }))
+                                    .cursor_pointer()
+                                    .child("NEXT ›")
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.mode = Mode::Preview;
+                                        view.focus.focus(window, cx);
+                                        if can_next {
+                                            view.pdf_page(next, cx);
+                                        }
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .p(px(12.0))
+                            .child(img(image.clone()).size_full()),
+                    )
+                    .into_any_element()
+            }
+        };
+        div()
+            .id("file-preview-panel")
+            .size_full()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .min_h_0()
+            .bg(rgb(colors.bg))
+            .border_1()
+            .border_color(rgb(
+                if self.mode == Mode::Preview && self.focus.is_focused(window) {
+                    colors.gold
+                } else {
+                    colors.divider
+                },
+            ))
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .border_b_1()
+                    .border_color(rgb(colors.divider))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_color(rgb(colors.cyan))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(9.0))
+                            .text_color(rgb(colors.muted))
+                            .child("PREVIEW"),
+                    ),
+            )
+            .child(content)
+            .on_click(cx.listener(|view, _, window, cx| {
+                view.mode = Mode::Preview;
+                view.focus.focus(window, cx);
                 cx.notify();
             }))
             .into_any_element()
@@ -959,16 +1455,13 @@ impl Render for FileExplorer {
             })
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Select a file or folder".into());
-        div()
-            .id("file-explorer")
+        let browser = div()
+            .id("file-explorer-browser")
             .size_full()
             .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .track_focus(&self.focus)
-            .key_context("FileExplorer")
-            .on_key_down(cx.listener(Self::key_down))
             .bg(rgb(colors.panel))
             .text_color(rgb(colors.text))
             .font_family("SF Mono")
@@ -1081,6 +1574,13 @@ impl Render for FileExplorer {
                             .gap(px(5.0))
                             .text_size(px(9.0))
                             .child(self.button(
+                                "file-explorer-edit",
+                                "EDIT IN VIM ↗",
+                                Mode::Edit,
+                                window,
+                                cx,
+                            ))
+                            .child(self.button(
                                 "file-explorer-copy",
                                 "COPY PATH",
                                 Mode::Copy,
@@ -1096,12 +1596,112 @@ impl Render for FileExplorer {
                             ))
                             .child(self.button(
                                 "file-explorer-open",
-                                "OPEN",
+                                "OPEN EXTERNALLY",
                                 Mode::Open,
                                 window,
                                 cx,
                             )),
                     ),
+            );
+        let bounds = self.bounds.clone();
+        let measured_view = cx.entity();
+        let horizontal = self.bounds.get().size.width.as_f32() >= 620.0;
+        let divider = div()
+            .id("file-preview-divider")
+            .flex_none()
+            .bg(rgb(colors.divider))
+            .hover(|style| style.bg(rgb(colors.cyan)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    view.resizing = true;
+                    cx.stop_propagation();
+                }),
+            );
+        let divider = if horizontal {
+            divider.w(px(5.0)).h_full().cursor_col_resize()
+        } else {
+            divider.h(px(5.0)).w_full().cursor_row_resize()
+        };
+        let container = div()
+            .id("file-explorer-split")
+            .relative()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .track_focus(&self.focus)
+            .key_context("FileExplorer")
+            .on_key_down(cx.listener(Self::key_down))
+            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                if !view.resizing {
+                    return;
+                }
+                let bounds = view.bounds.get();
+                let ratio = if bounds.size.width.as_f32() >= 620.0 {
+                    (event.position.x - bounds.origin.x).as_f32()
+                        / bounds.size.width.as_f32().max(1.0)
+                } else {
+                    (event.position.y - bounds.origin.y).as_f32()
+                        / bounds.size.height.as_f32().max(1.0)
+                };
+                view.split_ratio = ratio.clamp(0.24, 0.68);
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, _, _, _| view.resizing = false),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|view, _, _, _| view.resizing = false),
+            )
+            .bg(rgb(colors.panel))
+            .text_color(rgb(colors.text))
+            .font_family("SF Mono")
+            .text_size(px(11.0))
+            .child(
+                canvas(
+                    move |measured, _, cx| {
+                        let previous = bounds.replace(measured);
+                        if (previous.size.width.as_f32() >= 620.0)
+                            != (measured.size.width.as_f32() >= 620.0)
+                        {
+                            let view = measured_view.clone();
+                            cx.defer(move |cx| {
+                                let _ = view.update(cx, |_, cx| cx.notify());
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            );
+        let container = if horizontal {
+            container.flex_row()
+        } else {
+            container.flex_col()
+        };
+        container
+            .child(
+                div()
+                    .flex()
+                    .flex_basis(px(0.0))
+                    .flex_grow(self.split_ratio)
+                    .min_w_0()
+                    .min_h_0()
+                    .child(browser),
+            )
+            .child(divider)
+            .child(
+                div()
+                    .flex()
+                    .flex_basis(px(0.0))
+                    .flex_grow(1.0 - self.split_ratio)
+                    .min_w_0()
+                    .min_h_0()
+                    .child(self.preview_panel(window, cx)),
             )
     }
 }
@@ -1158,7 +1758,7 @@ impl EntityInputHandler for FileExplorer {
             return;
         }
         self.filter.replace(range, text);
-        self.ensure_selection();
+        self.ensure_selection(cx);
         cx.notify();
     }
     fn replace_and_mark_text_in_range(
@@ -1176,7 +1776,7 @@ impl EntityInputHandler for FileExplorer {
         let length = text.replace(['\n', '\r'], "").len();
         let end = self.filter.selection.end;
         self.filter.marked = (length > 0).then_some(end - length..end);
-        self.ensure_selection();
+        self.ensure_selection(cx);
         cx.notify();
     }
     fn bounds_for_range(

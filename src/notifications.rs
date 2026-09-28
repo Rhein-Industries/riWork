@@ -433,6 +433,7 @@ mod tests {
                 kind: ShellKind::Project,
                 cwd: project.root.clone(),
                 command: None,
+                editor_path: None,
                 harness: Some(HarnessKind::Codex),
                 unrestricted: false,
                 codex_account_id: None,

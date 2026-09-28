@@ -10,6 +10,7 @@ A compact, themeable GPUI workspace with native Ghostty terminals on macOS. Tabs
 - Rust 1.95 (selected by `rust-toolchain.toml`)
 - Zig 0.16 for the Ghostty native build
 - tmux (`brew install tmux`) for persistent shells
+- Vim for editing files in persistent RiWork tabs (included with macOS)
 - macOS 14 or later for Cua.ai desktop control; RiWork setup installs Cua Driver
 
 ## Build and run
@@ -133,7 +134,9 @@ Projects, Worktrees, Tasks, and Shells each have a searchable panel tab. Project
 
 Use the Projects sort selector beside the project count to choose **Last edited**, **Name**, **Date added**, or **Live sessions**. The arrow reverses the order. Projects sort within their virtual folders while the folder hierarchy stays intact; search and collapsed folders keep working. The preference is saved and shared across windows. Last edited defaults to newest first and reads the latest source-file modification time across each project's roots and registered worktrees, respecting Git ignores and excluding common build and dependency directories. Background scans refresh every 30 seconds. Unavailable or incomplete dates sort last; commit dates, deleted files, and task activity are not used as file-edit timestamps.
 
-Press **Cmd+Shift+E**, or choose **FILES** under **Views** in a pane's **…** actions menu, to browse the current worktree. The explorer follows the focused shell's worktree, including moving into another registered worktree with `cd`, and retains that selection while you use other panels. Expand folders to load their contents, click a file to open it in its default application, or use the selected file's controls to reveal it and copy its relative path. **Refresh** updates the tree, **Hidden** includes dotfiles, and **Cmd+F** filters files in directories already loaded. Files tabs restore with each project's layout.
+Press **Cmd+Shift+E**, or choose **FILES** under **Views** in a pane's **…** actions menu, to browse the current worktree. The explorer follows the focused shell's worktree, including moving into another registered worktree with `cd`. Select a regular file and click **Edit in Vim**, double-click its row, press Enter in the tree, or press **Cmd+E**. RiWork opens Vim in a dedicated persistent terminal tab in that worktree; existing agent shells keep running. Vim's normal editing, `:w` save, `u` undo, and `/` search work in the tab. The editor tab restores with the project layout while its tmux session is alive. Return to Files and select the file to edit it again; Files refreshes when focused. Symlinks and files outside the worktree cannot be opened for editing from Files.
+
+Single-click also shows a read-only preview of text, code, Markdown source, raster images, or PDF pages in the Files pane. Drag the divider to resize the tree and preview; narrow panes stack them vertically. Text previews stop at 1 MiB and image or PDF previews at 24 MiB; unsupported or binary files show a message. **Open Externally** uses the default application; **Reveal** and **Copy Path** act on the selection. **Refresh** updates the tree and preview, **Hidden** includes dotfiles, and **Cmd+F** filters files in directories already loaded. Use arrow keys in the tree, Tab to reach the preview and controls, Left/Right on a PDF preview to change pages, and **Cmd+O** to open externally. Files tabs restore with each project's layout.
 
 Each pane has a **lock** control. Locked panes keep their tabs, selected tab, and surrounding split sizes across project switches; panel contents still follow the selected project. The left navigation pane is locked by default. Unlock it to let that region use each project's saved layout. Locked shell tabs keep their original shell session and project context.
 

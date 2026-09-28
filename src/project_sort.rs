@@ -242,6 +242,7 @@ mod tests {
             kind,
             cwd: PathBuf::from("/"),
             command: None,
+            editor_path: None,
             harness: None,
             codex_account_id: None,
             codex_account_label: None,

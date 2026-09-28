@@ -60,6 +60,9 @@ pub struct ShellSession {
     pub kind: ShellKind,
     pub cwd: PathBuf,
     pub command: Option<String>,
+    /// Canonical worktree file opened by a dedicated Vim session.
+    #[serde(default)]
+    pub editor_path: Option<PathBuf>,
     #[serde(default)]
     pub harness: Option<HarnessKind>,
     #[serde(default)]
@@ -156,6 +159,37 @@ impl SessionManager {
             command,
             None,
             false,
+            None,
+        )
+    }
+
+    /// Open one selected regular worktree file in its own persistent tmux
+    /// session. The file name is a single quoted shell argument after `--`;
+    /// no input is sent to an existing agent terminal.
+    pub fn create_editor(
+        &self,
+        project_id: String,
+        worktree_id: Option<String>,
+        root: PathBuf,
+        path: PathBuf,
+        expected: crate::file_preview::FileIdentity,
+    ) -> Result<ShellSession, String> {
+        validate_uuid(&project_id)?;
+        if let Some(id) = &worktree_id {
+            validate_uuid(id)?;
+        }
+        let path = crate::file_preview::validated_editor_path(&root, &path, expected)?;
+        let vim = find_vim().ok_or("Vim is required to edit files in RiWork.")?;
+        let command = editor_command(&vim, &path)?;
+        self.create_inner(
+            Some(project_id),
+            worktree_id,
+            ShellKind::Project,
+            root,
+            Some(command),
+            None,
+            false,
+            Some(path),
         )
     }
 
@@ -181,6 +215,7 @@ impl SessionManager {
             None,
             Some(harness),
             unrestricted,
+            None,
         )
     }
 
@@ -1051,10 +1086,11 @@ impl SessionManager {
         command: Option<String>,
         harness: Option<HarnessKind>,
         unrestricted: bool,
+        editor_path: Option<PathBuf>,
     ) -> Result<ShellSession, String> {
         let _lock = self.lock_registry()?;
         let mut registry = self.read_registry()?;
-        let session = self.new_tmux_session(
+        let mut session = self.new_tmux_session(
             Uuid::new_v4().to_string(),
             project_id,
             worktree_id,
@@ -1065,6 +1101,7 @@ impl SessionManager {
             unrestricted,
             None,
         )?;
+        session.editor_path = editor_path;
         registry.sessions.push(session.clone());
         if let Err(error) = self.write_registry(&registry) {
             let _ = self.kill_tmux_session(&session.id);
@@ -1249,6 +1286,7 @@ impl SessionManager {
             kind,
             cwd,
             command,
+            editor_path: None,
             harness,
             unrestricted,
             codex_account_id: binding.as_ref().and_then(|binding| binding.id.clone()),
@@ -1402,6 +1440,27 @@ fn find_tmux() -> Option<PathBuf> {
         PathBuf::from("/usr/bin/tmux"),
     ]);
     candidates.into_iter().find(|path| path.is_file())
+}
+
+fn find_vim() -> Option<PathBuf> {
+    let mut candidates = vec![PathBuf::from("/usr/bin/vim")];
+    candidates.extend(
+        executable_dirs()
+            .into_iter()
+            .map(|dir| dir.join("vim"))
+            .collect::<Vec<_>>(),
+    );
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn editor_command(vim: &Path, path: &Path) -> Result<String, String> {
+    let vim = vim
+        .to_str()
+        .ok_or("The Vim executable path cannot be passed to the shell.")?;
+    let path = path
+        .to_str()
+        .ok_or("This file name cannot be passed to Vim.")?;
+    Ok(format!("exec {} -- {}", quote_arg(vim), quote_arg(path)))
 }
 
 fn selected_codex_binding(
@@ -2520,6 +2579,34 @@ fn strip_schedule_sgr(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_command_passes_unicode_and_metacharacters_as_one_file_name() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = env::temp_dir().join(format!("riwork-editor-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let vim = directory.join("fake vim");
+        let capture = directory.join("argv");
+        let file = directory.join("café ' $(touch PWNED) ;.txt");
+        fs::write(&file, "sample\n").unwrap();
+        fs::write(&vim, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\n").unwrap();
+        fs::set_permissions(&vim, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(editor_command(&vim, &file).unwrap())
+            .current_dir(&directory)
+            .env("CAPTURE", &capture)
+            .status()
+            .unwrap();
+        assert!(result.success());
+        assert_eq!(
+            fs::read_to_string(&capture).unwrap(),
+            format!("--\n{}\n", file.display())
+        );
+        assert!(!directory.join("PWNED").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     #[cfg(unix)]
