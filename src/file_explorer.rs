@@ -1,20 +1,25 @@
 //! A lazy filesystem browser scoped to the workspace's selected worktree.
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     cmp::Ordering,
     collections::{BTreeMap, HashSet},
+    ffi::OsStr,
     fs,
     ops::Range,
-    path::{Path, PathBuf},
+    os::unix::fs::MetadataExt,
+    path::{Component, Path, PathBuf},
     rc::Rc,
+    sync::Arc,
+    time::Duration,
 };
 
 use gpui::{
-    AnyElement, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
+    AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
     EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, MouseButton,
-    MouseMoveEvent, Pixels, Point, Render, ScrollStrategy, StyledText, UTF16Selection,
-    UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb, uniform_list,
+    MouseMoveEvent, Pixels, Point, Render, RenderImage, ScrollStrategy, StyledText, Task,
+    UTF16Selection, UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb,
+    uniform_list,
 };
 
 use crate::{
@@ -49,7 +54,7 @@ enum EntryKind {
     Other,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Entry {
     path: PathBuf,
     name: String,
@@ -58,10 +63,24 @@ struct Entry {
     identity: Option<FileIdentity>,
 }
 
+/// Longest listing shown for one folder, and how many names are read before
+/// giving up, so a folder with millions of files cannot stall or bloat the UI.
+const MAX_LISTED_ENTRIES: usize = 5_000;
+const MAX_SCANNED_ENTRIES: usize = 50_000;
+
+/// One folder's contents, already sorted and capped.
+#[derive(Debug)]
+struct Listing {
+    entries: Vec<Entry>,
+    /// Entries left out by the cap; only a lower bound when `scan_capped`.
+    omitted: usize,
+    scan_capped: bool,
+}
+
 /// Compare digit runs by magnitude, without parsing them into a bounded integer.
+/// Both names must already be case-folded, which callers do once per entry
+/// rather than on every comparison.
 fn natural_cmp(left: &str, right: &str) -> Ordering {
-    let left = left.to_lowercase();
-    let right = right.to_lowercase();
     let (left, right) = (left.as_bytes(), right.as_bytes());
     let (mut i, mut j) = (0, 0);
     while i < left.len() && j < right.len() {
@@ -97,19 +116,33 @@ fn natural_cmp(left: &str, right: &str) -> Ordering {
     left.len().cmp(&right.len())
 }
 
-fn read_directory(path: &Path) -> Result<Vec<Entry>, String> {
+fn read_directory(path: &Path) -> Result<Listing, String> {
+    read_directory_capped(path, MAX_LISTED_ENTRIES, MAX_SCANNED_ENTRIES)
+}
+
+fn read_directory_capped(
+    path: &Path,
+    max_listed: usize,
+    max_scanned: usize,
+) -> Result<Listing, String> {
     let metadata =
         fs::symlink_metadata(path).map_err(|error| format!("Cannot read this folder: {error}"))?;
     if metadata.file_type().is_symlink() {
-        return Err("Symbolic links are not expanded. Use Open or Reveal instead.".into());
+        return Err("Symbolic links are not expanded. Use Reveal instead.".into());
     }
     if !metadata.is_dir() {
         return Err("This folder is no longer a directory.".into());
     }
     let directory =
         fs::read_dir(path).map_err(|error| format!("Cannot read this folder: {error}"))?;
-    let mut entries = Vec::new();
+    // Names are folded once here instead of twice per comparison while sorting.
+    let mut scanned: Vec<(String, Entry)> = Vec::new();
+    let mut scan_capped = false;
     for entry in directory {
+        if scanned.len() >= max_scanned {
+            scan_capped = true;
+            break;
+        }
         let entry = entry.map_err(|error| format!("Cannot list this folder: {error}"))?;
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
@@ -118,40 +151,55 @@ fn read_directory(path: &Path) -> Result<Vec<Entry>, String> {
             Err(error) => return Err(format!("Cannot inspect this folder's files: {error}")),
         };
         let name = entry.file_name().to_string_lossy().into_owned();
-        entries.push(Entry {
-            path: entry.path(),
-            hidden: name.starts_with('.'),
-            name,
-            identity: file_type
-                .is_file()
-                .then(|| {
-                    entry
-                        .metadata()
-                        .ok()
-                        .map(|metadata| FileIdentity::of(&metadata))
-                })
-                .flatten(),
-            kind: if file_type.is_symlink() {
-                EntryKind::Symlink
-            } else if file_type.is_dir() {
-                EntryKind::Directory
-            } else if file_type.is_file() {
-                EntryKind::File
-            } else {
-                EntryKind::Other
+        scanned.push((
+            name.to_lowercase(),
+            Entry {
+                path: entry.path(),
+                hidden: name.starts_with('.'),
+                name,
+                identity: None,
+                kind: if file_type.is_symlink() {
+                    EntryKind::Symlink
+                } else if file_type.is_dir() {
+                    EntryKind::Directory
+                } else if file_type.is_file() {
+                    EntryKind::File
+                } else {
+                    EntryKind::Other
+                },
             },
-        });
+        ));
     }
-    entries.sort_by(|a, b| {
+    scanned.sort_by(|(a_key, a), (b_key, b)| {
         (a.kind != EntryKind::Directory)
             .cmp(&(b.kind != EntryKind::Directory))
-            .then_with(|| natural_cmp(&a.name, &b.name))
+            .then_with(|| natural_cmp(a_key, b_key))
             .then_with(|| a.path.cmp(&b.path))
     });
-    Ok(entries)
+    let omitted = scanned.len().saturating_sub(max_listed);
+    scanned.truncate(max_listed);
+    let mut entries = scanned
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .collect::<Vec<_>>();
+    // Only listed files need a stat for their identity.
+    for entry in entries
+        .iter_mut()
+        .filter(|entry| entry.kind == EntryKind::File)
+    {
+        entry.identity = fs::symlink_metadata(&entry.path)
+            .ok()
+            .filter(|metadata| metadata.is_file())
+            .map(|metadata| FileIdentity::of(&metadata));
+    }
+    Ok(Listing {
+        entries,
+        omitted,
+        scan_capped,
+    })
 }
 
-fn read_directory_in(root: &Path, path: &Path) -> Result<Vec<Entry>, String> {
+fn read_directory_in(root: &Path, path: &Path) -> Result<Listing, String> {
     let relative = path
         .strip_prefix(root)
         .map_err(|_| "This folder is outside the selected worktree.".to_owned())?;
@@ -169,7 +217,7 @@ fn read_directory_in(root: &Path, path: &Path) -> Result<Vec<Entry>, String> {
         let metadata = fs::symlink_metadata(&current)
             .map_err(|error| format!("Cannot read this folder: {error}"))?;
         if metadata.file_type().is_symlink() {
-            return Err("Symbolic links are not expanded. Use Open or Reveal instead.".into());
+            return Err("Symbolic links are not expanded. Use Reveal instead.".into());
         }
     }
     read_directory(path)
@@ -178,7 +226,12 @@ fn read_directory_in(root: &Path, path: &Path) -> Result<Vec<Entry>, String> {
 #[derive(Clone, Default)]
 struct DirectoryState {
     entries: Vec<Entry>,
+    omitted: usize,
+    scan_capped: bool,
     loading: bool,
+    /// A listing or an error has arrived at least once, so a reload does not
+    /// flash "Loading…" over rows that are already on screen.
+    loaded: bool,
     error: Option<String>,
     request: u64,
 }
@@ -197,6 +250,44 @@ struct TreeRow {
     depth: usize,
     kind: RowKind,
     identity: Option<FileIdentity>,
+}
+
+fn omitted_label(omitted: usize, scan_capped: bool) -> String {
+    let more = if scan_capped { "+" } else { "" };
+    if omitted == 1 && !scan_capped {
+        "1 more entry not shown".into()
+    } else {
+        format!("{omitted}{more} more entries not shown")
+    }
+}
+
+enum Pending<'a> {
+    Entry(&'a Entry, usize),
+    Omitted {
+        directory: &'a Path,
+        label: String,
+        depth: usize,
+    },
+}
+
+fn push_children<'a>(
+    stack: &mut Vec<Pending<'a>>,
+    directory: &'a Path,
+    state: &'a DirectoryState,
+    depth: usize,
+    show_omitted: bool,
+) {
+    // The stack is popped in reverse, so the notice goes in first to come last.
+    if show_omitted && state.omitted > 0 {
+        stack.push(Pending::Omitted {
+            directory,
+            label: omitted_label(state.omitted, state.scan_capped),
+            depth,
+        });
+    }
+    for entry in state.entries.iter().rev() {
+        stack.push(Pending::Entry(entry, depth));
+    }
 }
 
 fn visible_rows(
@@ -233,18 +324,33 @@ fn visible_rows(
     // Iterative traversal also bounds stack use in unusually deep worktrees.
     let mut rows = Vec::new();
     let mut stack = Vec::new();
-    if let Some(state) = directories.get(root) {
-        for entry in state.entries.iter().rev() {
-            stack.push((entry.clone(), 0));
-        }
+    if let Some((directory, state)) = directories.get_key_value(root) {
+        push_children(&mut stack, directory, state, 0, query.is_empty());
     }
-    while let Some((entry, depth)) = stack.pop() {
+    while let Some(item) = stack.pop() {
+        let (entry, depth) = match item {
+            Pending::Entry(entry, depth) => (entry, depth),
+            Pending::Omitted {
+                directory,
+                label,
+                depth,
+            } => {
+                rows.push(TreeRow {
+                    path: directory.to_owned(),
+                    label,
+                    depth,
+                    kind: RowKind::Status,
+                    identity: None,
+                });
+                continue;
+            }
+        };
         if (!show_hidden && entry.hidden) || (!query.is_empty() && !matches.contains(&entry.path)) {
             continue;
         }
         rows.push(TreeRow {
             path: entry.path.clone(),
-            label: entry.name,
+            label: entry.name.clone(),
             depth,
             kind: RowKind::Entry(entry.kind),
             identity: entry.identity,
@@ -255,7 +361,7 @@ fn visible_rows(
             continue;
         }
         if let Some(state) = directories.get(&entry.path) {
-            if (state.loading && state.entries.is_empty()) || state.error.is_some() {
+            if (state.loading && !state.loaded) || state.error.is_some() {
                 rows.push(TreeRow {
                     path: entry.path.clone(),
                     label: state.error.clone().unwrap_or_else(|| "Loading…".into()),
@@ -268,12 +374,196 @@ fn visible_rows(
                     identity: None,
                 });
             }
-            for child in state.entries.iter().rev() {
-                stack.push((child.clone(), depth + 1));
-            }
+            push_children(&mut stack, &entry.path, state, depth + 1, query.is_empty());
         }
     }
     rows
+}
+
+struct RowsCache {
+    version: u64,
+    show_hidden: bool,
+    filter: String,
+    rows: Rc<Vec<TreeRow>>,
+}
+
+/// What a finished folder load changed.
+struct LoadOutcome {
+    /// The visible rows may differ from before.
+    changed: bool,
+    /// Expanded subfolders to poll next.
+    reload: Vec<PathBuf>,
+}
+
+/// Loaded folders plus the visible-row list derived from them. The list is
+/// cached because render, key handlers and load completions all need it, and
+/// rebuilding it clones every visible entry.
+#[derive(Default)]
+struct TreeModel {
+    directories: BTreeMap<PathBuf, DirectoryState>,
+    expanded: HashSet<PathBuf>,
+    /// Bumped by every mutable borrow, so a cached list cannot outlive a change.
+    version: u64,
+    cache: RefCell<Option<RowsCache>>,
+}
+
+impl TreeModel {
+    fn directories(&self) -> &BTreeMap<PathBuf, DirectoryState> {
+        &self.directories
+    }
+
+    fn directories_mut(&mut self) -> &mut BTreeMap<PathBuf, DirectoryState> {
+        self.version = self.version.wrapping_add(1);
+        &mut self.directories
+    }
+
+    fn expanded(&self) -> &HashSet<PathBuf> {
+        &self.expanded
+    }
+
+    fn expanded_mut(&mut self) -> &mut HashSet<PathBuf> {
+        self.version = self.version.wrapping_add(1);
+        &mut self.expanded
+    }
+
+    fn clear(&mut self) {
+        self.directories_mut().clear();
+        self.expanded_mut().clear();
+    }
+
+    fn rows(&self, root: &Path, show_hidden: bool, filter: &str) -> Rc<Vec<TreeRow>> {
+        let cached = self
+            .cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| {
+                cache.version == self.version
+                    && cache.show_hidden == show_hidden
+                    && cache.filter == filter
+            })
+            .map(|cache| cache.rows.clone());
+        if let Some(rows) = cached {
+            return rows;
+        }
+        let rows = Rc::new(visible_rows(
+            root,
+            &self.directories,
+            &self.expanded,
+            show_hidden,
+            filter,
+        ));
+        *self.cache.borrow_mut() = Some(RowsCache {
+            version: self.version,
+            show_hidden,
+            filter: filter.to_owned(),
+            rows: rows.clone(),
+        });
+        rows
+    }
+
+    /// Returns whether the rows changed, which only a first load does: a
+    /// reload keeps showing the previous listing until the new one arrives.
+    fn begin_load(&mut self, path: &Path, request: u64) -> bool {
+        if let Some(state) = self.directories.get_mut(path) {
+            state.loading = true;
+            state.request = request;
+            return false;
+        }
+        self.directories_mut().insert(
+            path.to_owned(),
+            DirectoryState {
+                loading: true,
+                request,
+                ..Default::default()
+            },
+        );
+        true
+    }
+
+    fn finish_load(
+        &mut self,
+        path: &Path,
+        request: u64,
+        result: Result<Listing, String>,
+    ) -> LoadOutcome {
+        // The agent-written folders this polls every couple of seconds mostly
+        // come back identical, and then nothing needs rebuilding or repainting.
+        let unchanged = self.directories.get(path).is_some_and(|old| {
+            old.loaded
+                && match &result {
+                    Ok(listing) => {
+                        old.error.is_none()
+                            && old.entries == listing.entries
+                            && old.omitted == listing.omitted
+                            && old.scan_capped == listing.scan_capped
+                    }
+                    Err(error) => old.error.as_ref() == Some(error),
+                }
+        });
+        if unchanged {
+            if let Some(state) = self.directories.get_mut(path) {
+                state.loading = false;
+                state.request = request;
+            }
+        } else {
+            let state = match result {
+                Ok(listing) => DirectoryState {
+                    entries: listing.entries,
+                    omitted: listing.omitted,
+                    scan_capped: listing.scan_capped,
+                    loaded: true,
+                    request,
+                    ..Default::default()
+                },
+                Err(error) => DirectoryState {
+                    error: Some(error),
+                    loaded: true,
+                    request,
+                    ..Default::default()
+                },
+            };
+            let children = state
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == EntryKind::Directory)
+                .map(|entry| entry.path.clone())
+                .collect::<HashSet<_>>();
+            // Removed folders, and folders replaced by symlinks, lose their cached subtree.
+            let stale = self
+                .directories
+                .keys()
+                .filter(|child| child.parent() == Some(path) && !children.contains(*child))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !stale.is_empty() {
+                self.directories_mut()
+                    .retain(|child, _| !stale.iter().any(|stale| child.starts_with(stale)));
+                self.expanded_mut()
+                    .retain(|child| !stale.iter().any(|stale| child.starts_with(stale)));
+            }
+            self.directories_mut().insert(path.to_owned(), state);
+        }
+        // Collapsed folders keep their cached listing but are not polled; they
+        // reload when expanded again.
+        let reload = self
+            .directories
+            .get(path)
+            .map(|state| {
+                state
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.kind == EntryKind::Directory && self.expanded.contains(&entry.path)
+                    })
+                    .map(|entry| entry.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        LoadOutcome {
+            changed: !unchanged,
+            reload,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -325,10 +615,124 @@ impl FilterInput {
     }
 }
 
+/// How a row came to be selected. Only deliberate choices may parse a PDF;
+/// passive ones (arrow keys, auto-selection) also wait out a short delay so
+/// stepping through a folder does not decode every file it passes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Intent {
+    Passive,
+    Explicit,
+}
+
+const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(150);
+
+impl Intent {
+    fn delay(self) -> Duration {
+        match self {
+            Self::Passive => PREVIEW_DEBOUNCE,
+            Self::Explicit => Duration::ZERO,
+        }
+    }
+}
+
+/// The PDF the user has asked to render after this selection, if any.
+/// Selecting anything else forgets the request.
+fn explicit_pdf_after(path: Option<&Path>, intent: Intent) -> Option<PathBuf> {
+    path.filter(|path| intent == Intent::Explicit && file_preview::is_pdf(path))
+        .map(Path::to_owned)
+}
+
+enum PreviewPlan {
+    Show(PreviewState),
+    Load,
+}
+
+fn plan_preview(
+    kind: EntryKind,
+    identity: Option<FileIdentity>,
+    path: &Path,
+    explicit_pdf: Option<&Path>,
+) -> PreviewPlan {
+    let message =
+        |text: &str| PreviewPlan::Show(PreviewState::Ready(PreviewContent::Message(text.into())));
+    match kind {
+        EntryKind::Directory => message("Expand this folder to browse its files."),
+        EntryKind::Symlink => {
+            message("Symbolic links cannot be previewed or opened here. Use Reveal instead.")
+        }
+        EntryKind::Other => message("This item cannot be previewed."),
+        EntryKind::File if identity.is_none() => PreviewPlan::Show(PreviewState::Error(
+            "Cannot verify this file. Refresh and try again.".into(),
+        )),
+        EntryKind::File if file_preview::is_pdf(path) && explicit_pdf != Some(path) => {
+            PreviewPlan::Show(PreviewState::PdfPending)
+        }
+        EntryKind::File => PreviewPlan::Load,
+    }
+}
+
+/// Extensions macOS runs, mounts or installs when opened, whatever their
+/// permission bits say.
+const LAUNCHER_EXTENSIONS: &[&str] = &[
+    "app", "command", "tool", "terminal", "workflow", "action", "scpt", "scptd", "pkg", "mpkg",
+    "dmg", "jar", "prefpane", "saver", "webloc", "inetloc",
+];
+
+/// Why the system `open` must not be handed this item, if it must not. The
+/// explorer is a viewer: it opens documents and folders, but never launches
+/// programs or follows a link out of the worktree.
+fn open_refusal(root: &Path, path: &Path) -> Option<String> {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return Some("This item is outside the selected worktree.".into());
+    };
+    // `open` follows links, so every ancestor is checked, not just the item.
+    let mut current = root.to_owned();
+    let mut metadata = None;
+    for component in std::iter::once(None).chain(relative.components().map(Some)) {
+        match component {
+            None | Some(Component::CurDir) => {}
+            Some(Component::Normal(name)) => current.push(name),
+            Some(_) => return Some("This item is outside the selected worktree.".into()),
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(found) if found.file_type().is_symlink() => {
+                return Some(
+                    "Symbolic links are not opened externally. Use Reveal instead.".into(),
+                );
+            }
+            Ok(found) => metadata = Some(found),
+            Err(error) => return Some(format!("Cannot inspect this item: {error}")),
+        }
+    }
+    let metadata = metadata?;
+    let launcher = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| {
+            LAUNCHER_EXTENSIONS
+                .iter()
+                .any(|launcher| extension.eq_ignore_ascii_case(launcher))
+        });
+    if launcher {
+        Some("Applications and scripts are not opened externally. Use Reveal instead.".into())
+    } else if metadata.is_file() && metadata.mode() & 0o111 != 0 {
+        Some("Executable files are not opened externally. Use Reveal instead.".into())
+    } else if !metadata.is_file() && !metadata.is_dir() {
+        Some("Only files and folders can be opened externally.".into())
+    } else {
+        None
+    }
+}
+
+/// GPUI keeps an image's decoded atlas tiles until told to drop them.
+/// Deferred so it also reaches the window whose update is running.
+fn release_image(image: Arc<RenderImage>, cx: &mut App) {
+    cx.defer(move |cx| cx.drop_image(image, None));
+}
+
 pub struct FileExplorer {
     root: Option<ExplorerRoot>,
-    directories: BTreeMap<PathBuf, DirectoryState>,
-    expanded: HashSet<PathBuf>,
+    tree: TreeModel,
     selected: Option<PathBuf>,
     show_hidden: bool,
     filter: FilterInput,
@@ -337,9 +741,18 @@ pub struct FileExplorer {
     scroll: UniformListScrollHandle,
     preview_scroll: UniformListScrollHandle,
     preview: PreviewState,
+    /// The file `preview` shows. It trails `selected` while a replacement loads.
+    preview_path: Option<PathBuf>,
+    preview_loading: bool,
+    /// Dropping this cancels a pending debounce or an unfinished load.
+    preview_task: Option<Task<()>>,
     preview_request: u64,
     preview_identity: Option<FileIdentity>,
     preview_kind: Option<EntryKind>,
+    /// The one PDF the user has asked to render.
+    explicit_pdf: Option<PathBuf>,
+    /// Why the last action was refused.
+    notice: Option<String>,
     split_ratio: f32,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     resizing: bool,
@@ -351,8 +764,19 @@ pub struct FileExplorer {
 enum PreviewState {
     Empty,
     Loading,
+    /// A PDF waiting for the user to ask for it.
+    PdfPending,
     Ready(PreviewContent),
     Error(String),
+}
+
+impl PreviewState {
+    fn render_image(&self) -> Option<&Arc<RenderImage>> {
+        match self {
+            Self::Ready(content) => content.render_image(),
+            _ => None,
+        }
+    }
 }
 
 impl EventEmitter<FileExplorerEvent> for FileExplorer {}
@@ -361,10 +785,15 @@ impl FileExplorer {
     pub fn new(cx: &mut Context<Self>) -> Self {
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
+        cx.on_release(|explorer, cx| {
+            if let Some(image) = explorer.preview.render_image() {
+                release_image(image.clone(), cx);
+            }
+        })
+        .detach();
         Self {
             root: None,
-            directories: BTreeMap::new(),
-            expanded: HashSet::new(),
+            tree: TreeModel::default(),
             selected: None,
             show_hidden: false,
             filter: FilterInput::default(),
@@ -373,9 +802,14 @@ impl FileExplorer {
             scroll: UniformListScrollHandle::new(),
             preview_scroll: UniformListScrollHandle::new(),
             preview: PreviewState::Empty,
+            preview_path: None,
+            preview_loading: false,
+            preview_task: None,
             preview_request: 0,
             preview_identity: None,
             preview_kind: None,
+            explicit_pdf: None,
+            notice: None,
             split_ratio: 0.36,
             bounds: Rc::new(Cell::new(Bounds::default())),
             resizing: false,
@@ -395,13 +829,16 @@ impl FileExplorer {
         }
         self.root = root;
         self.generation = self.generation.wrapping_add(1);
-        self.directories.clear();
-        self.expanded.clear();
+        self.tree.clear();
         self.selected = None;
+        self.explicit_pdf = None;
+        self.notice = None;
         self.preview_request = self.preview_request.wrapping_add(1);
-        self.preview = PreviewState::Empty;
+        self.preview_task = None;
+        self.preview_loading = false;
         self.preview_identity = None;
         self.preview_kind = None;
+        self.set_preview(PreviewState::Empty, None, cx);
         self.filter = FilterInput::default();
         self.scroll = UniformListScrollHandle::new();
         if let Some(root) = &self.root {
@@ -412,14 +849,13 @@ impl FileExplorer {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         // A slow/network filesystem must not be restarted by every refresh tick.
-        if self.directories.values().any(|state| state.loading) {
+        if self.tree.directories().values().any(|state| state.loading) {
             return;
         }
         self.generation = self.generation.wrapping_add(1);
         if let Some(root) = &self.root {
             self.load(root.path.clone(), cx);
         }
-        cx.notify();
     }
 
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -436,7 +872,8 @@ impl FileExplorer {
 
     fn load(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self
-            .directories
+            .tree
+            .directories()
             .get(&path)
             .is_some_and(|state| state.loading)
         {
@@ -450,10 +887,9 @@ impl FileExplorer {
         let request = self.next_request;
         let generation = self.generation;
         let root_path = root.path.clone();
-        let state = self.directories.entry(path.clone()).or_default();
-        state.loading = true;
-        state.error = None;
-        state.request = request;
+        if self.tree.begin_load(&path, request) {
+            cx.notify();
+        }
         let work_path = path.clone();
         let work = cx
             .background_executor()
@@ -462,97 +898,35 @@ impl FileExplorer {
             let result = work.await;
             let _ = this.update(cx, |explorer, cx| {
                 if explorer.generation != generation
-                    || !explorer
-                        .directories
+                    || explorer
+                        .tree
+                        .directories()
                         .get(&path)
-                        .is_some_and(|state| state.request == request)
+                        .is_none_or(|state| state.request != request)
                 {
                     return;
                 }
-                let state = match result {
-                    Ok(entries) => DirectoryState {
-                        entries,
-                        request,
-                        ..Default::default()
-                    },
-                    Err(error) => DirectoryState {
-                        error: Some(error),
-                        request,
-                        ..Default::default()
-                    },
-                };
-                let reload = state
-                    .entries
-                    .iter()
-                    .filter(|entry| {
-                        entry.kind == EntryKind::Directory
-                            && (explorer.expanded.contains(&entry.path)
-                                || explorer.directories.contains_key(&entry.path))
-                    })
-                    .map(|entry| entry.path.clone())
-                    .collect::<Vec<_>>();
-                let children = state
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.kind == EntryKind::Directory)
-                    .map(|entry| entry.path.clone())
-                    .collect::<HashSet<_>>();
-                // Removed folders, and folders replaced by symlinks, lose their cached subtree.
-                let stale = explorer
-                    .directories
-                    .keys()
-                    .filter(|child| {
-                        child.parent() == Some(path.as_path()) && !children.contains(*child)
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                explorer
-                    .directories
-                    .retain(|child, _| !stale.iter().any(|stale| child.starts_with(stale)));
-                explorer
-                    .expanded
-                    .retain(|child| !stale.iter().any(|stale| child.starts_with(stale)));
-                explorer.directories.insert(path.clone(), state);
-                for path in reload {
+                let outcome = explorer.tree.finish_load(&path, request, result);
+                for path in outcome.reload {
                     explorer.load(path, cx);
                 }
                 explorer.ensure_selection(cx);
-                if explorer
-                    .selected
-                    .as_ref()
-                    .is_some_and(|selected| selected.parent() == Some(path.as_path()))
-                {
-                    let selected_row = explorer
-                        .rows()
-                        .into_iter()
-                        .find(|row| explorer.selected.as_ref() == Some(&row.path));
-                    if selected_row.as_ref().map(|row| row.identity)
-                        != Some(explorer.preview_identity)
-                        || selected_row.as_ref().map(|row| row.kind)
-                            != explorer.preview_kind.map(RowKind::Entry)
-                    {
-                        explorer.reload_preview(cx);
-                    }
+                explorer.reload_preview_if_changed(&path, cx);
+                if outcome.changed {
+                    cx.notify();
                 }
-                cx.notify();
             });
         })
         .detach();
     }
 
-    fn rows(&self) -> Vec<TreeRow> {
-        self.root
-            .as_ref()
-            .map(|root| {
-                visible_rows(
-                    &root.path,
-                    &self.directories,
-                    &self.expanded,
-                    self.show_hidden,
-                    &self.filter.text,
-                )
-            })
-            .unwrap_or_default()
+    fn rows(&self) -> Rc<Vec<TreeRow>> {
+        match &self.root {
+            Some(root) => self
+                .tree
+                .rows(&root.path, self.show_hidden, &self.filter.text),
+            None => Rc::default(),
+        }
     }
 
     fn ensure_selection(&mut self, cx: &mut Context<Self>) {
@@ -562,94 +936,128 @@ impl FileExplorer {
         }) {
             let selected = rows
                 .iter()
-                .find(|row| matches!(row.kind, RowKind::Entry(_)))
-                .cloned();
-            self.select_row(selected.as_ref(), cx);
+                .find(|row| matches!(row.kind, RowKind::Entry(_)));
+            self.select_row(selected, Intent::Passive, cx);
         }
     }
 
-    fn select_row(&mut self, row: Option<&TreeRow>, cx: &mut Context<Self>) {
+    fn select_row(&mut self, row: Option<&TreeRow>, intent: Intent, cx: &mut Context<Self>) {
         let path = row.map(|row| row.path.clone());
         if self.selected == path {
+            // Clicking the selected PDF is how its placeholder is dismissed.
+            if intent == Intent::Explicit {
+                self.open_pdf_preview(cx);
+            }
             return;
         }
+        self.notice = None;
+        self.explicit_pdf = explicit_pdf_after(path.as_deref(), intent);
         self.selected = path;
-        self.reload_preview(cx);
+        self.reload_preview(intent.delay(), cx);
     }
 
-    fn reload_preview(&mut self, cx: &mut Context<Self>) {
+    /// Refresh the preview when the selected entry's listing no longer matches
+    /// what the preview was loaded from.
+    fn reload_preview_if_changed(&mut self, listed: &Path, cx: &mut Context<Self>) {
+        let Some(selected) = &self.selected else {
+            return;
+        };
+        if selected.parent() != Some(listed) {
+            return;
+        }
+        let current = self.rows().iter().find_map(|row| match row.kind {
+            RowKind::Entry(kind) if &row.path == selected => Some((row.identity, Some(kind))),
+            _ => None,
+        });
+        if current != Some((self.preview_identity, self.preview_kind)) {
+            self.reload_preview(Duration::ZERO, cx);
+        }
+    }
+
+    fn reload_preview(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        // Dropping the previous task cancels its debounce or unfinished load.
+        self.preview_task = None;
+        self.preview_loading = false;
         self.preview_request = self.preview_request.wrapping_add(1);
-        self.preview_scroll = UniformListScrollHandle::new();
         let request = self.preview_request;
         self.preview_identity = None;
         self.preview_kind = None;
-        let Some(root) = &self.root else {
-            self.preview = PreviewState::Empty;
-            cx.notify();
+        let entry = self.selected.as_ref().and_then(|selected| {
+            self.rows().iter().find_map(|row| match row.kind {
+                RowKind::Entry(kind) if &row.path == selected => Some((kind, row.identity)),
+                _ => None,
+            })
+        });
+        let root_path = self.root.as_ref().map(|root| root.path.clone());
+        let (Some(root_path), Some(path), Some((kind, identity))) =
+            (root_path, self.selected.clone(), entry)
+        else {
+            self.set_preview(PreviewState::Empty, None, cx);
             return;
         };
-        let Some(selected) = &self.selected else {
-            self.preview = PreviewState::Empty;
-            cx.notify();
-            return;
-        };
-        let root_path = root.path.clone();
-        let path = selected.clone();
-        let row = self
-            .rows()
-            .into_iter()
-            .find(|row| row.path == path && matches!(row.kind, RowKind::Entry(_)));
-        let Some(row) = row else {
-            self.preview = PreviewState::Empty;
-            cx.notify();
-            return;
-        };
-        self.preview_identity = row.identity;
-        self.preview_kind = match row.kind {
-            RowKind::Entry(kind) => Some(kind),
-            _ => None,
-        };
-        if row.kind != RowKind::Entry(EntryKind::File) {
-            self.preview = PreviewState::Ready(PreviewContent::Message(match row.kind {
-                RowKind::Entry(EntryKind::Directory) => {
-                    "Expand this folder to browse its files.".into()
-                }
-                RowKind::Entry(EntryKind::Symlink) => {
-                    "Symbolic links cannot be previewed. Use Open or Reveal instead.".into()
-                }
-                _ => "This item cannot be previewed.".into(),
-            }));
-            cx.notify();
-            return;
+        self.preview_identity = identity;
+        self.preview_kind = Some(kind);
+        match plan_preview(kind, identity, &path, self.explicit_pdf.as_deref()) {
+            PreviewPlan::Show(state) => {
+                self.set_preview(state, Some(path), cx);
+                return;
+            }
+            PreviewPlan::Load => {}
         }
-        if row.identity.is_none() {
-            self.preview =
-                PreviewState::Error("Cannot verify this file. Refresh and try again.".into());
-            cx.notify();
-            return;
+        // Whatever is on screen stays until its replacement is ready, so a file
+        // an agent keeps rewriting neither flashes "Loading…" nor loses its
+        // scroll position.
+        if matches!(self.preview, PreviewState::Empty | PreviewState::Loading) {
+            self.set_preview(PreviewState::Loading, Some(path.clone()), cx);
         }
-        self.preview = PreviewState::Loading;
-        let work = cx
-            .background_executor()
-            .spawn(async move { file_preview::load(&root_path, &path, row.identity) });
-        let selected = selected.clone();
-        cx.spawn(async move |this, cx| {
-            let result = work.await;
+        self.preview_loading = true;
+        self.preview_task = Some(cx.spawn(async move |this, cx| {
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
+            let load_path = path.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { file_preview::load(&root_path, &load_path, identity) })
+                .await;
             let _ = this.update(cx, |explorer, cx| {
-                if explorer.preview_request != request
-                    || explorer.selected.as_ref() != Some(&selected)
+                if explorer.preview_request != request || explorer.selected.as_ref() != Some(&path)
                 {
                     return;
                 }
-                explorer.preview = match result {
+                explorer.preview_loading = false;
+                let state = match result {
                     Ok(content) => PreviewState::Ready(content),
                     Err(error) => PreviewState::Error(error),
                 };
-                cx.notify();
+                explorer.set_preview(state, Some(path), cx);
             });
-        })
-        .detach();
+        }));
         cx.notify();
+    }
+
+    /// Replace what the preview shows and release the bitmap it held.
+    fn set_preview(&mut self, state: PreviewState, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        if self.preview_path != path {
+            self.preview_scroll = UniformListScrollHandle::new();
+        }
+        self.preview_path = path;
+        let old = std::mem::replace(&mut self.preview, state);
+        if let Some(image) = old.render_image() {
+            release_image(image.clone(), cx);
+        }
+        cx.notify();
+    }
+
+    fn open_pdf_preview(&mut self, cx: &mut Context<Self>) {
+        let Some(selected) = &self.selected else {
+            return;
+        };
+        if !file_preview::is_pdf(selected) || self.explicit_pdf.as_ref() == Some(selected) {
+            return;
+        }
+        self.explicit_pdf = Some(selected.clone());
+        self.reload_preview(Duration::ZERO, cx);
     }
 
     fn pdf_page(&mut self, page: usize, cx: &mut Context<Self>) {
@@ -659,22 +1067,26 @@ impl FileExplorer {
         if page == 0 || page > *pages {
             return;
         }
+        // A reload of this file is pending; paging would cancel it.
+        if self.preview_loading {
+            return;
+        }
         let bytes = bytes.clone();
         let pages = *pages;
         self.preview_request = self.preview_request.wrapping_add(1);
         let request = self.preview_request;
         let selected = self.selected.clone();
-        self.preview = PreviewState::Loading;
+        // The current page stays up until the next one is rendered.
         let work = cx.background_executor().spawn(async move {
             file_preview::render_pdf(&bytes, page).map(|(image, _)| (bytes, image))
         });
-        cx.spawn(async move |this, cx| {
+        self.preview_task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |explorer, cx| {
                 if explorer.preview_request != request || explorer.selected != selected {
                     return;
                 }
-                explorer.preview = match result {
+                let state = match result {
                     Ok((bytes, image)) => PreviewState::Ready(PreviewContent::Pdf {
                         bytes,
                         image,
@@ -683,21 +1095,21 @@ impl FileExplorer {
                     }),
                     Err(error) => PreviewState::Error(error),
                 };
-                cx.notify();
+                let path = explorer.preview_path.clone();
+                explorer.set_preview(state, path, cx);
             });
-        })
-        .detach();
+        }));
         cx.notify();
     }
 
     fn toggle(&mut self, path: &Path, cx: &mut Context<Self>) {
-        if self.expanded.remove(path) {
+        if self.tree.expanded().contains(path) {
+            self.tree.expanded_mut().remove(path);
             self.ensure_selection(cx);
         } else {
-            self.expanded.insert(path.to_owned());
-            if !self.directories.contains_key(path) {
-                self.load(path.to_owned(), cx);
-            }
+            self.tree.expanded_mut().insert(path.to_owned());
+            // Collapsed folders are not polled, so a cached listing may be stale.
+            self.load(path.to_owned(), cx);
         }
         cx.notify();
     }
@@ -705,7 +1117,7 @@ impl FileExplorer {
     fn activate(&mut self, row: &TreeRow, cx: &mut Context<Self>) {
         match row.kind {
             RowKind::Entry(EntryKind::Directory) => self.toggle(&row.path, cx),
-            RowKind::Entry(_) => self.select_row(Some(row), cx),
+            RowKind::Entry(_) => self.select_row(Some(row), Intent::Explicit, cx),
             RowKind::Error => self.load(row.path.clone(), cx),
             RowKind::Status => {}
         }
@@ -714,16 +1126,17 @@ impl FileExplorer {
     fn selected_editable(&self) -> Option<(PathBuf, FileIdentity)> {
         let selected = self.selected.as_ref()?;
         self.rows()
-            .into_iter()
+            .iter()
             .find(|row| &row.path == selected && row.kind == RowKind::Entry(EntryKind::File))
-            .and_then(|row| row.identity.map(|identity| (row.path, identity)))
+            .and_then(|row| row.identity.map(|identity| (row.path.clone(), identity)))
     }
 
     fn action(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.notice = None;
         match mode {
             Mode::Refresh => {
                 self.refresh(cx);
-                self.reload_preview(cx);
+                self.reload_preview(Duration::ZERO, cx);
             }
             Mode::Hidden => {
                 self.show_hidden = !self.show_hidden;
@@ -744,10 +1157,17 @@ impl FileExplorer {
                     });
                 }
             }
-            Mode::Open | Mode::Reveal | Mode::Copy => {
+            Mode::Open => {
+                if let (Some(root), Some(path)) = (&self.root, &self.selected) {
+                    match open_refusal(&root.path, path) {
+                        Some(reason) => self.notice = Some(reason),
+                        None => cx.emit(FileExplorerEvent::Open(path.clone())),
+                    }
+                }
+            }
+            Mode::Reveal | Mode::Copy => {
                 if let Some(path) = &self.selected {
                     match mode {
-                        Mode::Open => cx.emit(FileExplorerEvent::Open(path.clone())),
                         Mode::Reveal => cx.emit(FileExplorerEvent::Reveal(path.clone())),
                         Mode::Copy => {
                             if let Some(relative) = self
@@ -760,6 +1180,11 @@ impl FileExplorer {
                         }
                         _ => {}
                     }
+                }
+            }
+            Mode::Preview => {
+                if matches!(self.preview, PreviewState::PdfPending) {
+                    self.open_pdf_preview(cx);
                 }
             }
             _ => {}
@@ -876,13 +1301,20 @@ impl FileExplorer {
                         "home" => 0,
                         _ => navigable.len() - 1,
                     };
-                    self.select_row(Some(navigable[index].1), cx);
+                    self.select_row(Some(navigable[index].1), Intent::Passive, cx);
                     self.scroll
                         .scroll_to_item(navigable[index].0, ScrollStrategy::Nearest);
                 }
                 "enter" | "space" => {
                     if let Some((_, row)) = navigable.get(index) {
-                        if key == "enter" && row.kind == RowKind::Entry(EntryKind::File) {
+                        // Enter renders a PDF that was only selected; once it is
+                        // showing, Enter edits it like any other file.
+                        let unopened_pdf = file_preview::is_pdf(&row.path)
+                            && self.explicit_pdf.as_ref() != Some(&row.path);
+                        if key == "enter"
+                            && row.kind == RowKind::Entry(EntryKind::File)
+                            && !unopened_pdf
+                        {
                             self.action(Mode::Edit, cx);
                         } else {
                             self.activate(row, cx);
@@ -892,13 +1324,13 @@ impl FileExplorer {
                 "right" => {
                     if let Some((_, row)) = navigable.get(index) {
                         if row.kind == RowKind::Entry(EntryKind::Directory) {
-                            if !self.expanded.contains(&row.path) {
+                            if !self.tree.expanded().contains(&row.path) {
                                 self.toggle(&row.path, cx);
                             } else if let Some((row_index, child)) = navigable
                                 .get(index + 1)
                                 .filter(|(_, child)| child.depth > row.depth)
                             {
-                                self.select_row(Some(child), cx);
+                                self.select_row(Some(child), Intent::Passive, cx);
                                 self.scroll
                                     .scroll_to_item(*row_index, ScrollStrategy::Nearest);
                             }
@@ -907,7 +1339,7 @@ impl FileExplorer {
                 }
                 "left" => {
                     if let Some((_, row)) = navigable.get(index) {
-                        if self.expanded.contains(&row.path) {
+                        if self.tree.expanded().contains(&row.path) {
                             self.toggle(&row.path, cx);
                         } else if let Some(parent) = row
                             .path
@@ -918,7 +1350,7 @@ impl FileExplorer {
                                 .iter()
                                 .find(|(_, row)| row.path == parent)
                                 .map(|(_, row)| *row);
-                            self.select_row(parent_row, cx);
+                            self.select_row(parent_row, Intent::Passive, cx);
                         }
                     }
                 }
@@ -1065,7 +1497,8 @@ impl FileExplorer {
         let colors = theme::palette(cx);
         let selected =
             matches!(row.kind, RowKind::Entry(_)) && self.selected.as_ref() == Some(&row.path);
-        let expanded = self.expanded.contains(&row.path) || !self.filter.text.trim().is_empty();
+        let expanded =
+            self.tree.expanded().contains(&row.path) || !self.filter.text.trim().is_empty();
         let icon = match row.kind {
             RowKind::Entry(EntryKind::Directory) if expanded => "▾",
             RowKind::Entry(EntryKind::Directory) => "▸",
@@ -1135,7 +1568,7 @@ impl FileExplorer {
                 view.mode = Mode::Tree;
                 view.focus.focus(window, cx);
                 if matches!(clicked_row.kind, RowKind::Entry(_)) {
-                    view.select_row(Some(&clicked_row), cx);
+                    view.select_row(Some(&clicked_row), Intent::Explicit, cx);
                 }
                 view.activate(&clicked_row, cx);
                 if matches!(event, gpui::ClickEvent::Mouse(mouse) if mouse.up.click_count == 2)
@@ -1150,9 +1583,12 @@ impl FileExplorer {
 
     fn preview_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
+        // The title follows the content on screen, which trails the selection
+        // while a replacement loads.
         let title = self
-            .selected
+            .preview_path
             .as_ref()
+            .or(self.selected.as_ref())
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "PREVIEW".into());
@@ -1166,6 +1602,33 @@ impl FileExplorer {
                 .p(px(18.0))
                 .text_color(rgb(colors.muted))
                 .child("Loading preview…")
+                .into_any_element(),
+            PreviewState::PdfPending => div()
+                .p(px(18.0))
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(10.0))
+                .child(div().text_color(rgb(colors.muted)).child(
+                    "PDFs are only rendered on request, because the PDF parser runs inside RiWork.",
+                ))
+                // While a newer selection loads, this placeholder is stale.
+                .children((self.preview_path == self.selected).then(|| {
+                    div()
+                        .id("file-preview-open-pdf")
+                        .px(px(7.0))
+                        .py(px(5.0))
+                        .border_1()
+                        .border_color(rgb(colors.divider))
+                        .text_color(rgb(colors.cyan))
+                        .cursor_pointer()
+                        .child("PREVIEW PDF")
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.mode = Mode::Preview;
+                            view.focus.focus(window, cx);
+                            view.open_pdf_preview(cx);
+                        }))
+                }))
                 .into_any_element(),
             PreviewState::Error(error) => div()
                 .p(px(18.0))
@@ -1386,7 +1849,13 @@ impl FileExplorer {
                             .flex_none()
                             .text_size(px(9.0))
                             .text_color(rgb(colors.muted))
-                            .child("PREVIEW"),
+                            .child(
+                                if self.preview_loading && self.preview_path != self.selected {
+                                    "LOADING…"
+                                } else {
+                                    "PREVIEW"
+                                },
+                            ),
                     ),
             )
             .child(content)
@@ -1410,10 +1879,10 @@ impl Render for FileExplorer {
         let root_state = self
             .root
             .as_ref()
-            .and_then(|root| self.directories.get(&root.path));
+            .and_then(|root| self.tree.directories().get(&root.path));
         let message = if self.root.is_none() {
             Some("Select a worktree to browse its files.".to_owned())
-        } else if root_state.is_some_and(|state| state.loading && state.entries.is_empty()) {
+        } else if root_state.is_some_and(|state| state.loading && !state.loaded) {
             Some("Loading worktree…".into())
         } else if let Some(error) = root_state.and_then(|state| state.error.clone()) {
             Some(error)
@@ -1567,6 +2036,12 @@ impl Render for FileExplorer {
                             .text_size(px(10.0))
                             .child(relative),
                     )
+                    .children(self.notice.clone().map(|notice| {
+                        div()
+                            .text_color(rgb(colors.gold))
+                            .text_size(px(10.0))
+                            .child(notice)
+                    }))
                     .child(
                         div()
                             .flex()
@@ -1838,7 +2313,7 @@ mod tests {
         for name in ["file10", "FILE2", "file02", ".hidden", "file1"] {
             fs::write(fixture.0.join(name), "").unwrap();
         }
-        let entries = read_directory(&fixture.0).unwrap();
+        let entries = read_directory(&fixture.0).unwrap().entries;
         assert_eq!(
             entries
                 .iter()
@@ -1897,7 +2372,7 @@ mod tests {
         fs::write(outside.0.join("secret"), "").unwrap();
         symlink(&outside.0, fixture.0.join("outside")).unwrap();
         symlink(&fixture.0, fixture.0.join("cycle")).unwrap();
-        let entries = read_directory(&fixture.0).unwrap();
+        let entries = read_directory(&fixture.0).unwrap().entries;
         assert!(entries.iter().all(|entry| entry.kind == EntryKind::Symlink));
         assert!(
             read_directory(&fixture.0.join("outside"))
@@ -1919,6 +2394,7 @@ mod tests {
         assert!(
             read_directory_in(&fixture.0, &fixture.0.join("parent/child"))
                 .unwrap()
+                .entries
                 .is_empty()
         );
         fs::remove_dir_all(fixture.0.join("parent")).unwrap();
@@ -1947,7 +2423,7 @@ mod tests {
         let fixture = Fixture::new();
         let path = fixture.0.join("private");
         fs::create_dir(&path).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
         let result = read_directory(&path);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         // Privileged test runners can bypass Unix mode bits.
@@ -1969,7 +2445,7 @@ mod tests {
             directories.insert(
                 path.clone(),
                 DirectoryState {
-                    entries: read_directory(path).unwrap(),
+                    entries: read_directory(path).unwrap().entries,
                     ..Default::default()
                 },
             );
@@ -1994,5 +2470,366 @@ mod tests {
             visible_rows(&fixture.0, &directories, &expanded, false, "").len(),
             2
         );
+    }
+
+    fn entry(root: &Path, name: &str, kind: EntryKind) -> Entry {
+        Entry {
+            path: root.join(name),
+            name: name.to_owned(),
+            kind,
+            hidden: name.starts_with('.'),
+            identity: None,
+        }
+    }
+
+    fn listing(entries: Vec<Entry>) -> Listing {
+        Listing {
+            entries,
+            omitted: 0,
+            scan_capped: false,
+        }
+    }
+
+    fn load_listing(tree: &mut TreeModel, path: &Path, request: u64, entries: Vec<Entry>) {
+        tree.begin_load(path, request);
+        tree.finish_load(path, request, Ok(listing(entries)));
+    }
+
+    #[test]
+    fn huge_folders_are_capped_with_directories_first() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("dir")).unwrap();
+        for index in 0..10 {
+            fs::write(fixture.0.join(format!("file{index}")), "").unwrap();
+        }
+        let listing = read_directory_capped(&fixture.0, 5, 100).unwrap();
+        assert_eq!(listing.entries.len(), 5);
+        assert_eq!(listing.entries[0].name, "dir");
+        assert_eq!((listing.omitted, listing.scan_capped), (6, false));
+        // Only listed files are statted.
+        assert!(
+            listing
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == EntryKind::File)
+                .all(|entry| entry.identity.is_some())
+        );
+        let listing = read_directory_capped(&fixture.0, 5, 8).unwrap();
+        assert_eq!(listing.entries.len(), 5);
+        assert_eq!((listing.omitted, listing.scan_capped), (3, true));
+        let listing = read_directory_capped(&fixture.0, 100, 11).unwrap();
+        assert_eq!((listing.entries.len(), listing.omitted), (11, 0));
+        assert!(!listing.scan_capped);
+    }
+
+    #[test]
+    fn omitted_entries_get_a_notice_row_after_the_folders_children() {
+        let root = Path::new("/w");
+        let mut directories = BTreeMap::new();
+        directories.insert(
+            root.to_owned(),
+            DirectoryState {
+                entries: vec![
+                    entry(root, "a", EntryKind::Directory),
+                    entry(root, "z", EntryKind::File),
+                ],
+                omitted: 3,
+                loaded: true,
+                ..Default::default()
+            },
+        );
+        directories.insert(
+            root.join("a"),
+            DirectoryState {
+                entries: vec![entry(&root.join("a"), "inner", EntryKind::File)],
+                omitted: 40_000,
+                scan_capped: true,
+                loaded: true,
+                ..Default::default()
+            },
+        );
+        let expanded = HashSet::from([root.join("a")]);
+        let rows = visible_rows(root, &directories, &expanded, false, "");
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.label.as_str(), row.depth))
+                .collect::<Vec<_>>(),
+            [
+                ("a", 0),
+                ("inner", 1),
+                ("40000+ more entries not shown", 1),
+                ("z", 0),
+                ("3 more entries not shown", 0),
+            ]
+        );
+        assert!(rows[2].kind == RowKind::Status && rows[4].kind == RowKind::Status);
+        // Filtering only looks at loaded names, so the notices stay out of it.
+        let rows = visible_rows(root, &directories, &expanded, false, "inner");
+        assert!(rows.iter().all(|row| row.kind != RowKind::Status));
+        assert_eq!(omitted_label(1, false), "1 more entry not shown");
+    }
+
+    #[test]
+    fn reloading_a_loaded_folder_never_shows_loading_again() {
+        let root = Path::new("/w");
+        let mut directories = BTreeMap::new();
+        directories.insert(
+            root.to_owned(),
+            DirectoryState {
+                entries: vec![entry(root, "empty", EntryKind::Directory)],
+                loaded: true,
+                ..Default::default()
+            },
+        );
+        directories.insert(
+            root.join("empty"),
+            DirectoryState {
+                loading: true,
+                loaded: true,
+                ..Default::default()
+            },
+        );
+        let expanded = HashSet::from([root.join("empty")]);
+        assert_eq!(
+            visible_rows(root, &directories, &expanded, false, "").len(),
+            1
+        );
+        directories.get_mut(&root.join("empty")).unwrap().loaded = false;
+        assert_eq!(
+            visible_rows(root, &directories, &expanded, false, "")[1].label,
+            "Loading…"
+        );
+    }
+
+    #[test]
+    fn cached_rows_survive_identical_reloads_and_rebuild_on_change() {
+        let root = Path::new("/w");
+        let mut tree = TreeModel::default();
+        let listed = || {
+            vec![
+                entry(root, "a", EntryKind::Directory),
+                entry(root, "f", EntryKind::File),
+            ]
+        };
+        assert!(tree.begin_load(root, 1));
+        let outcome = tree.finish_load(root, 1, Ok(listing(listed())));
+        assert!(outcome.changed);
+        let first = tree.rows(root, false, "");
+        assert_eq!(first.len(), 2);
+        assert!(Rc::ptr_eq(&first, &tree.rows(root, false, "")));
+        // A poll that finds the same listing changes nothing.
+        assert!(!tree.begin_load(root, 2));
+        assert!(tree.directories()[root].loading);
+        let outcome = tree.finish_load(root, 2, Ok(listing(listed())));
+        assert!(!outcome.changed);
+        assert!(!tree.directories()[root].loading);
+        assert!(Rc::ptr_eq(&first, &tree.rows(root, false, "")));
+        // The view options are part of the cache key.
+        assert!(!Rc::ptr_eq(&first, &tree.rows(root, true, "")));
+        assert!(!Rc::ptr_eq(&first, &tree.rows(root, false, "f")));
+        let second = tree.rows(root, false, "");
+        // A new file, or a new identity for an old one, rebuilds the rows.
+        tree.begin_load(root, 3);
+        let mut changed = listed();
+        changed.push(entry(root, "g", EntryKind::File));
+        assert!(tree.finish_load(root, 3, Ok(listing(changed))).changed);
+        assert_eq!(tree.rows(root, false, "").len(), 3);
+        tree.begin_load(root, 4);
+        let mut rewritten = listed();
+        rewritten.push(entry(root, "g", EntryKind::File));
+        rewritten[1].identity = Some(FileIdentity::of(&fs::metadata(".").unwrap()));
+        assert!(tree.finish_load(root, 4, Ok(listing(rewritten))).changed);
+        assert!(!Rc::ptr_eq(&second, &tree.rows(root, false, "")));
+        // Expanding a folder is a change too.
+        let before = tree.rows(root, false, "");
+        tree.expanded_mut().insert(root.join("a"));
+        assert!(!Rc::ptr_eq(&before, &tree.rows(root, false, "")));
+    }
+
+    #[test]
+    fn repeated_errors_are_unchanged_and_recovery_is_a_change() {
+        let root = Path::new("/w");
+        let mut tree = TreeModel::default();
+        tree.begin_load(root, 1);
+        assert!(tree.finish_load(root, 1, Err("nope".into())).changed);
+        tree.begin_load(root, 2);
+        assert!(!tree.finish_load(root, 2, Err("nope".into())).changed);
+        // The error stays on screen while a retry is running.
+        tree.begin_load(root, 3);
+        assert_eq!(tree.directories()[root].error.as_deref(), Some("nope"));
+        assert!(tree.finish_load(root, 3, Ok(listing(Vec::new()))).changed);
+        assert!(tree.directories()[root].error.is_none());
+    }
+
+    #[test]
+    fn only_expanded_folders_are_polled_and_removed_ones_are_evicted() {
+        let root = Path::new("/w");
+        let mut tree = TreeModel::default();
+        let dirs = || {
+            vec![
+                entry(root, "open", EntryKind::Directory),
+                entry(root, "closed", EntryKind::Directory),
+                entry(root, "gone", EntryKind::Directory),
+            ]
+        };
+        load_listing(&mut tree, root, 1, dirs());
+        for name in ["open", "closed", "gone"] {
+            load_listing(&mut tree, &root.join(name), 2, Vec::new());
+        }
+        load_listing(
+            &mut tree,
+            &root.join("gone"),
+            3,
+            vec![entry(&root.join("gone"), "deep", EntryKind::Directory)],
+        );
+        load_listing(&mut tree, &root.join("gone/deep"), 4, Vec::new());
+        tree.expanded_mut().insert(root.join("open"));
+        tree.expanded_mut().insert(root.join("gone"));
+        tree.begin_load(root, 5);
+        let outcome = tree.finish_load(root, 5, Ok(listing(dirs())));
+        // The collapsed folder keeps its cache but is not polled.
+        assert_eq!(
+            outcome.reload,
+            [root.join("open"), root.join("gone")].to_vec()
+        );
+        assert!(tree.directories().contains_key(&root.join("closed")));
+        tree.begin_load(root, 6);
+        let outcome = tree.finish_load(
+            root,
+            6,
+            Ok(listing(vec![
+                entry(root, "open", EntryKind::Directory),
+                entry(root, "closed", EntryKind::Directory),
+            ])),
+        );
+        assert_eq!(outcome.reload, [root.join("open")].to_vec());
+        assert!(!tree.directories().contains_key(&root.join("gone")));
+        assert!(!tree.directories().contains_key(&root.join("gone/deep")));
+        assert!(!tree.expanded().contains(&root.join("gone")));
+        assert!(tree.expanded().contains(&root.join("open")));
+    }
+
+    #[test]
+    fn open_externally_refuses_links_executables_and_bundles() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        let root = &fixture.0;
+        fs::write(root.join("notes.txt"), "").unwrap();
+        fs::create_dir(root.join("docs")).unwrap();
+        assert_eq!(open_refusal(root, &root.join("notes.txt")), None);
+        assert_eq!(open_refusal(root, &root.join("docs")), None);
+
+        fs::write(root.join("run.sh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(root.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            open_refusal(root, &root.join("run.sh"))
+                .unwrap()
+                .contains("Executable")
+        );
+
+        fs::write(root.join("Setup.COMMAND"), "").unwrap();
+        fs::create_dir(root.join("Tool.app")).unwrap();
+        for name in ["Setup.COMMAND", "Tool.app"] {
+            assert!(
+                open_refusal(root, &root.join(name))
+                    .unwrap()
+                    .contains("Applications and scripts"),
+                "{name}"
+            );
+        }
+
+        fs::write(outside.0.join("secret.txt"), "").unwrap();
+        symlink(outside.0.join("secret.txt"), root.join("link.txt")).unwrap();
+        symlink(&outside.0, root.join("linked-dir")).unwrap();
+        for path in [
+            root.join("link.txt"),
+            root.join("linked-dir"),
+            root.join("linked-dir/secret.txt"),
+        ] {
+            assert!(
+                open_refusal(root, &path)
+                    .unwrap()
+                    .contains("Symbolic links"),
+                "{}",
+                path.display()
+            );
+        }
+        assert!(
+            open_refusal(root, &outside.0.join("secret.txt"))
+                .unwrap()
+                .contains("outside")
+        );
+        assert!(
+            open_refusal(root, &root.join("../x"))
+                .unwrap()
+                .contains("outside")
+        );
+        assert!(
+            open_refusal(root, &root.join("missing.txt"))
+                .unwrap()
+                .contains("Cannot inspect")
+        );
+
+        let fifo = std::ffi::CString::new(root.join("pipe").to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(
+            open_refusal(root, &root.join("pipe"))
+                .unwrap()
+                .contains("Only files and folders")
+        );
+    }
+
+    #[test]
+    fn pdfs_are_parsed_only_after_an_explicit_request() {
+        let id = Some(FileIdentity::of(&fs::metadata(".").unwrap()));
+        let pdf = Path::new("/w/Paper.PDF");
+        let other = Path::new("/w/other.pdf");
+        assert!(matches!(
+            plan_preview(EntryKind::File, id, pdf, None),
+            PreviewPlan::Show(PreviewState::PdfPending)
+        ));
+        // A request for one PDF does not cover another.
+        assert!(matches!(
+            plan_preview(EntryKind::File, id, pdf, Some(other)),
+            PreviewPlan::Show(PreviewState::PdfPending)
+        ));
+        assert!(matches!(
+            plan_preview(EntryKind::File, id, pdf, Some(pdf)),
+            PreviewPlan::Load
+        ));
+        assert!(matches!(
+            plan_preview(EntryKind::File, id, Path::new("/w/a.png"), None),
+            PreviewPlan::Load
+        ));
+        assert!(matches!(
+            plan_preview(EntryKind::File, None, pdf, Some(pdf)),
+            PreviewPlan::Show(PreviewState::Error(_))
+        ));
+        for kind in [EntryKind::Directory, EntryKind::Symlink, EntryKind::Other] {
+            assert!(matches!(
+                plan_preview(kind, id, pdf, Some(pdf)),
+                PreviewPlan::Show(PreviewState::Ready(PreviewContent::Message(_)))
+            ));
+        }
+
+        // Arrow keys and auto-selection never opt in; clicks and Enter do,
+        // and selecting anything else forgets the request.
+        assert_eq!(explicit_pdf_after(Some(pdf), Intent::Passive), None);
+        assert_eq!(
+            explicit_pdf_after(Some(pdf), Intent::Explicit),
+            Some(pdf.to_owned())
+        );
+        assert_eq!(
+            explicit_pdf_after(Some(Path::new("/w/a.txt")), Intent::Explicit),
+            None
+        );
+        assert_eq!(explicit_pdf_after(None, Intent::Explicit), None);
+    }
+
+    #[test]
+    fn keyboard_selection_is_debounced_and_clicks_are_not() {
+        assert!(Intent::Passive.delay() >= Duration::from_millis(100));
+        assert_eq!(Intent::Explicit.delay(), Duration::ZERO);
     }
 }
