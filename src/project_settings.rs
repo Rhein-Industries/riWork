@@ -252,6 +252,42 @@ fn folder_choices(state: &State) -> (Vec<ProjectFolder>, BTreeMap<String, String
     (folders, paths)
 }
 
+const SAVE_PROMPT: &str = "Save changes  ↵ / CMD+S";
+
+/// What the footer says about saving. Name and folder edits wait for an
+/// explicit save; the Codex account is stored the moment it is picked, so
+/// choosing one says nothing about edits still pending.
+#[derive(Default)]
+struct SaveStatus {
+    pending: bool,
+    notice: Option<&'static str>,
+}
+
+impl SaveStatus {
+    fn edited(&mut self) {
+        self.pending = true;
+        self.notice = None;
+    }
+
+    fn details_saved(&mut self) {
+        self.pending = false;
+        self.notice = Some("Settings saved");
+    }
+
+    fn account_saved(&mut self) {
+        if !self.pending {
+            self.notice = Some("Codex account saved");
+        }
+    }
+
+    fn message(&self) -> &'static str {
+        match self.notice {
+            Some(notice) if !self.pending => notice,
+            _ => SAVE_PROMPT,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
     Name,
@@ -274,7 +310,7 @@ pub struct ProjectSettingsPanel {
     active: Field,
     focus: FocusHandle,
     error: Option<String>,
-    saved: bool,
+    status: SaveStatus,
 }
 
 impl EventEmitter<ProjectSettingsEvent> for ProjectSettingsPanel {}
@@ -304,7 +340,7 @@ impl ProjectSettingsPanel {
             active: Field::Name,
             focus: cx.focus_handle(),
             error,
-            saved: false,
+            status: SaveStatus::default(),
         }
     }
 
@@ -381,7 +417,7 @@ impl ProjectSettingsPanel {
     }
 
     fn edited(&mut self, cx: &mut Context<Self>) {
-        self.saved = false;
+        self.status.edited();
         self.error = None;
         cx.notify();
     }
@@ -466,7 +502,7 @@ impl ProjectSettingsPanel {
             Ok(project) => {
                 self.project = project.clone();
                 self.error = None;
-                self.saved = true;
+                self.status.account_saved();
                 cx.emit(ProjectSettingsEvent::Saved(project));
             }
             Err(error) => self.error = Some(error),
@@ -484,7 +520,7 @@ impl ProjectSettingsPanel {
                 self.name = Input::new(project.name.clone());
                 self.project = project.clone();
                 self.error = None;
-                self.saved = true;
+                self.status.details_saved();
                 cx.emit(ProjectSettingsEvent::Saved(project));
             }
             Err(error) => self.error = Some(error),
@@ -503,7 +539,7 @@ impl ProjectSettingsPanel {
                 self.folders.push(folder);
                 self.active = Field::Name;
                 self.error = None;
-                self.saved = false;
+                self.status.edited();
                 self.refresh_folders(cx);
                 cx.emit(ProjectSettingsEvent::FolderChanged);
             }
@@ -862,7 +898,7 @@ impl Render for ProjectSettingsPanel {
                     .child(
                         div().flex().flex_wrap().min_w_0().items_center().justify_between().gap(px(10.0))
                             .child(div().min_w_0().text_size(px(10.0)).text_color(rgb(if self.error.is_some() { colors.gold } else { colors.muted }))
-                                .child(self.error.clone().unwrap_or_else(|| if self.saved { "Settings saved".into() } else { "Save changes  ↵ / CMD+S".into() })))
+                                .child(self.error.clone().unwrap_or_else(|| self.status.message().into())))
                             .child(div().id("project-settings-save").flex_none().px(px(14.0)).py(px(10.0)).cursor_pointer()
                                 .bg(rgb(colors.panel_active)).border_1()
                                 .border_color(rgb(if focused && self.active == Field::Save { colors.gold } else { colors.cyan }))
@@ -1250,3 +1286,29 @@ impl_input_handler!(ProjectSettingsPanel);
 impl_input_handler!(FolderEditor);
 
 pub(crate) use impl_input_handler;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn choosing_an_account_never_claims_pending_edits_were_saved() {
+        let mut status = SaveStatus::default();
+        assert_eq!(status.message(), SAVE_PROMPT);
+        status.account_saved();
+        assert_eq!(status.message(), "Codex account saved");
+
+        // A name edit is unsaved until SAVE PROJECT, whatever happens to the account.
+        status.edited();
+        assert_eq!(status.message(), SAVE_PROMPT);
+        status.account_saved();
+        assert_eq!(status.message(), SAVE_PROMPT);
+
+        status.details_saved();
+        assert_eq!(status.message(), "Settings saved");
+        status.account_saved();
+        assert_eq!(status.message(), "Codex account saved");
+        status.edited();
+        assert_eq!(status.message(), SAVE_PROMPT);
+    }
+}

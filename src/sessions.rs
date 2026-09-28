@@ -364,7 +364,7 @@ impl SessionManager {
 
     pub fn orchestrator_get(&self) -> Result<Option<ShellSession>, String> {
         Ok(self
-            .list()?
+            .list_saved()?
             .into_iter()
             .find(|session| matches_orchestrator_scope(session, None)))
     }
@@ -375,7 +375,7 @@ impl SessionManager {
     ) -> Result<Option<ShellSession>, String> {
         validate_uuid(project_id)?;
         Ok(self
-            .list()?
+            .list_saved()?
             .into_iter()
             .find(|session| matches_orchestrator_scope(session, Some(project_id))))
     }
@@ -475,7 +475,16 @@ impl SessionManager {
         Ok(session)
     }
 
+    /// Saved sessions with a live check. A plain shell reports a Codex identity
+    /// only while Codex can still be running in it (see
+    /// `hide_exited_plain_codex`); `get` returns the saved identity as is.
     pub fn list(&self) -> Result<Vec<ShellSession>, String> {
+        let mut sessions = self.list_saved()?;
+        self.hide_exited_plain_codex(&mut sessions);
+        Ok(sessions)
+    }
+
+    fn list_saved(&self) -> Result<Vec<ShellSession>, String> {
         let mut sessions = self.read_registry()?.sessions;
         let live = self.live_session_names()?;
         for session in &mut sessions {
@@ -489,6 +498,46 @@ impl SessionManager {
             sessions.retain(|session| !pruned.contains(&session.id));
         }
         Ok(sessions)
+    }
+
+    /// `record_codex_launch` labels a plain shell as Codex when its user types
+    /// `codex`, but the launcher `exec`s Codex, so nothing runs afterwards to
+    /// take the label back. Report the label only while something other than
+    /// the shell itself owns the pane, so an idle shell neither counts toward
+    /// the tabs' account numbers nor keeps an old account in the status item.
+    /// The saved row is untouched: `codex resume` in the pane still finds its
+    /// account, and an unreadable tmux leaves the label as it was.
+    fn hide_exited_plain_codex(&self, sessions: &mut [ShellSession]) {
+        let candidates: HashSet<String> = sessions
+            .iter()
+            .filter(|session| session.alive && plain_shell_with_codex_label(session))
+            .map(|session| session.id.clone())
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let shell = self.default_command_shell();
+        let Some(shell) = shell.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let Ok(output) = self.tmux_checked(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_current_command}",
+        ]) else {
+            return;
+        };
+        let at_prompt =
+            panes_at_shell_prompt(&String::from_utf8_lossy(&output.stdout), &candidates, shell);
+        for session in sessions.iter_mut().filter(|s| at_prompt.contains(&s.id)) {
+            session.harness = None;
+            session.unrestricted = false;
+            session.codex_account_id = None;
+            session.codex_account_label = None;
+            session.codex_account_email = None;
+            session.codex_home = None;
+        }
     }
 
     /// A Vim session has no `remain-on-exit`: `:q` destroys its tmux session,
@@ -538,7 +587,7 @@ impl SessionManager {
 
     pub fn get(&self, id: &str) -> Result<ShellSession, String> {
         validate_uuid(id)?;
-        self.list()?
+        self.list_saved()?
             .into_iter()
             .find(|session| session.id == id)
             .ok_or_else(|| format!("unknown shell {id}"))
@@ -1085,7 +1134,7 @@ impl SessionManager {
     /// that refreshes periodically. CPU is the sum of process `%cpu` values;
     /// RAM is resident bytes for the shell and its descendants.
     pub fn metrics_snapshot(&self) -> Result<BTreeMap<String, SessionMetrics>, String> {
-        let sessions = self.list()?;
+        let sessions = self.list_saved()?;
         let live: HashSet<&str> = sessions
             .iter()
             .filter(|session| session.alive)
@@ -1209,28 +1258,28 @@ impl SessionManager {
         if !cwd.is_dir() {
             return Err(format!("{} is not a directory", cwd.display()));
         }
-        let plain_codex_home = if binding.is_none()
+        let plain_shell = binding.is_none()
             && harness.is_none()
             && kind == ShellKind::Project
-            && command.is_none()
-        {
-            Some(
-                selected_codex_binding(&self.home, project_id.as_deref())?
-                    .home
-                    .into_os_string(),
-            )
+            && command.is_none();
+        let codex_home = if plain_shell {
+            // Best effort: a saved account that vanished (Orca removed, the
+            // profile moved, the account deleted) must not stop a terminal
+            // from opening. Codex launches and the `codex` shim still fail
+            // closed with the reason; the shell just starts without an
+            // injected home, and never inherits another session's.
+            match selected_codex_binding(&self.home, project_id.as_deref()) {
+                Ok(binding) => Some(binding.home.into_os_string()),
+                Err(_) => crate::codex_accounts::user_codex_home_variable(),
+            }
         } else {
-            None
+            binding
+                .as_ref()
+                .map(|binding| binding.home.clone().into_os_string())
+                .or_else(|| env::var_os("CODEX_HOME"))
         };
         let profile_locations = [
-            (
-                "CODEX_HOME",
-                binding
-                    .as_ref()
-                    .map(|binding| binding.home.clone().into_os_string())
-                    .or(plain_codex_home)
-                    .or_else(|| env::var_os("CODEX_HOME")),
-            ),
+            ("CODEX_HOME", codex_home),
             ("CLAUDE_CONFIG_DIR", env::var_os("CLAUDE_CONFIG_DIR")),
             ("GROK_HOME", env::var_os("GROK_HOME")),
         ];
@@ -2185,6 +2234,42 @@ fn pane_directories(output: &str, live: &HashSet<&str>) -> BTreeMap<String, Path
         .collect()
 }
 
+/// A shell the user started by hand (no command), which typing `codex` in it
+/// has since labelled as a Codex session.
+fn plain_shell_with_codex_label(session: &ShellSession) -> bool {
+    session.kind == ShellKind::Project
+        && session.command.is_none()
+        && session.editor_path.is_none()
+        && session.harness == Some(HarnessKind::Codex)
+}
+
+/// Sessions among `candidates` whose window 0 pane is at the shell's own
+/// prompt, that is, nothing else is in its foreground.
+fn panes_at_shell_prompt(
+    output: &str,
+    candidates: &HashSet<String>,
+    shell: &str,
+) -> HashSet<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(4, '\t');
+            let (id, window, pane, command) = (
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+            );
+            // A login shell can be reported with its leading dash.
+            (candidates.contains(id)
+                && window == "0"
+                && pane == "0"
+                && command.trim_start_matches('-') == shell)
+                .then(|| id.to_owned())
+        })
+        .collect()
+}
+
 fn orchestrator_skill_version() -> String {
     format!("{:016x}", stable_hash(ORCHESTRATOR_SKILL.as_bytes()))
 }
@@ -2590,6 +2675,54 @@ fn harness_utility_invocation(harness: HarnessKind, arguments: &[String]) -> boo
     }
 }
 
+/// The Codex subcommands that write credentials or configuration into
+/// `CODEX_HOME`, as the command a user would recognize. Read-only forms such
+/// as `login status` and `mcp list` are not included.
+fn codex_home_mutation(arguments: &[String]) -> Option<String> {
+    if arguments
+        .iter()
+        .take_while(|argument| argument.as_str() != "--")
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+    {
+        return None;
+    }
+    let (command, remaining) = codex_first_command(arguments)?;
+    let subcommand = remaining
+        .iter()
+        .map(String::as_str)
+        .find(|argument| !argument.starts_with('-'));
+    let mutates = match (command, subcommand) {
+        ("login", Some("status")) => false,
+        ("login" | "logout", _) => true,
+        ("mcp", Some(subcommand)) => !matches!(subcommand, "list" | "get" | "help"),
+        ("plugin", Some(subcommand)) => {
+            !matches!(subcommand, "list" | "ls" | "show" | "get" | "info" | "help")
+        }
+        ("features", Some("enable" | "disable")) => true,
+        _ => false,
+    };
+    mutates.then(|| match subcommand {
+        Some(subcommand) if command != "login" => format!("codex {command} {subcommand}"),
+        _ => format!("codex {command}"),
+    })
+}
+
+/// Utility commands skip account binding, so they act on whatever `CODEX_HOME`
+/// the shell exports. In a shell RiWork bound to a saved account that is
+/// Orca's managed home, and `logout` or a second `login` would silently change
+/// that account's credentials for every session that uses it.
+fn managed_home_refusal(command: &str, home: &Path) -> String {
+    let own = crate::codex_accounts::default_codex_home()
+        .map(|home| crate::codex_accounts::display_home(&home))
+        .unwrap_or_else(|_| "~/.codex".to_owned());
+    format!(
+        "`{command}` would change {}, a saved account home that Orca manages. \
+         Manage that account in Orca. To run the command against your own profile \
+         instead, set its home explicitly: `CODEX_HOME={own} {command}`.",
+        crate::codex_accounts::display_home(home)
+    )
+}
+
 /// Entry point for the managed PATH wrappers. Preserve arguments as argv,
 /// including supplied prompts, and replace this process with the real CLI.
 fn cua_proxy_arguments(
@@ -2749,6 +2882,12 @@ pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(),
             .any(|argument| argument == "--agent" || argument.starts_with("--agent="))
     {
         return Err("RiWork's Grok launcher uses --agent for its Cua connection; a second --agent cannot be combined with it".to_owned());
+    }
+    if harness == HarnessKind::Codex
+        && let Some((command, home)) =
+            codex_home_mutation(arguments).zip(crate::codex_accounts::managed_codex_home_in_use())
+    {
+        return Err(managed_home_refusal(&command, &home));
     }
     let home = match env::var_os("RIWORK_HOME") {
         Some(home) => PathBuf::from(home),
@@ -3232,6 +3371,12 @@ mod tests {
             if env::var_os("RIWORK_TEST_ACCOUNT_FIXTURE").is_some() {
                 return true;
             }
+            // Fake `codex` executables live in `bin`, ahead of any real one.
+            let path = env::join_paths(
+                std::iter::once(self.0.join("bin"))
+                    .chain(env::var_os("PATH").iter().flat_map(env::split_paths)),
+            )
+            .unwrap();
             let output = Command::new(env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -3243,6 +3388,11 @@ mod tests {
                     "ORCA_USER_DATA_PATH",
                     self.0.join("Orca's `profiles` $(touch injected)"),
                 )
+                .env("PATH", path)
+                .env("RIWORK_CUA_DRIVER", self.0.join("fake-cua-driver"))
+                // A test may itself run inside a RiWork Codex session.
+                .env_remove("CODEX_HOME")
+                .env_remove("RIWORK_CODEX_ACCOUNT_HOME")
                 .output()
                 .unwrap();
             assert!(
@@ -3347,6 +3497,16 @@ mod tests {
         plain.codex_account_label = account_b.label.clone();
         plain.codex_account_email = account_b.email.clone();
         plain.codex_home = Some(account_b.home.clone());
+        let manager = SessionManager {
+            home: state.clone(),
+            tmux: PathBuf::from("/unused/tmux"),
+            socket_name: "unused".into(),
+        };
+        manager
+            .write_registry(&Registry {
+                sessions: vec![plain.clone()],
+            })
+            .unwrap();
         assert_eq!(
             codex_proxy_binding(&state, &[], None, Some(&plain)).unwrap(),
             account_a
@@ -3379,14 +3539,18 @@ mod tests {
             .set_project_codex_account(&beta.id, ProjectCodexAccount::Inherit)
             .unwrap();
         assert!(selected_codex_binding(&state, Some(&beta.id)).is_err());
-        assert_eq!(plain.codex_home, Some(account_b.home));
+        // Preference changes never rewrite a saved session's frozen account.
+        let saved = manager.registered_session(&plain.id).unwrap();
+        assert_eq!(saved.codex_home, Some(account_b.home.clone()));
 
         fs::remove_dir_all(&account_a.home).unwrap();
         assert_eq!(
             selected_codex_binding(&state, Some(&alpha.id)).unwrap_err(),
             "This saved account's home is missing. Restore or sign in through Orca."
         );
-        assert_eq!(plain.codex_account_id.as_deref(), Some("account-b"));
+        let saved = manager.registered_session(&plain.id).unwrap();
+        assert_eq!(saved.codex_account_id.as_deref(), Some("account-b"));
+        assert_eq!(saved.codex_home, Some(account_b.home));
     }
 
     #[test]
@@ -3448,6 +3612,248 @@ mod tests {
             arguments
                 .lines()
                 .any(|argument| argument == "RIWORK_CODEX_ACCOUNT_HOME=")
+        );
+    }
+
+    /// A manager whose tmux records every argument it is given, with fake
+    /// `codex` and Cua driver executables, for the isolated child process.
+    #[cfg(unix)]
+    fn recording_launcher(fixture: &AccountFixture, state: &Path) -> (SessionManager, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = |path: PathBuf, body: &str| {
+            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            path
+        };
+        fs::create_dir_all(fixture.0.join("bin")).unwrap();
+        executable(fixture.0.join("bin/codex"), "exit 0");
+        executable(fixture.0.join("fake-cua-driver"), "exit 0");
+        let capture = fixture.0.join("launch-tmux-argv");
+        let tmux = executable(
+            fixture.0.join("fake-tmux-launch"),
+            &format!(
+                "printf '%s\\n' \"$@\" >> {}",
+                quote_arg(&capture.to_string_lossy())
+            ),
+        );
+        let manager = SessionManager {
+            home: state.to_owned(),
+            tmux,
+            socket_name: "isolated-launch".into(),
+        };
+        (manager, capture)
+    }
+
+    /// The tmux arguments recorded since the previous call.
+    #[cfg(unix)]
+    fn take_recorded(capture: &Path) -> Vec<String> {
+        let recorded = fs::read_to_string(capture).unwrap_or_default();
+        let _ = fs::remove_file(capture);
+        recorded.lines().map(str::to_owned).collect()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn plain_shell_opens_without_a_home_when_its_account_is_unavailable() {
+        use crate::store::{ProjectCodexAccount, Store};
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child("plain_shell_opens_without_a_home_when_its_account_is_unavailable")
+        {
+            return;
+        }
+        let state = fixture.selected("account-b");
+        let (manager, capture) = recording_launcher(&fixture, &state);
+        let store = Store::open(&state).unwrap();
+        let root = fixture.0.join("stale");
+        fs::create_dir_all(&root).unwrap();
+        let other_root = fixture.0.join("inheriting");
+        fs::create_dir_all(&other_root).unwrap();
+        let saved = store.add_project(&root, Some("Saved")).unwrap();
+        let inheriting = store.add_project(&other_root, Some("Inheriting")).unwrap();
+        store
+            .set_project_codex_account(&saved.id, ProjectCodexAccount::Saved("account-a".into()))
+            .unwrap();
+        let account_a =
+            crate::codex_accounts::resolve_launch_binding(&state, Some("account-a")).unwrap();
+        let account_b =
+            crate::codex_accounts::resolve_launch_binding(&state, Some("account-b")).unwrap();
+        let create = |project: &str| manager.create(project.to_owned(), None, root.clone(), None);
+        let codex_home = |arguments: &[String]| {
+            arguments
+                .iter()
+                .find_map(|argument| argument.strip_prefix("CODEX_HOME="))
+                .map(str::to_owned)
+        };
+
+        // Healthy: each project's shell starts on its own effective home.
+        create(&saved.id).unwrap();
+        assert_eq!(
+            codex_home(&take_recorded(&capture)),
+            Some(account_a.home.display().to_string())
+        );
+        create(&inheriting.id).unwrap();
+        assert_eq!(
+            codex_home(&take_recorded(&capture)),
+            Some(account_b.home.display().to_string())
+        );
+
+        // Orca is gone: the saved account's home is missing, and the app-level
+        // choice that the other project inherits does not exist any more.
+        fs::remove_dir_all(&account_a.home).unwrap();
+        crate::settings::SettingsStore::open(&state)
+            .unwrap()
+            .update(|settings| settings.selected_codex_account = Some("deleted".into()))
+            .unwrap();
+        assert!(selected_codex_binding(&state, Some(&saved.id)).is_err());
+        assert!(selected_codex_binding(&state, Some(&inheriting.id)).is_err());
+        for project in [&saved.id, &inheriting.id] {
+            let shell = create(project).unwrap();
+            assert_eq!(shell.harness, None);
+            assert_eq!(shell.codex_home, None);
+            let arguments = take_recorded(&capture);
+            assert!(arguments.iter().any(|argument| argument == "new-session"));
+            assert_eq!(codex_home(&arguments), None, "{arguments:?}");
+            assert!(
+                arguments
+                    .iter()
+                    .any(|argument| argument == "RIWORK_CODEX_ACCOUNT_HOME=")
+            );
+        }
+
+        // Codex launches keep failing closed with the reason.
+        for (result, reason) in [
+            (
+                manager.create_harness(
+                    saved.id.clone(),
+                    None,
+                    root.clone(),
+                    HarnessKind::Codex,
+                    false,
+                ),
+                "home is missing",
+            ),
+            (
+                manager.create_harness(
+                    inheriting.id.clone(),
+                    None,
+                    root.clone(),
+                    HarnessKind::Codex,
+                    false,
+                ),
+                "was not found",
+            ),
+            (
+                manager.orchestrator_create_for_project(saved.id.clone(), root.clone(), None),
+                "home is missing",
+            ),
+        ] {
+            let error = result.unwrap_err();
+            assert!(error.contains(reason), "{error}");
+        }
+        assert!(take_recorded(&capture).is_empty(), "nothing was started");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn project_launches_resolve_the_project_choice_and_the_global_orchestrator_the_app_choice() {
+        use crate::store::{ProjectCodexAccount, Store};
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child(
+            "project_launches_resolve_the_project_choice_and_the_global_orchestrator_the_app_choice",
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-b");
+        let (manager, capture) = recording_launcher(&fixture, &state);
+        let store = Store::open(&state).unwrap();
+        let root = fixture.0.join("launch");
+        fs::create_dir_all(&root).unwrap();
+        let project = store.add_project(&root, Some("Launch")).unwrap();
+        let account_a =
+            crate::codex_accounts::resolve_launch_binding(&state, Some("account-a")).unwrap();
+        let account_b =
+            crate::codex_accounts::resolve_launch_binding(&state, Some("account-b")).unwrap();
+        let assert_frozen =
+            |shell: &ShellSession, expected: &crate::codex_accounts::CodexAccountBinding| {
+                assert_eq!(shell.harness, Some(HarnessKind::Codex));
+                assert_eq!(shell.codex_account_id, expected.id);
+                assert_eq!(shell.codex_home.as_ref(), Some(&expected.home));
+                let saved = manager.registered_session(&shell.id).unwrap();
+                assert_eq!(saved.codex_home.as_ref(), Some(&expected.home));
+                let arguments = take_recorded(&capture);
+                for variable in ["CODEX_HOME", "RIWORK_CODEX_ACCOUNT_HOME"] {
+                    assert!(
+                        arguments.iter().any(|argument| *argument
+                            == format!("{variable}={}", expected.home.display())),
+                        "{variable} missing from {arguments:?}"
+                    );
+                }
+            };
+
+        // Inheriting projects follow the app choice (B); an explicit saved
+        // account wins over it without touching the app setting.
+        let inherited = manager
+            .create_harness(
+                project.id.clone(),
+                None,
+                root.clone(),
+                HarnessKind::Codex,
+                false,
+            )
+            .unwrap();
+        assert_frozen(&inherited, &account_b);
+        store
+            .set_project_codex_account(&project.id, ProjectCodexAccount::Saved("account-a".into()))
+            .unwrap();
+        let harness = manager
+            .create_harness(
+                project.id.clone(),
+                None,
+                root.clone(),
+                HarnessKind::Codex,
+                false,
+            )
+            .unwrap();
+        assert_frozen(&harness, &account_a);
+        // The first shell keeps B: a preference change never rebinds it.
+        assert_eq!(
+            manager
+                .registered_session(&inherited.id)
+                .unwrap()
+                .codex_home,
+            Some(account_b.home.clone())
+        );
+
+        // A project orchestrator uses the project's choice, the global one the app's.
+        let orchestrator = manager
+            .orchestrator_create_for_project(project.id.clone(), root.clone(), None)
+            .unwrap();
+        assert_eq!(
+            orchestrator.project_id.as_deref(),
+            Some(project.id.as_str())
+        );
+        assert_frozen(&orchestrator, &account_a);
+        let global = manager.orchestrator_create(root.clone(), None).unwrap();
+        assert_eq!(global.project_id, None);
+        assert_frozen(&global, &account_b);
+
+        // System default for the project: no account id, the user's own home.
+        store
+            .set_project_codex_account(&project.id, ProjectCodexAccount::SystemDefault)
+            .unwrap();
+        let system = manager
+            .create_harness(
+                project.id.clone(),
+                None,
+                root.clone(),
+                HarnessKind::Codex,
+                false,
+            )
+            .unwrap();
+        assert_eq!(system.codex_account_id, None);
+        assert_eq!(
+            system.codex_home,
+            Some(crate::codex_accounts::default_codex_home().unwrap())
         );
     }
 
@@ -3744,6 +4150,60 @@ mod tests {
                 arguments
             );
         }
+    }
+
+    #[test]
+    fn credential_and_config_commands_are_recognized_but_reads_and_sessions_are_not() {
+        let args = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+        for (arguments, command) in [
+            (&["login"][..], "codex login"),
+            (&["login", "--device-auth"], "codex login"),
+            (&["login", "--with-api-key"], "codex login"),
+            (&["logout"], "codex logout"),
+            (&["--profile", "work", "logout"], "codex logout"),
+            (&["-c", "a=b", "login"], "codex login"),
+            (&["mcp", "add", "docs", "--", "server"], "codex mcp add"),
+            (&["mcp", "remove", "docs"], "codex mcp remove"),
+            (&["mcp", "login", "docs"], "codex mcp login"),
+            (
+                &["plugin", "marketplace", "add", "x"],
+                "codex plugin marketplace",
+            ),
+            (&["features", "enable", "x"], "codex features enable"),
+        ] {
+            assert_eq!(
+                codex_home_mutation(&args(arguments)).as_deref(),
+                Some(command),
+                "{arguments:?}"
+            );
+        }
+        for arguments in [
+            &[][..],
+            &["login", "status"],
+            &["--profile", "work", "login", "status"],
+            &["login", "--help"],
+            &["logout", "-h"],
+            &["--version"],
+            &["mcp"],
+            &["mcp", "list"],
+            &["mcp", "get", "docs"],
+            &["plugin"],
+            &["plugin", "list"],
+            &["features", "list"],
+            &["help", "login"],
+            &["update"],
+            &["exec", "logout"],
+            &["resume", "--last"],
+            &["fix the login flow"],
+            &["--", "logout"],
+        ] {
+            assert_eq!(codex_home_mutation(&args(arguments)), None, "{arguments:?}");
+        }
+        let message =
+            managed_home_refusal("codex logout", Path::new("/orca/codex-accounts/a/home"));
+        assert!(message.contains("`codex logout`"), "{message}");
+        assert!(message.contains("Orca"), "{message}");
+        assert!(message.contains("CODEX_HOME="), "{message}");
     }
 
     #[test]

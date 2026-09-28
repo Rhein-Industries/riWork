@@ -673,7 +673,7 @@ impl SettingsPanel {
             })
             .unwrap_or_default();
         div().flex().flex_col().gap(px(8.0))
-            .child(div().text_size(px(10.0)).text_color(rgb(colors.muted)).child("Choose the account for new Codex sessions. Running sessions keep their account."))
+            .child(div().text_size(px(10.0)).text_color(rgb(colors.muted)).child("Choose the account for new Codex sessions. Running sessions keep their account. A project can override this in Project Settings."))
             .child(div().id("refresh-codex-accounts").track_focus(&self.account_refresh_focus)
                 .flex().items_center().gap(px(8.0)).py(px(5.0)).cursor_pointer()
                 .text_size(px(10.0)).text_color(rgb(colors.cyan))
