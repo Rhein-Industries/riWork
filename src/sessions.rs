@@ -52,6 +52,13 @@ impl HarnessKind {
             Self::Grok => "grok",
         }
     }
+
+    /// Scheduled dispatch needs a structured completed-turn signal and a
+    /// provider identity proof. The picker, `Target::bind` and the ledger's
+    /// `save` all consult this, so a harness cannot be offered but refused.
+    pub fn schedulable(self) -> bool {
+        matches!(self, Self::Codex | Self::Claude)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -756,88 +763,121 @@ impl SessionManager {
         &self,
         shell: &ShellSession,
     ) -> Result<String, String> {
+        self.schedule_provider_proof(shell)
+            .map_err(IdentityError::into_message)
+    }
+
+    /// The provider conversation this pane demonstrably hosts right now. Only
+    /// `Changed` says the pane hosts something else; a missing or unreadable
+    /// proof is `Unproven`, which callers retry instead of pausing the schedule.
+    pub(crate) fn schedule_provider_proof(
+        &self,
+        shell: &ShellSession,
+    ) -> Result<String, IdentityError> {
+        use IdentityError::{Changed, Unproven};
         match shell.harness {
             Some(HarnessKind::Codex) => {
                 let tracker = crate::activity::ActivityTracker::at(self.home.clone());
                 let bound = tracker.schedule_identity(shell);
-                // Normal RiWork launches exec Codex in the pane. A wrapper or
-                // shared server without exact descriptor proof stays unknown.
-                let descriptor = self.schedule_codex_rollout(&shell.id)?;
+                // Normal RiWork launches exec Codex in the pane. A stale binding
+                // is not evidence that Codex is still running: without a live
+                // descriptor proof (Codex exited to a shell, a wrapper or shared
+                // server) the identity stays unknown.
+                let descriptor = self.schedule_codex_rollout(&shell.id).map_err(Unproven)?;
                 match (bound, descriptor) {
                     (Some(bound), Some(path)) => {
-                        let home = shell.codex_home.as_ref().ok_or("Codex account home is unknown")?;
-                        if !path.starts_with(home.join("sessions")) { return Err("Codex rollout moved outside the pinned account home".into()); }
+                        let home = shell
+                            .codex_home
+                            .as_ref()
+                            .ok_or_else(|| Unproven("Codex account home is unknown".into()))?;
+                        if !path.starts_with(home.join("sessions")) {
+                            return Err(Changed(
+                                "Codex rollout moved outside the pinned account home".into(),
+                            ));
+                        }
                         let name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-                        if !name.ends_with(&bound) { return Err("Codex thread changed in the selected pane".into()); }
+                        if !name.ends_with(&bound) {
+                            return Err(Changed(
+                                "Codex thread changed in the selected pane".into(),
+                            ));
+                        }
                         Ok(bound)
-                    },
-                    (Some(bound), None) => Ok(bound),
-                    (None, Some(path)) => tracker.bind_schedule_rollout(shell, &path),
-                    (None, None) => Err("Codex thread identity is not yet known; complete a turn or use a directly launched RiWork Codex pane".into()),
+                    }
+                    (Some(_), None) => Err(Unproven(
+                        "Codex is not the pane's foreground process, so its thread is unproven; deferring".into(),
+                    )),
+                    (None, Some(path)) => tracker
+                        .bind_schedule_rollout(shell, &path)
+                        .map_err(Unproven),
+                    (None, None) => Err(Unproven(
+                        "Codex thread identity is not yet known; complete a turn or use a directly launched RiWork Codex pane".into(),
+                    )),
                 }
             }
             Some(HarnessKind::Claude) => crate::agent_hooks::schedule_state(&self.home, &shell.id)
                 .map(|(id, _)| id)
-                .ok_or(
-                    "Claude session identity is not yet known; wait for a completed turn".into(),
-                ),
-            Some(HarnessKind::Grok) => Err("Grok scheduling is not yet supported".into()),
-            None => Err("Scheduling requires Codex or Claude".into()),
+                .ok_or_else(|| {
+                    Unproven(
+                        "Claude session identity is not yet known; wait for a completed turn"
+                            .into(),
+                    )
+                }),
+            Some(harness) if !harness.schedulable() => Err(Unproven(format!(
+                "{} sessions cannot be scheduled yet",
+                harness.program()
+            ))),
+            _ => Err(Unproven("Scheduling requires Codex or Claude".into())),
         }
     }
 
-    fn schedule_codex_rollout(&self, id: &str) -> Result<Option<PathBuf>, String> {
-        let pane = self.tmux_text(&[
+    /// `(pane_pid, pane_current_command)` of the pane's foreground process.
+    fn schedule_pane_process(&self, id: &str) -> Result<(String, String), String> {
+        let pane = self.schedule_pane_report(id)?;
+        let (pid, command) = pane
+            .trim()
+            .split_once('|')
+            .ok_or("Cannot identify the harness process")?;
+        Ok((pid.to_owned(), command.to_owned()))
+    }
+
+    fn schedule_pane_report(&self, id: &str) -> Result<String, String> {
+        #[cfg(test)]
+        if let Some(probe) = schedule_probe::lookup(&self.home) {
+            return (probe.pane)(id);
+        }
+        self.tmux_text(&[
             "display-message",
             "-p",
             "-t",
             &pane_target(id),
             "#{pane_pid}|#{pane_current_command}",
-        ])?;
-        let (pid, command) = pane
-            .trim()
-            .split_once('|')
-            .ok_or("Cannot identify the harness process")?;
-        if command != "codex" || pid.parse::<u32>().is_err() {
-            return Ok(None);
-        }
-        // A bounded child query, never a scan of another pane's files/processes.
-        let mut child = Command::new("/usr/sbin/lsof")
-            .args(["-nP", "-a", "-p", pid, "-Fn"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Cannot inspect Codex rollout identity: {e}"))?;
-        let started = std::time::Instant::now();
-        loop {
-            if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-                break;
-            }
-            if started.elapsed() > std::time::Duration::from_secs(2) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("Codex descriptor identity check timed out".into());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let output = child.wait_with_output().map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            return Err("Cannot verify Codex descriptor identity".into());
-        }
-        let paths: HashSet<_> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| line.strip_prefix('n'))
-            .filter(|path| path.contains("/rollout-") && path.ends_with(".jsonl"))
-            .map(PathBuf::from)
-            .collect();
-        if paths.len() != 1 {
-            return Err("Codex has no unique open primary rollout; scheduling is deferred".into());
-        }
-        Ok(paths.into_iter().next())
+        ])
     }
 
-    /// The scheduling gate and normal `send` share the input lock. The registry
-    /// lock also excludes RiWork close/respawn while checking and submitting.
+    fn schedule_lsof(&self) -> PathBuf {
+        #[cfg(test)]
+        if let Some(probe) = schedule_probe::lookup(&self.home) {
+            return probe.lsof;
+        }
+        PathBuf::from("/usr/sbin/lsof")
+    }
+
+    /// `Ok(None)` means the foreground process cannot be Codex at all. Otherwise
+    /// the pane's own process group must hold exactly one open primary rollout.
+    fn schedule_codex_rollout(&self, id: &str) -> Result<Option<PathBuf>, String> {
+        let (pid, command) = self.schedule_pane_process(id)?;
+        // `node` is the npm launcher's name. It earns no trust of its own: the
+        // same single-rollout descriptor proof must hold.
+        if !matches!(command.as_str(), "codex" | "node") || pid.parse::<u32>().is_err() {
+            return Ok(None);
+        }
+        codex_open_rollout(&self.schedule_lsof(), &pid).map(Some)
+    }
+
+    /// The registry lock excludes RiWork close/respawn for the whole attempt.
+    /// The readiness sample and the submission also share `send`'s input lock.
+    /// Only a target that is truly gone or demonstrably different fails (and
+    /// pauses); a check that could not be completed defers and is retried.
     pub(crate) fn send_scheduled(
         &self,
         target: &crate::schedules::Target,
@@ -848,15 +888,47 @@ impl SessionManager {
     ) -> Result<crate::schedules::Delivery, String> {
         use crate::schedules::{Delivery, Scope};
         let _registry = self.lock_registry()?;
-        let shell = match self.get(&target.shell_id) { Ok(s) if s.alive => s, _ => return Ok(Delivery::Failed("Target session no longer exists or has exited; select an existing target explicitly.".into())) };
-        if !target.matches(state, &shell)
-            || self.schedule_pane_identity(&shell.id)? != target.pane_identity
-            || self.schedule_provider_identity(&shell).ok().as_ref()
-                != Some(&target.provider_session)
-        {
-            return Ok(Delivery::Failed(
+        let gone = || {
+            Delivery::Failed(
+                "Target session no longer exists or has exited; select an existing target explicitly."
+                    .into(),
+            )
+        };
+        let changed = || {
+            Delivery::Failed(
                 "Target identity changed; edit and explicitly select the intended session.".into(),
-            ));
+            )
+        };
+        let shell = match self.get(&target.shell_id) {
+            Ok(shell) if shell.alive => shell,
+            Ok(_) => return Ok(gone()),
+            Err(error) if error.starts_with("unknown shell") => return Ok(gone()),
+            Err(error) => {
+                return Ok(Delivery::Deferred(format!(
+                    "Cannot read the target session: {error}"
+                )));
+            }
+        };
+        if !target.matches(state, &shell) {
+            return Ok(changed());
+        }
+        match self.schedule_pane_identity(&shell.id) {
+            Ok(pane) if pane == target.pane_identity => {}
+            Ok(_) => return Ok(changed()),
+            Err(error) => {
+                return Ok(Delivery::Deferred(format!(
+                    "Cannot read the target pane: {error}"
+                )));
+            }
+        }
+        match self.schedule_provider_proof(&shell) {
+            Ok(provider) if provider == target.provider_session => {}
+            Ok(_) | Err(IdentityError::Changed(_)) => return Ok(changed()),
+            Err(IdentityError::Unproven(reason)) => {
+                return Ok(Delivery::Deferred(format!(
+                    "Provider identity is unproven: {reason}"
+                )));
+            }
         }
         if let Scope::Workspace { worktree_id, .. } = &target.scope {
             let workspace = state
@@ -864,10 +936,15 @@ impl SessionManager {
                 .iter()
                 .find(|w| &w.id == worktree_id)
                 .ok_or("Workspace is missing")?;
-            if !self
-                .current_directory(&shell.id)?
-                .starts_with(&workspace.path)
-            {
+            let directory = match self.current_directory(&shell.id) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    return Ok(Delivery::Deferred(format!(
+                        "Cannot read the worker's directory: {error}"
+                    )));
+                }
+            };
+            if !directory.starts_with(&workspace.path) {
                 return Ok(Delivery::Failed(
                     "Worker left the selected workspace.".into(),
                 ));
@@ -896,6 +973,15 @@ impl SessionManager {
                     None => None,
                 };
                 let ready = (|| {
+                    // Claude's identity comes from hooks alone, which outlive the
+                    // process. A shell in the foreground means Claude exited, and
+                    // shell prompts often draw the same `❯` as its composer.
+                    if shell.harness == Some(HarnessKind::Claude) {
+                        let (_, command) = self.schedule_pane_process(&shell.id)?;
+                        if is_interactive_shell(&command) {
+                            return Err(format!("The pane is running {command}, not Claude"));
+                        }
+                    }
                     let token =
                         token.ok_or("Harness is busy, blocked or its idle lifecycle is unknown")?;
                     let first = self.schedule_prompt_screen(&shell)?;
@@ -1887,12 +1973,19 @@ fn harness_command(
                 quote_arg(&state_home.to_string_lossy()),
                 quote_arg(shell_id)
             );
+            // Passed per invocation with --settings; the user's Claude config is never edited.
+            let hooks: serde_json::Map<_, _> = crate::agent_hooks::CLAUDE_HOOK_EVENTS
+                .iter()
+                .map(|event| {
+                    (
+                        (*event).to_owned(),
+                        serde_json::json!([{"hooks":[{"type":"command","command":hook_command,"timeout":10}]}]),
+                    )
+                })
+                .collect();
             let settings = serde_json::json!({
                 "statusLine": { "type": "command", "command": telemetry_command },
-                "hooks": {
-                    "UserPromptSubmit": [{"hooks":[{"type":"command","command":hook_command,"timeout":10}]}],
-                    "Stop": [{"hooks":[{"type":"command","command":hook_command,"timeout":10}]}]
-                }
+                "hooks": hooks
             });
             arguments.push("--settings".to_owned());
             arguments.push(settings.to_string());
@@ -3055,6 +3148,154 @@ fn read_processes() -> Result<HashMap<u32, ProcessInfo>, String> {
     Ok(processes)
 }
 
+/// Why a scheduled target's provider identity is not confirmed.
+#[derive(Debug)]
+pub(crate) enum IdentityError {
+    /// Evidence was read and contradicts the pinned conversation.
+    Changed(String),
+    /// No proof either way: a timeout, unreadable evidence, or a foreground
+    /// process that is not the harness. Callers retry rather than pause.
+    Unproven(String),
+}
+
+impl IdentityError {
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            Self::Changed(message) | Self::Unproven(message) => message,
+        }
+    }
+}
+
+/// A shell in the foreground means the harness exited; shell prompts often
+/// draw the same `›`/`❯` glyph as a harness composer.
+fn is_interactive_shell(command: &str) -> bool {
+    matches!(
+        command.trim_start_matches('-'),
+        "sh" | "bash"
+            | "zsh"
+            | "fish"
+            | "dash"
+            | "ksh"
+            | "tcsh"
+            | "csh"
+            | "nu"
+            | "xonsh"
+            | "elvish"
+    )
+}
+
+const DESCRIPTOR_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const DESCRIPTOR_LISTING_LIMIT: usize = 4 * 1024 * 1024;
+
+/// The single primary rollout held open by the pane's process group, whose
+/// leader is `pid`. That is the exec'd harness plus a launcher child such as
+/// the npm wrapper's, and never another pane's files or processes. A bounded
+/// child query, not a scan.
+fn codex_open_rollout(lsof: &Path, pid: &str) -> Result<PathBuf, String> {
+    use std::io::Read;
+    let mut child = Command::new(lsof)
+        .args(["-nP", "-a", "-g", pid, "-Fn"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Cannot inspect Codex rollout identity: {e}"))?;
+    // A pipe holds 64 KiB; a process with many descriptors writes more and
+    // would block until the timeout unless the listing is drained meanwhile.
+    let mut stdout = child.stdout.take().ok_or("Cannot read Codex descriptors")?;
+    let reader = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let mut truncated = false;
+        let mut chunk = [0u8; 16 * 1024];
+        while let Ok(read) = stdout.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            let room = DESCRIPTOR_LISTING_LIMIT - kept.len();
+            truncated |= read > room;
+            kept.extend_from_slice(&chunk[..read.min(room)]);
+        }
+        (kept, truncated)
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.to_string());
+            }
+        }
+        if started.elapsed() > DESCRIPTOR_CHECK_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Codex descriptor identity check timed out".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let (listing, truncated) = reader
+        .join()
+        .map_err(|_| "Cannot read Codex descriptors".to_owned())?;
+    if !status.success() {
+        return Err("Cannot verify Codex descriptor identity".into());
+    }
+    if truncated {
+        return Err("Codex descriptor listing is too large to verify".into());
+    }
+    let paths: HashSet<_> = String::from_utf8_lossy(&listing)
+        .lines()
+        .filter_map(|line| line.strip_prefix('n'))
+        .filter(|path| path.contains("/rollout-") && path.ends_with(".jsonl"))
+        .map(PathBuf::from)
+        .collect();
+    if paths.len() != 1 {
+        return Err("Codex has no unique open primary rollout; scheduling is deferred".into());
+    }
+    Ok(paths.into_iter().next().expect("one rollout"))
+}
+
+/// Test seam: stands in for the pane's foreground-process report and for
+/// `lsof`, keyed by state home so unrelated fixtures keep the real probes.
+#[cfg(test)]
+pub(crate) mod schedule_probe {
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex},
+    };
+
+    pub(crate) type PaneReport = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
+    #[derive(Clone)]
+    pub(crate) struct Probe {
+        pub(crate) pane: PaneReport,
+        pub(crate) lsof: PathBuf,
+    }
+    static PROBES: Mutex<Vec<(PathBuf, Probe)>> = Mutex::new(Vec::new());
+
+    /// Removes the override when dropped, even if the test panics.
+    pub(crate) struct Installed(PathBuf);
+    impl Drop for Installed {
+        fn drop(&mut self) {
+            PROBES.lock().unwrap().retain(|(home, _)| home != &self.0);
+        }
+    }
+    pub(crate) fn install(home: &Path, pane: PaneReport, lsof: PathBuf) -> Installed {
+        let home = home.canonicalize().unwrap();
+        let mut probes = PROBES.lock().unwrap();
+        probes.retain(|(existing, _)| existing != &home);
+        probes.push((home.clone(), Probe { pane, lsof }));
+        Installed(home)
+    }
+    pub(super) fn lookup(home: &Path) -> Option<Probe> {
+        PROBES
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(existing, _)| existing == home)
+            .map(|(_, probe)| probe.clone())
+    }
+}
+
 fn schedule_empty_prompt_at(
     harness: Option<HarnessKind>,
     screen: &str,
@@ -3951,7 +4192,7 @@ mod tests {
             let settings: serde_json::Value =
                 serde_json::from_str(&arguments[settings_index + 1]).unwrap();
             assert_eq!(settings["statusLine"]["type"], "command");
-            for event in ["UserPromptSubmit", "Stop"] {
+            for event in ["UserPromptSubmit", "Stop", "SessionStart", "SubagentStop"] {
                 let hook = settings["hooks"][event][0]["hooks"][0].as_object().unwrap();
                 assert_eq!(hook["type"], "command");
                 assert_eq!(

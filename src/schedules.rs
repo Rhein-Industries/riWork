@@ -84,6 +84,20 @@ pub struct Target {
     pub pane_identity: String,
     pub provider_session: String,
 }
+fn refuse_unschedulable(harness: HarnessKind) -> Result<(), String> {
+    if harness.schedulable() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} sessions cannot be scheduled yet; use Codex or Claude",
+            harness.program()
+        ))
+    }
+}
+/// Titles are shown raw in text-mode CLI output, so they get the prompt's rule.
+fn single_line(text: &str) -> bool {
+    !text.chars().any(|c| c.is_control())
+}
 impl Target {
     pub fn bind(
         scope: Scope,
@@ -99,9 +113,7 @@ impl Target {
         let harness = shell
             .harness
             .ok_or("Scheduling requires an existing Codex or Claude session")?;
-        if harness == HarnessKind::Grok {
-            return Err("Grok scheduling is not yet supported".into());
-        }
+        refuse_unschedulable(harness)?;
         Ok(Self {
             scope,
             shell_id: id.into(),
@@ -294,13 +306,12 @@ impl ScheduleStore {
         if timing.first() <= now {
             return Err("First run must be in the future".into());
         }
-        if title.trim().is_empty() || title.len() > 120 {
-            return Err("Enter a title (up to 120 bytes)".into());
+        refuse_unschedulable(target.harness)?;
+        // Only the trimmed title is stored, so only it needs to be clean.
+        if title.trim().is_empty() || title.len() > 120 || !single_line(title.trim()) {
+            return Err("Enter a title (up to 120 bytes, no control characters)".into());
         }
-        if prompt.trim().is_empty()
-            || prompt.len() > 16 * 1024
-            || prompt.chars().any(|c| c.is_control())
-        {
+        if prompt.trim().is_empty() || prompt.len() > 16 * 1024 || !single_line(&prompt) {
             return Err("Enter a single-line prompt (up to 16 KiB, no control characters)".into());
         }
         self.mutate(|ledger| {
@@ -466,19 +477,31 @@ impl ScheduleStore {
         let due = s.next_run.unwrap();
         if now.saturating_sub(due) > GRACE_SECONDS {
             let current = &mut ledger.schedules[index];
+            // Keep why the last checks deferred: the window closing is a symptom.
+            let mut message =
+                "Missed the 5-minute delivery window; skipped overdue occurrences.".to_owned();
+            if let Some(run) = &current.last_run
+                && run.outcome == Outcome::Deferred
+                && run.due_at == due
+            {
+                message += &format!(" Last check: {}", one_line(&run.message));
+            }
             current.next_run = current.timing.next_after(now);
             current.last_run = Some(Run {
                 due_at: due,
                 observed_at: now,
                 outcome: Outcome::Missed,
-                message: "Missed the 5-minute delivery window; skipped overdue occurrences.".into(),
+                message,
             });
             current.revision += 1;
             return self.write(&ledger);
         }
         let mut claimed = false;
+        let mut claim_write_started = false;
         let result = dispatch(&s.target, &s.prompt, &mut |token| {
-            if now >= ledger.window_started.saturating_add(60) {
+            // A backward clock step also starts a new window; otherwise the old
+            // one would outlast the step by up to 60 s.
+            if now < ledger.window_started || now >= ledger.window_started.saturating_add(60) {
                 ledger.window_started = now;
                 ledger.sends_in_window = 0;
             }
@@ -510,17 +533,30 @@ impl ScheduleStore {
                 message: "Delivery in progress".into(),
             });
             current.revision += 1;
+            claim_write_started = true;
             self.write(&ledger)?;
             claimed = true;
             Ok(true)
-        })?;
+        });
+        let result = match result {
+            Ok(result) => result,
+            // Only a failed claim write may leave the ledger in an unknown state
+            // (the next owner settles it). Any other error came before input, and
+            // returning it here would retry this oldest schedule every second,
+            // starving the rest until it aged into Missed. Record it and back off.
+            Err(error) if !claim_write_started => {
+                eprintln!("riwork schedules: cannot check {}: {error}", s.id);
+                Delivery::Deferred(format!("Delivery check failed; will retry: {error}"))
+            }
+            Err(error) => return Err(error),
+        };
         let (outcome, message, pause) = match result {
             Delivery::Submitted => (
                 Outcome::Submitted,
                 "Submitted once to the pinned session; agent completion is separate.".into(),
                 false,
             ),
-            Delivery::Deferred(e) => (Outcome::Deferred, e, false),
+            Delivery::Deferred(e) => (Outcome::Deferred, one_line(&e), false),
             Delivery::Failed(e) => (Outcome::Failed, e, true),
             Delivery::Uncertain(e) => (Outcome::Uncertain, e, true),
         };
@@ -547,6 +583,13 @@ impl ScheduleStore {
         current.revision += 1;
         self.write(&ledger)
     }
+}
+/// Error text becomes a ledger message shown by the CLI and panel.
+fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(300)
+        .collect()
 }
 fn private_file(path: &Path, new: bool) -> Result<File, String> {
     if fs::symlink_metadata(path).is_ok_and(|m| !m.is_file()) {

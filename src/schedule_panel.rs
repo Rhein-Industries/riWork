@@ -2,7 +2,7 @@
 use crate::{
     project_settings::{Input, impl_input_handler, input_content},
     schedules::{self, Schedule, ScheduleStore, Scope, Target, Timing},
-    sessions::{SessionManager, ShellSession},
+    sessions::{HarnessKind, SessionManager, ShellSession},
     store::{State, Store},
     theme, utf16_to_byte,
 };
@@ -635,7 +635,7 @@ impl Render for SchedulePanel {
                 .iter()
                 .filter(|s| {
                     s.alive
-                        && s.harness.is_some()
+                        && s.harness.is_some_and(HarnessKind::schedulable)
                         && scope
                             .as_ref()
                             .is_ok_and(|scope| scope.matches(&self.state, s))
@@ -649,7 +649,7 @@ impl Render for SchedulePanel {
                     .child("EXISTING TARGET · CLICK TO EXPLICITLY BIND THIS SESSION"),
             );
             if targets.is_empty() {
-                choices = choices.child(div().text_color(rgb(colors.gold)).child(scope.as_ref().err().cloned().unwrap_or("No live harness in this scope. Open one separately, complete a turn, then return here.".into())));
+                choices = choices.child(div().text_color(rgb(colors.gold)).child(scope.as_ref().err().cloned().unwrap_or("No live Codex or Claude session in this scope. Open one separately, complete a turn, then return here.".into())));
             }
             for target in targets {
                 choices = choices.child(self.button(
