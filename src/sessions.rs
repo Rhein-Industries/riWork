@@ -476,7 +476,59 @@ impl SessionManager {
         for session in &mut sessions {
             session.alive = live.contains(&session.id);
         }
+        if sessions
+            .iter()
+            .any(|session| !session.alive && session.editor_path.is_some())
+        {
+            let pruned = self.prune_exited_editors();
+            sessions.retain(|session| !pruned.contains(&session.id));
+        }
         Ok(sessions)
+    }
+
+    /// A Vim session has no `remain-on-exit`: `:q` destroys its tmux session,
+    /// so its registry row can never be revived. Only editor rows are pruned;
+    /// an exited agent or shell keeps its row for saved attribution. This is
+    /// housekeeping run from `list`, so it never waits: callers such as
+    /// scheduled delivery already hold the registry lock and a blocking
+    /// acquire would deadlock. A skipped or failed prune is retried by the
+    /// next `list`.
+    fn prune_exited_editors(&self) -> HashSet<String> {
+        let path = self.home.join("sessions.lock");
+        let Ok(lock) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+        else {
+            return HashSet::new();
+        };
+        if lock.try_lock().is_err() {
+            return HashSet::new();
+        }
+        // Creation holds this lock from `new-session` until the row is
+        // written, so a fresh liveness check under it cannot mistake a session
+        // that is still being registered for a dead one.
+        let (Ok(mut registry), Ok(live)) = (self.read_registry(), self.live_session_names()) else {
+            return HashSet::new();
+        };
+        let pruned: HashSet<String> = registry
+            .sessions
+            .iter()
+            .filter(|session| session.editor_path.is_some() && !live.contains(&session.id))
+            .map(|session| session.id.clone())
+            .collect();
+        if pruned.is_empty() {
+            return pruned;
+        }
+        registry
+            .sessions
+            .retain(|session| !pruned.contains(&session.id));
+        if self.write_registry(&registry).is_err() {
+            return HashSet::new();
+        }
+        pruned
     }
 
     pub fn get(&self, id: &str) -> Result<ShellSession, String> {
@@ -517,6 +569,12 @@ impl SessionManager {
             .iter_mut()
             .find(|session| session.id == id)
             .ok_or_else(|| format!("unknown shell {id}"))?;
+        // An agent in a Claude or Grok pane may itself run `codex exec` through
+        // the PATH shim. That child must not relabel the pane's harness, drop
+        // its activity binding or replace its account.
+        if !matches!(session.harness, None | Some(HarnessKind::Codex)) {
+            return Ok(());
+        }
         session.harness = Some(HarnessKind::Codex);
         session.codex_account_id = binding.id.clone();
         session.codex_account_label = binding.label.clone();
@@ -818,6 +876,7 @@ impl SessionManager {
             &shell.id,
             text,
             &|args| self.tmux_text(args),
+            &|args, input| self.tmux_text_input(args, input),
             || {
                 let token = match shell.harness {
                     Some(HarnessKind::Codex) => {
@@ -1078,7 +1137,9 @@ impl SessionManager {
         if !registry.sessions.iter().any(|session| session.id == id) {
             return Err(format!("unknown shell {id}"));
         }
-        if self.is_alive(id) {
+        // A tmux failure (for example a timeout) is not "already exited":
+        // dropping the row would orphan a session that may still be running.
+        if self.live_session_names()?.contains(id) {
             self.kill_tmux_session(id)?;
         }
         registry.sessions.retain(|session| session.id != id);
@@ -1367,11 +1428,25 @@ impl SessionManager {
     }
 
     fn paste_and_submit(&self, id: &str, text: &str) -> Result<(), String> {
-        crate::session_input::submit(&self.home, id, text, &|args| self.tmux_text(args))
+        crate::session_input::submit(
+            &self.home,
+            id,
+            text,
+            &|args| self.tmux_text(args),
+            &|args, input| self.tmux_text_input(args, input),
+        )
     }
 
     fn tmux_command(&self, args: &[&str]) -> Result<Output, String> {
-        Command::new(&self.tmux)
+        self.tmux_run(args, None)
+    }
+
+    /// Every tmux client is bounded: a wedged server must fail a call, not
+    /// freeze the caller (often the UI thread). Nothing sent through here is
+    /// expected to block; no `wait-for`, `run-shell` or interactive attach.
+    fn tmux_run(&self, args: &[&str], input: Option<&[u8]>) -> Result<Output, String> {
+        let mut command = Command::new(&self.tmux);
+        command
             .arg("-L")
             .arg(&self.socket_name)
             .arg("-f")
@@ -1379,9 +1454,9 @@ impl SessionManager {
             .args(args)
             .env_remove("TMUX")
             .env_remove("RIWORK_RESTORE_TICKET")
-            .env("PATH", effective_path())
-            .output()
-            .map_err(|error| format!("run {}: {error}", self.tmux.display()))
+            .env("PATH", effective_path());
+        let label = format!("tmux {}", args.first().copied().unwrap_or_default());
+        run_bounded(command, input, TMUX_TIMEOUT, &label)
     }
 
     fn tmux_checked(&self, args: &[&str]) -> Result<Output, String> {
@@ -1390,6 +1465,16 @@ impl SessionManager {
             return Err(tmux_error(&output));
         }
         Ok(output)
+    }
+
+    /// Run a tmux command whose argument list must stay free of user text,
+    /// passing that text on stdin instead (`load-buffer -`).
+    fn tmux_text_input(&self, args: &[&str], input: &[u8]) -> Result<String, String> {
+        let output = self.tmux_run(args, Some(input))?;
+        if !output.status.success() {
+            return Err(tmux_error(&output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     fn lock_registry(&self) -> Result<File, String> {
@@ -2566,6 +2651,92 @@ fn no_tmux_server(output: &Output) -> bool {
     stderr.contains("no server running") || stderr.contains("error connecting to")
 }
 
+/// Upper bound for any single tmux client. A healthy server answers in
+/// milliseconds; this only trips when the server is wedged.
+const TMUX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run a command to completion, capturing its output like `Command::output`,
+/// but kill it and fail if it outlives `timeout`. `input` is written to stdin
+/// from a helper thread so a large payload cannot deadlock against the child.
+fn run_bounded(
+    mut command: Command,
+    input: Option<&[u8]>,
+    timeout: std::time::Duration,
+    label: &str,
+) -> Result<Output, String> {
+    use std::{
+        io::Read,
+        process::Stdio,
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
+    fn drain(mut reader: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = reader.read_to_end(&mut bytes);
+            let _ = sender.send(bytes);
+        });
+        receiver
+    }
+    let program = command.get_program().to_string_lossy().into_owned();
+    command
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("run {program}: {error}"))?;
+    if let (Some(mut stdin), Some(input)) = (child.stdin.take(), input) {
+        let input = input.to_vec();
+        // A child that exits early closes the pipe; that surfaces as its status.
+        thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+    }
+    let stdout = drain(child.stdout.take().ok_or("capture stdout")?);
+    let stderr = drain(child.stderr.take().ok_or("capture stderr")?);
+    let deadline = Instant::now() + timeout;
+    let mut pause = Duration::from_millis(1);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {}
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{label} did not finish within {}s and was stopped; the server may be unresponsive",
+                    timeout.as_secs_f32()
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("wait for {label}: {error}"));
+            }
+        }
+        thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(25));
+    };
+    // The child is gone; a stream that stays open belongs to a leaked descendant.
+    let collect = |receiver: mpsc::Receiver<Vec<u8>>| {
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| format!("{label} left its output stream open"))
+    };
+    Ok(Output {
+        status,
+        stdout: collect(stdout)?,
+        stderr: collect(stderr)?,
+    })
+}
+
 fn tmux_error(output: &Output) -> String {
     let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if detail.is_empty() {
@@ -2711,6 +2882,9 @@ fn strip_schedule_sgr(text: &str) -> String {
     }
     output
 }
+
+#[cfg(test)]
+mod tmux_tests;
 
 #[cfg(test)]
 mod tests {
