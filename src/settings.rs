@@ -2,7 +2,7 @@
 
 use std::{
     collections::BTreeMap,
-    env, fs,
+    fs,
     fs::{File, OpenOptions},
     io::Write,
     path::PathBuf,
@@ -13,7 +13,8 @@ use gpui::{
     AnyElement, App, Context, EventEmitter, FocusHandle, Global, IntoElement, KeyDownEvent,
     MouseButton, Render, Window, div, prelude::*, px, rgb,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::{
@@ -119,8 +120,7 @@ fn run_cua_action(action: CuaAction, cx: &mut App) {
     .detach();
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
     pub schema_version: u32,
     pub theme: ThemeChoice,
@@ -146,6 +146,57 @@ impl Default for Settings {
     }
 }
 
+impl<'de> Deserialize<'de> for Settings {
+    /// Every field falls back to its default on its own, so a value that a
+    /// newer build wrote (a theme or sort order this build lacks) cannot make
+    /// the whole file unreadable. The schema version and the Codex account
+    /// selection stay strict: guessing there would launch agents on the wrong
+    /// account or rewrite a format this build does not understand.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let object = Map::<String, Value>::deserialize(deserializer)?;
+        let defaults = Self::default();
+        Ok(Self {
+            schema_version: strict_field(&object, "schema_version", defaults.schema_version)?,
+            theme: lenient_field(&object, "theme", defaults.theme),
+            use_riwork_colors: lenient_field(
+                &object,
+                "use_riwork_colors",
+                defaults.use_riwork_colors,
+            ),
+            remember_window_size: lenient_field(
+                &object,
+                "remember_window_size",
+                defaults.remember_window_size,
+            ),
+            project_order: lenient_field(&object, "project_order", defaults.project_order),
+            selected_codex_account: strict_field(
+                &object,
+                "selected_codex_account",
+                defaults.selected_codex_account,
+            )?,
+            status_bar: lenient_field(&object, "status_bar", defaults.status_bar),
+        })
+    }
+}
+
+fn lenient_field<T: DeserializeOwned>(object: &Map<String, Value>, key: &str, default: T) -> T {
+    object
+        .get(key)
+        .and_then(|value| T::deserialize(value).ok())
+        .unwrap_or(default)
+}
+
+fn strict_field<T: DeserializeOwned, E: serde::de::Error>(
+    object: &Map<String, Value>,
+    key: &str,
+    default: T,
+) -> Result<T, E> {
+    match object.get(key) {
+        None => Ok(default),
+        Some(value) => T::deserialize(value).map_err(|error| E::custom(format!("{key}: {error}"))),
+    }
+}
+
 impl Global for Settings {}
 
 #[derive(Clone)]
@@ -155,17 +206,15 @@ pub struct SettingsStore {
 
 impl SettingsStore {
     pub fn open_default() -> Result<Self, String> {
-        let dir = match env::var_os("RIWORK_HOME") {
-            Some(dir) => PathBuf::from(dir),
-            None => PathBuf::from(env::var_os("HOME").ok_or("HOME is unset; set RIWORK_HOME")?)
-                .join(".local/share/riwork"),
-        };
-        Self::open(dir)
+        Self::open(crate::paths::riwork_home()?)
     }
 
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, String> {
         let dir = dir.into();
-        fs::create_dir_all(&dir)
+        if dir.as_os_str().is_empty() {
+            return Err("The RiWork data directory path is empty".to_owned());
+        }
+        crate::paths::create_private_dir(&dir)
             .map_err(|error| format!("Cannot create settings directory: {error}"))?;
         Ok(Self { dir })
     }
@@ -179,8 +228,10 @@ impl SettingsStore {
     pub fn update(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
         let lock = self.lock_file()?;
         FileExt::lock_exclusive(&lock).map_err(|error| format!("Cannot lock settings: {error}"))?;
-        let mut settings = self.read()?;
+        let (before, document) = self.read_with_document()?;
+        let mut settings = before.clone();
         change(&mut settings);
+        let document = merged_document(document, &before, &settings)?;
         let path = self.dir.join("settings.json");
         let temporary = self.dir.join(format!(".settings-{}.tmp", Uuid::new_v4()));
         let result = (|| {
@@ -189,7 +240,7 @@ impl SettingsStore {
                 .create_new(true)
                 .open(&temporary)
                 .map_err(|error| format!("Cannot create settings: {error}"))?;
-            serde_json::to_writer_pretty(&mut file, &settings)
+            serde_json::to_writer_pretty(&mut file, &document)
                 .map_err(|error| format!("Cannot encode settings: {error}"))?;
             file.write_all(b"\n")
                 .and_then(|_| file.sync_all())
@@ -218,15 +269,23 @@ impl SettingsStore {
     }
 
     fn read(&self) -> Result<Settings, String> {
+        self.read_with_document().map(|(settings, _)| settings)
+    }
+
+    /// Also return the file's own JSON object: settings from another RiWork
+    /// build may hold keys and values this one does not model.
+    fn read_with_document(&self) -> Result<(Settings, Map<String, Value>), String> {
         let path = self.dir.join("settings.json");
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Settings::default());
+                return Ok((Settings::default(), Map::new()));
             }
             Err(error) => return Err(format!("Cannot read settings: {error}")),
         };
-        let settings: Settings = serde_json::from_slice(&bytes)
+        let document: Map<String, Value> = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Cannot parse settings: {error}"))?;
+        let settings = Settings::deserialize(Value::Object(document.clone()))
             .map_err(|error| format!("Cannot parse settings: {error}"))?;
         if settings.schema_version != 1 {
             return Err(format!(
@@ -234,8 +293,31 @@ impl SettingsStore {
                 settings.schema_version
             ));
         }
-        Ok(settings)
+        Ok((settings, document))
     }
+}
+
+/// Apply only what `change` altered to the file's own JSON. Unknown keys and
+/// values this build read as defaults (a theme a newer build added) stay as
+/// written until that setting changes to something other than what it read as.
+fn merged_document(
+    mut document: Map<String, Value>,
+    before: &Settings,
+    after: &Settings,
+) -> Result<Map<String, Value>, String> {
+    let encode = |settings: &Settings| match serde_json::to_value(settings) {
+        Ok(Value::Object(fields)) => Ok(fields),
+        Ok(_) => Err("Cannot encode settings: not an object".to_owned()),
+        Err(error) => Err(format!("Cannot encode settings: {error}")),
+    };
+    let before = encode(before)?;
+    for (key, value) in encode(after)? {
+        if document.contains_key(&key) && before.get(&key) == Some(&value) {
+            continue;
+        }
+        document.insert(key, value);
+    }
+    Ok(document)
 }
 
 pub enum SettingsEvent {
@@ -1401,6 +1483,7 @@ impl Render for SettingsPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     #[test]
     fn missing_and_older_settings_preserve_terminal_colors_by_default() {
@@ -1417,6 +1500,85 @@ mod tests {
         assert!(legacy.use_riwork_colors);
         assert_eq!(legacy.selected_codex_account, None);
         assert_eq!(legacy.status_bar, StatusBarSettings::default());
+    }
+
+    #[test]
+    fn newer_values_and_keys_do_not_lock_out_settings_and_stay_until_changed() {
+        let dir = env::temp_dir().join(format!("riwork-settings-newer-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"theme":"future_theme","project_order":{"by":"future_sort","descending":false},"remember_window_size":"yes","selected_codex_account":"saved-fixture-account","future_setting":{"a":1},"status_bar":{"enabled":false,"items":[{"kind":"future_widget"}]}}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.theme, ThemeChoice::Ghostty);
+        assert_eq!(loaded.project_order, ProjectOrder::default());
+        assert!(loaded.remember_window_size);
+        assert_eq!(
+            loaded.selected_codex_account.as_deref(),
+            Some("saved-fixture-account")
+        );
+        assert!(!loaded.status_bar.enabled);
+
+        // Changing one setting rewrites the file without touching the values
+        // and keys this build could not read.
+        let saved = store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert!(saved.use_riwork_colors);
+        let document = |dir: &std::path::Path| -> Value {
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
+        };
+        let file = document(&dir);
+        assert_eq!(file["theme"], "future_theme");
+        assert_eq!(file["project_order"]["by"], "future_sort");
+        assert_eq!(file["remember_window_size"], "yes");
+        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        assert_eq!(file["status_bar"]["items"][0]["kind"], "future_widget");
+        assert_eq!(file["selected_codex_account"], "saved-fixture-account");
+        assert_eq!(file["use_riwork_colors"], true);
+
+        // A deliberate change replaces exactly that setting.
+        store
+            .update(|settings| {
+                settings.theme = ThemeChoice::Catppuccin;
+                settings.remember_window_size = false;
+            })
+            .unwrap();
+        let file = document(&dir);
+        assert_eq!(file["theme"], "catppuccin");
+        assert_eq!(file["remember_window_size"], false);
+        assert_eq!(file["project_order"]["by"], "future_sort");
+        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_codex_selection_and_schema_fail_closed_while_other_damage_is_ignored() {
+        let dir = env::temp_dir().join(format!("riwork-settings-strict-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let write = |content: &str| fs::write(dir.join("settings.json"), content).unwrap();
+        write(r#"{"theme":7,"use_riwork_colors":"x","project_order":[],"status_bar":3}"#);
+        assert_eq!(store.load().unwrap(), Settings::default());
+        for content in [
+            r#"{"selected_codex_account":5,"theme":"tokyo_night"}"#,
+            r#"{"selected_codex_account":["a"]}"#,
+            r#"{"schema_version":"one"}"#,
+            r#"{"schema_version":2}"#,
+            "[]",
+        ] {
+            write(content);
+            assert!(store.load().is_err(), "{content}");
+            assert!(store.update(|_| {}).is_err(), "{content}");
+            assert_eq!(
+                fs::read_to_string(dir.join("settings.json")).unwrap(),
+                content
+            );
+        }
+        write(r#"{"selected_codex_account":null}"#);
+        assert_eq!(store.load().unwrap().selected_codex_account, None);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

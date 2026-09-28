@@ -31,7 +31,7 @@ To make the CLI available everywhere, link the built executable into a directory
 ln -sfn "$PWD/target/release/riwork" "$HOME/.local/bin/riwork"
 ```
 
-Run `riwork help` for the full command list. Data defaults to `~/.local/share/riwork`; set `RIWORK_HOME` to use a separate store and tmux server.
+Run `riwork help` for the full command list. Data defaults to `~/.local/share/riwork`; set `RIWORK_HOME` to use a separate store and tmux server. An empty `RIWORK_HOME` or `HOME` counts as unset. A newly created data directory is owner-only, and `state.json` and `sessions.json` are written with owner-only permissions.
 
 ## Encrypted iOS access
 
@@ -202,7 +202,7 @@ riwork open PROJECT_NAME
 riwork open /path/to/another/project
 ```
 
-Project windows and independently launched app processes keep their own selected project. Projects, tasks, the shell registry, and layouts share the RiWork data directory. Closing a window preserves its shells. There is one persistent global orchestrator and one persistent orchestrator per project.
+Project windows and independently launched app processes keep their own selected project. Projects, tasks, the shell registry, and layouts share the RiWork data directory. Older and newer builds can share it after `riwork update` leaves an older window or `riwork` on `PATH`: a build keeps the fields and shell entries it does not understand, such as a session for a harness it predates, when it rewrites `state.json` or `sessions.json`; it hides those entries instead of failing. A store schema newer than the build is still refused. Closing a window preserves its shells. There is one persistent global orchestrator and one persistent orchestrator per project.
 
 ## Orchestrator
 
@@ -258,7 +258,7 @@ The workspace fills the window around a 78 × 28 px native close/minimize/maximi
 
 ## Settings
 
-Open **RiWork → Settings…**, press Cmd+, or choose **SETTINGS** under **Views** in a pane's **…** actions menu. Settings opens as a normal workspace tab: drag, split, close, and restore it like the other panel tabs. Preferences save automatically to `settings.json` under the RiWork data directory and are shared across open windows and app processes.
+Open **RiWork → Settings…**, press Cmd+, or choose **SETTINGS** under **Views** in a pane's **…** actions menu. Settings opens as a normal workspace tab: drag, split, close, and restore it like the other panel tabs. Preferences save automatically to `settings.json` under the RiWork data directory and are shared across open windows and app processes. A value this build does not recognize, for example a theme from a newer build, reads as that setting's default and stays in the file until you change that setting; an invalid Codex account selection still blocks Codex launches instead of falling back to the system account.
 
 - **Codex accounts** detects the current Codex profile and saved accounts from Orca. Use **REFRESH ACCOUNTS** to check again, then select an app default for new Codex sessions. Existing sessions and resumed conversations keep their original account. Quota is read separately for each account and follows the active Codex session's saved account.
 - **Project Settings → Codex Account** selects **Inherit app default**, **System default**, or an available saved Orca account. The choice saves immediately and applies to new Codex sessions and new project orchestrators. Older projects inherit the app setting. Global orchestrators always use the app setting. An explicit saved account that later becomes unavailable remains selected but prevents new Codex launches with an error until it is restored or changed. RiWork reads only Orca's public account list and its own metadata cache; it never reads account credentials.
