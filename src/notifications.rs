@@ -2,6 +2,9 @@
 //!
 //! A durable claim prevents multiple windows/processes from notifying twice.
 //! Native delivery stays in the GUI process so notifications belong to RiWork.
+//! Only an app-bundle process claims alerts: macOS refuses to post from any
+//! other binary, so an unbundled dev build sharing RIWORK_HOME would consume
+//! alerts that nothing can show.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -30,6 +33,12 @@ const RECEIPT_LIFETIME: u64 = 7 * 24 * 60 * 60;
 struct Ledger {
     #[serde(default)]
     entries: Vec<Entry>,
+}
+
+#[derive(Default, Deserialize)]
+struct RawLedger {
+    #[serde(default)]
+    entries: Vec<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -258,7 +267,22 @@ pub fn response_target(tag: &str) -> Option<(&str, &str)> {
     .then_some((project_id, shell_id))
 }
 
+/// True for `X.app/Contents/MacOS/<binary>`, the layout that gives macOS (and
+/// gpui's notification center) a bundle identifier to post under.
+fn in_app_bundle(executable: &Path) -> bool {
+    let mut parents = executable.ancestors().skip(1);
+    parents
+        .next()
+        .is_some_and(|dir| dir.ends_with("Contents/MacOS"))
+        && parents
+            .nth(1)
+            .is_some_and(|app| app.extension().is_some_and(|ext| ext == "app"))
+}
+
 pub fn start(home: PathBuf, cx: &mut App) {
+    if !std::env::current_exe().is_ok_and(|executable| in_app_bundle(&executable)) {
+        return;
+    }
     cx.spawn(async move |cx| {
         let mut last_error = None;
         loop {
@@ -361,21 +385,30 @@ fn read(home: &Path) -> Result<Ledger, String> {
     {
         return Err("Agent notification metadata is too large".into());
     }
-    let ledger: Ledger = serde_json::from_reader(file.take(MAX_BYTES))
+    // Entries are checked one by one: a single damaged or foreign entry (an
+    // older or newer build's format) must not disable every alert. Skipped
+    // entries are dropped the next time the ledger is written.
+    let raw: RawLedger = serde_json::from_reader(file.take(MAX_BYTES))
         .map_err(|_| "Invalid agent notification metadata")?;
-    if ledger.entries.len() > MAX_ENTRIES
-        || ledger.entries.iter().any(|entry| {
-            !canonical_uuid(&entry.completion_id)
-                || !canonical_uuid(&entry.shell_id)
-                || !canonical_uuid(&entry.project_id)
-                || entry.event_id.is_empty()
-                || entry.event_id.len() > 1024
-                || entry.event_id.chars().any(char::is_control)
-        })
-    {
-        return Err("Invalid agent notification metadata".into());
+    let mut entries: Vec<Entry> = raw
+        .entries
+        .into_iter()
+        .filter_map(|value| serde_json::from_value::<Entry>(value).ok())
+        .filter(valid_entry)
+        .collect();
+    if entries.len() > MAX_ENTRIES {
+        entries.drain(..entries.len() - MAX_ENTRIES);
     }
-    Ok(ledger)
+    Ok(Ledger { entries })
+}
+
+fn valid_entry(entry: &Entry) -> bool {
+    canonical_uuid(&entry.completion_id)
+        && canonical_uuid(&entry.shell_id)
+        && canonical_uuid(&entry.project_id)
+        && !entry.event_id.is_empty()
+        && entry.event_id.len() <= 1024
+        && !entry.event_id.chars().any(char::is_control)
 }
 
 fn write(home: &Path, ledger: &Ledger) -> Result<(), String> {
@@ -645,6 +678,66 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn one_invalid_ledger_entry_does_not_disable_the_others() {
+        let fixture = Fixture::new();
+        fixture.enabled(true);
+        let entry = |shell: &str, provider: &str, event: &str| {
+            serde_json::json!({
+                "completion_id": Uuid::new_v4().to_string(), "provider": provider,
+                "shell_id": shell, "project_id": fixture.project_id,
+                "event_id": event, "created_at": 100, "claimed": false
+            })
+        };
+        let good = entry(&fixture.shell_id, "codex", "thread:kept");
+        let mut missing_field = entry(&fixture.shell_id, "codex", "thread:missing");
+        missing_field.as_object_mut().unwrap().remove("claimed");
+        let bad = serde_json::json!({"entries": [
+            entry("not-a-uuid", "codex", "thread:bad-shell"),
+            missing_field,
+            entry(&fixture.shell_id, "an-unknown-harness", "thread:unknown-provider"),
+            entry(&fixture.shell_id, "codex", "thread:\ncontrol"),
+            entry(&fixture.shell_id, "codex", ""),
+            "not even an object",
+            good,
+        ]});
+        fs::write(fixture.home.join(LEDGER), bad.to_string()).unwrap();
+        assert_eq!(read(&fixture.home).unwrap().entries.len(), 1);
+        assert!(
+            record_at(
+                &fixture.home,
+                &fixture.shell_id,
+                "thread:next",
+                HarnessKind::Codex,
+                101
+            )
+            .unwrap()
+        );
+        let notices = claim_at(&fixture.home, 102).unwrap();
+        assert_eq!(notices.len(), 2);
+        // The damaged entries are gone once the ledger has been rewritten.
+        assert_eq!(read(&fixture.home).unwrap().entries.len(), 2);
+        // A ledger that is not a ledger at all is still refused.
+        fs::write(fixture.home.join(LEDGER), "{ truncated").unwrap();
+        assert!(read(&fixture.home).is_err());
+    }
+
+    #[test]
+    fn only_an_app_bundle_process_claims_alerts() {
+        assert!(in_app_bundle(Path::new(
+            "/Applications/RiWork.app/Contents/MacOS/riwork"
+        )));
+        assert!(in_app_bundle(Path::new(
+            "/tmp/target/debug/RiWork.app/Contents/MacOS/riwork"
+        )));
+        assert!(!in_app_bundle(Path::new("/tmp/target/debug/riwork")));
+        assert!(!in_app_bundle(Path::new(
+            "/tmp/target/debug/RiWork.app/riwork"
+        )));
+        assert!(!in_app_bundle(Path::new("/tmp/Contents/MacOS/riwork")));
+        assert!(!in_app_bundle(Path::new("riwork")));
     }
 
     #[cfg(unix)]

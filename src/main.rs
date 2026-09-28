@@ -223,6 +223,8 @@ struct CodexUsageEntry {
     codex_error: Option<String>,
     pending: bool,
     last_attempt: u64,
+    /// Consecutive failed reads; spaces out retries of an account that never works.
+    failures: u32,
 }
 impl Global for AccountUsage {}
 
@@ -5293,7 +5295,7 @@ fn request_codex_usage_at(home: PathBuf, force: bool, cx: &mut App) {
             .codex
             .entry(home.clone())
             .or_default();
-        let interval = if cache.codex.is_some() { 15 * 60 } else { 60 };
+        let interval = usage::codex_refresh_interval(cache.codex.is_some(), cache.failures);
         if cache.pending
             || (!force
                 && cache.last_attempt != 0
@@ -5321,8 +5323,12 @@ fn request_codex_usage_at(home: PathBuf, force: bool, cx: &mut App) {
                 Ok(snapshot) => {
                     cache.codex = Some(snapshot);
                     cache.codex_error = None;
+                    cache.failures = 0;
                 }
-                Err(error) => cache.codex_error = Some(error),
+                Err(error) => {
+                    cache.codex_error = Some(error);
+                    cache.failures = cache.failures.saturating_add(1);
+                }
             }
             cx.refresh_windows();
         });
@@ -5633,10 +5639,13 @@ fn main() {
             let mut reload = None;
             let mut restore = restore;
             let restore_started = Instant::now();
+            let mut ticks = 0u32;
+            let mut publish_due = false;
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(500))
                     .await;
+                ticks = ticks.wrapping_add(1);
                 let _ = cx.update(|cx| {
                     if let Some(snapshot) = &restore {
                         if restore_started.elapsed() > Duration::from_secs(20) {
@@ -5672,8 +5681,21 @@ fn main() {
                         }
                         return;
                     }
-                    if let Err(error) = registration.publish_windows(runtime_windows(cx, false)) {
-                        eprintln!("riwork: {error}");
+                    // The registry only feeds `riwork instances` and reload
+                    // reports (a reload snapshots the windows itself), so it is
+                    // refreshed every 2 s, written only on change, and never waits
+                    // for its lock on this thread: a busy lock stays due for the
+                    // next tick.
+                    publish_due |= ticks.is_multiple_of(4);
+                    if publish_due {
+                        match registration.try_publish_windows(runtime_windows(cx, false)) {
+                            Ok(true) => publish_due = false,
+                            Ok(false) => {}
+                            Err(error) => {
+                                publish_due = false;
+                                eprintln!("riwork: {error}");
+                            }
+                        }
                     }
                     match registration.pending_reload() {
                         Ok(Some(request)) => {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     env,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -18,6 +18,10 @@ const RELOAD_DIRECTORY: &str = "session-reloads";
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
+/// The worker records "waiting" within milliseconds; a binary that cannot do
+/// that (an incompatible build) is reported instead of left "queued".
+const WORKER_START_TIMEOUT: Duration = Duration::from_secs(20);
+const WORKER_START_POLL: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Serialize)]
 pub struct SessionReloadReport {
@@ -51,6 +55,13 @@ struct ReloadReceipt<'a> {
     shell_id: &'a str,
     thread_id: &'a str,
     message: &'a str,
+}
+
+#[derive(Deserialize)]
+struct StoredReceipt {
+    status: String,
+    #[serde(default)]
+    message: String,
 }
 
 #[derive(Default, Debug)]
@@ -117,11 +128,34 @@ pub fn queue_reload_for_shell(
         "queued",
         "Waiting for a persisted completion of the current turn",
     )?;
-    let log = private_file(&request_path.with_extension("log"))?;
+    let worker_pid = launch_worker(&request, &request_path, &receipt, WORKER_START_TIMEOUT)?;
+    Ok(SessionReloadReport {
+        queued: true,
+        shell_id: request.shell_id,
+        thread_id: request.thread_id,
+        receipt,
+        worker_pid,
+        waiting_for_turn: request.active_turn,
+    })
+}
+
+/// Start the detached worker and wait until it has taken over the receipt. The
+/// worker is the GUI binary, which may be a different build than this CLI: one
+/// that rejects the subcommand or the request exits without ever writing a
+/// receipt, and that must surface as an error rather than a forever-"queued"
+/// reload that never happens.
+fn launch_worker(
+    request: &ReloadRequest,
+    request_path: &Path,
+    receipt: &Path,
+    timeout: Duration,
+) -> Result<u32, String> {
+    let log_path = request_path.with_extension("log");
+    let log = private_file(&log_path)?;
     let mut command = Command::new(&request.executable);
     command
         .arg("reload-session-worker")
-        .arg(&request_path)
+        .arg(request_path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(
             log.try_clone().map_err(|error| error.to_string())?,
@@ -136,22 +170,115 @@ pub fn queue_reload_for_shell(
         Ok(child) => child,
         Err(error) => {
             let message = format!("Cannot start session reload worker: {error}");
-            write_receipt(&receipt, &request, "failed", &message)?;
+            write_receipt(receipt, request, "failed", &message)?;
             return Err(message);
         }
     };
     let worker_pid = child.id();
+    let deadline = Instant::now() + timeout;
+    let failure = loop {
+        match worker_verdict(receipt) {
+            Verdict::Running => {}
+            Verdict::Accepted => break None,
+            Verdict::Refused(message) => {
+                reap(child);
+                return Err(message);
+            }
+        }
+        // Exiting or timing out is judged only after one more look at the
+        // receipt: the worker records its verdict before it exits, possibly
+        // between the read above and this check.
+        let ended = match child.try_wait() {
+            Ok(Some(status)) => Some(format!("exited with {status} before recording progress")),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Some(format!(
+                    "did not start within {} seconds",
+                    timeout.as_secs_f32().ceil()
+                ))
+            }
+            Ok(None) => {
+                thread::sleep(WORKER_START_POLL);
+                None
+            }
+            Err(error) => Some(format!("could not be watched: {error}")),
+        };
+        if let Some(ended) = ended {
+            match worker_verdict(receipt) {
+                Verdict::Accepted => break None,
+                Verdict::Refused(message) => return Err(message),
+                Verdict::Running => {
+                    break Some(format!(
+                        "The session reload worker ({}) {ended}: {}",
+                        request.executable.display(),
+                        log_tail(&log_path)
+                    ));
+                }
+            }
+        }
+    };
+    if let Some(message) = failure {
+        write_receipt(receipt, request, "failed", &message)?;
+        return Err(format!("{message}. Nothing was restarted."));
+    }
+    reap(child);
+    Ok(worker_pid)
+}
+
+enum Verdict {
+    Running,
+    Accepted,
+    Refused(String),
+}
+
+/// What the worker itself has recorded: it took over the receipt ("waiting", or
+/// "completed" when the turn had already finished) or refused the request.
+fn worker_verdict(receipt: &Path) -> Verdict {
+    match read_receipt(receipt) {
+        Some(stored) => match stored.status.as_str() {
+            "waiting" | "completed" => Verdict::Accepted,
+            "aborted" | "failed" => Verdict::Refused(stored.message),
+            _ => Verdict::Running,
+        },
+        None => Verdict::Running,
+    }
+}
+
+/// Collect the worker's exit status without ever blocking the caller.
+fn reap(mut child: std::process::Child) {
     thread::spawn(move || {
         let _ = child.wait();
     });
-    Ok(SessionReloadReport {
-        queued: true,
-        shell_id: request.shell_id,
-        thread_id: request.thread_id,
-        receipt,
-        worker_pid,
-        waiting_for_turn: request.active_turn,
-    })
+}
+
+fn read_receipt(path: &Path) -> Option<StoredReceipt> {
+    let file = File::open(path).ok()?;
+    serde_json::from_reader(file.take(64 * 1024)).ok()
+}
+
+/// The end of the worker's output, flattened to one line for an error message.
+fn log_tail(path: &Path) -> String {
+    let Ok(mut file) = File::open(path) else {
+        return "(no output)".to_owned();
+    };
+    let length = file.metadata().map_or(0, |metadata| metadata.len());
+    let mut bytes = Vec::new();
+    if file
+        .seek(SeekFrom::Start(length.saturating_sub(400)))
+        .is_ok()
+    {
+        let _ = file.take(400).read_to_end(&mut bytes);
+    }
+    let text = String::from_utf8_lossy(&bytes)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.is_empty() {
+        "(no output)".to_owned()
+    } else {
+        text
+    }
 }
 
 /// Check the exact conversation and selected live pane before any GUI reload.
@@ -354,7 +481,8 @@ fn wait_for_completion(
 
 fn snapshot(path: &Path) -> Result<LogSnapshot, String> {
     let mut result = LogSnapshot::default();
-    for record in read_records(path, &mut result.cursor)? {
+    let mut cursor = 0;
+    scan_records(path, &mut cursor, |record| {
         if record.kind == "session_meta" {
             result.session_id = record.payload.id;
             result.subagent = record
@@ -379,15 +507,15 @@ fn snapshot(path: &Path) -> Result<LogSnapshot, String> {
                 Lifecycle::Completed(_) => {}
             }
         }
-    }
+    })?;
+    result.cursor = cursor;
     Ok(result)
 }
 
 fn read_lifecycle(path: &Path, cursor: &mut u64) -> Result<Vec<Lifecycle>, String> {
-    Ok(read_records(path, cursor)?
-        .into_iter()
-        .filter_map(lifecycle)
-        .collect())
+    let mut events = Vec::new();
+    scan_records(path, cursor, |record| events.extend(lifecycle(record)))?;
+    Ok(events)
 }
 
 fn lifecycle(record: LogRecord) -> Option<Lifecycle> {
@@ -402,7 +530,15 @@ fn lifecycle(record: LogRecord) -> Option<Lifecycle> {
     }
 }
 
-fn read_records(path: &Path, cursor: &mut u64) -> Result<Vec<LogRecord>, String> {
+/// Feed each complete record after `cursor` to `visit`, advancing the cursor
+/// past it. Neither the number of records nor the size of one is buffered: a
+/// rollout can be gigabytes and a line without a newline is cut off at the
+/// record limit instead of being read to its end.
+fn scan_records(
+    path: &Path,
+    cursor: &mut u64,
+    mut visit: impl FnMut(LogRecord),
+) -> Result<(), String> {
     let mut file =
         File::open(path).map_err(|error| format!("Cannot read Codex turn log: {error}"))?;
     if file.metadata().map_err(|error| error.to_string())?.len() < *cursor {
@@ -411,25 +547,25 @@ fn read_records(path: &Path, cursor: &mut u64) -> Result<Vec<LogRecord>, String>
     file.seek(SeekFrom::Start(*cursor))
         .map_err(|error| error.to_string())?;
     let mut reader = BufReader::new(file);
-    let mut records = Vec::new();
     let mut line = Vec::new();
     loop {
         line.clear();
-        let length = reader
+        let length = (&mut reader)
+            .take(MAX_RECORD_BYTES as u64 + 1)
             .read_until(b'\n', &mut line)
             .map_err(|error| error.to_string())?;
-        if length == 0 || line.last() != Some(&b'\n') {
-            break;
-        }
         if length > MAX_RECORD_BYTES {
             return Err("Codex log record exceeds the reload reader limit".to_owned());
         }
+        if length == 0 || line.last() != Some(&b'\n') {
+            break;
+        }
         let record = serde_json::from_slice(&line)
             .map_err(|error| format!("Cannot confirm Codex turn state: {error}"))?;
-        records.push(record);
+        visit(record);
         *cursor += length as u64;
     }
-    Ok(records)
+    Ok(())
 }
 
 fn find_rollout(directory: &Path, thread_id: &str) -> Result<PathBuf, String> {
@@ -974,6 +1110,156 @@ mod tests {
         )
         .unwrap();
         assert!(snapshot(&path).unwrap().noninteractive);
+    }
+
+    #[test]
+    fn record_reader_stops_at_the_record_limit_without_consuming_the_log() {
+        let temporary = Temporary::new();
+        let path = temporary.0.join("log.jsonl");
+        let first = event("task_started", "turn");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(first.as_bytes()).unwrap();
+        // An unterminated record past the limit is refused, not read to its end.
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..(MAX_RECORD_BYTES / chunk.len() + 1) {
+            file.write_all(&chunk).unwrap();
+        }
+        drop(file);
+        let mut cursor = 0;
+        let mut seen = 0;
+        let error = scan_records(&path, &mut cursor, |_| seen += 1).unwrap_err();
+        assert!(error.contains("exceeds the reload reader limit"), "{error}");
+        // The record before it was delivered and the cursor stops at its end.
+        assert_eq!((seen, cursor), (1, first.len() as u64));
+        // A terminated oversized record is refused the same way.
+        append(&path, "\n");
+        assert!(scan_records(&path, &mut cursor, |_| ()).is_err());
+        // A short unterminated tail is simply not consumed yet.
+        fs::write(&path, first.clone() + "{\"type\":\"event_m").unwrap();
+        let mut cursor = 0;
+        scan_records(&path, &mut cursor, |_| ()).unwrap();
+        assert_eq!(cursor, first.len() as u64);
+    }
+
+    #[cfg(unix)]
+    struct Worker {
+        request: ReloadRequest,
+        request_path: PathBuf,
+        receipt: PathBuf,
+    }
+    #[cfg(unix)]
+    impl Worker {
+        /// A GUI binary stand-in whose behavior is the given shell script body.
+        fn new(temporary: &Temporary, body: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let executable = temporary.0.join("fake-riwork");
+            fs::write(&executable, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut request = request(false);
+            request.home = temporary.0.clone();
+            request.executable = executable;
+            let request_path = temporary.0.join(format!("{}.json", Uuid::new_v4()));
+            let receipt = receipt_path(&request_path);
+            write_receipt(&receipt, &request, "queued", "queued").unwrap();
+            Self {
+                request,
+                request_path,
+                receipt,
+            }
+        }
+        fn launch(&self, timeout: Duration) -> Result<u32, String> {
+            launch_worker(&self.request, &self.request_path, &self.receipt, timeout)
+        }
+        fn status(&self) -> StoredReceipt {
+            read_receipt(&self.receipt).unwrap()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_from_an_incompatible_build_is_reported_instead_of_staying_queued() {
+        let temporary = Temporary::new();
+        // Rejects the unknown subcommand and exits non-zero, writing nothing.
+        let worker = Worker::new(
+            &temporary,
+            "echo 'error: unrecognized command reload-session-worker' >&2\nexit 2",
+        );
+        let error = worker.launch(Duration::from_secs(5)).unwrap_err();
+        assert!(error.contains("exit status: 2"), "{error}");
+        assert!(error.contains("unrecognized command"), "{error}");
+        assert!(error.contains("Nothing was restarted"), "{error}");
+        let stored = worker.status();
+        assert_eq!(stored.status, "failed");
+        assert!(stored.message.contains("unrecognized command"));
+
+        // An unrelated program that exits 0 with unexpected output.
+        let worker = Worker::new(&temporary, "echo 'RiWork 0.0.1 usage: riwork open'\nexit 0");
+        let error = worker.launch(Duration::from_secs(5)).unwrap_err();
+        assert!(error.contains("before recording progress"), "{error}");
+        assert!(error.contains("usage: riwork open"), "{error}");
+        assert_eq!(worker.status().status, "failed");
+
+        // One that never comes up is stopped and reported.
+        let worker = Worker::new(&temporary, "sleep 30");
+        let started = Instant::now();
+        let error = worker.launch(Duration::from_millis(300)).unwrap_err();
+        assert!(error.contains("did not start"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(worker.status().status, "failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_that_takes_over_the_receipt_is_accepted_or_its_own_refusal_reported() {
+        let temporary = Temporary::new();
+        let receipt = |status: &str, message: &str| {
+            format!(
+                "printf '{{\"status\":\"{status}\",\"shell_id\":\"s\",\"thread_id\":\"t\",\"message\":\"{message}\"}}' > \"${{2%.json}}.status.json\""
+            )
+        };
+        let waiting = Worker::new(
+            &temporary,
+            &format!("{}\nsleep 1", receipt("waiting", "ok")),
+        );
+        assert!(waiting.launch(Duration::from_secs(5)).unwrap() > 0);
+        assert_eq!(waiting.status().status, "waiting");
+
+        // A worker that records its verdict and exits at once must never be
+        // reported as having died silently, however the CLI's polls interleave.
+        for _ in 0..15 {
+            // A turn that had already finished completes before the CLI looks.
+            let instant = Worker::new(&temporary, &receipt("completed", "done"));
+            assert!(instant.launch(Duration::from_secs(5)).is_ok());
+
+            let refused = Worker::new(
+                &temporary,
+                &format!(
+                    "{}\nexit 1",
+                    receipt("aborted", "Another reload is pending")
+                ),
+            );
+            assert_eq!(
+                refused.launch(Duration::from_secs(5)).unwrap_err(),
+                "Another reload is pending"
+            );
+            assert_eq!(refused.status().status, "aborted");
+        }
+
+        let missing = Worker::new(&temporary, "");
+        let mut request = missing.request;
+        request.executable = temporary.0.join("does-not-exist");
+        let error = launch_worker(
+            &request,
+            &missing.request_path,
+            &missing.receipt,
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("Cannot start session reload worker"),
+            "{error}"
+        );
+        assert_eq!(read_receipt(&missing.receipt).unwrap().status, "failed");
     }
 
     #[test]

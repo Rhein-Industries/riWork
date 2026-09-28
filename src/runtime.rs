@@ -21,6 +21,13 @@ use uuid::Uuid;
 
 const MAX_BYTES: u64 = 32 * 1024 * 1024;
 const REQUEST_LIFETIME: u64 = 300;
+/// Reload tickets, requests and responses are dead well before this; anything
+/// older is a leftover from a crashed GUI or CLI.
+const LEFTOVER_AGE: Duration = Duration::from_secs(60 * 60);
+/// A registration nobody can parse is only removed once no live GUI could still
+/// be refreshing it (running GUIs rewrite theirs at least every HEARTBEAT).
+const UNREADABLE_AGE: Duration = Duration::from_secs(10 * 60);
+const HEARTBEAT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowGeometry {
@@ -113,6 +120,11 @@ pub struct ReloadReport {
     pub reloaded: usize,
     pub pending: usize,
     pub failed: usize,
+    /// Registrations of GUIs that are running but could not be understood,
+    /// typically because they were built with an incompatible layout format.
+    /// They are not part of `instances` and were not asked to reload.
+    #[serde(default)]
+    pub unreadable_registrations: usize,
     pub instances: Vec<ReloadInstanceResult>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -122,6 +134,14 @@ struct Response {
     state: ReloadState,
     new_instance: Option<RuntimeInstance>,
     message: String,
+}
+/// The fields every registration format has carried, enough to tell whether an
+/// unparsable registration still belongs to a running GUI.
+#[derive(Deserialize)]
+struct RegistrationIdentity {
+    pid: u32,
+    uid: u32,
+    started_token: String,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct InstalledBuild {
@@ -136,6 +156,7 @@ pub struct RuntimeManager {
 pub struct RuntimeRegistration {
     manager: RuntimeManager,
     instance: RuntimeInstance,
+    written_at: Instant,
 }
 
 impl RuntimeManager {
@@ -169,7 +190,12 @@ impl RuntimeManager {
             recorded_at: now(),
         };
         let _lock = self.lock()?;
-        write_json(&self.directory.join("installed-build.json"), &installed)
+        // This one outlives every GUI, so it is worth surviving a power loss.
+        write_json_synced(
+            &self.directory.join("installed-build.json"),
+            &installed,
+            true,
+        )
     }
 
     /// A removed or no longer executable installation allows normal fallback.
@@ -202,30 +228,53 @@ impl RuntimeManager {
             updated_at: now(),
         };
         let _lock = self.lock()?;
+        self.prune_leftovers();
         write_json(&self.instance_path(&instance.id)?, &instance)?;
         Ok(RuntimeRegistration {
             manager: self.clone(),
             instance,
+            written_at: Instant::now(),
         })
     }
     pub fn instances(&self) -> Result<Vec<RuntimeInstance>, String> {
         let _lock = self.lock()?;
-        self.live_instances()
+        let (live, unreadable) = self.live_instances()?;
+        warn_unreadable(unreadable);
+        Ok(live)
     }
-    fn live_instances(&self) -> Result<Vec<RuntimeInstance>, String> {
+    /// Running GUIs, plus how many registrations could not be understood. A
+    /// GUI built with an incompatible format is running but cannot be listed;
+    /// callers must say so instead of reporting that nothing is open.
+    fn live_instances(&self) -> Result<(Vec<RuntimeInstance>, usize), String> {
         let mut live = vec![];
+        let mut unreadable = 0;
         for entry in fs::read_dir(self.directory.join("instances")).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
-            let Ok(instance) = read_json::<RuntimeInstance>(&path) else {
-                continue;
+            let instance = match read_json::<RuntimeInstance>(&path) {
+                Ok(instance) if self.instance_path(&instance.id).is_ok_and(|p| p == path) => {
+                    instance
+                }
+                _ => {
+                    match read_json::<RegistrationIdentity>(&path) {
+                        Ok(identity) => {
+                            if process_alive(identity.pid, identity.uid, &identity.started_token)? {
+                                unreadable += 1;
+                            } else {
+                                let _ = fs::remove_file(&path);
+                            }
+                        }
+                        Err(_) if older_than(&path, UNREADABLE_AGE) => {
+                            let _ = fs::remove_file(&path);
+                        }
+                        Err(_) => unreadable += 1,
+                    }
+                    continue;
+                }
             };
-            if self.instance_path(&instance.id)? != path {
-                continue;
-            }
             if process_matches(&instance)? {
                 live.push(instance);
             } else {
@@ -235,12 +284,32 @@ impl RuntimeManager {
             }
         }
         live.sort_by_key(|instance| instance.pid);
-        Ok(live)
+        Ok((live, unreadable))
+    }
+    /// Files a crashed GUI or CLI never cleaned up. Callers hold the lock.
+    fn prune_leftovers(&self) {
+        for name in ["requests", "restores", "responses", "instances"] {
+            let Ok(entries) = fs::read_dir(self.directory.join(name)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                // Registrations are judged by their process, not their age.
+                if name == "instances" && path.extension().is_some_and(|ext| ext == "json") {
+                    continue;
+                }
+                if older_than(&path, LEFTOVER_AGE) {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
     }
     pub fn reload_all(&self, replacement: &Path) -> Result<ReloadReport, String> {
         let replacement = executable_path(replacement)?;
         let _lock = self.lock()?;
-        let instances = self.live_instances()?;
+        self.prune_leftovers();
+        let (instances, unreadable) = self.live_instances()?;
+        warn_unreadable(unreadable);
         let request_id = Uuid::new_v4().to_string();
         let mut report = ReloadReport {
             request_id: request_id.clone(),
@@ -249,6 +318,7 @@ impl RuntimeManager {
             reloaded: 0,
             pending: 0,
             failed: 0,
+            unreadable_registrations: unreadable,
             instances: vec![],
         };
         for instance in instances {
@@ -394,11 +464,16 @@ impl RuntimeManager {
             message: "Replacement GUI restored its windows; running shells were preserved."
                 .to_owned(),
         };
+        let response_path = self.response_path(&stored.old_instance_id, &stored.request_id)?;
         let _lock = self.lock()?;
-        write_json(
-            &self.response_path(&stored.old_instance_id, &stored.request_id)?,
-            &response,
-        )?;
+        // The previous GUI may have given up between the checks above and this
+        // lock. Confirming then would leave both GUIs open with the same windows.
+        let abandoned = read_optional::<Response>(&response_path)?
+            .is_some_and(|existing| existing.state == ReloadState::Failed);
+        if abandoned || !self.restore_path(&stored.ticket_id)?.exists() {
+            return Err("The previous RiWork gave up on this reload; closing this copy".to_owned());
+        }
+        write_json(&response_path, &response)?;
         fs::remove_file(self.restore_path(&stored.ticket_id)?)
             .map_err(|e| format!("Cannot consume restore ticket: {e}"))?;
         Ok(())
@@ -423,14 +498,26 @@ impl RuntimeManager {
             .join("responses")
             .join(format!("{instance}-{request}.json")))
     }
-    fn lock(&self) -> Result<File, String> {
-        let file = OpenOptions::new()
+    fn lock_file(&self) -> Result<File, String> {
+        OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
             .open(self.directory.join("registry.lock"))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
+    }
+    /// One attempt, for callers that must never wait (the GUI's UI thread).
+    fn try_lock(&self) -> Result<Option<File>, String> {
+        let file = self.lock_file()?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(file)),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(e) => Err(format!("Cannot lock RiWork runtime registry: {e}")),
+        }
+    }
+    fn lock(&self) -> Result<File, String> {
+        let file = self.lock_file()?;
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match file.try_lock_exclusive() {
@@ -446,15 +533,42 @@ impl RuntimeManager {
     }
 }
 impl RuntimeRegistration {
+    /// Blocking publish for startup and restore confirmation, where the file
+    /// must reflect `windows` before the caller continues.
     pub fn publish_windows(&mut self, windows: Vec<RuntimeWindow>) -> Result<(), String> {
-        validate_windows(&windows)?;
-        self.instance.windows = windows;
+        self.publish(windows, true).map(|_| ())
+    }
+    /// Publish from a thread that must not stall (the GUI's UI thread). Nothing
+    /// is written unless the windows changed, the file went missing, or the
+    /// heartbeat is due, and a busy registry lock is retried on the next call
+    /// instead of waited for. Returns whether the file is now current.
+    pub fn try_publish_windows(&mut self, windows: Vec<RuntimeWindow>) -> Result<bool, String> {
+        self.publish(windows, false)
+    }
+    fn publish(&mut self, windows: Vec<RuntimeWindow>, wait: bool) -> Result<bool, String> {
+        let path = self.manager.instance_path(&self.instance.id)?;
+        let changed = windows != self.instance.windows;
+        if !changed && self.written_at.elapsed() < HEARTBEAT && path.exists() {
+            return Ok(true);
+        }
+        if changed {
+            validate_windows(&windows)?;
+        }
+        let _lock = if wait {
+            self.manager.lock()?
+        } else if let Some(lock) = self.manager.try_lock()? {
+            lock
+        } else {
+            return Ok(false);
+        };
+        let previous = std::mem::replace(&mut self.instance.windows, windows);
         self.instance.updated_at = now();
-        let _lock = self.manager.lock()?;
-        write_json(
-            &self.manager.instance_path(&self.instance.id)?,
-            &self.instance,
-        )
+        if let Err(error) = write_json(&path, &self.instance) {
+            self.instance.windows = previous;
+            return Err(error);
+        }
+        self.written_at = Instant::now();
+        Ok(true)
     }
     pub fn pending_reload(&self) -> Result<Option<ReloadRequest>, String> {
         let Some(request) =
@@ -476,7 +590,12 @@ impl RuntimeRegistration {
         {
             return Ok(None);
         };
-        executable_path(&request.replacement_executable)?;
+        // Answer a request that can never launch now, rather than erroring on
+        // every poll until the requester times out.
+        if let Err(error) = executable_path(&request.replacement_executable) {
+            self.fail_reload(&request, &error)?;
+            return Ok(None);
+        }
         Ok(Some(request))
     }
     pub fn launch_reload(
@@ -492,7 +611,7 @@ impl RuntimeRegistration {
         valid_id(&request.request_id)?;
         valid_id(&request.ticket_id)?;
         validate_windows(&windows)?;
-        let executable = executable_path(&request.replacement_executable)?;
+        let executable = self.trusted_replacement(&request.replacement_executable)?;
         let snapshot = RestoreSnapshot {
             ticket_id: request.ticket_id.clone(),
             request_id: request.request_id.clone(),
@@ -546,23 +665,71 @@ impl RuntimeRegistration {
             exited,
         })
     }
+    /// Request files live in a user-writable cache directory, so the path in
+    /// one is not authority to run it. A GUI only relaunches itself: as the
+    /// executable it is already running, its sibling app bundle (the layout the
+    /// CLI falls back to), or the build `riwork update` last recorded.
+    fn trusted_replacement(&self, requested: &Path) -> Result<PathBuf, String> {
+        let requested = executable_path(requested)?;
+        let mut allowed = vec![];
+        if let Ok(current) = env::current_exe() {
+            if let Some(parent) = current.parent() {
+                allowed.push(parent.join("RiWork.app/Contents/MacOS/riwork"));
+            }
+            allowed.push(current);
+        }
+        allowed.extend(self.manager.installed_executable()?);
+        if !allowed
+            .iter()
+            .filter_map(|path| path.canonicalize().ok())
+            .any(|path| path == requested)
+        {
+            return Err(format!(
+                "Refusing to launch {}: a reload may only use this app's own executable or the build recorded by `riwork update`. Run `riwork update` to install and record that build.",
+                requested.display()
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = requested.metadata().map_err(|e| e.to_string())?;
+            // An administrator-installed app is root-owned; anything else must
+            // be ours, and nothing may be writable by everyone.
+            if !(metadata.uid() == current_uid() || metadata.uid() == 0)
+                || metadata.mode() & 0o002 != 0
+            {
+                return Err(
+                    "Replacement RiWork executable must be owned by you or root and not world-writable"
+                        .to_owned(),
+                );
+            }
+        }
+        Ok(requested)
+    }
+    /// A replacement that registered, restored every window, and is still the
+    /// process this GUI launched.
+    fn confirmed_by(&self, response: &Response, launch: Option<&ReloadLaunch>) -> bool {
+        response.state == ReloadState::Reloaded
+            && response.instance_id == self.instance.id
+            && launch.is_none_or(|launch| response.request_id == launch.request.request_id)
+            && response.new_instance.as_ref().is_some_and(|new| {
+                launch.is_none_or(|launch| new.pid == launch.pid)
+                    && process_matches(new).unwrap_or(false)
+            })
+    }
     pub fn reload_ready(&self, launch: &ReloadLaunch) -> Result<bool, String> {
+        // An unreadable response is not a verdict; the timeouts below still apply.
         let response = read_optional::<Response>(
             &self
                 .manager
                 .response_path(&self.instance.id, &launch.request.request_id)?,
-        )?;
+        )
+        .unwrap_or(None);
         if let Some(response) = response {
             if response.state == ReloadState::Failed {
                 return Err(response.message);
             }
-            if response.request_id == launch.request.request_id
-                && response.instance_id == self.instance.id
-                && response.state == ReloadState::Reloaded
-                && response.new_instance.as_ref().is_some_and(|new| {
-                    new.pid == launch.pid && process_matches(new).unwrap_or(false)
-                })
-            {
+            if self.confirmed_by(&response, Some(launch)) {
                 return Ok(true);
             }
         }
@@ -578,31 +745,64 @@ impl RuntimeRegistration {
             None
         };
         if let Some(message) = failure {
-            self.fail_reload(&launch.request, message)?;
-            return Err(message.to_owned());
+            // The replacement may have confirmed since the read above; that is
+            // decided again under the lock.
+            return match self.settle_failure(&launch.request, message, Some(launch)) {
+                Ok(true) => Ok(true),
+                Ok(false) => Err(message.to_owned()),
+                Err(_) => {
+                    // The failure could not be recorded (registry busy). Withdraw
+                    // the ticket so a late replacement cannot confirm a reload
+                    // this GUI has given up on.
+                    if let Ok(ticket) = self.manager.restore_path(&launch.request.ticket_id) {
+                        let _ = fs::remove_file(ticket);
+                    }
+                    Err(message.to_owned())
+                }
+            };
         }
         Ok(false)
     }
     pub fn fail_reload(&self, request: &ReloadRequest, message: &str) -> Result<(), String> {
+        self.settle_failure(request, message, None).map(|_| ())
+    }
+    /// Record a failed reload unless a live replacement has already confirmed
+    /// it, in which case that confirmation stands and `true` is returned. The
+    /// check and the write share the registry lock with `mark_restore_ready`,
+    /// so a GUI never gives up on a reload the replacement has completed.
+    fn settle_failure(
+        &self,
+        request: &ReloadRequest,
+        message: &str,
+        launch: Option<&ReloadLaunch>,
+    ) -> Result<bool, String> {
         if request.instance_id != self.instance.id {
             return Err("Reload request belongs to another GUI".to_owned());
         }
-        let response = Response {
-            request_id: request.request_id.clone(),
-            instance_id: self.instance.id.clone(),
-            state: ReloadState::Failed,
-            new_instance: None,
-            message: message.to_owned(),
-        };
+        let path = self
+            .manager
+            .response_path(&self.instance.id, &request.request_id)?;
         let _lock = self.manager.lock()?;
+        // Whatever is there but unreadable cannot be a confirmation.
+        let existing = read_optional::<Response>(&path).unwrap_or(None);
+        if let Some(existing) = &existing
+            && existing.request_id == request.request_id
+            && self.confirmed_by(existing, launch)
+        {
+            return Ok(true);
+        }
         write_json(
-            &self
-                .manager
-                .response_path(&self.instance.id, &request.request_id)?,
-            &response,
+            &path,
+            &Response {
+                request_id: request.request_id.clone(),
+                instance_id: self.instance.id.clone(),
+                state: ReloadState::Failed,
+                new_instance: None,
+                message: message.to_owned(),
+            },
         )?;
         let _ = fs::remove_file(self.manager.restore_path(&request.ticket_id)?);
-        Ok(())
+        Ok(false)
     }
 }
 impl Drop for RuntimeRegistration {
@@ -642,6 +842,23 @@ fn refresh_counts(report: &mut ReloadReport) {
             )
         })
         .count();
+}
+fn older_than(path: &Path, age: Duration) -> bool {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.is_file())
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|elapsed| elapsed > age)
+}
+fn warn_unreadable(count: usize) {
+    if count > 0 {
+        eprintln!(
+            "riwork: warning: {count} running RiWork app(s) are registered in a format this build cannot read \
+             (built from an incompatible version?). They are not listed and cannot be reloaded from here; \
+             quit and reopen them."
+        );
+    }
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -734,7 +951,13 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     }
     serde_json::from_slice(&data).map_err(|e| format!("Invalid RiWork runtime JSON: {e}"))
 }
+/// Registrations, requests and tickets describe live processes, so a crash
+/// makes them meaningless anyway. Skipping the sync keeps the periodic writes
+/// from queueing a full fsync (F_FULLFSYNC on macOS) behind unrelated disk I/O.
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    write_json_synced(path, value, false)
+}
+fn write_json_synced(path: &Path, value: &impl Serialize, sync: bool) -> Result<(), String> {
     let data = serde_json::to_vec(value).map_err(|e| e.to_string())?;
     if data.len() as u64 > MAX_BYTES {
         return Err("RiWork runtime snapshot is too large".to_owned());
@@ -750,7 +973,9 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
         }
         let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
         file.write_all(&data).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
+        if sync {
+            file.sync_all().map_err(|e| e.to_string())?;
+        }
         fs::rename(&temporary, path).map_err(|e| e.to_string())
     })();
     if result.is_err() {
@@ -766,12 +991,14 @@ struct ProcessIdentity {
     executable: Option<PathBuf>,
 }
 fn process_matches(instance: &RuntimeInstance) -> Result<bool, String> {
-    if instance.uid != current_uid() {
+    process_alive(instance.pid, instance.uid, &instance.started_token)
+}
+fn process_alive(pid: u32, uid: u32, started_token: &str) -> Result<bool, String> {
+    if uid != current_uid() {
         return Ok(false);
     }
-    Ok(process_identity(instance.pid)?.is_some_and(|identity| {
-        identity.uid == instance.uid && identity.started_token == instance.started_token
-    }))
+    Ok(process_identity(pid)?
+        .is_some_and(|identity| identity.uid == uid && identity.started_token == started_token))
 }
 #[cfg(unix)]
 fn current_uid() -> u32 {
@@ -1092,6 +1319,375 @@ mod tests {
             assert_eq!(report.instances[0].state, ReloadState::Failed);
         }
     }
+    #[cfg(unix)]
+    fn inode(path: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        path.metadata().unwrap().ino()
+    }
+    fn set_age(path: &Path, age: Duration) {
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::now() - age)
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publishing_writes_only_changes_and_never_waits_for_the_registry_lock() {
+        let fixture = Fixture::new();
+        let mut registration = fixture.register("state");
+        let path = fixture
+            .manager
+            .instance_path(&registration.instance.id)
+            .unwrap();
+        let windows = vec![window(fixture.path.clone())];
+        assert!(registration.try_publish_windows(windows.clone()).unwrap());
+        let written = inode(&path);
+        assert_eq!(
+            read_json::<RuntimeInstance>(&path).unwrap().windows,
+            windows
+        );
+        // Unchanged windows leave the file alone (every write is a new inode).
+        for _ in 0..3 {
+            assert!(registration.try_publish_windows(windows.clone()).unwrap());
+        }
+        assert_eq!(inode(&path), written);
+        // A busy registry is not waited for, and the change is not lost.
+        let changed = vec![window(fixture.path.clone()), window(fixture.path.clone())];
+        let held = fixture.manager.lock().unwrap();
+        let started = Instant::now();
+        assert!(!registration.try_publish_windows(changed.clone()).unwrap());
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(inode(&path), written);
+        drop(held);
+        assert!(registration.try_publish_windows(changed.clone()).unwrap());
+        assert_ne!(inode(&path), written);
+        assert_eq!(
+            read_json::<RuntimeInstance>(&path).unwrap().windows,
+            changed
+        );
+        // An invalid layout is rejected without touching the last good file.
+        let mut invalid = changed.clone();
+        invalid[0].bounds.as_mut().unwrap().width = f32::NAN;
+        assert!(registration.try_publish_windows(invalid).is_err());
+        assert_eq!(registration.instance.windows, changed);
+        // A removed registration is restored, and a due heartbeat refreshes it.
+        fs::remove_file(&path).unwrap();
+        assert!(registration.try_publish_windows(changed.clone()).unwrap());
+        assert!(path.exists());
+        let refreshed = inode(&path);
+        registration.written_at = Instant::now() - HEARTBEAT * 2;
+        assert!(registration.try_publish_windows(changed).unwrap());
+        assert_ne!(inode(&path), refreshed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_confirmation_that_lands_before_the_timeout_write_is_never_overwritten() {
+        let fixture = Fixture::new();
+        let old = fixture.register("state");
+        let mut new = fixture.register("state");
+        let windows = vec![window(fixture.path.clone())];
+        let report = fixture
+            .manager
+            .reload_all(&env::current_exe().unwrap())
+            .unwrap();
+        let request = old.pending_reload().unwrap().unwrap();
+        let snapshot = RestoreSnapshot {
+            ticket_id: request.ticket_id.clone(),
+            request_id: request.request_id.clone(),
+            old_instance_id: old.instance.id.clone(),
+            replacement_executable: executable_path(&env::current_exe().unwrap()).unwrap(),
+            state_home: new.instance.state_home.clone(),
+            windows: windows.clone(),
+            created_at: now(),
+        };
+        write_json(
+            &fixture.manager.restore_path(&snapshot.ticket_id).unwrap(),
+            &snapshot,
+        )
+        .unwrap();
+        new.publish_windows(windows).unwrap();
+        // The old GUI decided to time out (its earlier read saw nothing), then
+        // the replacement confirmed before the failure was written.
+        fixture.manager.mark_restore_ready(&snapshot, &new).unwrap();
+        let launch = ReloadLaunch {
+            pid: std::process::id(),
+            request: request.clone(),
+            started: Instant::now() - Duration::from_secs(26),
+            exited: Arc::new(AtomicBool::new(false)),
+        };
+        assert!(
+            old.settle_failure(&request, "timed out", Some(&launch))
+                .unwrap()
+        );
+        old.fail_reload(&request, "late failure").unwrap();
+        let path = fixture
+            .manager
+            .response_path(&old.instance.id, &request.request_id)
+            .unwrap();
+        assert_eq!(
+            read_json::<Response>(&path).unwrap().state,
+            ReloadState::Reloaded
+        );
+        // The same decision in reload_ready reports success, not an error.
+        assert!(old.reload_ready(&launch).unwrap());
+        let report = fixture
+            .manager
+            .wait_for_reload(report, Duration::ZERO)
+            .unwrap();
+        assert!(report.reloaded >= 1);
+        // A different process than the one launched does not count.
+        let wrong = ReloadLaunch { pid: 1, ..launch };
+        assert!(
+            !old.settle_failure(&request, "wrong child", Some(&wrong))
+                .unwrap()
+        );
+        assert_eq!(
+            read_json::<Response>(&path).unwrap().state,
+            ReloadState::Failed
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replacement_cannot_confirm_a_reload_the_old_gui_already_abandoned() {
+        let fixture = Fixture::new();
+        let old = fixture.register("state");
+        let mut new = fixture.register("state");
+        let windows = vec![window(fixture.path.clone())];
+        fixture
+            .manager
+            .reload_all(&env::current_exe().unwrap())
+            .unwrap();
+        let request = old.pending_reload().unwrap().unwrap();
+        let snapshot = RestoreSnapshot {
+            ticket_id: request.ticket_id.clone(),
+            request_id: request.request_id.clone(),
+            old_instance_id: old.instance.id.clone(),
+            replacement_executable: executable_path(&env::current_exe().unwrap()).unwrap(),
+            state_home: new.instance.state_home.clone(),
+            windows: windows.clone(),
+            created_at: now(),
+        };
+        let ticket = fixture.manager.restore_path(&snapshot.ticket_id).unwrap();
+        write_json(&ticket, &snapshot).unwrap();
+        new.publish_windows(windows).unwrap();
+        old.fail_reload(&request, "gave up").unwrap();
+        assert!(!ticket.exists());
+        // Even if the replacement read the ticket before it was withdrawn, its
+        // confirmation must not replace the failure.
+        write_json(&ticket, &snapshot).unwrap();
+        let error = fixture
+            .manager
+            .mark_restore_ready(&snapshot, &new)
+            .unwrap_err();
+        assert!(error.contains("gave up"), "{error}");
+        let path = fixture
+            .manager
+            .response_path(&old.instance.id, &request.request_id)
+            .unwrap();
+        assert_eq!(
+            read_json::<Response>(&path).unwrap().state,
+            ReloadState::Failed
+        );
+    }
+
+    #[test]
+    fn an_unreadable_response_is_replaced_by_the_failure_record() {
+        let fixture = Fixture::new();
+        let old = fixture.register("state");
+        fixture
+            .manager
+            .reload_all(&env::current_exe().unwrap())
+            .unwrap();
+        let request = old.pending_reload().unwrap().unwrap();
+        let path = fixture
+            .manager
+            .response_path(&old.instance.id, &request.request_id)
+            .unwrap();
+        fs::write(&path, "{ not a response").unwrap();
+        let launch = ReloadLaunch {
+            pid: std::process::id(),
+            request: request.clone(),
+            started: Instant::now() - Duration::from_secs(26),
+            exited: Arc::new(AtomicBool::new(false)),
+        };
+        // Neither an error nor a stuck wait: the timeout is recorded properly.
+        assert!(
+            old.reload_ready(&launch)
+                .unwrap_err()
+                .contains("25 seconds")
+        );
+        assert_eq!(
+            read_json::<Response>(&path).unwrap().state,
+            ReloadState::Failed
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_request_for_a_vanished_executable_is_answered_instead_of_retried() {
+        let fixture = Fixture::new();
+        let old = fixture.register("state");
+        let vanishing = fixture.path.join("vanishing");
+        fs::write(&vanishing, "#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&vanishing, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let report = fixture.manager.reload_all(&vanishing).unwrap();
+        assert_eq!(report.requested, 1);
+        fs::remove_file(&vanishing).unwrap();
+        assert!(old.pending_reload().unwrap().is_none());
+        assert!(old.pending_reload().unwrap().is_none());
+        let report = fixture
+            .manager
+            .wait_for_reload(report, Duration::ZERO)
+            .unwrap();
+        assert_eq!(report.instances[0].state, ReloadState::Failed);
+        assert!(report.instances[0].message.contains("Cannot read"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reload_request_can_only_launch_this_app_or_the_recorded_install() {
+        let fixture = Fixture::new();
+        let old = fixture.register("state");
+        let marker = fixture.path.join("ran");
+        let planted = fixture.path.join("planted");
+        fs::write(
+            &planted,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&planted, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fixture.manager.reload_all(&planted).unwrap();
+        let request = old.pending_reload().unwrap().unwrap();
+        let error = old.launch_reload(&request, vec![]).unwrap_err();
+        assert!(error.contains("Refusing to launch"), "{error}");
+        assert!(
+            !fixture
+                .manager
+                .restore_path(&request.ticket_id)
+                .unwrap()
+                .exists()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!marker.exists());
+        // The running executable and the recorded install are allowed.
+        assert!(
+            old.trusted_replacement(&env::current_exe().unwrap())
+                .is_ok()
+        );
+        fixture.manager.record_installed_build(&planted).unwrap();
+        assert_eq!(
+            old.trusted_replacement(&planted).unwrap(),
+            planted.canonicalize().unwrap()
+        );
+        // ...unless anyone could have modified it.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&planted, fs::Permissions::from_mode(0o777)).unwrap();
+        }
+        assert!(old.trusted_replacement(&planted).is_err());
+    }
+
+    #[test]
+    fn unreadable_registrations_are_counted_and_only_dead_or_ancient_ones_are_pruned() {
+        let fixture = Fixture::new();
+        let live = fixture.register("state");
+        // A running GUI whose registration this build cannot parse.
+        let incompatible = fixture.register("other");
+        let path = fixture
+            .manager
+            .instance_path(&incompatible.instance.id)
+            .unwrap();
+        let mut value: serde_json::Value = read_json(&path).unwrap();
+        value["windows"] = serde_json::json!("layout format 2");
+        fs::write(&path, value.to_string()).unwrap();
+        // The same, but for a process that no longer exists.
+        let dead_id = Uuid::new_v4().to_string();
+        let mut dead = value.clone();
+        dead["id"] = dead_id.clone().into();
+        dead["started_token"] = "0.000000".into();
+        let dead_path = fixture.manager.instance_path(&dead_id).unwrap();
+        fs::write(&dead_path, dead.to_string()).unwrap();
+        // Garbage: kept while it might be a GUI mid-write, removed when old.
+        let garbage = fixture
+            .manager
+            .instance_path(&Uuid::new_v4().to_string())
+            .unwrap();
+        fs::write(&garbage, "not json").unwrap();
+
+        let (instances, unreadable) = fixture.manager.live_instances().unwrap();
+        assert_eq!(
+            instances.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec![live.instance.id.clone()]
+        );
+        assert_eq!(unreadable, 2);
+        assert!(!dead_path.exists());
+        assert!(garbage.exists());
+        let report = fixture
+            .manager
+            .reload_all(&env::current_exe().unwrap())
+            .unwrap();
+        assert_eq!(report.unreadable_registrations, 2);
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["unreadable_registrations"],
+            2
+        );
+        set_age(&garbage, UNREADABLE_AGE + Duration::from_secs(1));
+        let (_, unreadable) = fixture.manager.live_instances().unwrap();
+        assert_eq!(unreadable, 1);
+        assert!(!garbage.exists());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn leftover_reload_files_are_pruned_but_recent_ones_and_registrations_stay() {
+        let fixture = Fixture::new();
+        let live = fixture.register("state");
+        let id = || Uuid::new_v4().to_string();
+        let mut old_files = vec![];
+        let mut fresh_files = vec![];
+        for name in ["requests", "restores", "responses"] {
+            let dir = fixture.manager.directory.join(name);
+            let old = dir.join(format!("{}.json", id()));
+            let fresh = dir.join(format!("{}.json", id()));
+            fs::write(&old, "{}").unwrap();
+            fs::write(&fresh, "{}").unwrap();
+            set_age(&old, LEFTOVER_AGE + Duration::from_secs(60));
+            old_files.push(old);
+            fresh_files.push(fresh);
+        }
+        let stale_temporary =
+            fixture
+                .manager
+                .directory
+                .join("instances")
+                .join(format!("{}.{}.tmp", id(), id()));
+        fs::write(&stale_temporary, "{").unwrap();
+        set_age(&stale_temporary, LEFTOVER_AGE + Duration::from_secs(60));
+        // Registrations are judged by their process, however old the file is.
+        let registration = fixture.manager.instance_path(&live.instance.id).unwrap();
+        set_age(&registration, LEFTOVER_AGE * 3);
+        fixture
+            .manager
+            .reload_all(&env::current_exe().unwrap())
+            .unwrap();
+        assert!(old_files.iter().all(|path| !path.exists()));
+        assert!(!stale_temporary.exists());
+        assert!(fresh_files.iter().all(|path| path.exists()));
+        assert!(registration.exists());
+    }
+
     #[test]
     fn identifiers_geometry_and_private_file_read_are_validated() {
         let fixture = Fixture::new();
