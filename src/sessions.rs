@@ -1608,9 +1608,25 @@ fn cua_harness_arguments(
     executable: &Path,
     state_home: &Path,
 ) -> Vec<String> {
+    cua_harness_arguments_with(
+        harness,
+        executable,
+        state_home,
+        crate::cua::driver_override_for_harness().as_deref(),
+    )
+}
+
+/// The harnesses filter their MCP servers' environments, so a custom driver
+/// that the launcher accepted reaches `riwork cua mcp` only if named here.
+fn cua_harness_arguments_with(
+    harness: HarnessKind,
+    executable: &Path,
+    state_home: &Path,
+    custom_driver: Option<&Path>,
+) -> Vec<String> {
     match harness {
         HarnessKind::Codex => {
-            let overrides = [
+            let mut overrides = vec![
                 format!(
                     "mcp_servers.cua-driver.command={}",
                     toml_string(&executable.to_string_lossy())
@@ -1620,10 +1636,18 @@ fn cua_harness_arguments(
                     "mcp_servers.cua-driver.env.RIWORK_HOME={}",
                     toml_string(&state_home.to_string_lossy())
                 ),
+            ];
+            if let Some(driver) = custom_driver {
+                overrides.push(format!(
+                    "mcp_servers.cua-driver.env.RIWORK_CUA_DRIVER={}",
+                    toml_string(&driver.to_string_lossy())
+                ));
+            }
+            overrides.extend([
                 "mcp_servers.cua-driver.enabled=true".to_owned(),
                 "mcp_servers.cua-driver.required=true".to_owned(),
                 "mcp_servers.cua-driver.startup_timeout_sec=120".to_owned(),
-            ];
+            ]);
             let mut arguments = vec!["--disable".to_owned(), "computer_use".to_owned()];
             for value in overrides {
                 arguments.extend(["-c".to_owned(), value]);
@@ -1631,13 +1655,18 @@ fn cua_harness_arguments(
             arguments
         }
         HarnessKind::Claude => {
+            let mut environment =
+                serde_json::json!({ "RIWORK_HOME": state_home.to_string_lossy() });
+            if let Some(driver) = custom_driver {
+                environment["RIWORK_CUA_DRIVER"] = driver.to_string_lossy().into();
+            }
             let config = serde_json::json!({
                 "mcpServers": {
                     "cua-driver": {
                         "type": "stdio",
                         "command": executable.to_string_lossy(),
                         "args": ["cua", "mcp"],
-                        "env": { "RIWORK_HOME": state_home.to_string_lossy() }
+                        "env": environment
                     }
                 }
             });
@@ -1650,24 +1679,42 @@ fn cua_harness_arguments(
         }
         HarnessKind::Grok => vec![
             "--agent".to_owned(),
-            grok_agent_path(state_home, executable)
+            grok_agent_path(state_home, executable, custom_driver)
                 .to_string_lossy()
                 .into_owned(),
         ],
     }
 }
 
-fn grok_agent_path(state_home: &Path, executable: &Path) -> PathBuf {
+/// Launches with different custom drivers must not overwrite one another's definition.
+fn grok_agent_path(state_home: &Path, executable: &Path, custom_driver: Option<&Path>) -> PathBuf {
+    let mut identity = executable.to_string_lossy().into_owned();
+    if let Some(driver) = custom_driver {
+        identity.push('\0');
+        identity.push_str(&driver.to_string_lossy());
+    }
     state_home.join(format!(
         "cua/grok-agent-{:016x}.md",
-        stable_hash(executable.to_string_lossy().as_bytes())
+        stable_hash(identity.as_bytes())
     ))
 }
 
 /// Grok's active agent can supply an MCP server for this session. An agent
 /// definition in RiWork state avoids modifying the user's Grok config or the
 /// project repository, while its ordinary config and login remain available.
-fn grok_agent_definition(executable: &Path, state_home: &Path) -> String {
+fn grok_agent_definition(
+    executable: &Path,
+    state_home: &Path,
+    custom_driver: Option<&Path>,
+) -> String {
+    let custom_driver = custom_driver
+        .map(|driver| {
+            format!(
+                "      RIWORK_CUA_DRIVER: {}\n",
+                toml_string(&driver.to_string_lossy())
+            )
+        })
+        .unwrap_or_default();
     format!(
         concat!(
             "---\n",
@@ -1679,21 +1726,24 @@ fn grok_agent_definition(executable: &Path, state_home: &Path) -> String {
             "    args: [\"cua\", \"mcp\"]\n",
             "    env:\n",
             "      RIWORK_HOME: {}\n",
+            "{}",
             "---\n",
             "{}\n"
         ),
         toml_string(&executable.to_string_lossy()),
         toml_string(&state_home.to_string_lossy()),
+        custom_driver,
         CUA_GUIDANCE
     )
 }
 
 fn ensure_grok_agent(state_home: &Path, executable: &Path) -> Result<(), String> {
-    let path = grok_agent_path(state_home, executable);
+    let custom_driver = crate::cua::driver_override_for_harness();
+    let path = grok_agent_path(state_home, executable, custom_driver.as_deref());
     let directory = path.parent().expect("Grok agent has a parent directory");
     fs::create_dir_all(directory)
         .map_err(|error| format!("create Grok Cua agent directory: {error}"))?;
-    let content = grok_agent_definition(executable, state_home);
+    let content = grok_agent_definition(executable, state_home, custom_driver.as_deref());
     if fs::read_to_string(&path).ok().as_deref() == Some(&content) {
         return Ok(());
     }
@@ -3663,6 +3713,64 @@ mod tests {
     }
 
     #[test]
+    fn a_custom_cua_driver_reaches_every_harness_mcp_server() {
+        let executable = Path::new("/Applications/RiWork's App/riwork");
+        let home = Path::new("/Users/test/RiWork State");
+        let driver = Path::new("/Users/test/dev \"cua\"\\driver/cua-driver");
+        let key = "mcp_servers.cua-driver.env.RIWORK_CUA_DRIVER=";
+        let codex = |custom: Option<&Path>| {
+            let arguments =
+                cua_harness_arguments_with(HarnessKind::Codex, executable, home, custom);
+            arguments
+                .windows(2)
+                .filter(|pair| pair[0] == "-c")
+                .find_map(|pair| pair[1].strip_prefix(key).map(str::to_owned))
+        };
+        assert_eq!(
+            serde_json::from_str::<String>(&codex(Some(driver)).unwrap()).unwrap(),
+            driver.to_string_lossy()
+        );
+        assert_eq!(codex(None), None);
+
+        let claude = |custom: Option<&Path>| {
+            let arguments =
+                cua_harness_arguments_with(HarnessKind::Claude, executable, home, custom);
+            let index = arguments
+                .iter()
+                .position(|arg| arg == "--mcp-config")
+                .unwrap();
+            let config: serde_json::Value = serde_json::from_str(&arguments[index + 1]).unwrap();
+            config["mcpServers"]["cua-driver"]["env"].clone()
+        };
+        assert_eq!(
+            claude(Some(driver))["RIWORK_CUA_DRIVER"],
+            driver.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            claude(Some(driver))["RIWORK_HOME"],
+            home.to_string_lossy().as_ref()
+        );
+        assert!(claude(None).get("RIWORK_CUA_DRIVER").is_none());
+
+        let with_driver = grok_agent_definition(executable, home, Some(driver));
+        assert!(with_driver.contains(&format!(
+            "      RIWORK_HOME: {}\n      RIWORK_CUA_DRIVER: {}\n---\n",
+            toml_string(&home.to_string_lossy()),
+            toml_string(&driver.to_string_lossy())
+        )));
+        assert!(!grok_agent_definition(executable, home, None).contains("RIWORK_CUA_DRIVER"));
+        // Launches with different drivers keep separate agent definitions.
+        assert_ne!(
+            grok_agent_path(home, executable, Some(driver)),
+            grok_agent_path(home, executable, None)
+        );
+        assert_eq!(
+            cua_harness_arguments_with(HarnessKind::Grok, executable, home, Some(driver))[1],
+            grok_agent_path(home, executable, Some(driver)).to_string_lossy()
+        );
+    }
+
+    #[test]
     fn managed_wrappers_pass_utilities_through_but_integrate_sessions() {
         for harness in [HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok] {
             for argument in ["--help", "--version", "mcp", "login"] {
@@ -3710,14 +3818,19 @@ mod tests {
             assert_eq!(arguments[1], "--agent");
             assert_eq!(
                 arguments[2],
-                grok_agent_path(home, executable).to_string_lossy()
+                grok_agent_path(
+                    home,
+                    executable,
+                    crate::cua::driver_override_for_harness().as_deref()
+                )
+                .to_string_lossy()
             );
             assert_eq!(
                 arguments.contains(&"--always-approve".to_owned()),
                 unrestricted
             );
         }
-        let definition = grok_agent_definition(executable, home);
+        let definition = grok_agent_definition(executable, home, None);
         assert!(definition.contains("mcpServers:\n  - name: cua-driver\n"));
         assert!(definition.contains(&format!(
             "    command: {}\n",

@@ -8,6 +8,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::atomic::{AtomicI32, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -15,6 +16,14 @@ use uuid::Uuid;
 
 const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const BUNDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Cargo and rustc get this long to exit on SIGTERM before the group is killed.
+const STAGE_TERMINATE_GRACE: Duration = Duration::from_secs(5);
+/// Update logs kept across runs, not counting the current one.
+const KEPT_LOGS: usize = 5;
+/// Marks staging left behind on purpose because it holds the only copy of the old build.
+const PRESERVED_MARKER: &str = "PRESERVED";
+const PRESERVED_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 #[derive(Debug, Serialize)]
 pub struct UpdateBuild {
@@ -22,7 +31,16 @@ pub struct UpdateBuild {
     pub profile: String,
     pub executable: PathBuf,
     pub bundle: PathBuf,
+    /// The build this one replaced, kept for rollback until the next update.
+    pub previous_bundle: Option<PathBuf>,
     pub log_path: PathBuf,
+}
+
+/// Where an update finds its tools, and whether the bundle's signature is
+/// checked (fixture bundles in tests are not signed).
+struct UpdateEnvironment {
+    tool_path: std::ffi::OsString,
+    verify_signature: bool,
 }
 
 pub fn resolve_source(explicit: Option<&Path>) -> Result<PathBuf, String> {
@@ -64,7 +82,7 @@ fn validate_source(source: &Path) -> Result<PathBuf, String> {
         "Cargo.toml",
         "src/main.rs",
         "scripts/bundle-macos.sh",
-        "assets/app-icon/RiWork.icns",
+        // The only icon the bundler reads.
         "assets/app-icon/RiWork-legacy.icns",
     ] {
         if !source.join(relative).is_file() {
@@ -110,12 +128,31 @@ fn update_profile(profile: Option<&str>) -> Result<&str, String> {
 /// Build the selected checkout without pulling Git changes or touching user
 /// settings. The returned paths are installed artifacts; GUI reload is separate.
 pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild, String> {
+    build_update_with(
+        source,
+        profile,
+        &UpdateEnvironment {
+            tool_path: update_tool_path()?,
+            verify_signature: cfg!(target_os = "macos"),
+        },
+    )
+}
+
+fn build_update_with(
+    source: &Path,
+    profile: Option<&str>,
+    environment: &UpdateEnvironment,
+) -> Result<UpdateBuild, String> {
+    // Declared first so it is released last: a signal that arrives during
+    // cleanup must not end the process before staging is removed.
+    let _interrupts = InterruptGuard::install();
     let source = validate_source(source)?;
     let profile = update_profile(profile)?.to_owned();
     let target = source.join("target");
     fs::create_dir_all(&target)
         .map_err(|error| format!("Cannot create {}: {error}", target.display()))?;
     let _lock = update_lock(&target)?;
+    let swept = sweep_stale_artifacts(&target);
     let identifier = Uuid::new_v4();
     let log_path = target.join(format!("riwork-update-{identifier}.log"));
     let mut log_options = OpenOptions::new();
@@ -128,26 +165,34 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
     let mut log = log_options
         .open(&log_path)
         .map_err(|error| format!("Cannot create update log: {error}"))?;
+    if swept != (0, 0) {
+        writeln!(
+            log,
+            "Removed {} stale staging directories and {} old logs.",
+            swept.0, swept.1
+        )
+        .ok();
+    }
     let mut staging = StagingDirectory::new(target.join(format!(".riwork-update-{identifier}")))?;
     let staged_target = staging.path.join("target");
     fs::create_dir_all(&staged_target)
         .map_err(|error| format!("Cannot create staging target: {error}"))?;
-    let tool_path = update_tool_path()?;
+    let tool_path = environment.tool_path.as_os_str();
     seed_build_cache(
         &target.join(&profile),
         &staged_target.join(&profile),
-        &tool_path,
+        tool_path,
         &mut log,
         &log_path,
     )?;
-    let cargo = find_tool("cargo", &tool_path)
+    let cargo = find_tool("cargo", tool_path)
         .ok_or("Cargo is required to rebuild RiWork. Install Rust or put cargo on PATH.")?;
     let mut build = Command::new(&cargo);
     build
         .current_dir(&source)
         .args(["build", "--locked", "--bin", "riwork"])
         .env("CARGO_TARGET_DIR", &staged_target)
-        .env("PATH", &tool_path);
+        .env("PATH", tool_path);
     if profile == "release" {
         build.arg("--release");
     }
@@ -170,12 +215,12 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
         seed_build_cache(
             &source.join("remote/target").join(&profile),
             &remote_target.join(&profile),
-            &tool_path,
+            tool_path,
             &mut log,
             &log_path,
         )?;
         let mut remote_build =
-            companion_build_command(&cargo, &source, &remote_target, &profile, &tool_path);
+            companion_build_command(&cargo, &source, &remote_target, &profile, tool_path);
         eprintln!("Building riwork-remote ({profile}).");
         run_stage(
             &mut remote_build,
@@ -194,7 +239,7 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
         .arg(&bundler)
         .arg(&profile)
         .current_dir(&staging.path)
-        .env("PATH", &tool_path);
+        .env("PATH", tool_path);
     eprintln!("Packaging RiWork.app.");
     run_stage(
         &mut bundle_command,
@@ -207,6 +252,30 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
     let staged_bundle = staged_target.join(&profile).join("RiWork.app");
     validate_artifacts(&staged_executable, &staged_bundle)?;
     validate_companion(&staged_bundle, companion)?;
+    if environment.verify_signature {
+        let mut verify = Command::new("/usr/bin/codesign");
+        verify
+            .args(["--verify", "--deep", "--strict"])
+            .arg(&staged_bundle);
+        run_stage(
+            &mut verify,
+            "Bundle signature check",
+            BUNDLE_TIMEOUT,
+            &mut log,
+            &log_path,
+        )?;
+    }
+    // A build that compiles can still crash at startup. Run both binaries that
+    // will be installed before anything is replaced, so a bad build never
+    // displaces the working one.
+    eprintln!("Checking that the new build starts.");
+    smoke_test(&staged_executable, &staging.path, &mut log, &log_path)?;
+    smoke_test(
+        &staged_bundle.join("Contents/MacOS/riwork"),
+        &staging.path,
+        &mut log,
+        &log_path,
+    )?;
     let destination = target.join(&profile);
     fs::create_dir_all(&destination)
         .map_err(|error| format!("Cannot create install directory: {error}"))?;
@@ -214,15 +283,27 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
     let bundle = destination.join("RiWork.app");
     log.sync_all()
         .map_err(|error| format!("Cannot sync update log: {error}"))?;
+    // Past this point the swap is short and must complete, so this is the last
+    // chance for an interrupt to abandon the update.
+    if let Some(signal) = interrupted() {
+        return Err(interrupted_message(signal, Some(&log_path)));
+    }
     if let Err(error) = install_artifacts(&staged_executable, &staged_bundle, &executable, &bundle)
     {
-        staging.cleanup = false;
+        staging.preserve();
         return Err(format!(
             "{error}. Staging preserved at {}. Log: {}",
             staging.path.display(),
             log_path.display()
         ));
     }
+    let previous_bundle = retain_previous(
+        &staged_executable,
+        &staged_bundle,
+        &executable,
+        &bundle,
+        &mut log,
+    );
     writeln!(
         log,
         "Installed executable: {}\nInstalled bundle: {}",
@@ -236,6 +317,7 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
         profile,
         executable,
         bundle,
+        previous_bundle,
         log_path,
     })
 }
@@ -287,7 +369,6 @@ fn validate_companion(bundle: &Path, required: bool) -> Result<(), String> {
 fn stage_bundle_inputs(source: &Path, staging: &Path) -> Result<PathBuf, String> {
     for relative in [
         "scripts/bundle-macos.sh",
-        "assets/app-icon/RiWork.icns",
         "assets/app-icon/RiWork-legacy.icns",
     ] {
         let destination = staging.join(relative);
@@ -309,6 +390,9 @@ fn update_lock(target: &Path) -> Result<File, String> {
         .map_err(|error| format!("Cannot open update lock: {error}"))?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
+        if let Some(signal) = interrupted() {
+            return Err(interrupted_message(signal, None));
+        }
         match file.try_lock_exclusive() {
             Ok(()) => return Ok(file),
             Err(error)
@@ -399,6 +483,9 @@ fn run_stage(
     log_path: &Path,
 ) -> Result<(), String> {
     writeln!(log, "\n{name}").map_err(|error| format!("Cannot write update log: {error}"))?;
+    if let Some(signal) = interrupted() {
+        return Err(interrupted_message(signal, Some(log_path)));
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(
@@ -418,6 +505,13 @@ fn run_stage(
     let deadline = Instant::now() + timeout;
     let mut progress = Instant::now() + Duration::from_secs(30);
     loop {
+        // The stage runs in its own process group, so the terminal's signal
+        // reaches only this process. Stop the stage here or it would outlive us.
+        if let Some(signal) = interrupted() {
+            eprintln!("Interrupted. Stopping {name} and removing the staging directory.");
+            terminate_stage(&mut child);
+            return Err(interrupted_message(signal, Some(log_path)));
+        }
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(status)) => {
@@ -454,16 +548,60 @@ fn run_stage(
     }
 }
 
+/// SIGTERM to the stage's whole group lets cargo and rustc exit; SIGKILL
+/// follows for anything that ignores it.
 fn terminate_stage(child: &mut Child) {
     #[cfg(unix)]
-    let _ = Command::new("/bin/kill")
-        .args(["-KILL", "--", &format!("-{}", child.id())])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    {
+        signal_group(child.id(), libc::SIGTERM);
+        let deadline = Instant::now() + STAGE_TERMINATE_GRACE;
+        while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        signal_group(child.id(), libc::SIGKILL);
+    }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn signal_group(leader: u32, signal: libc::c_int) {
+    if let Ok(leader) = libc::pid_t::try_from(leader) {
+        // Stages run with `process_group(0)`, so the group id is the pid.
+        unsafe { libc::kill(-leader, signal) };
+    }
+}
+
+/// Run a staged binary the way any user first would. `help` prints and exits
+/// without opening a window or reading state, so a nonzero exit, a crash or
+/// a hang means the build is unusable.
+fn smoke_test(
+    executable: &Path,
+    staging: &Path,
+    log: &mut File,
+    log_path: &Path,
+) -> Result<(), String> {
+    let home = staging.join("smoke-home");
+    fs::create_dir_all(&home).map_err(|error| format!("Cannot prepare smoke test: {error}"))?;
+    let mut command = Command::new(executable);
+    command
+        .arg("help")
+        .env_clear()
+        .env("HOME", &home)
+        .env("RIWORK_HOME", &home)
+        .env("PATH", "/usr/bin:/bin");
+    run_stage(
+        &mut command,
+        &format!("Smoke test: {} help", executable.display()),
+        SMOKE_TIMEOUT,
+        log,
+        log_path,
+    )
+    .map_err(|error| {
+        format!(
+            "The new build does not run, so it was not installed and the current build is unchanged. {error}"
+        )
+    })
 }
 
 fn log_tail(path: &Path) -> String {
@@ -586,6 +724,12 @@ impl StagingDirectory {
             cleanup: true,
         })
     }
+
+    /// Keep the directory: after a failed install it holds the previous build.
+    fn preserve(&mut self) {
+        self.cleanup = false;
+        let _ = fs::write(self.path.join(PRESERVED_MARKER), "");
+    }
 }
 impl Drop for StagingDirectory {
     fn drop(&mut self) {
@@ -595,9 +739,195 @@ impl Drop for StagingDirectory {
     }
 }
 
+/// Set by the signal handler, polled by every wait in an update. A handler may
+/// do nothing more than this, so the stage is stopped and staging removed from
+/// ordinary code as the update unwinds.
+static INTERRUPT: AtomicI32 = AtomicI32::new(0);
+
+fn interrupted() -> Option<i32> {
+    match INTERRUPT.load(Ordering::SeqCst) {
+        0 => None,
+        signal => Some(signal),
+    }
+}
+
+fn interrupted_message(signal: i32, log_path: Option<&Path>) -> String {
+    #[cfg(unix)]
+    let name = match signal {
+        libc::SIGINT => "SIGINT",
+        libc::SIGTERM => "SIGTERM",
+        libc::SIGHUP => "SIGHUP",
+        _ => "a signal",
+    };
+    #[cfg(not(unix))]
+    let name = {
+        let _ = signal;
+        "a signal"
+    };
+    let mut message = format!("Update interrupted by {name}. The installed build was not changed.");
+    if let Some(log_path) = log_path {
+        message.push_str(&format!(" Log: {}", log_path.display()));
+    }
+    message
+}
+
+/// Routes SIGINT, SIGTERM and SIGHUP into `INTERRUPT` for the length of an
+/// update and restores the previous handlers afterwards. A signal that was
+/// already ignored, as under `nohup`, stays ignored.
+struct InterruptGuard {
+    #[cfg(unix)]
+    previous: Vec<(libc::c_int, libc::sigaction)>,
+}
+
+#[cfg(unix)]
+extern "C" fn record_interrupt(signal: libc::c_int) {
+    INTERRUPT.store(signal, Ordering::SeqCst);
+}
+
+#[cfg(unix)]
+impl InterruptGuard {
+    fn install() -> Self {
+        INTERRUPT.store(0, Ordering::SeqCst);
+        let mut previous = Vec::new();
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            // SAFETY: plain sigaction calls with zeroed, then filled, structures.
+            // The handler only stores to an atomic, which is async-signal-safe.
+            unsafe {
+                let mut current: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(signal, std::ptr::null(), &mut current) != 0
+                    || current.sa_sigaction == libc::SIG_IGN
+                {
+                    continue;
+                }
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction =
+                    record_interrupt as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                libc::sigemptyset(&mut action.sa_mask);
+                if libc::sigaction(signal, &action, std::ptr::null_mut()) == 0 {
+                    previous.push((signal, current));
+                }
+            }
+        }
+        Self { previous }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        for (signal, action) in &self.previous {
+            // SAFETY: restores the action that sigaction returned for this signal.
+            unsafe { libc::sigaction(*signal, action, std::ptr::null_mut()) };
+        }
+        INTERRUPT.store(0, Ordering::SeqCst);
+    }
+}
+
+#[cfg(not(unix))]
+impl InterruptGuard {
+    fn install() -> Self {
+        Self {}
+    }
+}
+
+/// Runs under the update lock, so no other update owns anything it finds. An
+/// interrupted or killed update leaves its 1 GB staging clone, and every run
+/// leaves a log. Returns how many staging directories and logs were removed.
+fn sweep_stale_artifacts(target: &Path) -> (usize, usize) {
+    let Ok(entries) = fs::read_dir(target) else {
+        return (0, 0);
+    };
+    let mut staging = 0;
+    let mut logs = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let (Some(name), Ok(kind)) = (name.to_str(), entry.file_type()) else {
+            continue;
+        };
+        if kind.is_dir()
+            && name
+                .strip_prefix(".riwork-update-")
+                .is_some_and(|id| Uuid::parse_str(id).is_ok())
+        {
+            let preserved = fs::metadata(entry.path().join(PRESERVED_MARKER))
+                .map(|marker| {
+                    marker
+                        .modified()
+                        .ok()
+                        .and_then(|modified| modified.elapsed().ok())
+                        .is_none_or(|age| age < PRESERVED_RETENTION)
+                })
+                .unwrap_or(false);
+            if !preserved && fs::remove_dir_all(entry.path()).is_ok() {
+                staging += 1;
+            }
+        } else if kind.is_file()
+            && name
+                .strip_prefix("riwork-update-")
+                .and_then(|rest| rest.strip_suffix(".log"))
+                .is_some_and(|id| Uuid::parse_str(id).is_ok())
+            && let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified())
+        {
+            logs.push((modified, entry.path()));
+        }
+    }
+    logs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    let removed = logs
+        .into_iter()
+        .skip(KEPT_LOGS)
+        .filter(|(_, path)| fs::remove_file(path).is_ok())
+        .count();
+    (staging, removed)
+}
+
+fn previous_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(".previous");
+    path.with_file_name(name)
+}
+
+/// After the swap the staging paths hold the builds that were just replaced.
+/// Keep them beside the new ones for rollback, replacing the set kept by the
+/// previous update. Failing to keep them never fails an install that succeeded.
+fn retain_previous(
+    staged_executable: &Path,
+    staged_bundle: &Path,
+    executable: &Path,
+    bundle: &Path,
+    log: &mut File,
+) -> Option<PathBuf> {
+    let mut previous_bundle = None;
+    for (replaced, installed) in [(staged_executable, executable), (staged_bundle, bundle)] {
+        if fs::symlink_metadata(replaced).is_err() {
+            continue;
+        }
+        let previous = previous_path(installed);
+        let kept = match fs::symlink_metadata(&previous) {
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&previous),
+            Ok(_) => fs::remove_file(&previous),
+            Err(_) => Ok(()),
+        }
+        .and_then(|()| fs::rename(replaced, &previous));
+        match kept {
+            Ok(()) if installed == bundle => previous_bundle = Some(previous),
+            Ok(()) => {}
+            Err(error) => {
+                writeln!(
+                    log,
+                    "Could not keep the previous build at {}: {error}",
+                    previous.display()
+                )
+                .ok();
+            }
+        }
+    }
+    previous_bundle
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
 
     fn fixture(parent: &Path, name: &str) -> PathBuf {
         let source = parent.join(name);
@@ -611,7 +941,6 @@ mod tests {
         .unwrap();
         fs::write(source.join("src/main.rs"), "fn main() {}\n").unwrap();
         fs::write(source.join("scripts/bundle-macos.sh"), "#!/bin/sh\n").unwrap();
-        fs::write(source.join("assets/app-icon/RiWork.icns"), b"icon fixture").unwrap();
         fs::write(
             source.join("assets/app-icon/RiWork-legacy.icns"),
             b"legacy icon fixture",
@@ -680,14 +1009,13 @@ mod tests {
                 .contains("scripts/bundle-macos.sh")
         );
         fs::write(source.join("scripts/bundle-macos.sh"), "#!/bin/sh\n").unwrap();
-        for relative in [
-            "assets/app-icon/RiWork.icns",
-            "assets/app-icon/RiWork-legacy.icns",
-        ] {
-            fs::remove_file(source.join(relative)).unwrap();
-            assert!(validate_source(&source).unwrap_err().contains(relative));
-            fs::write(source.join(relative), b"icon fixture").unwrap();
-        }
+        // The bundler reads only the rounded icon; the full-bleed export is optional.
+        let relative = "assets/app-icon/RiWork-legacy.icns";
+        fs::remove_file(source.join(relative)).unwrap();
+        assert!(validate_source(&source).unwrap_err().contains(relative));
+        fs::write(source.join(relative), b"icon fixture").unwrap();
+        assert!(!source.join("assets/app-icon/RiWork.icns").exists());
+        validate_source(&source).unwrap();
         for profile in ["../release", "release; false", "", "/tmp", "custom"] {
             assert!(update_profile(Some(profile)).is_err());
         }
@@ -699,19 +1027,18 @@ mod tests {
     }
 
     #[test]
-    fn bundle_staging_transports_app_icon_and_validation_requires_it() {
+    fn bundle_staging_transports_the_bundled_icon_and_validation_requires_it() {
         let temporary = StagingDirectory::new(
             env::temp_dir().join(format!("riwork-update-icon-{}", Uuid::new_v4())),
         )
         .unwrap();
         let source = fixture(&temporary.path, "source");
         let staging = temporary.path.join("staging");
+        // A full-bleed export present in the checkout is not a bundler input.
+        fs::write(source.join("assets/app-icon/RiWork.icns"), b"icon fixture").unwrap();
         let bundler = stage_bundle_inputs(&source, &staging).unwrap();
         assert_eq!(fs::read_to_string(bundler).unwrap(), "#!/bin/sh\n");
-        assert_eq!(
-            fs::read(staging.join("assets/app-icon/RiWork.icns")).unwrap(),
-            b"icon fixture"
-        );
+        assert!(!staging.join("assets/app-icon/RiWork.icns").exists());
         assert_eq!(
             fs::read(staging.join("assets/app-icon/RiWork-legacy.icns")).unwrap(),
             b"legacy icon fixture"
@@ -736,7 +1063,7 @@ mod tests {
                 .contains("Contents/Resources/RiWork.icns")
         );
         fs::copy(
-            staging.join("assets/app-icon/RiWork.icns"),
+            staging.join("assets/app-icon/RiWork-legacy.icns"),
             bundle.join("Contents/Resources/RiWork.icns"),
         )
         .unwrap();
@@ -887,5 +1214,404 @@ mod tests {
                 .unwrap()
                 .contains("meaningful failure")
         );
+    }
+
+    fn log_file(path: &Path) -> File {
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap()
+    }
+
+    fn write_executable(path: &Path, body: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    fn wait_until_gone(pid: libc::pid_t) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupt_stops_the_running_stage_and_everything_it_started() {
+        let temporary = StagingDirectory::new(
+            env::temp_dir().join(format!("riwork-update-interrupt-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let log_path = temporary.path.join("build.log");
+        let mut log = log_file(&log_path);
+        let pid_file = temporary.path.join("descendant.pid");
+        let script = temporary.path.join("stage.sh");
+        // Like cargo, the stage runs children of its own in its process group.
+        write_executable(
+            &script,
+            &format!(
+                "sleep 60 &\necho $! > {}.tmp\nmv {0}.tmp {0}\nwait",
+                pid_file.display()
+            ),
+        );
+        let guard = InterruptGuard::install();
+        let signaller = {
+            let pid_file = pid_file.clone();
+            thread::spawn(move || {
+                while !pid_file.exists() {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                // SIGTERM rather than Ctrl-C's SIGINT: a shell starts background
+                // jobs, and so possibly this test, with SIGINT ignored.
+                unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+            })
+        };
+        let start = Instant::now();
+        let error = run_stage(
+            Command::new("/bin/sh").arg(&script),
+            "fixture build",
+            Duration::from_secs(60),
+            &mut log,
+            &log_path,
+        )
+        .unwrap_err();
+        signaller.join().unwrap();
+        assert!(error.contains("interrupted by SIGTERM"), "{error}");
+        assert!(error.contains("installed build was not changed"), "{error}");
+        assert!(start.elapsed() < Duration::from_secs(4));
+        let descendant = fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        assert!(wait_until_gone(descendant), "the stage's child survived");
+        // Later stages do not start once an update was interrupted.
+        let error = run_stage(
+            Command::new("/bin/sh").args(["-c", "touch never-runs"]),
+            "later stage",
+            Duration::from_secs(5),
+            &mut log,
+            &log_path,
+        )
+        .unwrap_err();
+        assert!(error.contains("interrupted"), "{error}");
+        assert!(
+            matches!(update_lock(&temporary.path), Err(error) if error.contains("interrupted"))
+        );
+        drop(guard);
+        assert_eq!(interrupted(), None);
+        for (signal, name) in [
+            (libc::SIGINT, "SIGINT"),
+            (libc::SIGTERM, "SIGTERM"),
+            (libc::SIGHUP, "SIGHUP"),
+        ] {
+            assert!(interrupted_message(signal, None).contains(name));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_handlers_are_restored_and_an_ignored_signal_stays_ignored() {
+        fn disposition(signal: libc::c_int) -> libc::sighandler_t {
+            unsafe {
+                let mut current: libc::sigaction = std::mem::zeroed();
+                libc::sigaction(signal, std::ptr::null(), &mut current);
+                current.sa_sigaction
+            }
+        }
+        let before = [
+            disposition(libc::SIGINT),
+            disposition(libc::SIGTERM),
+            disposition(libc::SIGHUP),
+        ];
+        {
+            let _guard = InterruptGuard::install();
+            let handler = record_interrupt as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                if before[[libc::SIGINT, libc::SIGTERM, libc::SIGHUP]
+                    .iter()
+                    .position(|candidate| *candidate == signal)
+                    .unwrap()]
+                    != libc::SIG_IGN
+                {
+                    assert_eq!(disposition(signal), handler);
+                }
+            }
+        }
+        assert_eq!(
+            before,
+            [
+                disposition(libc::SIGINT),
+                disposition(libc::SIGTERM),
+                disposition(libc::SIGHUP)
+            ]
+        );
+        // `nohup riwork update` must keep surviving a closed terminal.
+        unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
+        {
+            let _guard = InterruptGuard::install();
+            assert_eq!(disposition(libc::SIGHUP), libc::SIG_IGN);
+        }
+        unsafe { libc::signal(libc::SIGHUP, before[2]) };
+        assert_eq!(disposition(libc::SIGHUP), before[2]);
+    }
+
+    #[test]
+    fn stale_staging_and_old_logs_are_swept_but_other_files_and_kept_staging_are_not() {
+        let temporary = StagingDirectory::new(
+            env::temp_dir().join(format!("riwork-update-sweep-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let target = &temporary.path;
+        let stale = target.join(format!(".riwork-update-{}", Uuid::new_v4()));
+        fs::create_dir_all(stale.join("target/release")).unwrap();
+        fs::write(stale.join("target/release/big"), "clone").unwrap();
+        let preserved = target.join(format!(".riwork-update-{}", Uuid::new_v4()));
+        fs::create_dir(&preserved).unwrap();
+        fs::write(preserved.join(PRESERVED_MARKER), "").unwrap();
+        let abandoned = target.join(format!(".riwork-update-{}", Uuid::new_v4()));
+        fs::create_dir(&abandoned).unwrap();
+        let marker = File::create(abandoned.join(PRESERVED_MARKER)).unwrap();
+        marker
+            .set_modified(SystemTime::now() - PRESERVED_RETENTION - Duration::from_secs(60))
+            .unwrap();
+        let unrelated = [
+            target.join(".riwork-update.lock"),
+            target.join(".riwork-update-notes"),
+            target.join("riwork-update-notes.log"),
+            target.join("cargo.log"),
+        ];
+        for path in &unrelated {
+            fs::write(path, "keep").unwrap();
+        }
+        let mut logs = Vec::new();
+        for age in 0..9u64 {
+            let path = target.join(format!("riwork-update-{}.log", Uuid::new_v4()));
+            let file = File::create(&path).unwrap();
+            file.set_modified(SystemTime::now() - Duration::from_secs(60 * (age + 1)))
+                .unwrap();
+            logs.push(path);
+        }
+        assert_eq!(sweep_stale_artifacts(target), (2, 9 - KEPT_LOGS));
+        assert!(!stale.exists() && !abandoned.exists());
+        assert!(preserved.exists(), "recovery material is kept for a week");
+        assert!(unrelated.iter().all(|path| path.exists()));
+        let (newest, oldest) = logs.split_at(KEPT_LOGS);
+        assert!(newest.iter().all(|path| path.exists()));
+        assert!(oldest.iter().all(|path| !path.exists()));
+        assert_eq!(sweep_stale_artifacts(target), (0, 0));
+        assert_eq!(sweep_stale_artifacts(&target.join("missing")), (0, 0));
+    }
+
+    #[test]
+    fn the_replaced_build_is_kept_as_previous_until_the_next_update() {
+        let temporary = StagingDirectory::new(
+            env::temp_dir().join(format!("riwork-update-previous-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let root = &temporary.path;
+        let log_path = root.join("log");
+        let mut log = log_file(&log_path);
+        let staged_executable = root.join("staged/riwork");
+        let staged_bundle = root.join("staged/RiWork.app");
+        let executable = root.join("release/riwork");
+        let bundle = root.join("release/RiWork.app");
+        fs::create_dir_all(staged_bundle.parent().unwrap()).unwrap();
+        fs::create_dir_all(&bundle).unwrap();
+        // The state right after install_artifacts swapped the names.
+        fs::write(&staged_executable, "generation 1 executable").unwrap();
+        fs::create_dir(&staged_bundle).unwrap();
+        fs::write(staged_bundle.join("version"), "generation 1 bundle").unwrap();
+        fs::write(&executable, "generation 2 executable").unwrap();
+        fs::write(bundle.join("version"), "generation 2 bundle").unwrap();
+        // An older rollback set is superseded.
+        fs::create_dir(root.join("release/RiWork.app.previous")).unwrap();
+        fs::write(
+            root.join("release/RiWork.app.previous/version"),
+            "generation 0",
+        )
+        .unwrap();
+        fs::write(root.join("release/riwork.previous"), "generation 0").unwrap();
+        let previous = retain_previous(
+            &staged_executable,
+            &staged_bundle,
+            &executable,
+            &bundle,
+            &mut log,
+        );
+        assert_eq!(previous, Some(root.join("release/RiWork.app.previous")));
+        assert_eq!(
+            fs::read_to_string(root.join("release/riwork.previous")).unwrap(),
+            "generation 1 executable"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("release/RiWork.app.previous/version")).unwrap(),
+            "generation 1 bundle"
+        );
+        assert_eq!(
+            fs::read_to_string(&executable).unwrap(),
+            "generation 2 executable"
+        );
+        assert!(!staged_executable.exists() && !staged_bundle.exists());
+        // A first install has nothing to keep and leaves the existing set alone.
+        let previous = retain_previous(
+            &staged_executable,
+            &staged_bundle,
+            &executable,
+            &bundle,
+            &mut log,
+        );
+        assert_eq!(previous, None);
+        assert!(root.join("release/riwork.previous").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_build_that_does_not_start_is_rejected_before_installation() {
+        let temporary = StagingDirectory::new(
+            env::temp_dir().join(format!("riwork-update-smoke-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let log_path = temporary.path.join("build.log");
+        let mut log = log_file(&log_path);
+        let good = temporary.path.join("good/riwork");
+        write_executable(
+            &good,
+            "[ \"$1\" = help ] && [ -z \"$GH_TOKEN\" ] && echo usage",
+        );
+        smoke_test(&good, &temporary.path, &mut log, &log_path).unwrap();
+        for (name, body) in [
+            ("exits", "exit 3"),
+            ("crashes", "kill -SEGV $$"),
+            ("aborts", "echo 'dyld: Library not loaded' >&2; exit 134"),
+        ] {
+            let bad = temporary.path.join(name).join("riwork");
+            write_executable(&bad, body);
+            let error = smoke_test(&bad, &temporary.path, &mut log, &log_path).unwrap_err();
+            assert!(error.contains("not installed"), "{name}: {error}");
+            assert!(
+                error.contains("current build is unchanged"),
+                "{name}: {error}"
+            );
+        }
+        assert!(
+            smoke_test(
+                &temporary.path.join("missing/riwork"),
+                &temporary.path,
+                &mut log,
+                &log_path
+            )
+            .is_err()
+        );
+    }
+
+    /// A checkout whose cargo and bundler are fakes, so the complete update
+    /// pipeline runs in a second without building anything.
+    #[cfg(target_os = "macos")]
+    fn pipeline_fixture(temporary: &Path) -> (PathBuf, UpdateEnvironment) {
+        let source = fixture(temporary, "pipeline source");
+        write_executable(
+            &source.join("scripts/bundle-macos.sh"),
+            "set -eu\nbundle=target/$1/RiWork.app\nmkdir -p $bundle/Contents/MacOS $bundle/Contents/Resources/terminfo/78 $bundle/Contents/Resources/ghostty/shell-integration/zsh\ncp target/$1/riwork $bundle/Contents/MacOS/riwork\ncp assets/app-icon/RiWork-legacy.icns $bundle/Contents/Resources/RiWork.icns\ntouch $bundle/Contents/Info.plist $bundle/Contents/Resources/terminfo/78/xterm-ghostty $bundle/Contents/Resources/ghostty/shell-integration/zsh/ghostty-integration",
+        );
+        let tools = temporary.join("tools");
+        write_executable(
+            &tools.join("cargo"),
+            "mkdir -p \"$CARGO_TARGET_DIR/debug\"\nmode=$(cat build-mode)\nprintf '#!/bin/sh\\n%s\\n' \"$mode\" > \"$CARGO_TARGET_DIR/debug/riwork\"\nchmod +x \"$CARGO_TARGET_DIR/debug/riwork\"",
+        );
+        let tool_path =
+            env::join_paths([tools, PathBuf::from("/usr/bin"), PathBuf::from("/bin")]).unwrap();
+        (
+            source,
+            UpdateEnvironment {
+                tool_path,
+                verify_signature: false,
+            },
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn updates_install_only_builds_that_run_and_keep_the_previous_one() {
+        let temporary = StagingDirectory::new(
+            env::temp_dir().join(format!("riwork-update-pipeline-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let (source, environment) = pipeline_fixture(&temporary.path);
+        let source = source.canonicalize().unwrap();
+        let build_mode = |mode: &str| fs::write(source.join("build-mode"), mode).unwrap();
+        let installed = |name: &str| {
+            fs::read_to_string(source.join("target/debug").join(name)).unwrap_or_default()
+        };
+        // Leftovers of an interrupted update and of earlier runs.
+        fs::create_dir_all(source.join("target")).unwrap();
+        let stale = source.join(format!("target/.riwork-update-{}", Uuid::new_v4()));
+        fs::create_dir_all(stale.join("target")).unwrap();
+        for age in 0..8u64 {
+            let log =
+                File::create(source.join(format!("target/riwork-update-{}.log", Uuid::new_v4())))
+                    .unwrap();
+            log.set_modified(SystemTime::now() - Duration::from_secs(3600 * (age + 1)))
+                .unwrap();
+        }
+
+        build_mode("echo generation one");
+        let first = build_update_with(&source, Some("debug"), &environment).unwrap();
+        assert!(!stale.exists(), "interrupted staging is swept");
+        assert_eq!(first.previous_bundle, None);
+        assert!(installed("riwork").contains("generation one"));
+        let logs = |source: &Path| {
+            fs::read_dir(source.join("target"))
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".log"))
+                .count()
+        };
+        assert_eq!(logs(&source), KEPT_LOGS + 1);
+
+        build_mode("echo generation two");
+        let second = build_update_with(&source, Some("debug"), &environment).unwrap();
+        assert!(installed("riwork").contains("generation two"));
+        assert!(installed("RiWork.app/Contents/MacOS/riwork").contains("generation two"));
+        assert_eq!(
+            second.previous_bundle,
+            Some(source.join("target/debug/RiWork.app.previous"))
+        );
+        assert!(installed("riwork.previous").contains("generation one"));
+        assert!(installed("RiWork.app.previous/Contents/MacOS/riwork").contains("generation one"));
+
+        // Compiles, but fails at startup: nothing is replaced and nothing is left behind.
+        build_mode("exit 1");
+        let error = build_update_with(&source, Some("debug"), &environment).unwrap_err();
+        assert!(error.contains("does not run"), "{error}");
+        assert!(installed("riwork").contains("generation two"));
+        assert!(installed("RiWork.app/Contents/MacOS/riwork").contains("generation two"));
+        assert!(installed("riwork.previous").contains("generation one"));
+        assert!(
+            fs::read_dir(source.join("target"))
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".riwork-update-")
+                    || entry.file_name().to_string_lossy() == ".riwork-update.lock")
+        );
+
+        build_mode("echo generation three");
+        build_update_with(&source, Some("debug"), &environment).unwrap();
+        assert!(installed("riwork.previous").contains("generation two"));
     }
 }

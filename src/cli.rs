@@ -365,8 +365,13 @@ fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             if json {
                 print_json(&json!({"build":build,"reload_error":error}))?;
             }
+            let rollback = build
+                .previous_bundle
+                .as_ref()
+                .map(|previous| format!(" The previous build is kept at {}.", previous.display()))
+                .unwrap_or_default();
             return Err(format!(
-                "Installed {}, but reload failed: {error}. Retry `riwork reload`. Build log: {}",
+                "Installed {}, but reload failed: {error}. Retry `riwork reload`.{rollback} Build log: {}",
                 build.bundle.display(),
                 build.log_path.display()
             ));
@@ -376,6 +381,9 @@ fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         print_json(&json!({"build":build,"reload":reload}))?;
     } else {
         println!("Installed {}", build.bundle.display());
+        if let Some(previous) = &build.previous_bundle {
+            println!("Previous build kept at {}", previous.display());
+        }
         if let Some(reload) = reload {
             print_reload_report(&reload);
         }

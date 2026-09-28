@@ -32,6 +32,10 @@ if ! command -v tic >/dev/null 2>&1; then
     echo "tic is required to compile Ghostty terminfo" >&2
     exit 1
 fi
+if ! command -v codesign >/dev/null 2>&1; then
+    echo "codesign is required to sign the app bundle" >&2
+    exit 1
+fi
 
 ghostty_crate=${GHOSTTY_SOURCE_DIR:-}
 if [ -z "$ghostty_crate" ]; then
@@ -106,5 +110,25 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+# Give the bundle a real, stable signature instead of the linker's per-build
+# ad-hoc one: it binds Info.plist, seals the resources and fixes the identifier
+# to CFBundleIdentifier. Set CODESIGN_IDENTITY to a certificate name to sign for
+# distribution; the default is ad-hoc.
+codesign_identity=${CODESIGN_IDENTITY:--}
+identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist")
+if [ -z "$identifier" ]; then
+    echo "Could not read CFBundleIdentifier from $bundle/Contents/Info.plist" >&2
+    exit 1
+fi
+# Extended attributes copied with the resources would make codesign reject the bundle.
+xattr -cr "$bundle"
+# Sign nested executables first: sealing the bundle records them but does not sign them.
+if [ -f "$bundle/Contents/MacOS/riwork-remote" ]; then
+    codesign --force --sign "$codesign_identity" --identifier "$identifier.remote" \
+        "$bundle/Contents/MacOS/riwork-remote"
+fi
+codesign --force --sign "$codesign_identity" --identifier "$identifier" "$bundle"
+codesign --verify --deep --strict "$bundle"
 
 echo "$bundle"
