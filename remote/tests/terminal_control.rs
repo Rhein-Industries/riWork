@@ -113,9 +113,13 @@ fn real_equal_size_pins_policy_and_old_owner_cannot_clear_new_owner() -> Result<
 fn private_controls_and_invalid_ids_fail_before_terminal_input() {
     let home = tempfile::tempdir().unwrap();
     assert!(
-        session_input::submit(home.path(), "bad-id", "text", &|_| panic!(
-            "must not interact"
-        ))
+        session_input::submit(
+            home.path(),
+            "bad-id",
+            "text",
+            &|_| panic!("must not interact"),
+            &|_, _| panic!("must not interact")
+        )
         .is_err()
     );
     assert!(session_viewport::validate_size(19, 17).is_err());
