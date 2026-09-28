@@ -34,7 +34,9 @@ all CLI subprocesses and is never changed by forwarding/start.
 ## Pair, provision and start
 
 Run these from the desktop as its normal RiWork user. Pairing grants access to
-all existing projects and sessions in that desktop's `RIWORK_HOME`. Each phone
+all existing projects and sessions in that desktop's `RIWORK_HOME`, and because
+`shell.input` types into any live shell, unrestricted harness or editor tab, a
+paired phone can run arbitrary commands as you. Each phone
 gets an independent device UUID, PSK, route UUID and role tokens. Pair once per
 phone; do not share a pairing export between devices.
 
@@ -52,7 +54,9 @@ printing secrets to terminal scrollback. Both JSON files are created with mode
 600; connector state is in `$RIWORK_HOME/remote` (or the default data directory's
 `remote`) with mode 700. Existing files are never overwritten for pairing exports.
 `--relay-routes` appends the new route to a mode-600 provisioning manifest; keep a
-single manifest when adding devices so existing routes are preserved.
+single manifest when adding devices so existing routes are preserved. `pair` is
+all-or-nothing: if it fails, the export and the route it added are removed, so a
+retry does not leave orphan routes.
 
 Copy **only `relay-routes.json`** to the relay operator's protected config and
 start/restart the relay with that manifest. It contains hashes of relay tokens,
@@ -68,7 +72,11 @@ riwork remote revoke DEVICE_UUID
 
 `start` is a foreground process with automatic reconnects; leave it running while
 remote access is needed. If forwarded through `riwork remote`, `--riwork` normally
-can be omitted because forwarding supplies `RIWORK_CLI`. Stopping the connector,
+can be omitted because forwarding supplies `RIWORK_CLI`. The connector logs to
+stderr when it starts serving a device, when a device authenticates (flagging its
+first time) and why a connection dropped; `devices` prints, per device, JSON
+including `paired_at_unix`, `first_authenticated_unix` and `last_authenticated_unix`
+(Unix seconds, `null` when unknown). Stopping the connector,
 relay or mobile client does not terminate tmux or a coding harness. Output is
 captured from existing tmux panes. Mobile requests select full shell UUIDs;
 project/worktree/task list requests use explicit full project UUIDs.
@@ -78,8 +86,11 @@ Mobile project tabs select existing terminals by UUID, one terminal per tab.
 `shell.resize.clear` restores sizing without clearing content or sending input.
 One connection owns one override; another owner gets `viewport_busy`. Peer loss,
 revoke and shutdown clear sizing, with a separate 12-second crash lease as fallback.
-The connector renews the lease every three seconds. This affects the grid rendered
-by Ghostty, not the physical macOS window geometry. The CLI commands are:
+The connector renews the lease every three seconds, but only while it has heard an
+authenticated request from the phone in the last 20 seconds (the iOS app polls every
+three seconds), so a phone that vanished stops pinning the terminal. This affects
+the grid rendered by Ghostty, not the physical macOS window geometry. The CLI
+commands are:
 
 ```sh
 riwork shell resize SHELL_UUID --columns 43 --rows 17 --owner DEVICE_UUID --lease CONNECTION_UUID --json
@@ -150,7 +161,9 @@ immediate-Return failure, then verifies complete 3500-character submissions,
 exactly one Return, cached retry and two-device serialization. It calls no model
 and launches no coding worker. Default tests cover
 independent crypto vectors, replay/gaps/wrong device, routing authentication,
-health, duplicate sockets, unavailable peers, frame/socket/queue limits, private
+health, duplicate sockets, unavailable peers, frame/socket/queue limits,
+unauthenticated-socket budget, ping/idle liveness and stale-registration
+replacement, connector lease renewal, transactional pairing, private
 config, RPC allowlist and durable outcome-cache behavior. Root forwarding is
 compiled and exercised by the standalone tests too.
 The small default terminal-control test also requires `tmux` (and uses its own
@@ -167,6 +180,8 @@ uv run --with cryptography python remote/fixtures/generate.py
 ## Current limits
 
 - v1 uses a PSK handshake without forward secrecy. Protect/rotate pairing exports.
+- Pairing credentials never expire and any local process of the desktop user can
+  pair a device; watch the connector log and `devices` output, and `revoke` strays.
 - Relay sees route IDs, role tokens during registration, timing and frame sizes.
   It cannot decrypt session content or authenticate as an endpoint with a role token.
 - Terminal support is captured text and one control-free physical line followed

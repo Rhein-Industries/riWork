@@ -50,6 +50,15 @@ fn invalid(e: impl std::fmt::Display) -> Fault {
 fn cli_fault(e: impl std::fmt::Display) -> Fault {
     Fault::new("cli_error", e.to_string())
 }
+/// The CLI wrote more than one encrypted response can carry.
+#[derive(Debug)]
+struct OutputTooLarge;
+impl std::fmt::Display for OutputTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CLI response exceeded limit")
+    }
+}
+impl std::error::Error for OutputTooLarge {}
 fn viewport_fault(e: impl std::fmt::Display) -> Fault {
     let message = e.to_string();
     let code = if message.contains("viewport_busy:") {
@@ -62,6 +71,10 @@ fn viewport_fault(e: impl std::fmt::Display) -> Fault {
     Fault::new(code, message)
 }
 pub fn error(id: &str, code: &str, message: impl AsRef<str>) -> Value {
+    error_for(json!(id), code, message)
+}
+// `id` is null only when the request carried no usable ID to correlate with.
+fn error_for(id: Value, code: &str, message: impl AsRef<str>) -> Value {
     json!({"v":1,"type":"response","id":id,"ok":false,"error":{"code":code,"message":message.as_ref()}})
 }
 fn success(id: &str, result: Value) -> Value {
@@ -189,7 +202,7 @@ impl Rpc {
                     .take((MAX_PLAINTEXT + 1) as u64)
                     .read_to_end(&mut b)
                     .await?;
-                ensure!(b.len() <= MAX_PLAINTEXT, "CLI response exceeded limit");
+                ensure!(b.len() <= MAX_PLAINTEXT, OutputTooLarge);
                 Ok::<_, anyhow::Error>(b)
             };
             let err = async {
@@ -215,7 +228,16 @@ impl Rpc {
     async fn read(&self, args: &[&str]) -> std::result::Result<Value, Fault> {
         let mut a: Vec<String> = args.iter().map(|x| (*x).to_owned()).collect();
         a.push("--json".into());
-        let data = self.raw(a).await.map_err(cli_fault)?;
+        let data = self.raw(a).await.map_err(|e| {
+            if e.is::<OutputTooLarge>() {
+                Fault::new(
+                    "response_too_large",
+                    "CLI output exceeds the encrypted response limit; reduce output lines",
+                )
+            } else {
+                cli_fault(e)
+            }
+        })?;
         serde_json::from_slice(&data).map_err(cli_fault)
     }
     async fn sessions(&self) -> std::result::Result<Vec<Value>, Fault> {
@@ -246,11 +268,18 @@ impl Rpc {
         value: Value,
         viewport: Option<&mut Viewport>,
     ) -> Result<Value> {
-        let request_id = value
-            .get("id")
-            .and_then(Value::as_str)
-            .context("request ID missing")?
-            .to_owned();
+        // Malformed requests get an error response, not a dropped session. Only
+        // an ID that is a bounded string can be echoed for correlation.
+        let request_id = match value.get("id") {
+            Some(Value::String(s)) if s.len() <= 64 => s.clone(),
+            _ => {
+                return Ok(error_for(
+                    Value::Null,
+                    "invalid_request",
+                    "request must be a JSON object with a string id of at most 64 bytes",
+                ));
+            }
+        };
         let request: Request = match serde_json::from_value(value) {
             Ok(r) => r,
             Err(e) => return Ok(error(&request_id, "invalid_request", e.to_string())),
@@ -421,6 +450,12 @@ impl Rpc {
                 let p: Clear = params(r)?;
                 id(&p.shell_id)?;
                 let v = viewport.ok_or_else(|| invalid("authenticated connection required"))?;
+                // The CLI creates a lock file per shell ID it is asked about, so an
+                // arbitrary UUID must not reach it. A shell this connection pinned
+                // may have died since; clearing it must still work.
+                if v.selected.as_ref().is_none_or(|(s, _, _)| *s != p.shell_id) {
+                    self.selected(&p.shell_id).await?;
+                }
                 self.raw(v.args("resize-clear", &p.shell_id))
                     .await
                     .map_err(viewport_fault)?;

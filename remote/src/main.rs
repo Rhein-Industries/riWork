@@ -24,6 +24,7 @@ enum Action {
         bind: SocketAddr,
         #[arg(long)]
         routes: PathBuf,
+        /// Authenticated sockets; sockets still registering have a separate small budget.
         #[arg(long, default_value_t = 256)]
         max_connections: usize,
     },
@@ -44,7 +45,7 @@ enum Action {
     },
     /// Revoke a device locally; live connector closes its access within one second.
     Revoke { device_id: String },
-    /// List device metadata without secrets.
+    /// List device metadata (pairing and last-authenticated times) without secrets.
     Devices,
     /// Maintain outbound per-device connections; inherits RIWORK_HOME unchanged.
     Start {
@@ -99,7 +100,9 @@ async fn main() -> Result<()> {
         }
         Action::Devices => {
             let c = Storage::from_env()?.config()?;
-            println!("{}",serde_json::to_string_pretty(&c.devices.iter().map(|d|serde_json::json!({"device_id":d.pairing.device_id,"device_name":d.pairing.device_name,"route_id":d.pairing.route_id,"revoked":d.revoked})).collect::<Vec<_>>())?);
+            // Unix seconds, null when unknown: legacy pairings have no paired_at, and a
+            // device that never completed a handshake has never authenticated.
+            println!("{}",serde_json::to_string_pretty(&c.devices.iter().map(|d|serde_json::json!({"device_id":d.pairing.device_id,"device_name":d.pairing.device_name,"route_id":d.pairing.route_id,"revoked":d.revoked,"paired_at_unix":d.paired_at_unix,"first_authenticated_unix":d.first_authenticated_unix,"last_authenticated_unix":d.last_authenticated_unix})).collect::<Vec<_>>())?);
         }
         Action::Start { riwork } => {
             let path = riwork
