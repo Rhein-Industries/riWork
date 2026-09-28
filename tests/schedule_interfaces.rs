@@ -174,11 +174,13 @@ impl Fixture {
     fn tool_error(&self, name: &str, arguments: Value, code: &str) -> Value {
         let result = self.tool(name, arguments);
         assert_eq!(result["isError"], true, "{result}");
-        assert_eq!(
-            result["structuredContent"]["error"]["code"], code,
-            "{result}"
-        );
-        result["structuredContent"]["error"].clone()
+        // Clients validate structuredContent against the declared outputSchema,
+        // so a failure carries its `{"error":...}` object as text only.
+        assert!(result.get("structuredContent").is_none(), "{result}");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let error: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(error["error"]["code"], code, "{result}");
+        error["error"].clone()
     }
 
     fn scope_args(&self, index: usize) -> Vec<&str> {

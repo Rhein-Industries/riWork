@@ -1,10 +1,11 @@
 //! The command line view of the same data the GPUI workspace renders.
 
 use std::{
-    env,
-    io::{self, Read},
-    path::PathBuf,
+    env, fmt,
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -20,6 +21,32 @@ use crate::{
     sessions::{HarnessKind, SessionManager, ShellKind, ShellSession},
     store::{SearchHit, State, Store, Task, TaskStatus, Worktree},
 };
+
+// std's print macros panic when stdout is a closed pipe (`riwork shell output
+// ID | head`). Everything in this module prints through these instead, and the
+// command still finishes with its real exit status.
+static STDOUT_CLOSED: AtomicBool = AtomicBool::new(false);
+
+fn write_stdout(args: fmt::Arguments<'_>) {
+    if STDOUT_CLOSED.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Err(error) = io::stdout().lock().write_fmt(args) {
+        STDOUT_CLOSED.store(true, Ordering::Relaxed);
+        if error.kind() != io::ErrorKind::BrokenPipe {
+            eprintln!("riwork: cannot write output: {error}");
+        }
+    }
+}
+
+macro_rules! print {
+    ($($arg:tt)*) => { write_stdout(format_args!($($arg)*)) };
+}
+
+macro_rules! println {
+    () => { write_stdout(format_args!("\n")) };
+    ($($arg:tt)*) => { write_stdout(format_args!("{}\n", format_args!($($arg)*))) };
+}
 
 const HELP: &str = "\
 riwork [PROJECT_PATH]                  Open the GPUI workspace
@@ -42,7 +69,7 @@ riwork project folder create NAME [--parent ID]   Create a virtual folder or sub
 riwork project folder move ID (--parent ID | --root)   Move a virtual folder
 riwork project folder list|rename|remove   Manage virtual project folders
 riwork project tasks [ID]              Show tasks for a project
-riwork worktree create BRANCH [--project ID] [--repo PATH] [--path PATH] [--base REF]
+riwork worktree create BRANCH [--project ID] [--repo PATH] [--path PATH] [--base REF]   --base only applies to a new branch
 riwork worktree list [--project ID] [--all]
 riwork worktree tasks ID                Show tasks assigned to a worktree
 riwork worktree forget ID               Forget a missing worktree with no tasks or shells
@@ -53,6 +80,7 @@ riwork task unassign TASK_ID...         Remove worktree assignment
 riwork task status TASK_ID todo|in_progress|done
 riwork search QUERY                     Search projects, worktrees, and tasks
 riwork mcp                              Serve workspace tools over MCP stdio
+riwork version | --version              Print the RiWork version
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork remote --help                    Pairing, relay and connector command options
 riwork shell create [--project ID | --worktree ID] [--command CMD]
@@ -80,6 +108,12 @@ Add --json to read commands for structured output. Project, worktree, and task
 IDs accept a unique UUID prefix of at least eight characters; shell IDs need
 their full UUID. Project, worktree, and task data lives in RIWORK_HOME
 or ~/.local/share/riwork. Shell processes stay alive independently of the UI.
+Only no arguments or one existing project directory open the workspace; any
+other unknown command or option exits with an error.
+worktree create --base REF only chooses the start point of a new branch. If
+BRANCH already exists, it is checked out as is and --base is ignored.
+shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
+first, so a branch name shared by several projects is not ambiguous.
 Orchestrator commands without --project use the global session; list shows all
 scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
@@ -113,6 +147,8 @@ Examples (replace UUIDs and future time with values from your own fixture):
 ";
 
 /// Returns `false` when the arguments should launch the graphical workspace.
+/// Anything else that is not a command is an error, so a typo or a headless
+/// agent's `riwork --version` never starts (and registers) a GUI instance.
 pub fn run_cli(args: &[String]) -> Result<bool, String> {
     if args.is_empty() {
         return Ok(false);
@@ -121,6 +157,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         crate::remote_cli::forward(&args[1..])?;
         return Ok(true);
     }
+    let original = args;
     let mut args = args.to_vec();
     let literal_arguments = matches!(
         args.first().map(String::as_str),
@@ -167,12 +204,32 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "help"
             | "-h"
             | "--help"
+            | "version"
+            | "--version"
+            | "-V"
     ) {
-        return Ok(false);
+        return if opens_workspace(original) {
+            Ok(false)
+        } else {
+            // Name the offending token, not a leading --json that was consumed.
+            Err(unknown_invocation(if args.is_empty() {
+                original
+            } else {
+                args.as_slice()
+            }))
+        };
     }
     args.remove(0);
     match command.as_str() {
         "help" | "-h" | "--help" => print!("{HELP}"),
+        "version" | "--version" | "-V" => {
+            ensure_empty(&args)?;
+            if json {
+                print_json(&json!({"version": env!("CARGO_PKG_VERSION")}))?;
+            } else {
+                println!("riwork {}", env!("CARGO_PKG_VERSION"));
+            }
+        }
         "open" => open_command(args, json)?,
         "reload" => reload_command(args, json)?,
         "update" => update_command(args, json)?,
@@ -229,6 +286,30 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         _ => unreachable!(),
     }
     Ok(true)
+}
+
+/// The GUI's own startup forms: no arguments, or one project directory, which
+/// is how `riwork open`, reload restore, and the shell launchers start it.
+/// Older macOS may add a `-psn_` process serial number when launching a bundle.
+fn opens_workspace(args: &[String]) -> bool {
+    let mut args = args.iter().filter(|arg| !arg.starts_with("-psn_"));
+    match (args.next(), args.next()) {
+        (None, _) => true,
+        (Some(path), None) => Path::new(path).is_dir(),
+        _ => false,
+    }
+}
+
+fn unknown_invocation(args: &[String]) -> String {
+    let first = args.first().map(String::as_str).unwrap_or_default();
+    let problem = if first.starts_with('-') {
+        format!("Unknown option '{first}'")
+    } else {
+        format!("'{first}' is not a riwork command or an existing project directory")
+    };
+    format!(
+        "{problem}\nUsage: riwork [PROJECT_DIR] | riwork COMMAND [ARGS...]\nRun `riwork help` for all commands."
+    )
 }
 
 fn import_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
@@ -532,7 +613,9 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         if shell.harness == Some(HarnessKind::Codex) {
             crate::usage::read_codex_usage_at(frozen_codex_usage_home(&shell)?)?
         } else if shell.harness == Some(HarnessKind::Grok) {
-            return Err("Grok usage is available through the official grok usage command; RiWork does not yet show it in the usage panel.".to_owned());
+            // RiWork cannot read Grok's quota yet. Report that as unknown in the
+            // usual shape rather than failing a check-in loop over many shells.
+            grok_usage_unknown()
         } else if let Some(usage) = crate::usage::read_claude_usage(&shell_id)? {
             usage
         } else if matches!(shell.harness, Some(HarnessKind::Claude))
@@ -606,6 +689,20 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Grok quota is only available through its own `grok usage` command.
+fn grok_usage_unknown() -> crate::usage::ProviderUsage {
+    crate::usage::ProviderUsage {
+        provider: "grok".to_owned(),
+        windows: Vec::new(),
+        updated_at_unix: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs()),
+        account_label: Some("unknown".to_owned()),
+        context_used_percent: None,
+        session_cost_usd: None,
+    }
 }
 
 fn frozen_codex_usage_home(shell: &ShellSession) -> Result<&std::path::Path, String> {
@@ -767,27 +864,21 @@ fn project_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 args,
                 "project update ID [--name NAME] [--folder ID | --ungrouped]",
             )?;
-            if name.is_none() && (folder.is_some() || ungrouped) {
-                let project = store.move_project_to_folder(&selector, folder.as_deref())?;
-                if json {
-                    print_json(&project)?;
-                } else {
-                    println!("Updated project: {} ({})", project.name, project.id);
+            // Each edit is one transaction over the fields it changes, so an
+            // unrelated concurrent change (a GUI folder move, a rename) survives.
+            let moves = folder.is_some() || ungrouped;
+            let project = match (name.as_deref(), moves) {
+                (None, false) => {
+                    return Err(
+                        "Nothing to update; give --name, --folder, or --ungrouped".to_owned()
+                    );
                 }
-                return Ok(());
-            }
-            let state = store.snapshot()?;
-            let existing = state.project(&selector)?;
-            let folder = if ungrouped {
-                None
-            } else {
-                folder.as_deref().or(existing.folder_id.as_deref())
+                (None, true) => store.move_project_to_folder(&selector, folder.as_deref())?,
+                (Some(name), false) => store.rename_project(&selector, name)?,
+                (Some(name), true) => {
+                    store.update_project_metadata(&selector, name, folder.as_deref())?
+                }
             };
-            let project = store.update_project_metadata(
-                &existing.id,
-                name.as_deref().unwrap_or(&existing.name),
-                folder,
-            )?;
             if json {
                 print_json(&project)?;
             } else {
@@ -1134,13 +1225,19 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             }
             let state = Store::open_default()?.snapshot()?;
             let (project_id, worktree_id, cwd) = if let Some(selector) = worktree {
-                let worktree = state.worktree(&selector)?;
-                if let Some(project_selector) = project {
-                    let selected = state.project(&project_selector)?;
-                    if selected.id != worktree.project_id {
-                        return Err("Worktree belongs to another project".to_owned());
+                // A named project scopes the selector, so a branch shared by
+                // many projects (`main`) is not ambiguous.
+                let worktree = match project.as_deref() {
+                    Some(project_selector) => {
+                        let selected = state.project(project_selector)?;
+                        let worktree = state.worktree_in_project(&selected.id, &selector)?;
+                        if selected.id != worktree.project_id {
+                            return Err("Worktree belongs to another project".to_owned());
+                        }
+                        worktree
                     }
-                }
+                    None => state.worktree(&selector)?,
+                };
                 (
                     worktree.project_id.clone(),
                     Some(worktree.id.clone()),
@@ -1797,10 +1894,11 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_hook_command, frozen_codex_usage_home, take_orchestrator_project, take_update_profile,
+        agent_hook_command, frozen_codex_usage_home, grok_usage_unknown, opens_workspace,
+        take_orchestrator_project, take_update_profile, unknown_invocation,
     };
     use crate::sessions::ShellSession;
-    use crate::store::Store;
+    use crate::store::{State, Store};
     use std::io;
 
     #[test]
@@ -1979,5 +2077,154 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn only_gui_startup_forms_open_the_workspace() {
+        let directory = std::env::temp_dir().to_string_lossy().into_owned();
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        assert!(opens_workspace(&[]));
+        assert!(opens_workspace(&args(&[&directory])));
+        // Older macOS adds a process serial number when launching the bundle.
+        assert!(opens_workspace(&args(&["-psn_0_12345"])));
+        assert!(opens_workspace(&args(&["-psn_0_12345", &directory])));
+        for rejected in [
+            args(&["--version"]),
+            args(&["--json"]),
+            args(&["shells", "list"]),
+            args(&["--project", "A", "task", "list"]),
+            args(&["/definitely/not/a/riwork/project"]),
+            args(&[file]),
+            args(&[&directory, "extra"]),
+        ] {
+            assert!(!opens_workspace(&rejected), "{rejected:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_invocation_names_the_argument_and_points_to_usage() {
+        let option = unknown_invocation(&args(&["--bogus"]));
+        assert!(option.contains("Unknown option '--bogus'"), "{option}");
+        let command = unknown_invocation(&args(&["shells", "list"]));
+        assert!(
+            command.contains("'shells' is not a riwork command"),
+            "{command}"
+        );
+        for message in [option, command] {
+            assert!(message.contains("Usage: riwork"), "{message}");
+            assert!(message.contains("riwork help"), "{message}");
+        }
+    }
+
+    #[test]
+    fn grok_usage_is_an_empty_report_not_an_error() {
+        let usage = grok_usage_unknown();
+        let json = serde_json::to_value(&usage).unwrap();
+        assert_eq!(json["provider"], "grok");
+        assert_eq!(json["windows"], serde_json::json!([]));
+        assert_eq!(json["account_label"], "unknown");
+    }
+
+    fn main_worktree_state() -> (State, [String; 3]) {
+        let projects: [String; 3] = std::array::from_fn(|_| uuid::Uuid::new_v4().to_string());
+        let mut worktrees = Vec::new();
+        for (index, project) in projects.iter().enumerate() {
+            worktrees.push(serde_json::json!({
+                "id":uuid::Uuid::new_v4().to_string(),"project_id":project,"branch":"main",
+                "path":format!("/fixture/project-{index}"),"is_primary":true,"created_at":1
+            }));
+        }
+        worktrees.push(serde_json::json!({
+            "id":uuid::Uuid::new_v4().to_string(),"project_id":projects[0],"branch":"feature",
+            "path":"/fixture/project-0-feature","created_at":1
+        }));
+        let state = serde_json::from_value(serde_json::json!({
+            "projects":projects.iter().enumerate().map(|(index, id)| serde_json::json!({
+                "id":id,"name":format!("Project {index}"),"root":format!("/fixture/project-{index}"),"created_at":1
+            })).collect::<Vec<_>>(),
+            "worktrees":worktrees,
+        }))
+        .unwrap();
+        (state, projects)
+    }
+
+    #[test]
+    fn project_scope_disambiguates_a_branch_shared_by_many_projects() {
+        let (state, [first, second, _]) = main_worktree_state();
+        assert!(
+            state
+                .worktree("main")
+                .unwrap_err()
+                .contains("More than one")
+        );
+        let in_first = state.worktree_in_project(&first, "main").unwrap();
+        assert_eq!(in_first.project_id, first);
+        let in_second = state.worktree_in_project(&second, "main").unwrap();
+        assert_eq!(in_second.project_id, second);
+        let feature = state.worktree_in_project(&first, "feature").unwrap();
+        assert_eq!(
+            state
+                .worktree_in_project(&first, &feature.id[..8])
+                .unwrap()
+                .id,
+            feature.id
+        );
+        // A selector that only exists elsewhere still resolves globally so the
+        // caller can report "belongs to another project".
+        assert_eq!(
+            state
+                .worktree_in_project(&first, &in_second.id)
+                .unwrap()
+                .project_id,
+            second
+        );
+        assert!(
+            state
+                .worktree_in_project(&first, "missing")
+                .unwrap_err()
+                .contains("No worktree matches")
+        );
+    }
+
+    #[test]
+    fn two_matches_inside_one_project_stay_ambiguous() {
+        let (mut state, [first, ..]) = main_worktree_state();
+        let mut duplicate = state.worktrees[0].clone();
+        duplicate.id = uuid::Uuid::new_v4().to_string();
+        duplicate.path = "/fixture/project-0-second-main".into();
+        state.worktrees.push(duplicate);
+        assert!(
+            state
+                .worktree_in_project(&first, "main")
+                .unwrap_err()
+                .contains("More than one")
+        );
+    }
+
+    #[test]
+    fn rename_keeps_a_folder_moved_after_the_caller_read_its_snapshot() {
+        let home = std::env::temp_dir().join(format!("riwork-rename-{}", uuid::Uuid::new_v4()));
+        let root = home.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Store::open(home.join("state")).unwrap();
+        let project = store.add_project(root, Some("Before")).unwrap();
+        let folder = store.create_project_folder("Group").unwrap();
+        // The stale read is what `project update --name` used to copy the
+        // folder from; a move landing in between must survive the rename.
+        let stale = store.snapshot().unwrap();
+        assert_eq!(stale.project(&project.id).unwrap().folder_id, None);
+        store
+            .move_project_to_folder(&project.id, Some(&folder.id))
+            .unwrap();
+        let renamed = store.rename_project(&project.id, "  After  ").unwrap();
+        assert_eq!(renamed.name, "After");
+        assert_eq!(renamed.folder_id.as_deref(), Some(folder.id.as_str()));
+        let saved = store.snapshot().unwrap();
+        assert_eq!(
+            saved.project(&project.id).unwrap().folder_id.as_deref(),
+            Some(folder.id.as_str())
+        );
+        assert!(store.rename_project(&project.id, "   ").is_err());
+        std::fs::remove_dir_all(home).unwrap();
     }
 }
