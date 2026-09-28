@@ -40,15 +40,15 @@ impl FileIdentity {
     }
 }
 
-/// Check a selected file using the same no-follow walk as previews before
-/// handing its path to an interactive editor. A changed selection must be
-/// refreshed so the user cannot unknowingly edit a replacement file.
+/// Check a selected file for a new editor session using the same no-follow
+/// walk as previews. A changed selection must be refreshed before Vim opens
+/// it, so the user cannot unknowingly edit a replacement file.
 pub fn validated_editor_path(
     root: &Path,
     path: &Path,
     expected: FileIdentity,
 ) -> Result<std::path::PathBuf, String> {
-    let file = open_regular_in(root, path)?;
+    let (file, resolved_path) = open_regular_in(root, path)?;
     let actual = FileIdentity::of(
         &file
             .metadata()
@@ -57,13 +57,16 @@ pub fn validated_editor_path(
     if actual != expected {
         return Err("This file changed or was replaced. Refresh Files and try again.".into());
     }
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| "This file is outside the selected worktree.".to_owned())?;
-    let resolved_root = root
-        .canonicalize()
-        .map_err(|error| format!("Cannot locate the worktree: {error}"))?;
-    Ok(resolved_root.join(relative))
+    Ok(resolved_path)
+}
+
+/// Resolve a file for returning to an already-live editor. Vim may have
+/// changed the file's size, timestamp, or inode while saving, so the cached
+/// tree identity is not used here. The no-follow regular-file check still
+/// rejects links, missing files, and paths outside the selected worktree.
+pub fn validated_live_editor_path(root: &Path, path: &Path) -> Result<std::path::PathBuf, String> {
+    let (_file, resolved_path) = open_regular_in(root, path)?;
+    Ok(resolved_path)
 }
 
 #[derive(Clone)]
@@ -91,7 +94,7 @@ pub fn load(
     path: &Path,
     expected: Option<FileIdentity>,
 ) -> Result<PreviewContent, String> {
-    let mut file = open_regular_in(root, path)?;
+    let (mut file, _) = open_regular_in(root, path)?;
     let before = file
         .metadata()
         .map_err(|error| format!("Cannot inspect this file: {error}"))?;
@@ -254,7 +257,7 @@ fn decode_image(bytes: &[u8]) -> Result<PreviewContent, String> {
     })
 }
 
-fn open_regular_in(root: &Path, path: &Path) -> Result<File, String> {
+fn open_regular_in(root: &Path, path: &Path) -> Result<(File, std::path::PathBuf), String> {
     if !root.is_absolute() {
         return Err("The selected worktree path is not absolute.".into());
     }
@@ -339,7 +342,7 @@ fn open_regular_in(root: &Path, path: &Path) -> Result<File, String> {
     {
         return Err("Only regular files can be previewed.".into());
     }
-    Ok(file)
+    Ok((file, resolved_root.join(relative)))
 }
 
 #[cfg(target_os = "macos")]

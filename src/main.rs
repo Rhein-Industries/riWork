@@ -333,6 +333,34 @@ fn file_explorer_root(
     }
 }
 
+enum FileEditorTarget {
+    Existing(ShellSession),
+    New,
+}
+
+fn file_editor_target(
+    root: &ExplorerRoot,
+    path: &Path,
+    identity: file_preview::FileIdentity,
+    project_id: &str,
+    shells: &[ShellSession],
+) -> Result<FileEditorTarget, String> {
+    // A live editor owns this path already. Saving in Vim invalidates the
+    // browser's cached size/mtime; no-follow path validation still applies.
+    let editor_path = file_preview::validated_live_editor_path(&root.path, path)?;
+    if let Some(shell) = shells.iter().find(|shell| {
+        shell.alive
+            && shell.project_id.as_deref() == Some(project_id)
+            && shell.worktree_id == root.worktree_id
+            && shell.editor_path.as_ref() == Some(&editor_path)
+    }) {
+        return Ok(FileEditorTarget::Existing(shell.clone()));
+    }
+    // Only a fresh launch must match the selection's original file identity.
+    file_preview::validated_editor_path(&root.path, path, identity)?;
+    Ok(FileEditorTarget::New)
+}
+
 fn project_recency_sources(state: &State) -> BTreeMap<String, Vec<PathBuf>> {
     let mut sources: BTreeMap<_, _> = state
         .projects
@@ -1214,14 +1242,10 @@ impl Workspace {
         {
             return Err("The selected worktree changed. Select the file again.".into());
         }
-        let editor_path = file_preview::validated_editor_path(&root.path, &path, identity)?;
         let shells = self.sessions.list()?;
-        if let Some(shell) = shells.into_iter().find(|shell| {
-            shell.alive
-                && shell.project_id.as_deref() == Some(self.project_id.as_str())
-                && shell.worktree_id == root.worktree_id
-                && shell.editor_path.as_ref() == Some(&editor_path)
-        }) {
+        if let FileEditorTarget::Existing(shell) =
+            file_editor_target(&root, &path, identity, &self.project_id, &shells)?
+        {
             if let Some((pane_id, tab_id)) = self.panes.iter().find_map(|(pane_id, pane)| {
                 pane.tabs
                     .iter()
@@ -5331,6 +5355,68 @@ fn open_workspace_window(
 #[cfg(test)]
 mod workspace_tab_tests {
     use super::*;
+
+    #[test]
+    fn saved_file_reselects_its_live_editor_without_refresh_but_new_launch_stays_strict() {
+        use std::{fs, os::unix::fs::symlink};
+
+        let directory =
+            std::env::temp_dir().join(format!("riwork-editor-reselect-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("café space.txt");
+        fs::write(&path, "before\n").unwrap();
+        let old = file_preview::FileIdentity::of(&fs::metadata(&path).unwrap());
+        let root = ExplorerRoot {
+            path: directory.clone(),
+            label: "fixture".into(),
+            worktree_id: Some("worktree-a".into()),
+        };
+        let mut editor = session(ShellKind::Project, Some("project-a"));
+        editor.worktree_id = root.worktree_id.clone();
+        editor.editor_path = Some(directory.canonicalize().unwrap().join("café space.txt"));
+
+        // Saving updates the file without refreshing the explorer's old row.
+        fs::write(&path, "after save, with a different length\n").unwrap();
+        assert_ne!(
+            old,
+            file_preview::FileIdentity::of(&fs::metadata(&path).unwrap())
+        );
+        assert!(file_preview::validated_editor_path(&directory, &path, old).is_err());
+        assert!(matches!(
+            file_editor_target(&root, &path, old, "project-a", &[editor.clone()]),
+            Ok(FileEditorTarget::Existing(shell)) if shell.id == editor.id
+        ));
+
+        // A dead editor, another project, or another worktree cannot bypass
+        // the strict identity check for a new session.
+        for (project_id, shells) in [
+            ("project-a", vec![]),
+            ("project-b", vec![editor.clone()]),
+            (
+                "project-a",
+                vec![ShellSession {
+                    alive: false,
+                    ..editor.clone()
+                }],
+            ),
+            (
+                "project-a",
+                vec![ShellSession {
+                    worktree_id: Some("worktree-b".into()),
+                    ..editor.clone()
+                }],
+            ),
+        ] {
+            assert!(file_editor_target(&root, &path, old, project_id, &shells).is_err());
+        }
+
+        // Even a forged live-editor match cannot follow a symlink.
+        let link = directory.join("link.txt");
+        symlink(&path, &link).unwrap();
+        editor.editor_path = Some(directory.canonicalize().unwrap().join("link.txt"));
+        assert!(file_editor_target(&root, &link, old, "project-a", &[editor]).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn files_follow_the_selected_worktree_and_never_fall_back_from_an_unavailable_selection() {
