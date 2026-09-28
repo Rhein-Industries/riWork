@@ -3,6 +3,7 @@
 use gpui::{App, Global};
 use gpui_libghostty::{TerminalColor, TerminalTheme};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +144,58 @@ impl Appearance {
     }
 }
 
+/// Resolves the appearance for `choice` again, or returns None when following
+/// Ghostty and none of the files it reads changed since the last successful
+/// parse. Building, loading and freeing a Ghostty configuration takes the UI
+/// thread, so the two-second poll must not do it for an unchanged config.
+pub fn refresh_appearance(choice: ThemeChoice, cx: &mut App) -> Option<Appearance> {
+    if choice != ThemeChoice::Ghostty {
+        return Some(Appearance::resolve(choice));
+    }
+    // Taken before parsing, so an edit made during the parse shows up next poll.
+    let stamp = ghostty_config_stamp();
+    let following = cx
+        .try_global::<Appearance>()
+        .is_some_and(|appearance| appearance.selected == choice && appearance.ghostty.is_some());
+    if following && cx.default_global::<GhosttyWatch>().stamp.as_ref() == Some(&stamp) {
+        return None;
+    }
+    let appearance = Appearance::resolve(choice);
+    // A hard failure is retried on every poll; diagnostics about a config that
+    // still produced colors are stable until the files change.
+    cx.set_global(GhosttyWatch {
+        stamp: appearance.ghostty.is_some().then_some(stamp),
+    });
+    Some(appearance)
+}
+
+/// The config files behind the last successful "Follow Ghostty" parse.
+#[derive(Default)]
+struct GhosttyWatch {
+    stamp: Option<GhosttyConfigStamp>,
+}
+
+impl Global for GhosttyWatch {}
+
+/// On-disk state of one file the Ghostty loader may read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStamp {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified: (i64, i64),
+}
+
+/// State of every file that can feed Ghostty's effective colors: the default
+/// config files, the `config-file` includes they pull in, and the theme files
+/// they name. A file that does not exist yet is part of the stamp too.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GhosttyConfigStamp(Vec<(PathBuf, Option<FileStamp>)>);
+
+pub fn ghostty_config_stamp() -> GhosttyConfigStamp {
+    config_files::stamp()
+}
+
 pub fn palette(cx: &App) -> Palette {
     cx.try_global::<Appearance>()
         .map_or(Palette::RIWORK, |appearance| appearance.palette)
@@ -251,6 +304,310 @@ fn readable(foreground: u32, background: u32) -> u32 {
 /// Calls must be serialized on the application UI thread.
 pub fn read_ghostty_theme() -> Result<(TerminalTheme, Option<String>), String> {
     native::read()
+}
+
+#[cfg(unix)]
+mod config_files {
+    use super::{FileStamp, GhosttyConfigStamp};
+    use std::{
+        collections::{HashSet, VecDeque},
+        env, fs,
+        os::unix::fs::MetadataExt,
+        path::{Path, PathBuf},
+    };
+
+    /// Bounds the walk for a pathological or cyclic include chain.
+    const MAX_FILES: usize = 64;
+    const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+    const CONFIG_NAMES: [&str; 2] = ["config", "config.ghostty"];
+
+    pub(super) struct Locations {
+        home: Option<PathBuf>,
+        /// Directories holding a default config file and a `themes` folder.
+        config_dirs: Vec<PathBuf>,
+        /// Ghostty's bundled resources; their `themes` folder is searched last.
+        resources: Option<PathBuf>,
+    }
+
+    impl Locations {
+        fn from_env() -> Self {
+            let variable = |name| {
+                env::var_os(name)
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+            };
+            let home = variable("HOME");
+            let mut config_dirs = Vec::new();
+            if let Some(base) = variable("XDG_CONFIG_HOME")
+                .or_else(|| home.as_ref().map(|home| home.join(".config")))
+            {
+                config_dirs.push(base.join("ghostty"));
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(home) = &home {
+                config_dirs.push(home.join("Library/Application Support/com.mitchellh.ghostty"));
+            }
+            Self {
+                home,
+                config_dirs,
+                resources: variable("GHOSTTY_RESOURCES_DIR"),
+            }
+        }
+
+        fn theme_dirs(&self) -> Vec<PathBuf> {
+            self.config_dirs
+                .iter()
+                .map(|dir| dir.join("themes"))
+                .chain(self.resources.iter().map(|dir| dir.join("themes")))
+                .collect()
+        }
+
+        /// Absolute paths, `~/`, and paths relative to the file naming them.
+        fn resolve(&self, value: &str, relative_to: Option<&Path>) -> Option<PathBuf> {
+            if let Some(rest) = value.strip_prefix("~/") {
+                return Some(self.home.as_ref()?.join(rest));
+            }
+            let path = Path::new(value);
+            if path.is_absolute() {
+                Some(path.to_owned())
+            } else {
+                Some(relative_to?.join(path))
+            }
+        }
+
+        pub(super) fn stamp(&self) -> GhosttyConfigStamp {
+            let mut queue: VecDeque<PathBuf> = self
+                .config_dirs
+                .iter()
+                .flat_map(|dir| CONFIG_NAMES.iter().map(move |name| dir.join(name)))
+                .collect();
+            let mut seen = HashSet::new();
+            let mut files = Vec::new();
+            let mut themes = Vec::new();
+            while let Some(path) = queue.pop_front() {
+                if files.len() >= MAX_FILES || !seen.insert(path.clone()) {
+                    continue;
+                }
+                files.push(path.clone());
+                let Some(text) = read_config(&path) else {
+                    continue;
+                };
+                for (key, value) in entries(&text) {
+                    match key {
+                        "config-file" => {
+                            let value = value.strip_prefix('?').unwrap_or(value).trim_matches('"');
+                            if let Some(include) = (!value.is_empty())
+                                .then(|| self.resolve(value, path.parent()))
+                                .flatten()
+                            {
+                                queue.push_back(include);
+                            }
+                        }
+                        "theme" => themes.extend(theme_names(value)),
+                        _ => {}
+                    }
+                }
+            }
+            let theme_dirs = self.theme_dirs();
+            for name in themes.into_iter().take(MAX_FILES) {
+                // A theme is a name searched in the theme folders, or a path.
+                let candidates: Vec<PathBuf> = if name.starts_with('/') || name.starts_with("~/") {
+                    self.resolve(&name, None).into_iter().collect()
+                } else {
+                    theme_dirs.iter().map(|dir| dir.join(&name)).collect()
+                };
+                for candidate in candidates {
+                    if seen.insert(candidate.clone()) {
+                        files.push(candidate);
+                    }
+                }
+            }
+            GhosttyConfigStamp(
+                files
+                    .into_iter()
+                    .map(|path| {
+                        let stamp = stamp_file(&path);
+                        (path, stamp)
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    pub(super) fn stamp() -> GhosttyConfigStamp {
+        Locations::from_env().stamp()
+    }
+
+    fn stamp_file(path: &Path) -> Option<FileStamp> {
+        // Follow links: dotfile managers usually link the config into place.
+        let metadata = fs::metadata(path).ok()?;
+        Some(FileStamp {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            length: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+        })
+    }
+
+    fn read_config(path: &Path) -> Option<String> {
+        let metadata = fs::metadata(path).ok()?;
+        if !metadata.is_file() || metadata.len() > MAX_CONFIG_BYTES {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&fs::read(path).ok()?).into_owned())
+    }
+
+    /// `key = value` lines; Ghostty allows comments only on lines of their own.
+    fn entries(text: &str) -> impl Iterator<Item = (&str, &str)> {
+        text.lines().filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            Some((key.trim(), value.trim().trim_matches('"')))
+        })
+    }
+
+    /// Both variants of a paired `light:name,dark:name` value count.
+    fn theme_names(value: &str) -> Vec<String> {
+        value
+            .split(',')
+            .map(|part| {
+                let part = part.trim();
+                let part = part
+                    .strip_prefix("light:")
+                    .or_else(|| part.strip_prefix("dark:"))
+                    .unwrap_or(part);
+                part.trim().trim_matches('"').to_owned()
+            })
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        struct Fixture(PathBuf);
+
+        impl Fixture {
+            fn new() -> Self {
+                let root = std::env::temp_dir()
+                    .join(format!("riwork-theme-stamp-{}", uuid::Uuid::new_v4()));
+                fs::create_dir_all(root.join("xdg/ghostty/themes")).unwrap();
+                fs::create_dir_all(root.join("home")).unwrap();
+                Self(root)
+            }
+
+            fn locations(&self) -> Locations {
+                Locations {
+                    home: Some(self.0.join("home")),
+                    config_dirs: vec![self.0.join("xdg/ghostty"), self.0.join("support")],
+                    resources: Some(self.0.join("resources")),
+                }
+            }
+
+            fn write(&self, relative: &str, contents: &str) -> PathBuf {
+                let path = self.0.join(relative);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(&path, contents).unwrap();
+                path
+            }
+        }
+
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        #[test]
+        fn stamp_is_stable_until_a_relevant_file_changes() {
+            let fixture = Fixture::new();
+            fixture.write(
+                "xdg/ghostty/config",
+                "# theme = commented\ntheme = \"light:day,dark:night\"\nconfig-file = ?extra.conf\nconfig-file = ~/dotfiles/more.conf\n",
+            );
+            fixture.write("xdg/ghostty/extra.conf", "palette = 1=#111111\n");
+            fixture.write("home/dotfiles/more.conf", "background = #000000\n");
+            fixture.write("xdg/ghostty/themes/day", "background = #ffffff\n");
+            let locations = fixture.locations();
+            let first = locations.stamp();
+            assert_eq!(first, locations.stamp());
+
+            // Every part of the chain is watched, in either theme variant.
+            for relative in [
+                "xdg/ghostty/config",
+                "xdg/ghostty/extra.conf",
+                "home/dotfiles/more.conf",
+                "xdg/ghostty/themes/day",
+            ] {
+                let before = locations.stamp();
+                let path = fixture.0.join(relative);
+                let mut contents = fs::read_to_string(&path).unwrap();
+                contents.push_str("# edited\n");
+                fs::write(&path, contents).unwrap();
+                assert_ne!(before, locations.stamp(), "{relative}");
+            }
+
+            // A theme file that appears later is noticed, wherever it lives.
+            fixture.write(
+                "xdg/ghostty/config",
+                "theme = light:day,dark:night\nconfig-file = extra.conf\n",
+            );
+            let before = locations.stamp();
+            fixture.write("resources/themes/night", "background = #000000\n");
+            assert_ne!(before, locations.stamp());
+        }
+
+        #[test]
+        fn stamp_ignores_unrelated_files_and_survives_include_cycles() {
+            let fixture = Fixture::new();
+            fixture.write("xdg/ghostty/config", "config-file = a.conf\n");
+            fixture.write(
+                "xdg/ghostty/a.conf",
+                "config-file = config\nconfig-file = a.conf\n",
+            );
+            let unrelated = fixture.write("xdg/ghostty/notes.txt", "not a config\n");
+            let locations = fixture.locations();
+            let before = locations.stamp();
+            fs::write(&unrelated, "still not a config, but longer\n").unwrap();
+            assert_eq!(before, locations.stamp());
+
+            fixture.write("xdg/ghostty/config.ghostty", "theme = x\n");
+            assert_ne!(before, locations.stamp());
+        }
+
+        #[test]
+        fn theme_values_cover_pairs_quotes_and_paths() {
+            assert_eq!(theme_names("night"), ["night"]);
+            assert_eq!(
+                theme_names("light:\"Day Theme\",dark:night"),
+                ["Day Theme", "night"]
+            );
+            assert!(theme_names("").is_empty());
+            let fixture = Fixture::new();
+            let theme = fixture.write("elsewhere/mine", "background = #123456\n");
+            fixture.write(
+                "xdg/ghostty/config",
+                &format!("theme = {}\n", theme.display()),
+            );
+            let locations = fixture.locations();
+            let before = locations.stamp();
+            fixture.write("elsewhere/mine", "background = #654321 \n");
+            assert_ne!(before, locations.stamp());
+        }
+    }
+}
+
+#[cfg(not(unix))]
+mod config_files {
+    use super::GhosttyConfigStamp;
+
+    pub(super) fn stamp() -> GhosttyConfigStamp {
+        GhosttyConfigStamp::default()
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
