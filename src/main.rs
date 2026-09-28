@@ -248,6 +248,12 @@ struct Workspace {
     settings: Settings,
     appearance: Appearance,
     window_size: Option<WindowSize>,
+    /// Last size the user gave this window; it follows the window across project switches.
+    window_size_user: Option<WindowSize>,
+    /// A user resize waiting out its debounce; promoted to `window_size` on the next save.
+    window_size_pending: Option<WindowSize>,
+    /// The window's last settled ordinary frame, which is where a zoomed window returns to.
+    normal_bounds: Option<Bounds<Pixels>>,
     window_size_save: Option<gpui::Task<()>>,
     store: Store,
     sessions: SessionManager,
@@ -512,17 +518,79 @@ fn project_default_account_label(
     format!("DEFAULT ({source}) · {detail}")
 }
 
-impl Workspace {
-    fn new(
+/// Everything `Workspace::new` reads from disk. It is resolved before the
+/// window opens, so a broken store or a vanished project folder is an error the
+/// caller reports instead of a panic inside window creation.
+struct WorkspaceStartup {
+    store: Store,
+    layouts: LayoutStore,
+    settings_store: SettingsStore,
+    sessions: SessionManager,
+    state: State,
+    project: Project,
+}
+
+impl WorkspaceStartup {
+    fn prepare(startup_path: Option<PathBuf>, fallback_cwd: PathBuf) -> Result<Self, String> {
+        Self::resolve(
+            Store::open_default()?,
+            LayoutStore::open_default()?,
+            SettingsStore::open_default()?,
+            SessionManager::open_default()?,
+            startup_path,
+            fallback_cwd,
+        )
+    }
+
+    fn resolve(
+        store: Store,
+        layouts: LayoutStore,
+        settings_store: SettingsStore,
+        sessions: SessionManager,
         startup_path: Option<PathBuf>,
         fallback_cwd: PathBuf,
+    ) -> Result<Self, String> {
+        let initial = store.snapshot()?;
+        let project = if let Some(path) = startup_path {
+            let root = path.canonicalize().map_err(|error| {
+                format!("Cannot open project folder {}: {error}", path.display())
+            })?;
+            match initial.projects.iter().find(|project| project.root == root) {
+                Some(project) => project.clone(),
+                None => store.add_project(root, None)?,
+            }
+        } else if let Some(project) = initial.active_project() {
+            project.clone()
+        } else {
+            store.add_project(fallback_cwd, None)?
+        };
+        let state = store.snapshot()?;
+        Ok(Self {
+            store,
+            layouts,
+            settings_store,
+            sessions,
+            state,
+            project,
+        })
+    }
+}
+
+impl Workspace {
+    fn new(
+        startup: WorkspaceStartup,
         restore: Option<runtime::RuntimeWindow>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let store = Store::open_default().expect("open RiWork project store");
-        let layouts = LayoutStore::open_default().expect("open RiWork layout store");
-        let settings_store = SettingsStore::open_default().expect("open RiWork settings store");
+        let WorkspaceStartup {
+            store,
+            layouts,
+            settings_store,
+            sessions,
+            state,
+            project,
+        } = startup;
         let settings = cx.global::<Settings>().clone();
         let appearance = cx.global::<Appearance>().clone();
         let settings_panel = cx.new(|cx| SettingsPanel::new(settings_store.clone(), cx));
@@ -534,25 +602,7 @@ impl Workspace {
             }
         })
         .detach();
-        let sessions = SessionManager::open_default().expect("open RiWork shell registry");
         let activity_tracker = ActivityTracker::at(sessions.state_home().to_path_buf());
-        let initial = store.snapshot().expect("read RiWork project store");
-        let project = if let Some(path) = startup_path {
-            let root = path.canonicalize().expect("resolve project path");
-            initial
-                .projects
-                .iter()
-                .find(|project| project.root == root)
-                .cloned()
-                .unwrap_or_else(|| store.add_project(root, None).expect("register project"))
-        } else if let Some(project) = initial.active_project() {
-            project.clone()
-        } else {
-            store
-                .add_project(fallback_cwd, None)
-                .expect("register initial project")
-        };
-        let state = store.snapshot().expect("read selected project");
         window.set_window_title(&format!("RiWork · {}", project.name));
         let selected_worktree_id = state
             .worktrees_for(&project.id)
@@ -602,6 +652,9 @@ impl Workspace {
             settings,
             appearance,
             window_size: None,
+            window_size_user: None,
+            window_size_pending: None,
+            normal_bounds: normal_window_bounds(window),
             window_size_save: None,
             store,
             sessions,
@@ -649,7 +702,7 @@ impl Workspace {
             workspace.open_panel(PanelKind::Settings, workspace.active_pane, window, cx);
         }
         cx.observe_window_bounds(window, |workspace, window, cx| {
-            workspace.remember_window_size(window, cx);
+            workspace.remember_window_size(window, true, cx);
         })
         .detach();
         cx.observe_global_in::<Settings>(window, |workspace, window, cx| {
@@ -879,25 +932,55 @@ impl Workspace {
         Ok(())
     }
 
-    fn remember_window_size(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if !self.settings.remember_window_size {
-            return;
-        }
-        // Fullscreen and maximized frames must not replace the normal window size.
-        let WindowBounds::Windowed(bounds) = window.window_bounds() else {
+    /// `changed_only` ignores a size the window already settled at, so the frame it
+    /// opened with (possibly clamped to the display) or returned to after zooming is
+    /// not mistaken for the user's choice. Turning the setting on passes false to
+    /// remember the current size right away.
+    fn remember_window_size(
+        &mut self,
+        window: &Window,
+        changed_only: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // Fullscreen and zoomed frames must not replace the normal window size.
+        let Some(bounds) = normal_window_bounds(window) else {
+            self.window_size_pending = None;
+            self.window_size_save = None;
             return;
         };
-        let size = WindowSize::new(bounds.size.width.as_f32(), bounds.size.height.as_f32());
-        if size.is_none() || size == self.window_size {
+        if changed_only
+            && self
+                .normal_bounds
+                .is_some_and(|normal| normal.size == bounds.size)
+        {
+            // Only moved, or back at the settled size.
+            self.normal_bounds = Some(bounds);
+            self.window_size_pending = None;
+            self.window_size_save = None;
             return;
         }
-        self.window_size = size;
+        self.window_size_pending = self
+            .settings
+            .remember_window_size
+            .then(|| WindowSize::new(bounds.size.width.as_f32(), bounds.size.height.as_f32()))
+            .flatten();
         // Avoid writing for every frame during a drag. Release also saves the final size.
-        self.window_size_save = Some(cx.spawn(async move |this, cx| {
+        self.window_size_save = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(250))
                 .await;
-            let _ = this.update(cx, |workspace, _| workspace.save_layout());
+            let _ = this.update_in(cx, |workspace, window, _| {
+                // Zooming animates through ordinary-looking frames; only a window that
+                // is still ordinary now has settled on a size.
+                let Some(bounds) = normal_window_bounds(window) else {
+                    workspace.window_size_pending = None;
+                    return;
+                };
+                workspace.normal_bounds = Some(bounds);
+                if workspace.window_size_pending.is_some() {
+                    workspace.save_layout();
+                }
+            });
         }));
     }
 
@@ -928,7 +1011,7 @@ impl Workspace {
         self.settings = settings;
         self.appearance = appearance;
         if remember_changed && self.settings.remember_window_size {
-            self.remember_window_size(window, cx);
+            self.remember_window_size(window, false, cx);
         }
         if colors_changed {
             let mut error = None;
@@ -1806,6 +1889,10 @@ impl Workspace {
                 return;
             }
         };
+        // A layout that cannot be read (corrupt, or saved by a newer build) must not
+        // leave the window unusable. Open a default layout and say why; the store keeps
+        // the unreadable data as it is.
+        let mut layout_notice = None;
         let saved_layout = if let Some(layout) = self.restore_layout.clone() {
             Ok(Some(layout))
         } else {
@@ -1814,9 +1901,8 @@ impl Workspace {
         let mut saved = match saved_layout {
             Ok(saved) => saved,
             Err(error) => {
-                self.notice = Some(error);
-                cx.notify();
-                return;
+                layout_notice = Some(format!("{error}; using a default layout"));
+                None
             }
         };
         let destination_missing = saved.is_none();
@@ -1836,9 +1922,7 @@ impl Workspace {
             match destination.carry_locked_regions_from(previous) {
                 Ok(layout) => saved = Some(layout),
                 Err(error) => {
-                    self.notice = Some(error);
-                    cx.notify();
-                    return;
+                    layout_notice = Some(format!("{error}; locked regions were not carried over"));
                 }
             }
         }
@@ -1860,16 +1944,13 @@ impl Workspace {
         self.locked_panes = saved
             .as_ref()
             .and_then(|layout| layout.locked_panes.clone());
-        self.window_size = if self.settings.remember_window_size {
-            match window.window_bounds() {
-                WindowBounds::Windowed(bounds) => {
-                    WindowSize::new(bounds.size.width.as_f32(), bounds.size.height.as_f32())
-                }
-                _ => saved.as_ref().and_then(|saved| saved.window_size),
-            }
-        } else {
-            saved.as_ref().and_then(|saved| saved.window_size)
-        };
+        // The window keeps a size the user gave it when the project changes. The frame it
+        // opened with (clamped to the display) and zoomed or full-screen frames never
+        // become a project's remembered size.
+        self.window_size = saved.as_ref().and_then(|saved| saved.window_size);
+        if self.settings.remember_window_size {
+            self.window_size = self.window_size_user.or(self.window_size);
+        }
         let live_shells = shells
             .iter()
             .filter(|shell| {
@@ -2015,7 +2096,7 @@ impl Workspace {
                 self.focus_centered = centered;
                 self.set_focus_mode(mode, window, cx);
             }
-            self.notice = None;
+            self.notice = layout_notice;
             self.save_layout();
         }
         cx.notify();
@@ -2069,6 +2150,10 @@ impl Workspace {
     }
 
     fn save_layout(&mut self) {
+        if let Some(size) = self.window_size_pending.take() {
+            self.window_size = Some(size);
+            self.window_size_user = Some(size);
+        }
         let Some(saved) = self.layout_snapshot() else {
             return;
         };
@@ -2078,13 +2163,17 @@ impl Workspace {
     }
 
     fn runtime_window(&self, window: &Window) -> runtime::RuntimeWindow {
-        let window_bounds = window.window_bounds();
-        let mode = match window_bounds {
-            WindowBounds::Windowed(_) => runtime::WindowMode::Windowed,
-            WindowBounds::Maximized(_) => runtime::WindowMode::Maximized,
-            WindowBounds::Fullscreen(_) => runtime::WindowMode::Fullscreen,
+        // GPUI reports a zoomed macOS window as Windowed. A zoomed window is restored
+        // from its last ordinary frame so that un-zooming still has somewhere to go.
+        let (mode, bounds) = match window.window_bounds() {
+            WindowBounds::Fullscreen(bounds) => (runtime::WindowMode::Fullscreen, bounds),
+            WindowBounds::Maximized(bounds) => (runtime::WindowMode::Maximized, bounds),
+            WindowBounds::Windowed(bounds) if window.is_maximized() => (
+                runtime::WindowMode::Maximized,
+                self.normal_bounds.unwrap_or(bounds),
+            ),
+            WindowBounds::Windowed(bounds) => (runtime::WindowMode::Windowed, bounds),
         };
-        let bounds = window_bounds.get_bounds();
         runtime::RuntimeWindow {
             project_id: Some(self.project_id.clone()),
             path: self.cwd.clone(),
@@ -5234,6 +5323,11 @@ fn sync_appearance(cx: &mut App) {
     }
 }
 
+fn exit_startup(error: String) -> ! {
+    eprintln!("riwork: {error}");
+    std::process::exit(2);
+}
+
 fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
     match cli::run_cli(&args) {
@@ -5260,17 +5354,19 @@ fn main() {
                 .filter(|path| path.is_dir())
         })
         .unwrap_or_else(|| PathBuf::from("."));
-    let runtime = runtime::RuntimeManager::open_default().expect("open RiWork runtime registry");
+    // None of these can be worked around, but a message beats a panic backtrace.
+    let runtime =
+        runtime::RuntimeManager::open_default().unwrap_or_else(|error| exit_startup(error));
     let restore = runtime
         .restore_from_env()
-        .expect("read RiWork reload snapshot");
+        .unwrap_or_else(|error| exit_startup(error));
     let state_home = SessionManager::open_default()
-        .expect("open RiWork sessions")
+        .unwrap_or_else(|error| exit_startup(error))
         .state_home()
         .to_path_buf();
     let mut registration = runtime
         .register(state_home.clone())
-        .expect("register RiWork app");
+        .unwrap_or_else(|error| exit_startup(error));
 
     application().run(move |cx: &mut App| {
         cx.set_app_identity("dev.riwork.shell", "RiWork");
@@ -5365,21 +5461,27 @@ fn main() {
         .detach();
         if let Some(snapshot) = &restore {
             for window in &snapshot.windows {
-                open_workspace_window(
+                if let Err(error) = open_workspace_window(
                     Some(window.path.clone()),
                     fallback_cwd.clone(),
                     Some(window.clone()),
                     cx,
-                )
-                .expect("restore RiWork window");
+                ) {
+                    // The previous app stays open until every window is restored.
+                    eprintln!("riwork: cannot restore a window: {error}");
+                    cx.quit();
+                    return;
+                }
             }
-        } else {
-            open_workspace_window(startup_path.clone(), fallback_cwd.clone(), None, cx)
-                .expect("open RiWork window");
+        } else if let Err(error) =
+            open_startup_window(startup_path.clone(), fallback_cwd.clone(), cx)
+        {
+            exit_startup(error);
         }
-        registration
-            .publish_windows(runtime_windows(cx, false))
-            .expect("publish RiWork windows");
+        // The heartbeat below publishes again and reports failures.
+        if let Err(error) = registration.publish_windows(runtime_windows(cx, false)) {
+            eprintln!("riwork: {error}");
+        }
         cx.spawn(async move |cx| {
             let mut reload = None;
             let mut restore = restore;
@@ -5503,52 +5605,77 @@ fn runtime_windows(cx: &mut App, save: bool) -> Vec<runtime::RuntimeWindow> {
         .collect()
 }
 
+/// The window's frame when it is an ordinary window, None in full screen or
+/// zoomed. GPUI reports a zoomed macOS window as plain Windowed, so it also asks
+/// `is_maximized`; that covers the app's own titlebar double-click.
+fn normal_window_bounds(window: &Window) -> Option<Bounds<Pixels>> {
+    match window.window_bounds() {
+        WindowBounds::Windowed(bounds) if !window.is_maximized() => Some(bounds),
+        _ => None,
+    }
+}
+
+/// Opens the first window of an ordinary launch. A folder argument that cannot be
+/// opened falls back to the active project, and the window says why.
+fn open_startup_window(
+    startup_path: Option<PathBuf>,
+    fallback_cwd: PathBuf,
+    cx: &mut App,
+) -> Result<(), String> {
+    let error = match open_workspace_window(startup_path.clone(), fallback_cwd.clone(), None, cx) {
+        Ok(_) => return Ok(()),
+        Err(error) if startup_path.is_some() => error,
+        Err(error) => return Err(error),
+    };
+    eprintln!("riwork: {error}");
+    let handle = open_workspace_window(None, fallback_cwd, None, cx)?;
+    let _ = handle.update(cx, |workspace, _, cx| {
+        workspace.notice = Some(error);
+        cx.notify();
+    });
+    Ok(())
+}
+
 fn open_workspace_window(
     startup_path: Option<PathBuf>,
     fallback_cwd: PathBuf,
     restore: Option<runtime::RuntimeWindow>,
     cx: &mut App,
 ) -> Result<WindowHandle<Workspace>, String> {
-    let saved_size = if cx.global::<Settings>().remember_window_size {
-        let state = Store::open_default()?.snapshot()?;
-        let project = match startup_path.as_ref() {
-            Some(path) => {
-                let root = path
-                    .canonicalize()
-                    .map_err(|error| format!("Cannot resolve project: {error}"))?;
-                state.projects.iter().find(|project| project.root == root)
-            }
-            None => state.active_project(),
-        };
-        match project {
-            Some(project) => LayoutStore::open_default()?
-                .load(&project.id)?
-                .and_then(|layout| layout.window_size),
-            None => None,
-        }
-    } else {
-        None
+    let startup = WorkspaceStartup::prepare(startup_path, fallback_cwd)?;
+    // Best effort: an unreadable layout only means the default size.
+    let saved_size = cx
+        .global::<Settings>()
+        .remember_window_size
+        .then(|| startup.layouts.window_size(&startup.project.id))
+        .flatten()
+        .unwrap_or(WindowSize {
+            width: 1220.0,
+            height: 780.0,
+        });
+    let cascade = cx.windows().len();
+    let frame = match cx.primary_display().map(|display| display.visible_bounds()) {
+        Some(display) => layouts::WindowFrame::opening(
+            saved_size,
+            layouts::WindowFrame {
+                x: display.origin.x.as_f32(),
+                y: display.origin.y.as_f32(),
+                width: display.size.width.as_f32(),
+                height: display.size.height.as_f32(),
+            },
+            cascade,
+        ),
+        None => layouts::WindowFrame {
+            x: 0.0,
+            y: 0.0,
+            width: saved_size.width,
+            height: saved_size.height,
+        },
     };
-    let saved_size = saved_size.unwrap_or(WindowSize {
-        width: 1220.0,
-        height: 780.0,
-    });
-    // A project last opened on a larger monitor must still fit the current display.
-    let available = cx.primary_display().map(|display| display.bounds().size);
-    let width = available.map_or(saved_size.width, |size| {
-        saved_size
-            .width
-            .min((size.width.as_f32() - 40.0).max(640.0))
-    });
-    let height = available.map_or(saved_size.height, |size| {
-        saved_size
-            .height
-            .min((size.height.as_f32() - 80.0).max(400.0))
-    });
-    let mut bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let offset = px((cx.windows().len() % 5) as f32 * 22.0);
-    bounds.origin.x += offset;
-    bounds.origin.y += offset;
+    let mut bounds = Bounds::new(
+        point(px(frame.x), px(frame.y)),
+        size(px(frame.width), px(frame.height)),
+    );
     if let Some(saved) = restore.as_ref().and_then(|window| window.bounds.as_ref()) {
         bounds.origin = point(px(saved.x), px(saved.y));
         bounds.size = size(px(saved.width), px(saved.height));
@@ -5574,9 +5701,55 @@ fn open_workspace_window(
             window_min_size: Some(size(px(640.0), px(400.0))),
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| Workspace::new(startup_path, fallback_cwd, restore, window, cx)),
+        |window, cx| cx.new(|cx| Workspace::new(startup, restore, window, cx)),
     )
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    fn startup_at(
+        home: &Path,
+        startup_path: Option<PathBuf>,
+        fallback_cwd: PathBuf,
+    ) -> Result<WorkspaceStartup, String> {
+        WorkspaceStartup::resolve(
+            Store::open(home)?,
+            LayoutStore::open(home)?,
+            SettingsStore::open(home)?,
+            SessionManager::at(home.to_path_buf())?,
+            startup_path,
+            fallback_cwd,
+        )
+    }
+
+    #[test]
+    fn a_vanished_project_root_is_an_error_for_the_caller_not_a_panic() {
+        let base = std::env::temp_dir().join(format!("riwork-startup-{}", uuid::Uuid::new_v4()));
+        let home = base.join("home");
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let project = project.canonicalize().unwrap();
+
+        let opened = startup_at(&home, Some(project.clone()), base.clone()).unwrap();
+        assert_eq!(opened.project.root, project);
+        // The same folder opens the already registered project.
+        let again = startup_at(&home, Some(project.clone()), base.clone()).unwrap();
+        assert_eq!(again.project.id, opened.project.id);
+
+        std::fs::remove_dir_all(&project).unwrap();
+        let error = startup_at(&home, Some(project.clone()), base.clone())
+            .err()
+            .expect("a missing folder cannot be opened");
+        assert!(error.contains("Cannot open project folder"), "{error}");
+
+        // Without a folder argument the active project is used, whatever became of it.
+        let active = startup_at(&home, None, base.clone()).unwrap();
+        assert_eq!(active.project.id, opened.project.id);
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }
 
 #[cfg(test)]

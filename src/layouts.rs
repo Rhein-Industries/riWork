@@ -5,11 +5,13 @@ use std::{
     env, fs,
     fs::{File, OpenOptions},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use fs2::FileExt;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Value;
 use uuid::Uuid;
 
 pub type PaneId = u64;
@@ -18,6 +20,7 @@ const MAX_DEPTH: usize = 32;
 const MAX_PANES: usize = 256;
 const MAX_PANE_ID: PaneId = u64::MAX - MAX_PANES as u64;
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -321,6 +324,36 @@ impl WindowSize {
             && self.height.is_finite()
             && (320.0..=16_384.0).contains(&self.width)
             && (240.0..=16_384.0).contains(&self.height)
+    }
+}
+
+/// A window frame in display points with a top-left origin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowFrame {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl WindowFrame {
+    /// Where the `cascade`th open window goes: the remembered `size`, fitted to
+    /// `display`, centred and shifted down-right by its place in a five-step
+    /// cascade. The shift is applied before the final clamp so no step hangs
+    /// off the display.
+    pub fn opening(size: WindowSize, display: WindowFrame, cascade: usize) -> Self {
+        // A project last opened on a larger monitor must still fit this one.
+        let width = size.width.min((display.width - 40.0).max(640.0));
+        let height = size.height.min((display.height - 40.0).max(400.0));
+        let shift = (cascade % 5) as f32 * 22.0;
+        let x = display.x + (display.width - width) / 2.0 + shift;
+        let y = display.y + (display.height - height) / 2.0 + shift;
+        Self {
+            x: x.min(display.x + display.width - width).max(display.x),
+            y: y.min(display.y + display.height - height).max(display.y),
+            width,
+            height,
+        }
     }
 }
 
@@ -727,19 +760,136 @@ fn sync_saved_pane(pane: &mut SavedPane) {
     });
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(default)]
+/// Every project's layout, kept entry by entry. An entry this build cannot
+/// parse (typically a panel kind a newer build added) stays as raw JSON and is
+/// written back unchanged, so an older build never destroys a newer one's data.
+#[derive(Debug, Serialize)]
 struct SavedLayouts {
     schema_version: u32,
-    projects: BTreeMap<String, ProjectLayout>,
+    projects: BTreeMap<String, SavedEntry>,
+    /// Top-level fields this build does not know about.
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 
 impl Default for SavedLayouts {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             projects: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
+    }
+}
+
+#[derive(Debug)]
+enum SavedEntry {
+    Layout(Box<ProjectLayout>),
+    Unreadable { raw: Value, reason: String },
+}
+
+impl Serialize for SavedEntry {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Layout(layout) => layout.serialize(serializer),
+            Self::Unreadable { raw, .. } => raw.serialize(serializer),
+        }
+    }
+}
+
+impl SavedEntry {
+    fn layout(&self) -> Result<ProjectLayout, String> {
+        match self {
+            Self::Layout(layout) => {
+                let mut layout = (**layout).clone();
+                layout.normalize()?;
+                Ok(layout)
+            }
+            Self::Unreadable { reason, .. } => Err(unreadable_entry_message(reason)),
+        }
+    }
+
+    fn window_size(&self) -> Option<WindowSize> {
+        match self {
+            Self::Layout(layout) => layout.window_size,
+            Self::Unreadable { raw, .. } => raw
+                .get("window_size")
+                .and_then(|size| WindowSize::deserialize(size).ok()),
+        }
+        .filter(WindowSize::is_valid)
+    }
+}
+
+fn unreadable_entry_message(reason: &str) -> String {
+    format!(
+        "The saved layout for this project cannot be read ({reason}); it may come from a newer \
+         RiWork and is left unchanged"
+    )
+}
+
+/// Why layouts.json could not be used.
+enum Unreadable {
+    /// Not layout data at all. A save sets the file aside and starts over.
+    Corrupt(String),
+    /// Possibly a newer build's data, or unreadable right now. Never replaced.
+    Kept(String),
+}
+
+impl Unreadable {
+    fn into_message(self) -> String {
+        match self {
+            Self::Corrupt(message) | Self::Kept(message) => message,
+        }
+    }
+}
+
+impl SavedLayouts {
+    fn parse(data: &[u8], path: &Path) -> Result<Self, Unreadable> {
+        if data.iter().all(u8::is_ascii_whitespace) {
+            return Ok(Self::default());
+        }
+        let corrupt = |detail: String| {
+            Unreadable::Corrupt(format!(
+                "Cannot parse {}: {detail}; it is set aside as layouts.corrupt-*.json on the next save",
+                path.display()
+            ))
+        };
+        let Value::Object(mut fields) =
+            serde_json::from_slice(data).map_err(|error| corrupt(error.to_string()))?
+        else {
+            return Err(corrupt("expected a JSON object".to_owned()));
+        };
+        // Checked before anything else: a newer schema may reshape the rest.
+        if let Some(version) = fields.remove("schema_version")
+            && version.as_u64() != Some(u64::from(SCHEMA_VERSION))
+        {
+            return Err(Unreadable::Kept(format!(
+                "Unsupported layout schema {version}; this build supports schema {SCHEMA_VERSION}"
+            )));
+        }
+        let projects = match fields.remove("projects") {
+            None => serde_json::Map::new(),
+            Some(Value::Object(projects)) => projects,
+            Some(_) => return Err(corrupt("\"projects\" is not an object".to_owned())),
+        };
+        let projects = projects
+            .into_iter()
+            .map(|(id, raw)| {
+                let entry = match ProjectLayout::deserialize(&raw) {
+                    Ok(layout) => SavedEntry::Layout(Box::new(layout)),
+                    Err(error) => SavedEntry::Unreadable {
+                        reason: error.to_string(),
+                        raw,
+                    },
+                };
+                (id, entry)
+            })
+            .collect();
+        Ok(Self {
+            schema_version: SCHEMA_VERSION,
+            projects,
+            extra: fields.into_iter().collect(),
+        })
     }
 }
 
@@ -766,14 +916,29 @@ impl LayoutStore {
         Ok(Self { dir })
     }
 
+    /// An error means this project's layout, or the file, cannot be used; the
+    /// caller falls back to a default layout and the stored data is left alone.
     pub fn load(&self, project_id: &str) -> Result<Option<ProjectLayout>, String> {
         let lock = self.lock_file()?;
         FileExt::lock_shared(&lock).map_err(|error| format!("Cannot lock layouts: {error}"))?;
-        let mut layout = self.read_layouts()?.projects.remove(project_id);
-        if let Some(layout) = &mut layout {
-            layout.normalize()?;
-        }
-        Ok(layout)
+        let layouts = self.read_layouts().map_err(Unreadable::into_message)?;
+        layouts
+            .projects
+            .get(project_id)
+            .map(SavedEntry::layout)
+            .transpose()
+    }
+
+    /// The remembered window size, or None on any problem. Opening a window
+    /// must not depend on the rest of the layout parsing.
+    pub fn window_size(&self, project_id: &str) -> Option<WindowSize> {
+        let lock = self.lock_file().ok()?;
+        FileExt::lock_shared(&lock).ok()?;
+        self.read_layouts()
+            .ok()?
+            .projects
+            .get(project_id)?
+            .window_size()
     }
 
     pub fn save(&self, project_id: &str, layout: &ProjectLayout) -> Result<(), String> {
@@ -785,68 +950,106 @@ impl LayoutStore {
         layout.normalize()?;
         let lock = self.lock_file()?;
         FileExt::lock_exclusive(&lock).map_err(|error| format!("Cannot lock layouts: {error}"))?;
-        let mut layouts = self.read_layouts()?;
-        if layouts.projects.get(project_id) == Some(&layout) {
-            return Ok(());
+        let mut layouts = match self.read_layouts() {
+            Ok(layouts) => layouts,
+            Err(Unreadable::Corrupt(_)) => {
+                self.set_aside_corrupt_file()?;
+                SavedLayouts::default()
+            }
+            Err(Unreadable::Kept(message)) => return Err(message),
+        };
+        match layouts.projects.get(project_id) {
+            Some(SavedEntry::Unreadable { reason, .. }) => {
+                return Err(unreadable_entry_message(reason));
+            }
+            // Common case: nothing changed, so skip the write and its fsync.
+            Some(existing) if existing.layout().is_ok_and(|existing| existing == layout) => {
+                return Ok(());
+            }
+            _ => {}
         }
-        layouts.projects.insert(project_id.to_owned(), layout);
+        layouts
+            .projects
+            .insert(project_id.to_owned(), SavedEntry::Layout(Box::new(layout)));
         self.write_layouts(&layouts)
     }
 
     fn lock_file(&self) -> Result<File, String> {
+        // A pure lock file: its contents never matter, so never truncate it.
         OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(self.dir.join("layouts.lock"))
             .map_err(|error| format!("Cannot open layout lock: {error}"))
     }
 
-    fn read_layouts(&self) -> Result<SavedLayouts, String> {
+    fn read_layouts(&self) -> Result<SavedLayouts, Unreadable> {
         let path = self.dir.join("layouts.json");
         match fs::metadata(&path) {
             Ok(metadata) if metadata.len() > MAX_FILE_BYTES => {
-                return Err(format!("{} is too large", path.display()));
+                return Err(Unreadable::Kept(format!("{} is too large", path.display())));
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(SavedLayouts::default());
             }
-            Err(error) => return Err(format!("Cannot read {}: {error}", path.display())),
+            Err(error) => {
+                return Err(Unreadable::Kept(format!(
+                    "Cannot read {}: {error}",
+                    path.display()
+                )));
+            }
         }
-        let data =
-            fs::read(&path).map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
-        let layouts: SavedLayouts = serde_json::from_slice(&data)
-            .map_err(|error| format!("Cannot parse {}: {error}", path.display()))?;
-        if layouts.schema_version != 1 {
-            return Err(format!(
-                "Unsupported layout schema {}; this build supports schema 1",
-                layouts.schema_version
-            ));
-        }
-        Ok(layouts)
+        let data = fs::read(&path).map_err(|error| {
+            Unreadable::Kept(format!("Cannot read {}: {error}", path.display()))
+        })?;
+        SavedLayouts::parse(&data, &path)
+    }
+
+    /// Keep an unparseable layouts.json for manual recovery instead of
+    /// deleting it, so persistence can resume.
+    fn set_aside_corrupt_file(&self) -> Result<(), String> {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let unique = Uuid::new_v4().simple().to_string();
+        let path = self.dir.join("layouts.json");
+        let aside = self
+            .dir
+            .join(format!("layouts.corrupt-{secs}-{}.json", &unique[..8]));
+        fs::rename(&path, &aside).map_err(|error| {
+            format!(
+                "Cannot set aside {} as {}: {error}",
+                path.display(),
+                aside.display()
+            )
+        })
     }
 
     fn write_layouts(&self, layouts: &SavedLayouts) -> Result<(), String> {
         let path = self.dir.join("layouts.json");
         let tmp = self.dir.join(format!(".layouts-{}.tmp", Uuid::new_v4()));
         let write = || -> Result<(), String> {
+            // Encode first: pretty printing straight into the file is one
+            // syscall per token, and this runs on the UI thread.
+            let mut data = serde_json::to_vec_pretty(layouts)
+                .map_err(|error| format!("Cannot encode layouts: {error}"))?;
+            data.push(b'\n');
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&tmp)
                 .map_err(|error| format!("Cannot create {}: {error}", tmp.display()))?;
-            serde_json::to_writer_pretty(&mut file, layouts)
-                .map_err(|error| format!("Cannot encode layouts: {error}"))?;
-            file.write_all(b"\n")
+            file.write_all(&data)
                 .map_err(|error| format!("Cannot write layouts: {error}"))?;
             file.sync_all()
                 .map_err(|error| format!("Cannot sync layouts: {error}"))?;
+            // The rename is atomic; a crash before the directory entry reaches
+            // disk only loses this one save, so the directory is not synced.
             fs::rename(&tmp, &path)
-                .map_err(|error| format!("Cannot replace {}: {error}", path.display()))?;
-            File::open(&self.dir)
-                .and_then(|dir| dir.sync_all())
-                .map_err(|error| format!("Cannot sync {}: {error}", self.dir.display()))
+                .map_err(|error| format!("Cannot replace {}: {error}", path.display()))
         };
         let result = write();
         if result.is_err() {
@@ -874,10 +1077,22 @@ mod tests {
 
     impl Drop for TestDirectory {
         fn drop(&mut self) {
-            for name in ["layouts.json", "layouts.lock"] {
-                let _ = fs::remove_file(self.0.join(name));
-            }
-            let _ = fs::remove_dir(&self.0);
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl TestDirectory {
+        fn file(&self) -> PathBuf {
+            self.0.join("layouts.json")
+        }
+
+        fn write(&self, contents: impl AsRef<[u8]>) {
+            fs::create_dir_all(&self.0).unwrap();
+            fs::write(self.file(), contents).unwrap();
+        }
+
+        fn read_value(&self) -> Value {
+            serde_json::from_slice(&fs::read(self.file()).unwrap()).unwrap()
         }
     }
 
@@ -1618,5 +1833,194 @@ mod tests {
         json.as_object_mut().unwrap().remove("locked_panes");
         let legacy: ProjectLayout = serde_json::from_value(json).unwrap();
         assert_eq!(legacy.locked_panes, None);
+    }
+
+    /// A layout as a newer build could write it: a project holding a panel kind
+    /// and a tab kind this build has never heard of.
+    fn newer_layout(unknown_tab: Value) -> Value {
+        let mut value = serde_json::to_value(saved_layout()).unwrap();
+        value["panes"]["4"]["tabs"]
+            .as_array_mut()
+            .unwrap()
+            .push(unknown_tab);
+        value
+    }
+
+    #[test]
+    fn unparseable_entries_fall_back_per_project_and_are_kept_verbatim_on_save() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let unknown_panel = newer_layout(serde_json::json!({"kind": "panel", "panel": "quantum"}));
+        let unknown_tab = newer_layout(serde_json::json!({"kind": "browser", "url": "x"}));
+        directory.write(
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "future_top_level": {"keep": [1, 2, 3]},
+                "projects": {
+                    "old": saved_layout(),
+                    "panel": unknown_panel,
+                    "tab": unknown_tab,
+                },
+            }))
+            .unwrap(),
+        );
+
+        // Only the affected projects fall back; the rest of the file still loads.
+        assert_eq!(store.load("old").unwrap(), Some(saved_layout()));
+        for id in ["panel", "tab"] {
+            let error = store.load(id).unwrap_err();
+            assert!(error.contains("cannot be read"), "{error}");
+        }
+        assert!(store.load("absent").unwrap().is_none());
+        // The window size survives even when the rest of the entry does not parse.
+        assert_eq!(store.window_size("panel"), WindowSize::new(1440.0, 900.0));
+
+        // An older build saving its own projects leaves the newer data alone,
+        // and refuses to replace an entry it could not read.
+        let mut changed = saved_layout();
+        changed.selected_task_id = Some("another-task".to_owned());
+        store.save("old", &changed).unwrap();
+        for id in ["panel", "tab"] {
+            let error = store.save(id, &saved_layout()).unwrap_err();
+            assert!(error.contains("cannot be read"), "{error}");
+        }
+        store.save("brand-new", &saved_layout()).unwrap();
+        let file = directory.read_value();
+        assert_eq!(file["projects"]["panel"], unknown_panel);
+        assert_eq!(file["projects"]["tab"], unknown_tab);
+        assert_eq!(
+            file["future_top_level"],
+            serde_json::json!({"keep": [1, 2, 3]})
+        );
+        assert_eq!(store.load("old").unwrap(), Some(changed));
+        assert_eq!(store.load("brand-new").unwrap(), Some(saved_layout()));
+    }
+
+    #[test]
+    fn corrupt_file_is_set_aside_on_save_instead_of_crashing_or_being_deleted() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let garbage = b"{\"schema_version\": 1, \"projects\": {\"a\": ";
+        directory.write(garbage);
+
+        assert!(store.load("a").unwrap_err().contains("Cannot parse"));
+        assert_eq!(store.window_size("a"), None);
+
+        store.save("a", &saved_layout()).unwrap();
+        assert_eq!(store.load("a").unwrap(), Some(saved_layout()));
+        let aside = fs::read_dir(&directory.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("layouts.corrupt-"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(fs::read(&aside[0]).unwrap(), garbage);
+
+        // An empty file is simply an empty store, not damage worth keeping.
+        let empty = TestDirectory::new();
+        empty.write("");
+        assert!(empty.store().load("a").unwrap().is_none());
+        empty.store().save("a", &saved_layout()).unwrap();
+        assert_eq!(fs::read_dir(&empty.0).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn newer_schema_is_neither_loaded_nor_overwritten() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let newer = br#"{"schema_version": 2, "projects": ["reshaped"]}"#;
+        directory.write(newer);
+
+        assert!(
+            store
+                .load("a")
+                .unwrap_err()
+                .contains("Unsupported layout schema 2")
+        );
+        assert_eq!(store.window_size("a"), None);
+        assert!(store.save("a", &saved_layout()).is_err());
+        assert_eq!(fs::read(directory.file()).unwrap(), newer);
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn unchanged_layouts_are_not_rewritten_and_writes_leave_no_temporary_files() {
+        use std::os::unix::fs::MetadataExt;
+
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let layout = saved_layout();
+        store.save("a", &layout).unwrap();
+        let inode = fs::metadata(directory.file()).unwrap().ino();
+
+        store.save("a", &layout).unwrap();
+        assert_eq!(fs::metadata(directory.file()).unwrap().ino(), inode);
+
+        let mut changed = layout.clone();
+        changed.sidebar_visible = !changed.sidebar_visible;
+        store.save("a", &changed).unwrap();
+        assert_ne!(fs::metadata(directory.file()).unwrap().ino(), inode);
+        assert_eq!(store.load("a").unwrap(), Some(changed));
+        // Only layouts.json and layouts.lock remain.
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn window_size_lookup_is_best_effort() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        assert_eq!(store.window_size("a"), None);
+        store.save("a", &saved_layout()).unwrap();
+        assert_eq!(store.window_size("a"), WindowSize::new(1440.0, 900.0));
+        assert_eq!(store.window_size("b"), None);
+        directory.write("not json");
+        assert_eq!(store.window_size("a"), None);
+    }
+
+    fn frame(x: f32, y: f32, width: f32, height: f32) -> WindowFrame {
+        WindowFrame {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn opening_windows_cascade_inside_the_display_and_clamp_after_cascading() {
+        // Below the menu bar, like a laptop's visible frame.
+        let display = frame(0.0, 25.0, 1440.0, 875.0);
+        let contains = |window: WindowFrame| {
+            window.x >= display.x
+                && window.y >= display.y
+                && window.x + window.width <= display.x + display.width
+                && window.y + window.height <= display.y + display.height
+        };
+
+        // Room to spare: centred, then stepped 22 points per window, five steps.
+        let small = WindowSize::new(1000.0, 600.0).unwrap();
+        let first = WindowFrame::opening(small, display, 0);
+        assert_eq!(first, frame(220.0, 162.5, 1000.0, 600.0));
+        assert_eq!(
+            WindowFrame::opening(small, display, 3),
+            frame(286.0, 228.5, 1000.0, 600.0)
+        );
+        assert_eq!(WindowFrame::opening(small, display, 5), first);
+
+        // A size saved on a bigger monitor is fitted, and the later windows of
+        // the cascade used to hang off the display by up to 68 x 48 points.
+        let huge = WindowSize::new(3000.0, 2000.0).unwrap();
+        for cascade in 0..12 {
+            let window = WindowFrame::opening(huge, display, cascade);
+            assert_eq!((window.width, window.height), (1400.0, 835.0));
+            assert!(contains(window), "cascade {cascade}: {window:?}");
+        }
+        let last = WindowFrame::opening(huge, display, 4);
+        assert_eq!(last.x + last.width, display.x + display.width);
+        assert_eq!(last.y + last.height, display.y + display.height);
     }
 }
