@@ -42,6 +42,21 @@ pub struct UsageWindow {
     pub window_minutes: Option<u64>,
 }
 
+/// Seconds before an account's quota is read again. An account that keeps
+/// failing (signed out, offline, broken install) would otherwise start a
+/// `codex app-server` every minute for as long as RiWork is open, so each
+/// consecutive failure doubles the wait up to a cap. A forced refresh ignores
+/// this, and any success starts over.
+pub fn codex_refresh_interval(has_snapshot: bool, failures: u32) -> u64 {
+    // The caps stay short enough that signing in again is noticed soon.
+    let (base, cap) = if has_snapshot {
+        (15 * 60, 30 * 60)
+    } else {
+        (60, 10 * 60)
+    };
+    (base << failures.min(6)).min(cap)
+}
+
 /// Read the account and its quota through Codex's app-server under this exact
 /// home. The child override does not change this process's environment.
 /// Blocking and bounded: call from a worker, never GPUI's render thread.
@@ -555,6 +570,18 @@ fn response_result(message: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failing_codex_reads_back_off_exponentially_up_to_a_cap() {
+        let waits: Vec<_> = (0..9).map(|n| codex_refresh_interval(false, n)).collect();
+        assert_eq!(waits[..5], [60, 120, 240, 480, 600]);
+        assert!(waits[5..].iter().all(|wait| *wait == 10 * 60));
+        // A cached snapshot keeps its normal cadence until refreshes start failing.
+        assert_eq!(codex_refresh_interval(true, 0), 15 * 60);
+        assert_eq!(codex_refresh_interval(true, 1), 30 * 60);
+        assert_eq!(codex_refresh_interval(true, u32::MAX), 30 * 60);
+        assert_eq!(codex_refresh_interval(false, u32::MAX), 10 * 60);
+    }
 
     #[test]
     fn codex_uses_reported_durations_and_not_assumed_windows() {

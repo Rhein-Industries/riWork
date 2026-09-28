@@ -5,8 +5,9 @@ use std::{
     collections::BTreeMap,
     env, fs,
     fs::{File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize, de::IgnoredAny};
@@ -20,6 +21,10 @@ use crate::{
 pub(crate) const MAX_POLL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_BINDING_BYTES: u64 = 16 * 1024;
+/// A large rollout is opened from its first record plus the smallest tail that
+/// contains a turn start, so opening it never costs a scan from byte zero.
+const SEED_WINDOWS: [u64; 4] = [1 << 20, 4 << 20, 16 << 20, 64 << 20];
+const LOOKUP_BACKOFF_CAP: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AgentActivity {
@@ -231,24 +236,36 @@ fn record_codex_notification_at(
         crate::sessions::SessionManager::at(home.to_path_buf())?
             .freeze_codex_home_if_unknown(shell_id, log_home)?;
     }
-    if status == AgentActivity::Done && home.join("sessions.json").is_file() {
-        if let Some(turn) = &cursor.completed_turn {
-            if notification
-                .turn_id
-                .as_ref()
-                .is_none_or(|expected| expected == turn)
-            {
-                let event_id = codex_completion_event_id(log_home, &notification.thread_id, turn);
-                crate::notifications::record_completion(
-                    home,
-                    shell_id,
-                    &event_id,
-                    HarnessKind::Codex,
-                )?;
-            }
-        }
+    if let Some(turn) = notified_turn(&cursor, status, notification.turn_id)
+        && home.join("sessions.json").is_file()
+    {
+        let event_id = codex_completion_event_id(log_home, &notification.thread_id, &turn);
+        crate::notifications::record_completion(home, shell_id, &event_id, HarnessKind::Codex)?;
     }
     Ok(())
+}
+
+/// The turn to alert for. A rollout that shows a different completed turn or a
+/// newer running one vetoes the payload. When the rollout cannot be read
+/// conclusively (a damaged or oversized record inside the turn, or a log too
+/// large to place within one read), the ids Codex itself put in the payload are
+/// trusted once `session_meta` has been checked.
+fn notified_turn(
+    cursor: &RolloutCursor,
+    status: AgentActivity,
+    payload_turn: Option<String>,
+) -> Option<String> {
+    match status {
+        AgentActivity::Done => {
+            let turn = cursor.completed_turn.clone()?;
+            payload_turn
+                .is_none_or(|expected| expected == turn)
+                .then_some(turn)
+        }
+        AgentActivity::Unknown => payload_turn
+            .filter(|turn| (1..=128).contains(&turn.len()) && !turn.chars().any(char::is_control)),
+        _ => None,
+    }
 }
 
 fn codex_completion_event_id(log_home: &Path, thread_id: &str, turn_id: &str) -> String {
@@ -275,6 +292,32 @@ struct BoundCursor {
     rollout: RolloutCursor,
     primed: bool,
     last_completed_turn: Option<String>,
+    /// A missing rollout is not searched for again until this instant.
+    lookup_after: Option<Instant>,
+    lookup_misses: u32,
+}
+
+impl BoundCursor {
+    fn new(binding: Binding) -> Self {
+        Self {
+            rollout: RolloutCursor::new(binding.thread_id.clone()),
+            binding,
+            path: None,
+            primed: false,
+            last_completed_turn: None,
+            lookup_after: None,
+            lookup_misses: 0,
+        }
+    }
+
+    /// Walking the sessions tree is the expensive part of a miss (it is also
+    /// capped, so a very large tree never resolves), hence the exponential wait.
+    fn missed_lookup(&mut self) {
+        self.lookup_misses = self.lookup_misses.saturating_add(1);
+        let wait =
+            Duration::from_secs(2u64 << (self.lookup_misses - 1).min(6)).min(LOOKUP_BACKOFF_CAP);
+        self.lookup_after = Some(Instant::now() + wait);
+    }
 }
 
 impl ActivityTracker {
@@ -318,30 +361,30 @@ impl ActivityTracker {
             let cursor = self
                 .cursors
                 .entry(shell.id.clone())
-                .or_insert_with(|| BoundCursor {
-                    rollout: RolloutCursor::new(binding.thread_id.clone()),
-                    binding: binding.clone(),
-                    path: None,
-                    primed: false,
-                    last_completed_turn: None,
-                });
+                .or_insert_with(|| BoundCursor::new(binding.clone()));
             if cursor.binding != binding {
-                *cursor = BoundCursor {
-                    rollout: RolloutCursor::new(binding.thread_id.clone()),
-                    binding: binding.clone(),
-                    path: None,
-                    primed: false,
-                    last_completed_turn: None,
-                };
+                *cursor = BoundCursor::new(binding.clone());
             }
-            if cursor.path.is_none() {
+            if cursor.path.is_none() && cursor.lookup_after.is_none_or(|at| Instant::now() >= at) {
                 cursor.path = find_rollout(&binding.codex_home, &binding.thread_id);
+                if cursor.path.is_none() {
+                    cursor.missed_lookup();
+                }
             }
-            let status = cursor
-                .path
-                .as_ref()
-                .and_then(|path| cursor.rollout.read(path).ok())
-                .unwrap_or(AgentActivity::Unknown);
+            let status = match cursor.path.as_ref().map(|path| cursor.rollout.read(path)) {
+                Some(Ok(status)) => {
+                    cursor.lookup_misses = 0;
+                    status
+                }
+                Some(Err(_)) => {
+                    // The file moved or vanished: resolve it again, but not on
+                    // every poll.
+                    cursor.path = None;
+                    cursor.missed_lookup();
+                    AgentActivity::Unknown
+                }
+                None => AgentActivity::Unknown,
+            };
             if cursor.rollout.restarted {
                 cursor.primed = false;
                 cursor.last_completed_turn = None;
@@ -564,6 +607,7 @@ enum LogSource {
     Details { subagent: Option<IgnoredAny> },
 }
 
+#[derive(Clone)]
 struct RolloutCursor {
     thread_id: String,
     offset: u64,
@@ -598,6 +642,10 @@ impl RolloutCursor {
     }
 
     fn read(&mut self, path: &Path) -> Result<AgentActivity, String> {
+        self.read_with(path, &SEED_WINDOWS)
+    }
+
+    fn read_with(&mut self, path: &Path, windows: &[u64]) -> Result<AgentActivity, String> {
         self.restarted = false;
         let mut file = File::open(path).map_err(|error| error.to_string())?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
@@ -613,6 +661,14 @@ impl RolloutCursor {
             self.restarted = true;
         }
         self.identity = Some(identity);
+        if self.offset == 0
+            && metadata.len() > MAX_POLL_BYTES as u64
+            && let Some(mut seeded) = self.seeded(&mut file, metadata.len(), windows)?
+        {
+            seeded.identity = self.identity;
+            seeded.restarted = self.restarted;
+            *self = seeded;
+        }
         file.seek(SeekFrom::Start(self.offset))
             .map_err(|error| error.to_string())?;
         let mut buffer = [0; 64 * 1024];
@@ -651,10 +707,88 @@ impl RolloutCursor {
         Ok(self.status)
     }
 
+    /// State of a rollout too large to replay: the first record identifies the
+    /// session, and everything from the last turn start onward decides the
+    /// activity. Returns `None` when this shape cannot be proven, so the caller
+    /// keeps the incremental scan from byte zero.
+    fn seeded(&self, file: &mut File, len: u64, windows: &[u64]) -> Result<Option<Self>, String> {
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| error.to_string())?;
+        let mut head = Vec::new();
+        BufReader::new(Read::by_ref(file).take(MAX_RECORD_BYTES as u64))
+            .read_until(b'\n', &mut head)
+            .map_err(|error| error.to_string())?;
+        if head.pop() != Some(b'\n') {
+            return Ok(None);
+        }
+        let head_end = head.len() as u64 + 1;
+        let mut base = Self::new(self.thread_id.clone());
+        if base.apply(&head) != Applied::Meta
+            || len.saturating_sub(head_end) <= MAX_POLL_BYTES as u64
+        {
+            return Ok(None);
+        }
+        for &window in windows {
+            let start = len.saturating_sub(window);
+            let at_head = start <= head_end;
+            // Begin one byte early so a window that starts exactly on a record
+            // boundary keeps that record instead of discarding it as a partial.
+            let from = if at_head { head_end } else { start - 1 };
+            file.seek(SeekFrom::Start(from))
+                .map_err(|error| error.to_string())?;
+            let mut bytes = Vec::with_capacity((len - from) as usize);
+            Read::by_ref(file)
+                .take(len - from)
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            if bytes.len() as u64 != len - from {
+                return Ok(None);
+            }
+            let mut rest = &bytes[..];
+            if !at_head {
+                let Some(boundary) = rest.iter().position(|byte| *byte == b'\n') else {
+                    continue;
+                };
+                rest = &rest[boundary + 1..];
+            }
+            let mut trial = base.clone();
+            let mut started = false;
+            while let Some(end) = rest.iter().position(|byte| *byte == b'\n') {
+                let line = &rest[..end];
+                rest = &rest[end + 1..];
+                if line.len() > MAX_RECORD_BYTES {
+                    trial.malformed = true;
+                } else {
+                    started |= trial.apply(line) == Applied::Started;
+                }
+            }
+            // Turn ends and aborts only mean something after their start, so a
+            // window without one proves nothing unless it reaches the head.
+            if !at_head && !started {
+                continue;
+            }
+            if rest.len() > MAX_RECORD_BYTES {
+                trial.skipping = true;
+                trial.malformed = true;
+            } else {
+                trial.partial = rest.to_vec();
+            }
+            trial.offset = len;
+            return Ok(Some(trial));
+        }
+        Ok(None)
+    }
+
     fn record(&mut self) {
-        let Ok(record) = serde_json::from_slice::<LogRecord>(&self.partial) else {
+        let line = std::mem::take(&mut self.partial);
+        self.apply(&line);
+        self.partial = line;
+    }
+
+    fn apply(&mut self, line: &[u8]) -> Applied {
+        let Ok(record) = serde_json::from_slice::<LogRecord>(line) else {
             self.malformed = true;
-            return;
+            return Applied::Other;
         };
         if record.kind == "session_meta" {
             let delegated = record.payload.parent_thread_id.is_some()
@@ -670,9 +804,11 @@ impl RolloutCursor {
             self.status = AgentActivity::Waiting;
             self.active_turn = None;
             self.completed_turn = None;
-        } else if record.kind == "event_msg" {
+            return Applied::Meta;
+        }
+        if record.kind == "event_msg" {
             let Some(turn) = record.payload.turn_id.filter(|id| !id.is_empty()) else {
-                return;
+                return Applied::Other;
             };
             match record.payload.kind.as_str() {
                 "task_started" | "turn_started" => {
@@ -682,6 +818,7 @@ impl RolloutCursor {
                     self.active_turn = Some(turn);
                     self.completed_turn = None;
                     self.status = AgentActivity::Working;
+                    return Applied::Started;
                 }
                 "task_complete" | "turn_complete" if self.active_turn.as_deref() == Some(&turn) => {
                     self.active_turn = None;
@@ -696,7 +833,15 @@ impl RolloutCursor {
                 _ => {}
             }
         }
+        Applied::Other
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Applied {
+    Meta,
+    Started,
+    Other,
 }
 
 #[cfg(test)]
@@ -1039,9 +1184,11 @@ mod tests {
         let session = shell(Some(HarnessKind::Codex));
         fixture.bind(&session, &thread);
         let mut tracker = fixture.tracker();
+        // The first poll seeds from the head and tail instead of replaying
+        // 8 MiB per poll, and still treats the existing Done as a baseline.
         assert_eq!(
             tracker.sample(&[session.clone()])[&session.id],
-            AgentActivity::Unknown
+            AgentActivity::Done
         );
         assert!(tracker.take_completions().is_empty());
         assert_eq!(
@@ -1276,13 +1423,10 @@ mod tests {
         assert_eq!(project.summary().as_deref(), Some("● 1 working · ✓ 1 done"));
     }
 
-    #[test]
-    fn oversized_records_are_bounded_and_a_later_explicit_turn_recovers_activity() {
-        let fixture = Fixture::new();
-        let thread = Uuid::new_v4().to_string();
+    fn oversized_record_rollout(fixture: &Fixture, thread: &str) -> PathBuf {
         let path = fixture.log(
-            &thread,
-            &(meta(&thread) + &event("task_started", "old") + &event("task_complete", "old")),
+            thread,
+            &(meta(thread) + &event("task_started", "old") + &event("task_complete", "old")),
         );
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(
@@ -1299,27 +1443,323 @@ mod tests {
         file.write_all(b"\"}}\n").unwrap();
         file.write_all(event("task_started", "current").as_bytes())
             .unwrap();
-        drop(file);
-        let session = shell(Some(HarnessKind::Codex));
-        fixture.bind(&session, &thread);
-        let mut tracker = fixture.tracker();
+        path
+    }
+
+    #[test]
+    fn oversized_records_are_bounded_and_a_later_explicit_turn_recovers_activity() {
+        let fixture = Fixture::new();
+        let thread = Uuid::new_v4().to_string();
+        let path = oversized_record_rollout(&fixture, &thread);
+        // The incremental scan (no tail seeding) still enforces the record cap.
+        let mut cursor = RolloutCursor::new(thread.clone());
         assert_eq!(
-            tracker.sample(&[session.clone()])[&session.id],
+            cursor.read_with(&path, &[]).unwrap(),
             AgentActivity::Unknown
         );
-        assert!(tracker.cursors[&session.id].rollout.offset <= MAX_POLL_BYTES as u64);
+        assert!(cursor.offset <= MAX_POLL_BYTES as u64);
         let mut status = AgentActivity::Unknown;
         for _ in 0..8 {
-            status = tracker.sample(&[session.clone()])[&session.id];
+            status = cursor.read_with(&path, &[]).unwrap();
             if status == AgentActivity::Working {
                 break;
             }
         }
         assert_eq!(status, AgentActivity::Working);
-        append(&path, &event("task_complete", "current"));
+        // Seeding skips the oversized record the same way and needs one poll.
+        let session = shell(Some(HarnessKind::Codex));
+        fixture.bind(&session, &thread);
+        let mut tracker = fixture.tracker();
+        let sessions = [session.clone()];
         assert_eq!(
-            tracker.sample(&[session.clone()])[&session.id],
-            AgentActivity::Done
+            tracker.sample(&sessions)[&session.id],
+            AgentActivity::Working
         );
+        append(&path, &event("task_complete", "current"));
+        assert_eq!(tracker.sample(&sessions)[&session.id], AgentActivity::Done);
+    }
+
+    fn padding(bytes: usize) -> String {
+        format!(
+            "{{\"type\":\"response_item\",\"payload\":{{\"ignored\":\"{}\"}}}}\n",
+            "x".repeat(bytes)
+        )
+    }
+    const MIB: usize = 1024 * 1024;
+
+    #[test]
+    fn rollout_past_the_poll_limit_is_seeded_in_one_read_and_then_followed_incrementally() {
+        let fixture = Fixture::new();
+        let thread = Uuid::new_v4().to_string();
+        let path = fixture.log(
+            &thread,
+            &(meta(&thread)
+                + &event("task_started", "old")
+                + &event("task_complete", "old")
+                + &padding(MAX_POLL_BYTES + 512)
+                + &event("task_started", "new")),
+        );
+        let length = fs::metadata(&path).unwrap().len();
+        assert!(length > MAX_POLL_BYTES as u64);
+        let mut cursor = RolloutCursor::new(thread.clone());
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Working);
+        assert!(cursor.caught_up && cursor.valid_session && !cursor.restarted);
+        assert_eq!(cursor.offset, length);
+        assert_eq!(cursor.active_turn.as_deref(), Some("new"));
+        append(&path, &event("task_complete", "new"));
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Done);
+        assert_eq!(cursor.completed_turn.as_deref(), Some("new"));
+        // A partially written trailing record is kept for the next poll.
+        let completion = event("task_started", "next");
+        append(&path, completion.trim_end());
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Done);
+        append(&path, "\n");
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Working);
+    }
+
+    #[test]
+    fn seeding_widens_the_tail_until_it_contains_a_turn_start() {
+        let fixture = Fixture::new();
+        let thread = Uuid::new_v4().to_string();
+        // The turn start is 9 MiB from the end: the 1, 4 and 16 MiB windows
+        // are tried in turn, and the 16 MiB one is the first to contain it.
+        let path = fixture.log(
+            &thread,
+            &(meta(&thread)
+                + &padding(9 * MIB)
+                + &event("task_started", "long")
+                + &padding(6 * MIB)
+                + &event("task_complete", "long")
+                + &padding(3 * MIB)),
+        );
+        let mut cursor = RolloutCursor::new(thread.clone());
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Done);
+        assert_eq!(cursor.completed_turn.as_deref(), Some("long"));
+        assert_eq!(cursor.offset, fs::metadata(&path).unwrap().len());
+        // With only a 1 MiB window nothing proves the state, so the incremental
+        // scan from byte zero takes over (and is still bounded per call).
+        let mut fallback = RolloutCursor::new(thread.clone());
+        assert_eq!(
+            fallback.read_with(&path, &[MIB as u64]).unwrap(),
+            AgentActivity::Unknown
+        );
+        assert!(fallback.offset <= MAX_POLL_BYTES as u64 && !fallback.caught_up);
+        let mut status = AgentActivity::Unknown;
+        for _ in 0..4 {
+            status = fallback.read_with(&path, &[MIB as u64]).unwrap();
+        }
+        assert_eq!(status, AgentActivity::Done);
+    }
+
+    #[test]
+    fn tail_window_that_starts_on_a_record_boundary_keeps_that_record() {
+        let fixture = Fixture::new();
+        let thread = Uuid::new_v4().to_string();
+        let started = event("task_started", "boundary");
+        let prefix = meta(&thread) + &padding(MAX_POLL_BYTES + 1024);
+        let path = fixture.log(&thread, &(prefix.clone() + &started));
+        let mut cursor = RolloutCursor::new(thread.clone());
+        // Window exactly as long as the final record: it starts on a boundary.
+        assert_eq!(
+            cursor.read_with(&path, &[started.len() as u64]).unwrap(),
+            AgentActivity::Working
+        );
+        assert_eq!(cursor.active_turn.as_deref(), Some("boundary"));
+    }
+
+    #[test]
+    fn seeded_cursor_resets_when_the_rollout_is_replaced_or_truncated() {
+        let fixture = Fixture::new();
+        let thread = Uuid::new_v4().to_string();
+        let path = fixture.log(
+            &thread,
+            &(meta(&thread) + &padding(MAX_POLL_BYTES + 1024) + &event("task_started", "big")),
+        );
+        let mut cursor = RolloutCursor::new(thread.clone());
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Working);
+        fs::write(&path, meta(&thread) + &event("task_started", "small")).unwrap();
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Working);
+        assert!(cursor.restarted);
+        assert_eq!(cursor.active_turn.as_deref(), Some("small"));
+        // A large replacement (a new file) is seeded again after the reset.
+        let replacement = path.with_extension("replacement");
+        fs::write(
+            &replacement,
+            meta(&thread) + &padding(MAX_POLL_BYTES + 1024) + &event("task_started", "again"),
+        )
+        .unwrap();
+        fs::rename(replacement, &path).unwrap();
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Working);
+        assert!(cursor.restarted);
+        assert_eq!(cursor.active_turn.as_deref(), Some("again"));
+    }
+
+    #[test]
+    fn seeding_requires_a_session_meta_first_record() {
+        let fixture = Fixture::new();
+        let thread = Uuid::new_v4().to_string();
+        let path = fixture.log(
+            &thread,
+            &(event("task_started", "first")
+                + &meta(&thread)
+                + &padding(MAX_POLL_BYTES + 1024)
+                + &event("task_started", "last")),
+        );
+        let mut cursor = RolloutCursor::new(thread);
+        // Not the expected shape: fall back to the exact incremental replay.
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Unknown);
+        assert!(!cursor.caught_up);
+    }
+
+    fn notified_project(fixture: &Fixture) -> ShellSession {
+        let project_root = fixture.root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let store = crate::store::Store::open(fixture.home.clone()).unwrap();
+        let project = store.add_project(project_root, Some("Large")).unwrap();
+        store.set_project_notifications(&project.id, true).unwrap();
+        let mut session = shell(Some(HarnessKind::Codex));
+        session.project_id = Some(project.id);
+        fs::write(
+            fixture.home.join("sessions.json"),
+            serde_json::json!({"sessions":[session]}).to_string(),
+        )
+        .unwrap();
+        session
+    }
+
+    #[test]
+    fn notify_hook_queues_completions_for_rollouts_over_the_poll_limit() {
+        let fixture = Fixture::new();
+        let session = notified_project(&fixture);
+        let thread = Uuid::new_v4().to_string();
+        let path = fixture.log(
+            &thread,
+            &(meta(&thread)
+                + &event("task_started", "old")
+                + &event("task_complete", "old")
+                + &padding(MAX_POLL_BYTES * 2)
+                + &event("task_started", "new")
+                + &event("task_complete", "new")),
+        );
+        assert!(fs::metadata(&path).unwrap().len() > MAX_POLL_BYTES as u64 * 2);
+        let notify = |turn: &str| Notification {
+            kind: "agent-turn-complete".into(),
+            thread_id: thread.clone(),
+            turn_id: Some(turn.into()),
+        };
+        // A stale turn id is still vetoed by the rollout.
+        record_codex_notification_at(&fixture.home, &session.id, notify("old"), &fixture.log_home)
+            .unwrap();
+        assert!(
+            crate::notifications::claim_pending(&fixture.home)
+                .unwrap()
+                .is_empty()
+        );
+        record_codex_notification_at(&fixture.home, &session.id, notify("new"), &fixture.log_home)
+            .unwrap();
+        assert_eq!(
+            crate::notifications::claim_pending(&fixture.home)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn notify_hook_trusts_the_payload_when_the_turn_holds_an_unreadable_record() {
+        let fixture = Fixture::new();
+        let session = notified_project(&fixture);
+        let thread = Uuid::new_v4().to_string();
+        let path = fixture.log(
+            &thread,
+            &(meta(&thread) + &event("task_started", "current")),
+        );
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"type\":\"response_item\",\"payload\":{\"content\":\"")
+            .unwrap();
+        file.write_all(&vec![b'x'; MAX_RECORD_BYTES + 1]).unwrap();
+        file.write_all(b"\"}}\n").unwrap();
+        drop(file);
+        append(&path, &event("task_complete", "current"));
+        let mut cursor = RolloutCursor::new(thread.clone());
+        // The oversized record inside the turn leaves the activity unproven.
+        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Unknown);
+        assert!(cursor.valid_session && cursor.malformed);
+        let notify = |turn: Option<&str>| Notification {
+            kind: "agent-turn-complete".into(),
+            thread_id: thread.clone(),
+            turn_id: turn.map(str::to_owned),
+        };
+        record_codex_notification_at(&fixture.home, &session.id, notify(None), &fixture.log_home)
+            .unwrap();
+        assert!(
+            crate::notifications::claim_pending(&fixture.home)
+                .unwrap()
+                .is_empty()
+        );
+        record_codex_notification_at(
+            &fixture.home,
+            &session.id,
+            notify(Some("current")),
+            &fixture.log_home,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::notifications::claim_pending(&fixture.home)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn missing_rollouts_are_looked_up_with_exponential_backoff() {
+        let fixture = Fixture::new();
+        let thread = Uuid::new_v4().to_string();
+        let session = shell(Some(HarnessKind::Codex));
+        fixture.bind(&session, &thread);
+        let mut tracker = fixture.tracker();
+        let sessions = [session.clone()];
+        assert_eq!(
+            tracker.sample(&sessions)[&session.id],
+            AgentActivity::Unknown
+        );
+        let first = tracker.cursors[&session.id].lookup_after.unwrap();
+        // The file appearing during the wait is not noticed until it elapses.
+        fixture.log(&thread, &(meta(&thread) + &event("task_started", "turn")));
+        assert_eq!(
+            tracker.sample(&sessions)[&session.id],
+            AgentActivity::Unknown
+        );
+        assert_eq!(tracker.cursors[&session.id].lookup_after, Some(first));
+        tracker.cursors.get_mut(&session.id).unwrap().lookup_after =
+            Some(Instant::now() - Duration::from_secs(1));
+        assert_eq!(
+            tracker.sample(&sessions)[&session.id],
+            AgentActivity::Working
+        );
+        assert_eq!(tracker.cursors[&session.id].lookup_misses, 0);
+        // Repeated misses double the wait up to the cap.
+        let mut cursor = BoundCursor::new(Binding {
+            shell_id: session.id.clone(),
+            thread_id: thread,
+            codex_home: fixture.log_home.clone(),
+        });
+        let mut waits = Vec::new();
+        for _ in 0..9 {
+            cursor.missed_lookup();
+            waits.push(cursor.lookup_after.unwrap().duration_since(Instant::now()));
+        }
+        assert!(waits[0] <= Duration::from_secs(2));
+        assert!(waits[3] > Duration::from_secs(10) && waits[3] <= Duration::from_secs(16));
+        assert!(waits[8] > Duration::from_secs(100) && waits[8] <= LOOKUP_BACKOFF_CAP);
+        // A file that disappears is resolved again, also with a wait.
+        fs::remove_file(tracker.cursors[&session.id].path.clone().unwrap()).unwrap();
+        assert_eq!(
+            tracker.sample(&sessions)[&session.id],
+            AgentActivity::Unknown
+        );
+        let lost = &tracker.cursors[&session.id];
+        assert!(lost.path.is_none() && lost.lookup_after.is_some());
     }
 }

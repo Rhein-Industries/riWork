@@ -863,13 +863,10 @@ fn tracked_scheduler_catches_up_large_rollout_without_startup_alerts_or_duplicat
         .unwrap();
     let mut trackers = std::collections::HashMap::new();
     let received = f.f.home.join(format!("received-{id}"));
-    for at in [1000, 1015] {
-        f.f.store.tick_tracked(at, &mut trackers).unwrap();
-        assert_eq!(f.f.row().last_run.unwrap().outcome, Outcome::Deferred);
-        assert!(!received.exists());
-        assert!(trackers.get_mut(id).unwrap().take_completions().is_empty());
-    }
-    f.f.store.tick_tracked(1030, &mut trackers).unwrap();
+    // A rollout past the poll limit is opened from its head and tail, so its
+    // idle state is known on the first tick instead of after 8 MiB catch-up
+    // polls; the historical completion is a baseline, not an alert.
+    f.f.store.tick_tracked(1000, &mut trackers).unwrap();
     assert_eq!(f.f.row().last_run.unwrap().outcome, Outcome::Submitted);
     assert!(trackers.get_mut(id).unwrap().take_completions().is_empty());
     assert!(!f.f.home.join("agent-notifications.json").exists());
