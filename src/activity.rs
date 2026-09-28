@@ -754,6 +754,7 @@ mod tests {
             kind: ShellKind::Project,
             cwd: PathBuf::from("/same/project"),
             command: None,
+            editor_path: None,
             harness,
             unrestricted: false,
             codex_account_id: None,

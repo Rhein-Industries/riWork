@@ -4,6 +4,7 @@ mod cli;
 mod codex_accounts;
 mod cua;
 mod file_explorer;
+mod file_preview;
 mod icons;
 mod layouts;
 mod mcp;
@@ -321,11 +322,13 @@ fn file_explorer_root(
         Some(ExplorerRoot {
             path: worktree.path.clone(),
             label: format!("{} · {}", project.name, worktree.branch),
+            worktree_id: Some(worktree.id.clone()),
         })
     } else {
         Some(ExplorerRoot {
             path: project.root.clone(),
             label: project.name.clone(),
+            worktree_id: None,
         })
     }
 }
@@ -694,7 +697,14 @@ impl Workspace {
             })
             .map(|worktree| worktree.branch.as_str())
             .unwrap_or("root");
-        let title = if shell.kind == ShellKind::Orchestrator {
+        let title = if let Some(path) = &shell.editor_path {
+            format!(
+                "VIM · {}",
+                path.file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_default()
+            )
+        } else if shell.kind == ShellKind::Orchestrator {
             orchestrator_tab_title(&shell)
         } else {
             format!(
@@ -1128,6 +1138,22 @@ impl Workspace {
         if self.file_explorer.is_none() {
             let panel = cx.new(FileExplorer::new);
             cx.subscribe(&panel, |workspace, _, event, cx| match event {
+                FileExplorerEvent::Edit {
+                    root,
+                    path,
+                    identity,
+                } => {
+                    let view = cx.weak_entity();
+                    let entity_id = cx.entity_id();
+                    let (root, path, identity) = (root.clone(), path.clone(), *identity);
+                    cx.defer(move |app| {
+                        app.with_window(entity_id, |window, app| {
+                            let _ = view.update(app, |workspace, cx| {
+                                workspace.open_file_editor(root, path, identity, window, cx);
+                            });
+                        });
+                    });
+                }
                 FileExplorerEvent::Open(path) => cx.open_with_system(path),
                 FileExplorerEvent::Reveal(path) => cx.reveal_path(path),
                 FileExplorerEvent::CopyRelativePath(path) => {
@@ -1153,6 +1179,117 @@ impl Workspace {
             );
             panel.update(cx, |panel, cx| panel.set_root(root, cx));
         }
+    }
+
+    fn open_file_editor(
+        &mut self,
+        root: ExplorerRoot,
+        path: PathBuf,
+        identity: file_preview::FileIdentity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.open_file_editor_inner(root, path, identity, window, cx) {
+            self.notice = Some(error);
+            cx.notify();
+        }
+    }
+
+    fn open_file_editor_inner(
+        &mut self,
+        root: ExplorerRoot,
+        path: PathBuf,
+        identity: file_preview::FileIdentity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if !self.ensure_layout(window, cx) {
+            return Err("The workspace is still loading.".into());
+        }
+        if file_explorer_root(
+            &self.state,
+            &self.project_id,
+            self.selected_worktree_id.as_deref(),
+        ) != Some(root.clone())
+        {
+            return Err("The selected worktree changed. Select the file again.".into());
+        }
+        let editor_path = file_preview::validated_editor_path(&root.path, &path, identity)?;
+        let shells = self.sessions.list()?;
+        if let Some(shell) = shells.into_iter().find(|shell| {
+            shell.alive
+                && shell.project_id.as_deref() == Some(self.project_id.as_str())
+                && shell.worktree_id == root.worktree_id
+                && shell.editor_path.as_ref() == Some(&editor_path)
+        }) {
+            if let Some((pane_id, tab_id)) = self.panes.iter().find_map(|(pane_id, pane)| {
+                pane.tabs
+                    .iter()
+                    .find(|tab| tab.shell_id() == Some(&shell.id))
+                    .map(|tab| (*pane_id, tab.id))
+            }) {
+                self.select_tab(pane_id, tab_id, window, cx);
+            } else {
+                let pane_id = self.editor_pane(cx)?;
+                self.attach_session(pane_id, shell, window, cx)?;
+                self.focus_active(window, cx);
+                self.save_layout();
+            }
+            return Ok(());
+        }
+        let shell = self.sessions.create_editor(
+            self.project_id.clone(),
+            root.worktree_id,
+            root.path,
+            path,
+            identity,
+        )?;
+        let pane_id = self.editor_pane(cx)?;
+        self.attach_session(pane_id, shell, window, cx)?;
+        if let Ok(shells) = self.sessions.list() {
+            self.shells = shells;
+        }
+        self.focus_active(window, cx);
+        self.save_layout();
+        Ok(())
+    }
+
+    fn editor_pane(&mut self, cx: &mut Context<Self>) -> Result<PaneId, String> {
+        if let Some(pane_id) = self
+            .panes
+            .iter()
+            .find(|(id, pane)| {
+                !self.pane_is_locked(**id)
+                    && pane
+                        .tabs
+                        .iter()
+                        .any(|tab| matches!(tab.content, TabContent::Shell { .. }))
+            })
+            .map(|(id, _)| *id)
+            .or_else(|| {
+                self.panes
+                    .keys()
+                    .copied()
+                    .find(|id| !self.pane_is_locked(*id))
+            })
+        {
+            return Ok(pane_id);
+        }
+        let new_pane = self.next_pane_id;
+        self.next_pane_id += 1;
+        let target = self.active_pane;
+        if !self.layout.split(target, Axis::SideBySide, new_pane) {
+            return Err("Cannot make room for an editor tab.".into());
+        }
+        self.panes.insert(
+            new_pane,
+            Pane {
+                tabs: Vec::new(),
+                active: 0,
+            },
+        );
+        cx.notify();
+        Ok(new_pane)
     }
 
     fn remember_active_worktree(&mut self, cx: &mut Context<Self>) {
@@ -2147,6 +2284,19 @@ impl Workspace {
     fn refresh_shell_titles(&mut self) {
         for pane in self.panes.values_mut() {
             for tab in &mut pane.tabs {
+                if let Some(path) = tab
+                    .shell_id()
+                    .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
+                    .and_then(|shell| shell.editor_path.as_ref())
+                {
+                    tab.title = format!(
+                        "VIM · {}",
+                        path.file_name()
+                            .map(|name| name.to_string_lossy())
+                            .unwrap_or_default()
+                    );
+                    continue;
+                }
                 if let Some(shell) = tab
                     .shell_id()
                     .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
@@ -2252,7 +2402,10 @@ impl Workspace {
             self.search_focused = false;
             self.ensure_file_explorer(cx);
             if let Some(panel) = &self.file_explorer {
-                panel.update(cx, |panel, cx| panel.focus(window, cx));
+                panel.update(cx, |panel, cx| {
+                    panel.refresh(cx);
+                    panel.focus(window, cx);
+                });
             }
             return;
         }
@@ -5202,6 +5355,13 @@ mod workspace_tab_tests {
             PathBuf::from("/worktrees/feature")
         );
         assert_eq!(
+            file_explorer_root(&state, "atlas", Some("feature"))
+                .unwrap()
+                .worktree_id
+                .as_deref(),
+            Some("feature")
+        );
+        assert_eq!(
             file_explorer_root(&state, "beacon", Some("other"))
                 .unwrap()
                 .label,
@@ -5213,6 +5373,12 @@ mod workspace_tab_tests {
         assert_eq!(
             file_explorer_root(&state, "atlas", None).unwrap().path,
             PathBuf::from("/projects/atlas")
+        );
+        assert!(
+            file_explorer_root(&state, "atlas", None)
+                .unwrap()
+                .worktree_id
+                .is_none()
         );
     }
 
@@ -5270,6 +5436,7 @@ mod workspace_tab_tests {
             kind,
             cwd: PathBuf::from("/tmp"),
             command: None,
+            editor_path: None,
             harness: None,
             codex_account_id: None,
             codex_account_label: None,
