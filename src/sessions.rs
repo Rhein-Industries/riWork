@@ -74,6 +74,8 @@ pub struct ShellSession {
     #[serde(default)]
     pub codex_account_label: Option<String>,
     #[serde(default)]
+    pub codex_account_email: Option<String>,
+    #[serde(default)]
     pub codex_home: Option<PathBuf>,
     #[serde(default)]
     pub orchestrator_skill_loaded: bool,
@@ -293,7 +295,7 @@ impl SessionManager {
         let default_codex = command.is_none();
         let unrestricted = default_codex && project_id.is_some();
         let binding = if default_codex {
-            Some(selected_codex_binding(&self.home)?)
+            Some(selected_codex_binding(&self.home, project_id.as_deref())?)
         } else {
             None
         };
@@ -516,6 +518,7 @@ impl SessionManager {
         session.harness = Some(HarnessKind::Codex);
         session.codex_account_id = binding.id.clone();
         session.codex_account_label = binding.label.clone();
+        session.codex_account_email = binding.email.clone();
         session.codex_home = Some(binding.home.clone());
         if !resumed {
             session.unrestricted = arguments
@@ -1125,7 +1128,7 @@ impl SessionManager {
         let binding = match binding {
             Some(binding) => Some(binding),
             None if harness == Some(HarnessKind::Codex) => {
-                Some(selected_codex_binding(&self.home)?)
+                Some(selected_codex_binding(&self.home, project_id.as_deref())?)
             }
             None => None,
         };
@@ -1135,9 +1138,13 @@ impl SessionManager {
         if !cwd.is_dir() {
             return Err(format!("{} is not a directory", cwd.display()));
         }
-        let plain_codex_home = if binding.is_none() && harness.is_none() {
+        let plain_codex_home = if binding.is_none()
+            && harness.is_none()
+            && kind == ShellKind::Project
+            && command.is_none()
+        {
             Some(
-                crate::codex_accounts::resolve_launch_binding(&self.home, None)?
+                selected_codex_binding(&self.home, project_id.as_deref())?
                     .home
                     .into_os_string(),
             )
@@ -1291,6 +1298,7 @@ impl SessionManager {
             unrestricted,
             codex_account_id: binding.as_ref().and_then(|binding| binding.id.clone()),
             codex_account_label: binding.as_ref().and_then(|binding| binding.label.clone()),
+            codex_account_email: binding.as_ref().and_then(|binding| binding.email.clone()),
             codex_home: binding.map(|binding| binding.home),
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
@@ -1465,7 +1473,11 @@ fn editor_command(vim: &Path, path: &Path) -> Result<String, String> {
 
 fn selected_codex_binding(
     home: &Path,
+    project_id: Option<&str>,
 ) -> Result<crate::codex_accounts::CodexAccountBinding, String> {
+    if let Some(project_id) = project_id {
+        return crate::codex_accounts::resolve_project_launch_binding(home, project_id);
+    }
     let settings = crate::settings::SettingsStore::open(home)?.load()?;
     crate::codex_accounts::resolve_launch_binding(home, settings.selected_codex_account.as_deref())
 }
@@ -2285,12 +2297,16 @@ fn codex_proxy_binding(
                 home,
                 id: saved.and_then(|session| session.codex_account_id.clone()),
                 label: saved.and_then(|session| session.codex_account_label.clone()),
+                email: saved.and_then(|session| session.codex_account_email.clone()),
             });
         }
         // Legacy resume requests retain their explicit or inherited environment.
         return crate::codex_accounts::resolve_launch_binding(state_home, None);
     }
-    selected_codex_binding(state_home)
+    selected_codex_binding(
+        state_home,
+        saved.and_then(|session| session.project_id.as_deref()),
+    )
 }
 
 pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(), String> {
@@ -2752,6 +2768,157 @@ mod tests {
     }
 
     #[test]
+    fn project_accounts_override_app_choice_without_rebinding_existing_sessions() {
+        use crate::store::{ProjectCodexAccount, Store};
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child(
+            "project_accounts_override_app_choice_without_rebinding_existing_sessions",
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-b");
+        let store = Store::open(&state).unwrap();
+        let alpha_root = fixture.0.join("alpha");
+        let beta_root = fixture.0.join("beta");
+        fs::create_dir_all(&alpha_root).unwrap();
+        fs::create_dir_all(&beta_root).unwrap();
+        let alpha = store.add_project(&alpha_root, Some("Alpha")).unwrap();
+        let beta = store.add_project(&beta_root, Some("Beta")).unwrap();
+        let account_a =
+            crate::codex_accounts::resolve_launch_binding(&state, Some("account-a")).unwrap();
+        let account_b =
+            crate::codex_accounts::resolve_launch_binding(&state, Some("account-b")).unwrap();
+        assert_eq!(
+            selected_codex_binding(&state, Some(&alpha.id)).unwrap(),
+            account_b
+        );
+        assert_eq!(selected_codex_binding(&state, None).unwrap(), account_b);
+        store
+            .set_project_codex_account(&alpha.id, ProjectCodexAccount::Saved("account-a".into()))
+            .unwrap();
+        store
+            .set_project_codex_account(&beta.id, ProjectCodexAccount::SystemDefault)
+            .unwrap();
+        assert_eq!(
+            selected_codex_binding(&state, Some(&alpha.id)).unwrap(),
+            account_a
+        );
+        assert_eq!(
+            selected_codex_binding(&state, Some(&beta.id)).unwrap().id,
+            None
+        );
+        assert_eq!(selected_codex_binding(&state, None).unwrap(), account_b);
+
+        let mut plain = scope_session(ShellKind::Project, Some(&alpha.id));
+        plain.codex_account_id = account_b.id.clone();
+        plain.codex_account_label = account_b.label.clone();
+        plain.codex_account_email = account_b.email.clone();
+        plain.codex_home = Some(account_b.home.clone());
+        assert_eq!(
+            codex_proxy_binding(&state, &[], None, Some(&plain)).unwrap(),
+            account_a
+        );
+        assert_eq!(
+            codex_proxy_binding(&state, &[], Some(&account_b.home), Some(&plain)).unwrap(),
+            account_b
+        );
+        assert_eq!(
+            codex_proxy_binding(&state, &["resume".into()], None, Some(&plain)).unwrap(),
+            account_b
+        );
+
+        crate::settings::SettingsStore::open(&state)
+            .unwrap()
+            .update(|settings| {
+                settings.selected_codex_account = Some("missing".into());
+            })
+            .unwrap();
+        assert!(selected_codex_binding(&state, None).is_err());
+        assert_eq!(
+            selected_codex_binding(&state, Some(&alpha.id)).unwrap(),
+            account_a
+        );
+        assert_eq!(
+            selected_codex_binding(&state, Some(&beta.id)).unwrap().id,
+            None
+        );
+        store
+            .set_project_codex_account(&beta.id, ProjectCodexAccount::Inherit)
+            .unwrap();
+        assert!(selected_codex_binding(&state, Some(&beta.id)).is_err());
+        assert_eq!(plain.codex_home, Some(account_b.home));
+
+        fs::remove_dir_all(&account_a.home).unwrap();
+        assert_eq!(
+            selected_codex_binding(&state, Some(&alpha.id)).unwrap_err(),
+            "This saved account's home is missing. Restore or sign in through Orca."
+        );
+        assert_eq!(plain.codex_account_id.as_deref(), Some("account-b"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn plain_project_shell_receives_initial_home_without_pin() {
+        use crate::store::{ProjectCodexAccount, Store};
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child("plain_project_shell_receives_initial_home_without_pin") {
+            return;
+        }
+        let state = fixture.selected("account-b");
+        let project_root = fixture.0.join("plain");
+        fs::create_dir_all(&project_root).unwrap();
+        let store = Store::open(&state).unwrap();
+        let project = store.add_project(&project_root, Some("Plain")).unwrap();
+        store
+            .set_project_codex_account(&project.id, ProjectCodexAccount::Saved("account-a".into()))
+            .unwrap();
+        let account_a = selected_codex_binding(&state, Some(&project.id)).unwrap();
+        let tmux = fixture.0.join("fake-tmux-plain");
+        let capture = fixture.0.join("plain-tmux-argv");
+        fs::write(
+            &tmux,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
+                quote_arg(&capture.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
+        let manager = SessionManager {
+            home: state,
+            tmux,
+            socket_name: "isolated-plain".into(),
+        };
+        let shell = manager
+            .new_tmux_session(
+                Uuid::new_v4().to_string(),
+                Some(project.id),
+                None,
+                ShellKind::Project,
+                project_root,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(shell.harness, None);
+        assert_eq!(shell.codex_home, None);
+        let arguments = fs::read_to_string(capture).unwrap();
+        assert!(
+            arguments
+                .lines()
+                .any(|argument| argument == format!("CODEX_HOME={}", account_a.home.display()))
+        );
+        assert!(
+            arguments
+                .lines()
+                .any(|argument| argument == "RIWORK_CODEX_ACCOUNT_HOME=")
+        );
+    }
+
+    #[test]
     fn plain_shell_new_launch_selects_b_while_managed_children_and_resume_keep_a() {
         let fixture = AccountFixture::new();
         if !fixture.run_in_child(
@@ -2765,6 +2932,7 @@ mod tests {
         let mut saved = scope_session(ShellKind::Project, None);
         saved.codex_account_id = binding_a.id.clone();
         saved.codex_account_label = binding_a.label.clone();
+        saved.codex_account_email = binding_a.email.clone();
         saved.codex_home = Some(binding_a.home.clone());
         let new = codex_proxy_binding(&state, &[], None, Some(&saved)).unwrap();
         assert_eq!(new.id.as_deref(), Some("account-b"));
@@ -2831,7 +2999,7 @@ mod tests {
             return;
         }
         let state = fixture.selected("account-b");
-        let binding = selected_codex_binding(&state).unwrap();
+        let binding = selected_codex_binding(&state, None).unwrap();
         let tmux = fixture.0.join("fake-tmux");
         let capture = fixture.0.join("tmux-argv");
         fs::write(
@@ -2892,7 +3060,7 @@ mod tests {
         let state = fixture.selected("account-b");
         let binding_a =
             crate::codex_accounts::resolve_launch_binding(&state, Some("account-a")).unwrap();
-        let binding_b = selected_codex_binding(&state).unwrap();
+        let binding_b = selected_codex_binding(&state, None).unwrap();
         let manager = SessionManager {
             home: state,
             tmux: PathBuf::from("/unused/tmux"),
@@ -2936,6 +3104,7 @@ mod tests {
         let binding = crate::codex_accounts::CodexAccountBinding {
             id: Some("account-a".into()),
             label: None,
+            email: None,
             home: fixture.0.clone(),
         };
         manager
@@ -2973,7 +3142,7 @@ mod tests {
             return;
         }
         let state = fixture.selected("account-b");
-        let binding = selected_codex_binding(&state).unwrap();
+        let binding = selected_codex_binding(&state, None).unwrap();
         let program = fixture.0.join("fake codex's CLI");
         fs::write(
             &program,

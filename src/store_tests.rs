@@ -115,6 +115,10 @@ fn virtual_folders_extend_schema_one_without_requiring_a_migration() {
     assert!(state.project_folders.is_empty());
     assert_eq!(state.projects[0].folder_id, None);
     assert!(!state.projects[0].notify_on_agent_done);
+    assert_eq!(
+        state.projects[0].codex_account,
+        ProjectCodexAccount::Inherit
+    );
     assert!(state.projects[0].repository_roots.is_empty());
     let folder = store.create_project_folder("  Personal  ").unwrap();
     store
@@ -137,6 +141,69 @@ fn virtual_folders_extend_schema_one_without_requiring_a_migration() {
     );
     assert_eq!(reopened.projects[0].root, root);
     assert!(!reopened.projects[0].notify_on_agent_done);
+    assert_eq!(
+        reopened.projects[0].codex_account,
+        ProjectCodexAccount::Inherit
+    );
+}
+
+#[test]
+fn project_account_choice_round_trips_without_changing_other_projects_or_metadata() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let alpha = store
+        .add_project(fixture.directory("alpha"), Some("Alpha"))
+        .unwrap();
+    let beta = store
+        .add_project(fixture.directory("beta"), Some("Beta"))
+        .unwrap();
+    let folder = store.create_project_folder("Work").unwrap();
+    store
+        .update_project_metadata(&alpha.id, "Renamed", Some(&folder.id))
+        .unwrap();
+    let changed = store
+        .set_project_codex_account(&alpha.id, ProjectCodexAccount::SystemDefault)
+        .unwrap();
+    assert_eq!(changed.name, "Renamed");
+    assert_eq!(changed.folder_id.as_deref(), Some(folder.id.as_str()));
+    let state = Store::open(fixture.path("state"))
+        .unwrap()
+        .snapshot()
+        .unwrap();
+    assert_eq!(
+        state.project(&alpha.id).unwrap().codex_account,
+        ProjectCodexAccount::SystemDefault
+    );
+    assert_eq!(
+        state.project(&beta.id).unwrap().codex_account,
+        ProjectCodexAccount::Inherit
+    );
+    assert!(
+        store
+            .set_project_codex_account(&alpha.id, ProjectCodexAccount::Saved("missing".into()))
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .snapshot()
+            .unwrap()
+            .project(&alpha.id)
+            .unwrap()
+            .codex_account,
+        ProjectCodexAccount::SystemDefault
+    );
+    store
+        .set_project_codex_account(&alpha.id, ProjectCodexAccount::Inherit)
+        .unwrap();
+    assert_eq!(
+        store
+            .snapshot()
+            .unwrap()
+            .project(&alpha.id)
+            .unwrap()
+            .codex_account,
+        ProjectCodexAccount::Inherit
+    );
 }
 
 #[test]

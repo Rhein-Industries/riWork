@@ -10,7 +10,8 @@ use gpui::{
 };
 
 use crate::{
-    store::{Project, ProjectFolder, State, Store},
+    settings::{CodexAccountsState, refresh_codex_accounts},
+    store::{Project, ProjectCodexAccount, ProjectFolder, State, Store},
     theme::{self, Palette},
     utf16_to_byte,
 };
@@ -257,6 +258,8 @@ enum Field {
     Folder(usize),
     FolderName,
     AddFolder,
+    Account(usize),
+    AccountRefresh,
     Save,
 }
 
@@ -280,6 +283,11 @@ impl ProjectSettingsPanel {
     pub fn new(store: Store, project: Project, cx: &mut Context<Self>) -> Self {
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
+        cx.observe_global::<CodexAccountsState>(|_, cx| cx.notify())
+            .detach();
+        if cx.global::<CodexAccountsState>().snapshot.is_none() {
+            refresh_codex_accounts(cx);
+        }
         let snapshot = store.snapshot();
         let error = snapshot.as_ref().err().cloned();
         let (folders, folder_paths) = snapshot
@@ -393,7 +401,77 @@ impl ProjectSettingsPanel {
                     .map(|folder| folder.id.clone());
                 self.edited(cx);
             }
+            Field::Account(index) => {
+                if let Some((choice, _, available)) = self.account_choices(cx).get(index) {
+                    if *available {
+                        self.select_account(choice.clone(), cx);
+                    }
+                }
+            }
+            Field::AccountRefresh => refresh_codex_accounts(cx),
         }
+    }
+
+    fn account_choices(&self, cx: &App) -> Vec<(ProjectCodexAccount, String, bool)> {
+        let mut choices = vec![
+            (
+                ProjectCodexAccount::Inherit,
+                "Inherit app default".to_owned(),
+                true,
+            ),
+            (
+                ProjectCodexAccount::SystemDefault,
+                "System default".to_owned(),
+                true,
+            ),
+        ];
+        if let Some(snapshot) = &cx.global::<CodexAccountsState>().snapshot {
+            choices.extend(
+                snapshot
+                    .accounts
+                    .iter()
+                    .filter(|account| !account.is_system_default)
+                    .map(|account| {
+                        (
+                            ProjectCodexAccount::Saved(account.id.clone()),
+                            account.label.clone(),
+                            account.available,
+                        )
+                    }),
+            );
+        }
+        if let ProjectCodexAccount::Saved(id) = &self.project.codex_account {
+            if !choices
+                .iter()
+                .any(|(choice, _, _)| choice == &self.project.codex_account)
+            {
+                choices.push((
+                    ProjectCodexAccount::Saved(id.clone()),
+                    format!(
+                        "Saved account unavailable · {}",
+                        id.chars().take(8).collect::<String>()
+                    ),
+                    false,
+                ));
+            }
+        }
+        choices
+    }
+
+    fn select_account(&mut self, choice: ProjectCodexAccount, cx: &mut Context<Self>) {
+        match self
+            .store
+            .set_project_codex_account(&self.project.id, choice)
+        {
+            Ok(project) => {
+                self.project = project.clone();
+                self.error = None;
+                self.saved = true;
+                cx.emit(ProjectSettingsEvent::Saved(project));
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -456,12 +534,26 @@ impl ProjectSettingsPanel {
                 }
                 true
             }
+            "left" | "up" if matches!(self.active, Field::Account(_)) => {
+                if let Field::Account(index) = self.active {
+                    let len = self.account_choices(cx).len();
+                    self.active = Field::Account(index.checked_sub(1).unwrap_or(len - 1));
+                }
+                true
+            }
+            "right" | "down" if matches!(self.active, Field::Account(_)) => {
+                if let Field::Account(index) = self.active {
+                    self.active = Field::Account((index + 1) % self.account_choices(cx).len());
+                }
+                true
+            }
             "s" if event.keystroke.modifiers.platform => {
                 self.save(cx);
                 true
             }
             "tab" => {
                 let last_folder = self.folders.len();
+                let last_account = self.account_choices(cx).len() - 1;
                 self.active = if event.keystroke.modifiers.shift {
                     match self.active {
                         Field::Name => Field::Save,
@@ -469,7 +561,10 @@ impl ProjectSettingsPanel {
                         Field::Folder(index) => Field::Folder(index - 1),
                         Field::FolderName => Field::Folder(last_folder),
                         Field::AddFolder => Field::FolderName,
-                        Field::Save => Field::AddFolder,
+                        Field::Account(0) => Field::AddFolder,
+                        Field::Account(index) => Field::Account(index - 1),
+                        Field::AccountRefresh => Field::Account(last_account),
+                        Field::Save => Field::AccountRefresh,
                     }
                 } else {
                     match self.active {
@@ -477,7 +572,10 @@ impl ProjectSettingsPanel {
                         Field::Folder(index) if index < last_folder => Field::Folder(index + 1),
                         Field::Folder(_) => Field::FolderName,
                         Field::FolderName => Field::AddFolder,
-                        Field::AddFolder => Field::Save,
+                        Field::AddFolder => Field::Account(0),
+                        Field::Account(index) if index < last_account => Field::Account(index + 1),
+                        Field::Account(_) => Field::AccountRefresh,
+                        Field::AccountRefresh => Field::Save,
                         Field::Save => Field::Name,
                     }
                 };
@@ -633,6 +731,64 @@ impl Render for ProjectSettingsPanel {
                 );
             }
         }
+        let account_state = cx.global::<CodexAccountsState>().clone();
+        let mut account_rows = div().flex().flex_wrap().gap(px(6.0));
+        for (index, (choice, label, available)) in self.account_choices(cx).into_iter().enumerate()
+        {
+            let selected = choice == self.project.codex_account;
+            let id = match &choice {
+                ProjectCodexAccount::Inherit => "project-codex-inherit".to_owned(),
+                ProjectCodexAccount::SystemDefault => "project-codex-system".to_owned(),
+                ProjectCodexAccount::Saved(id) => format!("project-codex-saved-{id}"),
+            };
+            account_rows = account_rows.child(
+                div()
+                    .id(id)
+                    .max_w(px(300.0))
+                    .min_w_0()
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(rgb(if focused && self.active == Field::Account(index) {
+                        colors.gold
+                    } else if selected {
+                        colors.cyan
+                    } else {
+                        colors.divider
+                    }))
+                    .bg(rgb(if selected {
+                        colors.panel_active
+                    } else {
+                        colors.bg
+                    }))
+                    .text_color(rgb(if !available {
+                        colors.muted
+                    } else if selected {
+                        colors.cyan
+                    } else {
+                        colors.text
+                    }))
+                    .child(if selected { "◉" } else { "○" })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(label),
+                    )
+                    .on_click(cx.listener(move |form, _, window, cx| {
+                        form.active = Field::Account(index);
+                        form.focus.focus(window, cx);
+                        if available {
+                            form.select_account(choice.clone(), cx);
+                        }
+                    })),
+            );
+        }
         div()
             .id("project-settings-panel")
             .size_full().min_w_0().track_focus(&self.focus).key_context("ProjectSettings")
@@ -680,6 +836,30 @@ impl Render for ProjectSettingsPanel {
                                     })))),
                     )
                     .child(
+                        div().p(px(14.0)).flex().flex_col().gap(px(10.0)).bg(rgb(colors.panel))
+                            .border_1().border_color(rgb(colors.divider))
+                            .child(section("03  CODEX ACCOUNT", colors))
+                            .child(div().text_size(px(10.0)).text_color(rgb(colors.muted))
+                                .child("New Codex sessions use this choice. Running sessions keep their account. Selection saves immediately."))
+                            .child(account_rows)
+                            .child(div().id("project-codex-refresh").cursor_pointer()
+                                .text_size(px(10.0))
+                                .text_color(rgb(if focused && self.active == Field::AccountRefresh { colors.gold } else { colors.cyan }))
+                                .child(if account_state.pending { "CHECKING ACCOUNTS…" } else { "REFRESH ACCOUNTS" })
+                                .on_click(cx.listener(|form, _, window, cx| {
+                                    form.active = Field::AccountRefresh;
+                                    form.focus.focus(window, cx);
+                                    refresh_codex_accounts(cx);
+                                })))
+                            .children(account_state.snapshot.as_ref().and_then(|snapshot| snapshot.error.as_ref()).map(|error|
+                                div().text_size(px(10.0)).text_color(rgb(colors.gold)).child(error.clone())))
+                            .children(matches!(self.project.codex_account, ProjectCodexAccount::Saved(_))
+                                .then_some(self.project.codex_account.clone())
+                                .filter(|choice| self.account_choices(cx).iter().any(|(row, _, available)| row == choice && !available))
+                                .map(|_| div().text_size(px(10.0)).text_color(rgb(colors.gold))
+                                    .child("Selected account unavailable. Choose another before starting Codex."))),
+                    )
+                    .child(
                         div().flex().flex_wrap().min_w_0().items_center().justify_between().gap(px(10.0))
                             .child(div().min_w_0().text_size(px(10.0)).text_color(rgb(if self.error.is_some() { colors.gold } else { colors.muted }))
                                 .child(self.error.clone().unwrap_or_else(|| if self.saved { "Settings saved".into() } else { "Save changes  ↵ / CMD+S".into() })))
@@ -696,7 +876,7 @@ impl Render for ProjectSettingsPanel {
                     .child(
                         div().p(px(14.0)).flex().flex_col().gap(px(12.0)).bg(rgb(colors.panel))
                             .border_1().border_color(rgb(colors.divider))
-                            .child(section("03  LOCATIONS", colors))
+                            .child(section("04  LOCATIONS", colors))
                             .child(div().text_color(rgb(colors.muted)).text_size(px(10.0)).child("PROJECT ROOT"))
                             .child(div().px(px(10.0)).py(px(8.0)).bg(rgb(colors.bg)).border_l_1()
                                 .border_color(rgb(colors.cyan)).child(self.project.root.to_string_lossy().into_owned()))

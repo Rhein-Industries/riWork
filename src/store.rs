@@ -25,7 +25,20 @@ pub struct Project {
     pub folder_id: Option<String>,
     #[serde(default)]
     pub notify_on_agent_done: bool,
+    #[serde(default)]
+    pub codex_account: ProjectCodexAccount,
     pub created_at: u64,
+}
+
+/// The app preference remains the default for older projects. SystemDefault
+/// deliberately differs from Inherit when the app selects a saved account.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", content = "account_id", rename_all = "snake_case")]
+pub enum ProjectCodexAccount {
+    #[default]
+    Inherit,
+    SystemDefault,
+    Saved(String),
 }
 
 /// An organizational group in RiWork, independent of directories on disk.
@@ -723,6 +736,7 @@ impl Store {
                     repository_roots: inspection.repository_roots.clone(),
                     folder_id: None,
                     notify_on_agent_done: false,
+                    codex_account: ProjectCodexAccount::default(),
                     created_at: now(),
                 };
                 if state.active_project_id.is_none() {
@@ -929,6 +943,30 @@ impl Store {
                 .expect("resolved project remains in the transaction");
             let changed = project.notify_on_agent_done != enabled;
             project.notify_on_agent_done = enabled;
+            Ok((project.clone(), changed))
+        })
+    }
+
+    /// Change just the account preference, preserving concurrent edits to the
+    /// project's other metadata. Saved IDs must resolve through Orca's public
+    /// metadata cache before they can be selected.
+    pub fn set_project_codex_account(
+        &self,
+        selector: &str,
+        choice: ProjectCodexAccount,
+    ) -> Result<Project, String> {
+        if let ProjectCodexAccount::Saved(id) = &choice {
+            crate::codex_accounts::resolve_launch_binding(&self.dir, Some(id))?;
+        }
+        self.transaction_if_changed(|state| {
+            let project_id = state.project(selector)?.id.clone();
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|project| project.id == project_id)
+                .expect("resolved project remains in the transaction");
+            let changed = project.codex_account != choice;
+            project.codex_account = choice;
             Ok((project.clone(), changed))
         })
     }

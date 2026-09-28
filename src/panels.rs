@@ -1540,6 +1540,7 @@ mod tests {
             folder_id: folder.map(str::to_owned),
             created_at: 0,
             notify_on_agent_done: false,
+            codex_account: crate::store::ProjectCodexAccount::default(),
         }
     }
 

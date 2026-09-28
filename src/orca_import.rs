@@ -437,6 +437,7 @@ fn make_plan(state: &State, source: &SourceSnapshot) -> (ImportPlan, Vec<String>
                 repository_roots: project.repository_roots.clone(),
                 folder_id: None,
                 notify_on_agent_done: false,
+                codex_account: crate::store::ProjectCodexAccount::default(),
                 created_at: 0,
             });
             id

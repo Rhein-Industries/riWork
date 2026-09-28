@@ -17,19 +17,21 @@ pub enum StatusItemKind {
     LiveSessions,
     Resources,
     Usage,
+    CodexAccount,
     SessionId,
     GlobalOrchestrator,
     ProjectOrchestrator,
 }
 
 impl StatusItemKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Project,
         Self::Worktree,
         Self::AgentActivity,
         Self::LiveSessions,
         Self::Resources,
         Self::Usage,
+        Self::CodexAccount,
         Self::SessionId,
         Self::GlobalOrchestrator,
         Self::ProjectOrchestrator,
@@ -43,6 +45,7 @@ impl StatusItemKind {
             Self::LiveSessions => "Live sessions",
             Self::Resources => "CPU and memory",
             Self::Usage => "Account usage",
+            Self::CodexAccount => "Codex account email",
             Self::SessionId => "Session ID",
             Self::GlobalOrchestrator => "Global orchestrator",
             Self::ProjectOrchestrator => "Project orchestrator",
@@ -57,6 +60,7 @@ impl StatusItemKind {
             Self::LiveSessions => "Running sessions in the current project.",
             Self::Resources => "CPU and memory used by the project's sessions.",
             Self::Usage => "The active account's remaining quota.",
+            Self::CodexAccount => "Focused Codex account email, or the configured project default.",
             Self::SessionId => "The active session's ID; click to copy it.",
             Self::GlobalOrchestrator => "Open the global orchestrator.",
             Self::ProjectOrchestrator => "Open this project's orchestrator.",
@@ -71,6 +75,7 @@ impl StatusItemKind {
             Self::LiveSessions => "live-sessions",
             Self::Resources => "resources",
             Self::Usage => "usage",
+            Self::CodexAccount => "codex-account",
             Self::SessionId => "session-id",
             Self::GlobalOrchestrator => "global-orchestrator",
             Self::ProjectOrchestrator => "project-orchestrator",
@@ -189,15 +194,18 @@ impl<'de> Deserialize<'de> for StatusBarSettings {
 }
 
 impl StatusBarSettings {
-    /// First occurrence wins. Missing kinds remain configurable but are disabled,
-    /// so adding a new kind never unexpectedly changes a customized bar.
+    /// First occurrence wins. New kinds stay disabled in customized bars,
+    /// except the account readout requested for existing installations.
     pub fn normalize(&mut self) {
+        let had_items = !self.items.is_empty();
         let mut seen = HashSet::new();
         self.items.retain(|item| seen.insert(item.kind));
         for kind in StatusItemKind::ALL {
             if seen.insert(kind) {
                 self.items.push(StatusBarItem {
-                    enabled: false,
+                    // Introduce the requested account readout to older saved
+                    // bars while retaining their other customized choices.
+                    enabled: had_items && kind == StatusItemKind::CodexAccount,
                     ..StatusBarItem::default_for(kind)
                 });
             }
@@ -585,6 +593,7 @@ mod tests {
                 StatusItemKind::LiveSessions,
                 StatusItemKind::Resources,
                 StatusItemKind::Usage,
+                StatusItemKind::CodexAccount,
                 StatusItemKind::SessionId,
                 StatusItemKind::GlobalOrchestrator,
                 StatusItemKind::ProjectOrchestrator
@@ -628,7 +637,10 @@ mod tests {
             settings.visible_items(StatusSide::Left),
             [StatusItemKind::Usage]
         );
-        assert!(settings.visible_items(StatusSide::Right).is_empty());
+        assert_eq!(
+            settings.visible_items(StatusSide::Right),
+            [StatusItemKind::CodexAccount]
+        );
         let before = settings.clone();
         settings.normalize();
         assert_eq!(settings, before);
@@ -641,7 +653,10 @@ mod tests {
             settings.visible_items(StatusSide::Left),
             [StatusItemKind::Project]
         );
-        assert!(settings.visible_items(StatusSide::Right).is_empty());
+        assert_eq!(
+            settings.visible_items(StatusSide::Right),
+            [StatusItemKind::CodexAccount]
+        );
         assert_eq!(settings.items.len(), StatusItemKind::ALL.len());
         assert_eq!(
             serde_json::from_str::<StatusBarSettings>("{}").unwrap(),
