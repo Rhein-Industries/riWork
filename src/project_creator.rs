@@ -1,10 +1,16 @@
 //! Compact project creation with optional Git initialization.
 
-use std::{ops::Range, path::PathBuf, time::Duration};
+use std::{
+    ffi::OsStr,
+    fs,
+    ops::Range,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use gpui::{
     AnyElement, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, MouseButton,
+    EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, Modifiers, MouseButton,
     PathPromptOptions, Pixels, Point, Render, StyledText, UTF16Selection, Window, canvas, div,
     prelude::*, px, rgb,
 };
@@ -57,6 +63,83 @@ impl Input {
         }
         self.marked = None;
     }
+}
+
+/// Expands `~` and requires an absolute folder. A bare or relative path would
+/// resolve against the process directory, which is `/` when Finder launches the app.
+fn resolve_folder(text: &str, home: Option<&OsStr>) -> Result<PathBuf, String> {
+    let text = text.trim();
+    let expand = |tail: &str| {
+        let home = home
+            .filter(|home| !home.is_empty())
+            .ok_or("Cannot expand ~: HOME is not set. Enter an absolute folder path.")?;
+        Ok::<_, String>(PathBuf::from(home).join(tail))
+    };
+    let path = if text == "~" {
+        expand("")?
+    } else if let Some(tail) = text.strip_prefix("~/") {
+        expand(tail)?
+    } else {
+        PathBuf::from(text)
+    };
+    if !path.is_absolute() {
+        return Err("Use an absolute folder path, starting with / or ~/".to_owned());
+    }
+    if path
+        .components()
+        .any(|part| part.as_os_str().eq_ignore_ascii_case(".git"))
+    {
+        return Err("A project folder cannot be named .git or live inside it".to_owned());
+    }
+    Ok(path)
+}
+
+/// The text a copy or cut would place on the clipboard; an empty selection must
+/// leave the clipboard alone.
+fn selected_text(input: &Input) -> Option<String> {
+    let text = &input.text[input.selection.clone()];
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Cmd+G toggles Git initialization. With Shift it is the global Open Grok shortcut.
+fn init_git_shortcut(modifiers: &Modifiers) -> bool {
+    modifiers.platform && !modifiers.shift
+}
+
+/// The directories creating `root` would have to make, deepest first.
+fn missing_directories(root: &Path) -> Vec<PathBuf> {
+    root.ancestors()
+        .take_while(|directory| {
+            matches!(
+                fs::symlink_metadata(directory),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            )
+        })
+        .map(Path::to_path_buf)
+        .collect()
+}
+
+/// Removes directories a failed creation made. `remove_dir` only takes empty
+/// ones, so anything left inside, such as a `.git` from a completed `git init`,
+/// keeps its directory and every parent above it.
+fn remove_created_directories(created: &[PathBuf]) {
+    for directory in created {
+        if fs::remove_dir(directory).is_err() {
+            break;
+        }
+    }
+}
+
+fn create_project_cleaning_up(
+    store: &Store,
+    path: &Path,
+    name: Option<&str>,
+    init_git: bool,
+) -> Result<Project, String> {
+    let created = missing_directories(path);
+    store
+        .create_project(path, name, init_git)
+        .inspect_err(|_| remove_created_directories(&created))
 }
 
 pub struct ProjectCreator {
@@ -125,15 +208,8 @@ impl ProjectCreator {
         }
     }
 
-    fn path_value(&self) -> PathBuf {
-        let text = self.path.text.trim();
-        if let Some(tail) = text.strip_prefix("~/")
-            && let Some(home) = std::env::var_os("HOME")
-        {
-            PathBuf::from(home).join(tail)
-        } else {
-            PathBuf::from(text)
-        }
+    fn path_value(&self) -> Result<PathBuf, String> {
+        resolve_folder(&self.path.text, std::env::var_os("HOME").as_deref())
     }
 
     fn inspect(&mut self, cx: &mut Context<Self>) {
@@ -176,8 +252,16 @@ impl ProjectCreator {
             cx.notify();
             return;
         }
+        let path = match self.path_value() {
+            Ok(path) => path,
+            Err(error) => {
+                self.error = Some(error);
+                self.inspecting = false;
+                cx.notify();
+                return;
+            }
+        };
         self.inspecting = true;
-        let path = self.path_value();
         let generation = self.generation;
         let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
@@ -241,7 +325,14 @@ impl ProjectCreator {
         if self.creating || self.inspecting || self.inspection.is_none() {
             return;
         }
-        let path = self.path_value();
+        let path = match self.path_value() {
+            Ok(path) => path,
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
         let name = self.name.text.trim().to_owned();
         let init_git = self.init_git
             && self
@@ -252,7 +343,12 @@ impl ProjectCreator {
         self.creating = true;
         self.error = None;
         let work = cx.background_executor().spawn(async move {
-            store.create_project(path, (!name.is_empty()).then_some(name.as_str()), init_git)
+            create_project_cleaning_up(
+                &store,
+                &path,
+                (!name.is_empty()).then_some(name.as_str()),
+                init_git,
+            )
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -316,7 +412,7 @@ impl ProjectCreator {
                 self.focus.focus(window, cx);
                 true
             }
-            "g" if platform => {
+            "g" if init_git_shortcut(&event.keystroke.modifiers) => {
                 if self
                     .inspection
                     .as_ref()
@@ -337,12 +433,11 @@ impl ProjectCreator {
                 true
             }
             "c" | "x" if platform => {
-                let input = self.input();
-                cx.write_to_clipboard(ClipboardItem::new_string(
-                    input.text[input.selection.clone()].to_owned(),
-                ));
-                if event.keystroke.key == "x" {
-                    self.replace(None, "", cx);
+                if let Some(text) = selected_text(self.input()) {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    if event.keystroke.key == "x" {
+                        self.replace(None, "", cx);
+                    }
                 }
                 true
             }
@@ -522,7 +617,7 @@ impl Render for ProjectCreator {
             .inspection
             .as_ref()
             .is_some_and(|value| value.can_init_git);
-        let height = 260.0
+        let height = 288.0
             + if can_init
                 || self
                     .inspection
@@ -646,6 +741,23 @@ impl Render for ProjectCreator {
                     .text_color(rgb(colors.muted))
                     .text_size(px(10.0))
                     .child(summary),
+            )
+            .child(
+                // The folder the project will use once `~` and symlinks are resolved.
+                div()
+                    .h(px(14.0))
+                    .min_w_0()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(rgb(colors.muted))
+                    .text_size(px(10.0))
+                    .child(
+                        self.inspection
+                            .as_ref()
+                            .map(|value| format!("Folder: {}", value.root.display()))
+                            .unwrap_or_default(),
+                    ),
             )
             .children(
                 self.inspection
@@ -812,5 +924,153 @@ impl EntityInputHandler for ProjectCreator {
     }
     fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
         !self.creating
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("riwork-creator-test-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path.canonicalize().unwrap())
+        }
+
+        /// A store whose state file cannot be parsed: creating a project makes
+        /// its directories and then fails to register it.
+        fn failing_store(&self) -> Store {
+            let state = self.0.join("state");
+            let store = Store::open(&state).unwrap();
+            fs::write(state.join("state.json"), "not json").unwrap();
+            store
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn folders_are_absolute_and_expand_the_home_shorthand() {
+        let home = OsStr::new("/Users/someone");
+        let resolve = |text: &str| resolve_folder(text, Some(home));
+        assert_eq!(resolve("~").unwrap(), Path::new("/Users/someone"));
+        assert_eq!(
+            resolve(" ~/work/app ").unwrap(),
+            Path::new("/Users/someone/work/app")
+        );
+        assert_eq!(resolve("/srv/app").unwrap(), Path::new("/srv/app"));
+        for relative in ["app", "./app", "../app", "~someone/app", "~app", ""] {
+            assert!(
+                resolve(relative).unwrap_err().contains("absolute"),
+                "{relative:?}"
+            );
+        }
+        assert!(resolve_folder("~/app", None).unwrap_err().contains("HOME"));
+        assert!(
+            resolve_folder("~", Some(OsStr::new("")))
+                .unwrap_err()
+                .contains("HOME")
+        );
+        assert!(resolve_folder("~/app", Some(OsStr::new("relative-home"))).is_err());
+    }
+
+    #[test]
+    fn a_folder_cannot_be_git_metadata() {
+        let home = Some(OsStr::new("/Users/someone"));
+        for text in [
+            "~/Documents/riwork/.git",
+            "/srv/.GIT",
+            "/srv/.Git/hooks",
+            "~/.git/app",
+        ] {
+            assert!(
+                resolve_folder(text, home).unwrap_err().contains(".git"),
+                "{text}"
+            );
+        }
+        assert!(resolve_folder("/srv/.github", home).is_ok());
+        assert!(resolve_folder("/srv/my.git", home).is_ok());
+    }
+
+    #[test]
+    fn copy_and_cut_need_a_selection() {
+        let mut input = Input {
+            text: "/path/to/app".to_owned(),
+            selection: 3..3,
+            ..Default::default()
+        };
+        assert_eq!(selected_text(&input), None);
+        input.selection = 1..5;
+        assert_eq!(selected_text(&input).as_deref(), Some("path"));
+        assert_eq!(selected_text(&Input::default()), None);
+    }
+
+    #[test]
+    fn shift_leaves_cmd_g_to_the_global_open_grok_shortcut() {
+        let command = Modifiers {
+            platform: true,
+            ..Default::default()
+        };
+        assert!(init_git_shortcut(&command));
+        assert!(!init_git_shortcut(&Modifiers {
+            shift: true,
+            ..command
+        }));
+        assert!(!init_git_shortcut(&Modifiers::default()));
+    }
+
+    #[test]
+    fn failed_creation_removes_the_directories_it_made() {
+        let fixture = Fixture::new();
+        let store = fixture.failing_store();
+        let root = fixture.0.join("a/b/c");
+        assert!(create_project_cleaning_up(&store, &root, None, false).is_err());
+        assert!(!fixture.0.join("a").exists());
+        assert!(fixture.0.join("state").is_dir());
+    }
+
+    #[test]
+    fn failed_creation_keeps_directories_that_already_existed() {
+        let fixture = Fixture::new();
+        let store = fixture.failing_store();
+        fs::create_dir_all(fixture.0.join("a")).unwrap();
+        fs::write(fixture.0.join("a/keep.txt"), "mine").unwrap();
+        let root = fixture.0.join("a/b/c");
+        assert!(create_project_cleaning_up(&store, &root, None, false).is_err());
+        assert!(fixture.0.join("a/keep.txt").is_file());
+        assert!(!fixture.0.join("a/b").exists());
+        // An existing empty folder is not ours to remove either.
+        let existing = fixture.0.join("empty");
+        fs::create_dir_all(&existing).unwrap();
+        assert!(create_project_cleaning_up(&store, &existing, None, false).is_err());
+        assert!(existing.is_dir());
+    }
+
+    #[test]
+    fn failed_creation_keeps_a_directory_git_init_filled() {
+        let fixture = Fixture::new();
+        let store = fixture.failing_store();
+        let root = fixture.0.join("a/b");
+        assert!(create_project_cleaning_up(&store, &root, None, true).is_err());
+        // Registration failed after `git init`, so `.git` and its parents stay.
+        assert!(root.join(".git").is_dir());
+    }
+
+    #[test]
+    fn successful_creation_keeps_its_directories() {
+        let fixture = Fixture::new();
+        let store = Store::open(fixture.0.join("state")).unwrap();
+        let root = fixture.0.join("a/b");
+        let project = create_project_cleaning_up(&store, &root, Some("App"), false).unwrap();
+        assert_eq!(project.root, root);
+        assert!(root.is_dir());
     }
 }

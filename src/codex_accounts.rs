@@ -5,7 +5,9 @@
 
 use std::{
     collections::HashSet,
-    env, fs,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     fs::OpenOptions,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -23,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const SYSTEM_DEFAULT_ID: &str = "system-default";
+/// Exported beside CODEX_HOME by account-bound RiWork sessions.
+const PINNED_HOME_VARIABLE: &str = "RIWORK_CODEX_ACCOUNT_HOME";
 const MAX_OUTPUT: usize = 1024 * 1024;
 const MAX_ACCOUNTS: usize = 128;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -380,12 +384,116 @@ fn user_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "The user home directory is unavailable.".into())
 }
 
+/// The user's own Codex home: `CODEX_HOME` from their environment, else
+/// `~/.codex`. A `CODEX_HOME` that RiWork exported into an account-bound
+/// session is not the user's choice and never counts as the system default.
 pub fn default_codex_home() -> Result<PathBuf, String> {
-    match env::var_os("CODEX_HOME") {
-        Some(home) if !home.is_empty() => absolute_path(PathBuf::from(home)),
-        Some(_) => Err("CODEX_HOME is empty. Set a valid home before launching Codex.".into()),
+    system_codex_home(
+        env::var_os("CODEX_HOME"),
+        env::var_os(PINNED_HOME_VARIABLE),
+        orca_user_data().ok().as_deref(),
+    )
+}
+
+fn system_codex_home(
+    codex_home: Option<OsString>,
+    pinned_home: Option<OsString>,
+    user_data: Option<&Path>,
+) -> Result<PathBuf, String> {
+    match codex_home {
+        Some(home) if home.is_empty() => {
+            Err("CODEX_HOME is empty. Set a valid home before launching Codex.".into())
+        }
+        Some(home) => {
+            let home = absolute_path(PathBuf::from(home))?;
+            if riwork_injected_home(&home, pinned_home.as_deref(), user_data) {
+                Ok(user_home()?.join(".codex"))
+            } else {
+                Ok(home)
+            }
+        }
         None => Ok(user_home()?.join(".codex")),
     }
+}
+
+/// True when `home` is an Orca-managed account home, which RiWork hands to
+/// its account-bound sessions (`CODEX_HOME` in Codex panes, their tool
+/// environment, and plain project shells). The system default is never one:
+/// a system-default pane also exports its home as the pinned home, so the pin
+/// alone cannot tell an injected value from the user's own `CODEX_HOME`.
+fn riwork_injected_home(
+    home: &Path,
+    pinned_home: Option<&OsStr>,
+    user_data: Option<&Path>,
+) -> bool {
+    // The pin locates a managed home even when this process sees a different
+    // Orca profile override than the session that exported it.
+    if pinned_home.is_some_and(|pinned| Path::new(pinned) == home) && managed_home_shape(home) {
+        return true;
+    }
+    let Some(user_data) = user_data else {
+        return false;
+    };
+    if home.starts_with(user_data.join("codex-accounts")) {
+        return true;
+    }
+    // Managed homes are stored canonically; the profile path might not be.
+    match (user_data.canonicalize(), home.canonicalize()) {
+        (Ok(root), Ok(home)) => home.starts_with(root.join("codex-accounts")),
+        _ => false,
+    }
+}
+
+/// `<profile>/codex-accounts/<account id>/home`
+fn managed_home_shape(home: &Path) -> bool {
+    let mut parts = home
+        .components()
+        .rev()
+        .filter_map(|part| part.as_os_str().to_str());
+    parts.next() == Some("home")
+        && parts.next().is_some_and(safe_account_id)
+        && parts.next() == Some("codex-accounts")
+}
+
+/// A home for display, with the user's home directory shortened to `~`.
+pub fn display_home(path: &Path) -> String {
+    abbreviate_home(path, user_home().ok().as_deref())
+}
+
+fn abbreviate_home(path: &Path, user_home: Option<&Path>) -> String {
+    match user_home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// Removes the account variables RiWork injected into this process from a
+/// command that starts a new RiWork root (the GUI), so it cannot mistake them
+/// for the user's own environment or pass them on to its sessions.
+pub fn scrub_injected_environment(command: &mut Command) {
+    for name in injected_environment(
+        env::var_os("CODEX_HOME").as_deref(),
+        env::var_os(PINNED_HOME_VARIABLE).as_deref(),
+        orca_user_data().ok().as_deref(),
+    ) {
+        command.env_remove(name);
+    }
+}
+
+fn injected_environment(
+    codex_home: Option<&OsStr>,
+    pinned_home: Option<&OsStr>,
+    user_data: Option<&Path>,
+) -> Vec<&'static str> {
+    let mut names = vec![PINNED_HOME_VARIABLE, "RIWORK_CODEX_SHELL_ID"];
+    if let Some(home) = codex_home.filter(|home| !home.is_empty())
+        && absolute_path(PathBuf::from(home))
+            .is_ok_and(|home| riwork_injected_home(&home, pinned_home, user_data))
+    {
+        names.push("CODEX_HOME");
+    }
+    names
 }
 
 fn absolute_path(path: PathBuf) -> Result<PathBuf, String> {
@@ -419,17 +527,11 @@ fn orca_user_data() -> Result<PathBuf, String> {
 }
 
 fn installed_orca_cli() -> Result<PathBuf, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let path = PathBuf::from("/Applications/Orca.app/Contents/Resources/bin/orca");
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-    Err(
-        "Orca's installed CLI is unavailable. Previously discovered accounts can still be used."
-            .into(),
-    )
+    // The shared resolver's messages can name paths and variables; the account
+    // list only needs to say that no CLI was found.
+    crate::orca_import::discover_cli().map_err(|_| {
+        "Orca's CLI is unavailable. Previously discovered accounts can still be used.".to_owned()
+    })
 }
 
 fn read_cache(state_home: &Path) -> Result<AccountCache, String> {
@@ -599,12 +701,9 @@ fn read_output(
 fn terminate(child: &mut Child) {
     #[cfg(unix)]
     {
-        unsafe extern "C" {
-            fn kill(pid: i32, signal: i32) -> i32;
-        }
         // Only this CLI process group; never Orca's already-running application.
         unsafe {
-            kill(-(child.id() as i32), 9);
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
         }
     }
     let _ = child.kill();
@@ -864,5 +963,188 @@ mod tests {
             ..metadata
         };
         assert_eq!(account_email(&unknown), None);
+    }
+
+    /// Runs the named test again in a child whose environment is `vars`, so the
+    /// test can exercise process-environment lookups without mutating the
+    /// environment shared with other tests. The child gets the parent's
+    /// fixture directory as `Some`; the parent gets `None` once the child passed.
+    fn run_in_child(fixture: &Fixture, name: &str, vars: &[(&str, &OsStr)]) -> Option<PathBuf> {
+        if let Some(root) = env::var_os("RIWORK_TEST_ACCOUNT_CHILD") {
+            return Some(PathBuf::from(root));
+        }
+        let output = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("codex_accounts::tests::{name}"),
+                "--nocapture",
+            ])
+            .env("RIWORK_TEST_ACCOUNT_CHILD", &fixture.0)
+            .envs(vars.iter().copied())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // A filter that matches nothing also exits successfully.
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        None
+    }
+
+    fn managed(fixture: &Fixture, id: &str) -> PathBuf {
+        let home = fixture
+            .0
+            .join("profile/codex-accounts")
+            .join(id)
+            .join("home");
+        fs::create_dir_all(&home).unwrap();
+        home.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn system_default_ignores_homes_riwork_injected_into_sessions() {
+        let fixture = Fixture::new();
+        let profile = fixture.0.join("profile");
+        let account = managed(&fixture, "local-1");
+        let genuine = user_home().unwrap().join(".codex");
+        let os = |path: &Path| Some(path.as_os_str().to_owned());
+        // A Codex pane or its tool environment: CODEX_HOME plus the pinned home.
+        assert_eq!(
+            system_codex_home(os(&account), os(&account), Some(&profile)).unwrap(),
+            genuine
+        );
+        // A plain project shell receives only CODEX_HOME, with an empty pin.
+        assert_eq!(
+            system_codex_home(os(&account), Some("".into()), Some(&profile)).unwrap(),
+            genuine
+        );
+        // A different Orca profile override still identifies the pinned home.
+        assert_eq!(
+            system_codex_home(os(&account), os(&account), None).unwrap(),
+            genuine
+        );
+        // The user's own CODEX_HOME survives, including in a pane that pins it
+        // because the system default was selected.
+        let own = fixture.0.join("my-codex");
+        assert_eq!(
+            system_codex_home(os(&own), None, Some(&profile)).unwrap(),
+            own
+        );
+        assert_eq!(
+            system_codex_home(os(&own), os(&own), Some(&profile)).unwrap(),
+            own
+        );
+        assert_eq!(
+            system_codex_home(None, None, Some(&profile)).unwrap(),
+            genuine
+        );
+        assert!(system_codex_home(Some("".into()), None, Some(&profile)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn injected_homes_are_recognized_through_a_symlinked_profile() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let account = managed(&fixture, "local-1");
+        let alias = fixture.0.join("profile-alias");
+        symlink(fixture.0.join("profile"), &alias).unwrap();
+        assert!(riwork_injected_home(&account, None, Some(&alias)));
+        assert!(!riwork_injected_home(
+            &fixture.0.join("elsewhere"),
+            None,
+            Some(&alias)
+        ));
+        assert!(!managed_home_shape(
+            &fixture.0.join("codex-accounts/../home")
+        ));
+    }
+
+    #[test]
+    fn system_default_bindings_and_rows_ignore_the_injected_home() {
+        let fixture = Fixture::new();
+        let account = managed(&fixture, "local-1");
+        let profile = fixture.0.join("profile");
+        let user = fixture.0.join("user");
+        fs::create_dir_all(&user).unwrap();
+        let Some(root) = run_in_child(
+            &fixture,
+            "system_default_bindings_and_rows_ignore_the_injected_home",
+            &[
+                ("HOME", user.as_os_str()),
+                ("CODEX_HOME", account.as_os_str()),
+                ("RIWORK_CODEX_ACCOUNT_HOME", account.as_os_str()),
+                ("ORCA_USER_DATA_PATH", profile.as_os_str()),
+            ],
+        ) else {
+            return;
+        };
+        let genuine = root.join("user/.codex");
+        let state = root.join("state");
+        for selected in [None, Some(SYSTEM_DEFAULT_ID)] {
+            let binding = resolve_launch_binding(&state, selected).unwrap();
+            assert_eq!((binding.id, binding.home), (None, genuine.clone()));
+        }
+        use crate::store::ProjectCodexAccount::{Inherit, SystemDefault};
+        for choice in [Inherit, SystemDefault] {
+            let binding = resolve_project_choice_binding(&state, &choice, None).unwrap();
+            assert_eq!((binding.id, binding.home), (None, genuine.clone()));
+        }
+        let rows = snapshot(None, None, false).accounts;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_system_default);
+        assert_eq!(rows[0].home, genuine);
+    }
+
+    #[test]
+    fn open_scrubs_pins_and_only_an_injected_codex_home() {
+        let fixture = Fixture::new();
+        let account = managed(&fixture, "local-1");
+        let profile = fixture.0.join("profile");
+        let own = fixture.0.join("my-codex");
+        let os = |path: &Path| Some(path.as_os_str().to_owned());
+        let injected = injected_environment(
+            os(&account).as_deref(),
+            os(&account).as_deref(),
+            Some(&profile),
+        );
+        assert_eq!(
+            injected,
+            [
+                "RIWORK_CODEX_ACCOUNT_HOME",
+                "RIWORK_CODEX_SHELL_ID",
+                "CODEX_HOME"
+            ]
+        );
+        let genuine =
+            injected_environment(os(&own).as_deref(), os(&own).as_deref(), Some(&profile));
+        assert_eq!(
+            genuine,
+            ["RIWORK_CODEX_ACCOUNT_HOME", "RIWORK_CODEX_SHELL_ID"]
+        );
+        assert_eq!(
+            injected_environment(None, None, Some(&profile)),
+            ["RIWORK_CODEX_ACCOUNT_HOME", "RIWORK_CODEX_SHELL_ID"]
+        );
+    }
+
+    #[test]
+    fn home_display_shortens_only_the_users_home() {
+        let home = Path::new("/Users/someone");
+        assert_eq!(
+            abbreviate_home(Path::new("/Users/someone"), Some(home)),
+            "~"
+        );
+        assert_eq!(
+            abbreviate_home(Path::new("/Users/someone/.codex"), Some(home)),
+            "~/.codex"
+        );
+        assert_eq!(
+            abbreviate_home(Path::new("/Users/someone2/.codex"), Some(home)),
+            "/Users/someone2/.codex"
+        );
+        assert_eq!(abbreviate_home(Path::new("/x/.codex"), None), "/x/.codex");
     }
 }
