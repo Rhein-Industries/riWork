@@ -11,10 +11,23 @@ private actor FixtureTransport: RemoteTransport {
     var inputLines: [String] = []
     var listedShells: [RemoteSession]?
     var missingOutputs: Set<String> = []
+    var outputLineRequests: [Int] = []
+    var oversizeAbove: Int?
+    var oversizeCode = "response_too_large"
+    var blockedMethod: String?
+    var blockedCount = 0
+    private var waiters: [CheckedContinuation<Void, any Error>] = []
     func setSessions(_ sessions: [RemoteSession]) { listedShells = sessions }
     func setMissing(_ id: String) { missingOutputs.insert(id) }
     func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws { connected = true; connections += 1 }
-    func disconnect() async { connected = false }
+    func disconnect() async { connected = false; events.append("transport.disconnect") }
+    func setOversize(above lines: Int?, code: String = "response_too_large") { oversizeAbove = lines; oversizeCode = code }
+    func lineRequests() -> [Int] { outputLineRequests }
+    /// Parks the named RPC like an in-flight request. Cancelling its caller throws but keeps the connection, as RelayClient does.
+    func block(_ method: String) { blockedMethod = method; blockedCount = 0 }
+    func unblock() { blockedMethod = nil; let all = waiters; waiters = []; all.forEach { $0.resume() } }
+    func waitUntilBlocked() async { while blockedCount == 0 { try? await Task.sleep(for: .milliseconds(5)) } }
+    private func cancelWaiters() { let all = waiters; waiters = []; all.forEach { $0.resume(throwing: CancellationError()) } }
     func isConnected() async -> Bool { connected }
     func setUncertain() { inputUncertain = true }
     func counts() -> (Int, [String]) { (connections, inputs) }
@@ -24,6 +37,12 @@ private actor FixtureTransport: RemoteTransport {
         guard connected else { throw RemoteError.disconnected }
         try RequestValidation.validate(method: method, params: params, id: id)
         events.append("\(method):\(params["shell_id"]?.string ?? "")")
+        if blockedMethod == method {
+            blockedCount += 1
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in waiters.append(continuation) }
+            } onCancel: { Task { await self.cancelWaiters() } }
+        }
         let raw: String
         switch method {
         case "projects.list": raw = "{\"projects\":[{\"id\":\"11111111-1111-4111-8111-111111111111\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}]}"
@@ -37,6 +56,10 @@ private actor FixtureTransport: RemoteTransport {
             }
             raw = "{\"shells\":[{\"id\":\"44444444-4444-4444-8444-444444444444\",\"project_id\":\"11111111-1111-4111-8111-111111111111\",\"worktree_id\":null,\"kind\":\"project\",\"cwd\":\"/fixture\",\"harness\":\"codex\",\"alive\":true,\"created_at_unix\":1}]}"
         case "shell.output":
+            var lines = 0
+            if case .number(let value)? = params["lines"] { lines = Int(value) }
+            outputLineRequests.append(lines)
+            if let oversizeAbove, lines > oversizeAbove { throw RemoteError.rpc(code: oversizeCode, message: "reply too large") }
             if let shell = params["shell_id"]?.string, missingOutputs.contains(shell) {
                 throw RemoteError.rpc(code: "not_found", message: "Selected session is unavailable.")
             }
@@ -300,4 +323,143 @@ private actor FixtureTransport: RemoteTransport {
         await model.disconnect()
     }
 
+    func testPollInFlightAtDisconnectDetachesAndViewportReleaseRunsBeforeTheSocketCloses() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let transport = FixtureTransport()
+        let model = RemoteModel(client: transport, keychain: keychain, pollInterval: .milliseconds(10))
+        model.reportViewport(TerminalViewport(columns: 43, rows: 17)); model.setTerminalVisible(true)
+        await model.connect()
+        XCTAssertEqual(model.viewportSessionID, shell)
+        await transport.block("shell.output")
+        await transport.waitUntilBlocked()
+        await model.disconnect()
+        await transport.unblock()
+        let operations = await transport.operations()
+        let clear = try XCTUnwrap(operations.lastIndex(of: "shell.resize.clear:\(shell)"), "release must run even though a poll was in flight")
+        let close = try XCTUnwrap(operations.lastIndex(of: "transport.disconnect"))
+        XCTAssertLessThan(clear, close, "release must precede closing the socket")
+        XCTAssertEqual(model.state, .disconnected)
+        XCTAssertNil(model.error, "a cancelled poll is not a failure")
+        XCTAssertNil(model.viewportSessionID)
+    }
+    func testBackingOutOfAProjectLoadKeepsTheConnectionAndReloadsOnReturn() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let transport = FixtureTransport()
+        let model = RemoteModel(client: transport, keychain: keychain)
+        await model.connect()
+        let other = "66666666-6666-4666-8666-666666666666"
+        await transport.block("shells.list")
+        let choose = Task { await model.chooseProject(other) }
+        await transport.waitUntilBlocked()
+        choose.cancel()
+        await choose.value
+        let stillConnected = await transport.isConnected()
+        XCTAssertTrue(stillConnected, "Back during a load must not drop the socket")
+        XCTAssertEqual(model.state, .connected)
+        XCTAssertNil(model.error)
+        XCTAssertTrue(model.shells.isEmpty)
+        await transport.unblock()
+        // The same project is chosen again on return; the half-finished load must run again.
+        await model.chooseProject(other)
+        XCTAssertEqual(model.projectID, other)
+        XCTAssertEqual(model.shells.map(\.id), [shell])
+        XCTAssertEqual(model.outputSessionID, shell)
+        XCTAssertEqual(model.state, .connected)
+        await model.disconnect()
+    }
+    func testProjectLoadDoesNotFetchUnusedTasks() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let transport = FixtureTransport()
+        let model = RemoteModel(client: transport, keychain: keychain)
+        await model.connect()
+        await model.chooseProject("66666666-6666-4666-8666-666666666666")
+        let operations = await transport.operations()
+        XCTAssertFalse(operations.contains { $0.hasPrefix("tasks.list") })
+        XCTAssertTrue(operations.contains { $0.hasPrefix("shells.list") })
+        await model.disconnect()
+    }
+    func testManualDisconnectStaysDisconnectedThroughBackgroundAndForeground() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let transport = FixtureTransport()
+        let model = RemoteModel(client: transport, keychain: keychain)
+        await model.connect()
+        await model.disconnect()
+        XCTAssertEqual(model.state, .disconnected)
+        await model.disconnect(background: true)
+        XCTAssertEqual(model.state, .disconnected, "a manual disconnect is not \"paused in background\"")
+        await model.resume()
+        XCTAssertEqual(model.state, .disconnected)
+        let counts = await transport.counts()
+        XCTAssertEqual(counts.0, 1, "returning to the foreground must not reconnect a manual disconnect")
+    }
+    func testOversizedOutputHalvesLinesAndRemembersThePerSessionValue() async throws {
+        for code in ["response_too_large", "cli_error"] {
+            let keychain = try makeStore(); defer { try? keychain.delete() }
+            let transport = FixtureTransport()
+            await transport.setOversize(above: 130, code: code)
+            let model = RemoteModel(client: transport, keychain: keychain)
+            await model.connect()
+            let first = await transport.lineRequests()
+            XCTAssertEqual(first, [500, 250, 125], code)
+            XCTAssertFalse(model.snapshotStale); XCTAssertNil(model.error); XCTAssertTrue(model.canSend, "a fitting size must restore Send")
+            await model.readOutput()
+            let second = await transport.lineRequests()
+            XCTAssertEqual(second.suffix(1), [125], "the size that fit is remembered for this session")
+            await model.disconnect()
+        }
+    }
+    func testOutputLinesStopHalvingAtTheFloor() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let transport = FixtureTransport()
+        await transport.setOversize(above: 0, code: "cli_error")
+        let model = RemoteModel(client: transport, keychain: keychain)
+        await model.connect()
+        let attempts = await transport.lineRequests()
+        XCTAssertEqual(attempts, [500, 250, 125, 62, 31, 20])
+        XCTAssertNotNil(model.error); XCTAssertTrue(model.snapshotStale)
+        await model.readOutput()
+        let later = await transport.lineRequests()
+        XCTAssertEqual(Array(later.dropFirst(attempts.count)), [20], "a session that keeps failing costs one attempt per poll, not a new halving run")
+        await model.disconnect()
+    }
+    func testUnreadableKeychainLibraryIsNeverOverwrittenAndCanBeRetried() async throws {
+        let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+        defer { try? keychain.delete() }
+        // A schema this build cannot decode, standing in for any read failure other than "not found".
+        try keychain.write(["future": "schema"])
+        let model = RemoteModel(client: FixtureTransport(), keychain: keychain)
+        XCTAssertTrue(model.loadFailed)
+        XCTAssertTrue(model.desktops.isEmpty)
+        let pairing = """
+        {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+        """
+        XCTAssertThrowsError(try model.add(pairingText: pairing, name: "New", allowLocal: false))
+        XCTAssertTrue(model.desktops.isEmpty)
+        XCTAssertEqual(try keychain.read([String: String].self), ["future": "schema"], "the stored item must be untouched")
+        // Fixing the cause and retrying loads it and re-enables writes.
+        let saved = try Pairing.parse(pairing)
+        try keychain.write(Library(desktops: [SavedDesktop(name: "Kept", pairing: saved, allowLocalDevelopment: false)]))
+        model.loadLibrary()
+        XCTAssertFalse(model.loadFailed)
+        XCTAssertEqual(model.desktops.map(\.name), ["Kept"])
+        try model.rename(id: saved.route_id, name: "Renamed")
+        XCTAssertEqual(try keychain.read(Library.self)?.desktops.map(\.name), ["Renamed"])
+    }
+    func testMissingKeychainItemIsAnEmptyLibraryNotAFailure() async throws {
+        let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+        defer { try? keychain.delete() }
+        let model = RemoteModel(client: FixtureTransport(), keychain: keychain)
+        XCTAssertFalse(model.loadFailed)
+        XCTAssertTrue(model.desktops.isEmpty)
+    }
+    func testResetLibraryErasesAnUnreadableItemAfterExplicitCall() async throws {
+        let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+        defer { try? keychain.delete() }
+        try keychain.write(["future": "schema"])
+        let model = RemoteModel(client: FixtureTransport(), keychain: keychain)
+        XCTAssertTrue(model.loadFailed)
+        try model.resetLibrary()
+        XCTAssertFalse(model.loadFailed)
+        XCTAssertNil(try keychain.read([String: String].self))
+    }
 }

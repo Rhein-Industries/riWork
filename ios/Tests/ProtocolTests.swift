@@ -3,13 +3,13 @@ import CryptoKit
 @testable import RiWorkCore
 
 final class ProtocolTests: XCTestCase {
-    private func fixture() throws -> JSONValue {
+    private func fixture(_ name: String = "v1") throws -> JSONValue {
         #if SWIFT_PACKAGE
         let bundle = Bundle.module
         #else
         let bundle = Bundle(for: Self.self)
         #endif
-        let url = try XCTUnwrap(bundle.url(forResource: "v1", withExtension: "json", subdirectory: "Fixtures") ?? bundle.url(forResource: "v1", withExtension: "json"))
+        let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "json", subdirectory: "Fixtures") ?? bundle.url(forResource: name, withExtension: "json"))
         return try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: url))
     }
     private func pairing(_ fixture: JSONValue) throws -> Pairing {
@@ -125,5 +125,110 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(TerminalViewport.fit(width: .infinity, height: 200, cellWidth: 8, lineHeight: 16))
         XCTAssertNil(TerminalViewport.fit(width: 400, height: 0, cellWidth: 8, lineHeight: 16))
         XCTAssertEqual(TerminalViewport.fit(width: 1e100, height: 1, cellWidth: 8, lineHeight: 16), TerminalViewport(columns: 300, rows: 8))
+    }
+    /// Vectors above counter 0 come from an independent RFC 8439 implementation that first reproduces the
+    /// Rust fixture (`ios/scripts/gen-counter-vectors.py`). They pin big-endian nonce and AAD bytes.
+    func testCounterVectorsAboveZeroMatchIndependentDerivation() throws {
+        let f = try fixture(), vectors = try fixture("counter-vectors")["vectors"].array
+        XCTAssertEqual(vectors.count, 16)
+        let psk = SymmetricKey(data: try Base64URL.decode(f["pairing_secret"].string!, bytes: 32))
+        let transcript = Data(hexBytes: f["transcript_hex"].string!)
+        for vector in vectors {
+            let counter = try XCTUnwrap(UInt64(vector["counter"].string!))
+            XCTAssertGreaterThan(counter, 0)
+            let direction = vector["direction"].string!
+            var cipher = SessionCipher(psk: psk, transcript: transcript, sendCounter: counter, receiveCounter: counter)
+            XCTAssertEqual(hex(Data(repeating: 0, count: 4) + SessionCipher.counterBytes(counter)), vector["nonce_hex"].string, "nonce \(counter)")
+            XCTAssertEqual(hex(cipher.aad(direction: direction, counter: counter)), vector["aad_hex"].string, "aad \(direction) \(counter)")
+            let envelope = vector["envelope"], plaintext = try JSONDecoder().decode(JSONValue.self, from: Data(vector["plaintext_utf8"].string!.utf8))
+            if direction == "c2d" {
+                XCTAssertEqual(try cipher.sealJSON(Data(vector["plaintext_utf8"].string!.utf8)), envelope, "seal \(counter)")
+                XCTAssertEqual(cipher.sendCounter, counter + 1)
+            } else {
+                XCTAssertEqual(try cipher.open(envelope), plaintext, "open \(counter)")
+                XCTAssertEqual(cipher.receiveCounter, counter + 1)
+                // The same ciphertext is bound to its counter: neither a neighbouring nor a stale counter opens it.
+                for wrong in [counter - 1, counter + 1] {
+                    var other = SessionCipher(psk: psk, transcript: transcript, sendCounter: 0, receiveCounter: wrong)
+                    XCTAssertThrowsError(try other.open(envelope), "counter \(wrong) must not accept \(counter)")
+                    XCTAssertEqual(other.receiveCounter, wrong)
+                }
+            }
+        }
+    }
+    func testSequentialFramesFollowFixtureThenVectors() throws {
+        let f = try fixture(), vectors = try fixture("counter-vectors")["vectors"].array
+        func vector(_ direction: String, _ counter: String) -> JSONValue { vectors.first { $0["direction"].string == direction && $0["counter"].string == counter }! }
+        var cipher = try connectedCipher().1
+        let request = Data(f["frames"].array[0]["plaintext_utf8"].string!.utf8)
+        XCTAssertEqual(try cipher.sealJSON(request), f["frames"].array[0]["envelope"])
+        for counter in ["1", "2"] { XCTAssertEqual(try cipher.sealJSON(request), vector("c2d", counter)["envelope"]) }
+        XCTAssertEqual(cipher.sendCounter, 3)
+        _ = try cipher.open(f["frames"].array[1]["envelope"])
+        for counter in ["1", "2"] { XCTAssertEqual(try cipher.open(vector("d2c", counter)["envelope"])["type"].string, "response") }
+        XCTAssertEqual(cipher.receiveCounter, 3)
+        XCTAssertThrowsError(try cipher.open(vector("d2c", "2")["envelope"]), "replaying counter 2 must fail")
+    }
+    func testHostilePairingLinksAreRejected() throws {
+        let data = Base64URL.encode(try JSONEncoder().encode(pairing(fixture())))
+        XCTAssertNoThrow(try Pairing.parse("riwork://pair?v=1&data=\(data)"))
+        XCTAssertNoThrow(try Pairing.parse("riwork://pair/?data=\(data)&v=1"))
+        let hostile = [
+            "riwork://evil@pair?v=1&data=\(data)",             // userinfo
+            "riwork://user:secret@pair?v=1&data=\(data)",
+            "riwork://pair:8080?v=1&data=\(data)",              // port
+            "riwork://p%61ir?v=1&data=\(data)",                 // percent-encoded host
+            "riwork://pair/%2e%2e?v=1&data=\(data)",            // percent-encoded path
+            "riwork://pair/%2F?v=1&data=\(data)",
+            "riwork://pair/extra?v=1&data=\(data)",
+            "riwork://pair//?v=1&data=\(data)",
+            "RIWORK://pair?v=1&data=\(data)",                   // scheme is case-sensitive in v1
+            "Riwork://pair?v=1&data=\(data)",
+            "riwork://pair?%76=1&data=\(data)",                 // percent-encoded query names
+            "riwork://pair?v=1&%64ata=\(data)",
+            "riwork://pair?v=1&data=\(data.prefix(20))%41\(data.dropFirst(21))",
+            "riwork://pair?v=1&data=\(data)&x=1",
+            "riwork://pair?v=1&v=1&data=\(data)",
+            "riwork://pair?v=1&data=\(data)#fragment",
+            "riwork:pair?v=1&data=\(data)",
+            "riwork:///pair?v=1&data=\(data)",
+            "https://pair?v=1&data=\(data)",
+        ]
+        for link in hostile { XCTAssertThrowsError(try Pairing.parse(link), link) }
+        // An uppercase scheme is reported as a bad link, not as bad JSON.
+        do { _ = try Pairing.parse("RIWORK://pair?v=1&data=\(data)"); XCTFail() }
+        catch { XCTAssertTrue(error.localizedDescription.contains("riwork://pair"), error.localizedDescription) }
+    }
+    func testPairingDisplayFieldsAreBoundedPrintableText() throws {
+        var p = try pairing(fixture())
+        XCTAssertEqual(p.relayHost, "example.com")
+        XCTAssertEqual(p.desktopShortID, "11111111")
+        XCTAssertFalse(p.usesLocalDevelopmentRelay)
+        let json = String(data: try JSONEncoder().encode(p), encoding: .utf8)!.replacingOccurrences(of: "\"device_name\":\"Test\"", with: "\"device_name\":\"\\u001b[2Jevil\\nname\(String(repeating: "x", count: 200))\"")
+        p = try Pairing.parse(json)
+        XCTAssertFalse(p.displayDeviceName.unicodeScalars.contains { $0.value < 32 })
+        XCTAssertLessThanOrEqual(p.displayDeviceName.count, 80)
+        XCTAssertTrue(p.displayDeviceName.hasPrefix("[2Jevilname"))
+    }
+    func testTerminalTextStopsOSCAtTheFirstTerminator() {
+        XCTAssertEqual(TerminalText.readable("a\u{1b}]0;title\u{1b}\\visible\u{7}b"), "avisibleb", "ESC \\ ends the OSC; visible text after it must survive a later BEL")
+        XCTAssertEqual(TerminalText.readable("\u{1b}]0;one\u{7}keep\u{1b}]0;two\u{7}"), "keep")
+        XCTAssertEqual(TerminalText.readable("\u{1b}]8;;https://example.com\u{1b}\\link\u{1b}]8;;\u{1b}\\ text"), "link text")
+        XCTAssertEqual(TerminalText.readable("\u{1b}]0;no terminator\nnext line"), "0;no terminator\nnext line", "an unterminated OSC must not eat following lines")
+    }
+    func testRelayCloseCodesReadAsSentences() {
+        XCTAssertTrue(RemoteError.relayClosed(code: 1005, reason: nil).localizedDescription.contains("another connection"))
+        XCTAssertTrue(RemoteError.relayClosed(code: 1008, reason: nil).localizedDescription.contains("authorized"))
+        XCTAssertTrue(RemoteError.relayClosed(code: 1001, reason: nil).localizedDescription.contains("restarting"))
+        XCTAssertEqual(RemoteError.relayClosed(code: 4999, reason: nil).localizedDescription, "The relay closed the connection (code 4999).")
+        let shown = RemoteError.relayClosed(code: 1011, reason: "boom\u{1b}[31m\n\(String(repeating: "y", count: 500))").localizedDescription
+        XCTAssertFalse(shown.unicodeScalars.contains { $0.value < 32 })
+        XCTAssertLessThan(shown.count, 320)
+    }
+}
+
+private extension Data {
+    init(hexBytes hex: String) {
+        self.init(stride(from: 0, to: hex.count, by: 2).map { UInt8(hex[hex.index(hex.startIndex, offsetBy: $0)...hex.index(hex.startIndex, offsetBy: $0 + 1)], radix: 16)! })
     }
 }

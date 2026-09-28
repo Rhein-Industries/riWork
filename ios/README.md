@@ -29,6 +29,9 @@ xcrun simctl launch booted com.riwork.remote
 
 Use a specific simulator UDID when several are running. Keep ad-hoc simulator
 signing enabled. `CODE_SIGNING_ALLOWED=NO` compiles but cannot use Keychain (-34018).
+`xcodegen generate` also derives `RiWorkRemote/Info-Debug.plist` (`Info.plist` plus the
+Debug-only local-networking ATS exception, via `postGenCommand`); commit both plists.
+Release builds keep default App Transport Security and hide the local-relay switch.
 
 ## Pair and connect
 
@@ -40,17 +43,25 @@ desktop CLI's `shell resize` / `shell resize-clear` commands. An older installed
 CLI can list/read sessions but cannot fit them; update both desktop and connector.
 
 Tap **Add desktop**, enter a name, and paste the complete pairing JSON or
-`riwork://pair?v=1&data=…` link. Opening that link or scanning its QR code also
-opens the pairing form. Tap **Save pairing & connect**. Supported physical
+`riwork://pair?v=1&data=…` link. The form shows the parsed relay host, device name
+and desktop ID before anything is saved. Tap **Save pairing & connect**. Opening a
+link from another app or web page, which any of them can do, also opens the form,
+hides the raw data and asks for an explicit **Pair** confirmation naming the relay
+host and device. Scanning a QR code fills the form like a paste. Supported physical
 devices can scan with camera permission; simulator/unsupported devices can paste.
+Links with userinfo, a port, percent-encoding or an uppercase scheme are rejected.
 
-Physical devices require a trusted `wss://…/v1/ws` relay. Simulator testing can
-explicitly enable **Allow local development relay**, which permits `ws://` only
-on literal loopback hosts. Pair each device separately. Transfer the secret export
+Physical devices require a trusted `wss://…/v1/ws` relay. Simulator testing in a
+Debug build can explicitly enable **Allow local development relay**, which permits
+`ws://` only on literal loopback hosts (Release builds have neither the switch nor the
+ATS exception). Pair each device separately. Transfer the secret export
 directly to the intended device and remove it after import.
 
 Pairing keys, relay tokens, selections and unconfirmed input are stored only in
-device-local Keychain (`WhenUnlockedThisDeviceOnly`). The app does not use
+device-local Keychain (`WhenUnlockedThisDeviceOnly`). Only a missing Keychain item
+means "no desktops". If the stored library cannot be read or decoded, the app shows
+**Saved pairings unavailable** with **Try again**, refuses every write so nothing is
+overwritten, and offers a confirmed **Erase saved pairings** as a last resort. The app does not use
 UserDefaults for secrets, save terminal output to disk, or log pairing/frames.
 Rename/remove a desktop through its row’s options menu, context menu or swipe actions. Removal keeps
 desktop sessions running; revoke the device on the desktop to deny access.
@@ -68,7 +79,12 @@ clears if none remain. Old draft/output state clears on fallback. Pending input
 stays attached to its original shell and is never resent or moved to the new tab.
 If output returns `not_found`, the app refreshes project sessions once, reconciles,
 and stops polling that UUID. Explicit refresh or reconnect can check it again.
-Refresh or follow output from the toolbar.
+Refresh or follow output from the toolbar. Output is requested with `lines: 500`; if
+the desktop answers `response_too_large` or `cli_error` (its reply cap is 128 KiB, which
+wide grids with multibyte scrollback can exceed) the app halves `lines` down to 20,
+remembers the size that fits for that session, and resets it on reconnect or refresh.
+Backing out of a project while it loads only abandons that load; the connection stays
+up and the project loads again when reopened.
 
 The visible terminal measures its character cells and calls the exact v1
 `shell.resize` RPC before reading output. Selecting a tab, rotating the device,
@@ -79,8 +95,11 @@ Reconnect authenticates with fresh keys before reapplying the selected tab's gri
 The server also releases lost connections and recovers a connector crash within
 15 seconds. Another device's active override produces a useful error.
 
-Input is one control-free physical line, at most 8192 UTF-8 bytes. Tap **Send**
-(the upward arrow) to submit directly to the visibly selected tab. Send captures
+Input is one control-free physical line, at most 8192 UTF-8 bytes. The command field
+is a single-line UIKit text field with smart quotes, smart dashes, autocorrection and
+autocapitalization off, so `--oneline` and `"` reach the shell as typed. Multi-line
+pastes are refused (one trailing newline is dropped). Tap **Send** (the upward arrow)
+or the keyboard's Send key to submit directly to the visibly selected tab. Send captures
 that shell ID and the current line; a changed selection prevents delivery to a
 different tab. The desktop sends that line followed by Return. The app persists
 its request UUID
@@ -88,17 +107,28 @@ and line before sending. An uncertain result blocks further submission and
 survives reconnect/app restart. Review the indicated session before acknowledging
 the warning. Acknowledgement does not submit or retry anything.
 
-Backgrounding discards connection keys and marks output stale. Returning reconnects
-if the connection was active, with a fresh handshake and the same selected session.
-Manual disconnect remains disconnected. Reconnect/tab selection never recreates
+Backgrounding runs the viewport release under a UIKit background task, then discards
+connection keys and marks output stale; if iOS runs out of time the desktop restores its
+size within 15 seconds anyway. Returning reconnects if the connection was active, with a
+fresh handshake and the same selected session. Manual disconnect remains disconnected,
+including through backgrounding. While connected the phone sends a WebSocket ping every
+10 seconds (the relay never pings mobile sockets) and drops the connection if no pong
+arrives within 20; the URLSession idle timeout is 30 seconds. Relay close codes and
+reasons are shown as readable messages, for example a duplicate or unauthorized device. Reconnect/tab selection never recreates
 a terminal or retries input.
 
 ## Tests and real relay smoke
 
-`Core/RelayClient.swift` uses `URLSessionWebSocketTask`; `SessionCrypto.swift`
-implements the relay's exact v1 HMAC/HKDF/ChaCha20-Poly1305 contract in
+`Core/RelayClient.swift` uses `URLSessionWebSocketTask` behind the `WebSocketConnection`
+seam in `Core/WebSocketTransport.swift`, so `Tests/RelayClientTests.swift` can drive its
+handshake, cancellation, timeout, keepalive and close-code paths with a scripted desktop
+that enforces the exact-next-counter rule. Cancelling one request detaches only that
+caller: its already-sealed frame is still sent in order and its late response is dropped.
+`SessionCrypto.swift` implements the relay's exact v1 HMAC/HKDF/ChaCha20-Poly1305 contract in
 `docs/remote-protocol.md`. The checked-in fixture is copied verbatim from the
-relay's independently generated `remote/fixtures/v1.json`.
+relay's independently generated `remote/fixtures/v1.json`. Counter vectors above 0
+(`Tests/Fixtures/counter-vectors.json`) come from an independent RFC 8439 implementation,
+`scripts/gen-counter-vectors.py`, which first reproduces that fixture at counter 0.
 
 ```sh
 swift test --package-path ios

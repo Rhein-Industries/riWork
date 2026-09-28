@@ -10,6 +10,8 @@ private enum RemoteRoute: Hashable {
 private struct PairingRequest: Identifiable {
     let id = UUID()
     let text: String
+    /// Links can be opened by any app or web page, so they get a details-and-confirm step.
+    var fromLink = false
 }
 
 struct RemoteRootView: View {
@@ -18,13 +20,17 @@ struct RemoteRootView: View {
     @State private var pairingRequest: PairingRequest?
     @State private var renaming: SavedDesktop?
     @State private var removing: SavedDesktop?
+    // A double Back tap during the pop animation would otherwise pop an empty stack and trap.
+    private func pop() { if !path.isEmpty { path.removeLast() } }
     var body: some View {
         NavigationStack(path: $path) {
             VStack(spacing: 0) {
                 WorkspaceBar(title: "RIWORK") {
-                    Button("Add desktop", systemImage: "plus") { pairingRequest = PairingRequest(text: "") }.labelStyle(.iconOnly)
+                    Button("Add desktop", systemImage: "plus") { pairingRequest = PairingRequest(text: "") }.labelStyle(.iconOnly).disabled(model.loadFailed)
                 }
-                if model.desktops.isEmpty {
+                if model.loadFailed {
+                    LibraryFailureView(model: model)
+                } else if model.desktops.isEmpty {
                     EmptyDesktopOverlay { pairingRequest = PairingRequest(text: "") }
                 } else {
                     List {
@@ -76,18 +82,18 @@ struct RemoteRootView: View {
                 switch route {
                 case .projects(let desktopID):
                     VStack(spacing: 0) {
-                        WorkspaceBar(title: "PROJECTS", back: { path.removeLast() }) { EmptyView() }
+                        WorkspaceBar(title: "PROJECTS", back: pop) { EmptyView() }
                         ProjectSelectionView(model: model, onSelect: { path.append(.terminals($0)) })
                     }.background(DesktopStyle.background).id(desktopID).toolbar(.hidden, for: .navigationBar)
                 case .terminals(let project):
-                    TerminalTabsView(model: model, project: project, onBack: { path.removeLast() })
+                    TerminalTabsView(model: model, project: project, onBack: pop)
                         .toolbar(.hidden, for: .navigationBar)
                 }
             }
         }
         .background(DesktopStyle.background.ignoresSafeArea())
         .sheet(item: $pairingRequest) { request in
-            PairDesktopSheet(model: model, initialText: request.text, onAdded: { id in
+            PairDesktopSheet(model: model, initialText: request.text, fromLink: request.fromLink, onAdded: { id in
                 path = [.projects(id)]
                 Task { await model.activate(id) }
             })
@@ -100,7 +106,27 @@ struct RemoteRootView: View {
             }
             Button("Cancel", role: .cancel) { removing = nil }
         } message: { desktop in Text("Removes \(desktop.name)’s local pairing keys. Desktop sessions keep running. Revoke this device on the desktop to deny future access.") }
-        .onOpenURL { url in pairingRequest = PairingRequest(text: url.absoluteString) }
+        .onOpenURL { url in pairingRequest = PairingRequest(text: url.absoluteString, fromLink: true) }
+    }
+}
+
+private struct LibraryFailureView: View {
+    @Bindable var model: RemoteModel
+    @State private var confirmingReset = false
+    @State private var resetError: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("SAVED PAIRINGS UNAVAILABLE", systemImage: "exclamationmark.lock").font(.custom("Menlo-Bold", size: 14, relativeTo: .headline))
+            Text(model.loadFailure ?? "").foregroundStyle(DesktopStyle.warning).textSelection(.enabled)
+            Text("Nothing was changed or deleted. Pairing and removing desktops is paused until this loads.").foregroundStyle(DesktopStyle.muted)
+            if let resetError { Text(resetError).foregroundStyle(DesktopStyle.error) }
+            Button("Try again", systemImage: "arrow.clockwise") { model.loadLibrary() }.buttonStyle(DesktopButtonStyle(prominent: true))
+            Button("Erase saved pairings…", systemImage: "trash", role: .destructive) { confirmingReset = true }
+        }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center).background(DesktopStyle.background)
+            .alert("Erase saved pairings?", isPresented: $confirmingReset) {
+                Button("Erase", role: .destructive) { do { try model.resetLibrary() } catch { resetError = error.localizedDescription } }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text("Use this only if trying again never works. It deletes every pairing stored on this device, and each desktop has to be paired again.") }
     }
 }
 
@@ -363,17 +389,13 @@ struct SessionConsole: View {
                     VStack(alignment: .leading, spacing: 4) {
                         if let notice = model.deliveryNotice { Text(notice).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(DesktopStyle.muted) }
                         HStack {
-                            TextField("Continue the selected session…", text: $model.draft, axis: .vertical)
-                                .lineLimit(1...4).modifier(DesktopField()).autocorrectionDisabled().textInputAutocapitalization(.never)
-                                .disabled(!model.canEditDraft)
-                                .accessibilityLabel("Continuation prompt or terminal command")
-                            Button("Send", systemImage: "arrow.up") {
-                                guard let selectedID = model.sessionID else { return }
-                                let line = model.draft
-                                Task { await model.submit(expectedSessionID: selectedID, line: line) }
-                            }
+                            CommandField(text: $model.draft, placeholder: "Continue the selected session…", isEnabled: model.canEditDraft,
+                                         label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
+                                         onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
+                                .modifier(DesktopField())
+                            Button("Send", systemImage: "arrow.up", action: send)
                                 .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))
-                                .disabled(!model.canSend || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                .disabled(!canSubmit)
                                 .accessibilityLabel("Send to selected terminal")
                                 .accessibilityHint("Submits this line once followed by Return")
                         }
@@ -385,6 +407,12 @@ struct SessionConsole: View {
                 Text("Choose an open terminal tab.").foregroundStyle(DesktopStyle.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+    private var canSubmit: Bool { model.canSend && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private func send() {
+        guard let selectedID = model.sessionID else { return }
+        let line = model.draft
+        Task { await model.submit(expectedSessionID: selectedID, line: line) }
     }
     private var outputStale: Bool { model.state != .connected || model.snapshotStale || model.outputSessionID != model.sessionID || model.session?.alive != true || !model.viewportReady }
     private func reportViewport(_ size: CGSize) {
