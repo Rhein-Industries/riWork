@@ -7,11 +7,7 @@ profile=${1:-debug}
 binary="target/$profile/riwork"
 bundle="target/$profile/RiWork.app"
 resources="$bundle/Contents/Resources"
-app_icon="assets/app-icon/RiWork.icns"
-app_macos_major=$(/usr/bin/sw_vers -productVersion | /usr/bin/cut -d. -f1)
-if [ "$app_macos_major" -lt 26 ]; then
-    app_icon="assets/app-icon/RiWork-legacy.icns"
-fi
+app_icon="assets/app-icon/RiWork-legacy.icns"
 zig=${ZIG:-zig}
 
 if [ ! -x "$binary" ]; then

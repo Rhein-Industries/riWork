@@ -2,12 +2,12 @@
 
 The flat monochrome block hammer is RiWork's macOS app icon. The artwork is drawn directly as SVG paths, with no text or embedded bitmap.
 
-- `riwork-hammer.svg`: editable 1024 × 1024 app icon with an opaque full-bleed charcoal background for macOS 26 and later.
+- `riwork-hammer.svg`: editable 1024 × 1024 full-bleed artwork for Icon Composer.
 - `hammer-mark.svg`: transparent foreground artwork for Icon Composer.
-- `RiWork.icns`: compiled full-bleed macOS icon with 16–1024 px representations.
-- `riwork-hammer-legacy.svg` and `RiWork-legacy.icns`: rounded fallback for macOS versions before 26.
+- `RiWork.icns`: compiled full-bleed icon for Icon Composer workflows.
+- `riwork-hammer-legacy.svg` and `RiWork-legacy.icns`: rounded icon bundled on every supported macOS version. The filenames retain their original "legacy" name.
 
-The bundle script selects the full-bleed icon on macOS 26 and later, and the rounded fallback on earlier versions. It copies the selected file to `Contents/Resources/RiWork.icns` and declares it with `CFBundleIconFile`. Local updates stage both icon resources before packaging.
+The bundle script copies the rounded icon to `Contents/Resources/RiWork.icns` and declares it with `CFBundleIconFile`. Local updates stage both icon resources before packaging.
 
 To regenerate the `.icns`, render `riwork-hammer.svg` at the pixel sizes below into a directory named `RiWork.iconset`, then run `iconutil -c icns -o RiWork.icns RiWork.iconset`. An SVG renderer such as `rsvg-convert` can render each PNG directly from the source.
 
