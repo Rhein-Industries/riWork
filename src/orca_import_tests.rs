@@ -491,3 +491,168 @@ fn destination_symlink_retarget_requires_new_preview() {
         fs::read(fixture.root.join("state/state.json")).unwrap()
     );
 }
+
+#[test]
+fn empty_warning_free_plan_never_records_a_receipt() {
+    let fixture = Fixture::new();
+    let manager = fixture.manager();
+    // Orca may still be starting, or may simply have no projects yet.
+    let preview = manager.inspect().unwrap();
+    assert_eq!((preview.project_count, preview.worktree_count), (0, 0));
+    assert!(
+        manager
+            .import(&preview)
+            .unwrap_err()
+            .contains("Nothing was recorded")
+    );
+    assert!(!fixture.root.join("state/state.json").exists());
+    assert!(fixture.store.snapshot().unwrap().orca_import.is_none());
+    assert!(manager.inspect().unwrap().already_imported.is_none());
+
+    // Once Orca reports projects, the same manager can still import them.
+    let root = fixture.directory("repo");
+    fixture.source(&root, &fixture.directory("feature"));
+    let preview = manager.inspect().unwrap();
+    assert_eq!((preview.project_count, preview.worktree_count), (1, 2));
+    manager.import(&preview).unwrap();
+    assert!(manager.inspect().unwrap().already_imported.is_some());
+}
+
+#[test]
+fn everything_already_in_riwork_does_not_record_a_receipt() {
+    let fixture = Fixture::new();
+    let root = fixture.directory("repo");
+    let feature = fixture.directory("feature");
+    fixture.add_existing(root.clone(), Some(feature.clone()));
+    fixture
+        .store
+        .transaction(|state| {
+            state.worktrees.push(Worktree {
+                id: "existing-root-worktree".into(),
+                project_id: "existing".into(),
+                path: root.clone(),
+                branch: "main".into(),
+                is_primary: true,
+                repository_root: None,
+                created_at: 9,
+            });
+            Ok(())
+        })
+        .unwrap();
+    fixture.source(&root, &feature);
+    let manager = fixture.manager();
+    let preview = manager.inspect().unwrap();
+    assert_eq!((preview.project_count, preview.worktree_count), (0, 0));
+    assert!(manager.import(&preview).is_err());
+    assert!(fixture.store.snapshot().unwrap().orca_import.is_none());
+}
+
+#[test]
+fn empty_plan_with_skipped_items_still_records_completion() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "projects",
+        json!({"projects": [{"id": "gone", "displayName": "Gone"}]}),
+    );
+    fixture.write("setups", json!({"setups": [
+        {"id": "gone", "projectId": "gone", "hostId": "local", "path": fixture.root.join("absent"), "kind": "folder", "setupState": "ready"}
+    ]}));
+    let manager = fixture.manager();
+    let preview = manager.inspect().unwrap();
+    assert_eq!((preview.project_count, preview.worktree_count), (0, 0));
+    assert!(
+        preview
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("missing local project"))
+    );
+    let receipt = manager.import(&preview).unwrap();
+    assert_eq!((receipt.project_count, receipt.worktree_count), (0, 0));
+    assert!(manager.inspect().unwrap().already_imported.is_some());
+}
+
+struct CliLayout {
+    root: PathBuf,
+    bundle: PathBuf,
+    path_dir: PathBuf,
+    fallback: PathBuf,
+}
+
+impl CliLayout {
+    fn new(fixture: &Fixture) -> Self {
+        Self {
+            root: fixture.root.clone(),
+            bundle: fixture.root.join("Orca.app/bin/orca"),
+            path_dir: fixture.root.join("path-bin"),
+            fallback: fixture.root.join("fallback-bin"),
+        }
+    }
+
+    fn install(&self, path: &Path) -> PathBuf {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        path.canonicalize().unwrap()
+    }
+
+    fn find(&self, override_command: Option<&OsStr>, development: bool) -> Result<PathBuf, String> {
+        find_cli(
+            override_command.map(OsStr::to_os_string),
+            development,
+            Some(&self.bundle),
+            Some(env::join_paths([&self.path_dir]).unwrap()),
+            std::slice::from_ref(&self.fallback),
+        )
+    }
+}
+
+#[test]
+fn cli_lookup_prefers_the_app_bundle_and_keeps_the_same_fallbacks() {
+    let fixture = Fixture::new();
+    let layout = CliLayout::new(&fixture);
+    assert!(layout.find(None, false).unwrap_err().contains("not found"));
+
+    let fallback = layout.install(&layout.fallback.join("orca"));
+    assert_eq!(layout.find(None, false).unwrap(), fallback);
+    let on_path = layout.install(&layout.path_dir.join("orca"));
+    assert_eq!(layout.find(None, false).unwrap(), on_path);
+    // Import and account discovery agree on Orca.app even without a symlink.
+    let bundle = layout.install(&layout.bundle);
+    assert_eq!(layout.find(None, false).unwrap(), bundle);
+
+    // An explicit override still wins, and an empty one is rejected.
+    assert_eq!(
+        layout.find(Some(on_path.as_os_str()), false).unwrap(),
+        on_path
+    );
+    assert!(
+        layout
+            .find(Some(OsStr::new("")), false)
+            .unwrap_err()
+            .contains("empty")
+    );
+    assert!(
+        layout
+            .find(Some(layout.root.join("absent").as_os_str()), false)
+            .is_err()
+    );
+}
+
+#[test]
+fn development_checkouts_use_orca_dev_instead_of_the_installed_bundle() {
+    let fixture = Fixture::new();
+    let layout = CliLayout::new(&fixture);
+    layout.install(&layout.bundle);
+    assert!(layout.find(None, true).unwrap_err().contains("orca-dev"));
+    let dev = layout.install(&layout.path_dir.join("orca-dev"));
+    assert_eq!(layout.find(None, true).unwrap(), dev);
+}
+
+#[test]
+fn cli_lookup_skips_files_that_are_not_executable() {
+    let fixture = Fixture::new();
+    let layout = CliLayout::new(&fixture);
+    let plain = layout.install(&layout.bundle);
+    fs::set_permissions(&plain, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(layout.find(None, false).is_err());
+}

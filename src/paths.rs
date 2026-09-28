@@ -24,5 +24,31 @@ pub fn default_new_project_path(name: &str) -> Result<PathBuf, String> {
                 .to_owned(),
         );
     }
+    // Hidden names are reserved for tools: `.git` here would make every later
+    // project in the default directory look like it lives inside a repository.
+    if name.starts_with('.') {
+        return Err(
+            "A default project name cannot start with a dot; use PATH for another location"
+                .to_owned(),
+        );
+    }
     Ok(default_projects_directory()?.join(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_names_are_one_visible_folder_name() {
+        for name in [
+            "", "  ", ".", "..", ".git", ".GIT", ".Git", " .git ", ".hidden", "a/b", "a\\b", "a\0b",
+        ] {
+            assert!(default_new_project_path(name).is_err(), "{name:?}");
+        }
+        for name in ["project", "my.project", "git", "gitignore.d", " padded "] {
+            let path = default_new_project_path(name).unwrap();
+            assert_eq!(path.file_name().unwrap(), name.trim());
+        }
+    }
 }

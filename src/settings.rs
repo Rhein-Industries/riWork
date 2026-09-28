@@ -537,7 +537,12 @@ impl SettingsPanel {
                                                 account.unavailable_reason.clone().unwrap_or_else(
                                                     || {
                                                         if account.is_system_default {
-                                                            "Current Codex profile".to_owned()
+                                                            format!(
+                                                                "Current Codex profile · {}",
+                                                                codex_accounts::display_home(
+                                                                    &account.home,
+                                                                ),
+                                                            )
                                                         } else if snapshot.source_active_id.as_ref()
                                                             == Some(&account.id)
                                                         {

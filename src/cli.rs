@@ -454,6 +454,25 @@ fn print_cua_status(status: &CuaStatus, json: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn gui_command(executable: PathBuf, root: &std::path::Path) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .arg(root)
+        .env_remove("RIWORK_RESTORE_TICKET")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Run from an account-bound session, `open` must not turn that session's
+    // Codex home into the new window's system default.
+    crate::codex_accounts::scrub_injected_environment(&mut command);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+}
+
 fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
     let selector = optional_single(args, "open [PROJECT_OR_PATH] [--json]")?;
     let state = Store::open_default()?.snapshot()?;
@@ -495,20 +514,7 @@ fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
             root.display()
         ));
     }
-    let executable = gui_executable()?;
-    let mut command = Command::new(executable);
-    command
-        .arg(&root)
-        .env_remove("RIWORK_RESTORE_TICKET")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let child = command
+    let child = gui_command(gui_executable()?, &root)
         .spawn()
         .map_err(|error| format!("Cannot launch the project window: {error}"))?;
     if json {
@@ -1979,5 +1985,71 @@ mod tests {
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::gui_command;
+    use std::{
+        collections::BTreeSet,
+        env, fs,
+        path::{Path, PathBuf},
+        process::Command,
+    };
+
+    fn removed_variables(command: &Command) -> BTreeSet<String> {
+        command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Runs this test again in a child with a controlled environment.
+    fn child(case: &str, root: &Path, codex_home: &Path, pinned_home: &Path) {
+        let output = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cli::open_tests::open_scrubs_only_an_injected_codex_home",
+                "--nocapture",
+            ])
+            .env("RIWORK_TEST_OPEN_CASE", case)
+            .env("ORCA_USER_DATA_PATH", root.join("profile"))
+            .env("CODEX_HOME", codex_home)
+            .env("RIWORK_CODEX_ACCOUNT_HOME", pinned_home)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // A filter that matches nothing also exits successfully.
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{case}\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn open_scrubs_only_an_injected_codex_home() {
+        if let Some(case) = env::var_os("RIWORK_TEST_OPEN_CASE") {
+            let removed = removed_variables(&gui_command(
+                PathBuf::from("/unused/riwork"),
+                Path::new("/unused/project"),
+            ));
+            assert!(removed.contains("RIWORK_RESTORE_TICKET"));
+            assert!(removed.contains("RIWORK_CODEX_ACCOUNT_HOME"));
+            assert!(removed.contains("RIWORK_CODEX_SHELL_ID"));
+            assert_eq!(removed.contains("CODEX_HOME"), case == "injected");
+            return;
+        }
+        let root = env::temp_dir().join(format!("riwork-open-test-{}", uuid::Uuid::new_v4()));
+        let account = root.join("profile/codex-accounts/account-a/home");
+        fs::create_dir_all(&account).unwrap();
+        let own = root.join("my-codex");
+        // An account-bound session exports its account home; a system-default
+        // session pins the user's own CODEX_HOME, which `open` must keep.
+        child("injected", &root, &account, &account);
+        child("own", &root, &own, &own);
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -1,7 +1,9 @@
 //! Latest source-file edit times, calculated on the caller's background thread.
 //!
-//! A project is omitted when its scan is incomplete. A partial maximum would
-//! otherwise look like an authoritative last edit, especially for large trees.
+//! Each root is scanned within its own budget. A root whose scan does not
+//! complete contributes nothing, never a partial maximum, and a project shows the
+//! latest edit among the roots that did complete, so one oversized or unreadable
+//! root cannot erase the date of the others.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,16 +20,34 @@ use std::{
 use crate::store::State;
 
 const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
-const PROJECT_TIMEOUT: Duration = Duration::from_secs(5);
+const ROOT_TIMEOUT: Duration = Duration::from_secs(5);
 const GIT_TIMEOUT: Duration = Duration::from_millis(1500);
 const MAX_ENTRIES: usize = 50_000;
 const MAX_DEPTH: usize = 40;
 const MAX_GIT_OUTPUT: usize = 8 * 1024 * 1024;
 
-/// Return observed UNIX-second mtimes for projects whose source scan completed.
-/// Missing roots and projects without regular source files have no entry.
+#[derive(Clone, Copy)]
+struct Limits {
+    scan_timeout: Duration,
+    root_timeout: Duration,
+    root_entries: usize,
+}
+
+const LIMITS: Limits = Limits {
+    scan_timeout: SCAN_TIMEOUT,
+    root_timeout: ROOT_TIMEOUT,
+    root_entries: MAX_ENTRIES,
+};
+
+/// Return observed UNIX-second mtimes for projects with at least one completed
+/// root scan. Missing roots and projects without regular source files have no
+/// entry.
 pub fn scan(state: &State) -> BTreeMap<String, u64> {
-    let deadline = Instant::now() + SCAN_TIMEOUT;
+    scan_with(state, LIMITS)
+}
+
+fn scan_with(state: &State, limits: Limits) -> BTreeMap<String, u64> {
+    let deadline = Instant::now() + limits.scan_timeout;
     let mut results = BTreeMap::new();
     let mut root_cache: BTreeMap<PathBuf, Result<Option<u64>, ()>> = BTreeMap::new();
 
@@ -36,11 +56,6 @@ pub fn scan(state: &State) -> BTreeMap<String, u64> {
             break;
         }
         let mut roots = BTreeSet::new();
-        let mut complete = true;
-        let mut budget = Budget {
-            deadline: deadline.min(Instant::now() + PROJECT_TIMEOUT),
-            remaining_entries: MAX_ENTRIES,
-        };
         for path in std::iter::once(&project.root)
             .chain(project.repository_roots.iter())
             .chain(
@@ -51,42 +66,35 @@ pub fn scan(state: &State) -> BTreeMap<String, u64> {
                     .map(|worktree| &worktree.path),
             )
         {
-            if budget.consume().is_err() {
-                complete = false;
-                break;
-            }
-            match path.canonicalize() {
-                Ok(root) => match fs::symlink_metadata(&root) {
-                    Ok(metadata) if metadata.file_type().is_dir() => {
-                        roots.insert(root);
-                    }
-                    Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(_) => complete = false,
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => complete = false,
+            // A root that cannot be resolved is skipped like a missing one.
+            if let Ok(root) = path.canonicalize()
+                && fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_dir())
+            {
+                roots.insert(root);
             }
         }
         let mut latest = None;
         for root in roots {
+            if Instant::now() >= deadline {
+                break;
+            }
             let result = match root_cache.get(&root) {
                 Some(result) => *result,
                 None => {
+                    let mut budget = Budget {
+                        deadline: deadline.min(Instant::now() + limits.root_timeout),
+                        remaining_entries: limits.root_entries,
+                    };
                     let result = scan_root(&root, &mut budget);
                     root_cache.insert(root, result);
                     result
                 }
             };
-            match result {
-                Ok(time) => latest = later(latest, time),
-                Err(()) => complete = false,
-            }
-            if !complete {
-                break;
+            if let Ok(time) = result {
+                latest = later(latest, time);
             }
         }
-        if complete && let Some(latest) = latest {
+        if let Some(latest) = latest {
             results.insert(project.id.clone(), latest);
         }
     }
@@ -158,12 +166,22 @@ fn regular_file_time(metadata: &fs::Metadata) -> Result<Option<u64>, ()> {
     if !metadata.file_type().is_file() {
         return Ok(None);
     }
-    metadata
-        .modified()
-        .map_err(|_| ())?
-        .duration_since(UNIX_EPOCH)
-        .map(|time| Some(time.as_secs()))
-        .map_err(|_| ())
+    // A file dated before 1970 is real, just very old; it must not void the scan.
+    Ok(Some(
+        metadata
+            .modified()
+            .map_err(|_| ())?
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |time| time.as_secs()),
+    ))
+}
+
+/// Entries that vanished or that the user cannot read hold no observable edit.
+fn unobservable(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+    )
 }
 
 fn has_git_ancestor(root: &Path) -> bool {
@@ -301,7 +319,7 @@ fn scan_git_files(root: &Path, files: &[u8], budget: &mut Budget) -> Result<Opti
                     safe = false;
                     break;
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error) if unobservable(&error) => {
                     safe = false;
                     break;
                 }
@@ -313,7 +331,7 @@ fn scan_git_files(root: &Path, files: &[u8], budget: &mut Budget) -> Result<Opti
         }
         match fs::symlink_metadata(root.join(relative)) {
             Ok(metadata) => latest = later(latest, regular_file_time(&metadata)?),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if unobservable(&error) => {}
             Err(_) => return Err(()),
         }
     }
@@ -337,7 +355,12 @@ fn scan_plain(root: &Path, budget: &mut Budget) -> Result<Option<u64>, ()> {
             latest = later(latest, scan_git_files(&directory, &files, budget)?);
             continue;
         }
-        for entry in fs::read_dir(directory).map_err(|_| ())? {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if unobservable(&error) => continue,
+            Err(_) => return Err(()),
+        };
+        for entry in entries {
             budget.consume()?;
             let entry = entry.map_err(|_| ())?;
             let name = entry.file_name();
@@ -353,7 +376,7 @@ fn scan_plain(root: &Path, budget: &mut Budget) -> Result<Option<u64>, ()> {
             } else if file_type.is_file() {
                 match fs::symlink_metadata(entry.path()) {
                     Ok(metadata) => latest = later(latest, regular_file_time(&metadata)?),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) if unobservable(&error) => {}
                     Err(_) => return Err(()),
                 }
             }
@@ -567,6 +590,132 @@ mod tests {
         fixture.git(&["init", "--quiet"]);
         fixture.git(&["add", "source.rs", "linked.rs", "linked-directory"]);
         assert_eq!(scan(&fixture.state()).get("project"), Some(&20));
+    }
+
+    fn with_root_entries(root_entries: usize) -> Limits {
+        Limits {
+            root_entries,
+            ..LIMITS
+        }
+    }
+
+    #[test]
+    fn each_root_gets_its_own_entry_budget() {
+        let first = Fixture::new();
+        first.file("one.rs", 100);
+        first.file("two.rs", 150);
+        let second = Fixture::new();
+        second.file("one.rs", 250);
+        second.file("two.rs", 200);
+        let mut state = first.state();
+        state.projects[0].repository_roots = vec![second.0.clone()];
+        // Each root needs exactly two entries; the project needs four.
+        assert_eq!(
+            scan_with(&state, with_root_entries(2)).get("project"),
+            Some(&250)
+        );
+    }
+
+    #[test]
+    fn a_root_over_its_budget_does_not_erase_the_completed_roots() {
+        let large = Fixture::new();
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            large.file(name, 900);
+        }
+        let small = Fixture::new();
+        small.file("only.rs", 40);
+        let mut state = large.state();
+        state.projects[0].repository_roots = vec![small.0.clone()];
+        let limits = with_root_entries(2);
+        assert_eq!(scan_with(&state, limits).get("project"), Some(&40));
+        // With nothing complete, the project stays unknown rather than partial.
+        state.projects[0].repository_roots.clear();
+        assert!(scan_with(&state, limits).is_empty());
+    }
+
+    #[test]
+    fn many_worktree_roots_do_not_share_one_budget() {
+        let project = Fixture::new();
+        project.file("source.rs", 10);
+        let worktrees: Vec<_> = (0..6)
+            .map(|index| {
+                let worktree = Fixture::new();
+                worktree.file("a.rs", 20 + index);
+                worktree.file("b.rs", 30 + index);
+                worktree
+            })
+            .collect();
+        let mut state = project.state();
+        state.worktrees = worktrees
+            .iter()
+            .enumerate()
+            .map(|(index, worktree)| Worktree {
+                id: format!("worktree-{index}"),
+                project_id: "project".to_owned(),
+                branch: format!("branch-{index}"),
+                path: worktree.0.clone(),
+                is_primary: false,
+                repository_root: None,
+                created_at: 999_999,
+            })
+            .collect();
+        assert_eq!(
+            scan_with(&state, with_root_entries(2)).get("project"),
+            Some(&35)
+        );
+    }
+
+    #[test]
+    fn files_dated_before_1970_count_as_the_oldest_edit() {
+        let fixture = Fixture::new();
+        let old = fixture.file("old.rs", 0);
+        File::open(&old)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(UNIX_EPOCH - Duration::from_secs(86_400)))
+            .unwrap();
+        assert_eq!(scan(&fixture.state()).get("project"), Some(&0));
+        fixture.file("new.rs", 50);
+        assert_eq!(scan(&fixture.state()).get("project"), Some(&50));
+    }
+
+    #[cfg(unix)]
+    struct Unlock(PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for Unlock {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    #[cfg(unix)]
+    fn lock(directory: &Path) -> Unlock {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o000)).unwrap();
+        Unlock(directory.to_owned())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_subdirectory_does_not_erase_the_project_date() {
+        let fixture = Fixture::new();
+        fixture.file("src/main.rs", 40);
+        fixture.file("private/secret.rs", 900);
+        let _unlock = lock(&fixture.0.join("private"));
+        assert_eq!(scan(&fixture.state()).get("project"), Some(&40));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_in_a_git_repository_is_skipped() {
+        let fixture = Fixture::new();
+        fixture.git(&["init", "--quiet"]);
+        fixture.file("src/main.rs", 40);
+        fixture.file("private/secret.rs", 900);
+        fixture.git(&["add", "src/main.rs", "private/secret.rs"]);
+        let _unlock = lock(&fixture.0.join("private"));
+        assert_eq!(scan(&fixture.state()).get("project"), Some(&40));
     }
 
     #[test]

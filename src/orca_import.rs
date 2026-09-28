@@ -5,7 +5,9 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -29,6 +31,7 @@ const MAX_STDOUT: usize = 32 * 1024 * 1024;
 const MAX_STDERR: usize = 256 * 1024;
 const REFRESH_MESSAGE: &str =
     "Orca or RiWork changed since this preview. Refresh the preview before importing.";
+const NOTHING_TO_IMPORT_MESSAGE: &str = "Orca has no projects or worktrees to import yet. Nothing was recorded, so you can import again once Orca has loaded them.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportReceipt {
@@ -94,8 +97,12 @@ impl ImportManager {
         if executable_identity(&source)? != identity {
             return Err(REFRESH_MESSAGE.to_owned());
         }
-        let (plan, mut warnings) = make_plan(&state, &snapshot);
+        let (mut plan, mut warnings) = make_plan(&state, &snapshot);
         warnings.splice(0..0, snapshot.warnings.iter().cloned());
+        // Orca still starting up, or with no projects yet, looks like an empty
+        // plan. Recording that would report every later import as complete.
+        plan.recordable =
+            !plan.projects.is_empty() || !plan.worktrees.is_empty() || !warnings.is_empty();
         warnings.push("Orca's CLI does not export project folder names; imported projects will be unfiled. Existing RiWork folders are preserved.".to_owned());
         Ok(ImportPreview {
             source,
@@ -129,6 +136,9 @@ impl ImportManager {
             || executable_identity(&source)? != identity
         {
             return Err(REFRESH_MESSAGE.to_owned());
+        }
+        if !preview.plan.recordable {
+            return Err(NOTHING_TO_IMPORT_MESSAGE.to_owned());
         }
         self.store.transaction_if_changed(|state| {
             if let Some(receipt) = &state.orca_import {
@@ -186,6 +196,9 @@ impl ImportManager {
 struct ImportPlan {
     projects: Vec<Project>,
     worktrees: Vec<Worktree>,
+    /// Whether there is anything, additions or skipped-item warnings, for a
+    /// completion receipt to record.
+    recordable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -531,37 +544,75 @@ fn decode_array<T: for<'de> Deserialize<'de>>(value: &Value, key: &str) -> Resul
         .map_err(|error| format!("Cannot decode Orca {key}: {error}"))
 }
 
-fn discover_cli() -> Result<PathBuf, String> {
-    if let Some(command) = env::var_os("ORCA_CLI_COMMAND") {
+/// The installed Orca CLI's location inside Orca.app on macOS.
+const ORCA_APP_CLI: &str = "/Applications/Orca.app/Contents/Resources/bin/orca";
+
+/// The one lookup for Orca's CLI, shared with Codex account discovery:
+/// `ORCA_CLI_COMMAND`, then the Orca.app bundle, then `PATH` and the usual
+/// install directories.
+pub fn discover_cli() -> Result<PathBuf, String> {
+    find_cli(
+        env::var_os("ORCA_CLI_COMMAND"),
+        env::var_os("ORCA_DEV_REPO_ROOT").is_some(),
+        cfg!(target_os = "macos").then(|| Path::new(ORCA_APP_CLI)),
+        env::var_os("PATH"),
+        &fallback_directories(),
+    )
+}
+
+fn fallback_directories() -> [PathBuf; 2] {
+    [
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+    ]
+}
+
+fn find_cli(
+    override_command: Option<OsString>,
+    development: bool,
+    bundle: Option<&Path>,
+    path: Option<OsString>,
+    fallbacks: &[PathBuf],
+) -> Result<PathBuf, String> {
+    if let Some(command) = override_command {
         if command.is_empty() {
             return Err(
                 "ORCA_CLI_COMMAND is empty. Set it to a single Orca executable path.".to_owned(),
             );
         }
-        return resolve_executable(&command);
+        return resolve_executable_in(&command, path, fallbacks);
     }
-    let name = if env::var_os("ORCA_DEV_REPO_ROOT").is_some() {
+    // A development checkout has its own CLI; the installed bundle is another Orca.
+    if !development && let Some(cli) = bundle.and_then(executable_path) {
+        return Ok(cli);
+    }
+    let name = if development {
         "orca-dev"
     } else if cfg!(target_os = "linux") {
         "orca-ide"
     } else {
         "orca"
     };
-    resolve_executable(std::ffi::OsStr::new(name))
+    resolve_executable_in(OsStr::new(name), path, fallbacks)
 }
 
-fn resolve_executable(command: &std::ffi::OsStr) -> Result<PathBuf, String> {
+fn resolve_executable(command: &OsStr) -> Result<PathBuf, String> {
+    resolve_executable_in(command, env::var_os("PATH"), &fallback_directories())
+}
+
+fn resolve_executable_in(
+    command: &OsStr,
+    path_variable: Option<OsString>,
+    fallbacks: &[PathBuf],
+) -> Result<PathBuf, String> {
     let path = Path::new(command);
     if path.components().count() > 1 || path.is_absolute() {
         return executable_path(path).ok_or_else(|| format!("Orca CLI {} is unavailable. Install Orca or set ORCA_CLI_COMMAND to its executable path.", path.display()));
     }
-    let mut directories: Vec<PathBuf> = env::var_os("PATH")
+    let mut directories: Vec<PathBuf> = path_variable
         .map(|path| env::split_paths(&path).collect())
         .unwrap_or_default();
-    directories.extend([
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/opt/homebrew/bin"),
-    ]);
+    directories.extend(fallbacks.iter().cloned());
     directories.into_iter().find_map(|directory| executable_path(&directory.join(command)))
         .ok_or_else(|| format!("Orca CLI '{}' was not found. Install Orca or set ORCA_CLI_COMMAND to its executable path, then retry.", command.to_string_lossy()))
 }
@@ -717,13 +768,10 @@ fn spawn_reader(
 fn terminate(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
-        unsafe extern "C" {
-            fn kill(pid: i32, signal: i32) -> i32;
-        }
         // The CLI has its own process group, so timeout also closes pipes held
         // by children it started, without touching Orca's existing app process.
         unsafe {
-            kill(-(child.id() as i32), 9);
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
         }
     }
     let _ = child.kill();
