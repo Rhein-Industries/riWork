@@ -20,7 +20,6 @@ enum ConnectionState: Equatable {
     var error: String?
     var projects: [RemoteProject] = []
     var worktrees: [RemoteWorktree] = []
-    var tasks: [RemoteTask] = []
     var shells: [RemoteSession] = []
     var orchestrators: [RemoteSession] = []
     var output = ""
@@ -36,27 +35,50 @@ enum ConnectionState: Equatable {
     var viewportError: String?
     var terminalVisible = false
     var draft = ""
+    /// Set when the Keychain library could not be read. Saved pairings are then untouched and never overwritten.
+    var loadFailure: String?
+    var loadFailed: Bool { loadFailure != nil }
     @ObservationIgnored private let keychain: KeychainStore
     @ObservationIgnored private let client: any RemoteTransport
+    @ObservationIgnored private let pollInterval: Duration
     @ObservationIgnored private var polling: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var wantsConnection = false
     // A not_found UUID is excluded until an explicit refresh or fresh connection.
     private var missingSessionIDs: Set<String> = []
+    // The project whose worktrees and shells are current for this connection; a cancelled load leaves it unset.
+    @ObservationIgnored private var loadedProjectID: String?
+    // Per-session `lines` that fit the desktop's 128 KiB reply cap; wide grids or multibyte scrollback need fewer.
+    @ObservationIgnored private var outputLines: [String: Int] = [:]
+    private static let defaultOutputLines = 500, minimumOutputLines = 20
     @ObservationIgnored private var viewportBusy = false
     @ObservationIgnored private var viewportWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var viewportUpdateScheduled = false
     @ObservationIgnored private var failedViewport: ViewportTarget?
     private struct ViewportTarget: Equatable { let shellID: String; let viewport: TerminalViewport }
 
-    init(client: any RemoteTransport = RelayClient(), keychain: KeychainStore = KeychainStore()) {
+    init(client: any RemoteTransport = RelayClient(), keychain: KeychainStore = KeychainStore(), pollInterval: Duration = .seconds(3)) {
         self.client = client
         self.keychain = keychain
+        self.pollInterval = pollInterval
+        loadLibrary()
+    }
+    /// Only "item not found" means an empty library. Any other failure blocks writes so a retry can still succeed.
+    func loadLibrary() {
         do {
             let library = try keychain.read(Library.self) ?? Library()
             desktops = library.desktops
             selectedDesktopID = library.selectedDesktopID ?? desktops.first?.id
-        } catch { self.error = error.localizedDescription }
+            loadFailure = nil
+        } catch {
+            desktops = []; selectedDesktopID = nil
+            loadFailure = error is KeychainError ? error.localizedDescription : "Saved pairings could not be read (\(error.localizedDescription)). They were left untouched."
+        }
+    }
+    /// Last resort when the stored library can never be decoded; the user confirms first.
+    func resetLibrary() throws {
+        try keychain.delete()
+        desktops = []; selectedDesktopID = nil; loadFailure = nil; error = nil
     }
     var desktop: SavedDesktop? { desktops.first(where: { $0.id == selectedDesktopID }) }
     var projectID: String? { desktop?.selectedProjectID }
@@ -132,11 +154,18 @@ enum ConnectionState: Equatable {
             viewportSessionID = target.shellID; appliedViewport = target.viewport
             viewportError = nil; failedViewport = nil
         } catch {
-            if generation == token { failedViewport = target; viewportError = error.localizedDescription }
+            if generation == token {
+                if !(error is CancellationError) { failedViewport = target; viewportError = error.localizedDescription }
+                // A cancelled, timed-out or mismatched resize may still have pinned the shell; keep it releasable.
+                if case RemoteError.rpc = error {} else { viewportSessionID = target.shellID; appliedViewport = nil }
+            }
             throw error
         }
     }
-    func persist() throws { try keychain.write(Library(desktops: desktops, selectedDesktopID: selectedDesktopID)) }
+    func persist() throws {
+        guard !loadFailed else { throw RemoteError.remote("Saved pairings could not be loaded, so nothing was saved. Retry loading them first.") }
+        try keychain.write(Library(desktops: desktops, selectedDesktopID: selectedDesktopID))
+    }
     private func updateDesktop(_ update: (inout SavedDesktop) -> Void) throws {
         guard let i = desktops.firstIndex(where: { $0.id == selectedDesktopID }) else { return }
         let previous = desktops[i]
@@ -179,7 +208,7 @@ enum ConnectionState: Equatable {
         polling?.cancel()
         generation = UUID(); let token = generation
         viewportSessionID = nil; appliedViewport = nil; failedViewport = nil; viewportError = nil
-        missingSessionIDs = []
+        missingSessionIDs = []; loadedProjectID = nil; outputLines = [:]
         state = .connecting; error = nil; snapshotStale = true
         do {
             try await client.connect(pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment)
@@ -197,21 +226,23 @@ enum ConnectionState: Equatable {
     func disconnect(background: Bool = false) async {
         let token = generation
         if !background { wantsConnection = false }
-        state = background ? .suspended : .disconnected
+        // A manual disconnect stays disconnected through backgrounding; only an active connection is "paused".
+        state = background && wantsConnection ? .suspended : .disconnected
         snapshotStale = true; loading = false
         polling?.cancel(); polling = nil
-        // Clear only this authenticated connection's override before closing, when possible.
-        try? await synchronizeViewport(token: token, forceRelease: true)
+        // Clear only this authenticated connection's override before closing, when possible. Unstructured so a
+        // cancelled caller cannot skip it; the cancelled poll it waits behind only detaches its own request.
+        await Task { try? await self.synchronizeViewport(token: token, forceRelease: true) }.value
         guard generation == token else { return }
         generation = UUID()
         viewportSessionID = nil; appliedViewport = nil; failedViewport = nil
         await client.disconnect()
     }
     func resume() async { if wantsConnection, state == .suspended { await connect() } }
-    private func clearSnapshot() { projects = []; worktrees = []; tasks = []; shells = []; orchestrators = []; output = ""; outputSessionID = nil; lastOutputAt = nil; snapshotStale = true }
+    private func clearSnapshot() { projects = []; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; output = ""; outputSessionID = nil; lastOutputAt = nil; snapshotStale = true }
     func refresh() async {
         guard state == .connected else { return }
-        failedViewport = nil; viewportError = nil; missingSessionIDs = []
+        failedViewport = nil; viewportError = nil; missingSessionIDs = []; outputLines = [:]
         do { try await refresh(token: generation) } catch { handle(error) }
     }
     private func rpc(_ method: String, _ params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
@@ -230,18 +261,21 @@ enum ConnectionState: Equatable {
         if sessionID != nil { await readOutput() }
     }
     func chooseProject(_ id: String) async {
-        guard projectID != id else { return }
+        // Re-entering a project whose load was cancelled (Back during loading) must load it again.
+        guard projectID != id || (state == .connected && !loading && loadedProjectID != id) else { return }
         do {
             if state == .connected { try? await synchronizeViewport(token: generation, forceRelease: true) }
-            try updateDesktop {
-                if let previousProject = $0.selectedProjectID, let previousSession = $0.selectedSessionID {
-                    var selections = $0.projectSessionIDs ?? [:]; selections[previousProject] = previousSession; $0.projectSessionIDs = selections
+            if projectID != id {
+                try updateDesktop {
+                    if let previousProject = $0.selectedProjectID, let previousSession = $0.selectedSessionID {
+                        var selections = $0.projectSessionIDs ?? [:]; selections[previousProject] = previousSession; $0.projectSessionIDs = selections
+                    }
+                    $0.selectedProjectID = id
+                    $0.selectedSessionID = $0.projectSessionIDs?[id]
                 }
-                $0.selectedProjectID = id
-                $0.selectedSessionID = $0.projectSessionIDs?[id]
             }
             output = ""; outputSessionID = nil; lastOutputAt = nil; draft = ""; deliveryNotice = nil
-            worktrees = []; tasks = []; shells = []; snapshotStale = true
+            worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
             if state == .connected {
                 try await loadProject(id, token: generation)
                 await readOutput()
@@ -251,10 +285,9 @@ enum ConnectionState: Equatable {
     private func loadProject(_ id: String, token: UUID) async throws {
         let params: [String: JSONValue] = ["project_id": .string(id)]
         let trees = try await rpc("worktrees.list", params)["worktrees"].decode([RemoteWorktree].self)
-        let jobs = try await rpc("tasks.list", params)["tasks"].decode([RemoteTask].self)
         let workers = try await rpc("shells.list", params)["shells"].decode([RemoteSession].self)
         guard generation == token, projectID == id else { return }
-        worktrees = trees; tasks = jobs; shells = workers
+        worktrees = trees; shells = workers; loadedProjectID = id
         try reconcileSelectedSession()
         if sessionID == nil { try await synchronizeViewport(token: token) }
     }
@@ -297,7 +330,7 @@ enum ConnectionState: Equatable {
         do {
             try await synchronizeViewport(token: token)
             guard generation == token, sessionID == id else { return }
-            let result = try await rpc("shell.output", ["shell_id": .string(id), "lines": .number(500)])
+            let result = try await fetchOutput(id: id)
             guard result["shell_id"].string == id, let text = result["output"].string else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
             guard generation == token, sessionID == id else { return }
             output = TerminalText.readable(text); outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
@@ -319,6 +352,19 @@ enum ConnectionState: Equatable {
                     if recoverMissing, sessionID != nil { await readOutput(recoverMissing: false) }
                 } catch { handle(error) }
             } else { handle(error) }
+        }
+    }
+    /// The desktop refuses a reply over 128 KiB (`response_too_large`, or `cli_error` from the capture), which wide
+    /// grids or multibyte scrollback can exceed at 500 lines. Halve until it fits and remember that per session
+    /// (until reconnect or an explicit refresh), so a session that keeps failing costs one attempt per poll.
+    private func fetchOutput(id: String) async throws -> JSONValue {
+        var lines = outputLines[id] ?? Self.defaultOutputLines
+        while true {
+            do { return try await rpc("shell.output", ["shell_id": .string(id), "lines": .number(Double(lines))]) }
+            catch RemoteError.rpc(let code, _) where (code == "cli_error" || code == "response_too_large") && lines > Self.minimumOutputLines {
+                lines = max(Self.minimumOutputLines, lines / 2)
+                outputLines[id] = lines
+            }
         }
     }
     func submit(expectedSessionID: String? = nil, line: String? = nil) async {
@@ -356,6 +402,8 @@ enum ConnectionState: Equatable {
         draft = ""; deliveryNotice = "Unconfirmed input acknowledged after review. Nothing was resent."
     }
     private func handle(_ error: any Error) {
+        // Cancelled callers (a view going away, disconnect stopping the poll) are not failures.
+        if error is CancellationError { return }
         self.error = error.localizedDescription
         snapshotStale = true
         Task {
@@ -363,9 +411,10 @@ enum ConnectionState: Equatable {
         }
     }
     private func startPolling(token: UUID) {
+        let interval = pollInterval
         polling = Task { [weak self] in
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                do { try await Task.sleep(for: interval) } catch { return }
                 guard let self, self.generation == token else { return }
                 if !(await self.client.isConnected()) { self.state = .failed; self.snapshotStale = true; self.error = "Desktop disconnected. Reconnect to refresh output."; return }
                 await self.readOutput()

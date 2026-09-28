@@ -11,7 +11,11 @@ import SwiftUI
                 .font(.custom("Menlo", size: 13, relativeTo: .body))
                 .buttonStyle(DesktopButtonStyle())
                 .onChange(of: scenePhase) { _, phase in
-                    Task { if phase == .background { await model.disconnect(background: true) } else if phase == .active { await model.resume() } }
+                    switch phase {
+                    case .background: BackgroundGrace.run("RiWork viewport release") { await model.disconnect(background: true) }
+                    case .active: Task { await model.resume() }
+                    default: break
+                    }
                 }
         }
     }

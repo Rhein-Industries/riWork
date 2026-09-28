@@ -4,14 +4,19 @@ import UIKit
 /// Derived from src/theme.rs: Gruvbox Light in light appearance, RiWork in dark.
 /// The v1 relay does not export desktop theme settings.
 enum DesktopStyle {
-    private static func color(_ light: UInt32, _ dark: UInt32) -> Color {
-        Color(uiColor: UIColor { traits in
+    private static func dynamic(_ light: UInt32, _ dark: UInt32) -> UIColor {
+        UIColor { traits in
             let rgb = traits.userInterfaceStyle == .dark ? dark : light
             return UIColor(red: CGFloat((rgb >> 16) & 255) / 255,
                            green: CGFloat((rgb >> 8) & 255) / 255,
                            blue: CGFloat(rgb & 255) / 255, alpha: 1)
-        })
+        }
     }
+    private static func color(_ light: UInt32, _ dark: UInt32) -> Color { Color(uiColor: dynamic(light, dark)) }
+    // UIKit-backed controls need the dynamic UIColor itself; converting a SwiftUI Color back would freeze one appearance.
+    static let textUI = dynamic(0x3c3836, 0xd3e1e6)
+    static let mutedUI = dynamic(0x756f5e, 0x8fa6ae)
+    static let accentUI = dynamic(0x427b58, 0x55e6dc)
     static let background = color(0xfbf1c7, 0x090d14)
     static let panel = color(0xf4ebc2, 0x101720)
     static let active = color(0xede3bc, 0x14212a)

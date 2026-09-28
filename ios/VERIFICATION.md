@@ -13,9 +13,9 @@ all tabs have closed. Reconciliation clears the old draft/output/notice, preserv
 pending input on its original shell, and submits no input.
 
 - `swift build --package-path ios` and `swift test --package-path ios`: PASS;
-  9 independent crypto/protocol/geometry tests.
+  9 independent crypto/protocol/geometry tests at the time (31 after the review fixes below).
 - Signed `xcodebuild ... CODE_SIGN_IDENTITY=- test`, iPhone 17 Pro / iOS 26:
-  **19 tests, zero failures** (9 protocol + 10 state). Final log:
+  **19 tests, zero failures** (9 protocol + 10 state) at the time. Final log:
   `/tmp/riwork-ios-compact-final-tests.log`.
 - State coverage includes captured Send line/changed-selection rejection,
   Keychain reload, background resume/manual disconnect, durable uncertain outcomes,
@@ -30,6 +30,28 @@ pending input on its original shell, and submits no input.
   immutable removal alert removed only the two revoked fixture pairings. Both
   installed apps were left at the compact empty state. Phone build log:
   `/tmp/riwork-ios-compact-menu-build.log`.
+
+## Review fixes, 2026-09-28
+
+Xcode 26 / Swift 6.2, iPhone 17 simulator (iOS 26.0), ad-hoc signing.
+
+- `swift test --package-path ios`: **31 tests, zero failures** (15 protocol + 16 RelayClient).
+- `xcodebuild ... CODE_SIGN_IDENTITY=- test`: **53 tests, zero failures** (31 core + 22
+  app). `CODE_SIGNING_ALLOWED=NO ... build` also passes for Debug and Release; the built
+  Debug `Info.plist` has `NSAllowsLocalNetworking`, the Release one has no
+  `NSAppTransportSecurity`.
+- New coverage: the scripted-desktop `RelayClient` tests (cancelling one caller keeps the
+  socket and the counter sequence, a queued cancelled request is still sent in order, late
+  responses are dropped, handshake failure/timeout, request timeout, keepalive, missing
+  pong, relay close codes); counter vectors above 0 for nonce and AAD; hostile pairing
+  links; OSC stripping; the command field's UIKit traits, Return handling and paste rules;
+  and state tests for release-before-close with a poll in flight,
+  Back during a project load, manual disconnect through backgrounding, oversized-output
+  `lines` fallback, and an unreadable Keychain library that is never overwritten.
+- Not re-run in this pass: the real Rust relay/connector smoke above, physical-device
+  camera/TLS checks, and simulator UI walkthroughs. Keepalive over a real network,
+  `beginBackgroundTask` timing, the keyboard's smart-punctuation behaviour and the deep-link
+  confirmation sheet were checked only by build and unit tests; verify them on a device.
 
 ## Real Swift / Rust / tmux
 

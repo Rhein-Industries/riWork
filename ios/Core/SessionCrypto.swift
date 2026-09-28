@@ -43,9 +43,12 @@ public struct SessionCipher: Sendable {
     public let sessionID: Data
     public let c2d: SymmetricKey
     public let d2c: SymmetricKey
-    public private(set) var sendCounter: UInt64 = 0
-    public private(set) var receiveCounter: UInt64 = 0
-    public init(psk: SymmetricKey, transcript: Data) {
+    public private(set) var sendCounter: UInt64
+    public private(set) var receiveCounter: UInt64
+    public init(psk: SymmetricKey, transcript: Data) { self.init(psk: psk, transcript: transcript, sendCounter: 0, receiveCounter: 0) }
+    /// Tests start mid-stream to reach large counters without sealing millions of frames.
+    init(psk: SymmetricKey, transcript: Data, sendCounter: UInt64, receiveCounter: UInt64) {
+        self.sendCounter = sendCounter; self.receiveCounter = receiveCounter
         let salt = Data(SHA256.hash(data: transcript))
         sessionID = salt.prefix(16)
         c2d = HKDF<SHA256>.deriveKey(inputKeyMaterial: psk, salt: salt, info: Data("riwork/v1/c2d".utf8), outputByteCount: 32)

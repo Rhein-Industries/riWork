@@ -10,24 +10,30 @@
 		00D6ABB0BE0582B2124CE3F7 /* RiWorkCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; };
 		1A59AADB08B2AAE8E1F5833B /* RiWorkCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		322C1A82C60BD0354B25A9C7 /* TerminalText.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8955D7CEEB5ED7B59073518 /* TerminalText.swift */; };
+		3484AAEA162169159A022549 /* RelayClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B8603308BE4E27381F99D23 /* RelayClientTests.swift */; };
 		36B32F622E0F89F229918BDA /* SessionCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBB58DE07D23757B5555005A /* SessionCrypto.swift */; };
+		48F0F7411396EE8729E609D4 /* CommandField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 386561BE5F9AFB743FE0867E /* CommandField.swift */; };
 		534B27503C99098966C3B1FB /* RiWorkCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; };
 		5E96AD9651A7BF0B4B2FDCBC /* RelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BF5AAB0E69708DB37D89E5A /* RelayClient.swift */; };
 		608E540ED5407BB7A0F52594 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 08896516EF74B9533C867969 /* Assets.xcassets */; };
 		6D5552210D7254CBE3A08FC4 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE10B3C9EB13F95D1D974D1 /* KeychainStore.swift */; };
 		7AF1007B461C0273A9E532E0 /* PairingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 237C9C07E0BBF49923F04184 /* PairingViews.swift */; };
 		7F4051B8E71749C517B334EE /* ProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3368A0BB01F4516D7A2E1423 /* ProtocolTests.swift */; };
+		8BF3D90ADC498D4A474AF7FB /* CommandFieldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A8ED89F54DEF74A623371A /* CommandFieldTests.swift */; };
 		9D08EC0340993D847842CCE0 /* RiWorkRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C267561622D90717BA4F7BE5 /* RiWorkRemoteApp.swift */; };
 		A1F6211D8D3A10B3049E18B3 /* QRScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8675234AB403383A87B72D40 /* QRScanner.swift */; };
 		A4E7261D99B4461278975542 /* DesktopStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1BBD9DB0F36FC25E37B8E69 /* DesktopStyle.swift */; };
 		A7E6A5BF4E20688849C0B10C /* RiWorkCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A8B4111BDD37007A7CE1DB8E /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2EE56BC0C49CD4118865666 /* JSONValue.swift */; };
+		AD4F608209AD4373B3F0EEEE /* counter-vectors.json in Resources */ = {isa = PBXBuildFile; fileRef = 0162C45E1C9E0E2E28D31FAF /* counter-vectors.json */; };
 		B24D18BB82CDE48F20856535 /* RiWorkCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B6324AC15D3F9057B572B902 /* v1.json in Resources */ = {isa = PBXBuildFile; fileRef = 7911984A4E02BC0DB5363306 /* v1.json */; };
 		B968D899068CFE984A6A05BF /* Pairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05CD92EC6EF0523A190B3C1B /* Pairing.swift */; };
 		C28D80DD94AE01E2A5055AFF /* RemoteModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87216E2F3018C97AC2416AB1 /* RemoteModel.swift */; };
 		CF2AC80909442A92E92DEC7B /* TerminalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C2180357CE7830DCA47F448 /* TerminalViewport.swift */; };
+		D6DE2871888FA6DD5D8DC356 /* WebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = E78684A4C26A6FCA10E4BA0B /* WebSocketTransport.swift */; };
 		D8B73C506113BE3D8A51BF4F /* Entities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08363FC61702FE4DED414B9A /* Entities.swift */; };
+		DE25162258E3F02C16084946 /* BackgroundGrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7231EC8A895FA1AB9C00B311 /* BackgroundGrace.swift */; };
 		E558366E6EA7C696E99CA6DE /* RiWorkCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; };
 		E6F443313427148D5435796B /* StateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1887ADBCCA10CC2DBDEEF365 /* StateTests.swift */; };
 		F0C4822F075FE2067F6A72F4 /* RemoteViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C50600894DE4ADA5E2A637 /* RemoteViews.swift */; };
@@ -101,6 +107,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0162C45E1C9E0E2E28D31FAF /* counter-vectors.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "counter-vectors.json"; sourceTree = "<group>"; };
+		05A8ED89F54DEF74A623371A /* CommandFieldTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandFieldTests.swift; sourceTree = "<group>"; };
 		05CD92EC6EF0523A190B3C1B /* Pairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairing.swift; sourceTree = "<group>"; };
 		08363FC61702FE4DED414B9A /* Entities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Entities.swift; sourceTree = "<group>"; };
 		08896516EF74B9533C867969 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -109,9 +117,12 @@
 		237C9C07E0BBF49923F04184 /* PairingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingViews.swift; sourceTree = "<group>"; };
 		3368A0BB01F4516D7A2E1423 /* ProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolTests.swift; sourceTree = "<group>"; };
 		37F87448D26EF740B122ED8D /* RiWorkRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = RiWorkRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		386561BE5F9AFB743FE0867E /* CommandField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandField.swift; sourceTree = "<group>"; };
 		3BE10B3C9EB13F95D1D974D1 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		4BF5AAB0E69708DB37D89E5A /* RelayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClient.swift; sourceTree = "<group>"; };
 		52C50600894DE4ADA5E2A637 /* RemoteViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteViews.swift; sourceTree = "<group>"; };
+		6B8603308BE4E27381F99D23 /* RelayClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClientTests.swift; sourceTree = "<group>"; };
+		7231EC8A895FA1AB9C00B311 /* BackgroundGrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundGrace.swift; sourceTree = "<group>"; };
 		761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RiWorkCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		7911984A4E02BC0DB5363306 /* v1.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = v1.json; sourceTree = "<group>"; };
 		8675234AB403383A87B72D40 /* QRScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScanner.swift; sourceTree = "<group>"; };
@@ -121,6 +132,7 @@
 		C2EE56BC0C49CD4118865666 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		C4E103B9B382403DC43F42AC /* RiWorkCoreTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RiWorkCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DBB58DE07D23757B5555005A /* SessionCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCrypto.swift; sourceTree = "<group>"; };
+		E78684A4C26A6FCA10E4BA0B /* WebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketTransport.swift; sourceTree = "<group>"; };
 		F1BBD9DB0F36FC25E37B8E69 /* DesktopStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopStyle.swift; sourceTree = "<group>"; };
 		F37AD352200D8BAC9AE8AD40 /* RiWorkAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RiWorkAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F63FDDF7E5EBDA8943E19021 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -168,6 +180,7 @@
 		85B5553D91FE19BC721443F6 /* AppTests */ = {
 			isa = PBXGroup;
 			children = (
+				05A8ED89F54DEF74A623371A /* CommandFieldTests.swift */,
 				1887ADBCCA10CC2DBDEEF365 /* StateTests.swift */,
 			);
 			path = AppTests;
@@ -184,6 +197,7 @@
 				DBB58DE07D23757B5555005A /* SessionCrypto.swift */,
 				A8955D7CEEB5ED7B59073518 /* TerminalText.swift */,
 				0C2180357CE7830DCA47F448 /* TerminalViewport.swift */,
+				E78684A4C26A6FCA10E4BA0B /* WebSocketTransport.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -203,6 +217,7 @@
 			isa = PBXGroup;
 			children = (
 				3368A0BB01F4516D7A2E1423 /* ProtocolTests.swift */,
+				6B8603308BE4E27381F99D23 /* RelayClientTests.swift */,
 				D971E215C9A1A6969F4068C0 /* Fixtures */,
 			);
 			path = Tests;
@@ -211,6 +226,7 @@
 		D971E215C9A1A6969F4068C0 /* Fixtures */ = {
 			isa = PBXGroup;
 			children = (
+				0162C45E1C9E0E2E28D31FAF /* counter-vectors.json */,
 				7911984A4E02BC0DB5363306 /* v1.json */,
 			);
 			path = Fixtures;
@@ -220,6 +236,8 @@
 			isa = PBXGroup;
 			children = (
 				08896516EF74B9533C867969 /* Assets.xcassets */,
+				7231EC8A895FA1AB9C00B311 /* BackgroundGrace.swift */,
+				386561BE5F9AFB743FE0867E /* CommandField.swift */,
 				F1BBD9DB0F36FC25E37B8E69 /* DesktopStyle.swift */,
 				F63FDDF7E5EBDA8943E19021 /* Info.plist */,
 				237C9C07E0BBF49923F04184 /* PairingViews.swift */,
@@ -376,6 +394,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AD4F608209AD4373B3F0EEEE /* counter-vectors.json in Resources */,
 				B6324AC15D3F9057B572B902 /* v1.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -387,6 +406,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8BF3D90ADC498D4A474AF7FB /* CommandFieldTests.swift in Sources */,
 				E6F443313427148D5435796B /* StateTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -395,6 +415,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE25162258E3F02C16084946 /* BackgroundGrace.swift in Sources */,
+				48F0F7411396EE8729E609D4 /* CommandField.swift in Sources */,
 				A4E7261D99B4461278975542 /* DesktopStyle.swift in Sources */,
 				7AF1007B461C0273A9E532E0 /* PairingViews.swift in Sources */,
 				A1F6211D8D3A10B3049E18B3 /* QRScanner.swift in Sources */,
@@ -409,6 +431,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7F4051B8E71749C517B334EE /* ProtocolTests.swift in Sources */,
+				3484AAEA162169159A022549 /* RelayClientTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -424,6 +447,7 @@
 				36B32F622E0F89F229918BDA /* SessionCrypto.swift in Sources */,
 				322C1A82C60BD0354B25A9C7 /* TerminalText.swift in Sources */,
 				CF2AC80909442A92E92DEC7B /* TerminalViewport.swift in Sources */,
+				D6DE2871888FA6DD5D8DC356 /* WebSocketTransport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -672,7 +696,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				INFOPLIST_FILE = RiWorkRemote/Info.plist;
+				INFOPLIST_FILE = "RiWorkRemote/Info-Debug.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

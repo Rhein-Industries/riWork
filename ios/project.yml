@@ -3,6 +3,14 @@ options:
   bundleIdPrefix: com.riwork
   deploymentTarget:
     iOS: "18.0"
+  # Debug builds allow cleartext loopback (the simulator's local relay); Release keeps default ATS.
+  # Info-Debug.plist is Info.plist plus that exception, derived here so the two cannot drift.
+  postGenCommand: >-
+    cp RiWorkRemote/Info.plist RiWorkRemote/Info-Debug.plist &&
+    /usr/libexec/PlistBuddy
+    -c 'Add :NSAppTransportSecurity dict'
+    -c 'Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true'
+    RiWorkRemote/Info-Debug.plist
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -21,13 +29,18 @@ targets:
   RiWorkRemote:
     type: application
     platform: iOS
-    sources: [RiWorkRemote]
+    sources:
+      - path: RiWorkRemote
+        excludes: [Info-Debug.plist]
     dependencies:
       - target: RiWorkCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.riwork.remote
         TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        Debug:
+          INFOPLIST_FILE: RiWorkRemote/Info-Debug.plist
     info:
       path: RiWorkRemote/Info.plist
       properties:
@@ -41,8 +54,6 @@ targets:
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSCameraUsageDescription: Scan a pairing code from your RiWork desktop.
         NSLocalNetworkUsageDescription: Connect to a RiWork relay on your local network.
-        NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
         CFBundleURLTypes:
           - CFBundleURLName: com.riwork.remote.pair
             CFBundleURLSchemes: [riwork]

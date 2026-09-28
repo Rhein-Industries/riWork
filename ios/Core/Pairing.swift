@@ -25,9 +25,13 @@ public struct Pairing: Codable, Sendable, Equatable {
         let input = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard input.utf8.count <= 16384 else { throw RemoteError.invalidPairing("Code is too large.") }
         let data: Data
-        if input.hasPrefix("riwork:") {
-            guard let components = URLComponents(string: input), components.scheme == "riwork", components.host == "pair", (components.path == "" || components.path == "/"), components.fragment == nil,
-                  let items = components.queryItems, items.count == 2,
+        // Any case reaches the link parser so an uppercase scheme fails with a clear message, not a JSON one.
+        if input.lowercased().hasPrefix("riwork:") {
+            // Reject anything a differential parser could read differently: userinfo, port, percent-encoded host, path or query names.
+            guard let components = URLComponents(string: input), components.scheme == "riwork", components.percentEncodedHost == "pair",
+                  components.user == nil, components.password == nil, components.port == nil,
+                  components.percentEncodedPath == "" || components.percentEncodedPath == "/", components.fragment == nil,
+                  let items = components.percentEncodedQueryItems, items.count == 2, !items.contains(where: { $0.name.contains("%") || ($0.value ?? "").contains("%") }),
                   items.filter({ $0.name == "v" }).count == 1, items.first(where: { $0.name == "v" })?.value == "1",
                   items.filter({ $0.name == "data" }).count == 1, let value = items.first(where: { $0.name == "data" })?.value else { throw RemoteError.invalidPairing("Expected riwork://pair?v=1&data=…") }
             data = try Base64URL.decode(value)
@@ -48,6 +52,13 @@ public struct Pairing: Codable, Sendable, Equatable {
         guard allowLocalDevelopment, url.scheme == "ws", ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host) else { throw RemoteError.invalidPairing("Use a secure wss:// relay. Local ws:// requires the development switch.") }
     }
     public var relayHost: String { URLComponents(string: relay_url)?.host ?? "Relay" }
+    /// The device name is chosen on the desktop (or by whoever made the link), so show it as bounded printable text.
+    public var displayDeviceName: String {
+        let cleaned = String(device_name.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 && !CharacterSet.controlCharacters.contains($0) }.prefix(80).map { Character($0) }).trimmingCharacters(in: .whitespaces)
+        return cleaned.isEmpty ? "Unnamed device" : cleaned
+    }
+    public var desktopShortID: String { String(desktop_id.prefix(8)) }
+    public var usesLocalDevelopmentRelay: Bool { URLComponents(string: relay_url)?.scheme == "ws" }
 }
 
 public struct PendingInput: Codable, Sendable, Equatable {
@@ -62,9 +73,11 @@ public struct PendingInput: Codable, Sendable, Equatable {
 }
 
 public enum InputValidation {
+    /// Control characters and line/paragraph separators can never be part of a single submitted line.
+    public static func isForbidden(_ scalar: Unicode.Scalar) -> Bool { CharacterSet.controlCharacters.contains(scalar) || scalar.value == 0x2028 || scalar.value == 0x2029 }
     public static func validate(_ line: String) throws {
         guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { throw RemoteError.remote("Enter a continuation prompt or command.") }
-        guard line.utf8.count <= 8192, !line.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || $0.value == 0x2028 || $0.value == 0x2029 }) else { throw RemoteError.remote("Input must be one line, at most 8192 UTF-8 bytes, with no control characters.") }
+        guard line.utf8.count <= 8192, !line.unicodeScalars.contains(where: isForbidden) else { throw RemoteError.remote("Input must be one line, at most 8192 UTF-8 bytes, with no control characters.") }
     }
 }
 
