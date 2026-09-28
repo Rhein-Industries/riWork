@@ -258,6 +258,7 @@ fn classify_save_error(error: String) -> ScheduleError {
         || error.contains("prompt")
         || error.contains("Repeat interval")
         || error.contains("Date")
+        || error.contains("cannot be scheduled")
     {
         "invalid_argument"
     } else {

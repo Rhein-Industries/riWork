@@ -581,3 +581,91 @@ fn two_cli_processes_cannot_apply_the_same_revision() {
     assert_eq!(current["schedule"]["revision"], 2);
     assert_eq!(current["schedule"]["paused"], true);
 }
+
+#[test]
+fn grok_sessions_and_control_character_titles_are_refused_by_cli_and_mcp() {
+    let fixture = Fixture::new();
+    let registry = fixture.home.join("sessions.json");
+    let mut sessions: Value = serde_json::from_slice(&fs::read(&registry).unwrap()).unwrap();
+    for session in sessions["sessions"].as_array_mut().unwrap() {
+        if session["id"] == fixture.shells[2].as_str() {
+            session["harness"] = json!("grok");
+        }
+    }
+    fs::write(&registry, serde_json::to_vec(&sessions).unwrap()).unwrap();
+    let at = future_at(7);
+
+    let mut grok = vec!["schedule", "create"];
+    grok.extend(fixture.scope_args(2));
+    grok.extend([
+        "--title",
+        "Grok check",
+        "--prompt",
+        "Fixture prompt",
+        "--at",
+        &at,
+        "--json",
+    ]);
+    let error = fixture.cli_error(&grok, "binding_failed");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("grok sessions cannot be scheduled"),
+        "{error}"
+    );
+    let error = fixture.tool_error(
+        "riwork_schedule_create",
+        json!({
+            "scope":"workspace","project_id":fixture.project_id,"worktree_id":fixture.worktree_id,
+            "shell_id":fixture.shells[2],"title":"Grok check","prompt":"Fixture prompt","at":at
+        }),
+        "binding_failed",
+    );
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be scheduled")
+    );
+
+    // Titles are printed raw by text-mode commands, so escape sequences are refused.
+    let hostile = "Check\u{1b}]0;owned\u{7}";
+    let mut cli = vec!["schedule", "create"];
+    cli.extend(fixture.scope_args(0));
+    cli.extend([
+        "--title", hostile, "--prompt", "Fixture", "--at", &at, "--json",
+    ]);
+    fixture.cli_error(&cli, "invalid_argument");
+    fixture.tool_error(
+        "riwork_schedule_create",
+        json!({
+            "scope":"app","shell_id":fixture.shells[0],"title":hostile,"prompt":"Fixture","at":at
+        }),
+        "invalid_argument",
+    );
+    let created = fixture.tool_ok(
+        "riwork_schedule_create",
+        json!({
+            "scope":"app","shell_id":fixture.shells[0],"title":"Clean title","prompt":"Fixture","at":at
+        }),
+    )["schedule"]
+        .clone();
+    let mut update = vec![
+        "schedule",
+        "update",
+        created["id"].as_str().unwrap(),
+        "--revision",
+        "1",
+    ];
+    update.extend(fixture.scope_args(0));
+    update.extend(["--at", &at, "--title", hostile, "--json"]);
+    fixture.cli_error(&update, "invalid_argument");
+    assert_eq!(
+        fixture.cli_ok(&["schedule", "list", "--json"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}

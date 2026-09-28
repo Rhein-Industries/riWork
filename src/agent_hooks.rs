@@ -13,6 +13,12 @@ use uuid::Uuid;
 
 use crate::sessions::{HarnessKind, SessionManager};
 
+/// Events RiWork hooks into every Claude launch, through per-invocation
+/// `--settings` only. Stop and UserPromptSubmit track the turn; SessionStart
+/// rebinds the identity after /clear or /resume; SubagentStop proves a turn is
+/// running when a UserPromptSubmit was missed.
+pub(crate) const CLAUDE_HOOK_EVENTS: [&str; 4] =
+    ["UserPromptSubmit", "Stop", "SessionStart", "SubagentStop"];
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_CURSOR_BYTES: u64 = 16 * 1024;
 
@@ -22,6 +28,9 @@ struct ClaudeHookInput {
     #[serde(default)]
     prompt_id: Option<String>,
     hook_event_name: String,
+    /// SessionStart only: startup, resume, clear or compact.
+    #[serde(default)]
+    source: Option<String>,
     #[serde(default)]
     agent_id: Option<IgnoredAny>,
     #[serde(default)]
@@ -56,12 +65,39 @@ impl ClaudeTurnCursor {
                 .prompt_id
                 .as_deref()
                 .is_some_and(|id| !valid_identifier(id))
-            || input.agent_id.is_some()
-            || input.agent_transcript_path.is_some()
         {
             return None;
         }
+        if input.hook_event_name == "SubagentStop" {
+            // A subagent just finished, so this session's main agent is
+            // mid-turn even if its UserPromptSubmit was missed. Drop any stale
+            // completion; the turn's own Stop completes it again. Never complete.
+            if self.session_id == input.session_id {
+                self.completed = false;
+            }
+            return None;
+        }
+        if input.agent_id.is_some() || input.agent_transcript_path.is_some() {
+            return None;
+        }
         match input.hook_event_name.as_str() {
+            "SessionStart" => {
+                // /clear, /resume and a restart begin a different conversation;
+                // the previous one's completed turn says nothing about it and
+                // must not admit a scheduled prompt. The identity is rebound so
+                // a schedule pinned to the old session sees it changed.
+                // Compaction keeps the session and its turn lifecycle.
+                if !(input.source.as_deref() == Some("compact")
+                    && self.session_id == input.session_id)
+                {
+                    *self = Self {
+                        session_id: input.session_id.clone(),
+                        turn_id: String::new(),
+                        completed: false,
+                    };
+                }
+                None
+            }
             "UserPromptSubmit" => {
                 let turn = input
                     .prompt_id
@@ -82,9 +118,11 @@ impl ClaudeTurnCursor {
                     && input.background_tasks.is_empty()
                     && input.session_crons.is_empty() =>
             {
-                if !self.turn_id.is_empty()
-                    && (self.session_id != input.session_id
-                        || input
+                // A rebound session (SessionStart) has no turn yet but still
+                // rejects a late Stop that belongs to the replaced session.
+                if (!self.session_id.is_empty() && self.session_id != input.session_id)
+                    || (!self.turn_id.is_empty()
+                        && input
                             .prompt_id
                             .as_ref()
                             .is_some_and(|turn| turn != &self.turn_id))
@@ -426,5 +464,123 @@ mod tests {
         stop.session_crons.clear();
         stop.agent_id = serde_json::from_str("\"subagent\"").ok();
         assert!(cursor.observe(&stop).is_none());
+    }
+
+    fn session_start(session: &str, source: &str) -> ClaudeHookInput {
+        serde_json::from_value(serde_json::json!({
+            "hook_event_name":"SessionStart","session_id":session,"source":source,
+            "cwd":"/private/project","transcript_path":"/private/transcript.jsonl"
+        }))
+        .unwrap()
+    }
+
+    fn completed(cursor: &ClaudeTurnCursor) -> (String, bool) {
+        (cursor.session_id.clone(), cursor.completed)
+    }
+
+    #[test]
+    fn session_start_rebinds_a_replaced_conversation_but_not_a_compaction() {
+        let mut cursor = ClaudeTurnCursor::default();
+        cursor.observe(&hook("UserPromptSubmit", "session-a", Some("prompt-a")));
+        cursor.observe(&hook("Stop", "session-a", Some("prompt-a")));
+        assert_eq!(completed(&cursor), ("session-a".into(), true));
+        // Compaction keeps the conversation and its lifecycle.
+        assert!(
+            cursor
+                .observe(&session_start("session-a", "compact"))
+                .is_none()
+        );
+        assert_eq!(completed(&cursor), ("session-a".into(), true));
+        // /clear and /resume start another conversation: the old completion
+        // must not stay ready, and a late Stop of the old session is ignored.
+        for source in ["clear", "resume", "startup"] {
+            let mut cursor = ClaudeTurnCursor::default();
+            cursor.observe(&hook("UserPromptSubmit", "session-a", Some("prompt-a")));
+            cursor.observe(&hook("Stop", "session-a", Some("prompt-a")));
+            assert!(
+                cursor
+                    .observe(&session_start("session-b", source))
+                    .is_none()
+            );
+            assert_eq!(completed(&cursor), ("session-b".into(), false), "{source}");
+            assert!(
+                cursor
+                    .observe(&hook("Stop", "session-a", Some("prompt-a")))
+                    .is_none()
+            );
+            assert_eq!(completed(&cursor), ("session-b".into(), false), "{source}");
+            // The new conversation completes normally, and only once.
+            cursor.observe(&hook("UserPromptSubmit", "session-b", Some("prompt-b")));
+            assert!(
+                cursor
+                    .observe(&hook("Stop", "session-b", Some("prompt-b")))
+                    .is_some()
+            );
+            assert_eq!(completed(&cursor), ("session-b".into(), true));
+        }
+        // A compaction that reports another session id is a replacement.
+        assert!(
+            cursor
+                .observe(&session_start("session-c", "compact"))
+                .is_none()
+        );
+        assert_eq!(completed(&cursor), ("session-c".into(), false));
+        // A fresh process resuming the same id starts without a completion.
+        cursor.observe(&hook("UserPromptSubmit", "session-c", Some("prompt-c")));
+        cursor.observe(&hook("Stop", "session-c", Some("prompt-c")));
+        cursor.observe(&session_start("session-c", "resume"));
+        assert_eq!(completed(&cursor), ("session-c".into(), false));
+    }
+
+    #[test]
+    fn subagent_stop_withdraws_a_stale_completion_and_never_completes() {
+        let mut cursor = ClaudeTurnCursor::default();
+        cursor.observe(&hook("UserPromptSubmit", "session-a", Some("prompt-a")));
+        assert!(
+            cursor
+                .observe(&hook("Stop", "session-a", Some("prompt-a")))
+                .is_some()
+        );
+        let mut subagent = hook("SubagentStop", "session-a", Some("prompt-a"));
+        subagent.agent_id = serde_json::from_str("\"subagent\"").ok();
+        subagent.agent_transcript_path = serde_json::from_str("\"/private/agent.jsonl\"").ok();
+        assert!(cursor.observe(&subagent).is_none());
+        assert_eq!(completed(&cursor), ("session-a".into(), false));
+        // Another session's subagent says nothing about this cursor.
+        cursor.observe(&hook("Stop", "session-a", Some("prompt-a")));
+        subagent.session_id = "session-z".into();
+        cursor.observe(&subagent);
+        assert_eq!(completed(&cursor), ("session-a".into(), true));
+        // A subagent finishing never completes a turn by itself.
+        let mut fresh = ClaudeTurnCursor::default();
+        subagent.session_id = "session-a".into();
+        assert!(fresh.observe(&subagent).is_none());
+        assert!(!fresh.completed);
+    }
+
+    #[test]
+    fn session_start_and_turn_events_reach_the_saved_cursor() {
+        let fixture = Fixture::new();
+        let write = |payload: serde_json::Value| {
+            record_claude_hook(&fixture.home, &fixture.shell_id, &payload.to_string()).unwrap()
+        };
+        let start = |session: &str, source: &str| serde_json::json!({"hook_event_name":"SessionStart","session_id":session,"source":source});
+        write(start("session-a", "startup"));
+        assert_eq!(
+            schedule_state(&fixture.home, &fixture.shell_id),
+            Some(("session-a".into(), None)),
+            "a started session is identified before its first turn"
+        );
+        fixture.record("UserPromptSubmit", "prompt-a").unwrap();
+        fixture.record("Stop", "prompt-a").unwrap();
+        assert_eq!(
+            schedule_state(&fixture.home, &fixture.shell_id),
+            Some(("session-a".into(), Some("prompt-a".into())))
+        );
+        write(start("session-b", "clear"));
+        assert_eq!(
+            schedule_state(&fixture.home, &fixture.shell_id),
+            Some(("session-b".into(), None))
+        );
     }
 }

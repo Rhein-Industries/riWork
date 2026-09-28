@@ -52,6 +52,10 @@ impl Input {
         }
     }
 
+    pub(crate) fn selected_text(&self) -> Option<&str> {
+        (!self.selection.is_empty()).then(|| &self.text[self.selection.clone()])
+    }
+
     pub(crate) fn replace(&mut self, range: Option<Range<usize>>, text: &str) {
         let range = range
             .map(|range| {
@@ -59,7 +63,7 @@ impl Input {
             })
             .or(self.marked.take())
             .unwrap_or_else(|| self.selection.clone());
-        let text = text.replace(['\n', '\r'], "");
+        let text = single_line(text);
         self.text.replace_range(range.clone(), &text);
         let end = range.start + text.len();
         self.selection = end..end;
@@ -74,11 +78,12 @@ impl Input {
                 self.reversed = false;
             }
             "c" | "x" if platform => {
-                cx.write_to_clipboard(ClipboardItem::new_string(
-                    self.text[self.selection.clone()].to_owned(),
-                ));
-                if event.keystroke.key == "x" {
-                    self.replace(None, "");
+                // With nothing selected, copying "" would wipe the clipboard.
+                if let Some(selected) = self.selected_text() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(selected.to_owned()));
+                    if event.keystroke.key == "x" {
+                        self.replace(None, "");
+                    }
                 }
             }
             "v" if platform => {
@@ -148,6 +153,26 @@ impl Input {
         }
         true
     }
+}
+
+/// These inputs are single-line. A line break between pasted lines becomes one
+/// space so words do not fuse; a copied line's trailing break is dropped.
+fn single_line(text: &str) -> String {
+    let is_break = |c: char| matches!(c, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}');
+    let mut line = String::with_capacity(text.len());
+    let mut pending_break = false;
+    for c in text.trim_matches(is_break).chars() {
+        if is_break(c) {
+            if !pending_break {
+                line.push(' ');
+            }
+            pending_break = true;
+        } else {
+            pending_break = false;
+            line.push(c);
+        }
+    }
+    line
 }
 
 pub(crate) fn input_content<T: EntityInputHandler>(
