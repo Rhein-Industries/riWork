@@ -16,6 +16,47 @@ Choose **ONCE**, **HOURLY**, **24 HOURS**, **7 DAYS**, or a custom whole-minute 
 
 **EDIT** retains the pinned session identity. Clicking a target explicitly binds its current identity. **PAUSE** preserves the schedule; resuming a recurring schedule skips paused overdue occurrences and selects its next future occurrence. A completed or overdue one-time schedule needs a future date through Edit. **DELETE** requires a second confirmation click. Tab/Shift+Tab navigate controls, Enter activates them, Escape cancels editing, and Cmd+S saves. A revision conflict asks the user to reopen the schedule rather than overwriting a concurrent edit or run outcome.
 
+## CLI and MCP agent configuration
+
+`riwork schedule help` lists the full contract. These commands configure the same ledger shown by **SCHEDULES**. They do not launch sessions or dispatch prompts. `riwork mcp` advertises matching `riwork_schedule_list`, `show`, `create`, `update`, `pause`, `resume`, and `delete` tools through `tools/list`.
+
+Find an existing target first: `riwork orchestrator status --json` for the app orchestrator, `riwork orchestrator status --project PROJECT_UUID --json` for a project orchestrator, or `riwork shell list --project PROJECT_UUID --json` for a worktree worker. Use full canonical UUIDs for project, worktree, shell, and schedule IDs. The target must be a live Codex or Claude session in the selected scope with an established provider identity; complete a turn in that session before creating the schedule.
+
+```sh
+riwork schedule create --scope app --shell APP_SHELL_UUID \
+  --title 'Morning check' --prompt 'Summarize the current queue' \
+  --at 2026-10-05T09:00:00+02:00 --json
+
+riwork schedule create --scope project --project PROJECT_UUID \
+  --shell PROJECT_ORCHESTRATOR_UUID --title 'Project check' \
+  --prompt 'Review open tasks' --at 2026-10-05T09:00:00+02:00 --json
+
+riwork schedule create --scope workspace --project PROJECT_UUID \
+  --worktree WORKTREE_UUID --shell WORKER_SHELL_UUID \
+  --title 'Workspace check' --prompt 'Review this worktree' \
+  --at 2026-10-05T09:00:00+02:00 --every-minutes 60 --json
+```
+
+`--at` is a future RFC 3339 instant with seconds and an explicit timezone offset (or `Z`); saved times use UTC epoch seconds. `--every-minutes` is optional, from 5 to 525600 whole minutes. Omit it for a one-time schedule. Update always requires a new future `--at` and retains the pinned target and recurrence unless you use `--every-minutes N` or `--once`. To target a different session, create a new schedule and delete the old one.
+
+Read the full schedule ID and current revision from `riwork schedule list --json` or `riwork schedule show SCHEDULE_UUID --json`. Every later mutation requires both, plus the exact scope and shell identity in the schedule. Add `--project PROJECT_UUID` for project and workspace scope; add `--worktree WORKTREE_UUID` for workspace scope.
+
+```sh
+riwork schedule update SCHEDULE_UUID --revision 1 --scope workspace \
+  --project PROJECT_UUID --worktree WORKTREE_UUID --shell WORKER_SHELL_UUID \
+  --at 2026-10-06T09:00:00+02:00 --title 'Revised check' --json
+riwork schedule pause SCHEDULE_UUID --revision 2 --scope workspace \
+  --project PROJECT_UUID --worktree WORKTREE_UUID --shell WORKER_SHELL_UUID --json
+riwork schedule resume SCHEDULE_UUID --revision 3 --scope workspace \
+  --project PROJECT_UUID --worktree WORKTREE_UUID --shell WORKER_SHELL_UUID --json
+riwork schedule delete SCHEDULE_UUID --revision 4 --scope workspace \
+  --project PROJECT_UUID --worktree WORKTREE_UUID --shell WORKER_SHELL_UUID --json
+```
+
+Successful `--json` commands write an object with `schedule`, `items`, or `deleted` and exit 0. Failed commands write `{"error":{"code":"...","message":"...","current":{...}}}` to stdout and exit 2; revision conflicts include the current schedule. MCP successes have the same object in `structuredContent`. MCP tool failures set `isError: true` and put the error under `structuredContent.error`. For example, `riwork_schedule_create` accepts `{"scope":"workspace","project_id":"PROJECT_UUID","worktree_id":"WORKTREE_UUID","shell_id":"WORKER_SHELL_UUID","title":"Workspace check","prompt":"Review this worktree","at":"2026-10-05T09:00:00+02:00","every_minutes":60}`. The other tools use the same field names. Read the new revision after each mutation; a run outcome can also advance it.
+
+A failed or uncertain attempt pauses the schedule and requires reviewing the target transcript. Resume refuses it until an update saves a new future run. A paused overdue recurring schedule resumes on the next future cadence point; an overdue one-time schedule needs an update. Dispatch still requires a RiWork desktop process using the same `RIWORK_HOME` to be open.
+
 ## Delivery and lifecycle
 
 The GUI starts one background scheduler per app process, independent of project windows. Schedules run only while a RiWork desktop process using the same `RIWORK_HOME` is open. There is no installed launch agent or background daemon for closed-app execution.
@@ -43,10 +84,13 @@ Use Zig 0.16 and this worktree's own Cargo target directory:
 ```sh
 PATH=/Users/dominik/.cache/uv/archive-v0/wTsWUKqQ1AgbZM4gXoYXu/ziglang:$PATH cargo build --offline
 PATH=/Users/dominik/.cache/uv/archive-v0/wTsWUKqQ1AgbZM4gXoYXu/ziglang:$PATH scripts/check-schedules.sh schedules
+PATH=/Users/dominik/.cache/uv/archive-v0/wTsWUKqQ1AgbZM4gXoYXu/ziglang:$PATH cargo test --offline --test schedule_interfaces
 PATH=/Users/dominik/.cache/uv/archive-v0/wTsWUKqQ1AgbZM4gXoYXu/ziglang:$PATH scripts/check-schedules.sh
 ```
 
 `check-schedules.sh` gives the child test process a fresh isolated `RIWORK_HOME`; it leaves the caller's inherited value intact. Unit and real tmux fixtures use full UUIDs and remove only their own files/sessions. They cover timing boundaries, fixed recurrence, missed runs/rewind, deferral, pause/edit/delete, revisions, corruption, concurrent threads/processes, interrupted claims, rate limiting, stale readiness and wrong/missing targets. Real deterministic tmux fixtures cover all three scope routes. Readiness tests cover completed-history acceptance, both harness composers, busy/trust/login/approval/draft refusal, and dimmed Codex placeholders. A scheduler-level regression reads a rollout larger than two poll budgets across retained ticks: initial reads defer, catch-up submits once to the same target, and no startup-history notice or duplicate appears. Quick first-run tests verify exact future instants and preserved editor fields.
+
+`schedule_interfaces` spawns the real CLI and MCP stdio binary with a fresh child `RIWORK_HOME`, three inert fixture shells, and fixture-only provider identities. It checks all three scopes, persistence across processes, JSON and MCP structured results/errors, `tools/list`, the full mutation lifecycle, invalid requests, stale and exited targets, and a two-process revision race. It never opens a GUI or delivers a scheduled prompt.
 
 For optional live provider verification, provision three new disposable Codex sessions in a fresh child `RIWORK_HOME`, complete their startup turns, and create its `qa-info.json` fixture marker. Supply only their full UUIDs in app/project/workspace order. Never point this check at production sessions or an existing schedule ledger:
 

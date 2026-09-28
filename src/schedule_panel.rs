@@ -360,7 +360,9 @@ impl SchedulePanel {
                         if deleting {
                             store.delete(&row.id, row.revision)
                         } else {
-                            store.pause(&row.id, row.revision, !row.paused, schedules::now())
+                            store
+                                .pause(&row.id, row.revision, !row.paused, schedules::now())
+                                .map(|_| ())
                         }
                     });
                     self.finish(work, cx);

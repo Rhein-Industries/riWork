@@ -13,6 +13,10 @@ use serde_json::json;
 
 use crate::{
     cua::{CuaManager, CuaStatus},
+    schedule_service::{
+        CreateRequest, RepeatChange, ScheduleError, ScheduleKey, ScheduleService, ScopeInput,
+        UpdateRequest,
+    },
     sessions::{HarnessKind, SessionManager, ShellKind, ShellSession},
     store::{SearchHit, State, Store, Task, TaskStatus, Worktree},
 };
@@ -65,6 +69,12 @@ riwork orchestrator list [--project ID]   List global and project orchestrators
 riwork orchestrator status|output|cwd|metrics|attach|close [--project ID]
 riwork orchestrator send [--project ID] TEXT   Send a line to the selected orchestrator
 riwork orchestrator load-skill [--project ID]   Load its workspace skill
+riwork schedule list [--scope app|project|workspace] [--project UUID] [--worktree UUID]
+riwork schedule show SCHEDULE_UUID
+riwork schedule create --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--every-minutes N]
+riwork schedule update SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID --at RFC3339 [--title TITLE] [--prompt TEXT] [--every-minutes N | --once]
+riwork schedule pause|resume|delete SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID
+riwork schedule help                    Show schedule contract and examples
 
 Add --json to read commands for structured output. Project, worktree, and task
 IDs accept a unique UUID prefix of at least eight characters; shell IDs need
@@ -75,6 +85,31 @@ scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
 Without PATH, project create requires --name and uses ~/Documents/riwork/NAME.
 Explicit project paths remain relative to the current directory when needed.
+";
+
+const SCHEDULE_HELP: &str = "\
+Schedule management (add --json to any command for structured stdout):
+  riwork schedule list [--scope app|project|workspace] [--project UUID] [--worktree UUID]
+  riwork schedule show SCHEDULE_UUID
+  riwork schedule create --scope app|project|workspace --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--every-minutes N]
+  riwork schedule update SCHEDULE_UUID --revision N --scope SCOPE --shell UUID --at RFC3339 [--title TITLE] [--prompt TEXT] [--every-minutes N | --once]
+  riwork schedule pause|resume|delete SCHEDULE_UUID --revision N --scope SCOPE --shell UUID
+
+For project scope add --project PROJECT_UUID. For workspace scope add both
+--project PROJECT_UUID and --worktree WORKTREE_UUID. All UUIDs must be full,
+canonical values. Create binds an existing live Codex/Claude shell in that
+scope; edits keep its pinned identity. First run must be a future RFC 3339
+time with seconds and timezone, such as 2026-10-05T09:00:00+02:00. Recurrence
+is elapsed whole minutes from 5 to 525600; omit it for one run. Update needs
+a new future --at, retains recurrence unless changed, and may rearm a reviewed
+failed/uncertain schedule. Read its latest revision first. The desktop app
+must be open to dispatch; these commands never launch a session or agent.
+
+Examples (replace UUIDs and future time with values from your own fixture):
+  riwork schedule create --scope app --shell SHELL_UUID --title Check --prompt 'Review status' --at 2026-10-05T09:00:00+02:00 --json
+  riwork schedule create --scope project --project PROJECT_UUID --shell SHELL_UUID --title Check --prompt 'Review status' --at 2026-10-05T09:00:00+02:00
+  riwork schedule create --scope workspace --project PROJECT_UUID --worktree WORKTREE_UUID --shell SHELL_UUID --title Check --prompt 'Review status' --at 2026-10-05T09:00:00+02:00 --every-minutes 60
+  riwork schedule pause SCHEDULE_UUID --revision 1 --scope workspace --project PROJECT_UUID --worktree WORKTREE_UUID --shell SHELL_UUID --json
 ";
 
 /// Returns `false` when the arguments should launch the graphical workspace.
@@ -119,6 +154,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "tasks"
             | "shell"
             | "orchestrator"
+            | "schedule"
             | "search"
             | "usage"
             | "telemetry"
@@ -184,6 +220,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         "task" | "tasks" => task_command(args, json)?,
         "shell" => shell_command(args, json)?,
         "orchestrator" => orchestrator_command(args, json)?,
+        "schedule" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
         "mcp" => {
             ensure_empty(&args)?;
@@ -1401,6 +1438,190 @@ fn take_orchestrator_project(
         args.remove(0);
     }
     Ok(Some(project))
+}
+
+fn schedule_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
+    let operation = pop_command(&mut args, "list");
+    if matches!(operation.as_str(), "help" | "-h" | "--help") {
+        ensure_empty(&args)?;
+        print!("{SCHEDULE_HELP}");
+        return Ok(());
+    }
+    let result = schedule_command_inner(&operation, args);
+    match result {
+        Ok(value) => {
+            if json || operation == "show" {
+                print_json(&value)?;
+            } else if operation == "list" {
+                for schedule in value["items"].as_array().into_iter().flatten() {
+                    print_schedule_line(schedule);
+                }
+            } else if operation == "delete" {
+                println!(
+                    "Deleted {}",
+                    value["schedule"]["id"].as_str().unwrap_or("schedule")
+                );
+            } else {
+                print_schedule_line(&value["schedule"]);
+            }
+            Ok(())
+        }
+        Err(error) if json => {
+            print_json(&json!({"error":error}))?;
+            // The empty error suppresses a second unstructured stderr message.
+            Err(String::new())
+        }
+        Err(error) => Err(error.message),
+    }
+}
+
+fn schedule_command_inner(
+    operation: &str,
+    mut args: Vec<String>,
+) -> Result<serde_json::Value, ScheduleError> {
+    let option =
+        |args: &mut Vec<String>, name: &str| take_option(args, name).map_err(schedule_cli_error);
+    let required = |value: Option<String>, name: &str| {
+        value.ok_or_else(|| schedule_cli_error(format!("{name} is required")))
+    };
+    let scope = |args: &mut Vec<String>| -> Result<ScopeInput, ScheduleError> {
+        Ok(ScopeInput {
+            scope: required(option(args, "--scope")?, "--scope")?,
+            project_id: option(args, "--project")?,
+            worktree_id: option(args, "--worktree")?,
+        })
+    };
+    let key = |args: &mut Vec<String>| -> Result<ScheduleKey, ScheduleError> {
+        let identity = scope(args)?;
+        let shell_id = required(option(args, "--shell")?, "--shell")?;
+        let revision = required(option(args, "--revision")?, "--revision")?
+            .parse::<u64>()
+            .map_err(|_| schedule_cli_error("--revision must be a positive integer"))?;
+        let id = schedule_single(args, "SCHEDULE_UUID")?;
+        Ok(ScheduleKey {
+            id,
+            revision,
+            scope: identity,
+            shell_id,
+        })
+    };
+    let service = ScheduleService::open_default()?;
+    match operation {
+        "list" => {
+            let scope = option(&mut args, "--scope")?;
+            let project_id = option(&mut args, "--project")?;
+            let worktree_id = option(&mut args, "--worktree")?;
+            schedule_empty(&args)?;
+            let filter = match scope {
+                Some(scope) => Some(ScopeInput {
+                    scope,
+                    project_id,
+                    worktree_id,
+                }),
+                None if project_id.is_none() && worktree_id.is_none() => None,
+                None => {
+                    return Err(schedule_cli_error(
+                        "--scope is required with --project or --worktree",
+                    ));
+                }
+            };
+            Ok(json!({"items":service.list(filter.as_ref())?}))
+        }
+        "show" => {
+            let id = schedule_single(&mut args, "SCHEDULE_UUID")?;
+            Ok(json!({"schedule":service.show(&id)?}))
+        }
+        "create" => {
+            let identity = scope(&mut args)?;
+            let shell_id = required(option(&mut args, "--shell")?, "--shell")?;
+            let title = required(option(&mut args, "--title")?, "--title")?;
+            let prompt = required(option(&mut args, "--prompt")?, "--prompt")?;
+            let at = required(option(&mut args, "--at")?, "--at")?;
+            let every_minutes = schedule_minutes(option(&mut args, "--every-minutes")?)?;
+            schedule_empty(&args)?;
+            Ok(json!({"schedule":service.create(CreateRequest {
+                scope: identity, shell_id, title, prompt, at, every_minutes,
+            })?}))
+        }
+        "update" => {
+            // Parse optional edits before the positional schedule ID.
+            let title = option(&mut args, "--title")?;
+            let prompt = option(&mut args, "--prompt")?;
+            let at = required(option(&mut args, "--at")?, "--at")?;
+            let every_minutes = schedule_minutes(option(&mut args, "--every-minutes")?)?;
+            let once = take_flag(&mut args, "--once");
+            if once && every_minutes.is_some() {
+                return Err(schedule_cli_error("Choose --once or --every-minutes"));
+            }
+            let repeat = if once {
+                RepeatChange::Once
+            } else if let Some(minutes) = every_minutes {
+                RepeatChange::EveryMinutes(minutes)
+            } else {
+                RepeatChange::Keep
+            };
+            let key = key(&mut args)?;
+            Ok(
+                json!({"schedule":service.update(UpdateRequest { key, title, prompt, at, repeat })?}),
+            )
+        }
+        "pause" | "resume" => {
+            let key = key(&mut args)?;
+            Ok(json!({"schedule":service.pause(&key, operation == "pause")?}))
+        }
+        "delete" => {
+            let key = key(&mut args)?;
+            Ok(json!({"deleted":true,"schedule":service.delete(&key)?}))
+        }
+        _ => Err(schedule_cli_error(format!(
+            "Unknown schedule command '{operation}'. Run `riwork schedule help`."
+        ))),
+    }
+}
+
+fn schedule_minutes(value: Option<String>) -> Result<Option<u64>, ScheduleError> {
+    value
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| schedule_cli_error("--every-minutes must be a whole positive integer"))
+        })
+        .transpose()
+}
+
+fn schedule_single(args: &mut Vec<String>, name: &str) -> Result<String, ScheduleError> {
+    if args.len() == 1 && !args[0].starts_with("--") {
+        Ok(args.remove(0))
+    } else {
+        Err(schedule_cli_error(format!("Expected exactly one {name}")))
+    }
+}
+
+fn schedule_empty(args: &[String]) -> Result<(), ScheduleError> {
+    ensure_empty(args).map_err(schedule_cli_error)
+}
+
+fn schedule_cli_error(message: impl Into<String>) -> ScheduleError {
+    ScheduleError {
+        code: "invalid_argument",
+        message: message.into(),
+        current: None,
+    }
+}
+
+fn print_schedule_line(value: &serde_json::Value) {
+    println!(
+        "{}  rev {}  {}  {}  {}",
+        value["id"].as_str().unwrap_or("?"),
+        value["revision"].as_u64().unwrap_or(0),
+        value["target"]["scope"]["scope"].as_str().unwrap_or("?"),
+        if value["paused"].as_bool().unwrap_or(false) {
+            "paused"
+        } else {
+            "active"
+        },
+        value["title"].as_str().unwrap_or(""),
+    );
 }
 
 fn print_json(value: &impl Serialize) -> Result<(), String> {
