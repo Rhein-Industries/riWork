@@ -115,6 +115,7 @@ enum PaneMenuAction {
 }
 
 const WINDOW_CONTROLS_WIDTH: f32 = 78.0;
+const WINDOW_CONTROLS_HEIGHT: f32 = 28.0;
 const WINDOW_CONTROLS_CONTENT_INSET: f32 = WINDOW_CONTROLS_WIDTH + 14.0;
 const FOCUS_MAX_WIDTH: f32 = 1100.0;
 const FOCUS_BOTTOM_MARGIN: f32 = 0.30;
@@ -350,11 +351,13 @@ fn file_editor_target(
 ) -> Result<FileEditorTarget, String> {
     // A live editor owns this path already. Saving in Vim invalidates the
     // browser's cached size/mtime; no-follow path validation still applies.
+    // The canonical path alone identifies the file: the project root (no
+    // worktree id) and its primary worktree are one directory, while another
+    // worktree resolves to a different path.
     let editor_path = file_preview::validated_live_editor_path(&root.path, path)?;
     if let Some(shell) = shells.iter().find(|shell| {
         shell.alive
             && shell.project_id.as_deref() == Some(project_id)
-            && shell.worktree_id == root.worktree_id
             && shell.editor_path.as_ref() == Some(&editor_path)
     }) {
         return Ok(FileEditorTarget::Existing(shell.clone()));
@@ -362,6 +365,48 @@ fn file_editor_target(
     // Only a fresh launch must match the selection's original file identity.
     file_preview::validated_editor_path(&root.path, path, identity)?;
     Ok(FileEditorTarget::New)
+}
+
+/// The pane that inherits the space of `removed` when it closes, so focus can
+/// stay next to where the user was working. Nearest to `removed` inside the
+/// sibling subtree.
+fn pane_inheriting_space(layout: &Layout, removed: PaneId) -> Option<PaneId> {
+    let Layout::Split { first, second, .. } = layout else {
+        return None;
+    };
+    match (first.as_ref(), second.as_ref()) {
+        (Layout::Pane(id), sibling) if *id == removed => sibling.pane_ids().first().copied(),
+        (sibling, Layout::Pane(id)) if *id == removed => sibling.pane_ids().last().copied(),
+        _ => {
+            pane_inheriting_space(first, removed).or_else(|| pane_inheriting_space(second, removed))
+        }
+    }
+}
+
+/// Left and top offsets of the window-edge docking targets. They stay clear of
+/// the window controls island, which native full screen hides.
+fn root_dock_insets(controls_visible: bool) -> (f32, f32) {
+    if controls_visible {
+        (WINDOW_CONTROLS_WIDTH + 2.0, WINDOW_CONTROLS_HEIGHT + 2.0)
+    } else {
+        // Match the right dock, which yields the corner to the top dock.
+        (0.0, 12.0)
+    }
+}
+
+/// Frees snapshot textures from the window's sprite atlas. `RenderImage` has no
+/// `Drop`, so without this every snapshot leaks a surface-sized texture.
+fn release_render_images(images: Vec<Arc<gpui::RenderImage>>, cx: &mut App) {
+    if images.is_empty() {
+        return;
+    }
+    // `App::drop_image` skips a window that is mid-update, and this runs from
+    // event handlers and render. Deferred, the window is back in the app.
+    cx.defer(move |cx| {
+        for image in images {
+            cx.drop_image(image, None);
+        }
+    });
 }
 
 fn project_recency_sources(state: &State) -> BTreeMap<String, Vec<PathBuf>> {
@@ -821,6 +866,9 @@ impl Workspace {
             window,
             cx,
         )?;
+        // The new terminal takes focus on spawn.
+        self.search_focused = false;
+        self.search_marked = None;
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
         let worktree_name = shell
@@ -915,7 +963,7 @@ impl Workspace {
         let colors_changed = previous_theme != next_theme
             || (next_theme.is_none() && self.appearance.ghostty != appearance.ghostty);
         let restore_terminal_focus = next_theme.is_none()
-            && self.project_creator.is_none()
+            && !self.modal_open()
             && !self.search_focused
             && self.panel_menu.is_none()
             && !self.tab_dragging
@@ -972,7 +1020,7 @@ impl Workspace {
                     }
                 }
             }
-            self.terminal_snapshots.clear();
+            self.release_snapshots(cx);
             if let Some(error) = error {
                 self.notice = Some(error);
             }
@@ -1716,8 +1764,18 @@ impl Workspace {
         }
     }
 
+    /// Drops the terminal snapshots and frees their atlas textures.
+    fn release_snapshots(&mut self, cx: &mut Context<Self>) {
+        let snapshots = std::mem::take(&mut self.terminal_snapshots);
+        release_render_images(snapshots.into_values().collect(), cx);
+    }
+
+    fn modal_open(&self) -> bool {
+        self.project_creator.is_some() || self.folder_editor.is_some()
+    }
+
     fn begin_tab_drag(&mut self, cx: &mut Context<Self>) {
-        self.terminal_snapshots.clear();
+        self.release_snapshots(cx);
         self.tab_dragging = true;
         for pane in self.panes.values() {
             if let Some(tab) = pane.tabs.get(pane.active) {
@@ -1737,8 +1795,13 @@ impl Workspace {
     }
 
     fn finish_tab_drag(&mut self, cx: &mut Context<Self>) {
+        // A modal keeps the terminals frozen; showing them would draw the
+        // native surfaces above it.
+        if self.modal_open() {
+            return;
+        }
         self.tab_dragging = false;
-        self.terminal_snapshots.clear();
+        self.release_snapshots(cx);
         for pane in self.panes.values() {
             for (index, tab) in pane.tabs.iter().enumerate() {
                 tab.set_visible(index == pane.active, cx);
@@ -1765,6 +1828,10 @@ impl Workspace {
     }
 
     fn end_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Every left mouse-up lands here; only a divider drag changes the layout.
+        if self.resizing.is_none() {
+            return;
+        }
         self.resize_at(window.mouse_position(), cx);
         self.resizing = None;
         self.save_layout();
@@ -1785,7 +1852,7 @@ impl Workspace {
         self.layout = Layout::Pane(1);
         self.panes.clear();
         self.tab_dragging = false;
-        self.terminal_snapshots.clear();
+        self.release_snapshots(cx);
         self.drop_target = None;
         self.resizing = None;
         self.panel_menu = None;
@@ -2586,6 +2653,10 @@ impl Workspace {
             .and_then(|pane| pane.tabs.get(pane.active))
             .and_then(|tab| tab.terminal().cloned());
         if let Some(terminal) = terminal {
+            // The terminal takes the keys, so a search left open must not also
+            // act on them: the adapter does not stop them bubbling to us.
+            self.search_focused = false;
+            self.search_marked = None;
             terminal.update(cx, |terminal, cx| terminal.focus(window, cx));
         } else {
             self.focus.focus(window, cx);
@@ -2688,6 +2759,10 @@ impl Workspace {
         if !self.ensure_layout(window, cx) {
             return;
         }
+        // An open pane menu keeps the terminals frozen as snapshots, and only
+        // the render-time guard ends that once the menu is gone.
+        self.panel_menu = None;
+        self.drop_target = None;
         if self.panes.len() == 1 {
             if let Some(pane) = self.panes.get_mut(&pane_id) {
                 for tab in pane.tabs.drain(..) {
@@ -2698,6 +2773,9 @@ impl Workspace {
                 }
                 pane.active = 0;
             }
+            if self.tab_dragging {
+                self.finish_tab_drag(cx);
+            }
             self.focus_active(window, cx);
             self.save_layout();
             cx.notify();
@@ -2707,6 +2785,7 @@ impl Workspace {
             locked.remove(&pane_id);
         }
         let was_active = self.active_pane == pane_id;
+        let inheritor = pane_inheriting_space(&self.layout, pane_id);
         if let Some(pane) = self.panes.remove(&pane_id) {
             for tab in pane.tabs {
                 if let Some(shell_id) = tab.shell_id() {
@@ -2715,10 +2794,15 @@ impl Workspace {
                 tab.set_visible(false, cx);
             }
         }
+        if self.tab_dragging {
+            self.finish_tab_drag(cx);
+        }
         if let Some(layout) = self.layout.clone().without(pane_id) {
             self.layout = layout;
             if was_active {
-                self.active_pane = self.layout.first_pane();
+                self.active_pane = inheritor
+                    .filter(|id| self.panes.contains_key(id))
+                    .unwrap_or_else(|| self.layout.first_pane());
                 self.focus_active(window, cx);
             }
             self.save_layout();
@@ -2761,6 +2845,9 @@ impl Workspace {
     }
 
     fn new_tab_action(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         self.add_tab(window, cx);
     }
 
@@ -2790,14 +2877,23 @@ impl Workspace {
     }
 
     fn open_codex_action(&mut self, _: &OpenCodex, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         self.add_harness(HarnessKind::Codex, false, window, cx);
     }
 
     fn open_claude_action(&mut self, _: &OpenClaude, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         self.add_harness(HarnessKind::Claude, false, window, cx);
     }
 
     fn open_grok_action(&mut self, _: &OpenGrok, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         self.add_harness(HarnessKind::Grok, false, window, cx);
     }
 
@@ -2865,14 +2961,23 @@ impl Workspace {
     }
 
     fn split_right_action(&mut self, _: &SplitRight, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         self.add_split(Axis::SideBySide, window, cx);
     }
 
     fn split_down_action(&mut self, _: &SplitDown, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         self.add_split(Axis::Stacked, window, cx);
     }
 
     fn close_tab_action(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         let Some(pane) = self.panes.get(&self.active_pane) else {
             return;
         };
@@ -2883,10 +2988,16 @@ impl Workspace {
     }
 
     fn close_pane_action(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         self.remove_pane(self.active_pane, window, cx);
     }
 
     fn next_tab_action(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         self.cycle_tab(1, window, cx);
     }
 
@@ -2896,6 +3007,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.modal_open() {
+            return;
+        }
         self.cycle_tab(-1, window, cx);
     }
 
@@ -2905,6 +3019,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.modal_open() {
+            return;
+        }
         self.open_panel(PanelKind::Projects, self.active_pane, window, cx);
     }
 
@@ -2914,6 +3031,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.modal_open() {
+            return;
+        }
         self.open_panel(PanelKind::Schedules, self.active_pane, window, cx);
     }
 
@@ -2923,6 +3043,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.modal_open() {
+            return;
+        }
         self.open_panel(PanelKind::Settings, self.active_pane, window, cx);
     }
 
@@ -2932,10 +3055,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.modal_open() {
+            return;
+        }
         self.open_panel(PanelKind::ProjectSettings, self.active_pane, window, cx);
     }
 
     fn open_files_action(&mut self, _: &OpenFiles, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
         let pane_id = self
             .panes
             .iter()
@@ -2962,6 +3091,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.modal_open() {
+            return;
+        }
         let files_active = self
             .panes
             .get(&self.active_pane)
@@ -3059,7 +3191,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.project_creator.is_some() || !self.ensure_layout(window, cx) {
+        if self.modal_open() || !self.ensure_layout(window, cx) {
             return;
         }
         self.panel_menu = None;
@@ -3123,9 +3255,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.project_creator.is_none() {
-            self.set_focus_mode(!self.focus_mode, window, cx);
+        if self.modal_open() {
+            return;
         }
+        self.set_focus_mode(!self.focus_mode, window, cx);
     }
 
     fn replace_search_text(
@@ -3173,7 +3306,10 @@ impl Workspace {
             cx.notify();
             return;
         }
-        if !self.search_focused {
+        // Keys reach this handler from every focused descendant, including
+        // terminals, so the search only owns them while the workspace itself
+        // holds focus.
+        if !self.search_focused || !self.focus.is_focused(window) {
             return;
         }
         let handled = match event.keystroke.key.as_str() {
@@ -4597,8 +4733,14 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_root_dock(&self, side: DockSide, cx: &mut Context<Self>) -> AnyElement {
+    fn render_root_dock(
+        &self,
+        side: DockSide,
+        controls_visible: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme::palette(cx);
+        let (inset_left, inset_top) = root_dock_insets(controls_visible);
         let footer_height = if self.focus_mode || !self.settings.status_bar.enabled {
             0.0
         } else {
@@ -4624,7 +4766,7 @@ impl Workspace {
         match side {
             DockSide::Left => target
                 .left_0()
-                .top(px(30.0))
+                .top(px(inset_top))
                 .bottom(px(12.0 + footer_height))
                 .w(px(12.0)),
             DockSide::Right => target
@@ -4632,7 +4774,7 @@ impl Workspace {
                 .top(px(12.0))
                 .bottom(px(12.0 + footer_height))
                 .w(px(12.0)),
-            DockSide::Top => target.top_0().left(px(80.0)).right_0().h(px(12.0)),
+            DockSide::Top => target.top_0().left(px(inset_left)).right_0().h(px(12.0)),
             DockSide::Bottom => target
                 .bottom(px(footer_height))
                 .left_0()
@@ -4743,13 +4885,15 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
         let show_window_controls = window_controls_visible(window);
+        if self.search_focused && !self.focus.is_focused(window) {
+            // Focus moved elsewhere (a click on a terminal, say) without going
+            // through the workspace.
+            self.search_focused = false;
+            self.search_marked = None;
+        }
         if !cx.has_active_drag() {
             self.drop_target = None;
-            if self.tab_dragging
-                && self.panel_menu.is_none()
-                && self.project_creator.is_none()
-                && self.folder_editor.is_none()
-            {
+            if self.tab_dragging && self.panel_menu.is_none() && !self.modal_open() {
                 self.finish_tab_drag(cx);
             }
         }
@@ -4893,7 +5037,7 @@ impl Render for Workspace {
                             DockSide::Bottom,
                         ]
                         .into_iter()
-                        .map(|side| self.render_root_dock(side, cx))
+                        .map(|side| self.render_root_dock(side, show_window_controls, cx))
                         .collect::<Vec<_>>()
                     })
                     .unwrap_or_default(),
@@ -4941,7 +5085,7 @@ fn window_controls_island(cx: &App) -> impl IntoElement {
         .top_0()
         .left_0()
         .w(px(WINDOW_CONTROLS_WIDTH))
-        .h(px(28.0))
+        .h(px(WINDOW_CONTROLS_HEIGHT))
         .rounded_br(px(8.0))
         .bg(rgb(colors.panel_active))
         .border_r_1()
@@ -5224,11 +5368,14 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
 fn sync_appearance(cx: &mut App) {
     let selected = cx.global::<Settings>().theme;
     // Presets are static; native configuration is resolved again to pick up edits,
-    // including recursive config files and custom theme files.
+    // including recursive config files and custom theme files. The parse itself is
+    // skipped while none of those files changed.
     if selected != ThemeChoice::Ghostty && cx.global::<Appearance>().selected == selected {
         return;
     }
-    let appearance = Appearance::resolve(selected);
+    let Some(appearance) = theme::refresh_appearance(selected, cx) else {
+        return;
+    };
     if &appearance != cx.global::<Appearance>() {
         cx.set_global(appearance);
     }
@@ -5614,8 +5761,30 @@ mod workspace_tab_tests {
             Ok(FileEditorTarget::Existing(shell)) if shell.id == editor.id
         ));
 
-        // A dead editor, another project, or another worktree cannot bypass
-        // the strict identity check for a new session.
+        // The project root and its primary worktree are one directory, so an
+        // editor opened from either is the same editor.
+        for editor_worktree in [None, Some("primary".to_owned())] {
+            for root_worktree in [None, Some("worktree-a".to_owned())] {
+                let root = ExplorerRoot {
+                    worktree_id: root_worktree,
+                    ..root.clone()
+                };
+                let shell = ShellSession {
+                    worktree_id: editor_worktree.clone(),
+                    ..editor.clone()
+                };
+                assert!(matches!(
+                    file_editor_target(&root, &path, old, "project-a", std::slice::from_ref(&shell)),
+                    Ok(FileEditorTarget::Existing(found)) if found.id == shell.id
+                ));
+            }
+        }
+
+        // A dead editor, another project, or another worktree's copy of the
+        // file cannot bypass the strict identity check for a new session.
+        let other_worktree = directory.join("other-worktree");
+        fs::create_dir(&other_worktree).unwrap();
+        fs::write(other_worktree.join("café space.txt"), "before\n").unwrap();
         for (project_id, shells) in [
             ("project-a", vec![]),
             ("project-b", vec![editor.clone()]),
@@ -5630,6 +5799,12 @@ mod workspace_tab_tests {
                 "project-a",
                 vec![ShellSession {
                     worktree_id: Some("worktree-b".into()),
+                    editor_path: Some(
+                        other_worktree
+                            .canonicalize()
+                            .unwrap()
+                            .join("café space.txt"),
+                    ),
                     ..editor.clone()
                 }],
             ),
@@ -5643,6 +5818,47 @@ mod workspace_tab_tests {
         editor.editor_path = Some(directory.canonicalize().unwrap().join("link.txt"));
         assert!(file_editor_target(&root, &link, old, "project-a", &[editor]).is_err());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn closing_a_pane_focuses_the_pane_that_takes_its_space() {
+        let pane = |id| Box::new(Layout::Pane(id));
+        let split = |first: Box<Layout>, second: Box<Layout>| {
+            Box::new(Layout::Split {
+                axis: Axis::SideBySide,
+                ratio: 0.5,
+                first,
+                second,
+            })
+        };
+        // nav | (terminal | (top / bottom))
+        let layout = Layout::Split {
+            axis: Axis::SideBySide,
+            ratio: 0.27,
+            first: pane(1),
+            second: split(pane(2), split(pane(3), pane(4))),
+        };
+        assert_eq!(pane_inheriting_space(&layout, 4), Some(3));
+        assert_eq!(pane_inheriting_space(&layout, 3), Some(4));
+        assert_eq!(pane_inheriting_space(&layout, 2), Some(3));
+        assert_eq!(pane_inheriting_space(&layout, 1), Some(2));
+        // The neighbour next to the closed pane, not the far end of a subtree.
+        let layout = Layout::Split {
+            axis: Axis::SideBySide,
+            ratio: 0.5,
+            first: split(pane(1), pane(2)),
+            second: pane(3),
+        };
+        assert_eq!(pane_inheriting_space(&layout, 3), Some(2));
+        assert_eq!(pane_inheriting_space(&layout, 1), Some(2));
+        assert_eq!(pane_inheriting_space(&layout, 9), None);
+        assert_eq!(pane_inheriting_space(&Layout::Pane(1), 1), None);
+    }
+
+    #[test]
+    fn root_docking_targets_clear_the_window_controls_only_while_they_show() {
+        assert_eq!(root_dock_insets(true), (80.0, 30.0));
+        assert_eq!(root_dock_insets(false), (0.0, 12.0));
     }
 
     #[test]
