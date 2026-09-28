@@ -60,6 +60,14 @@ pub struct ImportPreview {
     plan: ImportPlan,
 }
 
+impl ImportPreview {
+    /// Whether `import` would record anything, additions or skipped-item
+    /// warnings. When false it refuses, so callers should not offer it.
+    pub fn recordable(&self) -> bool {
+        self.plan.recordable
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ImportManager {
     store: Store,

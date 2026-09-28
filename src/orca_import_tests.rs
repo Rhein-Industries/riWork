@@ -499,6 +499,8 @@ fn empty_warning_free_plan_never_records_a_receipt() {
     // Orca may still be starting, or may simply have no projects yet.
     let preview = manager.inspect().unwrap();
     assert_eq!((preview.project_count, preview.worktree_count), (0, 0));
+    // The Settings panel keys its finish button off this.
+    assert!(!preview.recordable());
     assert!(
         manager
             .import(&preview)
@@ -566,6 +568,7 @@ fn empty_plan_with_skipped_items_still_records_completion() {
             .iter()
             .any(|warning| warning.contains("missing local project"))
     );
+    assert!(preview.recordable());
     let receipt = manager.import(&preview).unwrap();
     assert_eq!((receipt.project_count, receipt.worktree_count), (0, 0));
     assert!(manager.inspect().unwrap().already_imported.is_some());

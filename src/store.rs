@@ -240,14 +240,9 @@ impl State {
     pub fn worktree(&self, selector: &str) -> Result<&Worktree, String> {
         let canonical = Path::new(selector).canonicalize().ok();
         resolve_one(
-            self.worktrees.iter().filter(|worktree| {
-                worktree.id == selector
-                    || id_prefix(&worktree.id, selector)
-                    || worktree.branch == selector
-                    || canonical
-                        .as_ref()
-                        .is_some_and(|path| path == &worktree.path)
-            }),
+            self.worktrees
+                .iter()
+                .filter(|worktree| worktree_matches(worktree, selector, canonical.as_deref())),
             "worktree",
             selector,
         )
@@ -285,12 +280,7 @@ impl State {
             .iter()
             .filter(|worktree| {
                 worktree.project_id == project_id
-                    && (worktree.id == selector
-                        || id_prefix(&worktree.id, selector)
-                        || worktree.branch == selector
-                        || canonical
-                            .as_ref()
-                            .is_some_and(|path| path == &worktree.path))
+                    && worktree_matches(worktree, selector, canonical.as_deref())
             })
             .peekable();
         if scoped.peek().is_none() {
@@ -374,6 +364,15 @@ fn resolve_one<'a, T: 'a>(
 
 fn id_prefix(id: &str, selector: &str) -> bool {
     selector.len() >= 8 && id.starts_with(selector)
+}
+
+/// The one rule for what a worktree selector names, shared by the global and
+/// the project-scoped lookups. `canonical` is the selector as an existing path.
+fn worktree_matches(worktree: &Worktree, selector: &str, canonical: Option<&Path>) -> bool {
+    worktree.id == selector
+        || id_prefix(&worktree.id, selector)
+        || worktree.branch == selector
+        || canonical.is_some_and(|path| path == worktree.path)
 }
 
 fn project_folder_name(

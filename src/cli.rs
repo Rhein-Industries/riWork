@@ -390,8 +390,13 @@ fn reload_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             print_json(&json!({"reload":report,"session":null}))?;
         }
         return Err(format!(
-            "Reload incomplete: {} restored, {} failed, {} pending. Existing apps remain open where restoration failed.",
-            report.reloaded, report.failed, report.pending
+            "Reload incomplete: {} restored, {} failed, {} pending. Existing apps remain open where restoration failed.{}",
+            report.reloaded,
+            report.failed,
+            report.pending,
+            unreadable_reload_error(&report)
+                .map(|note| format!(" {note}"))
+                .unwrap_or_default()
         ));
     }
     let session = if session {
@@ -412,7 +417,8 @@ fn reload_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             );
         }
     }
-    Ok(())
+    // Reported after the output so scripts still see what was reloaded.
+    unreadable_reload_error(&report).map_or(Ok(()), Err)
 }
 
 fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
@@ -465,11 +471,14 @@ fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         if let Some(previous) = &build.previous_bundle {
             println!("Previous build kept at {}", previous.display());
         }
-        if let Some(reload) = reload {
-            print_reload_report(&reload);
+        if let Some(reload) = &reload {
+            print_reload_report(reload);
         }
     }
-    Ok(())
+    reload
+        .as_ref()
+        .and_then(unreadable_reload_error)
+        .map_or(Ok(()), Err)
 }
 
 fn take_update_profile(args: &mut Vec<String>) -> Result<Option<&'static str>, String> {
@@ -484,19 +493,42 @@ fn take_update_profile(args: &mut Vec<String>) -> Result<Option<&'static str>, S
 }
 
 fn print_reload_report(report: &crate::runtime::ReloadReport) {
-    if report.instances.is_empty() {
-        println!("No registered RiWork apps are open.");
-    } else {
+    println!("{}", reload_summary(report));
+}
+
+fn reload_summary(report: &crate::runtime::ReloadReport) -> String {
+    if !report.instances.is_empty() {
         let windows: usize = report
             .instances
             .iter()
             .map(|instance| instance.window_count)
             .sum();
-        println!(
+        format!(
             "Reloaded {} RiWork apps ({} windows). Running shells and agents were preserved.",
             report.reloaded, windows
-        );
+        )
+    } else if report.unreadable_registrations > 0 {
+        "No readable RiWork apps were reloaded.".to_owned()
+    } else {
+        "No registered RiWork apps are open.".to_owned()
     }
+}
+
+/// Apps whose registration this build cannot parse keep running old code, so a
+/// reload that skipped them is only partly done and must not exit cleanly.
+fn unreadable_reload_error(report: &crate::runtime::ReloadReport) -> Option<String> {
+    let count = report.unreadable_registrations;
+    let (noun, pronoun) = if count == 1 {
+        ("process", "it")
+    } else {
+        ("processes", "them")
+    };
+    (count > 0).then(|| {
+        format!(
+            "{count} running RiWork {noun} from another build could not be reloaded. \
+             Quit {pronoun}, or run `riwork reload` from the build that started {pronoun}."
+        )
+    })
 }
 
 fn cua_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
@@ -1756,18 +1788,41 @@ fn schedule_cli_error(message: impl Into<String>) -> ScheduleError {
 }
 
 fn print_schedule_line(value: &serde_json::Value) {
-    println!(
+    println!("{}", schedule_line(value));
+}
+
+fn schedule_line(value: &serde_json::Value) -> String {
+    let text = |value: &serde_json::Value, fallback: &str| {
+        terminal_safe(value.as_str().unwrap_or(fallback))
+    };
+    format!(
         "{}  rev {}  {}  {}  {}",
-        value["id"].as_str().unwrap_or("?"),
+        text(&value["id"], "?"),
         value["revision"].as_u64().unwrap_or(0),
-        value["target"]["scope"]["scope"].as_str().unwrap_or("?"),
+        text(&value["target"]["scope"]["scope"], "?"),
         if value["paused"].as_bool().unwrap_or(false) {
             "paused"
         } else {
             "active"
         },
-        value["title"].as_str().unwrap_or(""),
-    );
+        text(&value["title"], ""),
+    )
+}
+
+/// Text stored before titles were validated may carry escape sequences or line
+/// breaks. Shown escaped so a terminal never acts on them; JSON stays exact.
+fn terminal_safe(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control()
+                || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+            {
+                c.escape_unicode().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 fn print_json(value: &impl Serialize) -> Result<(), String> {
@@ -1940,12 +1995,12 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 mod tests {
     use super::{
         agent_hook_command, frozen_codex_usage_home, grok_usage_unknown, opens_workspace,
-        scoped_codex_usage_home, take_orchestrator_project, take_update_profile,
-        unknown_invocation,
+        reload_summary, schedule_line, scoped_codex_usage_home, take_orchestrator_project,
+        take_update_profile, terminal_safe, unknown_invocation, unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
-    use std::io;
+    use std::{io, path::PathBuf};
 
     #[test]
     fn claude_notification_input_failures_always_return_nonblocking_success() {
@@ -2335,6 +2390,100 @@ mod tests {
         );
         assert!(store.rename_project(&project.id, "   ").is_err());
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn reload_report(unreadable: usize, windows: &[usize]) -> crate::runtime::ReloadReport {
+        crate::runtime::ReloadReport {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            replacement_executable: PathBuf::from("/unused/riwork"),
+            requested: windows.len(),
+            reloaded: windows.len(),
+            pending: 0,
+            failed: 0,
+            unreadable_registrations: unreadable,
+            instances: windows
+                .iter()
+                .map(|count| crate::runtime::ReloadInstanceResult {
+                    instance_id: uuid::Uuid::new_v4().to_string(),
+                    pid: 1,
+                    state_home: PathBuf::from("/unused/home"),
+                    window_count: *count,
+                    state: crate::runtime::ReloadState::Reloaded,
+                    new_pid: Some(2),
+                    message: String::new(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn reload_with_only_unreadable_apps_is_not_reported_as_nothing_open() {
+        let clean = reload_report(0, &[]);
+        assert_eq!(
+            reload_summary(&clean),
+            "No registered RiWork apps are open."
+        );
+        assert_eq!(unreadable_reload_error(&clean), None);
+
+        let stranded = reload_report(2, &[]);
+        assert_eq!(
+            reload_summary(&stranded),
+            "No readable RiWork apps were reloaded."
+        );
+        let error = unreadable_reload_error(&stranded).unwrap();
+        assert!(error.starts_with("2 running RiWork processes from another build"));
+        assert!(error.contains("Quit them"), "{error}");
+        assert!(error.contains("`riwork reload`"), "{error}");
+        assert!(
+            unreadable_reload_error(&reload_report(1, &[]))
+                .unwrap()
+                .contains("1 running RiWork process from another build")
+        );
+        // The count travels in --json output too.
+        assert_eq!(
+            serde_json::to_value(&stranded).unwrap()["unreadable_registrations"],
+            2
+        );
+    }
+
+    #[test]
+    fn reload_with_readable_and_unreadable_apps_still_reports_what_was_reloaded() {
+        let mixed = reload_report(1, &[2, 1]);
+        assert_eq!(
+            reload_summary(&mixed),
+            "Reloaded 2 RiWork apps (3 windows). Running shells and agents were preserved."
+        );
+        assert!(unreadable_reload_error(&mixed).is_some());
+    }
+
+    #[test]
+    fn schedule_text_output_escapes_control_characters_but_json_stays_exact() {
+        let title = "Deploy\u{1b}[2J\u{9b}31m\u{7f}\u{2028}next\u{2029}line\r\nend \u{202e}é";
+        let schedule = serde_json::json!({
+            "id":"abc","revision":3,"paused":true,
+            "target":{"scope":{"scope":"worktree"}},"title":title,
+        });
+        let line = schedule_line(&schedule);
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(
+            !line.contains(['\u{2028}', '\u{2029}', '\u{202e}']),
+            "{line:?}"
+        );
+        assert!(line.contains("\\u{1b}[2J"), "{line}");
+        assert!(line.contains("\\u{9b}"), "{line}");
+        assert!(line.contains("\\u{2028}next"), "{line}");
+        assert!(line.ends_with("é"), "{line}");
+        assert!(line.starts_with("abc  rev 3  worktree  paused  Deploy"));
+        // Ordinary text passes through untouched.
+        assert_eq!(
+            terminal_safe("Nightly build – 日本語"),
+            "Nightly build – 日本語"
+        );
+        // The stored value is never altered, so JSON output is exact.
+        assert_eq!(schedule["title"], title);
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&schedule).unwrap()).unwrap();
+        assert_eq!(json["title"], title);
     }
 }
 

@@ -396,6 +396,51 @@ fn import_counts(projects: usize, folders: usize, worktrees: usize, colors: Pale
         .into_any_element()
 }
 
+/// What the Orca section can honestly offer for a preview.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrcaImportOffer {
+    /// There are records to add.
+    Import,
+    /// Nothing to add, but skipped-item warnings that a receipt can record.
+    Finish,
+    /// Nothing to add and nothing to record: importing would only be refused.
+    NothingYet,
+}
+
+impl OrcaImportOffer {
+    fn for_preview(preview: &ImportPreview) -> Self {
+        let empty =
+            preview.project_count == 0 && preview.folder_count == 0 && preview.worktree_count == 0;
+        Self::new(empty, preview.recordable())
+    }
+
+    fn new(empty: bool, recordable: bool) -> Self {
+        match (empty, recordable) {
+            (false, _) => Self::Import,
+            (true, true) => Self::Finish,
+            (true, false) => Self::NothingYet,
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Self::Import => "These records will be added to RiWork when you import.",
+            Self::Finish => "Nothing new to add. Finish to save the one-time import receipt.",
+            Self::NothingYet => {
+                "Orca has no projects or worktrees to import yet. Once Orca has loaded them, choose PREVIEW IMPORT again."
+            }
+        }
+    }
+
+    fn button(self) -> Option<&'static str> {
+        match self {
+            Self::Import => Some("IMPORT NOW"),
+            Self::Finish => Some("FINISH IMPORT"),
+            Self::NothingYet => None,
+        }
+    }
+}
+
 impl SettingsPanel {
     pub fn new(store: SettingsStore, cx: &mut Context<Self>) -> Self {
         let account_ids = cx
@@ -776,7 +821,7 @@ impl SettingsPanel {
             && self
                 .orca_preview
                 .as_ref()
-                .is_some_and(|preview| preview.already_imported.is_none())
+                .is_some_and(|preview| preview.already_imported.is_none() && preview.recordable())
     }
 
     fn preview_orca(&mut self, cx: &mut Context<Self>) {
@@ -946,9 +991,7 @@ impl SettingsPanel {
                     )
                 })
             });
-        let empty = preview.is_some_and(|preview| {
-            preview.project_count == 0 && preview.folder_count == 0 && preview.worktree_count == 0
-        });
+        let offer = preview.map(OrcaImportOffer::for_preview);
         div()
             .id("orca-import")
             .flex()
@@ -1001,15 +1044,11 @@ impl SettingsPanel {
                     .child(format!("ORCA CLI · {}", source.display()))
             }))
             .children(counts)
-            .children((preview.is_some() && receipt.is_none()).then(|| {
+            .children(offer.filter(|_| receipt.is_none()).map(|offer| {
                 div()
                     .text_size(px(10.0))
                     .text_color(rgb(colors.muted))
-                    .child(if empty {
-                        "Nothing new to add. Finish to save the one-time import receipt."
-                    } else {
-                        "These records will be added to RiWork when you import."
-                    })
+                    .child(offer.hint())
             }))
             .children(preview.filter(|preview| !preview.warnings.is_empty()).map(|preview| {
                 div()
@@ -1050,14 +1089,12 @@ impl SettingsPanel {
                         pending,
                         cx,
                     ))
-                    .children((preview.is_some() && receipt.is_none()).then(|| {
-                        self.orca_button(
-                            if empty { "FINISH IMPORT" } else { "IMPORT NOW" },
-                            true,
-                            !self.can_import_orca(),
-                            cx,
-                        )
-                    })),
+                    .children(
+                        offer
+                            .filter(|_| receipt.is_none())
+                            .and_then(OrcaImportOffer::button)
+                            .map(|label| self.orca_button(label, true, !self.can_import_orca(), cx)),
+                    ),
             )
             .into_any_element()
     }
@@ -1802,5 +1839,26 @@ mod tests {
         assert_eq!(reloaded.theme, ThemeChoice::RiWork);
         assert!(!reloaded.remember_window_size);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_empty_orca_plan_offers_finish_only_when_a_receipt_has_something_to_record() {
+        // Nothing found and nothing skipped: import refuses, so no button.
+        let nothing = OrcaImportOffer::new(true, false);
+        assert_eq!(nothing, OrcaImportOffer::NothingYet);
+        assert_eq!(nothing.button(), None);
+        assert!(
+            nothing
+                .hint()
+                .starts_with("Orca has no projects or worktrees")
+        );
+        // Skipped-item warnings are still recorded as a receipt.
+        let skipped = OrcaImportOffer::new(true, true);
+        assert_eq!(skipped, OrcaImportOffer::Finish);
+        assert_eq!(skipped.button(), Some("FINISH IMPORT"));
+        assert!(skipped.hint().starts_with("Nothing new to add"));
+        let records = OrcaImportOffer::new(false, true);
+        assert_eq!(records, OrcaImportOffer::Import);
+        assert_eq!(records.button(), Some("IMPORT NOW"));
     }
 }
