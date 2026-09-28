@@ -21,7 +21,7 @@ ZIG=/path/to/zig-0.16/zig sh scripts/bundle-macos.sh release
 open target/release/RiWork.app --args /path/to/project
 ```
 
-The project path is optional. Without one, RiWork reopens the active project, or registers the current directory on first launch. The bundle includes Ghostty terminfo and shell integration, and copies the named theme catalog from `/Applications/Ghostty.app` when installed. Set `GHOSTTY_THEMES_DIR` while bundling to use another catalog directory. Custom themes in your Ghostty configuration directory also work. For an unbundled `cargo run`, set `GHOSTTY_RESOURCES_DIR` to the bundle's `Contents/Resources/ghostty` directory.
+The project path is optional but must be an existing directory. Without one, RiWork reopens the active project, or registers the current directory on first launch. Any other unrecognised argument, such as a misspelled command, prints an error and exits instead of opening a window. The bundle includes Ghostty terminfo and shell integration, and copies the named theme catalog from `/Applications/Ghostty.app` when installed. Set `GHOSTTY_THEMES_DIR` while bundling to use another catalog directory. Custom themes in your Ghostty configuration directory also work. For an unbundled `cargo run`, set `GHOSTTY_RESOURCES_DIR` to the bundle's `Contents/Resources/ghostty` directory.
 
 Use the release build for normal use. For development, `cargo build` and `sh scripts/bundle-macos.sh debug` create artifacts under `target/debug`; `cargo run -- /path/to/project` starts an unbundled development window.
 
@@ -31,7 +31,7 @@ To make the CLI available everywhere, link the built executable into a directory
 ln -sfn "$PWD/target/release/riwork" "$HOME/.local/bin/riwork"
 ```
 
-Run `riwork help` for the full command list. Data defaults to `~/.local/share/riwork`; set `RIWORK_HOME` to use a separate store and tmux server. An empty `RIWORK_HOME` or `HOME` counts as unset. A newly created data directory is owner-only, and `state.json` and `sessions.json` are written with owner-only permissions.
+Run `riwork help` for the full command list and `riwork --version` for the installed version. Data defaults to `~/.local/share/riwork`; set `RIWORK_HOME` to use a separate store and tmux server. An empty `RIWORK_HOME` or `HOME` counts as unset. A newly created data directory is owner-only, and `state.json` and `sessions.json` are written with owner-only permissions.
 
 ## Encrypted iOS access
 
@@ -94,7 +94,7 @@ New RiWork Codex, Claude, and Grok launches receive the same `cua-driver` MCP co
 
 The MCP connection runs through `riwork cua mcp`, which resolves the installed driver without depending on the agent's `PATH`. For a custom driver installation or isolated tests, set `RIWORK_CUA_DRIVER` to its executable. Setup keeps its managed launchers under `RIWORK_HOME/cua` and does not edit your global Codex, Claude, or Grok configuration or shell startup files. Grok receives a session-scoped agent definition from `RIWORK_HOME/cua/grok-agent-*.md`; its model and login still come from Grok's own profile, while RiWork's agent definition replaces Grok's default agent selection for that session. RiWork's zsh tabs forward your startup files through a session directory and restore the launcher prefix after their PATH changes. Custom shells, aliases, and nested shells can override that PATH; direct RiWork harness launches always receive the connection.
 
-RiWork also serves a local MCP connection over stdio with `riwork mcp`. Configure an MCP client to launch that command to give Codex, Claude, or Grok project, worktree, task, and shell inspection tools. The server uses the same state as the CLI and GPUI app.
+RiWork also serves a local MCP connection over stdio with `riwork mcp`. Configure an MCP client to launch that command to give Codex, Claude, or Grok project, worktree, task, shell, orchestrator, and schedule tools. Many tools only read state, but others change it: they register projects and worktrees, start shells (a `command` runs as an arbitrary program), send input to shells, and edit schedules whose prompts RiWork later types into an agent. Each tool's `annotations` mark its read-only and destructive behavior accordingly; for example `riwork_worktree_list` is not read-only because refreshing writes newly found worktrees to RiWork's state. Every tool rejects arguments outside its `inputSchema` instead of ignoring them, and failed schedule calls set `isError` without `structuredContent`. The server accepts JSON-RPC batches and answers malformed input with a JSON-RPC error. It uses the same state as the CLI and GPUI app.
 
 ## Projects, worktrees, and tasks
 
@@ -130,7 +130,7 @@ riwork task status TASK_ID in_progress
 riwork search search
 ```
 
-Projects, Worktrees, Tasks, and Shells each have a searchable panel tab. Projects lists all projects; the other panels show the active project's items. RiWork discovers Git worktrees created outside the CLI during refresh. A removed worktree stays registered so task and shell references keep their UUIDs; its path is marked `[missing]`. Use `riwork worktree forget ID` after its tasks and shells are gone to remove the stale record.
+`riwork worktree create --base REF` chooses the start point of a new branch only; if the branch already exists it is checked out as is and `--base` is ignored (the MCP `base` argument behaves the same). Projects, Worktrees, Tasks, and Shells each have a searchable panel tab. Projects lists all projects; the other panels show the active project's items. RiWork discovers Git worktrees created outside the CLI during refresh. A removed worktree stays registered so task and shell references keep their UUIDs; its path is marked `[missing]`. Use `riwork worktree forget ID` after its tasks and shells are gone to remove the stale record.
 
 Use the Projects sort selector beside the project count to choose **Last edited**, **Name**, **Date added**, or **Live sessions**. The arrow reverses the order. Projects sort within their virtual folders while the folder hierarchy stays intact; search and collapsed folders keep working. The preference is saved and shared across windows. Last edited defaults to newest first and reads the latest source-file modification time across each project's roots and registered worktrees, respecting Git ignores and excluding common build and dependency directories. Background scans refresh every 30 seconds. Unavailable or incomplete dates sort last; commit dates, deleted files, and task activity are not used as file-edit timestamps.
 

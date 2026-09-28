@@ -36,7 +36,7 @@ Read your startup scope and `RIWORK_ORCHESTRATOR_SCOPE`. A project orchestrator 
 
 ## Check progress and finish
 
-- Re-read task state and each assigned shell's output on a check-in. `riwork shell metrics SHELL_UUID --json` and `riwork usage --shell SHELL_UUID --json` add resource/quota context; missing usage means unknown. Sessions on one account share quota.
+- Re-read task state and each assigned shell's output on a check-in. `riwork shell metrics SHELL_UUID --json` and `riwork usage --shell SHELL_UUID --json` add resource/quota context; empty quota windows (always the case for Grok shells) or a usage error (for example a Claude session before its first response) mean unknown. Sessions on one account share quota.
 - Keep a compact mapping of task IDs to worktree IDs and shell UUIDs. When resuming, reconcile it with current state rather than assuming a previous submission completed.
 - Treat a harness's completion report as evidence to inspect. Review the relevant diff and the requested verification result before marking a task `done`. If a check fails, give the same harness a focused correction when it is ready for input.
 - Report completed work, remaining tasks, and concrete blockers. Do not merge, publish, send messages, or broaden the objective merely because implementation finished; follow the user's authorization for those actions.

@@ -270,6 +270,35 @@ impl State {
             .collect()
     }
 
+    /// Resolve a worktree selector inside one project first, so a branch such
+    /// as `main` that exists in many projects stays unambiguous when the caller
+    /// named the project. Selectors with no match in that project fall back to
+    /// the global lookup, which keeps its "belongs to another project" checks.
+    pub fn worktree_in_project(
+        &self,
+        project_id: &str,
+        selector: &str,
+    ) -> Result<&Worktree, String> {
+        let canonical = Path::new(selector).canonicalize().ok();
+        let mut scoped = self
+            .worktrees
+            .iter()
+            .filter(|worktree| {
+                worktree.project_id == project_id
+                    && (worktree.id == selector
+                        || id_prefix(&worktree.id, selector)
+                        || worktree.branch == selector
+                        || canonical
+                            .as_ref()
+                            .is_some_and(|path| path == &worktree.path))
+            })
+            .peekable();
+        if scoped.peek().is_none() {
+            return self.worktree(selector);
+        }
+        resolve_one(scoped, "worktree", selector)
+    }
+
     pub fn tasks_for_project(&self, project_id: &str) -> Vec<&Task> {
         self.tasks
             .iter()
@@ -989,6 +1018,25 @@ impl Store {
                 .find(|project| project.id == project_id)
                 .expect("resolved project remains in the transaction");
             project.folder_id = folder_id;
+            Ok(project.clone())
+        })
+    }
+
+    /// Rename inside the transaction without touching the folder, so a folder
+    /// move made meanwhile by another window or command is not reverted.
+    pub fn rename_project(&self, project_selector: &str, name: &str) -> Result<Project, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Project name cannot be empty".to_owned());
+        }
+        self.transaction(|state| {
+            let project_id = state.project(project_selector)?.id.clone();
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|project| project.id == project_id)
+                .expect("resolved project remains in the transaction");
+            project.name = name.to_owned();
             Ok(project.clone())
         })
     }
