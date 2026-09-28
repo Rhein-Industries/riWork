@@ -98,6 +98,11 @@ pub struct SessionMetrics {
     pub process_count: usize,
 }
 
+/// The sessions this build can represent. Other RiWork builds share the file,
+/// so `read_registry` skips entries it cannot parse (for example a harness a
+/// newer build added) instead of failing, and `write_registry` carries those
+/// entries, unknown session fields, and unknown top-level fields through from
+/// the file it replaces. Read it only through `read_registry`.
 #[derive(Default, Serialize, Deserialize)]
 struct Registry {
     sessions: Vec<ShellSession>,
@@ -1394,10 +1399,16 @@ impl SessionManager {
 
     fn lock_registry(&self) -> Result<File, String> {
         let path = self.home.join("sessions.lock");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
+        let mut options = OpenOptions::new();
+        // A pure lock file: never truncate it, and keep other users from
+        // opening it to hold the lock.
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
             .open(&path)
             .map_err(|error| format!("open {}: {error}", path.display()))?;
         file.lock()
@@ -1408,8 +1419,9 @@ impl SessionManager {
     fn read_registry(&self) -> Result<Registry, String> {
         let path = self.home.join("sessions.json");
         match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|error| format!("parse {}: {error}", path.display())),
+            Ok(bytes) => {
+                parse_registry(&bytes).map_err(|error| format!("parse {}: {error}", path.display()))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Registry::default()),
             Err(error) => Err(format!("read {}: {error}", path.display())),
         }
@@ -1418,12 +1430,19 @@ impl SessionManager {
     fn write_registry(&self, registry: &Registry) -> Result<(), String> {
         let path = self.home.join("sessions.json");
         let temporary = self.home.join(format!(".sessions-{}.tmp", Uuid::new_v4()));
-        let bytes = serde_json::to_vec_pretty(registry)
+        let document = registry_document(registry, &path)?;
+        let bytes = serde_json::to_vec_pretty(&document)
             .map_err(|error| format!("serialize shell registry: {error}"))?;
         let result = (|| -> Result<(), String> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
+            // Account labels and emails live here, so keep it owner-only.
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options
                 .open(&temporary)
                 .map_err(|error| format!("create {}: {error}", temporary.display()))?;
             file.write_all(&bytes)
@@ -1442,6 +1461,226 @@ impl SessionManager {
             let _ = fs::remove_file(&temporary);
         }
         result
+    }
+}
+
+/// Parse per entry: one session this build cannot represent must not hide the
+/// others, and a file that is not a `sessions` list is still an error.
+fn parse_registry(bytes: &[u8]) -> Result<Registry, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct Document {
+        sessions: Vec<serde_json::Value>,
+    }
+    let document: Document = serde_json::from_slice(bytes)?;
+    Ok(Registry {
+        sessions: document
+            .sessions
+            .into_iter()
+            .filter_map(|entry| serde_json::from_value(entry).ok())
+            .collect(),
+    })
+}
+
+/// The JSON to save: `registry` plus whatever the file it replaces holds that
+/// this build cannot represent. Callers hold the registry lock, so the file is
+/// the one `registry` was read from. A file that is not valid JSON has nothing
+/// to keep.
+fn registry_document(registry: &Registry, path: &Path) -> Result<serde_json::Value, String> {
+    use serde_json::{Map, Value};
+    let original = match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes).ok(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    let mut sessions = registry
+        .sessions
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("serialize shell registry: {error}"))?;
+    let mut extra = Map::new();
+    if let Some(Value::Object(original)) = &original {
+        let original_sessions = original
+            .get("sessions")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for session in sessions.iter_mut().filter_map(Value::as_object_mut) {
+            let known = original_sessions
+                .iter()
+                .filter_map(Value::as_object)
+                .find(|entry| entry.get("id").is_some() && entry.get("id") == session.get("id"));
+            if let Some(known) = known {
+                crate::store::restore_missing_fields(known, session);
+            }
+        }
+        sessions.extend(
+            original_sessions
+                .iter()
+                .filter(|entry| serde_json::from_value::<ShellSession>((*entry).clone()).is_err())
+                .cloned(),
+        );
+        extra.extend(
+            original
+                .iter()
+                .filter(|(key, _)| *key != "sessions")
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+    }
+    let mut document = Map::new();
+    document.insert("sessions".to_owned(), Value::Array(sessions));
+    document.extend(extra);
+    Ok(Value::Object(document))
+}
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    struct Home(PathBuf);
+
+    impl Home {
+        fn new() -> Self {
+            let path = env::temp_dir().join(format!("riwork-registry-test-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn manager(&self) -> SessionManager {
+            SessionManager {
+                home: self.0.clone(),
+                tmux: PathBuf::from("/unused/tmux"),
+                socket_name: "unused".into(),
+            }
+        }
+
+        fn registry_path(&self) -> PathBuf {
+            self.0.join("sessions.json")
+        }
+
+        fn saved(&self) -> Value {
+            serde_json::from_slice(&fs::read(self.registry_path()).unwrap()).unwrap()
+        }
+    }
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn session(id: &str) -> Value {
+        json!({
+            "id": id, "project_id": null, "worktree_id": null, "kind": "project",
+            "cwd": "/work", "command": null, "created_at_unix": 1
+        })
+    }
+
+    #[test]
+    fn unparsed_entries_and_unknown_fields_survive_a_load_modify_save_cycle() {
+        let home = Home::new();
+        let manager = home.manager();
+        let mut known = session("known");
+        known["harness"] = json!("codex");
+        known["future_session_flag"] = json!({"nested": [1, 2]});
+        // A build that predates a harness cannot represent its sessions, and a
+        // damaged entry is not even an object; neither may break the others.
+        let mut other_harness = session("other-harness");
+        other_harness["harness"] = json!("future_agent");
+        other_harness["future_session_flag"] = json!(true);
+        let damaged = json!("not a session");
+        let original = json!({
+            "sessions": [other_harness, known, damaged],
+            "future_registry_field": {"epoch": 3}
+        });
+        fs::write(home.registry_path(), serde_json::to_vec(&original).unwrap()).unwrap();
+
+        let mut registry = manager.read_registry().unwrap();
+        assert_eq!(registry.sessions.len(), 1);
+        assert_eq!(registry.sessions[0].id, "known");
+        registry.sessions[0].unrestricted = true;
+        registry
+            .sessions
+            .push(serde_json::from_value(session("added")).unwrap());
+        manager.write_registry(&registry).unwrap();
+
+        let saved = home.saved();
+        assert_eq!(saved["future_registry_field"], json!({"epoch": 3}));
+        let entries = saved["sessions"].as_array().unwrap();
+        assert_eq!(entries.len(), 4);
+        let entry = |id: &str| entries.iter().find(|entry| entry["id"] == id).unwrap();
+        assert_eq!(entry("known")["unrestricted"], true);
+        assert_eq!(
+            entry("known")["future_session_flag"],
+            json!({"nested": [1, 2]})
+        );
+        assert_eq!(entry("added")["kind"], "project");
+        assert_eq!(entry("other-harness"), &original["sessions"][0]);
+        assert!(entries.contains(&damaged));
+
+        // Removing a session this build owns still removes it, and the entries
+        // it cannot read stay put.
+        let mut registry = manager.read_registry().unwrap();
+        assert_eq!(registry.sessions.len(), 2);
+        registry.sessions.retain(|session| session.id != "known");
+        manager.write_registry(&registry).unwrap();
+        let entries = home.saved()["sessions"].as_array().unwrap().clone();
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().all(|entry| entry["id"] != "known"));
+        assert!(entries.contains(&original["sessions"][0]));
+        assert!(entries.contains(&damaged));
+    }
+
+    #[test]
+    fn a_registry_that_is_not_a_session_list_is_still_refused_and_untouched() {
+        let home = Home::new();
+        let manager = home.manager();
+        for content in ["not json", "[]", r#"{"sessions": {"id": "x"}}"#, "{}"] {
+            fs::write(home.registry_path(), content).unwrap();
+            assert!(manager.read_registry().is_err(), "{content}");
+            assert_eq!(fs::read_to_string(home.registry_path()).unwrap(), content);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_and_lock_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = Home::new();
+        let manager = home.manager();
+        // A registry written by an earlier build is 0644 until it is replaced.
+        fs::write(home.registry_path(), r#"{"sessions": []}"#).unwrap();
+        fs::set_permissions(home.registry_path(), fs::Permissions::from_mode(0o644)).unwrap();
+        let _lock = manager.lock_registry().unwrap();
+        let registry = manager.read_registry().unwrap();
+        manager.write_registry(&registry).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&home.registry_path()), 0o600);
+        assert_eq!(mode(&home.0.join("sessions.lock")), 0o600);
+    }
+
+    #[test]
+    fn damaged_unrelated_settings_do_not_block_codex_launches_but_a_bad_selection_does() {
+        let home = Home::new();
+        let settings = |content: &str| fs::write(home.0.join("settings.json"), content).unwrap();
+        // Values from another build in unrelated settings are ignored.
+        settings(
+            r#"{"theme":"future_theme","project_order":{"by":"future_sort"},"remember_window_size":[1],"future_key":true}"#,
+        );
+        let binding = selected_codex_binding(&home.0, None).unwrap();
+        assert_eq!(binding.id, None);
+        // The account selection itself is never guessed.
+        settings(r#"{"selected_codex_account":5}"#);
+        assert!(selected_codex_binding(&home.0, None).is_err());
+        settings(r#"{"selected_codex_account":"missing-account","theme":"future_theme"}"#);
+        assert!(
+            selected_codex_binding(&home.0, None)
+                .unwrap_err()
+                .contains("unavailable")
+        );
+        settings("not json");
+        assert!(selected_codex_binding(&home.0, None).is_err());
     }
 }
 

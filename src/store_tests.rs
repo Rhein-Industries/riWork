@@ -1245,3 +1245,260 @@ fn discovery_depth_limit_blocks_wrapper_initialization_and_preserves_deep_reposi
     );
     assert!(store.snapshot().unwrap().projects.is_empty());
 }
+
+fn write_state_json(store: &Store, state: &serde_json::Value) {
+    fs::write(
+        store.dir.join("state.json"),
+        serde_json::to_vec_pretty(state).unwrap(),
+    )
+    .unwrap();
+}
+
+fn read_state_json(store: &Store) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(store.dir.join("state.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn unknown_fields_from_a_newer_build_survive_a_transaction() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("compat-project");
+    write_state_json(
+        &store,
+        &serde_json::json!({
+            "schema_version": 1,
+            "active_project_id": "p1",
+            "future_top_level": {"flag": true},
+            "project_folders": [
+                {"id": "f1", "name": "Work", "parent_id": null, "created_at": 1, "future_folder": "color"},
+            ],
+            "projects": [
+                {"id": "p1", "name": "Compat", "root": root, "folder_id": "f1", "created_at": 2,
+                 "codex_account": {"source": "inherit"}, "future_project": [1, 2, 3]},
+            ],
+            "worktrees": [
+                {"id": "w1", "project_id": "p1", "branch": "main", "path": root, "is_primary": true,
+                 "created_at": 3, "future_worktree": null},
+            ],
+            "tasks": [
+                {"id": "t1", "project_id": "p1", "title": "Keep me", "created_at": 4, "updated_at": 4,
+                 "future_task": {"priority": 9}},
+                {"id": "t2", "project_id": "p1", "title": "Delete me", "created_at": 5, "updated_at": 5,
+                 "future_task": "gone with its task"},
+            ],
+            "orca_import": {"source": "/orca", "project_count": 1, "folder_count": 0,
+                            "worktree_count": 1, "completed_at": 6, "future_receipt": "kept"},
+        }),
+    );
+
+    let added = store.add_task("p1", "New task", "").unwrap();
+    store
+        .update_project_metadata("p1", "Renamed", Some("f1"))
+        .unwrap();
+    store.set_task_status("t1", TaskStatus::InProgress).unwrap();
+    store
+        .transaction(|state| {
+            state.tasks.retain(|task| task.id != "t2");
+            Ok(())
+        })
+        .unwrap();
+
+    let saved = read_state_json(&store);
+    assert_eq!(saved["future_top_level"], serde_json::json!({"flag": true}));
+    assert_eq!(saved["project_folders"][0]["future_folder"], "color");
+    assert_eq!(saved["projects"][0]["name"], "Renamed");
+    assert_eq!(
+        saved["projects"][0]["future_project"],
+        serde_json::json!([1, 2, 3])
+    );
+    assert!(saved["worktrees"][0]["future_worktree"].is_null());
+    assert!(
+        saved["worktrees"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("future_worktree")
+    );
+    assert_eq!(saved["orca_import"]["future_receipt"], "kept");
+    let tasks = saved["tasks"].as_array().unwrap();
+    assert_eq!(
+        tasks.len(),
+        2,
+        "the deleted task takes its extra fields with it"
+    );
+    assert_eq!(tasks[0]["id"], "t1");
+    assert_eq!(tasks[0]["status"], "in_progress");
+    assert_eq!(tasks[0]["future_task"], serde_json::json!({"priority": 9}));
+    assert_eq!(tasks[1]["id"], added.id);
+    assert!(tasks[1].get("future_task").is_none());
+    // The typed view never surfaces or depends on the unknown fields.
+    let state = store.snapshot().unwrap();
+    assert_eq!(state.projects[0].name, "Renamed");
+    assert_eq!(state.tasks[0].status, TaskStatus::InProgress);
+}
+
+#[test]
+fn moving_a_project_out_of_a_folder_does_not_resurrect_the_old_assignment() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("clear-folder");
+    write_state_json(
+        &store,
+        &serde_json::json!({
+            "schema_version": 1,
+            "project_folders": [{"id": "f1", "name": "Work", "created_at": 1}],
+            "projects": [{"id": "p1", "name": "Clear", "root": root, "folder_id": "f1", "created_at": 2,
+                          "codex_account": {"source": "saved", "account_id": "acct"}}],
+        }),
+    );
+    store.move_project_to_folder("p1", None).unwrap();
+    store
+        .set_project_codex_account("p1", ProjectCodexAccount::SystemDefault)
+        .unwrap();
+    let saved = read_state_json(&store);
+    assert!(saved["projects"][0]["folder_id"].is_null());
+    assert_eq!(
+        saved["projects"][0]["codex_account"],
+        serde_json::json!({"source": "system_default"})
+    );
+}
+
+#[test]
+fn newer_store_schemas_are_refused_and_left_untouched() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    write_state_json(
+        &store,
+        &serde_json::json!({"schema_version": 2, "projects": [], "worktrees": [], "tasks": []}),
+    );
+    let before = fs::read(store.dir.join("state.json")).unwrap();
+    assert!(
+        store
+            .snapshot()
+            .unwrap_err()
+            .contains("Unsupported store schema 2")
+    );
+    assert!(store.add_task("nothing", "Title", "").is_err());
+    assert_eq!(fs::read(store.dir.join("state.json")).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn state_files_are_private_and_new_directories_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let fixture = Fixture::new();
+    let nested = fixture.path("parent/riwork-home");
+    let store = Store::open(&nested).unwrap();
+    assert_eq!(mode(&nested), 0o700);
+    let control = fixture.directory("control");
+    assert_eq!(
+        mode(nested.parent().unwrap()),
+        mode(&control),
+        "only the data directory is private"
+    );
+    let root = fixture.directory("private-project");
+    store.add_project(&root, None).unwrap();
+    assert_eq!(mode(&nested.join("state.json")), 0o600);
+    assert_eq!(mode(&nested.join("state.lock")), 0o600);
+
+    // An older 0644 file becomes private the next time it is rewritten, and an
+    // existing directory keeps whatever mode its owner chose.
+    let shared = fixture.directory("shared-home");
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+    let store = Store::open(&shared).unwrap();
+    fs::write(shared.join("state.json"), r#"{"schema_version":1}"#).unwrap();
+    fs::set_permissions(shared.join("state.json"), fs::Permissions::from_mode(0o644)).unwrap();
+    store.add_project(&root, None).unwrap();
+    assert_eq!(mode(&shared.join("state.json")), 0o600);
+    assert_eq!(mode(&shared), 0o755);
+}
+
+#[test]
+fn an_empty_data_directory_is_rejected_instead_of_using_the_working_directory() {
+    let error = Store::open("").unwrap_err();
+    assert!(error.contains("empty"), "{error}");
+}
+
+#[test]
+#[cfg(unix)]
+fn worktree_creation_runs_git_and_its_hooks_outside_the_store_lock() {
+    use std::{os::unix::fs::PermissionsExt, sync::mpsc, thread, time::Duration};
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let repository = fixture.repository("hooked", true);
+    let project = store.add_project(&repository, None).unwrap();
+    let marks = fixture.directory("marks");
+    let hooks = fixture.directory("hooks");
+    let hook = hooks.join("post-checkout");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\n: > '{started}'\nwhile [ ! -e '{release}' ]; do sleep 0.05; done\n",
+            started = marks.join("started").display(),
+            release = marks.join("release").display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    git(
+        &repository,
+        [
+            "config",
+            "--local",
+            "core.hooksPath",
+            hooks.to_str().unwrap(),
+        ],
+    );
+
+    let creator = {
+        let store = store.clone();
+        let project_id = project.id.clone();
+        thread::spawn(move || store.create_worktree(&project_id, "feature", None, None))
+    };
+    let release = marks.join("release");
+    let started = marks.join("started");
+    for _ in 0..400 {
+        if started.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let hook_running = started.exists();
+    // While the hook blocks `git worktree add`, other windows and the hook's own
+    // `riwork` calls must still read and write the store. A sync in another
+    // window even discovers the half-finished worktree first.
+    let (sent, received) = mpsc::channel();
+    {
+        let store = store.clone();
+        let project_id = project.id.clone();
+        thread::spawn(move || {
+            let snapshot = store.snapshot().map(|state| state.worktrees.len());
+            let synced = store.sync_worktrees(&project_id).map(|list| list.len());
+            let _ = sent.send((snapshot, synced));
+        });
+    }
+    let outcome = received.recv_timeout(Duration::from_secs(20));
+    fs::write(&release, b"").unwrap();
+    let created = creator.join().unwrap();
+    assert!(hook_running, "the post-checkout hook never ran");
+    let (snapshot, synced) = outcome.expect("the store stayed locked while git was running");
+    assert_eq!(snapshot.unwrap(), 1);
+    assert_eq!(synced.unwrap(), 2, "the sync saw the new worktree");
+
+    let created = created.unwrap();
+    let expected = fixture.path("hooked-feature").canonicalize().unwrap();
+    assert_eq!(created.path, expected);
+    let state = store.snapshot().unwrap();
+    let recorded = state
+        .worktrees
+        .iter()
+        .filter(|worktree| worktree.path == expected)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "the concurrent duplicate collapses to one record"
+    );
+    assert_eq!(recorded[0].id, created.id);
+    assert_eq!(recorded[0].branch, "feature");
+}

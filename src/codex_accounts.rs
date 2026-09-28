@@ -70,8 +70,9 @@ struct AccountMetadata {
     wsl_distro: Option<String>,
 }
 
+// Unknown fields are ignored: a newer build may add some, and rejecting them
+// would report a different Orca profile and block every Codex launch.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct AccountCache {
     version: u32,
     user_data: PathBuf,
@@ -634,6 +635,19 @@ mod tests {
             "activeAccountIdsByRuntime":{"host":"local-2"}
         },"unrelatedProvider":{"authToken":"NEVER_CACHE_ME"}}}))
         .unwrap()
+    }
+
+    #[test]
+    fn cache_from_a_newer_build_with_extra_fields_still_parses() {
+        let cache: AccountCache = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "user_data": "/profile",
+            "accounts": [{"id": "local-1", "email": null, "futureField": {"nested": true}}],
+            "source_active_id": null,
+            "refreshed_at": 7
+        }))
+        .unwrap();
+        assert_eq!(cache.accounts[0].id, "local-1");
     }
 
     #[test]

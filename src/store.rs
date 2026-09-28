@@ -1,7 +1,7 @@
 //! Durable projects, Git worktrees, and tasks shared by the UI and `riwork` CLI.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     env, fs,
     fs::{File, OpenOptions},
     io::Write,
@@ -12,6 +12,7 @@ use std::{
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -412,6 +413,60 @@ fn now() -> u64 {
         .as_secs()
 }
 
+/// A key that the file has and this build's own encoding lacks belongs to a
+/// newer build, because every field this build models always serializes.
+pub(crate) fn restore_missing_fields(
+    original: &Map<String, Value>,
+    current: &mut Map<String, Value>,
+) {
+    for (key, value) in original {
+        if !current.contains_key(key) {
+            current.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// Carry unknown fields on the state, its records, and the import receipt
+/// through a rewrite. Records match by ID; nested tagged values are left alone.
+fn restore_unknown_state_fields(original: &Value, current: &mut Value) {
+    let (Some(original), Some(current)) = (original.as_object(), current.as_object_mut()) else {
+        return;
+    };
+    restore_missing_fields(original, current);
+    for collection in ["projects", "project_folders", "worktrees", "tasks"] {
+        let (Some(original), Some(current)) = (
+            original.get(collection).and_then(Value::as_array),
+            current.get_mut(collection).and_then(Value::as_array_mut),
+        ) else {
+            continue;
+        };
+        let originals: HashMap<&str, &Map<String, Value>> = original
+            .iter()
+            .filter_map(|record| {
+                let record = record.as_object()?;
+                Some((record.get("id")?.as_str()?, record))
+            })
+            .collect();
+        for record in current {
+            let Some(record) = record.as_object_mut() else {
+                continue;
+            };
+            let original = record
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| originals.get(id));
+            if let Some(original) = original {
+                restore_missing_fields(original, record);
+            }
+        }
+    }
+    if let (Some(Value::Object(original)), Some(Value::Object(current))) =
+        (original.get("orca_import"), current.get_mut("orca_import"))
+    {
+        restore_missing_fields(original, current);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
     dir: PathBuf,
@@ -419,18 +474,15 @@ pub struct Store {
 
 impl Store {
     pub fn open_default() -> Result<Self, String> {
-        let dir = if let Some(value) = env::var_os("RIWORK_HOME") {
-            PathBuf::from(value)
-        } else {
-            let home = env::var_os("HOME").ok_or("HOME is unset; set RIWORK_HOME")?;
-            PathBuf::from(home).join(".local/share/riwork")
-        };
-        Self::open(dir)
+        Self::open(crate::paths::riwork_home()?)
     }
 
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, String> {
         let dir = dir.into();
-        fs::create_dir_all(&dir)
+        if dir.as_os_str().is_empty() {
+            return Err("The RiWork data directory path is empty".to_owned());
+        }
+        crate::paths::create_private_dir(&dir)
             .map_err(|error| format!("Cannot create {}: {error}", dir.display()))?;
         Ok(Self { dir })
     }
@@ -456,34 +508,68 @@ impl Store {
     ) -> Result<T, String> {
         let lock = self.lock_file()?;
         FileExt::lock_exclusive(&lock).map_err(|error| format!("Cannot lock store: {error}"))?;
-        let mut state = self.read_state()?;
+        let (mut state, original) = self.read_state_with_original()?;
         let (result, changed) = operation(&mut state)?;
         if changed {
-            self.write_state(&state)?;
+            self.write_state(&state, original.as_ref())?;
         }
         Ok(result)
     }
 
     fn lock_file(&self) -> Result<File, String> {
-        OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
+        let mut options = OpenOptions::new();
+        // A pure lock file: never truncate it, and keep other users from
+        // opening it to hold the lock.
+        options.create(true).truncate(false).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options
             .open(self.dir.join("state.lock"))
             .map_err(|error| format!("Cannot open store lock: {error}"))
     }
 
     fn read_state(&self) -> Result<State, String> {
-        let path = self.dir.join("state.json");
-        let data = match fs::read(&path) {
-            Ok(data) => data,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(State::default());
-            }
-            Err(error) => return Err(format!("Cannot read {}: {error}", path.display())),
+        match self.read_state_bytes()? {
+            Some(data) => self.parse_state(&data),
+            None => Ok(State::default()),
+        }
+    }
+
+    /// Also return the file's JSON: a rewrite carries forward the fields that a
+    /// newer build stored and this one does not model.
+    fn read_state_with_original(&self) -> Result<(State, Option<Value>), String> {
+        let Some(data) = self.read_state_bytes()? else {
+            return Ok((State::default(), None));
         };
-        let state: State = serde_json::from_slice(&data)
-            .map_err(|error| format!("Cannot parse {}: {error}", path.display()))?;
+        let state = self.parse_state(&data)?;
+        let original = serde_json::from_slice(&data).map_err(|error| {
+            format!(
+                "Cannot parse {}: {error}",
+                self.dir.join("state.json").display()
+            )
+        })?;
+        Ok((state, Some(original)))
+    }
+
+    fn read_state_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        let path = self.dir.join("state.json");
+        match fs::read(&path) {
+            Ok(data) => Ok(Some(data)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("Cannot read {}: {error}", path.display())),
+        }
+    }
+
+    fn parse_state(&self, data: &[u8]) -> Result<State, String> {
+        let state: State = serde_json::from_slice(data).map_err(|error| {
+            format!(
+                "Cannot parse {}: {error}",
+                self.dir.join("state.json").display()
+            )
+        })?;
         if state.schema_version != 1 {
             return Err(format!(
                 "Unsupported store schema {}; this build supports schema 1",
@@ -493,16 +579,27 @@ impl Store {
         Ok(state)
     }
 
-    fn write_state(&self, state: &State) -> Result<(), String> {
+    fn write_state(&self, state: &State, original: Option<&Value>) -> Result<(), String> {
         let path = self.dir.join("state.json");
         let tmp = self.dir.join(format!(".state-{}.tmp", Uuid::new_v4()));
+        let mut encoded =
+            serde_json::to_value(state).map_err(|error| format!("Cannot encode state: {error}"))?;
+        if let Some(original) = original {
+            restore_unknown_state_fields(original, &mut encoded);
+        }
         let write = || -> Result<(), String> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
+            // The state names projects and paths, so keep it owner-only.
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options
                 .open(&tmp)
                 .map_err(|error| format!("Cannot create {}: {error}", tmp.display()))?;
-            serde_json::to_writer_pretty(&mut file, state)
+            serde_json::to_writer_pretty(&mut file, &encoded)
                 .map_err(|error| format!("Cannot encode state: {error}"))?;
             file.write_all(b"\n")
                 .map_err(|error| format!("Cannot write state: {error}"))?;
@@ -1170,97 +1267,127 @@ impl Store {
             return Err("Give a nonempty Git branch name that does not start with '-'".to_owned());
         }
         self.sync_worktrees(project_selector)?;
-        self.transaction(|state| {
-            let project = state.project(project_selector)?.clone();
-            let repository_root = select_repository(state, &project, repository_selector)?;
-            let validation = git_command(&repository_root)
-                .args(["check-ref-format", "--branch"])
+        // Git may run checkout hooks and LFS for a long time, and a hook can call
+        // `riwork` itself, so the store lock covers only resolving the inputs
+        // here and recording the result below.
+        let state = self.snapshot()?;
+        let project = state.project(project_selector)?.clone();
+        let repository_root = select_repository(&state, &project, repository_selector)?;
+        let validation = git_command(&repository_root)
+            .args(["check-ref-format", "--branch"])
+            .arg(branch)
+            .output()
+            .map_err(|error| format!("Cannot launch git: {error}"))?;
+        if !validation.status.success() {
+            return Err(format!("Invalid Git branch name: {branch}"));
+        }
+        let existing = git_command(&repository_root)
+            .args(["show-ref", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{branch}"))
+            .status()
+            .map_err(|error| format!("Cannot launch git: {error}"))?
+            .success();
+        let commit_ref = if existing {
+            format!("refs/heads/{branch}")
+        } else {
+            base.unwrap_or("HEAD").to_owned()
+        };
+        let commit = git_command(&repository_root)
+            .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
+            .arg(format!("{commit_ref}^{{commit}}"))
+            .output()
+            .map_err(|error| format!("Cannot launch git: {error}"))?;
+        if !commit.status.success() {
+            return Err(if !existing && base.is_none() {
+                "Repository has no initial commit; commit first or choose an existing --base before creating a worktree".to_owned()
+            } else {
+                format!("Worktree base '{commit_ref}' does not resolve to a commit")
+            });
+        }
+        let repo_suffix = if project.repository_roots.len() > 1 {
+            format!(
+                "-{}",
+                slug(
+                    &repository_root
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                )
+            )
+        } else {
+            String::new()
+        };
+        let default_path = project.root.parent().unwrap_or(&project.root).join(format!(
+            "{}{repo_suffix}-{}",
+            slug(&project.name),
+            slug(branch)
+        ));
+        let path = requested_path.unwrap_or(&default_path);
+        let path = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            env::current_dir()
+                .map_err(|error| format!("Cannot read current directory: {error}"))?
+                .join(path)
+        };
+        if fs::symlink_metadata(&path).is_ok() {
+            return Err(format!("Worktree path already exists: {}", path.display()));
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "Cannot create worktree parent {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        let mut command = git_command(&repository_root);
+        command.args(["worktree", "add"]);
+        if existing {
+            command.arg(&path).arg(branch);
+        } else {
+            command
+                .arg("-b")
                 .arg(branch)
-                .output()
-                .map_err(|error| format!("Cannot launch git: {error}"))?;
-            if !validation.status.success() {
-                return Err(format!("Invalid Git branch name: {branch}"));
-            }
-            let existing = git_command(&repository_root)
-                .args(["show-ref", "--verify", "--quiet"])
-                .arg(format!("refs/heads/{branch}"))
-                .status()
-                .map_err(|error| format!("Cannot launch git: {error}"))?
-                .success();
-            let commit_ref = if existing { format!("refs/heads/{branch}") } else { base.unwrap_or("HEAD").to_owned() };
-            let commit = git_command(&repository_root)
-                .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
-                .arg(format!("{commit_ref}^{{commit}}"))
-                .output()
-                .map_err(|error| format!("Cannot launch git: {error}"))?;
-            if !commit.status.success() {
-                return Err(if !existing && base.is_none() {
-                    "Repository has no initial commit; commit first or choose an existing --base before creating a worktree".to_owned()
-                } else {
-                    format!("Worktree base '{commit_ref}' does not resolve to a commit")
-                });
-            }
-            let repo_suffix = if project.repository_roots.len() > 1 {
-                format!("-{}", slug(&repository_root.file_name().unwrap_or_default().to_string_lossy()))
-            } else {
-                String::new()
-            };
-            let default_path = project.root.parent().unwrap_or(&project.root).join(format!(
-                "{}{repo_suffix}-{}",
-                slug(&project.name),
-                slug(branch)
+                .arg(&path)
+                .arg(String::from_utf8_lossy(&commit.stdout).trim());
+        }
+        let output = command
+            .output()
+            .map_err(|error| format!("Cannot launch git: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git worktree add failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
             ));
-            let path = requested_path.unwrap_or(&default_path);
-            let path = if path.is_absolute() {
-                path.to_owned()
-            } else {
-                env::current_dir()
-                    .map_err(|error| format!("Cannot read current directory: {error}"))?
-                    .join(path)
-            };
-            if fs::symlink_metadata(&path).is_ok() {
-                return Err(format!("Worktree path already exists: {}", path.display()));
+        }
+        let path = path.canonicalize().unwrap_or(path);
+        // Another window's sync may already have discovered the new worktree.
+        self.transaction_if_changed(|state| {
+            state.project(&project.id).map_err(|error| {
+                format!(
+                    "{error}; the worktree was created at {} and will be registered by a sync",
+                    path.display()
+                )
+            })?;
+            if let Some(recorded) = state
+                .worktrees
+                .iter()
+                .find(|worktree| worktree.project_id == project.id && worktree.path == path)
+            {
+                return Ok((recorded.clone(), false));
             }
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|error| {
-                    format!(
-                        "Cannot create worktree parent {}: {error}",
-                        parent.display()
-                    )
-                })?;
-            }
-            let mut command = git_command(&repository_root);
-            command.args(["worktree", "add"]);
-            if existing {
-                command.arg(&path).arg(branch);
-            } else {
-                command
-                    .arg("-b")
-                    .arg(branch)
-                    .arg(&path)
-                    .arg(String::from_utf8_lossy(&commit.stdout).trim());
-            }
-            let output = command
-                .output()
-                .map_err(|error| format!("Cannot launch git: {error}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "git worktree add failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
-            let path = path.canonicalize().unwrap_or(path);
             let worktree = Worktree {
                 id: Uuid::new_v4().to_string(),
-                project_id: project.id,
+                project_id: project.id.clone(),
                 branch: branch.to_owned(),
-                path,
+                path: path.clone(),
                 is_primary: false,
-                repository_root: Some(repository_root),
+                repository_root: Some(repository_root.clone()),
                 created_at: now(),
             };
             state.worktrees.push(worktree.clone());
-            Ok(worktree)
+            Ok((worktree, true))
         })
     }
 }
