@@ -2,9 +2,11 @@
 
 use std::{
     cell::Cell,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
+    sync::{LazyLock, Mutex, PoisonError},
+    time::{Duration, Instant},
 };
 
 use gpui::{
@@ -50,6 +52,92 @@ pub enum PanelAction {
     ToggleProjectSortMenu,
     CloseProjectSortMenu,
     SetProjectOrder(ProjectOrder),
+}
+
+/// How long a worktree folder check stays fresh; the workspace redraws about
+/// this often anyway.
+const PRESENCE_INTERVAL: Duration = Duration::from_secs(2);
+
+struct PresenceProbe {
+    missing: bool,
+    at: Instant,
+}
+
+/// Which registered worktree folders are gone. Checking is a `stat`, which can
+/// block for a long time on a sleeping external or network volume, so render
+/// only reads this cache and background tasks keep it fresh. Each folder has
+/// its own check, so one stuck volume cannot delay the others or stack up
+/// more blocked threads.
+#[derive(Default)]
+struct WorktreePresence {
+    probes: HashMap<PathBuf, PresenceProbe>,
+    in_flight: HashSet<PathBuf>,
+}
+
+impl WorktreePresence {
+    /// A folder nobody has checked yet counts as present.
+    fn missing(&self, path: &Path) -> bool {
+        self.probes.get(path).is_some_and(|probe| probe.missing)
+    }
+
+    /// The folders whose check is due, now marked as being checked.
+    fn due<'a>(&mut self, paths: impl Iterator<Item = &'a Path>, now: Instant) -> Vec<PathBuf> {
+        let mut due = Vec::new();
+        for path in paths {
+            let fresh = self
+                .probes
+                .get(path)
+                .is_some_and(|probe| now.duration_since(probe.at) < PRESENCE_INTERVAL);
+            if !fresh && !self.in_flight.contains(path) && !due.iter().any(|due| due == path) {
+                due.push(path.to_owned());
+            }
+        }
+        self.in_flight.extend(due.iter().cloned());
+        due
+    }
+
+    /// Record a check; returns whether it changed what the panel shows.
+    fn finish(&mut self, path: PathBuf, missing: bool, now: Instant) -> bool {
+        self.in_flight.remove(&path);
+        let changed = self.missing(&path) != missing;
+        self.probes.insert(path, PresenceProbe { missing, at: now });
+        changed
+    }
+}
+
+fn folder_missing(path: &Path) -> bool {
+    !path.is_dir()
+}
+
+static WORKTREE_PRESENCE: LazyLock<Mutex<WorktreePresence>> = LazyLock::new(Mutex::default);
+
+fn worktree_presence() -> std::sync::MutexGuard<'static, WorktreePresence> {
+    // The lock is never held across a filesystem call, so poisoning is harmless.
+    WORKTREE_PRESENCE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Start background checks for worktree folders whose cached state is stale,
+/// and repaint if one turns out to have appeared or vanished.
+fn refresh_worktree_presence<'a, V: 'static>(
+    paths: impl Iterator<Item = &'a Path>,
+    cx: &mut Context<V>,
+) {
+    let due = worktree_presence().due(paths, Instant::now());
+    for path in due {
+        let probe = path.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { folder_missing(&probe) });
+        cx.spawn(async move |this, cx| {
+            let missing = work.await;
+            if worktree_presence().finish(path, missing, Instant::now()) {
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .detach();
+    }
 }
 
 pub struct PanelData<'a> {
@@ -578,7 +666,9 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
             }
         }
         PanelKind::Worktrees => {
-            for worktree in data.state.worktrees_for(data.project_id) {
+            let worktrees = data.state.worktrees_for(data.project_id);
+            refresh_worktree_presence(worktrees.iter().map(|worktree| worktree.path.as_path()), cx);
+            for worktree in worktrees {
                 total += 1;
                 let path = worktree.path.to_string_lossy();
                 if !matches(&[&worktree.id, &worktree.branch, &path]) {
@@ -590,6 +680,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     .filter(|task| task.status == TaskStatus::Done)
                     .count();
                 let selected = data.selected_worktree_id == Some(worktree.id.as_str());
+                let missing = worktree_presence().missing(&worktree.path);
                 let activity = ActivityCounts::for_worktree(
                     &worktree.id,
                     data.state,
@@ -607,11 +698,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                 "{} {}{}{}",
                                 if worktree.is_primary { "◆" } else { "◇" },
                                 worktree.branch,
-                                if worktree.path.is_dir() {
-                                    ""
-                                } else {
-                                    "  [missing]"
-                                },
+                                if missing { "  [missing]" } else { "" },
                                 worktree
                                     .repository_root
                                     .as_ref()
@@ -1803,5 +1890,54 @@ mod tests {
             ..project
         };
         assert!(!context.accepts(&foreign, Some("tools")));
+    }
+
+    #[test]
+    fn worktree_presence_is_cached_and_never_probed_twice_at_once() {
+        let (a, b) = (Path::new("/w/a"), Path::new("/w/b"));
+        let start = Instant::now();
+        let mut presence = WorktreePresence::default();
+        // Unchecked folders count as present, and render only asks for checks.
+        assert!(!presence.missing(a));
+        let mut due = presence.due([a, b, a].into_iter(), start);
+        due.sort();
+        assert_eq!(due, [a.to_owned(), b.to_owned()]);
+        // Nothing is re-probed while a check (possibly stuck on a dead volume)
+        // is still running.
+        let later = start + Duration::from_secs(60);
+        assert!(presence.due([a, b].into_iter(), later).is_empty());
+        assert!(presence.finish(a.to_owned(), true, later));
+        assert!(presence.missing(a));
+        assert!(!presence.missing(b));
+        // Fresh results are reused; stale ones are checked again, per folder.
+        assert!(
+            presence
+                .due([a].into_iter(), later + Duration::from_secs(1))
+                .is_empty()
+        );
+        let stale = later + PRESENCE_INTERVAL;
+        assert_eq!(presence.due([a, b].into_iter(), stale), [a.to_owned()]);
+        // Confirming the same state does not ask for a repaint; a change does.
+        assert!(!presence.finish(a.to_owned(), true, stale));
+        assert_eq!(
+            presence.due([a].into_iter(), stale + PRESENCE_INTERVAL),
+            [a.to_owned()]
+        );
+        assert!(presence.finish(a.to_owned(), false, stale + PRESENCE_INTERVAL));
+        assert!(!presence.missing(a));
+        // A folder found present on its first check needs no repaint.
+        assert!(!presence.finish(b.to_owned(), false, later));
+    }
+
+    #[test]
+    fn a_worktree_folder_is_missing_unless_it_is_a_directory() {
+        let directory = std::env::temp_dir().join(format!("riwork-panels-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("file");
+        std::fs::write(&file, "").unwrap();
+        assert!(!folder_missing(&directory));
+        assert!(folder_missing(&file));
+        assert!(folder_missing(&directory.join("gone")));
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }

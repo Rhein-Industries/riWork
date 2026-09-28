@@ -12,12 +12,15 @@ use std::{
     sync::Arc,
 };
 
-use gpui::{Image, ImageFormat};
+use gpui::RenderImage;
+use image::{DynamicImage, Frame, ImageDecoder, metadata::Orientation};
 
 const TEXT_LIMIT: u64 = 1024 * 1024;
 const MEDIA_LIMIT: u64 = 24 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: u32 = 6000;
 const MAX_IMAGE_PIXELS: u64 = 24_000_000;
+/// Longest edge kept for a decoded preview; smaller images are never scaled up.
+const PREVIEW_EDGE: u32 = 1800;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileIdentity {
@@ -77,16 +80,44 @@ pub enum PreviewContent {
         markdown: bool,
     },
     Image {
-        image: Arc<Image>,
+        image: Arc<RenderImage>,
         description: String,
     },
     Pdf {
         bytes: Arc<Vec<u8>>,
-        image: Arc<Image>,
+        image: Arc<RenderImage>,
         page: usize,
         pages: usize,
     },
     Message(String),
+}
+
+impl PreviewContent {
+    /// The decoded bitmap, which the owner must release with `drop_image` once
+    /// the preview goes away: GPUI keeps its atlas tiles until told otherwise.
+    pub fn render_image(&self) -> Option<&Arc<RenderImage>> {
+        match self {
+            Self::Image { image, .. } | Self::Pdf { image, .. } => Some(image),
+            Self::Text { .. } | Self::Message(_) => None,
+        }
+    }
+}
+
+/// PDFs are parsed by CoreGraphics inside the app, so callers only load one
+/// after the user explicitly asks for it.
+pub fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+}
+
+/// Wrap RGBA pixels as a GPUI image, which expects BGRA.
+fn to_render_image(rgba: image::RgbaImage) -> Arc<RenderImage> {
+    let mut rgba = rgba;
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    Arc::new(RenderImage::new([Frame::new(rgba)]))
 }
 
 pub fn load(
@@ -242,17 +273,38 @@ fn decode_image(bytes: &[u8]) -> Result<PreviewContent, String> {
     limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
     limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
     limits.max_alloc = Some(160 * 1024 * 1024);
-    reader.limits(limits);
-    let decoded = reader
-        .decode()
+    reader.limits(limits.clone());
+    // `ImageReader::decode` would discard the EXIF orientation, so drive the
+    // decoder directly and charge the output buffer to `max_alloc` as it does.
+    let mut decoder = reader
+        .into_decoder()
         .map_err(|error| format!("Cannot decode this image: {error}"))?;
-    let thumb = decoded.thumbnail(1800, 1800);
-    let mut png = Cursor::new(Vec::new());
-    thumb
-        .write_to(&mut png, image::ImageFormat::Png)
-        .map_err(|error| format!("Cannot prepare this image: {error}"))?;
+    limits
+        .reserve(decoder.total_bytes())
+        .and_then(|()| decoder.set_limits(limits))
+        .map_err(|error| format!("Cannot decode this image: {error}"))?;
+    // A damaged EXIF block should not stop the pixels from showing.
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut decoded = DynamicImage::from_decoder(decoder)
+        .map_err(|error| format!("Cannot decode this image: {error}"))?;
+    // Shrinking first keeps the rotation copy small.
+    if decoded.width() > PREVIEW_EDGE || decoded.height() > PREVIEW_EDGE {
+        decoded = decoded.thumbnail(PREVIEW_EDGE, PREVIEW_EDGE);
+    }
+    decoded.apply_orientation(orientation);
+    let (width, height) = if matches!(
+        orientation,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    ) {
+        (height, width)
+    } else {
+        (width, height)
+    };
     Ok(PreviewContent::Image {
-        image: Arc::new(Image::from_bytes(ImageFormat::Png, png.into_inner())),
+        image: to_render_image(decoded.into_rgba8()),
         description: format!("{width} × {height} pixels"),
     })
 }
@@ -346,12 +398,12 @@ fn open_regular_in(root: &Path, path: &Path) -> Result<(File, std::path::PathBuf
 }
 
 #[cfg(target_os = "macos")]
-pub fn render_pdf(bytes: &[u8], page: usize) -> Result<(Arc<Image>, usize), String> {
+pub fn render_pdf(bytes: &[u8], page: usize) -> Result<(Arc<RenderImage>, usize), String> {
     pdf::render(bytes, page)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn render_pdf(_: &[u8], _: usize) -> Result<(Arc<Image>, usize), String> {
+pub fn render_pdf(_: &[u8], _: usize) -> Result<(Arc<RenderImage>, usize), String> {
     Err("PDF preview is available on macOS.".into())
 }
 
@@ -428,7 +480,7 @@ mod pdf {
         fn CGContextDrawPDFPage(context: *mut c_void, page: *mut c_void);
     }
 
-    pub fn render(bytes: &[u8], number: usize) -> Result<(Arc<Image>, usize), String> {
+    pub fn render(bytes: &[u8], number: usize) -> Result<(Arc<RenderImage>, usize), String> {
         if bytes.len() as u64 > MEDIA_LIMIT {
             return Err("PDF exceeds the preview limit.".into());
         }
@@ -456,7 +508,7 @@ mod pdf {
     unsafe fn render_document(
         document: *mut c_void,
         number: usize,
-    ) -> Result<(Arc<Image>, usize), String> {
+    ) -> Result<(Arc<RenderImage>, usize), String> {
         let pages = unsafe { CGPDFDocumentGetNumberOfPages(document) };
         if number == 0 || number > pages {
             return Err("This PDF page is unavailable.".into());
@@ -513,14 +565,7 @@ mod pdf {
         }
         let rgba = image::RgbaImage::from_raw(width as u32, height as u32, pixels)
             .ok_or("Cannot prepare this PDF page.")?;
-        let mut png = Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(rgba)
-            .write_to(&mut png, image::ImageFormat::Png)
-            .map_err(|error| format!("Cannot prepare this PDF page: {error}"))?;
-        Ok((
-            Arc::new(Image::from_bytes(ImageFormat::Png, png.into_inner())),
-            pages,
-        ))
+        Ok((to_render_image(rgba), pages))
     }
 }
 
@@ -656,23 +701,97 @@ mod tests {
         assert!(validated_editor_path(&fixture.0, &file, identity).is_err());
     }
 
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(width, height)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    fn pixel_size(image: &RenderImage) -> (i32, i32) {
+        let size = image.size(0);
+        (size.width.0, size.height.0)
+    }
+
     #[test]
     fn image_preview_is_decoded_and_dimension_limited() {
         let fixture = Fixture::new();
-        let image = image::DynamicImage::new_rgba8(3, 2);
-        let mut bytes = Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        fs::write(fixture.0.join("small.png"), bytes.into_inner()).unwrap();
+        fs::write(fixture.0.join("small.png"), png(3, 2)).unwrap();
         assert!(
             matches!(fixture.load("small.png").unwrap(), PreviewContent::Image { description, .. } if description.contains("3 × 2"))
         );
-        let image = image::DynamicImage::new_rgba8(MAX_IMAGE_DIMENSION + 1, 1);
-        let mut bytes = Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        fs::write(fixture.0.join("wide.png"), bytes.into_inner()).unwrap();
+        fs::write(fixture.0.join("wide.png"), png(MAX_IMAGE_DIMENSION + 1, 1)).unwrap();
         assert!(
             matches!(fixture.load("wide.png").unwrap(), PreviewContent::Message(message) if message.contains("too large"))
         );
+    }
+
+    #[test]
+    fn small_images_are_not_upscaled_and_large_ones_are_capped() {
+        let fixture = Fixture::new();
+        fs::write(fixture.0.join("icon.png"), png(16, 16)).unwrap();
+        let PreviewContent::Image { image, .. } = fixture.load("icon.png").unwrap() else {
+            panic!("expected an image")
+        };
+        assert_eq!(pixel_size(&image), (16, 16));
+        fs::write(fixture.0.join("banner.png"), png(2400, 60)).unwrap();
+        let PreviewContent::Image { image, description } = fixture.load("banner.png").unwrap()
+        else {
+            panic!("expected an image")
+        };
+        assert_eq!(pixel_size(&image), (1800, 45));
+        assert!(description.contains("2400 × 60"));
+    }
+
+    #[test]
+    fn preview_images_are_bgra() {
+        let fixture = Fixture::new();
+        let mut red = image::RgbaImage::new(1, 1);
+        red.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(red)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        fs::write(fixture.0.join("red.png"), bytes.into_inner()).unwrap();
+        let PreviewContent::Image { image, .. } = fixture.load("red.png").unwrap() else {
+            panic!("expected an image")
+        };
+        assert_eq!(image.as_bytes(0).unwrap(), [0, 0, 255, 255]);
+        assert_eq!(image.frame_count(), 1);
+    }
+
+    #[test]
+    fn exif_orientation_is_applied() {
+        use image::ImageEncoder;
+        // Little-endian TIFF header with one IFD entry: Orientation = 6
+        // (rotate 90 degrees clockwise).
+        let exif = vec![
+            0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x12, 0x01, 0x03, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let mut jpeg = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut jpeg);
+        encoder.set_exif_metadata(exif).unwrap();
+        encoder
+            .write_image(&[128; 3 * 2 * 3], 3, 2, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let fixture = Fixture::new();
+        fs::write(fixture.0.join("phone.jpg"), jpeg).unwrap();
+        let PreviewContent::Image { image, description } = fixture.load("phone.jpg").unwrap()
+        else {
+            panic!("expected an image")
+        };
+        assert_eq!(pixel_size(&image), (2, 3));
+        assert!(description.contains("2 × 3"));
+    }
+
+    #[test]
+    fn pdf_extension_check_is_case_insensitive() {
+        assert!(is_pdf(Path::new("a/Report.PDF")));
+        assert!(is_pdf(Path::new("plain.pdf")));
+        assert!(!is_pdf(Path::new("pdf")));
+        assert!(!is_pdf(Path::new("notes.pdf.txt")));
     }
 
     #[cfg(target_os = "macos")]
@@ -727,10 +846,10 @@ mod tests {
             panic!("expected PDF")
         };
         assert_eq!((page, pages), (1, 2));
-        assert!(image.bytes().starts_with(b"\x89PNG"));
+        assert_eq!(pixel_size(&image), (600, 400)); // 300 × 200 points at 2x
         let (second, count) = render_pdf(&bytes, 2).unwrap();
         assert_eq!(count, 2);
-        assert_ne!(image.bytes(), second.bytes());
+        assert_ne!(image.as_bytes(0), second.as_bytes(0));
         assert!(render_pdf(&bytes, 3).is_err());
     }
 }
