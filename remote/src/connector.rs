@@ -18,18 +18,67 @@ use tokio::{
     time::{Duration, Instant, interval, sleep, timeout},
 };
 use tokio_tungstenite::{
-    connect_async_with_config,
+    connect_async_tls_with_config,
     tungstenite::{Message, protocol::WebSocketConfig},
 };
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Selects the process rustls provider before any `ClientConfig` is built.
+/// ring is the only provider this crate enables. A second call loses the install
+/// race and rustls keeps the first provider.
+fn install_ring_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// Shipping builds pass `None`, so tungstenite loads the OS root store.
+/// `cargo test` on Unix can install one extra root for a local certificate.
+fn wss_connector(relay: &str) -> Option<tokio_tungstenite::Connector> {
+    #[cfg(all(test, unix))]
+    if relay.starts_with("wss://") {
+        if let Some(config) = TEST_WSS_TRUST.lock().expect("wss trust lock").clone() {
+            return Some(tokio_tungstenite::Connector::Rustls(config));
+        }
+    }
+    #[cfg(not(all(test, unix)))]
+    let _ = relay;
+    None
+}
+
+#[cfg(all(test, unix))]
+static TEST_WSS_TRUST: std::sync::Mutex<Option<Arc<rustls::ClientConfig>>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(all(test, unix))]
+struct TestWssTrust;
+
+#[cfg(all(test, unix))]
+impl TestWssTrust {
+    fn install(config: Arc<rustls::ClientConfig>) -> Self {
+        let mut slot = TEST_WSS_TRUST.lock().expect("wss trust lock");
+        assert!(slot.is_none(), "wss trust override already installed");
+        *slot = Some(config);
+        Self
+    }
+}
+
+#[cfg(all(test, unix))]
+impl Drop for TestWssTrust {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = TEST_WSS_TRUST.lock() {
+            *slot = None;
+        }
+    }
+}
+
 pub async fn connect_registered(
     relay: &str,
     route: &str,
     role: &str,
     token: &str,
 ) -> Result<(Socket, bool)> {
+    install_ring_provider();
     let config = WebSocketConfig::default()
         .read_buffer_size(16 * 1024)
         .write_buffer_size(0)
@@ -38,7 +87,7 @@ pub async fn connect_registered(
         .max_frame_size(Some(MAX_FRAME));
     let (mut ws, _) = timeout(
         Duration::from_secs(10),
-        connect_async_with_config(relay, Some(config), false),
+        connect_async_tls_with_config(relay, Some(config), false, wss_connector(relay)),
     )
     .await??;
     if relay.starts_with("ws://") {
@@ -786,5 +835,231 @@ mod tests {
         let ready: Envelope = serde_json::from_value(receive_json(&mut ws).await.unwrap()).unwrap();
         session.open("d2c", &ready).unwrap();
         (ws, session)
+    }
+
+    fn stamp(params: &mut rcgen::CertificateParams) {
+        let now = time::OffsetDateTime::now_utc();
+        params.not_before = now - time::Duration::hours(1);
+        params.not_after = now + time::Duration::hours(2);
+    }
+
+    /// Short-lived CA and a leaf whose only SAN is the IP 127.0.0.1.
+    fn test_certificate() -> (
+        tokio_rustls::TlsAcceptor,
+        rustls::pki_types::CertificateDer<'static>,
+    ) {
+        install_ring_provider();
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "RiWork Test CA");
+        ca_params
+            .key_usages
+            .push(rcgen::KeyUsagePurpose::DigitalSignature);
+        ca_params
+            .key_usages
+            .push(rcgen::KeyUsagePurpose::KeyCertSign);
+        ca_params.key_usages.push(rcgen::KeyUsagePurpose::CrlSign);
+        stamp(&mut ca_params);
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+
+        let mut leaf_params = rcgen::CertificateParams::new(vec!["127.0.0.1".into()]).unwrap();
+        assert!(matches!(
+            leaf_params.subject_alt_names.as_slice(),
+            [rcgen::SanType::IpAddress(std::net::IpAddr::V4(ip))]
+                if *ip == std::net::Ipv4Addr::LOCALHOST
+        ));
+        leaf_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "127.0.0.1");
+        leaf_params.use_authority_key_identifier_extension = true;
+        leaf_params
+            .key_usages
+            .push(rcgen::KeyUsagePurpose::DigitalSignature);
+        leaf_params
+            .extended_key_usages
+            .push(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
+        stamp(&mut leaf_params);
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).unwrap();
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf.der().clone()],
+                rustls::pki_types::PrivateKeyDer::Pkcs8(
+                    rustls::pki_types::PrivatePkcs8KeyDer::from(leaf_key.serialize_der()),
+                ),
+            )
+            .unwrap();
+        (
+            tokio_rustls::TlsAcceptor::from(Arc::new(server)),
+            ca.der().clone(),
+        )
+    }
+
+    fn trusting(ca: rustls::pki_types::CertificateDer<'static>) -> Arc<rustls::ClientConfig> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca).unwrap();
+        Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    }
+
+    /// Loopback TLS byte-pipe. Listens on IPv4 and IPv6 so `localhost` reaches it.
+    async fn tls_proxy(
+        acceptor: tokio_rustls::TlsAcceptor,
+        relay: std::net::SocketAddr,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let v4 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = v4.local_addr().unwrap();
+        let v6 = tokio::net::TcpListener::bind(format!("[::1]:{}", addr.port()))
+            .await
+            .unwrap();
+        let task = tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    result = v4.accept() => result,
+                    result = v6.accept() => result,
+                };
+                let Ok((tcp, _)) = accepted else {
+                    break;
+                };
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let Ok(mut upstream) = tokio::net::TcpStream::connect(relay).await else {
+                        return;
+                    };
+                    let _ = tokio::io::copy_bidirectional(&mut tls, &mut upstream).await;
+                });
+            }
+        });
+        (addr, task)
+    }
+
+    fn expect_certificate_error(result: Result<(Socket, bool)>, label: &str, needles: &[&str]) {
+        let text = match result {
+            Ok(_) => panic!("{label} completed registration"),
+            Err(err) => format!("{err:#}"),
+        };
+        assert!(
+            !text.contains("CryptoProvider"),
+            "{label} panicked in provider selection: {text}"
+        );
+        for needle in needles {
+            assert!(text.contains(needle), "{label}: {text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn wss_rejects_an_untrusted_cert_and_carries_v1_and_v2_when_trusted() {
+        let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_addr = relay_listener.local_addr().unwrap();
+        let (acceptor, ca) = test_certificate();
+        let trusted = trusting(ca);
+        let (front, front_task) = tls_proxy(acceptor, relay_addr).await;
+        let url = format!("wss://{front}/v1/ws");
+        let tmp = tempfile::tempdir().unwrap();
+        let (storage, device, routes) = paired(tmp.path(), &url).await;
+        let export = storage
+            .pair_with(
+                url.clone(),
+                "phone-v2".into(),
+                true,
+                &tmp.path().join("phone-v2.json"),
+                Some(&routes),
+                2,
+                600,
+            )
+            .unwrap();
+        let invite_secret = decode::<32>(export.invite_secret.as_deref().unwrap()).unwrap();
+        let relay = Relay::new(private_read::<Routes>(&routes, 1 << 20).unwrap(), 8).unwrap();
+        let server = tokio::spawn(async move { axum::serve(relay_listener, relay.router()).await });
+
+        expect_certificate_error(
+            connect_registered(
+                &device.pairing.relay_url,
+                &device.pairing.route_id,
+                "mobile",
+                &device.pairing.relay_token,
+            )
+            .await,
+            "untrusted certificate",
+            &["invalid peer certificate", "UnknownIssuer"],
+        );
+
+        let _trust = TestWssTrust::install(trusted);
+        // The leaf SAN is only the IP 127.0.0.1. `localhost` is a DNS name.
+        expect_certificate_error(
+            connect_registered(
+                &format!("wss://localhost:{}/v1/ws", front.port()),
+                &device.pairing.route_id,
+                "mobile",
+                &device.pairing.relay_token,
+            )
+            .await,
+            "name mismatch",
+            &["invalid peer certificate", "not valid for name"],
+        );
+
+        let pairing = device.pairing.clone();
+        let (cli, _) = scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string());
+        let rpc = Rpc::new(cli, storage.clone());
+        let connector =
+            tokio::spawn(async move { run_device_with(&device, &rpc, Timing::default()).await });
+        let (mut ws, mut session) = timeout(Duration::from_secs(20), mobile(&pairing))
+            .await
+            .expect("v1 handshake over wss");
+        let listed = call(&mut ws, &mut session, "projects.list", json!({})).await;
+        assert_eq!(listed["ok"], true, "{listed}");
+        assert_eq!(listed["result"]["projects"], json!([]));
+        ws.close(None).await.unwrap();
+        drop(ws);
+        connector.abort();
+
+        let device = storage.fresh_device(&export.device_id).unwrap().unwrap();
+        let (cli, _) = scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string());
+        let rpc = Rpc::new(cli, storage.clone());
+        let connector =
+            tokio::spawn(async move { run_device_with(&device, &rpc, Timing::default()).await });
+        let (mut ws, mut session, root) = timeout(
+            Duration::from_secs(20),
+            establish_v2(&export, &invite_secret),
+        )
+        .await
+        .expect("v2 invite over wss");
+        let listed = call(&mut ws, &mut session, "projects.list", json!({})).await;
+        assert_eq!(listed["ok"], true, "{listed}");
+        assert_eq!(listed["result"]["projects"], json!([]));
+        ws.close(None).await.unwrap();
+        drop(ws);
+        let (mut ws, mut again) = timeout(Duration::from_secs(20), resume_v2(&export, &root))
+            .await
+            .expect("v2 resume over wss");
+        let listed = call(&mut ws, &mut again, "projects.list", json!({})).await;
+        assert_eq!(listed["ok"], true, "{listed}");
+        assert_eq!(listed["result"]["projects"], json!([]));
+        ws.close(None).await.unwrap();
+        let v2_id = export.device_id.clone();
+        eventually(|| {
+            storage.config().ok().is_some_and(|config| {
+                config.devices.iter().any(|device| {
+                    device.pairing.device_id == v2_id && device.last_authenticated_unix.is_some()
+                })
+            })
+        })
+        .await;
+        // Authentication records are spawned off the handshake task. Let them
+        // finish before the temporary home disappears.
+        sleep(Duration::from_millis(200)).await;
+        connector.abort();
+        server.abort();
+        front_task.abort();
     }
 }

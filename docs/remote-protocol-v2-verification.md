@@ -185,3 +185,7 @@ failures of this run.
 - The signed simulator run covers `RiWorkAppTests`. The Xcode `RiWorkCoreTests`
   target was not launched; those sources ran under `swift test`. No physical
   device was installed.
+
+## Later fix
+
+Desktop `wss://` startup is recorded in [remote-wss-provider.md](remote-wss-provider.md).
