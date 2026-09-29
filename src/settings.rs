@@ -1,17 +1,19 @@
 //! Saved application preferences, shared by every RiWork window and process.
 
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     fs,
     fs::{File, OpenOptions},
     io::Write,
     path::PathBuf,
+    rc::Rc,
 };
 
 use fs2::FileExt;
 use gpui::{
-    AnyElement, App, Context, EventEmitter, FocusHandle, Global, IntoElement, KeyDownEvent,
-    MouseButton, Render, Window, div, prelude::*, px, rgb,
+    AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, Global, IntoElement,
+    KeyDownEvent, MouseButton, Pixels, Render, Window, canvas, div, prelude::*, px, rgb,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -374,20 +376,235 @@ pub struct SettingsPanel {
     orca_error: Option<String>,
     orca_initialized: bool,
     error: Option<String>,
+    /// The panel's own bounds, recorded while painting, to choose a width class.
+    bounds: Rc<Cell<Bounds<Pixels>>>,
 }
 
 impl EventEmitter<SettingsEvent> for SettingsPanel {}
 
-fn section_heading(number: &'static str, title: &'static str, colors: Palette) -> AnyElement {
+/// The panel's width class. It is chosen from the panel's own width, not the
+/// window's, because Settings can sit in a narrow split beside other tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsLayout {
+    /// One full-width column.
+    Narrow,
+    /// One centred column at a comfortable reading width.
+    Medium,
+    /// A centred container with two columns of section cards.
+    Wide,
+}
+
+const MEDIUM_FROM: f32 = 700.0;
+const WIDE_FROM: f32 = 1200.0;
+/// Descriptions stay readable however wide their card is.
+const DESCRIPTION_MAX_WIDTH: f32 = 560.0;
+const ROW_GAP: f32 = 8.0;
+const ROW_PAD_X: f32 = 12.0;
+const ROW_PAD_Y: f32 = 10.0;
+/// The narrowest a theme choice can be before the grid drops a column.
+const THEME_CELL_MIN_WIDTH: f32 = 220.0;
+
+/// A width that is not measured yet, or not a number, gets the narrow layout.
+fn layout_for(width: f32) -> SettingsLayout {
+    if width >= WIDE_FROM {
+        SettingsLayout::Wide
+    } else if width >= MEDIUM_FROM {
+        SettingsLayout::Medium
+    } else {
+        SettingsLayout::Narrow
+    }
+}
+
+impl SettingsLayout {
+    /// The content width limit; a narrow panel simply fills its pane.
+    fn max_width(self) -> Option<f32> {
+        match self {
+            Self::Narrow => None,
+            Self::Medium => Some(820.0),
+            Self::Wide => Some(1320.0),
+        }
+    }
+
+    fn page_padding(self) -> f32 {
+        match self {
+            Self::Narrow => 12.0,
+            Self::Medium => 24.0,
+            Self::Wide => 28.0,
+        }
+    }
+
+    fn card_padding(self) -> f32 {
+        match self {
+            Self::Narrow => 12.0,
+            Self::Medium => 16.0,
+            Self::Wide => 18.0,
+        }
+    }
+
+    /// The space between cards, both down a column and between columns.
+    fn gap(self) -> f32 {
+        match self {
+            Self::Narrow => 10.0,
+            Self::Medium => 14.0,
+            Self::Wide => 16.0,
+        }
+    }
+}
+
+/// The numbered groups of the panel, in the order Tab visits them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Section {
+    Cua,
+    Codex,
+    Appearance,
+    Windows,
+    StatusBar,
+    Orca,
+}
+
+impl Section {
+    const ALL: [Self; 6] = [
+        Self::Cua,
+        Self::Codex,
+        Self::Appearance,
+        Self::Windows,
+        Self::StatusBar,
+        Self::Orca,
+    ];
+
+    fn number(self) -> &'static str {
+        match self {
+            Self::Cua => "01",
+            Self::Codex => "02",
+            Self::Appearance => "03",
+            Self::Windows => "04",
+            Self::StatusBar => "05",
+            Self::Orca => "06",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Cua => "COMPUTER USE",
+            Self::Codex => "CODEX ACCOUNTS",
+            Self::Appearance => "APPEARANCE",
+            Self::Windows => "WINDOWS",
+            Self::StatusBar => "STATUS BAR",
+            Self::Orca => "IMPORT FROM ORCA",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Cua => "Let RiWork agents operate desktop apps through Cua.ai.",
+            Self::Codex => "The account new Codex sessions start with.",
+            Self::Appearance => "Choose a theme, or sync with Ghostty.",
+            Self::Windows => "How project windows open.",
+            Self::StatusBar => "Choose what appears, which side it sits on, and its order.",
+            Self::Orca => "Bring projects and worktrees over from Orca once.",
+        }
+    }
+}
+
+/// The sections of each column, top to bottom. The wide layout splits the
+/// numbered order in half, so Tab still reads down the left column and then
+/// the right, and the two stacks end up about as tall (Computer Use, Codex
+/// Accounts, Appearance against Windows, Status bar, Import).
+fn section_columns(layout: SettingsLayout) -> Vec<Vec<Section>> {
+    match layout {
+        SettingsLayout::Wide => {
+            let (left, right) = Section::ALL.split_at(Section::ALL.len() / 2);
+            vec![left.to_vec(), right.to_vec()]
+        }
+        SettingsLayout::Narrow | SettingsLayout::Medium => vec![Section::ALL.to_vec()],
+    }
+}
+
+/// The room inside one section card at a given panel width.
+fn card_inner_width(layout: SettingsLayout, width: f32) -> f32 {
+    let content = (width - 2.0 * layout.page_padding()).max(0.0);
+    let content = layout.max_width().map_or(content, |max| content.min(max));
+    let columns = section_columns(layout).len() as f32;
+    let column = (content - layout.gap() * (columns - 1.0)) / columns;
+    // The card's padding plus its one-pixel border on each side.
+    (column - 2.0 * (layout.card_padding() + 1.0)).max(0.0)
+}
+
+/// Theme choices per row: one on a narrow panel, otherwise as many as fit
+/// (two or three) without squeezing their descriptions.
+fn theme_columns(layout: SettingsLayout, width: f32) -> usize {
+    if layout == SettingsLayout::Narrow {
+        return 1;
+    }
+    let fit = (card_inner_width(layout, width) + ROW_GAP) / (THEME_CELL_MIN_WIDTH + ROW_GAP);
+    (fit as usize).clamp(2, 3)
+}
+
+/// Everything that changes the arrangement with the panel's width. The panel
+/// repaints when this changes, not on every pixel of a resize.
+fn width_class(width: f32) -> (SettingsLayout, usize) {
+    let layout = layout_for(width);
+    (layout, theme_columns(layout, width))
+}
+
+fn row_list() -> Div {
+    div().flex().flex_col().gap(px(ROW_GAP))
+}
+
+/// Button rows sit at the end of their card once there is room for that.
+fn action_bar(layout: SettingsLayout) -> Div {
     div()
         .flex()
-        .items_center()
-        .gap(px(10.0))
-        .mt(px(8.0))
-        .text_size(px(10.0))
-        .child(div().text_color(rgb(colors.magenta)).child(number))
-        .child(div().text_color(rgb(colors.cyan)).child(title))
-        .child(div().flex_1().h(px(1.0)).bg(rgb(colors.divider)))
+        .flex_wrap()
+        .gap(px(7.0))
+        .when(layout != SettingsLayout::Narrow, |bar| bar.justify_end())
+}
+
+fn section_card(
+    section: Section,
+    layout: SettingsLayout,
+    colors: Palette,
+    body: AnyElement,
+) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .gap(px(12.0))
+        .p(px(layout.card_padding()))
+        .bg(rgb(colors.panel))
+        .border_1()
+        .border_color(rgb(colors.divider))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .pb(px(10.0))
+                .border_b_1()
+                .border_color(rgb(colors.divider))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .text_size(px(11.0))
+                        .child(
+                            div()
+                                .text_color(rgb(colors.magenta))
+                                .child(section.number()),
+                        )
+                        .child(div().text_color(rgb(colors.cyan)).child(section.title())),
+                )
+                .child(
+                    div()
+                        .max_w(px(DESCRIPTION_MAX_WIDTH))
+                        .text_size(px(10.0))
+                        .text_color(rgb(colors.muted))
+                        .child(section.description()),
+                ),
+        )
+        .child(body)
         .into_any_element()
 }
 
@@ -520,6 +737,7 @@ impl SettingsPanel {
             orca_error: None,
             orca_initialized: false,
             error: None,
+            bounds: Rc::new(Cell::new(Bounds::default())),
         }
     }
 
@@ -628,7 +846,7 @@ impl SettingsPanel {
         );
     }
 
-    fn codex_accounts_section(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn codex_accounts_section(&self, layout: SettingsLayout, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let state = cx.global::<CodexAccountsState>().clone();
         let selected = cx.global::<Settings>().selected_codex_account.clone();
@@ -663,7 +881,8 @@ impl SettingsPanel {
                             .flex()
                             .items_center()
                             .gap(px(10.0))
-                            .p(px(10.0))
+                            .px(px(ROW_PAD_X))
+                            .py(px(ROW_PAD_Y))
                             .border_1()
                             .border_color(rgb(if active { colors.cyan } else { colors.divider }))
                             .bg(rgb(if active {
@@ -752,15 +971,34 @@ impl SettingsPanel {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        div().flex().flex_col().gap(px(8.0))
-            .child(div().text_size(px(10.0)).text_color(rgb(colors.muted)).child("Choose the account for new Codex sessions. Running sessions keep their account. A project can override this in Project Settings."))
-            .child(div().id("refresh-codex-accounts").track_focus(&self.account_refresh_focus)
-                .flex().items_center().gap(px(8.0)).py(px(5.0)).cursor_pointer()
-                .text_size(px(10.0)).text_color(rgb(colors.cyan))
-                .focus_visible(|style| style.bg(rgb(colors.panel_active)))
-                .child(if state.pending { "CHECKING ACCOUNTS…" } else { "REFRESH ACCOUNTS" })
-                .on_mouse_down(MouseButton::Left, cx.listener(|view, _, window, cx| view.account_refresh_focus.focus(window, cx)))
-                .on_click(cx.listener(|_, _, _, cx| refresh_codex_accounts(cx))))
+        let narrow = layout == SettingsLayout::Narrow;
+        row_list()
+            .child(
+                div()
+                    .flex()
+                    .gap(px(16.0))
+                    .when(narrow, |head| head.flex_col())
+                    .child(
+                        div()
+                            .max_w(px(DESCRIPTION_MAX_WIDTH))
+                            .text_size(px(10.0))
+                            .text_color(rgb(colors.muted))
+                            .when(narrow, |note| note.w_full())
+                            .when(!narrow, |note| note.flex_1().min_w_0())
+                            .child("Choose the account for new Codex sessions. Running sessions keep their account. A project can override this in Project Settings."),
+                    )
+                    .child(
+                        div().id("refresh-codex-accounts").track_focus(&self.account_refresh_focus)
+                            .flex_none().px(px(10.0)).py(px(6.0)).self_start()
+                            .border_1().border_color(rgb(colors.divider)).cursor_pointer()
+                            .text_size(px(10.0)).text_color(rgb(colors.cyan))
+                            .hover(|style| style.bg(rgb(colors.panel_active)))
+                            .focus_visible(|style| style.bg(rgb(colors.panel_active)).border_color(rgb(colors.cyan)))
+                            .child(if state.pending { "CHECKING ACCOUNTS…" } else { "REFRESH ACCOUNTS" })
+                            .on_mouse_down(MouseButton::Left, cx.listener(|view, _, window, cx| view.account_refresh_focus.focus(window, cx)))
+                            .on_click(cx.listener(|_, _, _, cx| refresh_codex_accounts(cx))),
+                    ),
+            )
             .children(rows)
             .children(selected_missing.then(|| div().text_size(px(10.0)).text_color(rgb(colors.gold))
                 .child("Your selected account is unavailable. Refresh accounts or choose another before starting Codex.")))
@@ -995,7 +1233,7 @@ impl SettingsPanel {
             .into_any_element()
     }
 
-    fn orca_section(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn orca_section(&self, layout: SettingsLayout, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let preview = self.orca_preview.as_ref();
         let receipt = self.orca_receipt.as_ref();
@@ -1028,11 +1266,6 @@ impl SettingsPanel {
             .flex()
             .flex_col()
             .gap(px(9.0))
-            .p(px(12.0))
-            .bg(rgb(colors.panel))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .border_l_2()
             .child(
                 div()
                     .flex()
@@ -1057,6 +1290,7 @@ impl SettingsPanel {
             )
             .child(
                 div()
+                    .max_w(px(DESCRIPTION_MAX_WIDTH))
                     .text_size(px(11.0))
                     .text_color(rgb(colors.muted))
                     .child(if receipt.is_some() {
@@ -1077,6 +1311,7 @@ impl SettingsPanel {
             .children(counts)
             .children(offer.filter(|_| receipt.is_none()).map(|offer| {
                 div()
+                    .max_w(px(DESCRIPTION_MAX_WIDTH))
                     .text_size(px(10.0))
                     .text_color(rgb(colors.muted))
                     .child(offer.hint())
@@ -1106,10 +1341,7 @@ impl SettingsPanel {
                     .child(error.clone())
             }))
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(7.0))
+                action_bar(layout)
                     .child(self.orca_button(
                         if receipt.is_some() {
                             "CHECK IMPORT"
@@ -1209,7 +1441,7 @@ impl SettingsPanel {
             .into_any_element()
     }
 
-    fn cua_section(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn cua_section(&self, layout: SettingsLayout, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let state = cx.global::<CuaSetupState>().clone();
         let status = state.status.as_ref();
@@ -1276,11 +1508,6 @@ impl SettingsPanel {
             .flex()
             .flex_col()
             .gap(px(9.0))
-            .p(px(12.0))
-            .bg(rgb(colors.panel))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .border_l_2()
             .child(
                 div()
                     .flex()
@@ -1293,14 +1520,14 @@ impl SettingsPanel {
                         colors,
                     )),
             )
-            .child(div().text_size(px(11.0)).text_color(rgb(if state.error.is_some() { colors.gold } else { colors.muted })).child(message))
+            .child(div().max_w(px(DESCRIPTION_MAX_WIDTH)).text_size(px(11.0)).text_color(rgb(if state.error.is_some() { colors.gold } else { colors.muted })).child(message))
             .children(access)
-            .children((installed && !ready && !verify_capture).then(|| div().text_size(px(11.0)).text_color(rgb(colors.muted))
+            .children((installed && !ready && !verify_capture).then(|| div().max_w(px(DESCRIPTION_MAX_WIDTH)).text_size(px(11.0)).text_color(rgb(colors.muted))
                 .child("Enable CuaDriver in macOS Accessibility and Screen Recording to connect all agents.")))
-            .child(div().flex().flex_wrap().gap(px(7.0))
+            .child(div().max_w(px(DESCRIPTION_MAX_WIDTH)).text_size(px(10.0)).text_color(rgb(colors.muted)).child("New agent sessions connect automatically. Restart existing sessions to connect them."))
+            .child(action_bar(layout)
                 .child(self.cua_button(if ready { "CHECK CUA" } else if repair { "REPAIR CUA" } else if verify_capture { "VERIFY SCREEN CAPTURE" } else if installed { "GRANT MACOS ACCESS" } else { "SET UP CUA" }, true, state.pending.is_some(), cx))
                 .child(self.cua_button("CHECK AGAIN", false, state.pending.is_some(), cx)))
-            .child(div().text_size(px(10.0)).text_color(rgb(colors.muted)).child("New agent sessions connect automatically. Restart existing sessions to connect them."))
             .into_any_element()
     }
 
@@ -1315,11 +1542,13 @@ impl SettingsPanel {
         div()
             .id(("theme-choice", index))
             .track_focus(&self.theme_focus[index])
+            .flex_1()
+            .min_w_0()
             .flex()
-            .items_center()
+            .items_start()
             .gap(px(12.0))
-            .px(px(12.0))
-            .py(px(8.0))
+            .px(px(ROW_PAD_X))
+            .py(px(ROW_PAD_Y))
             .bg(rgb(if selected {
                 colors.panel_active
             } else {
@@ -1337,6 +1566,7 @@ impl SettingsPanel {
             .child(
                 div()
                     .flex_none()
+                    .mt(px(4.0))
                     .size(px(8.0))
                     .border_1()
                     .border_color(rgb(if selected { colors.cyan } else { colors.muted }))
@@ -1350,10 +1580,20 @@ impl SettingsPanel {
                     .flex_col()
                     .gap(px(3.0))
                     .child(
+                        // The chip shares the title's line so a grid cell keeps its width for the text.
                         div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(colors.text))
-                            .child(theme.label()),
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(colors.text))
+                                    .child(theme.label()),
+                            )
+                            .children(selected.then(|| status_chip("ACTIVE", colors.cyan, colors))),
                     )
                     .child(
                         div()
@@ -1362,7 +1602,6 @@ impl SettingsPanel {
                             .child(theme.description()),
                     ),
             )
-            .children(selected.then(|| status_chip("ACTIVE", colors.cyan, colors)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -1373,6 +1612,31 @@ impl SettingsPanel {
                 view.change(|settings| settings.theme = theme, cx);
             }))
             .into_any_element()
+    }
+
+    /// The theme choices in rows of `columns` equal cells; a short last row keeps its cell widths.
+    fn theme_grid(&self, columns: usize, selected: ThemeChoice, cx: &mut Context<Self>) -> Div {
+        let mut cells = ThemeChoice::ALL
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, theme)| self.theme_row(index, theme, selected == theme, cx))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .peekable();
+        let mut grid = row_list();
+        while cells.peek().is_some() {
+            let mut row = div().flex().gap(px(ROW_GAP));
+            for _ in 0..columns {
+                let cell = div().flex_1().min_w_0().flex();
+                row = row.child(match cells.next() {
+                    Some(theme) => cell.child(theme),
+                    None => cell,
+                });
+            }
+            grid = grid.child(row);
+        }
+        grid
     }
 
     fn toggle_row(
@@ -1395,7 +1659,8 @@ impl SettingsPanel {
             .flex()
             .items_center()
             .gap(px(12.0))
-            .p(px(12.0))
+            .px(px(ROW_PAD_X))
+            .py(px(ROW_PAD_Y))
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.divider))
@@ -1417,6 +1682,7 @@ impl SettingsPanel {
                     )
                     .child(
                         div()
+                            .max_w(px(DESCRIPTION_MAX_WIDTH))
                             .text_size(px(10.0))
                             .text_color(rgb(colors.muted))
                             .child(description),
@@ -1451,19 +1717,15 @@ impl SettingsPanel {
             }))
             .into_any_element()
     }
-}
 
-impl Render for SettingsPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = cx.global::<Settings>().clone();
+    fn appearance_section(
+        &self,
+        theme_columns: usize,
+        settings: &Settings,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = palette(cx);
         let appearance_error = cx.global::<Appearance>().error.clone();
-        let theme_rows: Vec<_> = ThemeChoice::ALL
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, theme)| self.theme_row(index, theme, settings.theme == theme, cx))
-            .collect();
         let terminal_row = (settings.theme == ThemeChoice::Ghostty).then(|| {
             self.toggle_row(
                 Toggle::TerminalColors,
@@ -1473,76 +1735,144 @@ impl Render for SettingsPanel {
                 cx,
             )
         });
+        row_list()
+            .child(self.theme_grid(theme_columns, settings.theme, cx))
+            .children(appearance_error.map(|error| div().text_size(px(11.0)).text_color(rgb(colors.gold)).child(error)))
+            .children(terminal_row)
+            .child(self.toggle_row(
+                Toggle::PanelTabIcons,
+                "Icons instead of labels",
+                "Show icons instead of words on the panel tabs and on toolbar buttons, such as the create buttons in Projects and the file actions in Files. Hover an icon for its name.",
+                settings.panel_tab_icons,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn section_body(
+        &self,
+        section: Section,
+        layout: SettingsLayout,
+        theme_columns: usize,
+        settings: &Settings,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match section {
+            Section::Cua => self.cua_section(layout, cx),
+            Section::Codex => self.codex_accounts_section(layout, cx),
+            Section::Appearance => self.appearance_section(theme_columns, settings, cx),
+            Section::Windows => self.toggle_row(
+                Toggle::WindowSize,
+                "Remember project window size",
+                "Reopen projects at their last size. Switching projects keeps the current window size.",
+                settings.remember_window_size,
+                cx,
+            ),
+            Section::StatusBar => crate::status_bar::render_settings(&settings.status_bar, |view: &mut Self, status, _, cx| {
+                view.change(move |settings| settings.status_bar = status, cx);
+            }, cx),
+            Section::Orca => self.orca_section(layout, cx),
+        }
+    }
+}
+
+impl Render for SettingsPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings = cx.global::<Settings>().clone();
+        let colors = palette(cx);
+        let width = self.bounds.get().size.width.as_f32();
+        let (layout, theme_cells) = width_class(width);
+        let mut columns = Vec::new();
+        for sections in section_columns(layout) {
+            let mut cards = Vec::new();
+            for section in sections {
+                let body = self.section_body(section, layout, theme_cells, &settings, cx);
+                cards.push(section_card(section, layout, colors, body));
+            }
+            columns.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(layout.gap()))
+                    .children(cards),
+            );
+        }
+        let bounds = self.bounds.clone();
+        let measured_view = cx.entity();
         div()
             .id("settings-panel")
             .key_context("RiWorkSettings")
             .on_key_down(cx.listener(Self::key_down))
+            .relative()
             .size_full()
-            .overflow_y_scroll()
             .bg(rgb(colors.bg))
-            .p(px(20.0))
+            .child(
+                canvas(
+                    move |measured, _, cx| {
+                        let previous = bounds.replace(measured);
+                        if width_class(previous.size.width.as_f32())
+                            != width_class(measured.size.width.as_f32())
+                        {
+                            let view = measured_view.clone();
+                            cx.defer(move |cx| {
+                                view.update(cx, |_, cx| cx.notify());
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .max_w(px(760.0))
-                    .gap(px(8.0))
-                    .font_family("Menlo")
-                    .text_color(rgb(colors.text))
+                    .id("settings-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
                     .child(
                         div()
+                            .w_full()
                             .flex()
-                            .items_center()
-                            .gap(px(12.0))
-                            .pb(px(14.0))
-                            .mb(px(2.0))
-                            .border_b_1()
-                            .border_color(rgb(colors.cyan))
+                            .justify_center()
+                            .p(px(layout.page_padding()))
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(4.0))
-                                    .child(div().text_size(px(10.0)).text_color(rgb(colors.magenta)).child("RIWORK / PREFERENCES"))
-                                    .child(div().text_size(px(20.0)).child("Settings")),
-                            )
-                            .child(status_chip("ALL PROJECTS", colors.magenta, colors)),
-                    )
-                    .child(section_heading("01", "COMPUTER USE", colors))
-                    .child(self.cua_section(cx))
-                    .child(section_heading("02", "CODEX ACCOUNTS", colors))
-                    .child(self.codex_accounts_section(cx))
-                    .child(section_heading("03", "APPEARANCE", colors))
-                    .child(div().text_size(px(10.0)).text_color(rgb(colors.muted)).child("Choose a theme, or sync with Ghostty."))
-                    .children(theme_rows)
-                    .children(appearance_error.map(|error| div().text_size(px(11.0)).text_color(rgb(colors.gold)).child(error)))
-                    .children(terminal_row)
-                    .child(self.toggle_row(
-                        Toggle::PanelTabIcons,
-                        "Icons instead of labels",
-                        "Show icons instead of words on the panel tabs and on toolbar buttons, such as the create buttons in Projects and the file actions in Files. Hover an icon for its name.",
-                        settings.panel_tab_icons,
-                        cx,
-                    ))
-                    .child(section_heading("04", "WINDOWS", colors))
-                    .child(self.toggle_row(
-                        Toggle::WindowSize,
-                        "Remember project window size",
-                        "Reopen projects at their last size. Switching projects keeps the current window size.",
-                        settings.remember_window_size,
-                        cx,
-                    ))
-                    .child(section_heading("05", "STATUS BAR", colors))
-                    .child(crate::status_bar::render_settings(&settings.status_bar, |view: &mut Self, status, _, cx| {
-                        view.change(move |settings| settings.status_bar = status, cx);
-                    }, cx))
-                    .child(section_heading("06", "IMPORT FROM ORCA", colors))
-                    .child(self.orca_section(cx))
-                    .children(self.error.as_ref().map(|error| div().text_size(px(11.0)).text_color(rgb(colors.gold)).child(error.clone())))
-                    .child(div().mt(px(8.0)).pt(px(10.0)).border_t_1().border_color(rgb(colors.divider)).text_size(px(10.0)).text_color(rgb(colors.muted)).child("Saved automatically · Tab to move · Enter or Space to select")),
+                                    .w_full()
+                                    .min_w_0()
+                                    .when_some(layout.max_width(), |page, max| page.max_w(px(max)))
+                                    .gap(px(layout.gap()))
+                                    .font_family("Menlo")
+                                    .text_color(rgb(colors.text))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(12.0))
+                                            .pb(px(14.0))
+                                            .border_b_1()
+                                            .border_color(rgb(colors.cyan))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.0))
+                                                    .child(div().text_size(px(10.0)).text_color(rgb(colors.magenta)).child("RIWORK / PREFERENCES"))
+                                                    .child(div().text_size(px(20.0)).child("Settings")),
+                                            )
+                                            .child(status_chip("ALL PROJECTS", colors.magenta, colors)),
+                                    )
+                                    // Columns only differ in the wide layout; otherwise this is one stack of cards.
+                                    .child(div().flex().items_start().gap(px(layout.gap())).children(columns))
+                                    .children(self.error.as_ref().map(|error| div().text_size(px(11.0)).text_color(rgb(colors.gold)).child(error.clone())))
+                                    .child(div().pt(px(10.0)).border_t_1().border_color(rgb(colors.divider)).text_size(px(10.0)).text_color(rgb(colors.muted)).child("Saved automatically · Tab to move · Enter or Space to select")),
+                            ),
+                    ),
             )
     }
 }
@@ -1984,5 +2314,96 @@ mod tests {
         let records = OrcaImportOffer::new(false, true);
         assert_eq!(records, OrcaImportOffer::Import);
         assert_eq!(records.button(), Some("IMPORT NOW"));
+    }
+
+    #[test]
+    fn width_classes_switch_at_the_documented_breakpoints() {
+        use SettingsLayout::{Medium, Narrow, Wide};
+        for (width, expected) in [
+            (0.0, Narrow),
+            (300.0, Narrow),
+            (699.9, Narrow),
+            (700.0, Medium),
+            (820.0, Medium),
+            (1199.9, Medium),
+            (1200.0, Wide),
+            (2400.0, Wide),
+            // Not measured yet, or not a usable width: fall back to one column.
+            (-50.0, Narrow),
+            (f32::NAN, Narrow),
+        ] {
+            assert_eq!(layout_for(width), expected, "{width}");
+        }
+        assert_eq!(Narrow.max_width(), None);
+        assert_eq!(Medium.max_width(), Some(820.0));
+        assert_eq!(Wide.max_width(), Some(1320.0));
+    }
+
+    #[test]
+    fn every_section_lands_in_exactly_one_column_in_tab_order() {
+        use SettingsLayout::{Medium, Narrow, Wide};
+        for (layout, column_count) in [(Narrow, 1), (Medium, 1), (Wide, 2)] {
+            let columns = section_columns(layout);
+            assert_eq!(columns.len(), column_count, "{layout:?}");
+            // Reading down each column in turn is the numbered order, which is also
+            // the order Tab visits the controls in.
+            let flat: Vec<_> = columns.iter().flatten().copied().collect();
+            assert_eq!(flat, Section::ALL, "{layout:?}");
+        }
+        let wide = section_columns(Wide);
+        assert_eq!(
+            wide,
+            vec![
+                vec![Section::Cua, Section::Codex, Section::Appearance],
+                vec![Section::Windows, Section::StatusBar, Section::Orca],
+            ]
+        );
+    }
+
+    #[test]
+    fn sections_are_numbered_in_order_and_describe_themselves_in_one_line() {
+        for (index, section) in Section::ALL.iter().enumerate() {
+            assert_eq!(section.number(), format!("{:02}", index + 1));
+            assert!(!section.title().is_empty());
+            // Menlo at 10 px is about 6 px per character.
+            let width = section.description().chars().count() as f32 * 6.1;
+            assert!(width <= DESCRIPTION_MAX_WIDTH, "{:?} wraps", section);
+        }
+    }
+
+    #[test]
+    fn theme_choices_stay_in_one_column_on_narrow_panels_and_grid_when_there_is_room() {
+        for width in [0.0, 300.0, 520.0, 699.9] {
+            assert_eq!(theme_columns(layout_for(width), width), 1, "{width}");
+        }
+        assert_eq!(width_class(700.0), (SettingsLayout::Medium, 2));
+        assert_eq!(width_class(900.0), (SettingsLayout::Medium, 3));
+        assert_eq!(width_class(1200.0), (SettingsLayout::Wide, 2));
+        assert_eq!(width_class(1800.0), (SettingsLayout::Wide, 2));
+        // Wherever the grid is used, no cell is narrower than its minimum, and no
+        // section card is ever wider than its pane.
+        let mut width = 0.0;
+        while width <= 3000.0 {
+            let layout = layout_for(width);
+            let inner = card_inner_width(layout, width);
+            assert!(inner <= width, "{width}");
+            let columns = theme_columns(layout, width);
+            assert!((1..=3).contains(&columns), "{width}");
+            if layout != SettingsLayout::Narrow {
+                let cell = (inner - ROW_GAP * (columns - 1) as f32) / columns as f32;
+                assert!(cell >= THEME_CELL_MIN_WIDTH, "{width}: {cell}");
+            }
+            width += 3.0;
+        }
+    }
+
+    #[test]
+    fn repainting_is_needed_only_when_the_arrangement_changes() {
+        assert_eq!(width_class(1250.0), width_class(1900.0));
+        assert_eq!(width_class(800.0), width_class(1150.0));
+        assert_ne!(width_class(699.0), width_class(700.0));
+        assert_ne!(width_class(1199.0), width_class(1200.0));
+        // The grid gains a third column inside the medium class.
+        assert_ne!(width_class(720.0), width_class(900.0));
     }
 }

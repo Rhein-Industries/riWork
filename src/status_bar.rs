@@ -267,8 +267,11 @@ impl StatusBarSettings {
     }
 }
 
-/// A settings card. The owner persists each new snapshot and shares it with all
-/// windows through the same settings path as the other appearance preferences.
+/// The status bar block of a settings page: the master switch with a reset
+/// button, then the items of each side. The caller supplies the surrounding
+/// card, heading and description. The owner persists each new snapshot and
+/// shares it with all windows through the same settings path as the other
+/// appearance preferences.
 pub fn render_settings<V: 'static>(
     settings: &StatusBarSettings,
     on_change: impl Fn(&mut V, StatusBarSettings, &mut Window, &mut Context<V>) + Clone + 'static,
@@ -285,29 +288,40 @@ pub fn render_settings<V: 'static>(
         .flex()
         .flex_col()
         .gap(px(9.0))
-        .p(px(12.0))
-        .bg(rgb(colors.panel))
-        .border_1()
-        .border_color(rgb(colors.divider))
-        .border_l_2()
         .child(
             div()
                 .flex()
-                .items_center()
                 .gap(px(8.0))
                 .child(
                     div()
+                        .id("status-bar-visible")
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(13.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(8.0))
+                        .py(px(7.0))
+                        .cursor_pointer()
+                        .bg(rgb(colors.panel_active))
+                        .text_size(px(11.0))
                         .text_color(rgb(colors.text))
-                        .child("Status bar"),
+                        .hover(|style| style.bg(rgb(colors.divider)))
+                        .child(check_box(master_enabled, colors))
+                        .child("Show status bar")
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            let mut next = master_settings.clone();
+                            next.enabled = !master_enabled;
+                            master_change(view, next, window, cx);
+                        })),
                 )
                 .child(
                     div()
                         .id("status-bar-reset")
+                        .flex_none()
+                        .flex()
+                        .items_center()
                         .px(px(8.0))
-                        .py(px(5.0))
                         .cursor_pointer()
                         .border_1()
                         .border_color(rgb(colors.divider))
@@ -323,33 +337,6 @@ pub fn render_settings<V: 'static>(
                             reset(view, StatusBarSettings::default(), window, cx)
                         })),
                 ),
-        )
-        .child(
-            div()
-                .text_size(px(10.0))
-                .text_color(rgb(colors.muted))
-                .child("Choose what appears, which side it sits on, and its order."),
-        )
-        .child(
-            div()
-                .id("status-bar-visible")
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .px(px(8.0))
-                .py(px(7.0))
-                .cursor_pointer()
-                .bg(rgb(colors.panel_active))
-                .text_size(px(11.0))
-                .text_color(rgb(colors.text))
-                .hover(|style| style.bg(rgb(colors.divider)))
-                .child(check_box(master_enabled, colors))
-                .child("Show status bar")
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    let mut next = master_settings.clone();
-                    next.enabled = !master_enabled;
-                    master_change(view, next, window, cx);
-                })),
         );
     for side in [StatusSide::Left, StatusSide::Right] {
         let items: Vec<_> = settings
