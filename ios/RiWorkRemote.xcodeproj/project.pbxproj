@@ -21,6 +21,7 @@
 		7F4051B8E71749C517B334EE /* ProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3368A0BB01F4516D7A2E1423 /* ProtocolTests.swift */; };
 		8BF3D90ADC498D4A474AF7FB /* CommandFieldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A8ED89F54DEF74A623371A /* CommandFieldTests.swift */; };
 		9D08EC0340993D847842CCE0 /* RiWorkRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C267561622D90717BA4F7BE5 /* RiWorkRemoteApp.swift */; };
+		9DD0A88BB07D95E871AF570B /* v2.json in Resources */ = {isa = PBXBuildFile; fileRef = B1B2699AAE52865AE24FD33B /* v2.json */; };
 		A1F6211D8D3A10B3049E18B3 /* QRScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8675234AB403383A87B72D40 /* QRScanner.swift */; };
 		A4E7261D99B4461278975542 /* DesktopStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1BBD9DB0F36FC25E37B8E69 /* DesktopStyle.swift */; };
 		A7E6A5BF4E20688849C0B10C /* RiWorkCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -128,6 +129,7 @@
 		8675234AB403383A87B72D40 /* QRScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScanner.swift; sourceTree = "<group>"; };
 		87216E2F3018C97AC2416AB1 /* RemoteModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteModel.swift; sourceTree = "<group>"; };
 		A8955D7CEEB5ED7B59073518 /* TerminalText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalText.swift; sourceTree = "<group>"; };
+		B1B2699AAE52865AE24FD33B /* v2.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = v2.json; sourceTree = "<group>"; };
 		C267561622D90717BA4F7BE5 /* RiWorkRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RiWorkRemoteApp.swift; sourceTree = "<group>"; };
 		C2EE56BC0C49CD4118865666 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		C4E103B9B382403DC43F42AC /* RiWorkCoreTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RiWorkCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -228,6 +230,7 @@
 			children = (
 				0162C45E1C9E0E2E28D31FAF /* counter-vectors.json */,
 				7911984A4E02BC0DB5363306 /* v1.json */,
+				B1B2699AAE52865AE24FD33B /* v2.json */,
 			);
 			path = Fixtures;
 			sourceTree = "<group>";
@@ -396,6 +399,7 @@
 			files = (
 				AD4F608209AD4373B3F0EEEE /* counter-vectors.json in Resources */,
 				B6324AC15D3F9057B572B902 /* v1.json in Resources */,
+				9DD0A88BB07D95E871AF570B /* v2.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
