@@ -127,6 +127,8 @@ pub struct Settings {
     /// Kept for older preferences and as a terminal-only override while following Ghostty.
     pub use_riwork_colors: bool,
     pub remember_window_size: bool,
+    /// Built-in panel tabs show an icon instead of their text label.
+    pub panel_tab_icons: bool,
     pub project_order: ProjectOrder,
     pub selected_codex_account: Option<String>,
     pub status_bar: StatusBarSettings,
@@ -139,6 +141,7 @@ impl Default for Settings {
             theme: ThemeChoice::Ghostty,
             use_riwork_colors: false,
             remember_window_size: true,
+            panel_tab_icons: false,
             project_order: ProjectOrder::default(),
             selected_codex_account: None,
             status_bar: StatusBarSettings::default(),
@@ -168,6 +171,7 @@ impl<'de> Deserialize<'de> for Settings {
                 "remember_window_size",
                 defaults.remember_window_size,
             ),
+            panel_tab_icons: lenient_field(&object, "panel_tab_icons", defaults.panel_tab_icons),
             project_order: lenient_field(&object, "project_order", defaults.project_order),
             selected_codex_account: strict_field(
                 &object,
@@ -324,6 +328,33 @@ pub enum SettingsEvent {
     OrcaImported,
 }
 
+/// The on/off rows of the panel. Each owns one boolean setting and one focus handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Toggle {
+    TerminalColors,
+    PanelTabIcons,
+    WindowSize,
+}
+
+impl Toggle {
+    fn id(self) -> &'static str {
+        match self {
+            Self::TerminalColors => "terminal-colors",
+            Self::PanelTabIcons => "panel-tab-icons",
+            Self::WindowSize => "remember-window-size",
+        }
+    }
+
+    fn flip(self, settings: &mut Settings) {
+        let value = match self {
+            Self::TerminalColors => &mut settings.use_riwork_colors,
+            Self::PanelTabIcons => &mut settings.panel_tab_icons,
+            Self::WindowSize => &mut settings.remember_window_size,
+        };
+        *value = !*value;
+    }
+}
+
 pub struct SettingsPanel {
     store: SettingsStore,
     cua_focus: FocusHandle,
@@ -332,6 +363,7 @@ pub struct SettingsPanel {
     account_focus: BTreeMap<String, FocusHandle>,
     theme_focus: Vec<FocusHandle>,
     terminal_focus: FocusHandle,
+    tab_icons_focus: FocusHandle,
     size_focus: FocusHandle,
     orca_preview_focus: FocusHandle,
     orca_import_focus: FocusHandle,
@@ -477,6 +509,7 @@ impl SettingsPanel {
                 .collect(),
             theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
+            tab_icons_focus: cx.focus_handle(),
             size_focus: cx.focus_handle(),
             orca_preview_focus: cx.focus_handle(),
             orca_import_focus: cx.focus_handle(),
@@ -530,6 +563,7 @@ impl SettingsPanel {
         if settings.theme == ThemeChoice::Ghostty {
             handles.push(self.terminal_focus.clone());
         }
+        handles.push(self.tab_icons_focus.clone());
         handles.push(self.size_focus.clone());
         if self.orca_pending.is_none() {
             handles.push(self.orca_preview_focus.clone());
@@ -792,15 +826,11 @@ impl SettingsPanel {
                 } else if settings.theme == ThemeChoice::Ghostty
                     && self.terminal_focus.is_focused(window)
                 {
-                    self.change(
-                        |settings| settings.use_riwork_colors = !settings.use_riwork_colors,
-                        cx,
-                    );
+                    self.change(|settings| Toggle::TerminalColors.flip(settings), cx);
+                } else if self.tab_icons_focus.is_focused(window) {
+                    self.change(|settings| Toggle::PanelTabIcons.flip(settings), cx);
                 } else if self.size_focus.is_focused(window) {
-                    self.change(
-                        |settings| settings.remember_window_size = !settings.remember_window_size,
-                        cx,
-                    );
+                    self.change(|settings| Toggle::WindowSize.flip(settings), cx);
                 } else if self.orca_preview_focus.is_focused(window) {
                     self.preview_orca(cx);
                 } else if self.orca_import_focus.is_focused(window) {
@@ -1346,24 +1376,20 @@ impl SettingsPanel {
 
     fn toggle_row(
         &self,
+        toggle: Toggle,
         title: &'static str,
         description: &'static str,
         enabled: bool,
-        terminal: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
-        let focus = if terminal {
-            &self.terminal_focus
-        } else {
-            &self.size_focus
+        let focus = match toggle {
+            Toggle::TerminalColors => &self.terminal_focus,
+            Toggle::PanelTabIcons => &self.tab_icons_focus,
+            Toggle::WindowSize => &self.size_focus,
         };
         div()
-            .id(if terminal {
-                "terminal-colors"
-            } else {
-                "remember-window-size"
-            })
+            .id(toggle.id())
             .track_focus(focus)
             .flex()
             .items_center()
@@ -1411,25 +1437,16 @@ impl SettingsPanel {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
-                    if terminal {
-                        &view.terminal_focus
-                    } else {
-                        &view.size_focus
+                    match toggle {
+                        Toggle::TerminalColors => &view.terminal_focus,
+                        Toggle::PanelTabIcons => &view.tab_icons_focus,
+                        Toggle::WindowSize => &view.size_focus,
                     }
                     .focus(window, cx);
                 }),
             )
             .on_click(cx.listener(move |view, _, _, cx| {
-                view.change(
-                    |settings| {
-                        if terminal {
-                            settings.use_riwork_colors = !settings.use_riwork_colors;
-                        } else {
-                            settings.remember_window_size = !settings.remember_window_size;
-                        }
-                    },
-                    cx,
-                );
+                view.change(|settings| toggle.flip(settings), cx);
             }))
             .into_any_element()
     }
@@ -1448,10 +1465,10 @@ impl Render for SettingsPanel {
             .collect();
         let terminal_row = (settings.theme == ThemeChoice::Ghostty).then(|| {
             self.toggle_row(
+                Toggle::TerminalColors,
                 "Use RiWork terminal colors",
                 "Keep RiWork terminal colors while following Ghostty. Off uses Ghostty colors.",
                 settings.use_riwork_colors,
-                true,
                 cx,
             )
         });
@@ -1502,12 +1519,19 @@ impl Render for SettingsPanel {
                     .children(theme_rows)
                     .children(appearance_error.map(|error| div().text_size(px(11.0)).text_color(rgb(colors.gold)).child(error)))
                     .children(terminal_row)
+                    .child(self.toggle_row(
+                        Toggle::PanelTabIcons,
+                        "Panel tab icons",
+                        "Show an icon instead of the name on Projects, Files, Settings and the other panel tabs. Hover an icon for its name.",
+                        settings.panel_tab_icons,
+                        cx,
+                    ))
                     .child(section_heading("04", "WINDOWS", colors))
                     .child(self.toggle_row(
+                        Toggle::WindowSize,
                         "Remember project window size",
                         "Reopen projects at their last size. Switching projects keeps the current window size.",
                         settings.remember_window_size,
-                        false,
                         cx,
                     ))
                     .child(section_heading("05", "STATUS BAR", colors))
@@ -1621,6 +1645,105 @@ mod tests {
         write(r#"{"selected_codex_account":null}"#);
         assert_eq!(store.load().unwrap().selected_codex_account, None);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn panel_tab_icons_default_off_for_older_files_and_round_trip_beside_other_keys() {
+        let dir = env::temp_dir().join(format!("riwork-settings-tab-icons-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let document = |dir: &std::path::Path| -> Value {
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
+        };
+        assert!(!Settings::default().panel_tab_icons);
+
+        // A file from a build without the setting reads as off and is not rewritten by a load.
+        let older = r#"{"schema_version":1,"theme":"tokyo_night","remember_window_size":false,"future_setting":{"a":1}}"#;
+        fs::write(dir.join("settings.json"), older).unwrap();
+        assert!(!store.load().unwrap().panel_tab_icons);
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.json")).unwrap(),
+            older
+        );
+
+        // Turning it on writes the key and leaves the neighbouring and unknown keys alone.
+        let saved = store
+            .update(|settings| Toggle::PanelTabIcons.flip(settings))
+            .unwrap();
+        assert!(saved.panel_tab_icons);
+        let file = document(&dir);
+        assert_eq!(file["panel_tab_icons"], true);
+        assert_eq!(file["theme"], "tokyo_night");
+        assert_eq!(file["remember_window_size"], false);
+        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
+        assert!(reloaded.panel_tab_icons);
+        assert_eq!(reloaded.theme, ThemeChoice::TokyoNight);
+        assert!(!reloaded.remember_window_size);
+        let encoded = serde_json::to_string(&reloaded).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Settings>(&encoded).unwrap(),
+            reloaded
+        );
+
+        // Other settings changes keep it, and it turns off again.
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert_eq!(document(&dir)["panel_tab_icons"], true);
+        store
+            .update(|settings| Toggle::PanelTabIcons.flip(settings))
+            .unwrap();
+        assert_eq!(document(&dir)["panel_tab_icons"], false);
+        assert!(!store.load().unwrap().panel_tab_icons);
+
+        // A value another build wrote in a shape this one lacks reads as off and stays until changed.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"panel_tab_icons":"labels"}"#,
+        )
+        .unwrap();
+        assert!(!store.load().unwrap().panel_tab_icons);
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert_eq!(document(&dir)["panel_tab_icons"], "labels");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn each_toggle_changes_only_its_own_setting() {
+        let base = Settings::default();
+        for (toggle, expected) in [
+            (Toggle::TerminalColors, "use_riwork_colors"),
+            (Toggle::PanelTabIcons, "panel_tab_icons"),
+            (Toggle::WindowSize, "remember_window_size"),
+        ] {
+            let mut flipped = base.clone();
+            toggle.flip(&mut flipped);
+            let (before, after) = (
+                serde_json::to_value(&base).unwrap(),
+                serde_json::to_value(&flipped).unwrap(),
+            );
+            let changed: Vec<_> = before
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, value)| after[key.as_str()] != **value)
+                .map(|(key, _)| key.as_str())
+                .collect();
+            assert_eq!(changed, [expected]);
+            toggle.flip(&mut flipped);
+            assert_eq!(flipped, base);
+        }
+        let ids = [
+            Toggle::TerminalColors,
+            Toggle::PanelTabIcons,
+            Toggle::WindowSize,
+        ]
+        .map(Toggle::id)
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), 3);
     }
 
     #[test]
