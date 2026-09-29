@@ -154,6 +154,13 @@ impl Tab {
         }
     }
 
+    fn panel(&self) -> Option<PanelKind> {
+        match &self.content {
+            TabContent::Panel(panel) => Some(*panel),
+            _ => None,
+        }
+    }
+
     fn terminal(&self) -> Option<&Entity<Terminal>> {
         match &self.content {
             TabContent::Shell { terminal, .. } => Some(terminal),
@@ -2903,22 +2910,21 @@ impl Workspace {
     }
 
     fn pane_is_locked(&self, pane_id: PaneId) -> bool {
-        match &self.locked_panes {
-            Some(locked) => locked.contains(&pane_id),
-            None => {
-                self.layout.first_pane() == pane_id
-                    && self.panes.get(&pane_id).is_some_and(|pane| {
-                        pane.tabs.iter().any(|tab| {
-                            matches!(
-                                tab.content,
-                                TabContent::Panel(
-                                    PanelKind::Projects | PanelKind::Worktrees | PanelKind::Files
-                                )
-                            )
-                        })
+        pane_lock_state(
+            self.locked_panes.as_ref(),
+            pane_id,
+            self.layout.first_pane(),
+            || {
+                self.panes.get(&pane_id).is_some_and(|pane| {
+                    pane.tabs.iter().any(|tab| {
+                        matches!(
+                            tab.panel(),
+                            Some(PanelKind::Projects | PanelKind::Worktrees | PanelKind::Files)
+                        )
                     })
-            }
-        }
+                })
+            },
+        )
     }
 
     fn toggle_pane_lock(&mut self, pane_id: PaneId, cx: &mut Context<Self>) {
@@ -2932,8 +2938,53 @@ impl Workspace {
             locked.insert(pane_id);
         }
         self.locked_panes = Some(locked);
+        // The refusal hint is stale once the pane can be closed again.
+        if self.notice.as_deref().is_some_and(is_locked_close_hint) {
+            self.notice = None;
+        }
         self.save_layout();
         cx.notify();
+    }
+
+    /// Close a tab because the user asked to. A locked pane refuses; internal
+    /// removals (moving a tab, project switches, restore) never come through here.
+    fn close_tab_by_user(
+        &mut self,
+        pane_id: PaneId,
+        tab_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.ensure_layout(window, cx) || self.refuse_locked_close(pane_id, UserClose::Tab, cx)
+        {
+            return;
+        }
+        self.remove_tab(pane_id, tab_id, window, cx);
+    }
+
+    /// Close a pane, and with it every tab in it, because the user asked to.
+    fn close_pane_by_user(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ensure_layout(window, cx) || self.refuse_locked_close(pane_id, UserClose::Pane, cx)
+        {
+            return;
+        }
+        self.remove_pane(pane_id, window, cx);
+    }
+
+    /// Say why nothing was closed. The tab X and the menu's Close pane are not drawn
+    /// for a locked pane, so this is what a shortcut reaches.
+    fn refuse_locked_close(
+        &mut self,
+        pane_id: PaneId,
+        close: UserClose,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(hint) = user_close_refusal(self.pane_is_locked(pane_id), close) else {
+            return false;
+        };
+        self.notice = Some(hint.to_owned());
+        cx.notify();
+        true
     }
 
     fn new_tab_action(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -3076,14 +3127,14 @@ impl Workspace {
         let Some(tab) = pane.tabs.get(pane.active) else {
             return;
         };
-        self.remove_tab(self.active_pane, tab.id, window, cx);
+        self.close_tab_by_user(self.active_pane, tab.id, window, cx);
     }
 
     fn close_pane_action(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_open() {
             return;
         }
-        self.remove_pane(self.active_pane, window, cx);
+        self.close_pane_by_user(self.active_pane, window, cx);
     }
 
     fn next_tab_action(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -3585,6 +3636,7 @@ impl Workspace {
         let header_width = pane_width - control_inset;
         let show_lock = header_width >= 108.0;
         let show_focus = header_width >= 180.0;
+        let pane_locked = self.pane_is_locked(pane_id);
         let account_numbers = codex_account_numbers(&self.shells);
         let tabs = pane
             .tabs
@@ -3593,7 +3645,22 @@ impl Workspace {
             .map(|(index, tab)| {
                 let tab_id = tab.id;
                 let active = index == pane.active;
-                let panel = matches!(tab.content, TabContent::Panel(_));
+                let panel = tab.panel().is_some();
+                // Shell tabs keep their titles; only built-in panels swap in an icon.
+                let icon_panel = tab.panel().filter(|_| self.settings.panel_tab_icons);
+                // The X is left out, not disabled, so a locked pane's tabs lose no room to it.
+                let close_visible =
+                    active && user_close_refusal(pane_locked, UserClose::Tab).is_none();
+                let (pad_left, pad_right, gap) = match (icon_panel, close_visible) {
+                    (None, _) => (8.0, 8.0, 6.0),
+                    (Some(_), true) => (0.0, 4.0, 0.0),
+                    (Some(_), false) => (0.0, 0.0, 0.0),
+                };
+                let tab_color = if active {
+                    if panel { colors.magenta } else { colors.text }
+                } else {
+                    colors.muted
+                };
                 let workspace = cx.entity();
                 let shell = tab
                     .shell_id()
@@ -3605,8 +3672,9 @@ impl Workspace {
                     .flex_shrink_0()
                     .items_center()
                     .h_full()
-                    .px(px(8.0))
-                    .gap(px(6.0))
+                    .pl(px(pad_left))
+                    .pr(px(pad_right))
+                    .gap(px(gap))
                     .border_r_1()
                     .border_b_1()
                     .border_color(rgb(if active { colors.cyan } else { colors.divider }))
@@ -3615,19 +3683,31 @@ impl Workspace {
                     } else {
                         colors.panel
                     }))
-                    .text_color(rgb(if active {
-                        if panel { colors.magenta } else { colors.text }
-                    } else {
-                        colors.muted
-                    }))
+                    .text_color(rgb(tab_color))
                     .text_size(px(if panel { 9.0 } else { 10.0 }))
                     .cursor_grab()
                     .hover(|style| style.bg(rgb(colors.panel_active)))
                     .drag_over::<DraggedTab>(move |style, _, _, _| {
                         style.border_l_2().border_color(rgb(colors.cyan))
                     })
-                    .child(display_title.clone())
-                    .children(active.then(|| {
+                    .child(match icon_panel {
+                        // The tooltip sits on the icon's own box so it does not stack with the X's.
+                        Some(kind) => div()
+                            .id(("tab-icon", tab_id))
+                            .h_full()
+                            .min_w(px(32.0))
+                            .px(px(8.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icons::icon(Icon::Panel(kind), tab_color))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| PaneActionTooltip(panel_tooltip(kind))).into()
+                            })
+                            .into_any_element(),
+                        None => display_title.clone().into_any_element(),
+                    })
+                    .children(close_visible.then(|| {
                         div()
                             .id(("close-tab", tab_id))
                             .size(px(18.0))
@@ -3643,7 +3723,7 @@ impl Workspace {
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |workspace, _, window, cx| {
                                 cx.stop_propagation();
-                                workspace.remove_tab(pane_id, tab_id, window, cx);
+                                workspace.close_tab_by_user(pane_id, tab_id, window, cx);
                             }))
                     }))
                     .on_click(cx.listener(move |workspace, _, window, cx| {
@@ -3740,12 +3820,12 @@ impl Workspace {
                         self.pane_button(
                             pane_id,
                             "lock",
-                            if self.pane_is_locked(pane_id) {
+                            if pane_locked {
                                 Icon::Lock
                             } else {
                                 Icon::Unlock
                             },
-                            if self.pane_is_locked(pane_id) {
+                            if pane_locked {
                                 colors.cyan
                             } else {
                                 colors.muted
@@ -4120,17 +4200,29 @@ impl Workspace {
                                 ("Close pane", "⌘⇧W", Icon::Close, PaneMenuAction::Close),
                             ]
                             .into_iter()
+                            // Menus here have no disabled rows, so a locked pane just omits Close pane.
+                            .filter(|(_, _, _, action)| {
+                                !matches!(action, PaneMenuAction::Close)
+                                    || user_close_refusal(pane_locked, UserClose::Pane).is_none()
+                            })
                             .map(|(label, shortcut, icon, action)| {
                                 self.pane_menu_row(pane_id, label, shortcut, Some(icon), action, cx)
                             }),
                         )
                         .children((!show_lock).then(|| {
-                            let locked = self.pane_is_locked(pane_id);
                             self.pane_menu_row(
                                 pane_id,
-                                if locked { "Unlock pane" } else { "Lock pane" },
+                                if pane_locked {
+                                    "Unlock pane"
+                                } else {
+                                    "Lock pane"
+                                },
                                 "",
-                                Some(if locked { Icon::Lock } else { Icon::Unlock }),
+                                Some(if pane_locked {
+                                    Icon::Lock
+                                } else {
+                                    Icon::Unlock
+                                }),
                                 PaneMenuAction::Lock,
                                 cx,
                             )
@@ -4749,9 +4841,9 @@ impl Workspace {
                 |button| {
                     let label = match key {
                         "lock" if self.pane_is_locked(pane_id) => {
-                            "Locked across project switches · click to unlock"
+                            "Locked across project switches, tabs can't close · click to unlock"
                         }
-                        "lock" => "Lock this pane across project switches",
+                        "lock" => "Lock across project switches and keep tabs open",
                         "focus" => "Focus this tab · ⌘⇧F",
                         _ => "Add tabs and manage this pane",
                     };
@@ -4814,7 +4906,7 @@ impl Workspace {
                     }
                     PaneMenuAction::View(kind) => workspace.open_panel(kind, pane_id, window, cx),
                     PaneMenuAction::Split(axis) => workspace.add_split(axis, window, cx),
-                    PaneMenuAction::Close => workspace.remove_pane(pane_id, window, cx),
+                    PaneMenuAction::Close => workspace.close_pane_by_user(pane_id, window, cx),
                     PaneMenuAction::Lock => {
                         workspace.toggle_pane_lock(pane_id, cx);
                         workspace.focus_active(window, cx);
@@ -5162,6 +5254,62 @@ impl Render for PaneActionTooltip {
             .text_color(rgb(colors.text))
             .text_size(px(11.0))
             .child(self.0)
+    }
+}
+
+/// Whether a pane is locked. The user's explicit set wins (an empty set unlocks
+/// everything); until they choose, the first pane is locked while it holds a
+/// navigation panel (Projects, Worktrees or Files).
+fn pane_lock_state(
+    explicit: Option<&HashSet<PaneId>>,
+    pane_id: PaneId,
+    first_pane: PaneId,
+    holds_navigation_panel: impl FnOnce() -> bool,
+) -> bool {
+    match explicit {
+        Some(locked) => locked.contains(&pane_id),
+        None => first_pane == pane_id && holds_navigation_panel(),
+    }
+}
+
+/// What the user asked to close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UserClose {
+    /// One tab: the tab X or Cmd+W.
+    Tab,
+    /// A whole pane and every tab in it: Close pane or Cmd+Shift+W.
+    Pane,
+}
+
+/// Why a close the user asked for must not happen, or `None` when it may. A locked
+/// pane keeps its tabs and stays a pane. Only requests from the user ask this:
+/// moving a tab to another pane, project switches, restore and layout repair remove
+/// tabs on their own terms, and a locked pane never blocks them.
+fn user_close_refusal(pane_locked: bool, close: UserClose) -> Option<&'static str> {
+    pane_locked.then_some(match close {
+        UserClose::Tab => "Unlock the pane to close its tabs",
+        UserClose::Pane => "Unlock the pane to close it",
+    })
+}
+
+fn is_locked_close_hint(notice: &str) -> bool {
+    [UserClose::Tab, UserClose::Pane]
+        .into_iter()
+        .any(|close| user_close_refusal(true, close) == Some(notice))
+}
+
+/// The full name of a built-in panel, for the tooltip of its icon-only tab.
+fn panel_tooltip(panel: PanelKind) -> &'static str {
+    match panel {
+        PanelKind::Projects => "Projects · ⌘B",
+        PanelKind::Worktrees => "Worktrees",
+        PanelKind::Files => "Files · ⌘⇧E",
+        PanelKind::Tasks => "Tasks",
+        PanelKind::Shells => "Shells",
+        PanelKind::Usage => "Usage",
+        PanelKind::Settings => "Settings · ⌘,",
+        PanelKind::ProjectSettings => "Project Settings · ⌘⌥A",
+        PanelKind::Schedules => "Schedules · ⌘⇧S",
     }
 }
 
@@ -5925,6 +6073,69 @@ mod startup_tests {
 #[cfg(test)]
 mod workspace_tab_tests {
     use super::*;
+
+    #[test]
+    fn a_locked_pane_refuses_user_closes_but_an_unlocked_one_allows_them() {
+        for close in [UserClose::Tab, UserClose::Pane] {
+            assert_eq!(user_close_refusal(false, close), None);
+            assert!(user_close_refusal(true, close).is_some());
+        }
+        assert_ne!(
+            user_close_refusal(true, UserClose::Tab),
+            user_close_refusal(true, UserClose::Pane)
+        );
+        // Only the hints this decision produces are treated as stale on unlock.
+        for close in [UserClose::Tab, UserClose::Pane] {
+            assert!(is_locked_close_hint(
+                user_close_refusal(true, close).unwrap()
+            ));
+        }
+        assert!(!is_locked_close_hint("Copied /tmp/file"));
+    }
+
+    #[test]
+    fn lock_state_follows_the_users_choice_and_defaults_to_the_navigation_pane() {
+        let nav = || true;
+        let none = || false;
+        // Before any choice the first pane is locked only while it holds a navigation panel.
+        assert!(pane_lock_state(None, 1, 1, nav));
+        assert!(!pane_lock_state(None, 1, 1, none));
+        assert!(!pane_lock_state(None, 2, 1, nav));
+        // An explicit set decides on its own, whatever the panes hold.
+        let locked = HashSet::from([2]);
+        assert!(pane_lock_state(Some(&locked), 2, 1, none));
+        assert!(!pane_lock_state(Some(&locked), 1, 1, nav));
+        // Unlocking the default navigation pane stores an empty set and stays unlocked.
+        assert!(!pane_lock_state(Some(&HashSet::new()), 1, 1, nav));
+        // A default-locked pane refuses to be closed; once unlocked it can be.
+        let default_locked = pane_lock_state(None, 1, 1, nav);
+        assert!(user_close_refusal(default_locked, UserClose::Tab).is_some());
+        let unlocked = pane_lock_state(Some(&HashSet::new()), 1, 1, nav);
+        assert!(user_close_refusal(unlocked, UserClose::Tab).is_none());
+    }
+
+    #[test]
+    fn icon_only_panel_tabs_name_their_panel_in_the_tooltip() {
+        let panels = [
+            (PanelKind::Projects, "Projects"),
+            (PanelKind::Worktrees, "Worktrees"),
+            (PanelKind::Files, "Files"),
+            (PanelKind::Tasks, "Tasks"),
+            (PanelKind::Shells, "Shells"),
+            (PanelKind::Usage, "Usage"),
+            (PanelKind::Settings, "Settings"),
+            (PanelKind::ProjectSettings, "Project Settings"),
+            (PanelKind::Schedules, "Schedules"),
+        ];
+        for (panel, name) in panels {
+            assert!(panel_tooltip(panel).starts_with(name), "{panel:?}");
+            assert_eq!(
+                Workspace::panel_title(panel),
+                name.to_uppercase(),
+                "the tooltip names the tab's own label"
+            );
+        }
+    }
 
     #[test]
     fn saved_file_reselects_its_live_editor_without_refresh_but_new_launch_stays_strict() {
