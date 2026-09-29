@@ -57,8 +57,8 @@ use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
 use icons::Icon;
 use layouts::{
-    Axis, Layout, LayoutStore, PaneId, PanelKind, ProjectLayout, SavedPane, SavedTab, TabEdge,
-    WindowSize,
+    Axis, DIVIDER_THICKNESS, Extent, Layout, LayoutStore, MIN_PANE_EXTENT, PaneId, PanelKind,
+    ProjectLayout, SavedPane, SavedTab, TabEdge, WindowSize,
 };
 use panels::{PanelAction, PanelData};
 use project_creator::{ProjectCreationEvent, ProjectCreator};
@@ -122,6 +122,10 @@ const FOCUS_MAX_WIDTH: f32 = 1100.0;
 const FOCUS_BOTTOM_MARGIN: f32 = 0.30;
 const FOCUS_TOOLBAR_HEIGHT: f32 = 32.0;
 const STATUS_BAR_HEIGHT: f32 = 22.0;
+/// A window restored fullscreen or zoomed is first drawn at its opening size and animates
+/// to the real one. Sizes seen this soon after the first draw are that settling, not the
+/// user resizing, so they must not rebalance the saved ratios.
+const WINDOW_SETTLE: Duration = Duration::from_secs(2);
 /// Attach attempts a tab makes on its own before it waits to be selected.
 const ATTACH_RETRIES: u8 = 3;
 const ATTACH_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -273,6 +277,13 @@ struct Workspace {
     carry_layout: Option<ProjectLayout>,
     layout: Layout,
     layout_ready: bool,
+    /// The size of the area the split ratios were last laid out for. `None` until the
+    /// first draw of a layout, and left alone in focus mode, which draws no split tree.
+    pane_area: Option<Extent>,
+    /// When the window first drew a layout; sizes within `WINDOW_SETTLE` of it are not resizes.
+    first_drawn: Option<Instant>,
+    /// A pending save of ratios rewritten by a window resize; one write per resize.
+    layout_save: Option<gpui::Task<()>>,
     panes: BTreeMap<PaneId, Pane>,
     active_pane: PaneId,
     next_pane_id: PaneId,
@@ -725,6 +736,9 @@ impl Workspace {
             carry_layout: None,
             layout: Layout::Pane(1),
             layout_ready: false,
+            pane_area: None,
+            first_drawn: None,
+            layout_save: None,
             panes,
             active_pane: 1,
             next_pane_id: 2,
@@ -2252,6 +2266,8 @@ impl Workspace {
             self.set_focus_mode(false, window, cx);
         }
         self.layout_ready = false;
+        // A new project's saved ratios are drawn as they are.
+        self.pane_area = None;
         for pane in self.panes.values() {
             for tab in &pane.tabs {
                 tab.set_visible(false, cx);
@@ -3853,6 +3869,56 @@ impl Workspace {
         }
     }
 
+    /// Keeps locked panes at their pixel size when the area the panes fill changes: a
+    /// window resize, full screen, or the status bar being switched on or off.
+    fn follow_pane_area(&mut self, window: &Window, cx: &mut Context<Self>) {
+        // Focus mode draws one pane instead of the tree. Leaving `pane_area` as it was
+        // means any change made meanwhile is applied once focus mode ends.
+        if self.focus_mode {
+            return;
+        }
+        let viewport = window.viewport_size();
+        let footer = if self.settings.status_bar.enabled {
+            STATUS_BAR_HEIGHT
+        } else {
+            0.0
+        };
+        let area = Extent {
+            width: viewport.width.as_f32(),
+            height: viewport.height.as_f32() - footer,
+        };
+        if !self.layout_ready || area.width <= 0.0 || area.height <= 0.0 {
+            self.pane_area = None;
+            return;
+        }
+        let settled = *self.first_drawn.get_or_insert_with(Instant::now) + WINDOW_SETTLE;
+        // The first area of a layout only records what the saved ratios were drawn at.
+        let Some(previous) = self.pane_area.replace(area) else {
+            return;
+        };
+        if previous == area || Instant::now() < settled {
+            return;
+        }
+        let locked: HashSet<PaneId> = self
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter(|id| self.pane_is_locked(*id))
+            .collect();
+        if self
+            .layout
+            .preserve_locked(previous, area, &|id| locked.contains(&id), MIN_PANE_EXTENT)
+        {
+            // One write once the resize pauses, not one per frame of it.
+            self.layout_save = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                let _ = this.update(cx, |workspace, _| workspace.save_layout());
+            }));
+        }
+    }
+
     fn render_layout(
         &self,
         layout: &Layout,
@@ -3894,9 +3960,15 @@ impl Workspace {
                         }),
                     );
                 let divider = if horizontal {
-                    divider.w(px(5.0)).h_full().cursor_col_resize()
+                    divider
+                        .w(px(DIVIDER_THICKNESS))
+                        .h_full()
+                        .cursor_col_resize()
                 } else {
-                    divider.h(px(5.0)).w_full().cursor_row_resize()
+                    divider
+                        .h(px(DIVIDER_THICKNESS))
+                        .w_full()
+                        .cursor_row_resize()
                 };
                 let mut first_path = path.clone();
                 first_path.push(false);
@@ -3931,7 +4003,7 @@ impl Workspace {
                                 first,
                                 first_path,
                                 if horizontal {
-                                    (width - 5.0).max(0.0) * *ratio
+                                    (width - DIVIDER_THICKNESS).max(0.0) * *ratio
                                 } else {
                                     width
                                 },
@@ -3952,12 +4024,13 @@ impl Workspace {
                                 second,
                                 second_path,
                                 if horizontal {
-                                    (width - 5.0).max(0.0) * (1.0 - *ratio)
+                                    (width - DIVIDER_THICKNESS).max(0.0) * (1.0 - *ratio)
                                 } else {
                                     width
                                 },
                                 if horizontal {
-                                    x + (width - 5.0).max(0.0) * *ratio + 5.0
+                                    x + (width - DIVIDER_THICKNESS).max(0.0) * *ratio
+                                        + DIVIDER_THICKNESS
                                 } else {
                                     x
                                 },
@@ -5457,6 +5530,7 @@ impl Render for Workspace {
                 self.finish_tab_drag(cx);
             }
         }
+        self.follow_pane_area(window, cx);
         // Every tab on screen needs a terminal before the panes are drawn: tabs restored
         // with the window, and tabs that were released while hidden.
         self.attach_shown_terminals(window, cx);

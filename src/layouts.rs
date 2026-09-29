@@ -1,6 +1,7 @@
 //! Durable per-project tabs and split geometry, independent of shell lifetimes.
 
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, HashSet, VecDeque},
     fs,
     fs::{File, OpenOptions},
@@ -197,7 +198,7 @@ impl Layout {
             } => match (first.unique(seen), second.unique(seen)) {
                 (Some(first), Some(second)) => Some(Self::Split {
                     axis,
-                    ratio: normalized_ratio(ratio),
+                    ratio: stored_ratio(ratio),
                     first: Box::new(first),
                     second: Box::new(second),
                 }),
@@ -218,6 +219,236 @@ fn normalized_ratio(ratio: f32) -> f32 {
     } else {
         default_ratio()
     }
+}
+
+/// Dragging keeps a divider inside `normalized_ratio`'s range, but a resize can leave a
+/// narrow locked pane in a wide window below it. A ratio in this wider range survives a
+/// restart; anything outside it is repaired as before.
+const MIN_KEPT_RATIO: f32 = 0.02;
+const MAX_KEPT_RATIO: f32 = 0.98;
+
+fn stored_ratio(ratio: f32) -> f32 {
+    if (MIN_KEPT_RATIO..=MAX_KEPT_RATIO).contains(&ratio) {
+        ratio
+    } else {
+        normalized_ratio(ratio)
+    }
+}
+
+/// Thickness of the divider between a split's children. The renderer takes it off the
+/// split's extent before sharing the rest by ratio, so pixel maths must do the same.
+pub const DIVIDER_THICKNESS: f32 = 5.0;
+
+/// The least a resize leaves a pane along an axis (unless it was already smaller).
+pub const MIN_PANE_EXTENT: f32 = 100.0;
+
+/// Pixel size of the area a split tree fills.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Extent {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Extent {
+    fn along(self, axis: Axis) -> f32 {
+        match axis {
+            Axis::SideBySide => self.width,
+            Axis::Stacked => self.height,
+        }
+    }
+
+    fn across(self, axis: Axis) -> f32 {
+        match axis {
+            Axis::SideBySide => self.height,
+            Axis::Stacked => self.width,
+        }
+    }
+
+    fn from_axis(axis: Axis, along: f32, across: f32) -> Self {
+        match axis {
+            Axis::SideBySide => Self {
+                width: along,
+                height: across,
+            },
+            Axis::Stacked => Self {
+                width: across,
+                height: along,
+            },
+        }
+    }
+}
+
+impl Layout {
+    /// Rewrites split ratios for the tree's area changing from `old` to `new` so locked
+    /// panes keep their pixel size and unlocked panes absorb the difference. Returns
+    /// whether any ratio changed.
+    ///
+    /// Along a split's axis a child holds its pixels when it is a locked pane, a split
+    /// along that axis whose children both hold theirs, or a split across it with a
+    /// locked pane inside (its children share that extent). A child that holds beside
+    /// one that does not keeps its pixels and the other absorbs the change; two that
+    /// hold, or two that do not, keep their ratio, as before. A locked pane with no
+    /// neighbour along an axis has nothing to trade with, so it follows the area there.
+    /// The one refinement is a locked pane beside a column that only holds because a
+    /// locked pane sits in it (a locked nav next to a region with a locked footer): both
+    /// cannot be kept, and the column gives way, so the pane beside it stays put.
+    /// When the side that gives would fall under `min_pane` the other shrinks by just
+    /// enough; if even that cannot fit both minimums the split stays proportional.
+    pub fn preserve_locked(
+        &mut self,
+        old: Extent,
+        new: Extent,
+        locked: &impl Fn(PaneId) -> bool,
+        min_pane: f32,
+    ) -> bool {
+        self.rebalance(old, new, locked, min_pane)
+    }
+
+    fn rebalance(
+        &mut self,
+        old: Extent,
+        new: Extent,
+        locked: &dyn Fn(PaneId) -> bool,
+        min_pane: f32,
+    ) -> bool {
+        let Self::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } = self
+        else {
+            return false;
+        };
+        if old == new {
+            return false;
+        }
+        let axis = *axis;
+        let available_old = old.along(axis) - DIVIDER_THICKNESS;
+        let available_new = new.along(axis) - DIVIDER_THICKNESS;
+        // Also rejects NaN.
+        if !(available_old > 0.0 && available_new > 0.0) {
+            return false;
+        }
+        let first_old = available_old * *ratio;
+        let second_old = available_old - first_old;
+        let mut changed = false;
+        let first_new = if available_old == available_new {
+            first_old
+        } else {
+            let kept_first = match first.grip(axis, locked).cmp(&second.grip(axis, locked)) {
+                Ordering::Greater => kept_extent(
+                    available_new,
+                    first_old,
+                    second_old,
+                    first.min_extent(axis, min_pane),
+                    second.min_extent(axis, min_pane),
+                ),
+                Ordering::Less => kept_extent(
+                    available_new,
+                    second_old,
+                    first_old,
+                    second.min_extent(axis, min_pane),
+                    first.min_extent(axis, min_pane),
+                )
+                .map(|kept| available_new - kept),
+                Ordering::Equal => None,
+            };
+            match kept_first {
+                Some(first_new) => {
+                    // The renderer applies the stored ratio, so continue from that.
+                    let next = (first_new / available_new).clamp(MIN_KEPT_RATIO, MAX_KEPT_RATIO);
+                    changed = next != *ratio;
+                    *ratio = next;
+                    available_new * next
+                }
+                None => available_new * *ratio,
+            }
+        };
+        let second_new = available_new - first_new;
+        let (across_old, across_new) = (old.across(axis), new.across(axis));
+        changed |= first.rebalance(
+            Extent::from_axis(axis, first_old, across_old),
+            Extent::from_axis(axis, first_new, across_new),
+            locked,
+            min_pane,
+        );
+        changed |= second.rebalance(
+            Extent::from_axis(axis, second_old, across_old),
+            Extent::from_axis(axis, second_new, across_new),
+            locked,
+            min_pane,
+        );
+        changed
+    }
+
+    /// How firmly this subtree holds its extent along `axis`.
+    fn grip(&self, axis: Axis, locked: &dyn Fn(PaneId) -> bool) -> Grip {
+        match self {
+            Self::Pane(id) if locked(*id) => Grip::Firm,
+            Self::Pane(_) => Grip::Loose,
+            Self::Split {
+                axis: own,
+                first,
+                second,
+                ..
+            } if *own == axis => first.grip(axis, locked).min(second.grip(axis, locked)),
+            Self::Split { first, second, .. } => {
+                if first.grip(axis, locked).max(second.grip(axis, locked)) == Grip::Loose {
+                    Grip::Loose
+                } else {
+                    Grip::Shared
+                }
+            }
+        }
+    }
+
+    /// The least this subtree needs along `axis`.
+    fn min_extent(&self, axis: Axis, min_pane: f32) -> f32 {
+        match self {
+            Self::Pane(_) => min_pane,
+            Self::Split {
+                axis: own,
+                first,
+                second,
+                ..
+            } if *own == axis => {
+                first.min_extent(axis, min_pane)
+                    + DIVIDER_THICKNESS
+                    + second.min_extent(axis, min_pane)
+            }
+            Self::Split { first, second, .. } => first
+                .min_extent(axis, min_pane)
+                .max(second.min_extent(axis, min_pane)),
+        }
+    }
+}
+
+/// How firmly a subtree holds its extent along an axis while its parent resizes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Grip {
+    /// Nothing locked pins it, so it can absorb a change.
+    Loose,
+    /// Pinned only because a locked pane inside shares the extent with its siblings.
+    Shared,
+    /// Locked panes, and only them, fill the extent, so it keeps its pixels.
+    Firm,
+}
+
+/// What the child that holds keeps of `available` pixels shared with a sibling that
+/// gives, or `None` when the two minimums do not fit and the split has to stay proportional.
+fn kept_extent(
+    available: f32,
+    kept: f32,
+    other: f32,
+    kept_min: f32,
+    other_min: f32,
+) -> Option<f32> {
+    // A child already under its minimum is not pushed back up, so growing never
+    // shrinks the rigid side.
+    let kept_floor = kept_min.min(kept);
+    let other_floor = other_min.min(other);
+    (available >= kept_floor + other_floor).then(|| kept.min(available - other_floor))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1538,6 +1769,28 @@ mod tests {
     }
 
     #[test]
+    fn ratios_a_resize_leaves_on_narrow_locked_panes_survive_a_restart() {
+        let directory = TestDirectory::new();
+        let mut layout = saved_layout();
+        if let Layout::Split { ratio, second, .. } = &mut layout.layout {
+            *ratio = 0.05;
+            if let Layout::Split { ratio, .. } = second.as_mut() {
+                *ratio = 0.97;
+            }
+        }
+        directory.store().save("project-narrow", &layout).unwrap();
+        let restored = directory.store().load("project-narrow").unwrap().unwrap();
+        assert_eq!(restored.layout.ratio_at(&[]), Some(0.05));
+        assert_eq!(restored.layout.ratio_at(&[true]), Some(0.97));
+        // Outside what a resize produces, and for dragging, the old range holds.
+        assert_eq!(stored_ratio(0.01), 0.1);
+        assert_eq!(stored_ratio(0.995), 0.9);
+        assert_eq!(stored_ratio(f32::NAN), 0.5);
+        assert!(layout.layout.set_ratio(&[], 0.05));
+        assert_eq!(layout.layout.ratio_at(&[]), Some(0.1));
+    }
+
+    #[test]
     fn unreasonable_layout_is_rejected_without_replacing_saved_state() {
         let directory = TestDirectory::new();
         let store = directory.store();
@@ -2017,5 +2270,436 @@ mod tests {
         let last = WindowFrame::opening(huge, display, 4);
         assert_eq!(last.x + last.width, display.x + display.width);
         assert_eq!(last.y + last.height, display.y + display.height);
+    }
+}
+
+#[cfg(test)]
+mod preserve_locked_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn area(width: f32, height: f32) -> Extent {
+        Extent { width, height }
+    }
+
+    fn pane(id: PaneId) -> Layout {
+        Layout::Pane(id)
+    }
+
+    fn split(axis: Axis, ratio: f32, first: Layout, second: Layout) -> Layout {
+        Layout::Split {
+            axis,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    fn side(ratio: f32, first: Layout, second: Layout) -> Layout {
+        split(Axis::SideBySide, ratio, first, second)
+    }
+
+    fn stack(ratio: f32, first: Layout, second: Layout) -> Layout {
+        split(Axis::Stacked, ratio, first, second)
+    }
+
+    /// The ratio that gives a split's first child `pixels` of `total` along its axis.
+    fn ratio_of(pixels: f32, total: f32) -> f32 {
+        pixels / (total - DIVIDER_THICKNESS)
+    }
+
+    /// Every pane's pixel size, laid out the way the renderer does it.
+    fn sizes(layout: &Layout, area: Extent) -> BTreeMap<PaneId, Extent> {
+        fn walk(layout: &Layout, area: Extent, out: &mut BTreeMap<PaneId, Extent>) {
+            match layout {
+                Layout::Pane(id) => {
+                    out.insert(*id, area);
+                }
+                Layout::Split {
+                    axis,
+                    ratio,
+                    first,
+                    second,
+                } => {
+                    let available = area.along(*axis) - DIVIDER_THICKNESS;
+                    let first_along = available * ratio;
+                    let across = area.across(*axis);
+                    walk(first, Extent::from_axis(*axis, first_along, across), out);
+                    walk(
+                        second,
+                        Extent::from_axis(*axis, available - first_along, across),
+                        out,
+                    );
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(layout, area, &mut out);
+        out
+    }
+
+    fn resize(layout: &mut Layout, old: Extent, new: Extent, locked: &[PaneId]) -> bool {
+        layout.preserve_locked(old, new, &|id| locked.contains(&id), MIN_PANE_EXTENT)
+    }
+
+    fn assert_size(sizes: &BTreeMap<PaneId, Extent>, id: PaneId, width: f32, height: f32) {
+        let actual = sizes[&id];
+        assert!(
+            (actual.width - width).abs() < 0.01 && (actual.height - height).abs() < 0.01,
+            "pane {id}: {}x{} but wanted {width}x{height}",
+            actual.width,
+            actual.height,
+        );
+    }
+
+    #[test]
+    fn a_locked_left_nav_keeps_its_width_and_its_height_follows_the_window() {
+        let start = area(1200.0, 800.0);
+        let mut layout = side(
+            ratio_of(260.0, 1200.0),
+            pane(1),
+            stack(0.5, pane(2), pane(3)),
+        );
+        let mut current = start;
+        for next in [
+            area(1600.0, 900.0),
+            area(900.0, 700.0),
+            area(900.0, 500.0),
+            start,
+        ] {
+            resize(&mut layout, current, next, &[1]);
+            current = next;
+            let panes = sizes(&layout, next);
+            // The nav has no vertical neighbour, so it spans the window's height.
+            assert_size(&panes, 1, 260.0, next.height);
+            let right = next.width - 260.0 - DIVIDER_THICKNESS;
+            let each = (next.height - DIVIDER_THICKNESS) / 2.0;
+            assert_size(&panes, 2, right, each);
+            assert_size(&panes, 3, right, each);
+        }
+    }
+
+    #[test]
+    fn a_locked_pane_with_neighbours_on_both_axes_keeps_width_and_height() {
+        let start = area(1200.0, 800.0);
+        // Column of 695 x (595 | 200), the locked pane at the bottom right.
+        let mut layout = side(
+            ratio_of(500.0, 1200.0),
+            pane(1),
+            stack(ratio_of(595.0, 800.0), pane(2), pane(3)),
+        );
+        let mut current = start;
+        for next in [
+            area(1500.0, 1000.0),
+            area(900.0, 600.0),
+            area(1100.0, 900.0),
+        ] {
+            resize(&mut layout, current, next, &[3]);
+            current = next;
+            let panes = sizes(&layout, next);
+            assert_size(&panes, 3, 695.0, 200.0);
+            // Unlocked panes take up the difference on each axis.
+            assert_size(
+                &panes,
+                1,
+                next.width - 695.0 - DIVIDER_THICKNESS,
+                next.height,
+            );
+            assert_size(&panes, 2, 695.0, next.height - 200.0 - DIVIDER_THICKNESS);
+        }
+    }
+
+    #[test]
+    fn a_locked_pane_that_is_alone_along_an_axis_follows_that_axis() {
+        let start = area(1200.0, 800.0);
+        // A locked top bar spans the whole width but has a pane below it.
+        let mut layout = stack(ratio_of(120.0, 800.0), pane(1), side(0.5, pane(2), pane(3)));
+        let next = area(1500.0, 700.0);
+        assert!(resize(&mut layout, start, next, &[1]));
+        let panes = sizes(&layout, next);
+        assert_size(&panes, 1, 1500.0, 120.0);
+        let below = 700.0 - 120.0 - DIVIDER_THICKNESS;
+        assert_size(&panes, 2, (1500.0 - DIVIDER_THICKNESS) / 2.0, below);
+        assert_size(&panes, 3, (1500.0 - DIVIDER_THICKNESS) / 2.0, below);
+
+        // With nothing beside or below it, a locked pane fills the window both ways.
+        let mut only = pane(1);
+        assert!(!resize(&mut only, start, next, &[1]));
+        assert_eq!(only, pane(1));
+    }
+
+    #[test]
+    fn a_locked_footer_keeps_its_height_and_its_width_follows() {
+        let start = area(1200.0, 800.0);
+        let mut layout = stack(ratio_of(560.0, 800.0), pane(1), pane(2));
+        let next = area(1000.0, 1000.0);
+        resize(&mut layout, start, next, &[2]);
+        let panes = sizes(&layout, next);
+        assert_size(&panes, 2, 1000.0, 800.0 - 560.0 - DIVIDER_THICKNESS);
+        assert_size(&panes, 1, 1000.0, 1000.0 - 235.0 - DIVIDER_THICKNESS);
+    }
+
+    #[test]
+    fn a_column_holding_a_locked_pane_keeps_its_width() {
+        let start = area(1200.0, 800.0);
+        // Locked nav above unlocked files in one column, a terminal beside it.
+        let mut layout = side(
+            ratio_of(260.0, 1200.0),
+            stack(ratio_of(300.0, 800.0), pane(1), pane(2)),
+            pane(3),
+        );
+        let next = area(1500.0, 1000.0);
+        resize(&mut layout, start, next, &[1]);
+        let panes = sizes(&layout, next);
+        assert_size(&panes, 1, 260.0, 300.0);
+        assert_size(&panes, 2, 260.0, 1000.0 - 300.0 - DIVIDER_THICKNESS);
+        assert_size(&panes, 3, 1500.0 - 260.0 - DIVIDER_THICKNESS, 1000.0);
+    }
+
+    #[test]
+    fn two_locked_or_two_unlocked_children_stay_proportional() {
+        let start = area(1200.0, 800.0);
+        let next = area(1800.0, 500.0);
+        for locked in [&[1, 2][..], &[][..]] {
+            let mut layout = side(0.3, pane(1), pane(2));
+            assert!(!resize(&mut layout, start, next, locked));
+            assert_eq!(layout.ratio_at(&[]), Some(0.3));
+            let panes = sizes(&layout, next);
+            let left = (1800.0 - DIVIDER_THICKNESS) * 0.3;
+            assert_size(&panes, 1, left, 500.0);
+            assert_size(&panes, 2, 1800.0 - left - DIVIDER_THICKNESS, 500.0);
+        }
+        // Nothing locked anywhere: the whole tree is left exactly as it was.
+        let mut tree = side(
+            0.3,
+            pane(1),
+            stack(0.6, pane(2), side(0.4, pane(3), pane(4))),
+        );
+        let before = tree.clone();
+        assert!(!resize(&mut tree, start, next, &[]));
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn a_split_of_only_locked_panes_behaves_as_one_locked_pane() {
+        let start = area(1200.0, 800.0);
+        let next = area(1600.0, 800.0);
+        // Panes 1 and 2 are locked, side by side, next to unlocked pane 3.
+        let mut layout = side(
+            ratio_of(500.0, 1200.0),
+            side(0.4, pane(1), pane(2)),
+            pane(3),
+        );
+        resize(&mut layout, start, next, &[1, 2]);
+        let panes = sizes(&layout, next);
+        assert_size(&panes, 1, (500.0 - DIVIDER_THICKNESS) * 0.4, 800.0);
+        assert_size(&panes, 2, (500.0 - DIVIDER_THICKNESS) * 0.6, 800.0);
+        assert_size(&panes, 3, 1600.0 - 500.0 - DIVIDER_THICKNESS, 800.0);
+
+        // With one of them unlocked the pair can give, so the root stays proportional
+        // and the locked pane holds its width inside the pair.
+        let mut layout = side(
+            ratio_of(500.0, 1200.0),
+            side(0.4, pane(1), pane(2)),
+            pane(3),
+        );
+        resize(&mut layout, start, next, &[1]);
+        let panes = sizes(&layout, next);
+        assert_eq!(layout.ratio_at(&[]), Some(ratio_of(500.0, 1200.0)));
+        let pair = (1600.0 - DIVIDER_THICKNESS) * ratio_of(500.0, 1200.0);
+        assert_size(&panes, 1, (500.0 - DIVIDER_THICKNESS) * 0.4, 800.0);
+        assert_size(
+            &panes,
+            2,
+            pair - (500.0 - DIVIDER_THICKNESS) * 0.4 - DIVIDER_THICKNESS,
+            800.0,
+        );
+    }
+
+    #[test]
+    fn a_small_window_takes_from_the_locked_pane_only_as_far_as_it_must() {
+        let start = area(1200.0, 800.0);
+        let mut layout = side(ratio_of(260.0, 1200.0), pane(1), pane(2));
+        let narrow = area(300.0, 800.0);
+        resize(&mut layout, start, narrow, &[1]);
+        let panes = sizes(&layout, narrow);
+        assert_size(&panes, 2, MIN_PANE_EXTENT, 800.0);
+        assert_size(
+            &panes,
+            1,
+            300.0 - MIN_PANE_EXTENT - DIVIDER_THICKNESS,
+            800.0,
+        );
+
+        // Growing again gives the extra to the unlocked pane.
+        let wide = area(1000.0, 800.0);
+        resize(&mut layout, narrow, wide, &[1]);
+        let panes = sizes(&layout, wide);
+        assert_size(&panes, 1, 195.0, 800.0);
+        assert_size(&panes, 2, 1000.0 - 195.0 - DIVIDER_THICKNESS, 800.0);
+
+        // A flexible side made of two panes needs room for both.
+        let mut layout = side(
+            ratio_of(260.0, 1200.0),
+            pane(1),
+            side(0.5, pane(2), pane(3)),
+        );
+        let narrow = area(400.0, 800.0);
+        resize(&mut layout, start, narrow, &[1]);
+        let panes = sizes(&layout, narrow);
+        let needed = 2.0 * MIN_PANE_EXTENT + DIVIDER_THICKNESS;
+        assert_size(&panes, 1, 400.0 - needed - DIVIDER_THICKNESS, 800.0);
+        assert_size(&panes, 2, MIN_PANE_EXTENT, 800.0);
+        assert_size(&panes, 3, MIN_PANE_EXTENT, 800.0);
+    }
+
+    #[test]
+    fn a_window_too_small_for_every_minimum_stays_proportional() {
+        let start = area(1200.0, 800.0);
+        let mut layout = side(
+            ratio_of(260.0, 1200.0),
+            pane(1),
+            side(0.5, pane(2), pane(3)),
+        );
+        let before = layout.clone();
+        assert!(!resize(&mut layout, start, area(250.0, 800.0), &[1]));
+        assert_eq!(layout, before);
+    }
+
+    #[test]
+    fn a_pane_already_under_the_minimum_is_not_pushed_back_up() {
+        // The unlocked pane starts at 95 pixels, under the 100 pixel minimum.
+        let start = area(360.0, 800.0);
+        let base = side(ratio_of(260.0, 360.0), pane(1), pane(2));
+
+        let mut layout = base.clone();
+        let wider = area(400.0, 800.0);
+        resize(&mut layout, start, wider, &[1]);
+        let panes = sizes(&layout, wider);
+        assert_size(&panes, 1, 260.0, 800.0);
+        assert_size(&panes, 2, 135.0, 800.0);
+
+        let mut layout = base;
+        let narrower = area(350.0, 800.0);
+        resize(&mut layout, start, narrower, &[1]);
+        let panes = sizes(&layout, narrower);
+        assert_size(&panes, 2, 95.0, 800.0);
+        assert_size(&panes, 1, 250.0, 800.0);
+    }
+
+    #[test]
+    fn a_locked_nav_beside_a_locked_footer_keeps_its_width_and_the_footer_follows() {
+        let start = area(1200.0, 800.0);
+        // Locked nav | (editor over a locked footer that spans the region's width).
+        let fresh = || {
+            side(
+                ratio_of(260.0, 1200.0),
+                pane(1),
+                stack(ratio_of(560.0, 800.0), pane(2), pane(3)),
+            )
+        };
+        for next in [area(1600.0, 1000.0), area(800.0, 600.0)] {
+            let mut layout = fresh();
+            resize(&mut layout, start, next, &[1, 3]);
+            let panes = sizes(&layout, next);
+            let region = next.width - 260.0 - DIVIDER_THICKNESS;
+            assert_size(&panes, 1, 260.0, next.height);
+            assert_size(&panes, 3, region, 235.0);
+            assert_size(&panes, 2, region, next.height - 235.0 - DIVIDER_THICKNESS);
+        }
+    }
+
+    #[test]
+    fn resizing_back_and_forth_returns_to_the_same_ratios() {
+        // A locked nav, then a region with a locked footer over an unlocked pane and a
+        // locked side pane, so three levels of splits each rebalance.
+        let start = area(1400.0, 900.0);
+        let mut layout = side(
+            ratio_of(260.0, 1400.0),
+            pane(1),
+            stack(
+                ratio_of(715.0, 900.0),
+                side(ratio_of(830.0, 1135.0), pane(2), pane(4)),
+                pane(3),
+            ),
+        );
+        let original = layout.clone();
+        let locked = [1, 3, 4];
+        let route = [area(1900.0, 1100.0), area(1000.0, 700.0), start];
+
+        let mut once = layout.clone();
+        assert!(resize(&mut once, start, route[0], &locked));
+        let panes = sizes(&once, route[0]);
+        assert_size(&panes, 1, 260.0, 1100.0);
+        assert_size(&panes, 4, 300.0, 1100.0 - 180.0 - DIVIDER_THICKNESS);
+        assert_size(&panes, 3, 1900.0 - 260.0 - DIVIDER_THICKNESS, 180.0);
+        assert_ne!(once.ratio_at(&[]), original.ratio_at(&[]));
+        assert_ne!(once.ratio_at(&[true]), original.ratio_at(&[true]));
+        assert_ne!(
+            once.ratio_at(&[true, false]),
+            original.ratio_at(&[true, false])
+        );
+
+        let mut current = start;
+        for _ in 0..100 {
+            for next in route {
+                resize(&mut layout, current, next, &locked);
+                current = next;
+            }
+        }
+        for path in [&[][..], &[true], &[true, false]] {
+            let drift = (layout.ratio_at(path).unwrap() - original.ratio_at(path).unwrap()).abs();
+            assert!(drift < 1e-4, "{path:?} drifted by {drift}");
+        }
+        let panes = sizes(&layout, start);
+        let before = sizes(&original, start);
+        for id in 1..=4 {
+            let (now, was) = (panes[&id], before[&id]);
+            assert!(
+                (now.width - was.width).abs() < 0.1 && (now.height - was.height).abs() < 0.1,
+                "pane {id} moved from {was:?} to {now:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_real_changes_are_reported() {
+        let start = area(1200.0, 800.0);
+        let mut layout = side(ratio_of(260.0, 1200.0), pane(1), pane(2));
+        assert!(!resize(&mut layout, start, start, &[1]));
+        // Only the height changed: the nav already spans it, so no ratio moves.
+        assert!(!resize(&mut layout, start, area(1200.0, 900.0), &[1]));
+        assert!(resize(&mut layout, start, area(1300.0, 800.0), &[1]));
+        // Nothing is locked: today's proportional behaviour, nothing rewritten.
+        let mut plain = side(0.4, pane(1), pane(2));
+        assert!(!resize(&mut plain, start, area(1300.0, 900.0), &[]));
+    }
+
+    #[test]
+    fn unusable_sizes_leave_the_layout_alone() {
+        let start = area(1200.0, 800.0);
+        let base = side(ratio_of(260.0, 1200.0), pane(1), pane(2));
+        for bad in [
+            area(3.0, 800.0),
+            area(0.0, 0.0),
+            area(f32::NAN, 800.0),
+            area(-50.0, 800.0),
+        ] {
+            let mut layout = base.clone();
+            assert!(!resize(&mut layout, start, bad, &[1]));
+            assert!(!resize(&mut layout, bad, start, &[1]));
+            assert_eq!(layout, base);
+        }
+    }
+
+    #[test]
+    fn a_narrow_locked_pane_in_a_wide_window_may_go_below_the_drag_limit() {
+        let start = area(1200.0, 800.0);
+        let mut layout = side(ratio_of(260.0, 1200.0), pane(1), pane(2));
+        let ultrawide = area(5000.0, 800.0);
+        resize(&mut layout, start, ultrawide, &[1]);
+        let ratio = layout.ratio_at(&[]).unwrap();
+        assert!((MIN_KEPT_RATIO..0.1).contains(&ratio), "{ratio}");
+        assert_size(&sizes(&layout, ultrawide), 1, 260.0, 800.0);
     }
 }
