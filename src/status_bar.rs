@@ -2,11 +2,14 @@
 
 use std::collections::HashSet;
 
-use gpui::{AnyElement, Context, IntoElement, Render, Window, div, prelude::*, px, rgb};
+use gpui::{AnyElement, Context, IntoElement, Window, div, prelude::*, px, rgb};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::theme::{self, Palette};
+use crate::{
+    theme::{self, Palette},
+    tooltip::{self, Look},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -422,7 +425,7 @@ fn render_item<V: 'static>(
                         .text_ellipsis()
                         .child(item.kind.label()),
                 )
-                .tooltip(move |_, cx| cx.new(|_| StatusTooltip(item.kind.description())).into())
+                .child(tooltip::anchor(item.kind.description(), Look::Status))
                 .on_click(cx.listener(move |view, _, window, cx| {
                     let mut next = toggle_settings.clone();
                     next.set_visible(item.kind, !item.enabled);
@@ -446,16 +449,14 @@ fn render_item<V: 'static>(
                 }))
                 .hover(|style| style.border_color(rgb(colors.cyan)))
                 .child(item.side.label())
-                .tooltip(move |_, cx| {
-                    cx.new(|_| {
-                        StatusTooltip(if item.side == StatusSide::Left {
-                            "Move to the right side"
-                        } else {
-                            "Move to the left side"
-                        })
-                    })
-                    .into()
-                })
+                .child(tooltip::anchor(
+                    if item.side == StatusSide::Left {
+                        "Move to the right side"
+                    } else {
+                        "Move to the left side"
+                    },
+                    Look::Status,
+                ))
                 .on_click(cx.listener(move |view, _, window, cx| {
                     let mut next = route_settings.clone();
                     next.set_side(item.kind, item.side.opposite());
@@ -511,16 +512,14 @@ fn move_button<V: 'static>(
                 .hover(|style| style.bg(rgb(colors.divider)))
         })
         .child(if up { "↑" } else { "↓" })
-        .tooltip(move |_, cx| {
-            cx.new(|_| {
-                StatusTooltip(if up {
-                    "Move earlier on this side"
-                } else {
-                    "Move later on this side"
-                })
-            })
-            .into()
-        })
+        .child(tooltip::anchor(
+            if up {
+                "Move earlier on this side"
+            } else {
+                "Move later on this side"
+            },
+            Look::Status,
+        ))
         .on_click(cx.listener(move |view, _, window, cx| {
             if enabled {
                 let mut next = settings.clone();
@@ -545,22 +544,6 @@ fn check_box(enabled: bool, colors: Palette) -> AnyElement {
         .text_color(rgb(colors.cyan))
         .child(if enabled { "✓" } else { "" })
         .into_any_element()
-}
-
-struct StatusTooltip(&'static str);
-impl Render for StatusTooltip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme::palette(cx);
-        div()
-            .px(px(8.0))
-            .py(px(6.0))
-            .bg(rgb(colors.panel_active))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .text_size(px(10.0))
-            .text_color(rgb(colors.text))
-            .child(self.0)
-    }
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ use crate::{
     sessions::{SessionMetrics, ShellKind, ShellSession},
     store::{State, TaskStatus},
     theme::{self, Palette},
+    tooltip::{self, Look},
 };
 
 #[derive(Clone)]
@@ -1107,7 +1108,7 @@ fn project_header_button<V: 'static>(
                     .w(px(28.0))
                     .justify_center()
                     .child(icons::icon(Icon::Action(glyph), color))
-                    .tooltip(move |_, cx| cx.new(|_| ControlTooltip(tooltip)).into())
+                    .child(tooltip::anchor(tooltip, Look::Control))
             } else {
                 button.px(px(pad)).child(label)
             }
@@ -1165,10 +1166,10 @@ fn project_sort_controls<V: 'static>(
                     .inset_0(),
                 )
                 .when(!open, |control| {
-                    control.tooltip(|_, cx| {
-                        cx.new(|_| ControlTooltip("Sort projects within each folder"))
-                            .into()
-                    })
+                    control.child(tooltip::anchor(
+                        "Sort projects within each folder",
+                        Look::Control,
+                    ))
                 })
                 .on_click(cx.listener(move |view, _, window, cx| {
                     choose(view, PanelAction::ToggleProjectSortMenu, window, cx);
@@ -1187,9 +1188,7 @@ fn project_sort_controls<V: 'static>(
                 .hover(|style| style.bg(rgb(colors.panel_active)))
                 .child(if order.descending { "↓" } else { "↑" })
                 .when(!open, |control| {
-                    control.tooltip(move |_, cx| {
-                        cx.new(|_| ControlTooltip(order.direction_label())).into()
-                    })
+                    control.child(tooltip::anchor(order.direction_label(), Look::Control))
                 })
                 .on_click(cx.listener(move |view, _, window, cx| {
                     on_action(
@@ -1276,23 +1275,6 @@ fn project_sort_menu<V: 'static>(
         .into_any_element()
 }
 
-pub(crate) struct ControlTooltip(pub(crate) &'static str);
-impl Render for ControlTooltip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme::palette(cx);
-        div()
-            .px(px(8.0))
-            .py(px(5.0))
-            .bg(rgb(colors.panel_active))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .text_color(rgb(colors.text))
-            .font_family("Menlo")
-            .text_size(px(10.0))
-            .child(self.0)
-    }
-}
-
 fn project_control<V: 'static>(
     project_id: &str,
     name: &str,
@@ -1319,7 +1301,7 @@ fn project_control<V: 'static>(
                 .text_color(rgb(colors.magenta))
         })
         .child(mark)
-        .tooltip(move |_, cx| cx.new(|_| ControlTooltip(tooltip)).into())
+        .child(tooltip::anchor(tooltip, Look::Control))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(move |view, _, window, cx| {
             cx.stop_propagation();
@@ -1350,16 +1332,14 @@ fn project_notification_control<V: 'static>(
             if enabled { Icon::Bell } else { Icon::BellOff },
             if enabled { colors.cyan } else { colors.muted },
         ))
-        .tooltip(move |_, cx| {
-            cx.new(|_| {
-                ControlTooltip(if enabled {
-                    "Agent completion notifications on · click to disable"
-                } else {
-                    "Agent completion notifications off · click to enable"
-                })
-            })
-            .into()
-        })
+        .child(tooltip::anchor(
+            if enabled {
+                "Agent completion notifications on · click to disable"
+            } else {
+                "Agent completion notifications off · click to enable"
+            },
+            Look::Control,
+        ))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(move |view, _, window, cx| {
             cx.stop_propagation();
@@ -1475,16 +1455,14 @@ fn folder_header<V: 'static>(
                 cx,
             )
         }))
-        .tooltip(move |_, cx| {
-            cx.new(|_| {
-                ControlTooltip(if editable {
-                    "Drag this folder to move it; drop projects or folders here"
-                } else {
-                    "Drop projects here to unfile them, or folders to move them to the root"
-                })
-            })
-            .into()
-        })
+        .child(tooltip::anchor(
+            if editable {
+                "Drag this folder to move it; drop projects or folders here"
+            } else {
+                "Drop projects here to unfile them, or folders to move them to the root"
+            },
+            Look::Control,
+        ))
         .on_click(cx.listener(move |view, _, window, cx| {
             toggle_action(
                 view,

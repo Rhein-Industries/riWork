@@ -26,7 +26,9 @@ use crate::{
     file_preview::{self, FileIdentity, PreviewContent},
     icons::{self, ActionGlyph, Icon},
     settings::Settings,
-    theme, utf16_to_byte,
+    theme,
+    tooltip::{self, Look},
+    utf16_to_byte,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1667,9 +1669,7 @@ impl FileExplorer {
             Face::Text(label) => {
                 let button = button.px(px(7.0)).py(px(5.0)).child(label.to_owned());
                 match explanation {
-                    Some(text) => {
-                        button.tooltip(move |_, cx| cx.new(|_| ExplorerTooltip(text.into())).into())
-                    }
+                    Some(text) => button.child(tooltip::anchor(text, Look::Control)),
                     None => button,
                 }
             }
@@ -1680,7 +1680,7 @@ impl FileExplorer {
                 button
                     .size(px(24.0))
                     .child(icons::icon(Icon::Action(glyph), color))
-                    .tooltip(move |_, cx| cx.new(|_| ExplorerTooltip(tooltip.clone())).into())
+                    .child(tooltip::anchor(tooltip, Look::Control))
             }
         };
         button
@@ -2208,23 +2208,6 @@ enum Face<'a> {
     Text(&'a str),
     /// A glyph in the text colour; the name and hint move to the tooltip.
     Glyph(ActionGlyph, &'static str),
-}
-
-struct ExplorerTooltip(SharedString);
-impl Render for ExplorerTooltip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme::palette(cx);
-        div()
-            .px(px(8.0))
-            .py(px(5.0))
-            .bg(rgb(colors.panel_active))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .text_color(rgb(colors.text))
-            .font_family("Menlo")
-            .text_size(px(10.0))
-            .child(self.0.clone())
-    }
 }
 
 impl Render for FileExplorer {
