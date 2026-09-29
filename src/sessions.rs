@@ -1390,12 +1390,16 @@ impl SessionManager {
         };
         let mut command = match harness {
             Some(harness) => {
-                cua.driver_path()?;
                 let program = find_harness_program(harness, &shim_directory).ok_or_else(|| {
                     format!("{} is not installed or is not on PATH", harness.program())
                 })?;
                 if harness == HarnessKind::Grok {
+                    // The driver's start can outlast Grok's 30-second MCP limit,
+                    // so it finishes before Grok is created.
+                    cua.prepare_for_grok()?;
                     ensure_grok_agent(&self.home, &executable)?;
+                } else {
+                    cua.driver_path()?;
                 }
                 Some(harness_command(
                     harness,
@@ -1480,6 +1484,18 @@ impl SessionManager {
             args.push("-e".to_owned());
             args.push(format!("RIWORK_CUA_DRIVER={}", driver.to_string_lossy()));
         }
+        // The tmux server does not inherit this client's environment, so Grok's
+        // timeout has to be named on the pane. A value the user already set is
+        // forwarded unchanged.
+        let grok_timeouts = if harness == Some(HarnessKind::Grok) {
+            grok_mcp_timeout_from_process()
+        } else {
+            Vec::new()
+        };
+        for (name, value) in &grok_timeouts {
+            args.push("-e".to_owned());
+            args.push(format!("{name}={value}"));
+        }
         if let Some(command) = &command {
             if command.trim().is_empty() {
                 return Err("shell command cannot be empty".to_owned());
@@ -1492,6 +1508,13 @@ impl SessionManager {
         let mut absent = stale_profile_variables(&profile_locations);
         if cua_driver.is_none() {
             absent.push("RIWORK_CUA_DRIVER");
+        }
+        if harness == Some(HarnessKind::Grok) {
+            for name in ["GROK_MCP_STARTUP_TIMEOUT_SECS", "MCP_TIMEOUT"] {
+                if !grok_timeouts.iter().any(|(key, _)| *key == name) {
+                    absent.push(name);
+                }
+            }
         }
         // history-limit applies only to panes created afterwards, so it is set
         // in the same tmux invocation, ahead of the session's first pane.
@@ -2266,10 +2289,11 @@ fn grok_agent_path(state_home: &Path, executable: &Path, custom_driver: Option<&
 /// Grok's active agent can supply an MCP server for this session. An agent
 /// definition in RiWork state avoids modifying the user's Grok config or the
 /// project repository, while its ordinary config and login remain available.
-/// Grok documents `startup_timeout_sec` only for `config.toml` servers, and
-/// `GROK_MCP_STARTUP_TIMEOUT_SECS` for all of them; agent frontmatter has no
-/// documented timeout field, so cua-driver keeps Grok's default of 30 seconds
-/// here rather than getting the 120 Codex is given.
+/// Grok documents `startup_timeout_sec` for `config.toml` servers. Adding it
+/// to this frontmatter does not change the handshake limit, so the definition
+/// leaves the timeout unset. Launch code raises the default with
+/// `GROK_MCP_STARTUP_TIMEOUT_SECS` when the user has not set that or
+/// `MCP_TIMEOUT`.
 fn grok_agent_definition(
     executable: &Path,
     state_home: &Path,
@@ -2302,6 +2326,65 @@ fn grok_agent_definition(
         toml_string(&state_home.to_string_lossy()),
         custom_driver,
         CUA_GUIDANCE
+    )
+}
+
+/// Seconds, matching the startup budget Codex receives. Grok's own default is 30.
+const GROK_MCP_STARTUP_BUDGET_SECS: &str = "120";
+
+/// How a documented Grok timeout variable is present in this process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum EnvText {
+    Absent,
+    Value(String),
+    /// Set, but not valid UTF-8, so it cannot be forwarded through tmux.
+    Unreadable,
+}
+
+fn env_text(name: &str) -> EnvText {
+    match env::var_os(name) {
+        None => EnvText::Absent,
+        Some(value) if value.is_empty() => EnvText::Absent,
+        Some(value) => match value.into_string() {
+            Ok(text) => EnvText::Value(text),
+            Err(_) => EnvText::Unreadable,
+        },
+    }
+}
+
+/// Environment for a RiWork-launched Grok. `MCP_TIMEOUT` (milliseconds) is
+/// Grok's overriding default when both it and `GROK_MCP_STARTUP_TIMEOUT_SECS`
+/// are set, so a user value is passed through and the 120-second budget is
+/// added only when neither is set. A per-server `startup_timeout_sec` in the
+/// user's config still wins inside Grok; this does not write that config.
+fn grok_mcp_timeout_environment(
+    startup: EnvText,
+    mcp_timeout: EnvText,
+) -> Vec<(&'static str, String)> {
+    let mut variables = Vec::new();
+    let mcp_set = matches!(mcp_timeout, EnvText::Value(_) | EnvText::Unreadable);
+    match startup {
+        EnvText::Value(value) => {
+            variables.push(("GROK_MCP_STARTUP_TIMEOUT_SECS", value));
+        }
+        EnvText::Absent if !mcp_set => {
+            variables.push((
+                "GROK_MCP_STARTUP_TIMEOUT_SECS",
+                GROK_MCP_STARTUP_BUDGET_SECS.to_owned(),
+            ));
+        }
+        EnvText::Absent | EnvText::Unreadable => {}
+    }
+    if let EnvText::Value(value) = mcp_timeout {
+        variables.push(("MCP_TIMEOUT", value));
+    }
+    variables
+}
+
+fn grok_mcp_timeout_from_process() -> Vec<(&'static str, String)> {
+    grok_mcp_timeout_environment(
+        env_text("GROK_MCP_STARTUP_TIMEOUT_SECS"),
+        env_text("MCP_TIMEOUT"),
     )
 }
 
@@ -3371,9 +3454,14 @@ pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(),
     })?;
     let mut command = Command::new(program);
     if !harness_utility_invocation(harness, arguments) {
-        cua.driver_path()?;
         if harness == HarnessKind::Grok {
+            cua.prepare_for_grok()?;
             ensure_grok_agent(&home, &executable)?;
+            for (name, value) in grok_mcp_timeout_from_process() {
+                command.env(name, value);
+            }
+        } else {
+            cua.driver_path()?;
         }
     }
     let shell_id =
@@ -5315,6 +5403,246 @@ mod tests {
             toml_string(&home.to_string_lossy())
         )));
         assert!(definition.contains(CUA_GUIDANCE));
+        assert!(!definition.contains("startup_timeout"), "{definition}");
+    }
+
+    #[test]
+    fn grok_timeout_environment_uses_120_seconds_only_when_both_defaults_are_unset() {
+        assert_eq!(
+            grok_mcp_timeout_environment(EnvText::Absent, EnvText::Absent),
+            vec![(
+                "GROK_MCP_STARTUP_TIMEOUT_SECS",
+                GROK_MCP_STARTUP_BUDGET_SECS.to_owned()
+            )]
+        );
+        assert_eq!(
+            grok_mcp_timeout_environment(EnvText::Value("45".to_owned()), EnvText::Absent),
+            vec![("GROK_MCP_STARTUP_TIMEOUT_SECS", "45".to_owned())]
+        );
+        assert_eq!(
+            grok_mcp_timeout_environment(EnvText::Absent, EnvText::Value("15000".to_owned())),
+            vec![("MCP_TIMEOUT", "15000".to_owned())]
+        );
+        assert_eq!(
+            grok_mcp_timeout_environment(
+                EnvText::Value("45".to_owned()),
+                EnvText::Value("15000".to_owned())
+            ),
+            vec![
+                ("GROK_MCP_STARTUP_TIMEOUT_SECS", "45".to_owned()),
+                ("MCP_TIMEOUT", "15000".to_owned())
+            ]
+        );
+        // An unreadable value is already set, so it is left alone.
+        assert!(grok_mcp_timeout_environment(EnvText::Unreadable, EnvText::Absent).is_empty());
+        assert_eq!(
+            grok_mcp_timeout_environment(EnvText::Absent, EnvText::Unreadable),
+            Vec::<(&str, String)>::new()
+        );
+    }
+
+    #[cfg(unix)]
+    fn install_grok_preflight_driver(path: &Path, marker: &Path, calls: &Path, mode: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let script = r#"#!/usr/bin/python3
+import json, os, sys, time
+marker = "MARKER_PATH"
+calls = "CALLS_PATH"
+mode = "MODE"
+def note(action):
+    with open(calls, "a", encoding="utf-8") as handle:
+        handle.write(action + "\n")
+cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+note(cmd or "none")
+if cmd == "--version":
+    print("cua-driver test")
+elif cmd == "status":
+    if os.path.exists(marker):
+        print("Cua Driver daemon is running")
+        raise SystemExit(0)
+    raise SystemExit(1)
+elif cmd == "serve":
+    with open(marker, "w", encoding="utf-8") as handle:
+        handle.write(str(os.getpid()))
+    while True:
+        time.sleep(0.2)
+elif cmd == "mcp":
+    if mode == "fail":
+        print("socket refused", file=sys.stderr)
+        raise SystemExit(2)
+    for line in sys.stdin:
+        message = json.loads(line)
+        method = message.get("method")
+        if method == "initialize":
+            body = {"jsonrpc": "2.0", "id": message.get("id"), "result": {"capabilities": {"tools": {}}}}
+            print(json.dumps(body), flush=True)
+        elif method == "tools/list":
+            body = {"jsonrpc": "2.0", "id": message.get("id"), "result": {"tools": [{"name": "probe_tool"}]}}
+            print(json.dumps(body), flush=True)
+else:
+    raise SystemExit(99)
+"#;
+        let script = script
+            .replace("MARKER_PATH", &marker.display().to_string())
+            .replace("CALLS_PATH", &calls.display().to_string())
+            .replace("MODE", mode);
+        fs::write(path, script).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    struct StopPreflightDaemon(PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for StopPreflightDaemon {
+        fn drop(&mut self) {
+            let Ok(pid) = fs::read_to_string(&self.0) else {
+                return;
+            };
+            let pid = pid.trim();
+            if !pid.is_empty() {
+                let _ = Command::new("/bin/kill").args(["-9", pid]).status();
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn grok_launch_preflights_the_driver_and_sets_the_timeout_when_unset() {
+        const NAME: &str = "grok_launch_preflights_the_driver_and_sets_the_timeout_when_unset";
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child_with(
+            NAME,
+            &[
+                ("GROK_MCP_STARTUP_TIMEOUT_SECS", None),
+                ("MCP_TIMEOUT", None),
+            ],
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-a");
+        let (manager, capture) = recording_launcher(&fixture, &state);
+        executable_script(&fixture.0.join("bin/grok"), "exit 0");
+        let marker = fixture.0.join("daemon-pid");
+        let calls = fixture.0.join("driver-calls");
+        install_grok_preflight_driver(&fixture.0.join("fake-cua-driver"), &marker, &calls, "ready");
+        let _stop = StopPreflightDaemon(marker);
+        let cwd = fixture.0.join("grok-work");
+        fs::create_dir_all(&cwd).unwrap();
+        let session = manager
+            .create_harness(
+                Uuid::new_v4().to_string(),
+                None,
+                cwd,
+                HarnessKind::Grok,
+                false,
+            )
+            .unwrap();
+        assert_eq!(session.harness, Some(HarnessKind::Grok));
+        let command = session.command.unwrap();
+        assert!(command.contains("--agent"), "{command}");
+        assert!(!command.contains("startup_timeout"), "{command}");
+        let arguments = take_recorded(&capture);
+        assert!(contains_sequence(
+            &arguments,
+            &["-e", "GROK_MCP_STARTUP_TIMEOUT_SECS=120"]
+        ));
+        assert!(contains_sequence(
+            &arguments,
+            &[";", "set-environment", "-gu", "MCP_TIMEOUT"]
+        ));
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.contains("MCP_TIMEOUT="))
+        );
+        let calls = fs::read_to_string(&calls).unwrap();
+        assert!(calls.contains("serve\n"), "{calls}");
+        assert!(calls.contains("mcp\n"), "{calls}");
+        let agent = fs::read_dir(state.join("cua"))
+            .unwrap()
+            .flatten()
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("grok-agent-")
+            })
+            .unwrap()
+            .path();
+        let definition = fs::read_to_string(agent).unwrap();
+        assert!(definition.contains("name: cua-driver"), "{definition}");
+        assert!(!definition.contains("startup_timeout"), "{definition}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn grok_launch_forwards_a_user_timeout_and_refuses_to_start_when_mcp_fails() {
+        const NAME: &str =
+            "grok_launch_forwards_a_user_timeout_and_refuses_to_start_when_mcp_fails";
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child_with(
+            NAME,
+            &[
+                ("GROK_MCP_STARTUP_TIMEOUT_SECS", Some("45")),
+                ("MCP_TIMEOUT", Some("15000")),
+            ],
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-a");
+        let (manager, capture) = recording_launcher(&fixture, &state);
+        executable_script(&fixture.0.join("bin/grok"), "exit 0");
+        let cwd = fixture.0.join("grok-work");
+        fs::create_dir_all(&cwd).unwrap();
+        let marker = fixture.0.join("daemon-pid");
+        install_grok_preflight_driver(
+            &fixture.0.join("fake-cua-driver"),
+            &marker,
+            &fixture.0.join("driver-calls"),
+            "ready",
+        );
+        let _stop = StopPreflightDaemon(marker.clone());
+        manager
+            .create_harness(
+                Uuid::new_v4().to_string(),
+                None,
+                cwd.clone(),
+                HarnessKind::Grok,
+                false,
+            )
+            .unwrap();
+        let arguments = take_recorded(&capture);
+        assert!(contains_sequence(
+            &arguments,
+            &["-e", "GROK_MCP_STARTUP_TIMEOUT_SECS=45"]
+        ));
+        assert!(contains_sequence(&arguments, &["-e", "MCP_TIMEOUT=15000"]));
+        assert!(!arguments.iter().any(|argument| argument.contains("=120")));
+
+        install_grok_preflight_driver(
+            &fixture.0.join("fake-cua-driver"),
+            &marker,
+            &fixture.0.join("failed-calls"),
+            "fail",
+        );
+        let error = manager
+            .create_harness(
+                Uuid::new_v4().to_string(),
+                None,
+                cwd,
+                HarnessKind::Grok,
+                false,
+            )
+            .unwrap_err();
+        assert!(error.contains("socket refused"), "{error}");
+        assert!(error.contains("30 seconds"), "{error}");
+        assert!(error.contains("driver.log"), "{error}");
+        let recorded = fs::read_to_string(&capture).unwrap_or_default();
+        assert!(
+            !recorded.lines().any(|line| line == "new-session"),
+            "{recorded}"
+        );
     }
 
     #[test]

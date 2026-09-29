@@ -4,9 +4,10 @@ use std::{
     env,
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -33,6 +34,9 @@ const INSTALL_TERMINATE_GRACE: Duration = Duration::from_secs(10);
 const INSTALL_LOCK_STALE_AFTER: Duration = Duration::from_secs(600);
 const DAEMON_LOCK_WAIT: Duration = Duration::from_secs(5);
 const DAEMON_START_WAIT: Duration = Duration::from_secs(30);
+/// Bound for the preflight handshake. The desktop service is already up, so
+/// this only covers the MCP proxy, and it stays well under Grok's limits.
+const MCP_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const OUTPUT_LIMIT: u64 = 16 * 1024;
 const TIMED_OUT: &str = "Cua command timed out";
 
@@ -485,6 +489,43 @@ impl CuaManager {
         wait_for_daemon(&driver)
     }
 
+    /// Start the desktop service, if it is down, and complete an MCP handshake
+    /// before Grok is launched. Grok's own clock has not started yet. Closing
+    /// the probe's stdin ends the MCP proxy; this does not stop the service.
+    pub fn prepare_for_grok(&self) -> Result<(), String> {
+        self.prepare_for_grok_within(MCP_READY_TIMEOUT)
+    }
+
+    fn prepare_for_grok_within(&self, handshake_timeout: Duration) -> Result<(), String> {
+        let started = Instant::now();
+        let result = (|| {
+            let driver = self.trusted_driver()?;
+            self.ensure_started()?;
+            handshake_mcp(&driver, handshake_timeout)
+        })();
+        let log = self.home.join("cua/driver.log");
+        match result {
+            Ok(()) => {
+                self.record_driver_log(&format!(
+                    "Grok preflight ready in {:.1}s",
+                    started.elapsed().as_secs_f32()
+                ));
+                Ok(())
+            }
+            Err(cause) => {
+                let explained = explain_grok_preflight(&cause, started.elapsed(), &log);
+                self.record_driver_log(&explained);
+                Err(explained)
+            }
+        }
+    }
+
+    fn record_driver_log(&self, message: &str) {
+        if let Ok(mut log) = self.log_file("driver.log") {
+            let _ = writeln!(log, "riwork: {message}");
+        }
+    }
+
     /// Take the launch lock, or return `None` once another launcher's daemon is
     /// up. Agents spawned together against a cold daemon all arrive here; the
     /// losers wait for the winner instead of failing their required MCP server.
@@ -590,7 +631,9 @@ impl CuaManager {
         Ok(status)
     }
 
-    /// Keep stdout exclusively for the MCP protocol.
+    /// Keep stdout exclusively for the MCP protocol. Grok launches call
+    /// `prepare_for_grok` first, so this start is not racing Grok's 30-second
+    /// limit. Codex and a direct `riwork cua mcp` still start the service here.
     pub fn run_mcp(&self) -> Result<(), String> {
         self.ensure_started()?;
         let driver = self.trusted_driver()?;
@@ -926,6 +969,281 @@ fn wait_for_daemon(driver: &Path) -> Result<(), String> {
         "Cua Driver's desktop service did not start. Run `riwork cua status` and retry setup."
             .to_owned(),
     )
+}
+
+fn explain_grok_preflight(cause: &str, elapsed: Duration, log: &Path) -> String {
+    format!(
+        "{cause} RiWork starts Cua Driver and completes its MCP handshake before launching Grok, because Grok's default MCP startup limit is 30 seconds. This check took {:.1} seconds. Log: {}. Run `riwork cua status`.",
+        elapsed.as_secs_f32(),
+        log.display()
+    )
+}
+
+/// Speak the newline-delimited JSON-RPC that `cua-driver mcp` answers.
+/// `initialize` then `tools/list` is the same handshake Grok performs.
+fn handshake_mcp(driver: &Path, timeout: Duration) -> Result<(), String> {
+    let mut command = Command::new(driver);
+    command
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    detach_process(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Cannot start Cua Driver MCP handshake: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Cannot write to Cua Driver MCP".to_owned())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Cannot read Cua Driver MCP".to_owned())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Cannot read Cua Driver MCP errors".to_owned())?;
+    let stderr_text = collect_stderr(stderr);
+    let lines = spawn_stdout_lines(stdout);
+    let exchange = mcp_exchange(&mut child, stdin, &lines, timeout);
+    finish_mcp_child(&mut child);
+    let stderr_text = stderr_text
+        .recv_timeout(Duration::from_millis(200))
+        .unwrap_or_default();
+    exchange.map_err(|error| append_driver_stderr(error, &stderr_text))
+}
+
+fn mcp_exchange(
+    child: &mut Child,
+    mut stdin: ChildStdin,
+    lines: &mpsc::Receiver<std::io::Result<String>>,
+    timeout: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let result = (|| {
+        write_mcp(
+            &mut stdin,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "riwork", "version": "0" }
+                }
+            }),
+        )?;
+        let initialized = read_mcp_response(child, lines, started, timeout, 1)?;
+        if initialized.get("result").is_none() {
+            return Err("Cua Driver MCP answered initialize without a result".to_owned());
+        }
+        write_mcp(
+            &mut stdin,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }),
+        )?;
+        write_mcp(
+            &mut stdin,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {}
+            }),
+        )?;
+        let listed = read_mcp_response(child, lines, started, timeout, 2)?;
+        let tools = listed
+            .pointer("/result/tools")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "Cua Driver MCP answered tools/list without a tools array".to_owned())?;
+        if tools.is_empty() {
+            return Err("Cua Driver MCP answered tools/list with no tools".to_owned());
+        }
+        Ok(())
+    })();
+    // End of input asks the MCP proxy to exit. The desktop service stays up.
+    drop(stdin);
+    result
+}
+
+fn write_mcp(stdin: &mut ChildStdin, value: &Value) -> Result<(), String> {
+    let mut line = serde_json::to_string(value)
+        .map_err(|error| format!("Cannot encode Cua Driver MCP request: {error}"))?;
+    line.push('\n');
+    stdin
+        .write_all(line.as_bytes())
+        .map_err(|error| format!("Cannot write to Cua Driver MCP: {error}"))?;
+    stdin
+        .flush()
+        .map_err(|error| format!("Cannot write to Cua Driver MCP: {error}"))
+}
+
+fn read_mcp_response(
+    child: &mut Child,
+    lines: &mpsc::Receiver<std::io::Result<String>>,
+    started: Instant,
+    timeout: Duration,
+    id: i64,
+) -> Result<Value, String> {
+    let deadline = started + timeout;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "Cua Driver MCP did not answer request {id} within {:.1} seconds",
+                timeout.as_secs_f32()
+            ));
+        }
+        let incoming = match lines.try_recv() {
+            Ok(line) => Some(line),
+            Err(mpsc::TryRecvError::Empty) => match child.try_wait() {
+                Ok(Some(status)) => {
+                    thread::sleep(Duration::from_millis(30));
+                    match lines.try_recv() {
+                        Ok(line) => Some(line),
+                        Err(_) => {
+                            return Err(format!(
+                                "Cua Driver MCP exited before answering request {id} ({status})"
+                            ));
+                        }
+                    }
+                }
+                Ok(None) => {
+                    thread::sleep(Duration::from_millis(20));
+                    None
+                }
+                Err(error) => return Err(format!("Cannot wait for Cua Driver MCP: {error}")),
+            },
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(format!(
+                    "Cua Driver MCP closed its output before answering request {id}"
+                ));
+            }
+        };
+        if let Some(line) = incoming {
+            let line = line.map_err(|error| format!("Cannot read Cua Driver MCP: {error}"))?;
+            match mcp_message(line, id)? {
+                Some(value) => return Ok(value),
+                None => continue,
+            }
+        }
+    }
+}
+
+/// `Ok(None)` is a notification or a response for a different request.
+fn mcp_message(line: String, id: i64) -> Result<Option<Value>, String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(line).map_err(|error| {
+        format!(
+            "Cua Driver MCP sent non-JSON output ({error}): {}",
+            snippet(line)
+        )
+    })?;
+    if let Some(error) = value.get("error") {
+        let matches = value.get("id").and_then(Value::as_i64) == Some(id);
+        let unnamed = value.get("id").is_none_or(Value::is_null);
+        if matches || unnamed {
+            return Err(format!(
+                "Cua Driver MCP rejected request {id}: {}",
+                snippet(&error.to_string())
+            ));
+        }
+    }
+    if value.get("id").and_then(Value::as_i64) == Some(id) {
+        Ok(Some(value))
+    } else {
+        Ok(None)
+    }
+}
+
+fn spawn_stdout_lines(
+    stdout: impl Read + Send + 'static,
+) -> mpsc::Receiver<std::io::Result<String>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if sender.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                    break;
+                }
+            }
+        }
+    });
+    receiver
+}
+
+fn collect_stderr(stderr: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = String::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(size) => {
+                    if buffer.len() < 2000 {
+                        let room = 2000 - buffer.len();
+                        buffer.push_str(&String::from_utf8_lossy(&chunk[..size.min(room)]));
+                    }
+                }
+            }
+        }
+        let _ = sender.send(buffer);
+    });
+    receiver
+}
+
+fn finish_mcp_child(child: &mut Child) {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+            _ => {
+                terminate_child(child);
+                return;
+            }
+        }
+    }
+}
+
+fn append_driver_stderr(error: String, stderr: &str) -> String {
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        error
+    } else {
+        format!("{error} Driver said: {}", snippet(stderr))
+    }
+}
+
+fn snippet(text: &str) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= 180 {
+        compact
+    } else {
+        let end = compact
+            .char_indices()
+            .nth(180)
+            .map(|(index, _)| index)
+            .unwrap_or(compact.len());
+        format!("{}…", &compact[..end])
+    }
 }
 
 /// One retry: a transient failure right after boot must not read as a broken install.
@@ -1950,6 +2268,164 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("did not start"), "{error}");
+        assert!(error.contains("riwork cua status"), "{error}");
+    }
+
+    struct StopDaemon(PathBuf);
+
+    impl Drop for StopDaemon {
+        fn drop(&mut self) {
+            let Ok(pid) = fs::read_to_string(&self.0) else {
+                return;
+            };
+            let pid = pid.trim();
+            if !pid.is_empty() {
+                let _ = Command::new("/bin/kill").args(["-9", pid]).status();
+            }
+        }
+    }
+
+    /// A driver double that records each subcommand and speaks one MCP handshake.
+    fn install_handshake_driver(path: &Path, marker: &Path, calls: &Path, mode: &str) {
+        let script = r#"#!/usr/bin/python3
+import json, os, sys, time
+marker = "MARKER_PATH"
+calls = "CALLS_PATH"
+mode = "MODE"
+def note(action):
+    with open(calls, "a", encoding="utf-8") as handle:
+        handle.write(action + "\n")
+cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+note(cmd or "none")
+if cmd == "--version":
+    print("cua-driver test")
+elif cmd == "status":
+    if os.path.exists(marker):
+        print("Cua Driver daemon is running")
+        raise SystemExit(0)
+    raise SystemExit(1)
+elif cmd == "serve":
+    with open(marker, "w", encoding="utf-8") as handle:
+        handle.write(str(os.getpid()))
+    while True:
+        time.sleep(0.2)
+elif cmd == "mcp":
+    if mode == "fail":
+        print("socket refused", file=sys.stderr)
+        raise SystemExit(2)
+    if mode == "sleep":
+        time.sleep(30)
+        raise SystemExit(0)
+    for line in sys.stdin:
+        message = json.loads(line)
+        method = message.get("method")
+        if method == "initialize":
+            body = {"jsonrpc": "2.0", "id": message.get("id"), "result": {"capabilities": {"tools": {}}}}
+            print(json.dumps(body), flush=True)
+        elif method == "tools/list":
+            tools = [] if mode == "empty" else [{"name": "probe_tool", "inputSchema": {"type": "object"}}]
+            body = {"jsonrpc": "2.0", "id": message.get("id"), "result": {"tools": tools}}
+            print(json.dumps(body), flush=True)
+else:
+    raise SystemExit(99)
+"#;
+        let script = script
+            .replace("MARKER_PATH", &marker.display().to_string())
+            .replace("CALLS_PATH", &calls.display().to_string())
+            .replace("MODE", mode);
+        atomic_executable(path, script.as_bytes()).unwrap();
+    }
+
+    fn handshake_manager(home: PathBuf, driver: PathBuf) -> CuaManager {
+        let mut manager = manager(home);
+        manager.override_driver = Some(driver);
+        manager
+    }
+
+    #[test]
+    fn grok_preflight_starts_a_down_driver_and_lists_its_tools() {
+        let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-test").unwrap();
+        let driver = temp.path.join("driver");
+        let marker = temp.path.join("running");
+        let calls = temp.path.join("calls");
+        install_handshake_driver(&driver, &marker, &calls, "ready");
+        let _stop = StopDaemon(marker.clone());
+        let manager = handshake_manager(temp.path.join("home"), driver);
+        let started = Instant::now();
+        manager.prepare_for_grok().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let recorded = fs::read_to_string(&calls).unwrap();
+        assert!(recorded.contains("serve\n"), "{recorded}");
+        assert!(recorded.contains("mcp\n"), "{recorded}");
+        let log = fs::read_to_string(temp.path.join("home/cua/driver.log")).unwrap();
+        assert!(log.contains("Grok preflight ready"), "{log}");
+        // A second launch finds the service already up and only handshakes.
+        let before = recorded.matches("serve\n").count();
+        manager.prepare_for_grok().unwrap();
+        let recorded = fs::read_to_string(&calls).unwrap();
+        assert_eq!(recorded.matches("serve\n").count(), before, "{recorded}");
+        assert!(recorded.matches("mcp\n").count() >= 2, "{recorded}");
+    }
+
+    #[test]
+    fn grok_preflight_reports_a_failed_handshake_without_hiding_the_cause() {
+        let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-test").unwrap();
+        let driver = temp.path.join("driver");
+        let marker = temp.path.join("running");
+        let calls = temp.path.join("calls");
+        install_handshake_driver(&driver, &marker, &calls, "fail");
+        let _stop = StopDaemon(marker);
+        let manager = handshake_manager(temp.path.join("home"), driver);
+        let error = manager.prepare_for_grok().unwrap_err();
+        assert!(error.contains("socket refused"), "{error}");
+        assert!(error.contains("30 seconds"), "{error}");
+        assert!(error.contains("driver.log"), "{error}");
+        assert!(error.contains("riwork cua status"), "{error}");
+        let log = fs::read_to_string(temp.path.join("home/cua/driver.log")).unwrap();
+        assert!(log.contains("socket refused"), "{log}");
+    }
+
+    #[test]
+    fn grok_preflight_rejects_an_empty_tool_list_and_a_stuck_proxy() {
+        let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-test").unwrap();
+        let marker = temp.path.join("running");
+        fs::write(&marker, "1").unwrap();
+        let empty = temp.path.join("empty");
+        install_handshake_driver(&empty, &marker, &temp.path.join("empty-calls"), "empty");
+        let manager = handshake_manager(temp.path.join("empty-home"), empty);
+        let error = manager.prepare_for_grok().unwrap_err();
+        assert!(error.contains("no tools"), "{error}");
+
+        let stuck = temp.path.join("stuck");
+        install_handshake_driver(&stuck, &marker, &temp.path.join("stuck-calls"), "sleep");
+        let manager = handshake_manager(temp.path.join("stuck-home"), stuck);
+        let started = Instant::now();
+        let error = manager
+            .prepare_for_grok_within(Duration::from_millis(400))
+            .unwrap_err();
+        assert!(
+            error.contains("did not answer request 1 within 0.4 seconds"),
+            "{error} after {:?}",
+            started.elapsed()
+        );
+        // Status probes have their own 3-second bound, so a loaded machine can
+        // spend several of those before the handshake budget starts. The 30-second
+        // sleep in the double must not be what this call waits for.
+        assert!(
+            started.elapsed() < Duration::from_secs(12),
+            "{error} after {:?}",
+            started.elapsed()
+        );
+        assert!(error.contains("30 seconds"), "{error}");
+    }
+
+    #[test]
+    fn grok_preflight_names_a_missing_driver() {
+        let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-test").unwrap();
+        let manager = handshake_manager(temp.path.join("home"), temp.path.join("missing-driver"));
+        let error = manager.prepare_for_grok().unwrap_err();
+        assert!(error.contains("not an executable"), "{error}");
+        assert!(error.contains("30 seconds"), "{error}");
         assert!(error.contains("riwork cua status"), "{error}");
     }
 
