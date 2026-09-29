@@ -89,6 +89,23 @@ struct DiscoveredWorktree {
     repository_root: Option<PathBuf>,
 }
 
+/// What Git says about a project's repositories and worktrees, before it is
+/// compared with the store. It depends on the filesystem alone, so it can be
+/// remembered while the files it was read from stay as they are.
+#[derive(Clone, Debug)]
+struct Discovery {
+    exists: bool,
+    /// Discovery finished without a warning, so the result does not lean on
+    /// the roots the store already holds.
+    complete: bool,
+    repository_roots: Vec<PathBuf>,
+    worktrees: Vec<DiscoveredWorktree>,
+}
+
+#[path = "store_scan.rs"]
+mod scan;
+use scan::Scan;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -649,11 +666,15 @@ impl Store {
     /// Inspect without changing the filesystem or project registry. Repository
     /// roots are deduplicated across linked worktrees of the same Git repo.
     pub fn inspect_project(root: impl AsRef<Path>) -> Result<ProjectInspection, String> {
-        let (root, ancestor) = resolve_project_path(root.as_ref())?;
+        Self::inspect_scan(root.as_ref(), &mut Scan::fresh())
+    }
+
+    fn inspect_scan(root: &Path, scan: &mut Scan) -> Result<ProjectInspection, String> {
+        let (root, ancestor) = resolve_project_path(root)?;
         let exists = root.is_dir();
         let mut repositories = BTreeMap::new();
         let mut warnings = Vec::new();
-        match probe_repository(&ancestor) {
+        match scan.probe_ancestor(&ancestor) {
             Ok(Some(repository)) => {
                 repositories.insert(repository.common_dir.clone(), repository);
             }
@@ -671,8 +692,9 @@ impl Store {
                         .push("Repository discovery reached the 20,000-directory limit".to_owned());
                     break;
                 }
+                scan.walk(&directory);
                 if directory != ancestor && has_git_marker(&directory) {
-                    match probe_repository(&directory) {
+                    match scan.probe(&directory) {
                         Ok(Some(repository)) => {
                             repositories.insert(repository.common_dir.clone(), repository);
                         }
@@ -841,7 +863,8 @@ impl Store {
                     .map(|name| name.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "project".to_owned());
-        let discovered = project_worktrees(&root, &inspection.repository_roots)?;
+        let discovered =
+            project_worktrees(&root, &inspection.repository_roots, &mut Scan::fresh())?;
         let project = self.transaction(|state| {
             let project = if let Some(project) = state
                 .projects
@@ -1118,29 +1141,46 @@ impl Store {
     /// Discover worktrees created outside RiWork while preserving UUIDs used by
     /// tasks and shell sessions. Plain directories retain their root worktree.
     pub fn sync_worktrees(&self, project_selector: &str) -> Result<Vec<Worktree>, String> {
+        self.sync_worktrees_with(project_selector, false)
+    }
+
+    /// The periodic refresh a window runs for its project. Unlike
+    /// `sync_worktrees` it may return without looking at anything: the GUI is
+    /// one process, so a project another window synced moments ago, or is
+    /// syncing now, is left to that sync, and a project whose files are
+    /// unchanged since the last scan is not scanned again. Worktrees created
+    /// outside the app still show up within a refresh period or two.
+    pub fn refresh_worktrees(&self, project_selector: &str) -> Result<(), String> {
+        let key = format!("{}\n{project_selector}", self.dir.display());
+        scan::SYNCS
+            .run(&key, scan::SYNC_MIN_GAP, || {
+                self.sync_worktrees_with(project_selector, true).map(drop)
+            })
+            .unwrap_or(Ok(()))
+    }
+
+    /// With `cached`, Git is not asked what an earlier scan already learned
+    /// from files that have not changed since.
+    fn sync_worktrees_with(
+        &self,
+        project_selector: &str,
+        cached: bool,
+    ) -> Result<Vec<Worktree>, String> {
         let state = self.snapshot()?;
         let project = state.project(project_selector)?.clone();
-        let inspection = Self::inspect_project(&project.root)?;
-        if !inspection.exists {
+        let Discovery {
+            exists,
+            repository_roots,
+            worktrees: discovered,
+            ..
+        } = discover_project(&project, cached)?;
+        if !exists {
             return Ok(state
                 .worktrees_for(&project.id)
                 .into_iter()
                 .cloned()
                 .collect());
         }
-        let mut repository_roots = inspection.repository_roots;
-        if !inspection.discovery_complete {
-            repository_roots.extend(
-                project
-                    .repository_roots
-                    .iter()
-                    .filter(|path| path.is_dir())
-                    .cloned(),
-            );
-            repository_roots.sort();
-            repository_roots.dedup();
-        }
-        let discovered = project_worktrees(&project.root, &repository_roots)?;
         let unchanged = project.repository_roots == repository_roots
             && discovered.iter().all(|found| {
                 state.worktrees.iter().any(|worktree| {
@@ -1452,7 +1492,15 @@ fn slug(value: &str) -> String {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Git commands built on this thread, so a test can prove a refresh ran none.
+    static GIT_COMMANDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn git_command(root: &Path) -> Command {
+    #[cfg(test)]
+    GIT_COMMANDS.with(|count| count.set(count.get() + 1));
     let mut command = Command::new("git");
     command.arg("-C").arg(root);
     command.env("LC_ALL", "C");
@@ -1647,9 +1695,56 @@ fn discover_git_worktrees(root: &Path) -> Result<Vec<DiscoveredWorktree>, String
     Ok(found)
 }
 
+fn discover_project(project: &Project, cached: bool) -> Result<Discovery, String> {
+    if !cached {
+        return scan_project(project, &mut Scan::fresh());
+    }
+    if let Some(found) = scan::cached_discovery(&project.root) {
+        return Ok(found);
+    }
+    let mut scan = Scan::cached();
+    scan.root(&project.root);
+    let found = scan_project(project, &mut scan)?;
+    scan::remember_discovery(&project.root, scan, &found);
+    Ok(found)
+}
+
+fn scan_project(project: &Project, scan: &mut Scan) -> Result<Discovery, String> {
+    let inspection = Store::inspect_scan(&project.root, scan)?;
+    let complete = inspection.discovery_complete;
+    if !inspection.exists {
+        return Ok(Discovery {
+            exists: false,
+            complete,
+            repository_roots: Vec::new(),
+            worktrees: Vec::new(),
+        });
+    }
+    let mut repository_roots = inspection.repository_roots;
+    if !complete {
+        repository_roots.extend(
+            project
+                .repository_roots
+                .iter()
+                .filter(|path| path.is_dir())
+                .cloned(),
+        );
+        repository_roots.sort();
+        repository_roots.dedup();
+    }
+    let worktrees = project_worktrees(&project.root, &repository_roots, scan)?;
+    Ok(Discovery {
+        exists: true,
+        complete,
+        repository_roots,
+        worktrees,
+    })
+}
+
 fn project_worktrees(
     root: &Path,
     repository_roots: &[PathBuf],
+    scan: &mut Scan,
 ) -> Result<Vec<DiscoveredWorktree>, String> {
     let mut found = BTreeMap::new();
     let root_repository = repository_roots
@@ -1678,7 +1773,7 @@ fn project_worktrees(
         },
     );
     for repository in repository_roots {
-        for mut worktree in discover_git_worktrees(repository)? {
+        for mut worktree in scan.worktrees(repository)? {
             worktree.repository_root = Some(repository.clone());
             found.insert(worktree.path.clone(), worktree);
         }

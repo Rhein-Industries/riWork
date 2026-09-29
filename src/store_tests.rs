@@ -1558,3 +1558,6 @@ fn global_and_project_scoped_worktree_lookups_share_one_selector_rule() {
     let scoped = state.worktree_in_project(&projects[1], "main").unwrap();
     assert_eq!(scoped.project_id, projects[1]);
 }
+
+#[path = "store_scan_tests.rs"]
+mod scan_tests;

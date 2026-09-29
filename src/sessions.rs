@@ -16,6 +16,9 @@ use std::{
 };
 use uuid::Uuid;
 
+mod sample;
+pub use sample::SessionSample;
+
 const HISTORY_LINES: usize = 100_000;
 const ORCHESTRATOR_SKILL: &str = include_str!("../skills/riwork-orchestrator/SKILL.md");
 /// Additive session guidance shared by the supported coding harnesses.
@@ -743,7 +746,9 @@ impl SessionManager {
         // Ghostty renders a tmux client: scrollback belongs to tmux, so mouse
         // reporting is needed for wheel/trackpad scrolling and copy mode.
         // Set this per session as well, upgrading sessions made by older builds.
-        self.configure_scrolling(id)?;
+        let configured = self.configure_scrolling(id);
+        self.invalidate_sample();
+        configured?;
         Ok(format!(
             "{} -u TMUX -u TMUX_TMPDIR {} -L {} attach-session -t {}",
             quote_arg("/usr/bin/env"),
@@ -1205,7 +1210,15 @@ impl SessionManager {
     /// that refreshes periodically. CPU is the sum of process `%cpu` values;
     /// RAM is resident bytes for the shell and its descendants.
     pub fn metrics_snapshot(&self) -> Result<BTreeMap<String, SessionMetrics>, String> {
-        let sessions = self.list_saved()?;
+        self.metrics_for(&self.list_saved()?)
+    }
+
+    /// `metrics_snapshot` for sessions the caller has just listed, which spares
+    /// it a second liveness query.
+    fn metrics_for(
+        &self,
+        sessions: &[ShellSession],
+    ) -> Result<BTreeMap<String, SessionMetrics>, String> {
         let live: HashSet<&str> = sessions
             .iter()
             .filter(|session| session.alive)
@@ -1252,6 +1265,21 @@ impl SessionManager {
             result.insert(id, metrics);
         }
         Ok(result)
+    }
+
+    /// What a window's periodic refresh shows: every shell with its liveness,
+    /// the directories of the live ones and, when `want_metrics`, their CPU and
+    /// memory. The whole process shares one sample for about a tick, so this
+    /// can be up to 1.5 s old; anything that changes sessions in this process
+    /// discards it. Everything else here always asks tmux.
+    pub fn sample(&self, want_metrics: bool) -> Result<SessionSample, String> {
+        sample::cache_for(&self.socket_name).get(self, want_metrics)
+    }
+
+    /// Called wherever this process changes sessions, so the next `sample` reads
+    /// tmux again instead of showing the old state for the rest of its TTL.
+    fn invalidate_sample(&self) {
+        sample::cache_for(&self.socket_name).invalidate();
     }
 
     /// Explicitly end a shell. Closing its GPUI tab must not call this method.
@@ -1535,7 +1563,9 @@ impl SessionManager {
         invocation.push(";".to_owned());
         invocation.extend(args.iter().map(|argument| tmux_argument(argument)));
         let borrowed: Vec<&str> = invocation.iter().map(String::as_str).collect();
-        let created = self.tmux_checked_without(&borrowed, &absent)?;
+        let created = self.tmux_checked_without(&borrowed, &absent);
+        self.invalidate_sample();
+        let created = created?;
         // tmux silently starts the shell in $HOME when it cannot use the
         // directory it was given. An empty report means this tmux cannot say.
         let reported = String::from_utf8_lossy(&created.stdout);
@@ -1609,8 +1639,9 @@ impl SessionManager {
     }
 
     fn kill_tmux_session(&self, id: &str) -> Result<(), String> {
-        self.tmux_checked(&["kill-session", "-t", &format!("={id}")])?;
-        Ok(())
+        let killed = self.tmux_checked(&["kill-session", "-t", &format!("={id}")]);
+        self.invalidate_sample();
+        killed.map(|_| ())
     }
 
     fn default_command_shell(&self) -> PathBuf {
@@ -1764,7 +1795,22 @@ impl SessionManager {
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
+        self.invalidate_sample();
         result
+    }
+}
+
+impl sample::SampleSource for SessionManager {
+    fn shells(&self) -> Result<Vec<ShellSession>, String> {
+        self.list()
+    }
+
+    fn directories(&self, shells: &[ShellSession]) -> Result<BTreeMap<String, PathBuf>, String> {
+        self.current_directories(shells)
+    }
+
+    fn metrics(&self, shells: &[ShellSession]) -> Result<BTreeMap<String, SessionMetrics>, String> {
+        self.metrics_for(shells)
     }
 }
 
