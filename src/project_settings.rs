@@ -10,7 +10,9 @@ use gpui::{
 };
 
 use crate::{
-    settings::{CodexAccountsState, refresh_codex_accounts},
+    icons::{self, ActionGlyph, Icon},
+    panels::ControlTooltip,
+    settings::{CodexAccountsState, Settings, refresh_codex_accounts},
     store::{Project, ProjectCodexAccount, ProjectFolder, State, Store},
     theme::{self, Palette},
     utf16_to_byte,
@@ -346,6 +348,8 @@ impl ProjectSettingsPanel {
             .detach();
         cx.observe_global::<CodexAccountsState>(|_, cx| cx.notify())
             .detach();
+        // The create-folder button swaps between words and a glyph with this setting.
+        cx.observe_global::<Settings>(|_, cx| cx.notify()).detach();
         if cx.global::<CodexAccountsState>().snapshot.is_none() {
             refresh_codex_accounts(cx);
         }
@@ -886,15 +890,26 @@ impl Render for ProjectSettingsPanel {
                             }))
                             .child(div().flex().flex_wrap().min_w_0().items_center().gap(px(8.0))
                                 .child(self.field(Field::FolderName, window, cx))
-                                .child(div().id("project-settings-create-folder").h(px(34.0)).px(px(12.0))
-                                    .flex_none().flex().items_center().cursor_pointer().border_1()
-                                    .border_color(rgb(if focused && self.active == Field::AddFolder { colors.gold } else { colors.magenta }))
-                                    .text_color(rgb(colors.magenta)).child(if self.folder_id.is_some() { "+ SUBFOLDER" } else { "+ FOLDER" })
-                                    .on_click(cx.listener(|form, _, window, cx| {
+                                .child({
+                                    let subfolder = self.folder_id.is_some();
+                                    let button = div().id("project-settings-create-folder").h(px(34.0))
+                                        .flex_none().flex().items_center().cursor_pointer().border_1()
+                                        .border_color(rgb(if focused && self.active == Field::AddFolder { colors.gold } else { colors.magenta }))
+                                        .text_color(rgb(colors.magenta));
+                                    // Icons keep the button's size, colour and focus ring; the tooltip names it.
+                                    let button = if icons::labels_as_icons(cx) {
+                                        button.w(px(34.0)).justify_center()
+                                            .child(icons::icon(Icon::Action(ActionGlyph::NewFolder), colors.magenta))
+                                            .tooltip(move |_, cx| cx.new(|_| ControlTooltip(if subfolder { "New subfolder" } else { "New folder" })).into())
+                                    } else {
+                                        button.px(px(12.0)).child(if subfolder { "+ SUBFOLDER" } else { "+ FOLDER" })
+                                    };
+                                    button.on_click(cx.listener(|form, _, window, cx| {
                                         form.active = Field::AddFolder;
                                         form.focus.focus(window, cx);
                                         form.create_folder(cx);
-                                    })))),
+                                    }))
+                                })),
                     )
                     .child(
                         div().p(px(14.0)).flex().flex_col().gap(px(10.0)).bg(rgb(colors.panel))

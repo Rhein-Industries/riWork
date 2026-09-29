@@ -17,13 +17,15 @@ use std::{
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
     EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, MouseButton,
-    MouseMoveEvent, Pixels, Point, Render, RenderImage, ScrollStrategy, StyledText, Task,
-    UTF16Selection, UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb,
+    MouseMoveEvent, Pixels, Point, Render, RenderImage, ScrollStrategy, SharedString, StyledText,
+    Task, UTF16Selection, UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb,
     uniform_list,
 };
 
 use crate::{
     file_preview::{self, FileIdentity, PreviewContent},
+    icons::{self, ActionGlyph, Icon},
+    settings::Settings,
     theme, utf16_to_byte,
 };
 
@@ -566,7 +568,7 @@ impl TreeModel {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Search,
     Tree,
@@ -579,6 +581,76 @@ enum Mode {
     Reveal,
     Edit,
     Open,
+}
+
+/// The file actions in the preview header, left to right.
+const TOOLBAR: [ToolbarAction; 5] = [
+    ToolbarAction {
+        id: "file-explorer-edit",
+        label: "EDIT IN VIM ↗",
+        name: "Edit in Vim",
+        glyph: ActionGlyph::EditInVim,
+        mode: Mode::Edit,
+    },
+    ToolbarAction {
+        id: "file-explorer-copy",
+        label: "COPY PATH",
+        name: "Copy path",
+        glyph: ActionGlyph::CopyPath,
+        mode: Mode::Copy,
+    },
+    ToolbarAction {
+        id: "file-explorer-copy-contents",
+        label: "COPY CONTENTS",
+        name: "Copy contents",
+        glyph: ActionGlyph::CopyContents,
+        mode: Mode::CopyContents,
+    },
+    ToolbarAction {
+        id: "file-explorer-reveal",
+        label: "REVEAL",
+        name: "Reveal in Finder",
+        glyph: ActionGlyph::Reveal,
+        mode: Mode::Reveal,
+    },
+    ToolbarAction {
+        id: "file-explorer-open",
+        label: "OPEN EXTERNALLY",
+        name: "Open externally",
+        glyph: ActionGlyph::OpenExternally,
+        mode: Mode::Open,
+    },
+];
+
+/// One button of the preview header: its words, or its glyph with `name` as the tooltip.
+struct ToolbarAction {
+    id: &'static str,
+    label: &'static str,
+    name: &'static str,
+    glyph: ActionGlyph,
+    mode: Mode,
+}
+
+/// What Copy Contents does when it is available; the reason it is not otherwise.
+const COPY_CONTENTS_HINT: &str = "Copy the whole file as text (up to 1 MiB)";
+
+/// The keyboard shortcut or explanation an icon button adds to its name.
+fn tooltip_hint(mode: Mode) -> Option<&'static str> {
+    match mode {
+        Mode::Edit => Some("⌘E"),
+        Mode::Open => Some("⌘O"),
+        Mode::CopyContents => Some(COPY_CONTENTS_HINT),
+        _ => None,
+    }
+}
+
+/// An icon has no words, so its tooltip is the name, then the hint or the reason
+/// the button is unavailable.
+fn icon_tooltip(name: &str, detail: Option<&str>) -> String {
+    match detail {
+        Some(detail) => format!("{name} · {detail}"),
+        None => name.to_owned(),
+    }
 }
 
 const FOCUS_ORDER: [Mode; 11] = [
@@ -860,6 +932,8 @@ impl FileExplorer {
     pub fn new(cx: &mut Context<Self>) -> Self {
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
+        // The preview toolbar swaps between words and glyphs with this setting.
+        cx.observe_global::<Settings>(|_, cx| cx.notify()).detach();
         cx.on_release(|explorer, cx| {
             if let Some(image) = explorer.preview.render_image() {
                 release_image(image.clone(), cx);
@@ -1535,6 +1609,32 @@ impl FileExplorer {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.button_face(id, Face::Text(label), mode, window, cx)
+    }
+
+    fn toolbar_button(
+        &self,
+        action: &ToolbarAction,
+        as_icon: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let face = if as_icon {
+            Face::Glyph(action.glyph, action.name)
+        } else {
+            Face::Text(action.label)
+        };
+        self.button_face(action.id, face, action.mode, window, cx)
+    }
+
+    fn button_face(
+        &self,
+        id: &'static str,
+        face: Face,
+        mode: Mode,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme::palette(cx);
         let active = self.focus.is_focused(window) && self.mode == mode;
         let available = match mode {
@@ -1543,33 +1643,51 @@ impl FileExplorer {
             Mode::Copy | Mode::Reveal | Mode::Open => self.selected.is_some(),
             _ => self.root.is_some(),
         };
+        let color = if active {
+            colors.gold
+        } else if available {
+            colors.cyan
+        } else {
+            colors.muted
+        };
         // Copy Contents has limits the label cannot show, so it always explains.
-        let tooltip = (mode == Mode::CopyContents).then(|| {
-            self.copy_contents_refusal()
-                .unwrap_or("Copy the whole file as text (up to 1 MiB)")
-        });
+        let explanation = (mode == Mode::CopyContents)
+            .then(|| self.copy_contents_refusal().unwrap_or(COPY_CONTENTS_HINT));
         let button = div()
             .id(id)
-            .px(px(7.0))
-            .py(px(5.0))
             .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
             .cursor_pointer()
             .border_1()
             .border_color(rgb(if active { colors.gold } else { colors.divider }))
-            .text_color(rgb(if active {
-                colors.gold
-            } else if available {
-                colors.cyan
-            } else {
-                colors.muted
-            }))
-            .child(label.to_owned());
-        let button = match tooltip {
-            Some(text) => button.tooltip(move |_, cx| cx.new(|_| ExplorerTooltip(text)).into()),
-            None => button,
+            .text_color(rgb(color));
+        let button = match face {
+            Face::Text(label) => {
+                let button = button.px(px(7.0)).py(px(5.0)).child(label.to_owned());
+                match explanation {
+                    Some(text) => {
+                        button.tooltip(move |_, cx| cx.new(|_| ExplorerTooltip(text.into())).into())
+                    }
+                    None => button,
+                }
+            }
+            // Square, so the hit target stays at least 22 px; the glyph takes the text colour.
+            Face::Glyph(glyph, name) => {
+                let detail = explanation.or_else(|| tooltip_hint(mode).filter(|_| available));
+                let tooltip: SharedString = icon_tooltip(name, detail).into();
+                button
+                    .size(px(24.0))
+                    .child(icons::icon(Icon::Action(glyph), color))
+                    .tooltip(move |_, cx| cx.new(|_| ExplorerTooltip(tooltip.clone())).into())
+            }
         };
         button
             .on_click(cx.listener(move |view, _, window, cx| {
+                // The preview panel also takes clicks to focus itself; this button
+                // owns its own focus state.
+                cx.stop_propagation();
                 view.mode = mode;
                 view.focus.focus(window, cx);
                 // A disabled Copy Contents says why on click, as it does on
@@ -1579,6 +1697,26 @@ impl FileExplorer {
                 }
                 cx.notify();
             }))
+            .into_any_element()
+    }
+
+    /// The file actions, right of the file name. They drop to their own line only
+    /// once the name is down to a stub, and wrap among themselves only when even
+    /// that line is too narrow.
+    fn preview_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let as_icons = icons::labels_as_icons(cx);
+        div()
+            .id("file-preview-actions")
+            .ml_auto()
+            .flex()
+            .flex_wrap()
+            .gap(px(4.0))
+            .text_size(px(9.0))
+            .children(
+                TOOLBAR
+                    .iter()
+                    .map(|action| self.toolbar_button(action, as_icons, window, cx)),
+            )
             .into_any_element()
     }
 
@@ -1989,38 +2127,72 @@ impl FileExplorer {
                 },
             ))
             .child(
+                // The name gives way first: it truncates down to a stub before
+                // the toolbar drops to a line of its own.
                 div()
+                    .id("file-preview-header")
                     .flex_none()
                     .px(px(12.0))
-                    .py(px(10.0))
+                    .py(px(8.0))
                     .border_b_1()
                     .border_color(rgb(colors.divider))
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .justify_between()
-                    .gap(px(8.0))
+                    .gap_x(px(10.0))
+                    .gap_y(px(6.0))
                     .child(
                         div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_color(rgb(colors.cyan))
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(9.0))
-                            .text_color(rgb(colors.muted))
+                            .flex_grow(1.0)
+                            .flex_basis(px(0.0))
+                            .min_w(px(40.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
                             .child(
-                                if self.preview_loading && self.preview_path != self.selected {
-                                    "LOADING…"
-                                } else {
-                                    "PREVIEW"
-                                },
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_color(rgb(colors.cyan))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_size(px(9.0))
+                                    .text_color(rgb(colors.muted))
+                                    .child(
+                                        if self.preview_loading
+                                            && self.preview_path != self.selected
+                                        {
+                                            "LOADING…"
+                                        } else {
+                                            "PREVIEW"
+                                        },
+                                    ),
                             ),
-                    ),
+                    )
+                    .child(self.preview_toolbar(window, cx)),
             )
+            // Directly under the header, where the action that caused it just was.
+            .children(self.notice.as_ref().map(|notice| {
+                div()
+                    .flex_none()
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .border_b_1()
+                    .border_color(rgb(colors.divider))
+                    .text_size(px(10.0))
+                    .text_color(rgb(if notice.confirmation {
+                        colors.cyan
+                    } else {
+                        colors.gold
+                    }))
+                    .child(notice.text.clone())
+            }))
             .child(content)
             .on_click(cx.listener(|view, _, window, cx| {
                 view.mode = Mode::Preview;
@@ -2031,7 +2203,14 @@ impl FileExplorer {
     }
 }
 
-struct ExplorerTooltip(&'static str);
+/// How a button shows its action.
+enum Face<'a> {
+    Text(&'a str),
+    /// A glyph in the text colour; the name and hint move to the tooltip.
+    Glyph(ActionGlyph, &'static str),
+}
+
+struct ExplorerTooltip(SharedString);
 impl Render for ExplorerTooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
@@ -2044,7 +2223,7 @@ impl Render for ExplorerTooltip {
             .text_color(rgb(colors.text))
             .font_family("Menlo")
             .text_size(px(10.0))
-            .child(self.0)
+            .child(self.0.clone())
     }
 }
 
@@ -2202,9 +2381,6 @@ impl Render for FileExplorer {
                 div()
                     .flex_none()
                     .p(px(8.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
                     .border_t_1()
                     .border_color(rgb(colors.divider))
                     .child(
@@ -2215,58 +2391,6 @@ impl Render for FileExplorer {
                             .text_color(rgb(colors.muted))
                             .text_size(px(10.0))
                             .child(relative),
-                    )
-                    .children(self.notice.as_ref().map(|notice| {
-                        div()
-                            .text_color(rgb(if notice.confirmation {
-                                colors.cyan
-                            } else {
-                                colors.gold
-                            }))
-                            .text_size(px(10.0))
-                            .child(notice.text.clone())
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(5.0))
-                            .text_size(px(9.0))
-                            .child(self.button(
-                                "file-explorer-edit",
-                                "EDIT IN VIM ↗",
-                                Mode::Edit,
-                                window,
-                                cx,
-                            ))
-                            .child(self.button(
-                                "file-explorer-copy",
-                                "COPY PATH",
-                                Mode::Copy,
-                                window,
-                                cx,
-                            ))
-                            .child(self.button(
-                                "file-explorer-copy-contents",
-                                "COPY CONTENTS",
-                                Mode::CopyContents,
-                                window,
-                                cx,
-                            ))
-                            .child(self.button(
-                                "file-explorer-reveal",
-                                "REVEAL",
-                                Mode::Reveal,
-                                window,
-                                cx,
-                            ))
-                            .child(self.button(
-                                "file-explorer-open",
-                                "OPEN EXTERNALLY",
-                                Mode::Open,
-                                window,
-                                cx,
-                            )),
                     ),
             );
         let bounds = self.bounds.clone();
@@ -3108,6 +3232,62 @@ mod tests {
         assert_eq!(
             copy_summary(&"a".repeat(1024 * 1024)),
             "Copied 1 line (1.0 MiB)"
+        );
+    }
+
+    #[test]
+    fn toolbar_keeps_its_words_and_stays_reachable_with_tab() {
+        let labels: Vec<_> = TOOLBAR.iter().map(|action| action.label).collect();
+        assert_eq!(
+            labels,
+            [
+                "EDIT IN VIM ↗",
+                "COPY PATH",
+                "COPY CONTENTS",
+                "REVEAL",
+                "OPEN EXTERNALLY"
+            ]
+        );
+        for (index, action) in TOOLBAR.iter().enumerate() {
+            assert!(
+                FOCUS_ORDER.contains(&action.mode),
+                "{} cannot be reached with Tab",
+                action.name
+            );
+            for other in &TOOLBAR[index + 1..] {
+                assert_ne!(action.id, other.id);
+                assert_ne!(action.mode, other.mode);
+                assert_ne!(action.glyph, other.glyph);
+                assert_ne!(action.name, other.name);
+            }
+        }
+        for (index, mode) in FOCUS_ORDER.iter().enumerate() {
+            assert!(!FOCUS_ORDER[index + 1..].contains(mode), "{mode:?} twice");
+        }
+    }
+
+    #[test]
+    fn icon_tooltips_name_the_action_and_carry_the_reason_it_is_unavailable() {
+        assert_eq!(icon_tooltip("Reveal in Finder", None), "Reveal in Finder");
+        assert_eq!(
+            icon_tooltip("Edit in Vim", tooltip_hint(Mode::Edit)),
+            "Edit in Vim · ⌘E"
+        );
+        assert_eq!(tooltip_hint(Mode::Copy), None);
+        assert_eq!(tooltip_hint(Mode::Reveal), None);
+
+        // A disabled Copy Contents shows the refusal that a click or Enter would.
+        let fixture = Fixture::new();
+        let big = fixture.0.join("big.log");
+        fs::File::create(&big)
+            .unwrap()
+            .set_len(1024 * 1024 + 1)
+            .unwrap();
+        let identity = Some(FileIdentity::of(&fs::metadata(&big).unwrap()));
+        let reason = copy_contents_refusal(EntryKind::File, identity, &big, None);
+        assert_eq!(
+            icon_tooltip("Copy contents", reason),
+            "Copy contents · Too large to copy (over 1 MiB)"
         );
     }
 }

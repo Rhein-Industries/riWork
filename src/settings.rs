@@ -127,7 +127,8 @@ pub struct Settings {
     /// Kept for older preferences and as a terminal-only override while following Ghostty.
     pub use_riwork_colors: bool,
     pub remember_window_size: bool,
-    /// Built-in panel tabs show an icon instead of their text label.
+    /// Built-in panel tabs and toolbar buttons show an icon instead of their text label.
+    /// The key predates the toolbar buttons and stays as it is in `settings.json`.
     pub panel_tab_icons: bool,
     pub project_order: ProjectOrder,
     pub selected_codex_account: Option<String>,
@@ -1521,8 +1522,8 @@ impl Render for SettingsPanel {
                     .children(terminal_row)
                     .child(self.toggle_row(
                         Toggle::PanelTabIcons,
-                        "Panel tab icons",
-                        "Show an icon instead of the name on Projects, Files, Settings and the other panel tabs. Hover an icon for its name.",
+                        "Icons instead of labels",
+                        "Show icons instead of words on the panel tabs and on toolbar buttons, such as the create buttons in Projects and the file actions in Files. Hover an icon for its name.",
                         settings.panel_tab_icons,
                         cx,
                     ))
