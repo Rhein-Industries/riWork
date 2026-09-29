@@ -127,8 +127,10 @@ curl --fail https://relay.example.com/healthz
 
 `ok` confirms HTTP/router health, not device authentication or desktop availability.
 Desktop pairing must use `wss://relay.example.com/v1/ws`. Production clients use
-normal certificate verification; no certificate bypass is provided. Local
-`ws://127.0.0.1` pairing requires the explicit `--allow-insecure-loopback` switch.
+normal certificate verification; no certificate bypass is provided. The desktop
+rustls client installs the ring CryptoProvider and checks the relay certificate
+against the operating-system root store. Local `ws://127.0.0.1` pairing requires
+the explicit `--allow-insecure-loopback` switch.
 
 Limits are enforced before routing: at most 128 configured routes, at most 256
 **authenticated** WebSocket connections (or the smaller `--max-connections`

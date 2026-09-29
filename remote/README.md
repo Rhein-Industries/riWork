@@ -66,7 +66,8 @@ retry does not leave orphan routes.
 Copy **only `relay-routes.json`** to the relay operator's protected config and
 start/restart the relay with that manifest. It contains hashes of relay tokens,
 never the endpoint PSK or session content. [TLS deployment](../docs/remote-deployment.md)
-uses a loopback relay behind Caddy.
+uses a loopback relay behind Caddy. The desktop connector installs rustls's ring
+CryptoProvider and checks that certificate against the operating-system root store.
 
 ```sh
 riwork-remote relay --routes /etc/riwork-relay/routes.json --bind 127.0.0.1:8787
