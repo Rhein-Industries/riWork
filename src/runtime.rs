@@ -984,11 +984,22 @@ fn write_json_synced(path: &Path, value: &impl Serialize, sync: bool) -> Result<
     result
 }
 
-struct ProcessIdentity {
+pub(crate) struct ProcessIdentity {
     pid: u32,
     uid: u32,
     started_token: String,
-    executable: Option<PathBuf>,
+    pub(crate) executable: Option<PathBuf>,
+}
+impl ProcessIdentity {
+    /// When the process started, as seconds since the epoch, where the platform
+    /// reports that. Linux's start token counts ticks since boot instead.
+    pub(crate) fn started_unix(&self) -> Option<f64> {
+        if cfg!(target_os = "macos") {
+            self.started_token.parse().ok()
+        } else {
+            None
+        }
+    }
 }
 fn process_matches(instance: &RuntimeInstance) -> Result<bool, String> {
     process_alive(instance.pid, instance.uid, &instance.started_token)
@@ -1012,7 +1023,7 @@ fn current_uid() -> u32 {
     0
 }
 #[cfg(target_os = "macos")]
-fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>, String> {
+pub(crate) fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>, String> {
     use std::{ffi::c_void, os::unix::ffi::OsStringExt};
     #[repr(C)]
     struct BsdInfo {
@@ -1066,7 +1077,7 @@ fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>, String> {
     }))
 }
 #[cfg(target_os = "linux")]
-fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>, String> {
+pub(crate) fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>, String> {
     use std::os::unix::fs::MetadataExt;
     let root = PathBuf::from(format!("/proc/{pid}"));
     let Ok(stat) = fs::read_to_string(root.join("stat")) else {
@@ -1088,7 +1099,7 @@ fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>, String> {
     }))
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_identity(_pid: u32) -> Result<Option<ProcessIdentity>, String> {
+pub(crate) fn process_identity(_pid: u32) -> Result<Option<ProcessIdentity>, String> {
     Err("RiWork GUI reloads are unsupported on this platform".to_owned())
 }
 

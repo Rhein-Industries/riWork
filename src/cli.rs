@@ -54,7 +54,7 @@ riwork open [PROJECT_OR_PATH]           Open an independent project window
 riwork reload [--all] [--session] [--shell ID]   Reload windows; optionally resume a Codex session
 riwork update [--source PATH] [--release | --debug] [--no-reload]   Build release by default, install, and reload all windows
 riwork instances                        List running RiWork apps and their windows
-riwork usage [--shell ID]               Read harness subscription usage
+riwork usage [--shell ID]               Read harness usage (Grok: session tokens and cost)
 riwork setup                            Install and start Cua.ai Driver
 riwork cua setup|status|permissions      Manage native computer use
 riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
@@ -655,13 +655,16 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     let shell_id = take_option(&mut args, "--shell")?;
     ensure_empty(&args)?;
     let usage = if let Some(shell_id) = shell_id {
-        let shell = SessionManager::open_default()?.get(&shell_id)?;
+        let manager = SessionManager::open_default()?;
+        let shell = manager.get(&shell_id)?;
         if shell.harness == Some(HarnessKind::Codex) {
             crate::usage::read_codex_usage_at(frozen_codex_usage_home(&shell)?)?
         } else if shell.harness == Some(HarnessKind::Grok) {
-            // RiWork cannot read Grok's quota yet. Report that as unknown in the
-            // usual shape rather than failing a check-in loop over many shells.
-            grok_usage_unknown()
+            // The account allowance is unknown (only Grok's /usage screen shows
+            // it), so the report has no windows. It carries the session's own
+            // tokens and cost, or says why they are missing, rather than failing
+            // a check-in loop over many shells.
+            grok_usage_report(&manager, &shell)
         } else if let Some(usage) = crate::usage::read_claude_usage(&shell_id)? {
             usage
         } else if matches!(shell.harness, Some(HarnessKind::Claude))
@@ -732,17 +735,61 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 .unwrap_or_default();
             println!("{}: {:.0}% remaining{reset}", window.label, remaining);
         }
-        if usage.windows.is_empty() {
+        if usage.provider == "grok" {
+            println!("Account allowance: not available to RiWork; open /usage in Grok.");
+        } else if usage.windows.is_empty() {
             println!("Subscription quota is not reported for this account.");
         }
         if let Some(context) = usage.context_used_percent {
             println!("Context: {context:.0}% used");
         }
-        if let Some(cost) = usage.session_cost_usd {
+        if let Some(session) = &usage.session {
+            print_grok_session(session);
+        } else if let Some(cost) = usage.session_cost_usd {
             println!("Session cost estimate: ${cost:.2}");
+        }
+        if let Some(error) = &usage.session_error {
+            println!("Session usage unavailable: {error}");
         }
     }
     Ok(())
+}
+
+fn print_grok_session(session: &crate::usage::SessionUsage) {
+    use crate::usage::{format_tokens, format_usd};
+    let model = session.primary_model.as_deref().unwrap_or("unknown model");
+    println!(
+        "Session {}: {model} · {} turns · {} model calls",
+        session.session_id, session.turns, session.model_calls
+    );
+    let tokens = &session.tokens;
+    println!(
+        "Tokens: {} total ({} input, {} output, {} cached read, {} cache creation, {} reasoning)",
+        format_tokens(tokens.total),
+        format_tokens(tokens.input),
+        format_tokens(tokens.output),
+        format_tokens(tokens.cached_read),
+        format_tokens(tokens.cache_creation),
+        format_tokens(tokens.reasoning),
+    );
+    if let Some(cost) = session.cost_usd {
+        println!("Session cost: {}", format_usd(cost));
+    }
+    for model in session.models.iter().filter(|_| session.models.len() > 1) {
+        println!(
+            "  {}: {} tokens · {} calls{}",
+            model.model,
+            format_tokens(model.tokens.total),
+            model.model_calls,
+            model
+                .cost_usd
+                .map(|cost| format!(" · {}", format_usd(cost)))
+                .unwrap_or_default()
+        );
+    }
+    if let Some(updated) = &session.updated_at {
+        println!("Last activity: {updated}");
+    }
 }
 
 /// The account `riwork usage` reports without `--shell`: the calling shell's
@@ -768,18 +815,26 @@ fn scoped_codex_usage_home(
     .map(|binding| binding.home)
 }
 
-/// Grok quota is only available through its own `grok usage` command.
-fn grok_usage_unknown() -> crate::usage::ProviderUsage {
-    crate::usage::ProviderUsage {
-        provider: "grok".to_owned(),
-        windows: Vec::new(),
-        updated_at_unix: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs()),
-        account_label: Some("unknown".to_owned()),
-        context_used_percent: None,
-        session_cost_usd: None,
-    }
+/// A Grok shell's report. Grok's allowance is only on its interactive `/usage`
+/// screen, so `windows` stays empty and the account unknown. The session's own
+/// tokens and cost come from `grok usage`, for the session Grok lists against
+/// this shell's pane process.
+fn grok_usage_report(
+    manager: &SessionManager,
+    shell: &ShellSession,
+) -> crate::usage::ProviderUsage {
+    let tab = if shell.alive {
+        let pane_pid = manager
+            .pane_pids(std::slice::from_ref(&shell.id))
+            .and_then(|mut pids| {
+                pids.remove(&shell.id)
+                    .ok_or_else(|| "tmux did not report a process for this shell".to_owned())
+            });
+        crate::usage::read_grok_shell_usage(pane_pid)
+    } else {
+        crate::usage::GrokTabUsage::unavailable("This Grok session is not running")
+    };
+    crate::usage::grok_provider_usage(&tab)
 }
 
 fn frozen_codex_usage_home(shell: &ShellSession) -> Result<&std::path::Path, String> {
@@ -1994,9 +2049,9 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_hook_command, frozen_codex_usage_home, grok_usage_unknown, opens_workspace,
-        reload_summary, schedule_line, scoped_codex_usage_home, take_orchestrator_project,
-        take_update_profile, terminal_safe, unknown_invocation, unreadable_reload_error,
+        agent_hook_command, frozen_codex_usage_home, opens_workspace, reload_summary,
+        schedule_line, scoped_codex_usage_home, take_orchestrator_project, take_update_profile,
+        terminal_safe, unknown_invocation, unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
@@ -2282,11 +2337,15 @@ mod tests {
 
     #[test]
     fn grok_usage_is_an_empty_report_not_an_error() {
-        let usage = grok_usage_unknown();
+        let usage = crate::usage::grok_provider_usage(&crate::usage::GrokTabUsage::unavailable(
+            "This Grok session is not running",
+        ));
         let json = serde_json::to_value(&usage).unwrap();
         assert_eq!(json["provider"], "grok");
         assert_eq!(json["windows"], serde_json::json!([]));
         assert_eq!(json["account_label"], "unknown");
+        assert_eq!(json["session_error"], "This Grok session is not running");
+        assert!(json.get("session").is_none());
     }
 
     fn main_worktree_state() -> (State, [String; 3]) {
