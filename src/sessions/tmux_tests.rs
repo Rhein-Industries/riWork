@@ -857,3 +857,77 @@ fn a_tmux_that_cannot_answer_does_not_make_a_session_dead() {
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].id, orchestrator);
 }
+
+/// Every window refreshes through `sample`. However many ask, tmux is queried
+/// once per tick, and a change this process makes is visible at once.
+#[cfg(unix)]
+#[test]
+fn windows_share_one_tmux_sample_until_this_process_changes_a_session() {
+    let id = "00000000-0000-4000-8000-0000000000e1";
+    let mut calls = PathBuf::new();
+    let fixture = Fixture::new(|root| {
+        calls = root.join("calls");
+        let tmux = root.join("fake-tmux");
+        Fixture::script(
+            &tmux,
+            &format!(
+                "printf '%s\\n' \"$*\" >> {calls}\n\
+                 case \"$*\" in\n\
+                 *list-sessions*) printf '{id}\\n' ;;\n\
+                 *pane_pid*) printf '{id}\\t1\\n' ;;\n\
+                 *pane_current_path*) printf '{id}\\t0\\t0\\t/work\\n' ;;\n\
+                 esac",
+                calls = quote_arg(&calls.to_string_lossy()),
+            ),
+        );
+        tmux
+    });
+    fixture.registry(vec![shell(id, None, None)]);
+    let tmux_calls = || {
+        fs::read_to_string(&calls)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let baseline = tmux_calls();
+
+    for _ in 0..7 {
+        let sample = fixture.manager.sample(true).unwrap();
+        assert_eq!(sample.shells.len(), 1);
+        assert!(sample.shells[0].alive);
+        assert_eq!(
+            sample.directories.unwrap().get(id),
+            Some(&PathBuf::from("/work"))
+        );
+        assert!(sample.metrics.is_some());
+    }
+    // list-sessions, then the pane directories and the pane pids.
+    assert_eq!(tmux_calls() - baseline, 3);
+
+    // Creating, closing and attaching all go through these.
+    fixture.registry(vec![shell(id, None, None)]);
+    fixture.manager.sample(true).unwrap();
+    assert_eq!(tmux_calls() - baseline, 6);
+    fixture.manager.kill_tmux_session(id).unwrap();
+    fixture.manager.sample(true).unwrap();
+    assert_eq!(tmux_calls() - baseline, 10);
+    fixture.manager.attach_command(id).unwrap();
+    fixture.manager.sample(true).unwrap();
+    let after_attach = tmux_calls();
+    fixture.manager.sample(true).unwrap();
+    assert_eq!(tmux_calls(), after_attach);
+
+    // The CLI and MCP read tmux directly and never see a cached answer.
+    let before = tmux_calls();
+    fixture.manager.list().unwrap();
+    fixture.manager.list().unwrap();
+    assert_eq!(tmux_calls() - before, 2);
+
+    // What each window used to run every tick, for comparison: four tmux
+    // clients (and a `ps`) per window, where the process now runs three in all.
+    let before = tmux_calls();
+    let shells = fixture.manager.list().unwrap();
+    fixture.manager.metrics_snapshot().unwrap();
+    fixture.manager.current_directories(&shells).unwrap();
+    assert_eq!(tmux_calls() - before, 4);
+}

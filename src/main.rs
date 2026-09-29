@@ -2462,9 +2462,11 @@ impl Workspace {
             let project_id = self.project_id.clone();
             let work_project_id = project_id.clone();
             let store = self.store.clone();
+            // Shared with the other windows: it does nothing when one of them
+            // just synced this project or nothing on disk changed since.
             let work = cx
                 .background_executor()
-                .spawn(async move { store.sync_worktrees(&work_project_id) });
+                .spawn(async move { store.refresh_worktrees(&work_project_id) });
             cx.spawn(async move |this, cx| {
                 let result = work.await;
                 let _ = this.update(cx, |workspace, cx| {
@@ -2522,10 +2524,13 @@ impl Workspace {
         let generation = self.session_refresh_generation;
         let sessions = self.sessions.clone();
         let work_project_id = project_id.clone();
+        let want_metrics = self.metrics_visible();
         let work = cx.background_executor().spawn(async move {
-            let shells = sessions.list()?;
-            let metrics = sessions.metrics_snapshot().ok();
-            let cwds = sessions.current_directories(&shells).ok();
+            // One tmux and `ps` sample serves every window for about a tick.
+            let sample = sessions.sample(want_metrics)?;
+            let shells = sample.shells;
+            let metrics = sample.metrics;
+            let cwds = sample.directories;
             let mut claude_usage = BTreeMap::new();
             for shell in &shells {
                 if shell.harness == Some(HarnessKind::Claude)
@@ -2578,6 +2583,29 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// CPU and memory feed only the status bar's resources item and the Shells
+    /// panel, and sampling them costs a `ps` run. A window showing neither keeps
+    /// its last figures and picks them up again on the refresh after either
+    /// appears.
+    fn metrics_visible(&self) -> bool {
+        use status_bar::{StatusItemKind, StatusSide};
+        let status = &self.settings.status_bar;
+        let in_status_bar = !self.focus_mode
+            && [StatusSide::Left, StatusSide::Right]
+                .into_iter()
+                .any(|side| {
+                    status
+                        .visible_items(side)
+                        .contains(&StatusItemKind::Resources)
+                });
+        in_status_bar
+            || self.panes.values().any(|pane| {
+                pane.tabs
+                    .get(pane.active)
+                    .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Shells)))
+            })
     }
 
     fn refresh_shell_titles(&mut self) {
