@@ -927,6 +927,8 @@ impl Workspace {
         let state = self.state.clone();
         let sources = project_recency_sources(&state);
         let work = cx.background_executor().spawn(async move {
+            // One scan at a time for the whole process: the other windows read
+            // what it leaves in the shared cache.
             let edits = project_recency::scan(&state);
             (sources, edits)
         });
