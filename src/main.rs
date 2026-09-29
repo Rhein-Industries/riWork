@@ -3,6 +3,7 @@ mod agent_hooks;
 mod cli;
 mod codex_accounts;
 mod cua;
+mod dock_menu;
 mod file_explorer;
 mod file_preview;
 mod icons;
@@ -829,6 +830,16 @@ impl Workspace {
         .detach();
         cx.on_release(|workspace, _| workspace.save_layout())
             .detach();
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                dock_menu::set_frontmost(window.window_handle().window_id().as_u64(), cx);
+            }
+        })
+        .detach();
+        if window.is_window_active() {
+            dock_menu::set_frontmost(window.window_handle().window_id().as_u64(), cx);
+        }
+        workspace.announce_to_dock(window, cx);
         request_codex_usage(false, cx);
         for home in workspace
             .shells
@@ -2574,6 +2585,33 @@ impl Workspace {
         }
     }
 
+    /// Tells the Dock menu which project and branch this window shows. Cheap when
+    /// nothing changed, so it can follow every refresh.
+    fn announce_to_dock(&self, window: &Window, cx: &mut App) {
+        let branch =
+            self.selected_worktree_id
+                .as_ref()
+                .and_then(|id| {
+                    self.state.worktrees.iter().find(|worktree| {
+                        worktree.id == *id && worktree.project_id == self.project_id
+                    })
+                })
+                .map(|worktree| worktree.branch.clone());
+        let project = self
+            .state
+            .project(&self.project_id)
+            .map(|project| project.name.clone())
+            .unwrap_or_default();
+        dock_menu::update_window(
+            dock_menu::DockWindow {
+                id: window.window_handle().window_id().as_u64(),
+                project,
+                branch,
+            },
+            cx,
+        );
+    }
+
     fn runtime_window(&self, window: &Window) -> runtime::RuntimeWindow {
         // GPUI reports a zoomed macOS window as Windowed. A zoomed window is restored
         // from its last ordinary frame so that un-zooming still has somewhere to go.
@@ -2658,6 +2696,7 @@ impl Workspace {
         self.search.clear();
         self.search_marked = None;
         self.load_project(window, cx);
+        self.announce_to_dock(window, cx);
     }
 
     fn select_worktree(&mut self, worktree_id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2827,6 +2866,7 @@ impl Workspace {
         if let Ok(project) = self.state.project(&self.project_id) {
             window.set_window_title(&format!("RiWork · {}", project.name));
         }
+        self.announce_to_dock(window, cx);
         if let Some(panel) = &self.project_settings_panel {
             panel.update(cx, |panel, cx| panel.refresh_folders(cx));
         }
@@ -6563,9 +6603,12 @@ fn main() {
             MenuItem::separator(),
             MenuItem::action("Quit RiWork", Quit),
         ])]);
-        cx.on_window_closed(|cx, _| {
+        dock_menu::init(cx);
+        cx.on_window_closed(|cx, window| {
             if cx.windows().is_empty() {
                 cx.quit();
+            } else {
+                dock_menu::window_closed(window, cx);
             }
         })
         .detach();
