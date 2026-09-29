@@ -195,10 +195,7 @@ pub fn load(
         }
         Err(_) => return Ok(binary_message()),
     };
-    if text
-        .chars()
-        .any(|ch| ch == '\0' || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t')))
-    {
+    if has_binary_control(text) {
         return Ok(binary_message());
     }
     let mut lines = Vec::new();
@@ -223,6 +220,13 @@ pub fn load(
     })
 }
 
+/// Text with control characters other than newline, carriage return and tab
+/// is treated as binary, by the preview and by Copy Contents alike.
+fn has_binary_control(text: &str) -> bool {
+    text.chars()
+        .any(|ch| ch == '\0' || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t')))
+}
+
 fn binary_message() -> PreviewContent {
     PreviewContent::Message(
         "Binary or non-UTF-8 content cannot be previewed safely. Use Open to view it externally."
@@ -235,6 +239,63 @@ fn is_image(extension: &str) -> bool {
         extension,
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "ico"
     )
+}
+
+/// Why a file's contents cannot be copied, judged from its listing alone so
+/// the button can say so up front. Binary content is only known after reading,
+/// which `read_text` checks again together with the size.
+pub fn copy_block(path: &Path, identity: FileIdentity) -> Option<&'static str> {
+    let extension = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if is_image(&extension) || extension == "pdf" {
+        Some("Images and PDFs cannot be copied as text")
+    } else if identity.length > TEXT_LIMIT {
+        Some(TOO_LARGE_TO_COPY)
+    } else {
+        None
+    }
+}
+
+const TOO_LARGE_TO_COPY: &str = "Too large to copy (over 1 MiB)";
+
+/// The exact text of a file for the clipboard: no clipping, no line cap, line
+/// endings untouched. It opens through the same no-follow walk as previews and
+/// refuses a file that is not the one selected, so a replacement is never
+/// copied. A file over `TEXT_LIMIT` is refused outright rather than copied in
+/// part.
+pub fn read_text(root: &Path, path: &Path, expected: FileIdentity) -> Result<String, String> {
+    let (mut file, _) = open_regular_in(root, path)?;
+    let before = file
+        .metadata()
+        .map_err(|error| format!("Cannot inspect this file: {error}"))?;
+    if FileIdentity::of(&before) != expected {
+        return Err("This file changed or was replaced. Refresh Files and try again.".into());
+    }
+    if before.len() > TEXT_LIMIT {
+        return Err(TOO_LARGE_TO_COPY.into());
+    }
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(TEXT_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Cannot read this file: {error}"))?;
+    let after = file
+        .metadata()
+        .map_err(|error| format!("Cannot inspect this file: {error}"))?;
+    if FileIdentity::of(&before) != FileIdentity::of(&after) {
+        return Err("This file changed while it was being read. Refresh and try again.".into());
+    }
+    if bytes.len() as u64 > TEXT_LIMIT {
+        return Err(TOO_LARGE_TO_COPY.into());
+    }
+    let text = String::from_utf8(bytes)
+        .ok()
+        .filter(|text| !has_binary_control(text))
+        .ok_or("Binary or non-UTF-8 content cannot be copied as text.")?;
+    Ok(text)
 }
 
 fn decode_image(bytes: &[u8]) -> Result<PreviewContent, String> {
@@ -699,6 +760,154 @@ mod tests {
         fs::rename(&file, fixture.0.join("old.txt")).unwrap();
         fs::write(&file, "replacement\n").unwrap();
         assert!(validated_editor_path(&fixture.0, &file, identity).is_err());
+    }
+
+    fn identity_of(path: &Path) -> FileIdentity {
+        FileIdentity::of(&fs::symlink_metadata(path).unwrap())
+    }
+
+    fn read_copy(fixture: &Fixture, name: &str) -> Result<String, String> {
+        let path = fixture.0.join(name);
+        read_text(&fixture.0, &path, identity_of(&path))
+    }
+
+    #[test]
+    fn copy_returns_the_exact_text_the_preview_would_alter() {
+        let fixture = Fixture::new();
+        // CRLF, a lone CR, tabs, non-ASCII, and no trailing newline.
+        let crlf = "first\r\n\tsecond é ✓\r\nlone\rcr\r\nlast";
+        fs::write(fixture.0.join("crlf.txt"), crlf).unwrap();
+        assert_eq!(read_copy(&fixture, "crlf.txt").unwrap(), crlf);
+        fs::write(fixture.0.join("newline.txt"), "one\ntwo\n\n").unwrap();
+        assert_eq!(read_copy(&fixture, "newline.txt").unwrap(), "one\ntwo\n\n");
+        fs::write(fixture.0.join("empty.txt"), "").unwrap();
+        assert_eq!(read_copy(&fixture, "empty.txt").unwrap(), "");
+
+        // The preview clips this line at 4,000 characters; the copy must not.
+        let long = format!("{}\nshort", "é".repeat(5_000));
+        fs::write(fixture.0.join("long.txt"), &long).unwrap();
+        let copied = read_copy(&fixture, "long.txt").unwrap();
+        assert_eq!(copied, long);
+        assert!(!copied.contains("[line clipped]"));
+
+        // The preview stops at 10,000 lines; the copy must keep all of them.
+        let many = "line\n".repeat(12_000);
+        fs::write(fixture.0.join("many.txt"), &many).unwrap();
+        assert!((many.len() as u64) < TEXT_LIMIT);
+        let copied = read_copy(&fixture, "many.txt").unwrap();
+        assert_eq!(copied.lines().count(), 12_000);
+        assert_eq!(copied, many);
+    }
+
+    #[test]
+    fn copy_refuses_files_over_the_text_limit_without_a_partial_copy() {
+        let fixture = Fixture::new();
+        fs::write(fixture.0.join("exact.txt"), vec![b'a'; TEXT_LIMIT as usize]).unwrap();
+        assert_eq!(
+            read_copy(&fixture, "exact.txt").unwrap().len() as u64,
+            TEXT_LIMIT
+        );
+        fs::write(
+            fixture.0.join("big.txt"),
+            vec![b'a'; TEXT_LIMIT as usize + 1],
+        )
+        .unwrap();
+        let error = read_copy(&fixture, "big.txt").unwrap_err();
+        assert!(error.contains("Too large to copy") && error.contains("1 MiB"));
+    }
+
+    #[test]
+    fn copy_refuses_binary_and_non_utf8_content() {
+        let fixture = Fixture::new();
+        for (name, bytes) in [
+            ("nul.bin", b"a\0b".to_vec()),
+            ("latin1.txt", b"caf\xe9\n".to_vec()),
+            ("escape.txt", b"\x1b[31mred\x1b[0m\n".to_vec()),
+            ("opaque.bin", vec![0, 1, 2, 255]),
+        ] {
+            fs::write(fixture.0.join(name), bytes).unwrap();
+            let error = read_copy(&fixture, name).unwrap_err();
+            assert!(error.contains("Binary"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn copy_refuses_symlinks_and_paths_outside_the_worktree() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        fs::write(outside.0.join("secret.txt"), "secret").unwrap();
+        fs::write(fixture.0.join("real.txt"), "inside").unwrap();
+        // The link's target carries a matching identity, so only the no-follow
+        // open stands between the link and the copy.
+        symlink(outside.0.join("secret.txt"), fixture.0.join("link.txt")).unwrap();
+        let secret = identity_of(&outside.0.join("secret.txt"));
+        assert!(read_text(&fixture.0, &fixture.0.join("link.txt"), secret).is_err());
+        symlink(fixture.0.join("real.txt"), fixture.0.join("inner.txt")).unwrap();
+        let real = identity_of(&fixture.0.join("real.txt"));
+        assert!(read_text(&fixture.0, &fixture.0.join("inner.txt"), real).is_err());
+        symlink(&outside.0, fixture.0.join("dir-link")).unwrap();
+        assert!(read_text(&fixture.0, &fixture.0.join("dir-link/secret.txt"), secret).is_err());
+        assert!(
+            read_text(&fixture.0, &outside.0.join("secret.txt"), secret)
+                .unwrap_err()
+                .contains("outside")
+        );
+        assert!(read_text(&fixture.0, &fixture.0.join("sub/../../secret.txt"), secret).is_err());
+        assert_eq!(read_copy(&fixture, "real.txt").unwrap(), "inside");
+    }
+
+    #[test]
+    fn copy_refuses_a_file_that_changed_since_it_was_selected() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("note.txt");
+        fs::write(&path, "first").unwrap();
+        let selected = identity_of(&path);
+        // A replacement at the same path is a different file.
+        fs::rename(&path, fixture.0.join("old.txt")).unwrap();
+        fs::write(&path, "second").unwrap();
+        assert!(
+            read_text(&fixture.0, &path, selected)
+                .unwrap_err()
+                .contains("replaced")
+        );
+        // So is an in-place edit that changes its size.
+        let selected = identity_of(&path);
+        fs::write(&path, "second, extended").unwrap();
+        assert!(read_text(&fixture.0, &path, selected).is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(read_text(&fixture.0, &path, selected).is_err());
+    }
+
+    #[test]
+    fn copy_block_is_decided_from_the_listing() {
+        let identity = |length| FileIdentity {
+            device: 1,
+            inode: 2,
+            length,
+            modified_seconds: 3,
+            modified_nanoseconds: 4,
+        };
+        assert_eq!(
+            copy_block(Path::new("a/main.rs"), identity(TEXT_LIMIT)),
+            None
+        );
+        assert_eq!(copy_block(Path::new("a/empty"), identity(0)), None);
+        assert!(
+            copy_block(Path::new("a/big.log"), identity(TEXT_LIMIT + 1))
+                .unwrap()
+                .contains("over 1 MiB")
+        );
+        for name in ["pic.png", "PHOTO.JPG", "scan.Pdf", "icon.ico"] {
+            assert!(
+                copy_block(Path::new(name), identity(10))
+                    .unwrap()
+                    .contains("Images and PDFs"),
+                "{name}"
+            );
+        }
+        // An unrecognized extension is only judged by reading it.
+        assert_eq!(copy_block(Path::new("a/data.bin"), identity(10)), None);
     }
 
     fn png(width: u32, height: u32) -> Vec<u8> {

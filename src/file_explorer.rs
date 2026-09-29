@@ -575,12 +575,13 @@ enum Mode {
     Hidden,
     RevealRoot,
     Copy,
+    CopyContents,
     Reveal,
     Edit,
     Open,
 }
 
-const FOCUS_ORDER: [Mode; 10] = [
+const FOCUS_ORDER: [Mode; 11] = [
     Mode::Search,
     Mode::Tree,
     Mode::Preview,
@@ -588,6 +589,7 @@ const FOCUS_ORDER: [Mode; 10] = [
     Mode::Hidden,
     Mode::RevealRoot,
     Mode::Copy,
+    Mode::CopyContents,
     Mode::Reveal,
     Mode::Edit,
     Mode::Open,
@@ -724,6 +726,77 @@ fn open_refusal(root: &Path, path: &Path) -> Option<String> {
     }
 }
 
+/// A message under the selected path. Refusals show in gold; a confirmation
+/// that something was done shows in cyan and clears itself.
+struct Notice {
+    text: String,
+    confirmation: bool,
+}
+
+impl Notice {
+    fn refusal(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            confirmation: false,
+        }
+    }
+}
+
+const CONFIRMATION_LIFETIME: Duration = Duration::from_secs(4);
+
+/// Why Copy Contents is unavailable for this entry, if it is. `preview` is
+/// what the pane shows for this same file, once it has arrived; the read at
+/// click time still decides, so a preview that is missing or stale never
+/// allows anything the read would refuse.
+fn copy_contents_refusal(
+    kind: EntryKind,
+    identity: Option<FileIdentity>,
+    path: &Path,
+    preview: Option<&PreviewState>,
+) -> Option<&'static str> {
+    match kind {
+        EntryKind::File => {}
+        EntryKind::Directory => return Some("Select a file to copy its contents"),
+        EntryKind::Symlink => return Some("Symbolic links cannot be copied"),
+        EntryKind::Other => return Some("Only regular files can be copied"),
+    }
+    let Some(identity) = identity else {
+        return Some("Cannot verify this file. Refresh and try again.");
+    };
+    if let Some(reason) = file_preview::copy_block(path, identity) {
+        return Some(reason);
+    }
+    // Images, PDFs and oversize files are ruled out above, so the only message
+    // the preview shows for a regular file is its binary-content one.
+    match preview {
+        Some(PreviewState::Ready(PreviewContent::Message(_))) => Some("Binary file"),
+        _ => None,
+    }
+}
+
+/// "Copied 214 lines (6.1 KiB)" for the confirmation after a copy.
+fn copy_summary(text: &str) -> String {
+    let bytes = text.len() as u64;
+    let size = if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        // Tenths of a KiB, rounded, so nearly 1 MiB reads as 1.0 MiB and not
+        // 1024.0 KiB.
+        let tenths = (bytes * 10 + 512) / 1024;
+        if tenths < 10_240 {
+            format!("{}.{} KiB", tenths / 10, tenths % 10)
+        } else {
+            let tenths = (bytes * 10 + 524_288) / 1_048_576;
+            format!("{}.{} MiB", tenths / 10, tenths % 10)
+        }
+    };
+    match text.lines().count() {
+        0 => format!("Copied an empty file ({size})"),
+        1 => format!("Copied 1 line ({size})"),
+        lines => format!("Copied {lines} lines ({size})"),
+    }
+}
+
 /// GPUI keeps an image's decoded atlas tiles until told to drop them.
 /// Deferred so it also reaches the window whose update is running.
 fn release_image(image: Arc<RenderImage>, cx: &mut App) {
@@ -751,8 +824,10 @@ pub struct FileExplorer {
     preview_kind: Option<EntryKind>,
     /// The one PDF the user has asked to render.
     explicit_pdf: Option<PathBuf>,
-    /// Why the last action was refused.
-    notice: Option<String>,
+    /// Why the last action was refused, or that it worked.
+    notice: Option<Notice>,
+    /// The Copy Contents read in flight. Starting another drops it.
+    copy_task: Option<Task<()>>,
     split_ratio: f32,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     resizing: bool,
@@ -810,6 +885,7 @@ impl FileExplorer {
             preview_kind: None,
             explicit_pdf: None,
             notice: None,
+            copy_task: None,
             split_ratio: 0.36,
             bounds: Rc::new(Cell::new(Bounds::default())),
             resizing: false,
@@ -1131,6 +1207,79 @@ impl FileExplorer {
             .and_then(|row| row.identity.map(|identity| (row.path.clone(), identity)))
     }
 
+    fn copy_contents_refusal(&self) -> Option<&'static str> {
+        let Some(selected) = &self.selected else {
+            return Some("Select a file to copy its contents");
+        };
+        let Some((kind, identity)) = self.rows().iter().find_map(|row| match row.kind {
+            RowKind::Entry(kind) if &row.path == selected => Some((kind, row.identity)),
+            _ => None,
+        }) else {
+            return Some("Select a file to copy its contents");
+        };
+        // A preview still loading for another file says nothing about this one.
+        let preview = (self.preview_path.as_ref() == Some(selected)).then_some(&self.preview);
+        copy_contents_refusal(kind, identity, selected, preview)
+    }
+
+    /// Copy the selected file's full text, not the clipped preview lines. The
+    /// file is read again off the UI thread, and only if it is still the one
+    /// that was selected.
+    fn copy_contents(&mut self, cx: &mut Context<Self>) {
+        if let Some(reason) = self.copy_contents_refusal() {
+            self.notice = Some(Notice::refusal(reason));
+            return;
+        }
+        let (Some(root), Some((path, identity))) = (&self.root, self.selected_editable()) else {
+            return;
+        };
+        let root_path = root.path.clone();
+        let (read_root, read_path) = (root_path.clone(), path.clone());
+        let work = cx
+            .background_executor()
+            .spawn(async move { file_preview::read_text(&read_root, &read_path, identity) });
+        self.copy_task = Some(cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let confirmed = this
+                .update(cx, |explorer, cx| {
+                    // The user moved on; copying now would surprise them.
+                    if explorer.root.as_ref().map(|root| &root.path) != Some(&root_path)
+                        || explorer.selected.as_ref() != Some(&path)
+                    {
+                        return false;
+                    }
+                    let confirmed = result.is_ok();
+                    explorer.notice = Some(match result {
+                        Ok(text) => {
+                            let summary = copy_summary(&text);
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            Notice {
+                                text: summary,
+                                confirmation: true,
+                            }
+                        }
+                        Err(error) => Notice::refusal(error),
+                    });
+                    cx.notify();
+                    confirmed
+                })
+                .unwrap_or(false);
+            if confirmed {
+                cx.background_executor().timer(CONFIRMATION_LIFETIME).await;
+                let _ = this.update(cx, |explorer, cx| {
+                    if explorer
+                        .notice
+                        .as_ref()
+                        .is_some_and(|notice| notice.confirmation)
+                    {
+                        explorer.notice = None;
+                        cx.notify();
+                    }
+                });
+            }
+        }));
+    }
+
     fn action(&mut self, mode: Mode, cx: &mut Context<Self>) {
         self.notice = None;
         match mode {
@@ -1160,11 +1309,12 @@ impl FileExplorer {
             Mode::Open => {
                 if let (Some(root), Some(path)) = (&self.root, &self.selected) {
                     match open_refusal(&root.path, path) {
-                        Some(reason) => self.notice = Some(reason),
+                        Some(reason) => self.notice = Some(Notice::refusal(reason)),
                         None => cx.emit(FileExplorerEvent::Open(path.clone())),
                     }
                 }
             }
+            Mode::CopyContents => self.copy_contents(cx),
             Mode::Reveal | Mode::Copy => {
                 if let Some(path) = &self.selected {
                     match mode {
@@ -1389,10 +1539,16 @@ impl FileExplorer {
         let active = self.focus.is_focused(window) && self.mode == mode;
         let available = match mode {
             Mode::Edit => self.selected_editable().is_some(),
+            Mode::CopyContents => self.copy_contents_refusal().is_none(),
             Mode::Copy | Mode::Reveal | Mode::Open => self.selected.is_some(),
             _ => self.root.is_some(),
         };
-        div()
+        // Copy Contents has limits the label cannot show, so it always explains.
+        let tooltip = (mode == Mode::CopyContents).then(|| {
+            self.copy_contents_refusal()
+                .unwrap_or("Copy the whole file as text (up to 1 MiB)")
+        });
+        let button = div()
             .id(id)
             .px(px(7.0))
             .py(px(5.0))
@@ -1407,11 +1563,18 @@ impl FileExplorer {
             } else {
                 colors.muted
             }))
-            .child(label.to_owned())
+            .child(label.to_owned());
+        let button = match tooltip {
+            Some(text) => button.tooltip(move |_, cx| cx.new(|_| ExplorerTooltip(text)).into()),
+            None => button,
+        };
+        button
             .on_click(cx.listener(move |view, _, window, cx| {
                 view.mode = mode;
                 view.focus.focus(window, cx);
-                if available {
+                // A disabled Copy Contents says why on click, as it does on
+                // Enter, since a tooltip needs a hover.
+                if available || mode == Mode::CopyContents {
                     view.action(mode, cx);
                 }
                 cx.notify();
@@ -1868,6 +2031,23 @@ impl FileExplorer {
     }
 }
 
+struct ExplorerTooltip(&'static str);
+impl Render for ExplorerTooltip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme::palette(cx);
+        div()
+            .px(px(8.0))
+            .py(px(5.0))
+            .bg(rgb(colors.panel_active))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .text_color(rgb(colors.text))
+            .font_family("Menlo")
+            .text_size(px(10.0))
+            .child(self.0)
+    }
+}
+
 impl Render for FileExplorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
@@ -2036,11 +2216,15 @@ impl Render for FileExplorer {
                             .text_size(px(10.0))
                             .child(relative),
                     )
-                    .children(self.notice.clone().map(|notice| {
+                    .children(self.notice.as_ref().map(|notice| {
                         div()
-                            .text_color(rgb(colors.gold))
+                            .text_color(rgb(if notice.confirmation {
+                                colors.cyan
+                            } else {
+                                colors.gold
+                            }))
                             .text_size(px(10.0))
-                            .child(notice)
+                            .child(notice.text.clone())
                     }))
                     .child(
                         div()
@@ -2059,6 +2243,13 @@ impl Render for FileExplorer {
                                 "file-explorer-copy",
                                 "COPY PATH",
                                 Mode::Copy,
+                                window,
+                                cx,
+                            ))
+                            .child(self.button(
+                                "file-explorer-copy-contents",
+                                "COPY CONTENTS",
+                                Mode::CopyContents,
                                 window,
                                 cx,
                             ))
@@ -2831,5 +3022,92 @@ mod tests {
     fn keyboard_selection_is_debounced_and_clicks_are_not() {
         assert!(Intent::Passive.delay() >= Duration::from_millis(100));
         assert_eq!(Intent::Explicit.delay(), Duration::ZERO);
+    }
+
+    #[test]
+    fn copy_contents_is_offered_only_for_small_text_files() {
+        let fixture = Fixture::new();
+        let identity = |name: &str, bytes: &[u8]| {
+            let path = fixture.0.join(name);
+            fs::write(&path, bytes).unwrap();
+            (
+                path.clone(),
+                Some(FileIdentity::of(&fs::metadata(&path).unwrap())),
+            )
+        };
+        let text = PreviewState::Ready(PreviewContent::Text {
+            lines: Arc::new(vec!["fn main() {}".into()]),
+            truncated: false,
+            markdown: false,
+        });
+        let binary = PreviewState::Ready(PreviewContent::Message(
+            "Binary or non-UTF-8 content cannot be previewed safely.".into(),
+        ));
+        let (path, id) = identity("main.rs", b"fn main() {}\n");
+        let refusal = |kind, id, path: &Path, preview: Option<&PreviewState>| {
+            copy_contents_refusal(kind, id, path, preview)
+        };
+        assert_eq!(refusal(EntryKind::File, id, &path, Some(&text)), None);
+        // The read decides while the preview is missing or still loading.
+        assert_eq!(refusal(EntryKind::File, id, &path, None), None);
+        assert_eq!(
+            refusal(EntryKind::File, id, &path, Some(&PreviewState::Loading)),
+            None
+        );
+        assert_eq!(
+            refusal(EntryKind::File, id, &path, Some(&binary)),
+            Some("Binary file")
+        );
+
+        // One byte over 1 MiB, without writing a megabyte of data.
+        let big = fixture.0.join("big.log");
+        fs::File::create(&big)
+            .unwrap()
+            .set_len(1024 * 1024 + 1)
+            .unwrap();
+        let big_id = Some(FileIdentity::of(&fs::metadata(&big).unwrap()));
+        assert_eq!(
+            refusal(EntryKind::File, big_id, &big, Some(&text)),
+            Some("Too large to copy (over 1 MiB)")
+        );
+        let (limit, limit_id) = identity("limit.txt", &vec![b'a'; 1024 * 1024]);
+        assert_eq!(refusal(EntryKind::File, limit_id, &limit, None), None);
+
+        for name in ["pic.png", "scan.PDF"] {
+            let (path, id) = identity(name, b"x");
+            assert!(
+                refusal(EntryKind::File, id, &path, None)
+                    .unwrap()
+                    .contains("Images and PDFs"),
+                "{name}"
+            );
+        }
+        assert!(refusal(EntryKind::File, None, &path, Some(&text)).is_some());
+        for kind in [EntryKind::Directory, EntryKind::Symlink, EntryKind::Other] {
+            assert!(refusal(kind, id, &path, Some(&text)).is_some());
+        }
+    }
+
+    #[test]
+    fn copy_summary_counts_lines_and_sizes_the_text() {
+        assert_eq!(copy_summary(""), "Copied an empty file (0 B)");
+        assert_eq!(copy_summary("one"), "Copied 1 line (3 B)");
+        assert_eq!(copy_summary("one\r\ntwo\r\n"), "Copied 2 lines (10 B)");
+        assert_eq!(copy_summary("\n\n\n"), "Copied 3 lines (3 B)");
+        let text = "x".repeat(70) + "\n";
+        assert_eq!(
+            copy_summary(&text.repeat(88)),
+            "Copied 88 lines (6.1 KiB)" // 6,248 bytes
+        );
+        assert_eq!(copy_summary(&"é".repeat(512)), "Copied 1 line (1.0 KiB)");
+        // Just under 1 MiB must not read as 1024.0 KiB.
+        assert_eq!(
+            copy_summary(&"a".repeat(1024 * 1024 - 10)),
+            "Copied 1 line (1.0 MiB)"
+        );
+        assert_eq!(
+            copy_summary(&"a".repeat(1024 * 1024)),
+            "Copied 1 line (1.0 MiB)"
+        );
     }
 }
