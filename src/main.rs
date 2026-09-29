@@ -995,14 +995,20 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Entity<Terminal>, String> {
-        let command = self.sessions.attach_command(&shell.id)?;
-        let mut options = Self::terminal_options(
-            command,
-            shell.cwd.clone(),
-            Self::terminal_theme(&self.settings, &self.appearance),
-        );
-        options.focus_on_spawn = focus_on_spawn;
-        Terminal::spawn(options, window, cx)
+        // A restoring app leaves these where a hang in the terminal library
+        // would otherwise leave no trace (see `runtime::RestoreWatchdog`).
+        runtime::note_attach_started(&shell.id, &shell.cwd);
+        let spawned = self.sessions.attach_command(&shell.id).and_then(|command| {
+            let mut options = Self::terminal_options(
+                command,
+                shell.cwd.clone(),
+                Self::terminal_theme(&self.settings, &self.appearance),
+            );
+            options.focus_on_spawn = focus_on_spawn;
+            Terminal::spawn(options, window, cx)
+        });
+        runtime::note_attach_finished(&shell.id, spawned.is_ok());
+        spawned
     }
 
     fn shell_tab(&mut self, shell: ShellSession, terminal: Option<Entity<Terminal>>) -> Tab {
@@ -6506,6 +6512,10 @@ fn main() {
     let mut registration = runtime
         .register(state_home.clone())
         .unwrap_or_else(|error| exit_startup(error));
+    // A replacement that cannot finish restoring ends itself; see the watchdog.
+    let watchdog = restore
+        .as_ref()
+        .map(|snapshot| registration.start_restore_watchdog(snapshot));
 
     application().run(move |cx: &mut App| {
         cx.set_app_identity("dev.riwork.shell", "RiWork");
@@ -6629,6 +6639,7 @@ fn main() {
         cx.spawn(async move |cx| {
             let mut reload = None;
             let mut restore = restore;
+            let mut watchdog = watchdog;
             let restore_started = Instant::now();
             let mut ticks = 0u32;
             let mut publish_due = false;
@@ -6648,13 +6659,24 @@ fn main() {
                         if windows.len() == snapshot.windows.len()
                             && windows.iter().all(|window| window.layout.is_some())
                         {
+                            // The watchdog may already be ending this process,
+                            // which must then not confirm anything.
+                            if watchdog.as_ref().is_some_and(|w| !w.begin_confirm()) {
+                                return;
+                            }
                             if let Err(error) = registration
                                 .publish_windows(windows)
                                 .and_then(|_| runtime.mark_restore_ready(snapshot, &registration))
                             {
                                 eprintln!("riwork: {error}");
+                                if let Some(watchdog) = &watchdog {
+                                    watchdog.abort_confirm();
+                                }
                                 cx.quit();
                                 return;
+                            }
+                            if let Some(watchdog) = watchdog.take() {
+                                watchdog.finish_confirm();
                             }
                             restore = None;
                         } else {

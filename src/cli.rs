@@ -6,7 +6,6 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
 };
 
 use serde::Serialize;
@@ -384,19 +383,20 @@ fn reload_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     let executable = gui_executable()?;
     let manager = crate::runtime::RuntimeManager::open_default()?;
     let report = manager.reload_all(&executable)?;
-    let report = manager.wait_for_reload(report, Duration::from_secs(30))?;
+    let report = manager.wait_for_reload(report, crate::runtime::RELOAD_WAIT)?;
     if report.failed > 0 || report.pending > 0 {
         if json {
             print_json(&json!({"reload":report,"session":null}))?;
         }
         return Err(format!(
-            "Reload incomplete: {} restored, {} failed, {} pending. Existing apps remain open where restoration failed.{}",
+            "Reload incomplete: {} restored, {} failed, {} pending. Existing apps remain open where restoration failed.{}{}",
             report.reloaded,
             report.failed,
             report.pending,
             unreadable_reload_error(&report)
                 .map(|note| format!(" {note}"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            reload_failure_details(&report)
         ));
     }
     let session = if session {
@@ -437,11 +437,14 @@ fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             return Ok(None);
         }
         let report = manager.reload_all(&executable)?;
-        let report = manager.wait_for_reload(report, Duration::from_secs(30))?;
+        let report = manager.wait_for_reload(report, crate::runtime::RELOAD_WAIT)?;
         if report.failed > 0 || report.pending > 0 {
             return Err(format!(
-                "{} restored, {} failed, {} pending",
-                report.reloaded, report.failed, report.pending
+                "{} restored, {} failed, {} pending{}",
+                report.reloaded,
+                report.failed,
+                report.pending,
+                reload_failure_details(&report)
             ));
         }
         Ok(Some(report))
@@ -457,6 +460,8 @@ fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 .as_ref()
                 .map(|previous| format!(" The previous build is kept at {}.", previous.display()))
                 .unwrap_or_default();
+            // An app's own reason already ends in a full stop.
+            let error = error.trim_end_matches('.');
             return Err(format!(
                 "Installed {}, but reload failed: {error}. Retry `riwork reload`.{rollback} Build log: {}",
                 build.bundle.display(),
@@ -479,6 +484,30 @@ fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         .as_ref()
         .and_then(unreadable_reload_error)
         .map_or(Ok(()), Err)
+}
+
+/// Why each app that did not reload failed, one line per app, each starting on
+/// a new line. The apps say it themselves, including where a replacement hung
+/// and which diagnostic file to read; without this only the counts are shown.
+fn reload_failure_details(report: &crate::runtime::ReloadReport) -> String {
+    use crate::runtime::ReloadState;
+    report
+        .instances
+        .iter()
+        .filter(|instance| {
+            matches!(
+                instance.state,
+                ReloadState::Failed | ReloadState::TimedOut | ReloadState::Busy
+            )
+        })
+        .map(|instance| {
+            format!(
+                "\nRiWork app (pid {}): {}",
+                instance.pid,
+                terminal_safe(&instance.message)
+            )
+        })
+        .collect()
 }
 
 fn take_update_profile(args: &mut Vec<String>) -> Result<Option<&'static str>, String> {
@@ -2049,9 +2078,9 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_hook_command, frozen_codex_usage_home, opens_workspace, reload_summary,
-        schedule_line, scoped_codex_usage_home, take_orchestrator_project, take_update_profile,
-        terminal_safe, unknown_invocation, unreadable_reload_error,
+        agent_hook_command, frozen_codex_usage_home, opens_workspace, reload_failure_details,
+        reload_summary, schedule_line, scoped_codex_usage_home, take_orchestrator_project,
+        take_update_profile, terminal_safe, unknown_invocation, unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
@@ -2513,6 +2542,41 @@ mod tests {
             "Reloaded 2 RiWork apps (3 windows). Running shells and agents were preserved."
         );
         assert!(unreadable_reload_error(&mixed).is_some());
+    }
+
+    #[test]
+    fn a_failed_reload_shows_why_each_app_failed_and_where_it_hung() {
+        use crate::runtime::ReloadState;
+        let mut report = reload_report(0, &[2, 1, 1, 1]);
+        for (instance, (state, pid, message)) in report.instances.iter_mut().zip([
+            (ReloadState::Reloaded, 10, "restored"),
+            (
+                ReloadState::Failed,
+                11,
+                "Replacement RiWork did not confirm restoration within 25 seconds: stuck attaching terminal for session abc (cwd /work/x); see /runtime/diagnostics/reload-1.txt. The unresponsive replacement (pid 99) was stopped. Existing windows remain open.",
+            ),
+            (ReloadState::TimedOut, 12, "GUI has not confirmed restoration; its existing windows were left running."),
+            (ReloadState::Busy, 13, "A reload is already in progress for this GUI."),
+        ]) {
+            instance.state = state;
+            instance.pid = pid;
+            instance.message = message.to_owned();
+        }
+        let details = reload_failure_details(&report);
+        assert_eq!(
+            details.lines().collect::<Vec<_>>(),
+            vec![
+                "",
+                "RiWork app (pid 11): Replacement RiWork did not confirm restoration within 25 seconds: stuck attaching terminal for session abc (cwd /work/x); see /runtime/diagnostics/reload-1.txt. The unresponsive replacement (pid 99) was stopped. Existing windows remain open.",
+                "RiWork app (pid 12): GUI has not confirmed restoration; its existing windows were left running.",
+                "RiWork app (pid 13): A reload is already in progress for this GUI.",
+            ]
+        );
+        // Nothing to add when everything reloaded.
+        assert_eq!(reload_failure_details(&reload_report(0, &[1])), "");
+        // A message cannot make the terminal act on it.
+        report.instances[1].message = "bad \u{1b}[2J text".to_owned();
+        assert!(reload_failure_details(&report).contains("bad \\u{1b}[2J text"));
     }
 
     #[test]
