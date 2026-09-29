@@ -41,6 +41,11 @@ targets:
       configs:
         Debug:
           INFOPLIST_FILE: RiWorkRemote/Info-Debug.plist
+    # ITSAppUsesNonExemptEncryption is omitted from info.properties on purpose.
+    # xcodegen writes Info.plist from the properties below, then postGenCommand
+    # copies it to Info-Debug.plist and adds only the Debug ATS exception.
+    # Leave the key out of both plists until docs/export-compliance.md records
+    # an account-holder outcome. A Boolean here would be copied into both.
     info:
       path: RiWorkRemote/Info.plist
       properties:
