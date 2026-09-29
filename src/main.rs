@@ -28,6 +28,7 @@ mod sessions;
 mod settings;
 mod status_bar;
 mod store;
+mod terminal_lifecycle;
 mod theme;
 mod update;
 mod usage;
@@ -121,18 +122,31 @@ const FOCUS_MAX_WIDTH: f32 = 1100.0;
 const FOCUS_BOTTOM_MARGIN: f32 = 0.30;
 const FOCUS_TOOLBAR_HEIGHT: f32 = 32.0;
 const STATUS_BAR_HEIGHT: f32 = 22.0;
+/// Attach attempts a tab makes on its own before it waits to be selected.
+const ATTACH_RETRIES: u8 = 3;
+const ATTACH_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 struct Tab {
     id: TabId,
     title: String,
     content: TabContent,
+    /// When the tab last went off screen; `None` while it is shown.
+    hidden_since: Option<Instant>,
 }
 
 enum TabContent {
     Shell {
         shell_id: String,
         worktree_id: Option<String>,
-        terminal: Entity<Terminal>,
+        /// The Ghostty surface, and with it the tmux client. Absent while the tab is
+        /// released (hidden for a while) or has not been shown yet; the tmux session
+        /// does not depend on it, and a new terminal attaches to the same session.
+        terminal: Option<Entity<Terminal>>,
+        /// Why the last attach failed. Kept so a tab that cannot attach is not
+        /// retried on every frame; a few timed retries follow, and selecting the tab
+        /// tries again.
+        attach_error: Option<String>,
+        attach_failures: u8,
     },
     Panel(PanelKind),
 }
@@ -163,9 +177,22 @@ impl Tab {
 
     fn terminal(&self) -> Option<&Entity<Terminal>> {
         match &self.content {
-            TabContent::Shell { terminal, .. } => Some(terminal),
+            TabContent::Shell { terminal, .. } => terminal.as_ref(),
             _ => None,
         }
+    }
+
+    /// Drop the terminal, which frees its Ghostty surface, the surface's threads and
+    /// render targets, and detaches its tmux client. The session keeps running.
+    fn release_terminal(&mut self, cx: &mut Context<Workspace>) -> bool {
+        let TabContent::Shell { terminal, .. } = &mut self.content else {
+            return false;
+        };
+        let Some(terminal) = terminal.take() else {
+            return false;
+        };
+        terminal.update(cx, |terminal, _| terminal.set_visible(false));
+        true
     }
 
     fn set_visible(&self, visible: bool, cx: &mut Context<Workspace>) {
@@ -294,6 +321,11 @@ struct Workspace {
     resizing: Option<SplitResize>,
     tab_dragging: bool,
     terminal_snapshots: BTreeMap<TabId, Arc<gpui::RenderImage>>,
+    /// The pending pass that releases hidden terminals; replaced whenever the set
+    /// of hidden tabs changes.
+    terminal_release: Option<gpui::Task<()>>,
+    /// The pending retry of tabs whose terminal failed to attach.
+    attach_retry: Option<gpui::Task<()>>,
     search_focused: bool,
     search: String,
     search_marked: Option<Range<usize>>,
@@ -740,6 +772,8 @@ impl Workspace {
             resizing: None,
             tab_dragging: false,
             terminal_snapshots: BTreeMap::new(),
+            terminal_release: None,
+            attach_retry: None,
             search_focused: false,
             search: String::new(),
             search_marked: None,
@@ -912,26 +946,27 @@ impl Workspace {
         .detach();
     }
 
-    fn attach_session(
-        &mut self,
-        pane_id: PaneId,
-        shell: ShellSession,
+    /// A terminal attached to `shell`'s tmux session. New tabs, tabs coming back from
+    /// release and window restores all start theirs here, so size, theme and
+    /// environment cannot differ between them.
+    fn spawn_terminal(
+        &self,
+        shell: &ShellSession,
+        focus_on_spawn: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<(), String> {
+    ) -> Result<Entity<Terminal>, String> {
         let command = self.sessions.attach_command(&shell.id)?;
-        let terminal = Terminal::spawn(
-            Self::terminal_options(
-                command,
-                shell.cwd.clone(),
-                Self::terminal_theme(&self.settings, &self.appearance),
-            ),
-            window,
-            cx,
-        )?;
-        // The new terminal takes focus on spawn.
-        self.search_focused = false;
-        self.search_marked = None;
+        let mut options = Self::terminal_options(
+            command,
+            shell.cwd.clone(),
+            Self::terminal_theme(&self.settings, &self.appearance),
+        );
+        options.focus_on_spawn = focus_on_spawn;
+        Terminal::spawn(options, window, cx)
+    }
+
+    fn shell_tab(&mut self, shell: ShellSession, terminal: Option<Entity<Terminal>>) -> Tab {
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
         let worktree_name = shell
@@ -963,22 +998,40 @@ impl Workspace {
             )
         };
         let title = contextual_shell_title(title, &shell, &self.project_id, &self.state);
-        let pane = self
-            .panes
-            .get_mut(&pane_id)
-            .ok_or_else(|| format!("Pane {pane_id} no longer exists"))?;
-        for tab in &pane.tabs {
-            tab.set_visible(false, cx);
-        }
-        pane.tabs.push(Tab {
+        Tab {
             id: tab_id,
             title,
             content: TabContent::Shell {
                 shell_id: shell.id,
                 worktree_id: shell.worktree_id,
                 terminal,
+                attach_error: None,
+                attach_failures: 0,
             },
-        });
+            hidden_since: None,
+        }
+    }
+
+    fn attach_session(
+        &mut self,
+        pane_id: PaneId,
+        shell: ShellSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let terminal = self.spawn_terminal(&shell, true, window, cx)?;
+        // The new terminal takes focus on spawn.
+        self.search_focused = false;
+        self.search_marked = None;
+        let tab = self.shell_tab(shell, Some(terminal));
+        let pane = self
+            .panes
+            .get_mut(&pane_id)
+            .ok_or_else(|| format!("Pane {pane_id} no longer exists"))?;
+        for existing in &pane.tabs {
+            existing.set_visible(false, cx);
+        }
+        pane.tabs.push(tab);
         pane.active = pane.tabs.len() - 1;
         self.active_pane = pane_id;
         self.notice = None;
@@ -988,6 +1041,20 @@ impl Workspace {
         }
         cx.notify();
         Ok(())
+    }
+
+    /// Add a shell's tab without a terminal. Restoring a window opens every saved
+    /// tab, but only each pane's active one is ever seen, so the others wait for a
+    /// terminal until they are shown.
+    fn restore_shell_tab(&mut self, pane_id: PaneId, shell: ShellSession) {
+        let tab = self.shell_tab(shell, None);
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
+            return;
+        };
+        pane.tabs.push(tab);
+        pane.active = pane.tabs.len() - 1;
+        self.active_pane = pane_id;
+        self.session_refresh_generation = self.session_refresh_generation.wrapping_add(1);
     }
 
     /// `changed_only` ignores a size the window already settled at, so the frame it
@@ -1064,7 +1131,7 @@ impl Workspace {
                 .panes
                 .get(&self.active_pane)
                 .and_then(|pane| pane.tabs.get(pane.active))
-                .is_some_and(|tab| tab.terminal().is_some());
+                .is_some_and(|tab| tab.shell_id().is_some());
         let remember_changed = settings.remember_window_size != self.settings.remember_window_size;
         self.settings = settings;
         self.appearance = appearance;
@@ -1079,6 +1146,11 @@ impl Workspace {
                         shell_id, terminal, ..
                     } = &mut tab.content
                     else {
+                        continue;
+                    };
+                    // A released tab has no client to update; it attaches with the
+                    // new colors when it is shown again.
+                    let Some(terminal) = terminal else {
                         continue;
                     };
                     if let Some(theme) = next_theme {
@@ -1164,6 +1236,7 @@ impl Workspace {
                 id,
                 title: Self::panel_title(panel).to_owned(),
                 content: TabContent::Panel(panel),
+                hidden_since: None,
             });
             pane.active = pane.tabs.len() - 1;
         }
@@ -1331,7 +1404,7 @@ impl Workspace {
                     .panes
                     .iter()
                     .rev()
-                    .find(|(_, pane)| pane.tabs.iter().any(|tab| tab.terminal().is_some()))
+                    .find(|(_, pane)| pane.tabs.iter().any(|tab| tab.shell_id().is_some()))
                     .map(|(id, _)| *id)
                     .unwrap_or(self.active_pane);
                 self.open_panel(PanelKind::ProjectSettings, pane_id, window, cx);
@@ -1870,8 +1943,13 @@ impl Workspace {
     fn begin_tab_drag(&mut self, cx: &mut Context<Self>) {
         self.release_snapshots(cx);
         self.tab_dragging = true;
-        for pane in self.panes.values() {
+        for (pane_id, pane) in &self.panes {
             if let Some(tab) = pane.tabs.get(pane.active) {
+                // Only what is on screen is frozen. Focus mode hides the other panes'
+                // terminals, and a released one has nothing to capture.
+                if !self.tab_is_shown(*pane_id, pane.active, pane.active) {
+                    continue;
+                }
                 if let Some(terminal) = tab.terminal() {
                     let snapshot = terminal.update(cx, |terminal, _| {
                         let snapshot = terminal.snapshot().ok();
@@ -1900,6 +1978,241 @@ impl Workspace {
                 tab.set_visible(index == pane.active, cx);
             }
         }
+    }
+
+    /// Whether the tab at `index` of a pane is on screen.
+    fn tab_is_shown(&self, pane_id: PaneId, pane_active: usize, index: usize) -> bool {
+        terminal_lifecycle::is_shown(
+            index,
+            pane_active,
+            pane_id,
+            self.active_pane,
+            self.focus_mode,
+        )
+    }
+
+    /// Show the terminals that are on screen, hide the rest, and note when each tab
+    /// went off screen. Returns whether any tab changed between shown and hidden.
+    fn sync_tab_visibility(&mut self, cx: &mut Context<Self>) -> bool {
+        let now = Instant::now();
+        let mut changed = false;
+        for (pane_id, pane) in &mut self.panes {
+            for (index, tab) in pane.tabs.iter_mut().enumerate() {
+                let shown = terminal_lifecycle::is_shown(
+                    index,
+                    pane.active,
+                    *pane_id,
+                    self.active_pane,
+                    self.focus_mode,
+                );
+                tab.set_visible(shown && !self.tab_dragging, cx);
+                if shown {
+                    if tab.hidden_since.take().is_some() {
+                        changed = true;
+                        // Bringing a tab back is asking for its terminal again, by
+                        // whatever path it came back, so an old failure is forgotten.
+                        if let TabContent::Shell {
+                            attach_error,
+                            attach_failures,
+                            ..
+                        } = &mut tab.content
+                        {
+                            *attach_error = None;
+                            *attach_failures = 0;
+                        }
+                    }
+                } else if tab.hidden_since.is_none() {
+                    tab.hidden_since = Some(now);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Give a shell tab that has no terminal a new one attached to its session.
+    /// Returns whether it has one afterwards. A failure is remembered on the tab
+    /// so it is not retried on every frame.
+    fn attach_terminal(
+        &mut self,
+        pane_id: PaneId,
+        tab_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(shell_id) = self
+            .panes
+            .get(&pane_id)
+            .and_then(|pane| pane.tabs.iter().find(|tab| tab.id == tab_id))
+            .and_then(|tab| match &tab.content {
+                TabContent::Shell {
+                    shell_id,
+                    terminal: None,
+                    attach_error: None,
+                    ..
+                } => Some(shell_id.clone()),
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        let result = match self.shells.iter().find(|shell| shell.id == shell_id) {
+            Some(shell) => Ok(shell.clone()),
+            None => self.sessions.get(&shell_id),
+        }
+        .and_then(|shell| self.spawn_terminal(&shell, false, window, cx));
+        let Some(TabContent::Shell {
+            terminal,
+            attach_error,
+            attach_failures,
+            ..
+        }) = self
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|pane| pane.tabs.iter_mut().find(|tab| tab.id == tab_id))
+            .map(|tab| &mut tab.content)
+        else {
+            return false;
+        };
+        match result {
+            Ok(spawned) => {
+                *terminal = Some(spawned);
+                *attach_error = None;
+                *attach_failures = 0;
+                true
+            }
+            Err(error) => {
+                *attach_error = Some(error.clone());
+                *attach_failures = attach_failures.saturating_add(1);
+                let retry = *attach_failures < ATTACH_RETRIES;
+                self.notice = Some(error);
+                if retry {
+                    self.schedule_attach_retry(cx);
+                }
+                false
+            }
+        }
+    }
+
+    /// A tab that failed to attach, say because tmux was busy while many windows
+    /// opened at once, is tried again shortly, a few times, without any click.
+    fn schedule_attach_retry(&mut self, cx: &mut Context<Self>) {
+        if self.attach_retry.is_some() {
+            return;
+        }
+        self.attach_retry = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ATTACH_RETRY_DELAY).await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.attach_retry = None;
+                for pane in workspace.panes.values_mut() {
+                    for tab in &mut pane.tabs {
+                        if let TabContent::Shell {
+                            attach_error,
+                            attach_failures,
+                            ..
+                        } = &mut tab.content
+                            && *attach_failures < ATTACH_RETRIES
+                        {
+                            *attach_error = None;
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Attach a terminal to every tab that is on screen without one: tabs restored
+    /// with their window, and tabs coming back from release.
+    fn attach_shown_terminals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let missing = self
+            .panes
+            .iter()
+            .flat_map(|(pane_id, pane)| {
+                pane.tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, tab)| {
+                        self.tab_is_shown(*pane_id, pane.active, *index)
+                            && matches!(
+                                tab.content,
+                                TabContent::Shell {
+                                    terminal: None,
+                                    attach_error: None,
+                                    ..
+                                }
+                            )
+                    })
+                    .map(|(_, tab)| (*pane_id, tab.id))
+            })
+            .collect::<Vec<_>>();
+        for (pane_id, tab_id) in missing {
+            self.attach_terminal(pane_id, tab_id, window, cx);
+        }
+    }
+
+    /// Which hidden terminals to release now and when to look again.
+    fn hidden_terminal_plan(&self) -> terminal_lifecycle::Plan {
+        let now = Instant::now();
+        let panes = self
+            .panes
+            .iter()
+            .map(|(id, pane)| terminal_lifecycle::PaneState {
+                id: *id,
+                active: pane.active,
+                tabs: pane
+                    .tabs
+                    .iter()
+                    .map(|tab| terminal_lifecycle::TabState {
+                        id: tab.id,
+                        attached: tab.terminal().is_some(),
+                        // A session that has ended, or one this window has not
+                        // heard of yet, keeps its terminal: attaching again could
+                        // not bring its last screen back.
+                        pinned: !tab.shell_id().is_some_and(|id| {
+                            self.shells
+                                .iter()
+                                .any(|shell| shell.id == id && shell.alive)
+                        }),
+                        hidden_for: tab
+                            .hidden_since
+                            .map_or(Duration::ZERO, |since| now.saturating_duration_since(since)),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        terminal_lifecycle::plan(&terminal_lifecycle::Screen {
+            panes: &panes,
+            active_pane: self.active_pane,
+            focus_mode: self.focus_mode,
+            // Dragging a tab, the pane menu and modals all run `begin_tab_drag`, which
+            // freezes the shown terminals as snapshots until they end.
+            frozen: self.tab_dragging || self.modal_open(),
+        })
+    }
+
+    /// Drop the terminals the policy gives up, which detaches their tmux clients and
+    /// frees their surfaces, then schedule the next look.
+    fn release_hidden_terminals(&mut self, cx: &mut Context<Self>) {
+        let plan = self.hidden_terminal_plan();
+        for tab_id in plan.release {
+            for pane in self.panes.values_mut() {
+                for tab in pane.tabs.iter_mut().filter(|tab| tab.id == tab_id) {
+                    tab.release_terminal(cx);
+                }
+            }
+        }
+        self.schedule_terminal_release(plan.recheck, cx);
+    }
+
+    /// Replaces any pending pass, so a burst of tab switches leaves a single timer.
+    fn schedule_terminal_release(&mut self, after: Option<Duration>, cx: &mut Context<Self>) {
+        self.terminal_release = after.map(|after| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(after).await;
+                let _ = this.update(cx, |workspace, cx| workspace.release_hidden_terminals(cx));
+            })
+        });
     }
 
     fn resize_at(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
@@ -2099,11 +2412,7 @@ impl Workspace {
                             SavedTab::Shell { shell_id } => {
                                 known_shell_ids.insert(shell_id.clone());
                                 if let Some(shell) = live_shells.get(shell_id) {
-                                    if let Err(error) =
-                                        self.attach_session(*pane_id, shell.clone(), window, cx)
-                                    {
-                                        restore_error = Some(error);
-                                    }
+                                    self.restore_shell_tab(*pane_id, shell.clone());
                                 }
                             }
                             SavedTab::Panel { panel } => self.attach_panel(*pane_id, *panel, cx),
@@ -2119,9 +2428,7 @@ impl Workspace {
                 && !known_shell_ids.contains(&shell.id)
             {
                 if let Some(shell_pane) = shell_pane {
-                    if let Err(error) = self.attach_session(shell_pane, shell.clone(), window, cx) {
-                        restore_error = Some(error);
-                    }
+                    self.restore_shell_tab(shell_pane, shell.clone());
                 }
             }
         }
@@ -2746,6 +3053,16 @@ impl Workspace {
                 .update(cx, |panel, cx| panel.focus(window, cx));
             return;
         }
+        // A tab that was released while hidden gets its terminal back here, before
+        // it is asked to take the keys.
+        if let Some(tab_id) = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .map(|tab| tab.id)
+        {
+            self.attach_terminal(self.active_pane, tab_id, window, cx);
+        }
         let terminal = self
             .panes
             .get(&self.active_pane)
@@ -2790,6 +3107,16 @@ impl Workspace {
         pane.active = index;
         for (tab_index, tab) in pane.tabs.iter().enumerate() {
             tab.set_visible(tab_index == index, cx);
+        }
+        // Choosing a tab that could not attach is asking to try again.
+        if let TabContent::Shell {
+            attach_error,
+            attach_failures,
+            ..
+        } = &mut pane.tabs[index].content
+        {
+            *attach_error = None;
+            *attach_failures = 0;
         }
         self.active_pane = pane_id;
         self.search_focused = false;
@@ -3873,7 +4200,11 @@ impl Workspace {
             })
             .map(|shell| shell.id.clone());
         let content = match pane.tabs.get(pane.active).map(|tab| &tab.content) {
-            Some(TabContent::Shell { terminal, .. }) => {
+            Some(TabContent::Shell {
+                terminal,
+                attach_error,
+                ..
+            }) => {
                 let snapshot = pane
                     .tabs
                     .get(pane.active)
@@ -3883,8 +4214,23 @@ impl Workspace {
                         Some(snapshot) => img(snapshot.clone()).size_full().into_any_element(),
                         None => div().size_full().bg(rgb(colors.bg)).into_any_element(),
                     }
-                } else {
+                } else if let Some(terminal) = terminal {
                     terminal.clone().into_any_element()
+                } else {
+                    // The terminal attaches during the frame this tab is shown in; this
+                    // is what a tab shows if that failed. tmux redraws the screen on
+                    // attach, so there is nothing to keep here.
+                    div()
+                        .size_full()
+                        .p(px(14.0))
+                        .bg(rgb(colors.bg))
+                        .text_color(rgb(colors.muted))
+                        .child(
+                            attach_error
+                                .clone()
+                                .unwrap_or_else(|| "Attaching…".to_owned()),
+                        )
+                        .into_any_element()
                 }
             }
             Some(TabContent::Panel(PanelKind::Usage)) => self.render_usage_panel(cx),
@@ -5081,15 +5427,12 @@ impl Render for Workspace {
                 self.finish_tab_drag(cx);
             }
         }
-        for (pane_id, pane) in &self.panes {
-            for (index, tab) in pane.tabs.iter().enumerate() {
-                tab.set_visible(
-                    !self.tab_dragging
-                        && index == pane.active
-                        && (!self.focus_mode || *pane_id == self.active_pane),
-                    cx,
-                );
-            }
+        // Every tab on screen needs a terminal before the panes are drawn: tabs restored
+        // with the window, and tabs that were released while hidden.
+        self.attach_shown_terminals(window, cx);
+        if self.sync_tab_visibility(cx) {
+            // Some tab just went off screen or came back; look at what is hidden.
+            self.schedule_terminal_release(Some(terminal_lifecycle::MIN_RECHECK), cx);
         }
         div()
             .id("riwork")
