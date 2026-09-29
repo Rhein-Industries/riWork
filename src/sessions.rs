@@ -1227,18 +1227,7 @@ impl SessionManager {
         if live.is_empty() {
             return Ok(BTreeMap::new());
         }
-        let output =
-            self.tmux_checked(&["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"])?;
-        let mut roots = BTreeMap::new();
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if let Some((id, pid)) = line.split_once('\t') {
-                if live.contains(id) {
-                    if let Ok(pid) = pid.parse::<u32>() {
-                        roots.insert(id.to_owned(), pid);
-                    }
-                }
-            }
-        }
+        let roots = self.pane_roots(&live)?;
         let processes = read_processes()?;
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
         for (&pid, process) in &processes {
@@ -1265,6 +1254,32 @@ impl SessionManager {
             result.insert(id, metrics);
         }
         Ok(result)
+    }
+
+    /// The process each named live shell's pane runs, from one tmux query.
+    /// Shells tmux does not list are left out.
+    pub fn pane_pids(&self, ids: &[String]) -> Result<BTreeMap<String, u32>, String> {
+        let live: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        if live.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        self.pane_roots(&live)
+    }
+
+    fn pane_roots(&self, live: &HashSet<&str>) -> Result<BTreeMap<String, u32>, String> {
+        let output =
+            self.tmux_checked(&["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"])?;
+        let mut roots = BTreeMap::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some((id, pid)) = line.split_once('\t') {
+                if live.contains(id) {
+                    if let Ok(pid) = pid.parse::<u32>() {
+                        roots.insert(id.to_owned(), pid);
+                    }
+                }
+            }
+        }
+        Ok(roots)
     }
 
     /// What a window's periodic refresh shows: every shell with its liveness,
@@ -3128,6 +3143,15 @@ fn find_harness_program(harness: HarnessKind, shim_directory: &Path) -> Option<P
     find_harness_program_via(harness, shim_directory, executable_dirs(), || {
         login_shell_dirs().to_vec()
     })
+}
+
+/// The official Grok CLI, for reading its own reports. RiWork's launcher shims
+/// are skipped by their marker wherever they live, so this never runs one.
+pub(crate) fn find_grok_program() -> Option<PathBuf> {
+    find_harness_program(
+        HarnessKind::Grok,
+        Path::new("/nonexistent/riwork-harness-bin"),
+    )
 }
 
 fn find_harness_program_via(

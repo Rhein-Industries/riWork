@@ -322,6 +322,10 @@ struct Workspace {
     project_recency_sampled_at: Option<Instant>,
     project_sort_menu_open: bool,
     claude_usage: BTreeMap<String, ProviderUsage>,
+    /// Session usage of Grok tabs, by shell. Read only while shown; see
+    /// `refresh_grok_usage`.
+    grok_usage: BTreeMap<String, usage::GrokTabUsage>,
+    grok_usage_pending: bool,
     refresh_count: u64,
     syncing_project_ids: HashSet<String>,
     sidebar_visible: bool,
@@ -776,6 +780,8 @@ impl Workspace {
             project_recency_sampled_at: None,
             project_sort_menu_open: false,
             claude_usage: BTreeMap::new(),
+            grok_usage: BTreeMap::new(),
+            grok_usage_pending: false,
             refresh_count: 0,
             syncing_project_ids: HashSet::new(),
             sidebar_visible: true,
@@ -1311,6 +1317,10 @@ impl Workspace {
             self.focus_active(window, cx);
             self.save_layout();
             cx.notify();
+        }
+        if panel == PanelKind::Usage {
+            // Show Grok's figures now, not on the next tick.
+            self.refresh_grok_usage(false, cx);
         }
     }
 
@@ -2901,9 +2911,113 @@ impl Workspace {
                 {
                     request_codex_usage_at(home, false, cx);
                 }
+                workspace.refresh_grok_usage(false, cx);
                 workspace.refresh_agent_activity(cx);
                 workspace.remember_active_worktree(cx);
                 workspace.refresh_shell_titles();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The bottom bar's usage item is drawn.
+    fn usage_chip_visible(&self) -> bool {
+        use status_bar::{StatusItemKind, StatusSide};
+        !self.focus_mode
+            && [StatusSide::Left, StatusSide::Right]
+                .into_iter()
+                .any(|side| {
+                    self.settings
+                        .status_bar
+                        .visible_items(side)
+                        .contains(&StatusItemKind::Usage)
+                })
+    }
+
+    fn usage_panel_visible(&self) -> bool {
+        self.panes.values().any(|pane| {
+            pane.tabs
+                .get(pane.active)
+                .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Usage)))
+        })
+    }
+
+    fn active_shell(&self) -> Option<&ShellSession> {
+        self.panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .and_then(Tab::shell_id)
+            .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
+    }
+
+    /// Grok tabs whose session usage this window shows: every live one of the
+    /// project while the Usage panel is on screen, and the focused one while the
+    /// bottom bar's usage item is. Anything else is not worth a `grok usage`.
+    fn grok_usage_targets(&self) -> Vec<String> {
+        let panel = self.usage_panel_visible();
+        let focused = self
+            .usage_chip_visible()
+            .then(|| self.active_shell())
+            .flatten()
+            .map(|shell| shell.id.as_str());
+        self.shells
+            .iter()
+            .filter(|shell| shell.alive && shell.harness == Some(HarnessKind::Grok))
+            .filter(|shell| {
+                (panel && shell.project_id.as_deref() == Some(self.project_id.as_str()))
+                    || focused == Some(shell.id.as_str())
+            })
+            .map(|shell| shell.id.clone())
+            .collect()
+    }
+
+    /// Read Grok's per-session usage on a worker for the tabs shown. Grok has no
+    /// interface for its account allowance, so this is tokens and cost only. Each
+    /// tick asks whether a tab's figures are due (about every 30 s, sooner while
+    /// a tab has none); the reads themselves are also cached across windows, so
+    /// this never starts `grok` every tick. `force` is the Refresh action.
+    fn refresh_grok_usage(&mut self, force: bool, cx: &mut Context<Self>) {
+        if self.grok_usage_pending {
+            return;
+        }
+        let shells = &self.shells;
+        self.grok_usage
+            .retain(|id, _| shells.iter().any(|shell| shell.id == *id && shell.alive));
+        let targets = self.grok_usage_targets();
+        let now = unix_time();
+        let due = force
+            || targets
+                .iter()
+                .any(|id| self.grok_usage.get(id).is_none_or(|tab| tab.is_due(now)));
+        if targets.is_empty() || !due {
+            return;
+        }
+        self.grok_usage_pending = true;
+        let sessions = self.sessions.clone();
+        let previous = self.grok_usage.clone();
+        let work = cx.background_executor().spawn(async move {
+            let pids = sessions.pane_pids(&targets);
+            let targets = targets
+                .into_iter()
+                .map(|shell_id| usage::GrokTarget {
+                    pane_pid: match &pids {
+                        Ok(pids) => pids
+                            .get(&shell_id)
+                            .copied()
+                            .ok_or_else(|| "tmux did not report a process for this tab".to_owned()),
+                        Err(error) => Err(error.clone()),
+                    },
+                    shell_id,
+                })
+                .collect::<Vec<_>>();
+            usage::read_grok_usages(&targets, &previous, force)
+        });
+        cx.spawn(async move |this, cx| {
+            let results = work.await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.grok_usage_pending = false;
+                workspace.grok_usage.extend(results);
                 cx.notify();
             });
         })
@@ -4950,12 +5064,7 @@ impl Workspace {
 
     fn render_usage_chip(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
-        let active_shell = self
-            .panes
-            .get(&self.active_pane)
-            .and_then(|pane| pane.tabs.get(pane.active))
-            .and_then(Tab::shell_id)
-            .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
+        let active_shell = self.active_shell();
         let cache = cx.global::<AccountUsage>();
         let label = if let Some(shell) =
             active_shell.filter(|shell| shell.harness == Some(HarnessKind::Claude))
@@ -4964,6 +5073,15 @@ impl Workspace {
                 .get(&shell.id)
                 .map(|snapshot| usage_summary("CLAUDE", snapshot))
                 .unwrap_or_else(|| "CLAUDE · WAITING".to_owned())
+        } else if let Some(shell) =
+            active_shell.filter(|shell| shell.harness == Some(HarnessKind::Grok))
+        {
+            // Grok's allowance is not readable, so the chip shows this session.
+            if shell.alive {
+                usage::grok_chip_label(self.grok_usage.get(&shell.id))
+            } else {
+                "GROK · EXITED".to_owned()
+            }
         } else {
             let profile = if let Some(shell) =
                 active_shell.filter(|shell| shell.harness == Some(HarnessKind::Codex))
@@ -4989,7 +5107,7 @@ impl Workspace {
         };
         div()
             .id("usage-chip")
-            .max_w(px(180.0))
+            .max_w(px(220.0))
             .overflow_hidden()
             .text_ellipsis()
             .text_color(rgb(colors.cyan))
@@ -5095,12 +5213,14 @@ impl Workspace {
                     .into_any_element(),
             );
         }
+        cards.extend(self.render_grok_usage_cards(colors));
         div().size_full().flex().flex_col().min_h_0().bg(rgb(colors.panel))
             .child(div().h(px(32.0)).flex_none().flex().items_center().px(px(10.0)).justify_between()
                 .border_b_1().border_color(rgb(colors.divider)).child("ACCOUNT USAGE")
                 .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan)).cursor_pointer()
-                    .child(if pending { "REFRESHING…" } else { "↻ REFRESH" })
+                    .child(if pending || self.grok_usage_pending { "REFRESHING…" } else { "↻ REFRESH" })
                     .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.refresh_grok_usage(true, cx);
                         request_codex_usage(true, cx);
                         for home in workspace.shells.iter()
                             .filter(|shell| shell.harness == Some(HarnessKind::Codex))
@@ -5111,8 +5231,64 @@ impl Workspace {
                     }))))
             .child(div().id("usage-panel-scroll").flex_1().min_h_0().overflow_y_scroll().children(cards))
             .child(div().flex_none().p(px(10.0)).border_t_1().border_color(rgb(colors.divider)).text_color(rgb(colors.muted)).text_size(px(9.0))
-                .child("Quota is shared by all sessions on the same account. Missing windows are unavailable. Claude subscription quota requires a supported Pro/Max account."))
+                .child("Quota is shared by all sessions on the same account. Missing windows are unavailable. Claude subscription quota requires a supported Pro/Max account. Grok shows each session's tokens and cost only."))
             .into_any_element()
+    }
+
+    /// Grok's section of the Usage panel: one card per live Grok tab of the
+    /// project, their combined total, and where the account allowance is.
+    fn render_grok_usage_cards(&self, colors: Palette) -> Vec<AnyElement> {
+        let shells = self.shells.iter().filter(|shell| {
+            shell.alive
+                && shell.harness == Some(HarnessKind::Grok)
+                && shell.project_id.as_deref() == Some(self.project_id.as_str())
+        });
+        let mut cards = Vec::new();
+        let mut usages = Vec::new();
+        let mut listed = 0;
+        for shell in shells {
+            listed += 1;
+            let title = self
+                .panes
+                .values()
+                .flat_map(|pane| pane.tabs.iter())
+                .find(|tab| tab.shell_id() == Some(shell.id.as_str()))
+                .map(|tab| tab.title.to_uppercase())
+                .unwrap_or_else(|| format!("GROK · {}", &shell.id[..8]));
+            let tab = self.grok_usage.get(&shell.id);
+            usages.extend(tab.and_then(|tab| tab.usage.as_ref()));
+            cards.push(render_grok_session(&title, tab, colors));
+        }
+        if listed == 0 {
+            cards.push(
+                div()
+                    .p(px(12.0))
+                    .border_t_1()
+                    .border_color(rgb(colors.divider))
+                    .text_color(rgb(colors.muted))
+                    .child("No live Grok sessions")
+                    .into_any_element(),
+            );
+        } else if !usages.is_empty() {
+            cards.push(render_grok_total(
+                &usage::grok_totals(usages.iter().copied()),
+                listed - usages.len(),
+                colors,
+            ));
+        }
+        cards.push(
+            div()
+                .px(px(12.0))
+                .pb(px(12.0))
+                .pt(px(8.0))
+                .border_t_1()
+                .border_color(rgb(colors.divider))
+                .text_color(rgb(colors.muted))
+                .text_size(px(9.0))
+                .child("Grok's account allowance and credits are shown only in Grok's own /usage screen. RiWork cannot read them through an official interface.")
+                .into_any_element(),
+        );
+        cards
     }
 
     fn render_focus(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -5972,6 +6148,191 @@ fn reset_summary(resets_at: Option<u64>) -> String {
     } else {
         format!("Resets in {}m", seconds.div_ceil(60))
     }
+}
+
+fn ago(seconds: u64) -> String {
+    match seconds {
+        0..60 => "just now".to_owned(),
+        60..3600 => format!("{}m ago", seconds / 60),
+        3600..86400 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86400),
+    }
+}
+
+fn token_breakdown(tokens: &usage::TokenCounts) -> String {
+    use usage::format_tokens;
+    format!(
+        "in {} · out {} · cached {} · cache writes {} · reasoning {}",
+        format_tokens(tokens.input),
+        format_tokens(tokens.output),
+        format_tokens(tokens.cached_read),
+        format_tokens(tokens.cache_creation),
+        format_tokens(tokens.reasoning),
+    )
+}
+
+fn render_grok_session(
+    title: &str,
+    tab: Option<&usage::GrokTabUsage>,
+    colors: Palette,
+) -> AnyElement {
+    let card = div()
+        .p(px(12.0))
+        .border_t_1()
+        .border_color(rgb(colors.divider));
+    let Some(tab) = tab else {
+        return card
+            .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .text_color(rgb(colors.muted))
+                    .child("Reading Grok usage…"),
+            )
+            .into_any_element();
+    };
+    let Some(session) = &tab.usage else {
+        return card
+            .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .text_color(rgb(colors.muted))
+                    .child(format!(
+                        "usage unavailable: {}",
+                        tab.error.as_deref().unwrap_or("Grok has not reported it")
+                    )),
+            )
+            .into_any_element();
+    };
+    let now = unix_time();
+    let headline = [
+        session.cost_usd.map(usage::format_usd),
+        Some(format!(
+            "{} tokens",
+            usage::format_tokens(session.tokens.total)
+        )),
+        Some(format!(
+            "{} turn{}",
+            session.turns,
+            if session.turns == 1 { "" } else { "s" }
+        )),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let read_age = now.saturating_sub(tab.fetched_at_unix);
+    let mut freshness = format!("Updated {}", ago(read_age));
+    if let Some(activity) = session.updated_at_unix {
+        freshness.push_str(&format!(
+            " · last activity {}",
+            ago(now.saturating_sub(activity))
+        ));
+    }
+    card.child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(8.0))
+            .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+            .child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .text_size(px(9.0))
+                    .child(
+                        session
+                            .primary_model
+                            .clone()
+                            .unwrap_or_else(|| "model unknown".to_owned()),
+                    ),
+            ),
+    )
+    .child(div().mt(px(6.0)).child(headline))
+    .child(
+        div()
+            .mt(px(4.0))
+            .text_color(rgb(colors.muted))
+            .text_size(px(9.0))
+            .child(token_breakdown(&session.tokens)),
+    )
+    .children((session.models.len() > 1).then(|| {
+        div()
+            .mt(px(4.0))
+            .text_color(rgb(colors.muted))
+            .text_size(px(9.0))
+            .children(session.models.iter().map(|model| {
+                div().child(format!(
+                    "{} · {} tokens · {} calls{}",
+                    model.model,
+                    usage::format_tokens(model.tokens.total),
+                    model.model_calls,
+                    model
+                        .cost_usd
+                        .map(|cost| format!(" · {}", usage::format_usd(cost)))
+                        .unwrap_or_default()
+                ))
+            }))
+    }))
+    .child(
+        div()
+            .mt(px(4.0))
+            .text_color(rgb(if tab.stale { colors.gold } else { colors.muted }))
+            .text_size(px(9.0))
+            .child(if tab.stale {
+                format!(
+                    "STALE · {} · {}",
+                    freshness,
+                    tab.error.as_deref().unwrap_or("latest read failed")
+                )
+            } else {
+                freshness
+            }),
+    )
+    .into_any_element()
+}
+
+fn render_grok_total(totals: &usage::GrokTotals, missing: usize, colors: Palette) -> AnyElement {
+    div()
+        .p(px(12.0))
+        .border_t_1()
+        .border_color(rgb(colors.divider))
+        .child(div().text_color(rgb(colors.cyan)).child("GROK · TOTAL"))
+        .child(div().mt(px(6.0)).child(format!(
+            "{} · {} tokens · {} session{}",
+            usage::format_usd(totals.cost_usd),
+            usage::format_tokens(totals.tokens.total),
+            totals.sessions,
+            if totals.sessions == 1 { "" } else { "s" }
+        )))
+        .child(
+            div()
+                .mt(px(4.0))
+                .text_color(rgb(colors.muted))
+                .text_size(px(9.0))
+                .child(token_breakdown(&totals.tokens)),
+        )
+        .child(
+            div()
+                .mt(px(4.0))
+                .text_color(rgb(colors.muted))
+                .text_size(px(9.0))
+                .child(
+                    "A session resumed or forked from another includes that history, so the total can overcount.",
+                ),
+        )
+        .children((missing > 0).then(|| {
+            div()
+                .mt(px(4.0))
+                .text_color(rgb(colors.muted))
+                .text_size(px(9.0))
+                .child(format!(
+                    "{missing} listed session{} without usage not counted",
+                    if missing == 1 { "" } else { "s" }
+                ))
+        }))
+        .into_any_element()
 }
 
 fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette) -> AnyElement {

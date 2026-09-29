@@ -395,7 +395,234 @@ fn grok_shell_usage_is_unknown_not_an_error() {
     let usage = home.ok(&["usage", "--shell", &shell, "--json"]);
     assert_eq!(usage["provider"], "grok");
     assert_eq!(usage["windows"], json!([]));
+    assert_eq!(usage["account_label"], "unknown");
+    // Not running: no session figures, and the reason instead of a failure.
+    assert!(usage.get("session").is_none());
+    assert_eq!(usage["session_error"], "This Grok session is not running");
     let text = home.run(&["usage", "--shell", &shell]);
     assert!(text.status.success());
-    assert!(String::from_utf8_lossy(&text.stdout).starts_with("grok"));
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.starts_with("grok"));
+    assert!(text.contains("open /usage in Grok"), "{text}");
+    assert!(text.contains("Session usage unavailable"), "{text}");
+}
+
+/// Marks a registered shell as a Grok tab without launching Grok.
+fn mark_as_grok(home: &Home, shell: &str) {
+    let path = home.0.join("sessions.json");
+    let mut registry: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for session in registry["sessions"].as_array_mut().unwrap() {
+        if session["id"] == shell {
+            session["harness"] = json!("grok");
+        }
+    }
+    fs::write(path, registry.to_string()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn grok_shell_usage_reports_the_session_grok_lists_for_the_panes_process() {
+    let home = Home::new();
+    let project = home.0.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let project_id = home.ok(&["project", "add", project.to_str().unwrap(), "--json"])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // The pane's process is a copy of this build named `grok`, so the kernel
+    // reports a Grok executable for it. `mcp` waits on the terminal for input.
+    let running = home.0.join("running");
+    fs::create_dir_all(&running).unwrap();
+    let grok_process = running.join("grok");
+    fs::copy(env!("CARGO_BIN_EXE_riwork"), &grok_process).unwrap();
+    let pid_file = home.0.join("pane.pid");
+    let live = home.ok(&[
+        "shell",
+        "create",
+        "--project",
+        &project_id,
+        "--command",
+        &format!(
+            "echo $$ > '{}'; exec '{}' mcp",
+            pid_file.display(),
+            grok_process.display()
+        ),
+        "--json",
+    ])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A Grok tab whose pane is not Grok, which Grok's list still names: what
+    // remains after a session dies and its pid is reused.
+    let reused_pid_file = home.0.join("reused.pid");
+    let stale = home.ok(&[
+        "shell",
+        "create",
+        "--project",
+        &project_id,
+        "--command",
+        &format!("echo $$ > '{}'; exec /bin/cat", reused_pid_file.display()),
+        "--json",
+    ])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read_pid = |file: &Path| -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(text) = fs::read_to_string(file)
+                && let Ok(pid) = text.trim().parse()
+            {
+                return pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{} never appeared",
+                file.display()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let (live_pid, stale_pid) = (read_pid(&pid_file), read_pid(&reused_pid_file));
+    // The pid file is written before the shell replaces itself with the copy.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let name = Command::new("ps")
+            .args(["-o", "comm=", "-p", &live_pid.to_string()])
+            .output()
+            .unwrap();
+        if String::from_utf8_lossy(&name.stdout)
+            .trim()
+            .ends_with("/grok")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pane never became the grok copy"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    mark_as_grok(&home, &live);
+    mark_as_grok(&home, &stale);
+
+    let session = "01a0ebde-d244-7bc3-8222-9d1a4330cd15";
+    let other = "01a0ebd0-7000-7000-8000-000000000001";
+    let grok_home = home.0.join("grok-home");
+    fs::create_dir_all(&grok_home).unwrap();
+    let opened_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    fs::write(
+        grok_home.join("active_sessions.json"),
+        json!([
+            {"session_id": session, "pid": live_pid, "cwd": "/w", "opened_at": opened_at},
+            {"session_id": other, "pid": stale_pid, "cwd": "/w", "opened_at": opened_at},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    // The official CLI, which the fake answers for the listed session only.
+    let bin = home.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(
+        bin.join("report.json"),
+        json!({
+            "sessionId": session, "updatedAt": "2026-09-29T13:02:35.793940+00:00",
+            "session": {
+                "inputTokens": 100_000, "outputTokens": 28_000, "cachedReadTokens": 60_000,
+                "cacheCreationTokens": 5, "reasoningTokens": 9_000, "totalTokens": 128_000,
+                "modelCalls": 12, "costUsdTicks": 4_200_000_000u64, "turnCount": 3,
+                "primaryModelId": "grok-4.7-build-fast",
+                "modelUsage": {"grok-4.7-build-fast": {
+                    "inputTokens": 100_000, "outputTokens": 28_000, "totalTokens": 128_000,
+                    "modelCalls": 12, "costUsdTicks": 4_200_000_000u64
+                }}
+            },
+            "turns": []
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let cli = bin.join("grok");
+    fs::write(
+        &cli,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = usage ] && [ \"$2\" = {session} ]; then cat \"${{0%/*}}/report.json\"; else echo \"Error: Session '$2' not found.\" >&2; exit 1; fi\n"
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let usage_of = |shell: &str, json: bool| {
+        let mut args = vec!["usage", "--shell", shell];
+        if json {
+            args.push("--json");
+        }
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut command = home.command(&args);
+        command.env("GROK_HOME", &grok_home).env("PATH", path);
+        finish(command.spawn().unwrap(), &args)
+    };
+
+    let output = usage_of(&live, true);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let usage: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // The allowance is unknown and stays out of `windows`.
+    assert_eq!(usage["provider"], "grok");
+    assert_eq!(usage["windows"], json!([]));
+    assert_eq!(usage["account_label"], "unknown");
+    assert!(usage.get("session_error").is_none(), "{usage}");
+    assert_eq!(usage["session_cost_usd"], 0.42);
+    let report = &usage["session"];
+    assert_eq!(report["session_id"], session);
+    assert_eq!(report["primary_model"], "grok-4.7-build-fast");
+    assert_eq!(report["turns"], 3);
+    assert_eq!(report["model_calls"], 12);
+    assert_eq!(report["updated_at"], "2026-09-29T13:02:35Z");
+    assert_eq!(report["cost_usd"], 0.42);
+    assert_eq!(report["tokens"]["total"], 128_000);
+    assert_eq!(report["tokens"]["input"], 100_000);
+    assert_eq!(report["tokens"]["output"], 28_000);
+    assert_eq!(report["tokens"]["cached_read"], 60_000);
+    assert_eq!(report["tokens"]["cache_creation"], 5);
+    assert_eq!(report["tokens"]["reasoning"], 9_000);
+
+    let text = usage_of(&live, false);
+    assert!(text.status.success());
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.starts_with("grok · unknown"), "{text}");
+    assert!(text.contains("open /usage in Grok"), "{text}");
+    assert!(
+        text.contains("grok-4.7-build-fast · 3 turns · 12 model calls"),
+        "{text}"
+    );
+    assert!(text.contains("Tokens: 128k total"), "{text}");
+    assert!(text.contains("Session cost: $0.42"), "{text}");
+
+    // The stale entry is refused: the report says why instead of showing a
+    // session that is not this tab's.
+    let output = usage_of(&stale, true);
+    assert!(output.status.success());
+    let usage: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(usage["provider"], "grok");
+    assert_eq!(usage["windows"], json!([]));
+    assert!(usage.get("session").is_none(), "{usage}");
+    assert!(usage.get("session_cost_usd").is_none_or(Value::is_null));
+    assert!(
+        usage["session_error"]
+            .as_str()
+            .unwrap()
+            .contains("not registered"),
+        "{usage}"
+    );
 }
