@@ -1,10 +1,10 @@
 //! Small vector controls that keep pane chrome consistent across fonts and themes.
 
-use gpui::{AnyElement, IntoElement, PathBuilder, canvas, point, prelude::*, px, rgb};
+use gpui::{AnyElement, App, IntoElement, PathBuilder, canvas, point, prelude::*, px, rgb};
 
-use crate::layouts::PanelKind;
+use crate::{layouts::PanelKind, settings::Settings};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Icon {
     Lock,
     Unlock,
@@ -18,6 +18,27 @@ pub enum Icon {
     BellOff,
     /// The symbol a built-in panel tab shows instead of its label.
     Panel(PanelKind),
+    /// The symbol a toolbar button shows instead of its label.
+    Action(ActionGlyph),
+}
+
+/// Text buttons that can be drawn as a glyph, with the label kept for the tooltip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionGlyph {
+    NewFolder,
+    NewProject,
+    EditInVim,
+    CopyPath,
+    CopyContents,
+    Reveal,
+    OpenExternally,
+}
+
+/// Whether text buttons that have a glyph show it instead of their label. This is
+/// the `panel_tab_icons` setting, which now covers toolbar buttons as well as tabs.
+pub fn labels_as_icons(cx: &App) -> bool {
+    cx.try_global::<Settings>()
+        .is_some_and(|settings| settings.panel_tab_icons)
 }
 
 /// Paint an icon in a fixed 14 px box. The caller owns its hit target and tooltip.
@@ -117,6 +138,7 @@ pub fn icon(kind: Icon, color: u32) -> AnyElement {
                     }
                 }
                 Icon::Panel(panel) => panel_glyph(&mut path, panel),
+                Icon::Action(action) => action_glyph(&mut path, action),
             }
             path.translate(bounds.origin);
             if let Ok(path) = path.build() {
@@ -206,6 +228,85 @@ fn panel_glyph(path: &mut PathBuilder, panel: PanelKind) {
     }
 }
 
+/// One simple symbol per text button, in the same 14 px box.
+fn action_glyph(path: &mut PathBuilder, action: ActionGlyph) {
+    match action {
+        ActionGlyph::NewFolder => {
+            // The folder loses its bottom-right corner to make room for the plus.
+            path.move_to(point(px(6.5), px(12.0)));
+            path.line_to(point(px(1.5), px(12.0)));
+            path.line_to(point(px(1.5), px(2.5)));
+            path.line_to(point(px(5.3), px(2.5)));
+            path.line_to(point(px(6.6), px(4.2)));
+            path.line_to(point(px(12.5), px(4.2)));
+            path.line_to(point(px(12.5), px(6.5)));
+            plus(path, 10.5, 10.3, 2.3);
+        }
+        ActionGlyph::NewProject => {
+            // Same corner badge as the folder, so the two read as a pair.
+            path.move_to(point(px(6.5), px(12.0)));
+            path.line_to(point(px(2.0), px(12.0)));
+            path.line_to(point(px(2.0), px(2.0)));
+            path.line_to(point(px(12.0), px(2.0)));
+            path.line_to(point(px(12.0), px(6.5)));
+            plus(path, 10.5, 10.3, 2.3);
+        }
+        ActionGlyph::EditInVim => {
+            // A pencil on the diagonal, tip down-left, with its tip cone and eraser band.
+            polygon(
+                path,
+                &[
+                    (2.2, 11.8),
+                    (3.44, 8.44),
+                    (9.94, 1.94),
+                    (12.06, 4.06),
+                    (5.56, 10.56),
+                ],
+            );
+            line(path, (3.44, 8.44), (5.56, 10.56));
+            line(path, (8.7, 3.2), (10.8, 5.3));
+        }
+        ActionGlyph::CopyPath => {
+            // Two chain links, the second interlocked with the first.
+            capsule(path, (3.8, 10.2), (6.3, 7.7), 1.8);
+            capsule(path, (7.7, 6.3), (10.2, 3.8), 1.8);
+        }
+        ActionGlyph::CopyContents => {
+            // The page behind shows only where the page in front does not cover it.
+            rectangle(path, 5.0, 5.0, 12.0, 12.5);
+            path.move_to(point(px(5.0), px(9.0)));
+            path.line_to(point(px(2.0), px(9.0)));
+            path.line_to(point(px(2.0), px(1.5)));
+            path.line_to(point(px(9.0), px(1.5)));
+            path.line_to(point(px(9.0), px(5.0)));
+        }
+        ActionGlyph::Reveal => {
+            // A folder with a magnifier over its corner: find it in Finder.
+            path.move_to(point(px(5.0), px(12.0)));
+            path.line_to(point(px(1.5), px(12.0)));
+            path.line_to(point(px(1.5), px(2.5)));
+            path.line_to(point(px(5.3), px(2.5)));
+            path.line_to(point(px(6.6), px(4.2)));
+            path.line_to(point(px(12.5), px(4.2)));
+            path.line_to(point(px(12.5), px(5.0)));
+            circle(path, 9.0, 9.0, 2.4);
+            line(path, (10.8, 10.8), (12.9, 12.9));
+        }
+        ActionGlyph::OpenExternally => {
+            // A box with an open corner and an arrow leaving through it.
+            path.move_to(point(px(6.0), px(2.5)));
+            path.line_to(point(px(2.5), px(2.5)));
+            path.line_to(point(px(2.5), px(11.5)));
+            path.line_to(point(px(11.5), px(11.5)));
+            path.line_to(point(px(11.5), px(8.0)));
+            line(path, (6.5, 7.5), (12.0, 2.0));
+            path.move_to(point(px(8.3), px(2.0)));
+            path.line_to(point(px(12.0), px(2.0)));
+            path.line_to(point(px(12.0), px(5.7)));
+        }
+    }
+}
+
 fn folder(path: &mut PathBuilder) {
     polygon(
         path,
@@ -241,6 +342,41 @@ fn rectangle(path: &mut PathBuilder, left: f32, top: f32, right: f32, bottom: f3
     path.line_to(point(px(right), px(top)));
     path.line_to(point(px(right), px(bottom)));
     path.line_to(point(px(left), px(bottom)));
+    path.close();
+}
+
+fn plus(path: &mut PathBuilder, x: f32, y: f32, arm: f32) {
+    line(path, (x - arm, y), (x + arm, y));
+    line(path, (x, y - arm), (x, y + arm));
+}
+
+/// A stadium outline: the segment `from`..`to` swollen by `radius` on both sides.
+fn capsule(path: &mut PathBuilder, from: (f32, f32), to: (f32, f32), radius: f32) {
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    let length = dx.hypot(dy);
+    // Unit vectors along the segment and to its left, scaled to the radius.
+    let (along, across) = (
+        (dx / length * radius, dy / length * radius),
+        (-dy / length * radius, dx / length * radius),
+    );
+    let control = 0.552_284_8;
+    let offset = |center: (f32, f32), a: (f32, f32)| point(px(center.0 + a.0), px(center.1 + a.1));
+    // A quarter turn about `center` from radius vector `a` to `b`.
+    let quarter = |path: &mut PathBuilder, center: (f32, f32), a: (f32, f32), b: (f32, f32)| {
+        path.cubic_bezier_to(
+            offset(center, b),
+            offset(center, (a.0 + b.0 * control, a.1 + b.1 * control)),
+            offset(center, (b.0 + a.0 * control, b.1 + a.1 * control)),
+        );
+    };
+    let negate = |v: (f32, f32)| (-v.0, -v.1);
+    path.move_to(offset(from, across));
+    path.line_to(offset(to, across));
+    quarter(path, to, across, along);
+    quarter(path, to, along, negate(across));
+    path.line_to(offset(from, negate(across)));
+    quarter(path, from, negate(across), negate(along));
+    quarter(path, from, negate(along), across);
     path.close();
 }
 
@@ -290,10 +426,29 @@ mod tests {
         PanelKind::Schedules,
     ];
 
-    fn shape(panel: PanelKind) -> Vec<(i32, i32)> {
+    const ACTIONS: [ActionGlyph; 7] = [
+        ActionGlyph::NewFolder,
+        ActionGlyph::NewProject,
+        ActionGlyph::EditInVim,
+        ActionGlyph::CopyPath,
+        ActionGlyph::CopyContents,
+        ActionGlyph::Reveal,
+        ActionGlyph::OpenExternally,
+    ];
+
+    /// Cells per pixel side for the coverage comparison below.
+    const GRID: usize = 4;
+
+    struct Shape {
+        vertices: Vec<(i32, i32)>,
+        /// Which cells of a 14 px box the glyph paints, `GRID` cells per pixel.
+        cells: Vec<bool>,
+    }
+
+    fn shape(name: &str, draw: impl FnOnce(&mut PathBuilder)) -> Shape {
         let mut path = PathBuilder::stroke(px(1.25));
-        panel_glyph(&mut path, panel);
-        let path = path.build().expect("panel glyph tessellates");
+        draw(&mut path);
+        let path = path.build().expect("glyph tessellates");
         // Tessellated stroke geometry includes the line width, so this is the painted extent.
         let (left, top) = (path.bounds.origin.x.as_f32(), path.bounds.origin.y.as_f32());
         let (right, bottom) = (
@@ -302,33 +457,100 @@ mod tests {
         );
         assert!(
             left >= 0.0 && top >= 0.0 && right <= 14.0 && bottom <= 14.0,
-            "{panel:?} leaves the 14 px box: {left},{top} to {right},{bottom}"
+            "{name} leaves the 14 px box: {left},{top} to {right},{bottom}"
         );
-        assert!(
-            right - left >= 8.0 && bottom - top >= 8.0,
-            "{panel:?} is tiny"
-        );
-        let mut vertices: Vec<_> = path
+        assert!(right - left >= 8.0 && bottom - top >= 8.0, "{name} is tiny");
+        let points: Vec<(f32, f32)> = path
             .vertices
             .iter()
-            .map(|vertex| {
-                (
-                    (vertex.xy_position.x.as_f32() * 100.0).round() as i32,
-                    (vertex.xy_position.y.as_f32() * 100.0).round() as i32,
-                )
-            })
+            .map(|vertex| (vertex.xy_position.x.as_f32(), vertex.xy_position.y.as_f32()))
+            .collect();
+        let side = 14 * GRID;
+        let mut cells = vec![false; side * side];
+        for triangle in points.chunks_exact(3) {
+            let edge = |a: (f32, f32), b: (f32, f32), p: (f32, f32)| {
+                (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0)
+            };
+            for (index, cell) in cells.iter_mut().enumerate() {
+                let p = (
+                    ((index % side) as f32 + 0.5) / GRID as f32,
+                    ((index / side) as f32 + 0.5) / GRID as f32,
+                );
+                let signs = [
+                    edge(triangle[0], triangle[1], p),
+                    edge(triangle[1], triangle[2], p),
+                    edge(triangle[2], triangle[0], p),
+                ];
+                if signs.iter().all(|s| *s >= 0.0) || signs.iter().all(|s| *s <= 0.0) {
+                    *cell = true;
+                }
+            }
+        }
+        let mut vertices: Vec<_> = points
+            .iter()
+            .map(|(x, y)| ((x * 100.0).round() as i32, (y * 100.0).round() as i32))
             .collect();
         vertices.sort_unstable();
         vertices.dedup();
-        vertices
+        Shape { vertices, cells }
+    }
+
+    /// The share of painted cells that only one of two glyphs paints.
+    fn difference(a: &Shape, b: &Shape) -> f32 {
+        let (mut either, mut one) = (0, 0);
+        for (a, b) in a.cells.iter().zip(&b.cells) {
+            either += usize::from(*a || *b);
+            one += usize::from(a != b);
+        }
+        one as f32 / either as f32
     }
 
     #[test]
     fn every_panel_has_its_own_glyph_inside_the_icon_box() {
-        let shapes: Vec<_> = PANELS.iter().map(|panel| shape(*panel)).collect();
+        let shapes: Vec<_> = PANELS
+            .iter()
+            .map(|panel| shape(&format!("{panel:?}"), |path| panel_glyph(path, *panel)))
+            .collect();
         for (index, shape) in shapes.iter().enumerate() {
             for other in &shapes[index + 1..] {
-                assert_ne!(shape, other);
+                assert_ne!(shape.vertices, other.vertices);
+            }
+        }
+    }
+
+    #[test]
+    fn every_action_glyph_stays_inside_the_icon_box_and_differs_from_the_others() {
+        let panels: Vec<_> = PANELS
+            .iter()
+            .map(|panel| {
+                (
+                    format!("{panel:?}"),
+                    shape("panel", |path| panel_glyph(path, *panel)),
+                )
+            })
+            .collect();
+        let actions: Vec<_> = ACTIONS
+            .iter()
+            .map(|action| {
+                (
+                    format!("{action:?}"),
+                    shape(&format!("{action:?}"), |path| action_glyph(path, *action)),
+                )
+            })
+            .collect();
+        for (index, (name, glyph)) in actions.iter().enumerate() {
+            // A glyph that is a few strokes away from another reads as the same
+            // symbol at 14 px, so distinct vertices are not enough.
+            for (other_name, other) in actions[index + 1..].iter().chain(&panels) {
+                assert_ne!(
+                    glyph.vertices, other.vertices,
+                    "{name} repeats {other_name}"
+                );
+                let differs = difference(glyph, other);
+                assert!(
+                    differs >= 0.3,
+                    "{name} and {other_name} differ in only {differs:.2} of their ink"
+                );
             }
         }
     }

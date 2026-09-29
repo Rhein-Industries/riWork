@@ -16,7 +16,7 @@ use gpui::{
 
 use crate::{
     activity::{ActivityCounts, AgentActivity},
-    icons::{self, Icon},
+    icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
     sessions::{SessionMetrics, ShellKind, ShellSession},
@@ -891,8 +891,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
         .into_any_element()
     });
     let search_action = on_action.clone();
-    let folder_action = on_action.clone();
-    let create_action = on_action.clone();
+    let as_icons = icons::labels_as_icons(cx);
     let sort_selector_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
     let mut panel = div()
         .relative()
@@ -940,36 +939,36 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                         })),
                 )
                 .children((kind == PanelKind::Projects).then(|| {
-                    div()
-                        .id("new-project-folder")
-                        .flex_none()
-                        .h_full()
-                        .px(px(6.0))
-                        .flex()
-                        .items_center()
-                        .text_color(rgb(colors.magenta))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgb(colors.panel_active)))
-                        .child("+ FOLDER")
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            folder_action(view, PanelAction::CreateFolder, window, cx);
-                        }))
+                    project_header_button(
+                        "new-project-folder",
+                        HeaderButton {
+                            label: "+ FOLDER",
+                            tooltip: "New folder",
+                            glyph: ActionGlyph::NewFolder,
+                            color: colors.magenta,
+                            pad: 6.0,
+                            action: PanelAction::CreateFolder,
+                        },
+                        as_icons,
+                        on_action.clone(),
+                        cx,
+                    )
                 }))
                 .children((kind == PanelKind::Projects).then(|| {
-                    div()
-                        .id("new-project")
-                        .flex_none()
-                        .h_full()
-                        .px(px(8.0))
-                        .flex()
-                        .items_center()
-                        .text_color(rgb(colors.cyan))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgb(colors.panel_active)))
-                        .child("+ PROJECT")
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            create_action(view, PanelAction::CreateProject, window, cx);
-                        }))
+                    project_header_button(
+                        "new-project",
+                        HeaderButton {
+                            label: "+ PROJECT",
+                            tooltip: "New project",
+                            glyph: ActionGlyph::NewProject,
+                            color: colors.cyan,
+                            pad: 8.0,
+                            action: PanelAction::CreateProject,
+                        },
+                        as_icons,
+                        on_action.clone(),
+                        cx,
+                    )
                 })),
         )
         .child(
@@ -1061,6 +1060,61 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 )
             }),
         )
+        .into_any_element()
+}
+
+/// A create button in the Projects header.
+struct HeaderButton {
+    label: &'static str,
+    tooltip: &'static str,
+    glyph: ActionGlyph,
+    color: u32,
+    /// Side padding of the text button; the icon button has a fixed width instead.
+    pad: f32,
+    action: PanelAction,
+}
+
+/// The header keeps its words unless icons are on, when the glyph takes their place
+/// and the tooltip carries the name. The button keeps its colour and full height.
+fn project_header_button<V: 'static>(
+    id: &'static str,
+    button: HeaderButton,
+    as_icon: bool,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    let HeaderButton {
+        label,
+        tooltip,
+        glyph,
+        color,
+        pad,
+        action,
+    } = button;
+    div()
+        .id(id)
+        .flex_none()
+        .h_full()
+        .flex()
+        .items_center()
+        .text_color(rgb(color))
+        .cursor_pointer()
+        .hover(|style| style.bg(rgb(colors.panel_active)))
+        .map(|button| {
+            if as_icon {
+                button
+                    .w(px(28.0))
+                    .justify_center()
+                    .child(icons::icon(Icon::Action(glyph), color))
+                    .tooltip(move |_, cx| cx.new(|_| ControlTooltip(tooltip)).into())
+            } else {
+                button.px(px(pad)).child(label)
+            }
+        })
+        .on_click(cx.listener(move |view, _, window, cx| {
+            on_action(view, action.clone(), window, cx);
+        }))
         .into_any_element()
 }
 
@@ -1222,7 +1276,7 @@ fn project_sort_menu<V: 'static>(
         .into_any_element()
 }
 
-struct ControlTooltip(&'static str);
+pub(crate) struct ControlTooltip(pub(crate) &'static str);
 impl Render for ControlTooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
