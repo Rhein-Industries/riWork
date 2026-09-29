@@ -152,3 +152,5 @@ Library copies inside the X25519 implementation may outlive that wipe.
 Swift implementations. Rust, the iOS package tests, and
 `swift remote/fixtures/verify.swift remote/fixtures/v2.json` all recompute
 those bytes. Isolated continuation uses a temporary `RIWORK_HOME` only.
+The 2026-09-29 command log and pass counts are in
+[remote-protocol-v2-verification.md](remote-protocol-v2-verification.md).
