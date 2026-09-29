@@ -87,10 +87,13 @@ fn inode(_: &fs::Metadata) -> u64 {
 /// The stamps of every path one result was computed from. Each is taken before
 /// the path is read, so a change during the read shows up as a difference.
 #[derive(Clone, Debug)]
-pub(super) struct Fingerprint {
+pub(crate) struct Fingerprint {
     stamps: BTreeMap<(PathBuf, Kind), Stamp>,
     racy: bool,
     since: Instant,
+    /// When the read this fingerprint guards began. A file changed after that,
+    /// or too close to it, may or may not have been seen by the read.
+    read_from: Option<SystemTime>,
 }
 
 impl Default for Fingerprint {
@@ -99,17 +102,31 @@ impl Default for Fingerprint {
             stamps: BTreeMap::new(),
             racy: false,
             since: Instant::now(),
+            read_from: None,
         }
     }
 }
 
 impl Fingerprint {
-    pub(super) fn entries(&mut self, directory: &Path) {
+    pub(crate) fn entries(&mut self, directory: &Path) {
         self.record(directory, Kind::Entries);
     }
 
-    pub(super) fn marker(&mut self, path: &Path) {
+    pub(crate) fn marker(&mut self, path: &Path) {
         self.record(path, Kind::Marker);
+    }
+
+    /// For a fingerprint whose stamps are taken around a read that takes a
+    /// while: anything modified since the read began counts as racy, even when
+    /// the stamp is taken after the read ended.
+    pub(crate) fn begin_read(&mut self) {
+        self.read_from = Some(SystemTime::now());
+    }
+
+    /// False when a stamp was too fresh to tell a later change from this one, so
+    /// the fingerprint never validates.
+    pub(crate) fn settled(&self) -> bool {
+        !self.racy
     }
 
     fn record(&mut self, path: &Path, kind: Kind) {
@@ -124,7 +141,9 @@ impl Fingerprint {
         } = stamp
         {
             // A modification time in the future is as untrustworthy as a fresh one.
-            let settled = SystemTime::now()
+            let settled = self
+                .read_from
+                .unwrap_or_else(SystemTime::now)
                 .duration_since(modified)
                 .is_ok_and(|age| age >= RACY_WINDOW);
             self.racy |= !settled;
@@ -141,7 +160,7 @@ impl Fingerprint {
     }
 
     /// True when a fresh stat of every path gives what was recorded.
-    pub(super) fn is_current(&self) -> bool {
+    pub(crate) fn is_current(&self) -> bool {
         !self.racy
             && self.since.elapsed() < MAX_AGE
             && self

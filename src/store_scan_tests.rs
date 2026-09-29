@@ -313,6 +313,29 @@ fn a_fingerprint_read_right_after_a_change_is_not_trusted() {
 }
 
 #[test]
+fn a_change_during_a_long_read_is_not_trusted_even_when_stamped_after_it() {
+    let fixture = Fixture::new();
+    let directory = fixture.directory("watched");
+    settle();
+    let mut fingerprint = scan::Fingerprint::default();
+    fingerprint.begin_read();
+    // The read is under way when the entry appears, and it ends well before the
+    // stamp is taken: only the moment the read began tells the two apart.
+    fs::write(directory.join("entry"), "x").unwrap();
+    settle();
+    fingerprint.entries(&directory);
+    assert!(!fingerprint.settled());
+    assert!(!fingerprint.is_current());
+
+    settle();
+    let mut fingerprint = scan::Fingerprint::default();
+    fingerprint.begin_read();
+    fingerprint.entries(&directory);
+    assert!(fingerprint.settled());
+    assert!(fingerprint.is_current());
+}
+
+#[test]
 fn a_fingerprint_expires_after_the_safety_maximum() {
     let fixture = Fixture::new();
     let directory = fixture.directory("watched");

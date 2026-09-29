@@ -103,7 +103,7 @@ struct Discovery {
 }
 
 #[path = "store_scan.rs"]
-mod scan;
+pub(crate) mod scan;
 use scan::Scan;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
