@@ -225,6 +225,60 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(shown.unicodeScalars.contains { $0.value < 32 })
         XCTAssertLessThan(shown.count, 320)
     }
+    func testPublishedV2InviteAndSessionVectors() throws {
+        let f = try fixture("v2")
+        let pending = try v2Pairing(f)
+        let invite = try V2Invite(pairing: pending, nonce: Base64URL.decode(f["pair_client_nonce"].string!, bytes: 32))
+        XCTAssertEqual(invite.hello, f["pair_hello"])
+        let helloText = String(data: try JSONEncoder().encode(invite.hello), encoding: .utf8)!
+        XCTAssertFalse(helloText.contains(f["invite_secret"].string!))
+        let accepted = try invite.accept(f["pair_accept"])
+        XCTAssertEqual(accepted.finish, f["pair_finish"])
+        XCTAssertNil(accepted.established.invite_secret)
+        XCTAssertEqual(accepted.established.invite_state, "established")
+        XCTAssertEqual(accepted.established.root_key, Base64URL.encode(Data(hexBytes: f["root_key_hex"].string!)))
+        XCTAssertThrowsError(try V2Invite(pairing: accepted.established))
+        XCTAssertThrowsError(try invite.accept(change(f["pair_accept"], key: "mac", to: .string(Base64URL.encode(Data(repeating: 7, count: 32))))))
+
+        let scalar = Data(hexBytes: f["client_private_hex"].string!)
+        let session = try V2SessionHandshake(pairing: accepted.established, privateKey: scalar)
+        XCTAssertEqual(hex(session.hello["client_eph"].string.flatMap { try? Base64URL.decode($0) } ?? Data()), f["client_public_hex"].string)
+        XCTAssertEqual(session.hello, f["client_hello"])
+        let opened = try session.accept(f["server_hello"])
+        XCTAssertEqual(opened.finish, f["client_finish"])
+        var cipher = opened.cipher
+        XCTAssertEqual(cipher.version, 2)
+        XCTAssertEqual(cipher.c2d.withUnsafeBytes { hex(Data($0)) }, f["c2d_key_hex"].string)
+        XCTAssertEqual(cipher.d2c.withUnsafeBytes { hex(Data($0)) }, f["d2c_key_hex"].string)
+        XCTAssertEqual(Base64URL.encode(cipher.sessionID), f["session_id"].string)
+        let request = f["frames"].array[0]
+        XCTAssertEqual(try cipher.sealJSON(Data(request["plaintext_utf8"].string!.utf8)), request["envelope"])
+        let ready = f["frames"].array[1]["envelope"]
+        var bytes = try Base64URL.decode(ready["ciphertext"].string!)
+        bytes[bytes.startIndex] ^= 1
+        XCTAssertThrowsError(try cipher.open(change(ready, key: "ciphertext", to: .string(Base64URL.encode(bytes)))))
+        XCTAssertEqual(cipher.receiveCounter, 0)
+        XCTAssertEqual(try cipher.open(ready)["type"].string, "ready")
+        var otherScalar = Data(hexBytes: f["client_private_hex"].string!)
+        otherScalar[otherScalar.startIndex] ^= 0x5a
+        let other = try V2SessionHandshake(pairing: accepted.established, privateKey: otherScalar)
+        XCTAssertNotEqual(other.hello["client_eph"].string, session.hello["client_eph"].string)
+        XCTAssertThrowsError(try session.accept(change(f["server_hello"], key: "mac", to: .string(Base64URL.encode(Data(repeating: 9, count: 32))))))
+    }
+    private func v2Pairing(_ fixture: JSONValue) throws -> Pairing {
+        guard case .number(let expires) = fixture["expires_at"],
+              let relay = fixture["relay_url"].string,
+              let desktop = fixture["desktop_id"].string,
+              let device = fixture["device_id"].string,
+              let route = fixture["route_id"].string,
+              let invite = fixture["invite_id"].string,
+              let secret = fixture["invite_secret"].string else {
+            throw RemoteError.invalidPairing("Incomplete v2 fixture.")
+        }
+        return try Pairing.parse("""
+        {"v":2,"relay_url":"\(relay)","desktop_id":"\(desktop)","device_id":"\(device)","route_id":"\(route)","device_name":"Test","relay_token":"\(secret)","invite_id":"\(invite)","invite_secret":"\(secret)","expires_at":\(UInt64(expires)),"invite_state":"pending"}
+        """)
+    }
 }
 
 private extension Data {

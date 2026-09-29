@@ -139,7 +139,15 @@ pub fn accept_hello(
         desktop_nonce: b64(&d),
         mac: proof(secret, &tagged(b"riwork/v1/server-hello\0", &t)),
     };
-    Ok((server, Pending { t, secret: *secret }))
+    Ok((
+        server,
+        Pending {
+            t,
+            secret: *secret,
+            version: 1,
+            keys: None,
+        },
+    ))
 }
 pub fn accept_server(
     id: &Identity,
@@ -169,16 +177,34 @@ pub fn accept_server(
 }
 pub struct Pending {
     t: Vec<u8>,
+    /// v1 pairing secret, or the v2 handshake MAC key.
     secret: [u8; 32],
+    version: u8,
+    /// v2 session id and directional keys. v1 re-derives them from the PSK.
+    keys: Option<([u8; 16], [u8; 32], [u8; 32])>,
 }
 impl Pending {
     pub fn finish(self, f: &ClientFinish) -> Result<Session> {
-        ensure!(f.v == 1 && f.kind == "client_finish", "unexpected finish");
-        verify(
-            &self.secret,
-            &tagged(b"riwork/v1/client-finish\0", &self.t),
-            &f.mac,
-        )?;
+        ensure!(
+            f.v == self.version && f.kind == "client_finish",
+            "unexpected finish"
+        );
+        let label: &[u8] = match self.version {
+            1 => b"riwork/v1/client-finish\0",
+            2 => b"riwork/v2/client-finish\0",
+            _ => bail!("unsupported version"),
+        };
+        verify(&self.secret, &tagged(label, &self.t), &f.mac)?;
+        if let Some((id, c2d, d2c)) = self.keys {
+            return Ok(Session {
+                id,
+                c2d,
+                d2c,
+                version: self.version,
+                c2d_counter: 0,
+                d2c_counter: 0,
+            });
+        }
         Session::derive(&self.secret, &self.t)
     }
 }
@@ -198,6 +224,7 @@ pub struct Session {
     pub id: [u8; 16],
     pub c2d: [u8; 32],
     pub d2c: [u8; 32],
+    version: u8,
     c2d_counter: u64,
     d2c_counter: u64,
 }
@@ -217,6 +244,7 @@ impl Session {
             id,
             c2d,
             d2c,
+            version: 1,
             c2d_counter: 0,
             d2c_counter: 0,
         })
@@ -229,13 +257,12 @@ impl Session {
         };
         let mut nonce = [0; 12];
         nonce[4..].copy_from_slice(&counter.to_be_bytes());
-        let aad = [
-            b"riwork/v1/frame\0".as_slice(),
-            &self.id,
-            &[dir],
-            &counter.to_be_bytes(),
-        ]
-        .concat();
+        let label: &[u8] = match self.version {
+            1 => b"riwork/v1/frame\0",
+            2 => b"riwork/v2/frame\0",
+            _ => bail!("unsupported version"),
+        };
+        let aad = [label, &self.id, &[dir], &counter.to_be_bytes()].concat();
         Ok((key, nonce, aad))
     }
     fn next(&self, direction: &str) -> Result<u64> {
@@ -272,7 +299,7 @@ impl Session {
             .map_err(|_| anyhow::anyhow!("encryption failed"))?;
         self.advance(direction)?;
         Ok(Envelope {
-            v: 1,
+            v: self.version,
             kind: "encrypted".into(),
             session_id: b64(&self.id),
             direction: direction.into(),
@@ -282,7 +309,7 @@ impl Session {
     }
     pub fn open(&mut self, direction: &str, e: &Envelope) -> Result<Vec<u8>> {
         ensure!(
-            e.v == 1
+            e.v == self.version
                 && e.kind == "encrypted"
                 && e.direction == direction
                 && e.session_id == b64(&self.id),
@@ -318,3 +345,11 @@ impl Session {
         Ok(plain)
     }
 }
+
+#[path = "crypto_v2.rs"]
+mod v2;
+pub use v2::{
+    ClientHelloV2, PairAccept, PairFinish, PairHello, ServerHelloV2, accept_client_hello_v2,
+    accept_pair, accept_server_hello_v2, client_hello_v2, complete_pair, pair_hello,
+    verify_pair_finish, verify_pair_hello,
+};

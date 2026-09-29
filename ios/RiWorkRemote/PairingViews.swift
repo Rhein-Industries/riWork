@@ -89,9 +89,16 @@ private struct PairingDetails: View {
             row("Relay", pairing.relayHost + (pairing.usesLocalDevelopmentRelay ? " (local, unencrypted)" : ""))
             row("Device", pairing.displayDeviceName)
             row("Desktop", pairing.desktopShortID)
+            if pairing.v == 2, pairing.invite_state != "established" {
+                row("Invite", "Single-use until \(inviteDeadline(pairing.expires_at))")
+            }
         }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
             .background(DesktopStyle.panel).overlay(Rectangle().stroke(DesktopStyle.divider, lineWidth: 1))
             .accessibilityElement(children: .combine)
+    }
+    private func inviteDeadline(_ expires: UInt64?) -> String {
+        guard let expires else { return "expiry missing" }
+        return Date(timeIntervalSince1970: TimeInterval(expires)).formatted(date: .abbreviated, time: .shortened)
     }
     private func row(_ title: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {

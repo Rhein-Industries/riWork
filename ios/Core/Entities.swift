@@ -42,7 +42,8 @@ public struct RemoteSession: Codable, Sendable, Identifiable, Hashable {
 }
 
 public protocol RemoteTransport: Sendable {
-    func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws
+    @discardableResult
+    func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing
     func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue
     func disconnect() async
     func isConnected() async -> Bool

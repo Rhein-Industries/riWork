@@ -2,7 +2,13 @@
 
 Contract owner: `feature/encrypted-relay`. This is the interoperability contract for
 `ios/`. No silent wire changes. Changes require an explicit dated note below and
-agreement with the iOS worker. v1 has no RPC that creates projects, shells, workers,
+agreement with the iOS worker.
+
+## Changelog
+
+- 2026-09-29: Protocol v2 is specified in [remote-protocol-v2.md](remote-protocol-v2.md). The v1 bytes in this document are unchanged. `pair` still defaults to v1. v2 is opt-in (`--protocol 2`). A v1 device is not rewritten in place; moving a phone to v2 is revoke plus a new pairing.
+
+v1 has no RPC that creates projects, shells, workers,
 schedules or tasks; it works on existing sessions. That is an API-level limit only:
 `shell.input` reaches every live project shell and orchestrator, including
 unrestricted harness sessions and editor (Vim) tabs, so a paired device can run

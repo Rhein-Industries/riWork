@@ -49,7 +49,12 @@ riwork remote pair --relay wss://relay.example.com/v1/ws --name 'My iPhone' \
 
 Import `phone.pairing.json` in the iOS app or open/scan the printed
 `riwork://pair?v=1&data=...` link. The export/link contains secrets; share it only
-with that phone and remove the export after import. Omitting `--show-link` avoids
+with that phone and remove the export after import. `--protocol 2` mints a
+single-use invite (`riwork://pair?v=2&data=...`) that expires (`--ttl-seconds`,
+30 to 3600, default 600) and is replaced by a forward-secret session root. The
+default remains protocol 1, and an existing v1 device is left as-is. The v2
+contract and threat model are in [remote-protocol-v2.md](../docs/remote-protocol-v2.md).
+Omitting `--show-link` avoids
 printing secrets to terminal scrollback. Both JSON files are created with mode
 600; connector state is in `$RIWORK_HOME/remote` (or the default data directory's
 `remote`) with mode 700. Existing files are never overwritten for pairing exports.

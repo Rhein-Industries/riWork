@@ -211,7 +211,11 @@ enum ConnectionState: Equatable {
         missingSessionIDs = []; loadedProjectID = nil; outputLines = [:]
         state = .connecting; error = nil; snapshotStale = true
         do {
-            try await client.connect(pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment)
+            let established = try await client.connect(pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment)
+            guard generation == token else { return }
+            if established != desktop.pairing {
+                try updateDesktop { $0.pairing = established }
+            }
             guard generation == token else { return }
             state = .connected
             try await refresh(token: token)

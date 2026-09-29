@@ -22,6 +22,7 @@ parser.add_argument('--riwork', required=True, type=Path)
 parser.add_argument('--smoke-binary', type=Path, default=Path(__file__).resolve().parents[1] / '.build/debug/riwork-ios-smoke')
 parser.add_argument('--hold', type=int, default=0, help='Keep the fixture available for simulator pairing for this many seconds')
 parser.add_argument('--viewport', action='store_true', help='Require the published resize extension; verify real PTY cells and desktop restoration')
+parser.add_argument('--protocol', type=int, default=1, choices=(1, 2), help='1 is the long-lived PSK. 2 is a single-use invite.')
 args = parser.parse_args()
 finish_hold = threading.Event()
 signal.signal(signal.SIGUSR1, lambda *_: finish_hold.set())
@@ -93,7 +94,10 @@ try:
         port = available.getsockname()[1]
     pairing = root / 'device.pairing.json'
     routes = root / 'routes.json'
-    run([args.relay_binary, 'pair', '--relay', f'ws://127.0.0.1:{port}/v1/ws', '--name', 'Swift fixture', '--out', pairing, '--relay-routes', routes, '--allow-insecure-loopback'])
+    pair = [args.relay_binary, 'pair', '--relay', f'ws://127.0.0.1:{port}/v1/ws', '--name', 'Swift fixture', '--out', pairing, '--relay-routes', routes, '--allow-insecure-loopback']
+    if args.protocol == 2:
+        pair += ['--protocol', '2', '--ttl-seconds', '600']
+    run(pair)
     start([args.relay_binary, 'relay', '--bind', f'127.0.0.1:{port}', '--routes', routes], 'relay.log')
     wait_health(port)
     start([args.relay_binary, 'start', '--riwork', args.riwork], 'connector.log')
@@ -104,6 +108,9 @@ try:
     if args.viewport: line = f"stty size > {shlex.quote(str(size_file))}; " + line
     smoke_command = [args.smoke_binary, pairing, '--local', '--project', project_id, '--shell', shell_id, '--send', line]
     if args.viewport: smoke_command += ['--columns', '43', '--rows', '17']
+    established = root / 'established.pairing.json'
+    if args.protocol == 2:
+        smoke_command += ['--write-established', established]
     smoke = run(smoke_command)
     print(smoke.stdout, end='', flush=True)
     for _ in range(80):
@@ -125,6 +132,21 @@ try:
     alive = cli('shell', 'list', '--project', project_id)
     if not any(s['id'] == shell_id and s['alive'] for s in alive): raise RuntimeError('Existing session did not survive reconnect')
     print('PASS: exactly one executed line; same persistent session alive after Swift reconnect', flush=True)
+    if args.protocol == 2:
+        # The first process keeps the established root in memory and writes it aside.
+        # The original file is still the invite, so a second process must be rejected.
+        replay = run([args.smoke_binary, pairing, '--local'], check=False)
+        if replay.returncode == 0:
+            raise RuntimeError('A second process accepted an already consumed v2 invite')
+        print('PASS: consumed v2 invite is rejected for a second process', flush=True)
+        saved = json.loads(established.read_text())
+        if saved.get('v') != 2 or saved.get('invite_state') != 'established' or not saved.get('root_key') or saved.get('invite_secret'):
+            raise RuntimeError('Established pairing file is missing the root or still holds the invite secret')
+        resume = run([args.smoke_binary, established, '--local', '--project', project_id, '--shell', shell_id])
+        print(resume.stdout, end='', flush=True)
+        if marker.read_bytes() != b'x':
+            raise RuntimeError('Persisted-root reconnect executed the fixture line again')
+        print('PASS: a new process continued with the stored root and did not replay the invite', flush=True)
     # These are fixture-only paths/IDs, never secret contents.
     metadata = {'root': str(root), 'home': str(home), 'pairing_file': str(pairing), 'project_id': project_id, 'shell_id': shell_id, 'orchestrator_id': orchestrator['id'], 'port': port, 'baseline_pane': baseline}
     (root / 'fixture.json').write_text(json.dumps(metadata))
@@ -135,7 +157,9 @@ try:
     device_id = json.loads(pairing.read_text())['device_id']
     run([args.relay_binary, 'revoke', device_id])
     time.sleep(1.2)
-    denied = run([args.smoke_binary, pairing, '--local'], check=False)
+    # v2 must present the stored root. The invite file is already rejected, so it cannot show that revoke closed the session.
+    revoked_file = established if args.protocol == 2 else pairing
+    denied = run([args.smoke_binary, revoked_file, '--local'], check=False)
     if denied.returncode == 0: raise RuntimeError('Revoked device connected')
     print('PASS: revoked device cannot authenticate/reconnect', flush=True)
 finally:
