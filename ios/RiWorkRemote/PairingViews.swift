@@ -1,5 +1,45 @@
 import SwiftUI
+import UIKit
 import RiWorkCore
+
+/// Pairing JSON is a credential. SwiftUI's TextEditor cannot turn off smart punctuation, inline
+/// prediction or writing tools, any of which can rewrite `"`, `--` or base64url hyphens on device.
+struct PairingCodeField: UIViewRepresentable {
+    @Binding var text: String
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.delegate = context.coordinator
+        view.backgroundColor = .clear
+        view.textColor = DesktopStyle.textUI
+        view.tintColor = DesktopStyle.accentUI
+        view.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(for: UIFont(name: "Menlo", size: 11) ?? .monospacedSystemFont(ofSize: 11, weight: .regular))
+        view.adjustsFontForContentSizeCategory = true
+        view.autocorrectionType = .no
+        view.autocapitalizationType = .none
+        view.spellCheckingType = .no
+        view.smartQuotesType = .no
+        view.smartDashesType = .no
+        view.smartInsertDeleteType = .no
+        view.inlinePredictionType = .no
+        view.mathExpressionCompletionType = .no
+        view.writingToolsBehavior = .none
+        view.dataDetectorTypes = []
+        view.textContainerInset = UIEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
+        view.accessibilityLabel = "Pairing JSON or deep link"
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
+    }
+    func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.parent = self
+        if view.text != text { view.text = text }
+    }
+    @MainActor final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: PairingCodeField
+        init(_ parent: PairingCodeField) { self.parent = parent }
+        func textViewDidChange(_ textView: UITextView) { parent.text = textView.text }
+    }
+}
 
 struct PairDesktopSheet: View {
     @Bindable var model: RemoteModel
@@ -24,10 +64,10 @@ struct PairDesktopSheet: View {
     }
     @ViewBuilder private var codeEntry: some View {
         Text("PAIRING CODE").font(.caption).foregroundStyle(DesktopStyle.muted)
-        TextEditor(text: $code).font(.custom("Menlo", size: 11, relativeTo: .caption))
-            .frame(height: 140).scrollContentBackground(.hidden).padding(4)
+        PairingCodeField(text: $code)
+            .frame(height: 140)
             .background(DesktopStyle.background).overlay(Rectangle().stroke(DesktopStyle.divider, lineWidth: 1))
-            .autocorrectionDisabled().textInputAutocapitalization(.never).privacySensitive().accessibilityLabel("Pairing JSON or deep link")
+            .privacySensitive()
         HStack {
             PasteButton(payloadType: String.self) { values in if let value = values.first { code = value } }.buttonBorderShape(.roundedRectangle(radius: 3)).controlSize(.small)
             Spacer()

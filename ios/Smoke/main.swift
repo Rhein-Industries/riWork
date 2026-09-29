@@ -5,7 +5,7 @@ import RiWorkCore
     static func main() async {
         do {
             let args = CommandLine.arguments
-            guard args.count >= 2 else { throw RemoteError.remote("Usage: riwork-ios-smoke PAIRING_FILE [--project UUID] [--shell UUID] [--send LINE] [--columns 43 --rows 17] [--local] [--write-established PATH]") }
+            guard args.count >= 2 else { throw RemoteError.remote("Usage: riwork-ios-smoke PAIRING_FILE [--project UUID] [--shell UUID] [--send LINE] [--columns 43 --rows 17] [--local] [--idle-seconds N] [--write-established PATH]") }
             func value(_ flag: String) -> String? { guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return nil }; return args[index + 1] }
             let local = args.contains("--local")
             var pairing = try Pairing.parse(String(contentsOfFile: args[1], encoding: .utf8), allowLocalDevelopment: local)
@@ -90,6 +90,15 @@ import RiWorkCore
                 guard after["shell_id"].string == shell, let output = after["output"].string else { throw RemoteError.protocolViolation("Reconnected to different session.") }
                 print("Reconnected to same existing session:\n\(TerminalText.readable(output))")
                 // Deliberately close without explicit clear to verify peer-loss restoration.
+            }
+            if let idleText = value("--idle-seconds"), let idle = Double(idleText), idle > 0 {
+                let deadline = Date().addingTimeInterval(idle)
+                while Date() < deadline {
+                    if !(await client.isConnected()) { throw RemoteError.remote("Keepalive dropped the idle connection.") }
+                    try await Task.sleep(for: .seconds(1))
+                }
+                if !(await client.isConnected()) { throw RemoteError.remote("Keepalive dropped the idle connection.") }
+                print("Idle keepalive held for \(idleText)s")
             }
             if let establishedPath = value("--write-established") {
                 let data = try JSONEncoder().encode(pairing)

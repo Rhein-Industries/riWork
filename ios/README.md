@@ -43,7 +43,9 @@ desktop CLI's `shell resize` / `shell resize-clear` commands. An older installed
 CLI can list/read sessions but cannot fit them; update both desktop and connector.
 
 Tap **Add desktop**, enter a name, and paste the complete pairing JSON or
-`riwork://pair?v=1&data=…` link. The form shows the parsed relay host, device name
+`riwork://pair?v=1&data=…` link. The code field is a UIKit text view with smart
+punctuation, predictions and writing tools off, so a pasted or typed quote or hyphen
+is stored unchanged. The form shows the parsed relay host, device name
 and desktop ID before anything is saved. Tap **Save pairing & connect**. Opening a
 link from another app or web page, which any of them can do, also opens the form,
 hides the raw data and asks for an explicit **Pair** confirmation naming the relay
@@ -96,8 +98,9 @@ The server also releases lost connections and recovers a connector crash within
 15 seconds. Another device's active override produces a useful error.
 
 Input is one control-free physical line, at most 8192 UTF-8 bytes. The command field
-is a single-line UIKit text field with smart quotes, smart dashes, autocorrection and
-autocapitalization off, so `--oneline` and `"` reach the shell as typed. Multi-line
+is a single-line UIKit text field with smart quotes, smart dashes, autocorrection,
+autocapitalization, inline prediction, math completion and writing tools off, so
+`--oneline` and `"` reach the shell as typed. Multi-line
 pastes are refused (one trailing newline is dropped). Tap **Send** (the upward arrow)
 or the keyboard's Send key to submit directly to the visibly selected tab. Send captures
 that shell ID and the current line; a changed selection prevents delivery to a

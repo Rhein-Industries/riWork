@@ -3,7 +3,7 @@ import UIKit
 import RiWorkCore
 
 /// One-line command entry. SwiftUI's TextField cannot turn off smart quotes and dashes (`--oneline` would
-/// become `—oneline`, `"` would become `“`), and its vertical axis lets Return insert a newline.
+/// become an em dash, `"` a curly quote), inline prediction, or writing tools, and its vertical axis lets Return insert a newline.
 struct CommandField: UIViewRepresentable {
     @Binding var text: String
     var placeholder: String
@@ -24,6 +24,9 @@ struct CommandField: UIViewRepresentable {
         field.smartQuotesType = .no
         field.smartDashesType = .no
         field.smartInsertDeleteType = .no
+        field.inlinePredictionType = .no
+        field.mathExpressionCompletionType = .no
+        field.writingToolsBehavior = .none
         field.returnKeyType = .send
         field.enablesReturnKeyAutomatically = true
         field.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Menlo", size: 13) ?? .monospacedSystemFont(ofSize: 13, weight: .regular))

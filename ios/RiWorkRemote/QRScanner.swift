@@ -26,18 +26,63 @@ struct QRScannerSheet: View {
     }
 }
 
+/// DataScanner's `startScanning` throws until the view is in a window. Starting from
+/// `makeUIViewController` fails on a physical device and the sheet then stays on the paste fallback.
+@MainActor final class ScannerStartController: UIViewController {
+    private let start: () throws -> Void
+    private let stop: () -> Void
+    private let onError: (String) -> Void
+    private var scanning = false
+    init(start: @escaping () throws -> Void, stop: @escaping () -> Void, onError: @escaping (String) -> Void) {
+        self.start = start
+        self.stop = stop
+        self.onError = onError
+        super.init(nibName: nil, bundle: nil)
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+    func embed(_ child: UIViewController) {
+        addChild(child)
+        child.view.frame = view.bounds
+        child.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(child.view)
+        child.didMove(toParent: self)
+    }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !scanning else { return }
+        do {
+            try start()
+            scanning = true
+        } catch {
+            onError("Camera could not start. Paste the pairing code instead.")
+        }
+    }
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        stopIfNeeded()
+    }
+    func stopIfNeeded() {
+        guard scanning else { return }
+        scanning = false
+        stop()
+    }
+}
+
 private struct ScannerView: UIViewControllerRepresentable {
     var onScan: (String) -> Void
     var onError: (String) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(onScan: onScan, onError: onError) }
-    func makeUIViewController(context: Context) -> DataScannerViewController {
+    func makeUIViewController(context: Context) -> ScannerStartController {
         let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])], qualityLevel: .balanced, recognizesMultipleItems: false, isGuidanceEnabled: true, isHighlightingEnabled: true)
         scanner.delegate = context.coordinator
-        do { try scanner.startScanning() } catch { Task { @MainActor in onError("Camera could not start. Paste the pairing code instead.") } }
-        return scanner
+        let coordinator = context.coordinator
+        // startScanning throws unless this controller is already in a window, so the host waits for viewDidAppear.
+        let host = ScannerStartController(start: { try scanner.startScanning() }, stop: { scanner.stopScanning() }, onError: { coordinator.onError($0) })
+        host.embed(scanner)
+        return host
     }
-    func updateUIViewController(_ uiViewController: DataScannerViewController, context: Context) {}
-    static func dismantleUIViewController(_ uiViewController: DataScannerViewController, coordinator: Coordinator) { uiViewController.stopScanning() }
+    func updateUIViewController(_ uiViewController: ScannerStartController, context: Context) {}
+    static func dismantleUIViewController(_ uiViewController: ScannerStartController, coordinator: Coordinator) { uiViewController.stopIfNeeded() }
     @MainActor final class Coordinator: NSObject, DataScannerViewControllerDelegate {
         let onScan: (String) -> Void
         let onError: (String) -> Void
