@@ -381,6 +381,7 @@ impl Storage {
     }
     /// `version` 1 is the frozen PSK pairing. `version` 2 is a single-use invite.
     /// `ttl_secs` applies only to v2 and must be 30..=3600.
+    #[allow(clippy::too_many_arguments)]
     pub fn pair_with(
         &self,
         relay: String,

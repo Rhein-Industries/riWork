@@ -36,10 +36,10 @@ fn install_ring_provider() {
 /// `cargo test` on Unix can install one extra root for a local certificate.
 fn wss_connector(relay: &str) -> Option<tokio_tungstenite::Connector> {
     #[cfg(all(test, unix))]
-    if relay.starts_with("wss://") {
-        if let Some(config) = TEST_WSS_TRUST.lock().expect("wss trust lock").clone() {
-            return Some(tokio_tungstenite::Connector::Rustls(config));
-        }
+    if relay.starts_with("wss://")
+        && let Some(config) = TEST_WSS_TRUST.lock().expect("wss trust lock").clone()
+    {
+        return Some(tokio_tungstenite::Connector::Rustls(config));
     }
     #[cfg(not(all(test, unix)))]
     let _ = relay;
