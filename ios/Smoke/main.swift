@@ -5,14 +5,14 @@ import RiWorkCore
     static func main() async {
         do {
             let args = CommandLine.arguments
-            guard args.count >= 2 else { throw RemoteError.remote("Usage: riwork-ios-smoke PAIRING_FILE [--project UUID] [--shell UUID] [--send LINE] [--columns 43 --rows 17] [--local]") }
+            guard args.count >= 2 else { throw RemoteError.remote("Usage: riwork-ios-smoke PAIRING_FILE [--project UUID] [--shell UUID] [--send LINE] [--columns 43 --rows 17] [--local] [--write-established PATH]") }
             func value(_ flag: String) -> String? { guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return nil }; return args[index + 1] }
             let local = args.contains("--local")
-            let pairing = try Pairing.parse(String(contentsOfFile: args[1], encoding: .utf8), allowLocalDevelopment: local)
+            var pairing = try Pairing.parse(String(contentsOfFile: args[1], encoding: .utf8), allowLocalDevelopment: local)
             let client = RelayClient()
-            try await client.connect(pairing: pairing, allowLocalDevelopment: local)
+            pairing = try await client.connect(pairing: pairing, allowLocalDevelopment: local)
             let projects = try await client.request(method: "projects.list")
-            print("Authenticated; projects: \(projects["projects"].array.count)")
+            print("Authenticated; protocol \(pairing.v); projects: \(projects["projects"].array.count)")
             if let project = value("--project") {
                 for method in ["worktrees.list", "tasks.list", "shells.list"] {
                     let result = try await client.request(method: method, params: ["project_id": .string(project)])
@@ -78,7 +78,7 @@ import RiWorkCore
                 }
                 try await clear()
                 await client.disconnect()
-                try await client.connect(pairing: pairing, allowLocalDevelopment: local)
+                pairing = try await client.connect(pairing: pairing, allowLocalDevelopment: local)
                 try await resize()
                 if let id = inputID, let line = value("--send") {
                     // Explicit isolated-fixture smoke verifies desktop dedup with the SAME UUID.
@@ -90,6 +90,11 @@ import RiWorkCore
                 guard after["shell_id"].string == shell, let output = after["output"].string else { throw RemoteError.protocolViolation("Reconnected to different session.") }
                 print("Reconnected to same existing session:\n\(TerminalText.readable(output))")
                 // Deliberately close without explicit clear to verify peer-loss restoration.
+            }
+            if let establishedPath = value("--write-established") {
+                let data = try JSONEncoder().encode(pairing)
+                try data.write(to: URL(fileURLWithPath: establishedPath), options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: establishedPath)
             }
             await client.disconnect()
             print("PASS")

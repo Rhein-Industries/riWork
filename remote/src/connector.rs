@@ -2,7 +2,8 @@ use crate::{
     HANDSHAKE_SECONDS, MAX_FRAME,
     config::{Device, Storage},
     crypto::{
-        ClientFinish, ClientHello, Envelope, Pending, Session, accept_hello, decode, random32,
+        ClientFinish, ClientHello, ClientHelloV2, Envelope, PairFinish, PairHello, Pending,
+        Session, accept_client_hello_v2, accept_hello, decode, random32,
     },
     log_safe,
     rpc::Rpc,
@@ -229,13 +230,27 @@ async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
     run_device_with(device, rpc, Timing::default()).await
 }
 pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) -> Result<()> {
+    // Reload so a v2 invite redeemed on the previous connection is not stale.
+    let device = rpc
+        .storage
+        .fresh_device(&device.pairing.device_id)?
+        .context("revoked device")?;
     let p = &device.pairing;
     p.validate(device.allow_insecure_loopback)?;
     let (mut ws, online) =
         connect_registered(&p.relay_url, &p.route_id, "desktop", &device.desktop_token).await?;
     let identity = p.identity();
-    let secret = decode::<32>(&p.pairing_secret)?;
+    let v1_secret = if p.v == 1 {
+        Some(decode::<32>(&p.pairing_secret)?)
+    } else {
+        None
+    };
+    let mut root = match p.root_key.as_deref() {
+        Some(value) => Some(decode::<32>(value)?),
+        None => None,
+    };
     let mut pending: Option<Pending> = None;
+    let mut pair_state: Option<(Vec<u8>, [u8; 32])> = None;
     let mut session: Option<Session> = None;
     let mut viewport: Option<Viewport> = None;
     let mut deadline: Option<Instant> =
@@ -264,9 +279,10 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) 
             },
             _=async {if let Some(t)=deadline {tokio::time::sleep_until(t).await;}else{std::future::pending::<()>().await;}}=>bail!("handshake timeout"),
         };
-        ensure!(value["v"] == 1, "unsupported version");
+        let ver = value["v"].as_u64();
         match value["type"].as_str() {
             Some("peer") => {
+                ensure!(ver == Some(1), "unsupported version");
                 let online = value["online"].as_bool().context("missing peer status")?;
                 // Ordered peer control messages reset old transport state.
                 if let Some(mut v) = viewport.take() {
@@ -274,18 +290,67 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) 
                 }
                 session = None;
                 pending = None;
+                pair_state = None;
                 deadline = online.then(|| Instant::now() + Duration::from_secs(HANDSHAKE_SECONDS));
             }
-            Some("client_hello") => {
+            Some("pair_hello") => {
+                ensure!(p.v == 2 && ver == Some(2), "unsupported version");
                 ensure!(
-                    session.is_none() && pending.is_none(),
+                    session.is_none() && pending.is_none() && pair_state.is_none(),
                     "unexpected handshake restart"
                 );
                 ensure!(rpc.storage.authorized(&p.device_id)?, "revoked device");
-                let hello: ClientHello = serde_json::from_value(value)?;
-                let (reply, state) = accept_hello(&identity, &secret, &hello, random32())?;
-                send_json(&mut ws, &reply).await?;
-                pending = Some(state);
+                let hello: PairHello = serde_json::from_value(value)?;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_secs());
+                match rpc.storage.redeem_invite(&hello, now, random32()) {
+                    Ok(done) => {
+                        send_json(&mut ws, &done.accept).await?;
+                        root = Some(done.root_key);
+                        pair_state = Some((done.transcript, done.root_key));
+                        deadline = Some(Instant::now() + Duration::from_secs(HANDSHAKE_SECONDS));
+                    }
+                    Err(crate::config::RedeemError::Rejected(code)) => {
+                        let _ =
+                            send_json(&mut ws, &json!({"v":2,"type":"pair_error","error":code}))
+                                .await;
+                        bail!("pairing {code}");
+                    }
+                    Err(crate::config::RedeemError::Io(error)) => return Err(error),
+                }
+            }
+            Some("pair_finish") => {
+                ensure!(p.v == 2 && ver == Some(2), "unsupported version");
+                let (transcript, key) = pair_state.take().context("unexpected pair finish")?;
+                let finish: PairFinish = serde_json::from_value(value)?;
+                crate::crypto::verify_pair_finish(&key, &transcript, &finish)?;
+                deadline = Some(Instant::now() + Duration::from_secs(HANDSHAKE_SECONDS));
+            }
+            Some("client_hello") => {
+                ensure!(
+                    session.is_none() && pending.is_none() && pair_state.is_none(),
+                    "unexpected handshake restart"
+                );
+                ensure!(rpc.storage.authorized(&p.device_id)?, "revoked device");
+                if p.v == 1 {
+                    ensure!(ver == Some(1), "unsupported version");
+                    let secret = v1_secret.context("missing pairing secret")?;
+                    let hello: ClientHello = serde_json::from_value(value)?;
+                    let (reply, state) = accept_hello(&identity, &secret, &hello, random32())?;
+                    send_json(&mut ws, &reply).await?;
+                    pending = Some(state);
+                } else if p.v == 2 {
+                    ensure!(ver == Some(2), "unsupported version");
+                    let key = root.context("pairing not established")?;
+                    let hello: ClientHelloV2 = serde_json::from_value(value)?;
+                    let (reply, state) =
+                        accept_client_hello_v2(&identity, &key, &hello, random32())?;
+                    send_json(&mut ws, &reply).await?;
+                    pending = Some(state);
+                } else {
+                    bail!("unsupported version");
+                }
                 deadline = Some(Instant::now() + Duration::from_secs(HANDSHAKE_SECONDS));
             }
             Some("client_finish") => {
@@ -332,6 +397,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::crypto::b64;
     use crate::{
         config::{Pairing, private_read},
         crypto::{ServerHello, accept_server, client_hello},
@@ -539,5 +605,186 @@ mod tests {
         assert!(error.contains("liveness deadline"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(3));
         hole.abort();
+    }
+
+    #[tokio::test]
+    async fn v2_relay_rejects_race_replay_and_old_hello_then_continues() {
+        use crate::crypto::pair_hello;
+        let tmp = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/ws", listener.local_addr().unwrap());
+        let storage = Storage::at(tmp.path().to_path_buf()).unwrap();
+        let routes = tmp.path().join("routes.json");
+        let export = storage
+            .pair_with(
+                url.clone(),
+                "phone".into(),
+                true,
+                &tmp.path().join("phone.json"),
+                Some(&routes),
+                2,
+                600,
+            )
+            .unwrap();
+        let invite_secret = decode::<32>(export.invite_secret.as_deref().unwrap()).unwrap();
+        let relay = Relay::new(private_read::<Routes>(&routes, 1 << 20).unwrap(), 8).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, relay.router()).await });
+        let (cli, _) = scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string());
+        let rpc = Rpc::new(cli, storage.clone());
+        let hold = storage.testing_hold_invite(export.invite_id.as_deref().unwrap());
+        let device = storage.config().unwrap().devices.remove(0);
+        let connector =
+            tokio::spawn(async move { run_device_with(&device, &rpc, Timing::default()).await });
+        let mut raced = connect_mobile(&export).await;
+        let hello = pair_hello(
+            &export.identity(),
+            &export.relay_url,
+            export.invite_id.as_deref().unwrap(),
+            export.expires_at.unwrap(),
+            &invite_secret,
+            [11u8; 32],
+        )
+        .unwrap();
+        send_json(&mut raced, &hello).await.unwrap();
+        let error = receive_json(&mut raced).await.unwrap();
+        assert_eq!(error["error"], "invite_race");
+        let reason = format!("{:#}", connector.await.unwrap().unwrap_err());
+        assert!(reason.contains("invite_race"), "{reason}");
+        drop(raced);
+        drop(hold);
+        assert_eq!(
+            storage.config().unwrap().devices[0]
+                .pairing
+                .invite_state
+                .as_deref(),
+            Some("pending")
+        );
+
+        let device = storage.fresh_device(&export.device_id).unwrap().unwrap();
+        let rpc = Rpc::new(
+            scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string()).0,
+            storage.clone(),
+        );
+        let connector =
+            tokio::spawn(async move { run_device_with(&device, &rpc, Timing::default()).await });
+        let mut ws = connect_mobile(&export).await;
+        // A v1 hello cannot open a v2 device.
+        send_json(&mut ws, &json!({"v":1,"type":"client_hello","desktop_id":export.desktop_id,"device_id":export.device_id,"route_id":export.route_id,"client_nonce":"AA","mac":"AA"})).await.unwrap();
+        // The desktop closes. The relay may deliver peer-offline before the socket ends.
+        let next = timeout(Duration::from_secs(2), receive_json(&mut ws))
+            .await
+            .unwrap();
+        if let Ok(value) = next {
+            assert_ne!(value["type"], "server_hello", "{value}");
+        }
+        drop(ws);
+        let reason = format!("{:#}", connector.await.unwrap().unwrap_err());
+        assert!(reason.contains("unsupported version"), "{reason}");
+
+        let device = storage.fresh_device(&export.device_id).unwrap().unwrap();
+        let rpc = Rpc::new(
+            scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string()).0,
+            storage.clone(),
+        );
+        let connector =
+            tokio::spawn(async move { run_device_with(&device, &rpc, Timing::default()).await });
+        let (mut ws, mut session, root) = establish_v2(&export, &invite_secret).await;
+        let listed = call(&mut ws, &mut session, "projects.list", json!({})).await;
+        assert_eq!(listed["ok"], true);
+        assert_eq!(listed["result"]["projects"], json!([]));
+        let first_id = session.id;
+        ws.close(None).await.unwrap();
+        drop(ws);
+        let (mut ws, mut again) = resume_v2(&export, &root).await;
+        assert_ne!(again.id, first_id);
+        assert_eq!(
+            call(&mut ws, &mut again, "projects.list", json!({})).await["ok"],
+            true
+        );
+        ws.close(None).await.unwrap();
+        drop(ws);
+        let mut replay = connect_mobile(&export).await;
+        send_json(&mut replay, &hello).await.unwrap();
+        let error = receive_json(&mut replay).await.unwrap();
+        assert_eq!(error["error"], "invite_replay");
+        let reason = format!("{:#}", connector.await.unwrap().unwrap_err());
+        assert!(reason.contains("invite_replay"), "{reason}");
+        let saved = std::fs::read_to_string(storage.dir.join("devices.json")).unwrap();
+        let routes_raw = std::fs::read_to_string(&routes).unwrap();
+        assert!(!saved.contains(export.invite_secret.as_deref().unwrap()));
+        assert!(!routes_raw.contains(export.invite_secret.as_deref().unwrap()));
+        assert!(!routes_raw.contains("projects.list"));
+        server.abort();
+    }
+
+    async fn connect_mobile(p: &Pairing) -> Socket {
+        let (mut ws, online) = loop {
+            match connect_registered(&p.relay_url, &p.route_id, "mobile", &p.relay_token).await {
+                Ok(ready) => break ready,
+                Err(_) => sleep(Duration::from_millis(20)).await,
+            }
+        };
+        if !online {
+            let peer = receive_json(&mut ws).await.unwrap();
+            assert_eq!(peer["online"], true);
+        }
+        ws
+    }
+    async fn establish_v2(p: &Pairing, invite_secret: &[u8; 32]) -> (Socket, Session, [u8; 32]) {
+        use crate::crypto::{accept_pair, accept_server_hello_v2, client_hello_v2, pair_hello};
+        let mut ws = connect_mobile(p).await;
+        let nonce = random32();
+        let hello = pair_hello(
+            &p.identity(),
+            &p.relay_url,
+            p.invite_id.as_deref().unwrap(),
+            p.expires_at.unwrap(),
+            invite_secret,
+            nonce,
+        )
+        .unwrap();
+        let wire = serde_json::to_string(&hello).unwrap();
+        assert!(!wire.contains(&b64(invite_secret)));
+        send_json(&mut ws, &hello).await.unwrap();
+        let accept: crate::crypto::PairAccept =
+            serde_json::from_value(receive_json(&mut ws).await.unwrap()).unwrap();
+        let (finish, root, _) = accept_pair(
+            &p.identity(),
+            &p.relay_url,
+            p.invite_id.as_deref().unwrap(),
+            p.expires_at.unwrap(),
+            invite_secret,
+            &nonce,
+            &accept,
+        )
+        .unwrap();
+        send_json(&mut ws, &finish).await.unwrap();
+        // client_hello_v2 wipes only its copy of the scalar. The caller keeps this one for finish.
+        let client_private = random32();
+        let (session_hello, _) = client_hello_v2(&p.identity(), &root, client_private).unwrap();
+        send_json(&mut ws, &session_hello).await.unwrap();
+        let server: crate::crypto::ServerHelloV2 =
+            serde_json::from_value(receive_json(&mut ws).await.unwrap()).unwrap();
+        let (finish, mut session) =
+            accept_server_hello_v2(&p.identity(), &root, client_private, &server).unwrap();
+        send_json(&mut ws, &finish).await.unwrap();
+        let ready: Envelope = serde_json::from_value(receive_json(&mut ws).await.unwrap()).unwrap();
+        session.open("d2c", &ready).unwrap();
+        (ws, session, root)
+    }
+    async fn resume_v2(p: &Pairing, root: &[u8; 32]) -> (Socket, Session) {
+        use crate::crypto::{accept_server_hello_v2, client_hello_v2};
+        let mut ws = connect_mobile(p).await;
+        let client_private = random32();
+        let (hello, _) = client_hello_v2(&p.identity(), root, client_private).unwrap();
+        send_json(&mut ws, &hello).await.unwrap();
+        let server: crate::crypto::ServerHelloV2 =
+            serde_json::from_value(receive_json(&mut ws).await.unwrap()).unwrap();
+        let (finish, mut session) =
+            accept_server_hello_v2(&p.identity(), root, client_private, &server).unwrap();
+        send_json(&mut ws, &finish).await.unwrap();
+        let ready: Envelope = serde_json::from_value(receive_json(&mut ws).await.unwrap()).unwrap();
+        session.open("d2c", &ready).unwrap();
+        (ws, session)
     }
 }

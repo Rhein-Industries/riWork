@@ -173,7 +173,9 @@ requests; that would discard the evidence needed for duplicate suppression.
 
 The v1 PSK protocol does not provide forward secrecy. Its exact security boundary,
 handshake/envelope bytes, errors and retry rules are in
-[remote-protocol.md](remote-protocol.md). Production transport requires both TLS
+[remote-protocol.md](remote-protocol.md). Protocol v2 (`riwork remote pair --protocol 2`)
+is a single-use expiring invite and an X25519 session; the default remains v1.
+See [remote-protocol-v2.md](remote-protocol-v2.md). Production transport requires both TLS
 and endpoint authentication; a relay token alone never authorizes a CLI request.
 
 ## What a paired device can do, and how to watch it

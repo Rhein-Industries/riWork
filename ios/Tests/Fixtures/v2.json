@@ -1,0 +1,95 @@
+{
+  "v": 2,
+  "desktop_id": "11111111-1111-4111-8111-111111111111",
+  "device_id": "22222222-2222-4222-8222-222222222222",
+  "route_id": "33333333-3333-4333-8333-333333333333",
+  "invite_id": "55555555-5555-4555-8555-555555555555",
+  "relay_url": "wss://relay.example.com/v1/ws",
+  "expires_at": 1893456000,
+  "invite_secret": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+  "pair_client_nonce": "wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t8",
+  "pair_desktop_nonce": "4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8",
+  "identity_hex": "111111111111411181111111111111112222222222224222822222222222222233333333333343338333333333333333",
+  "pair_transcript_hex": "7269776f726b2f76322f7061697200111111111111411181111111111111112222222222224222822222222222222233333333333343338333333333333333555555555555455585555555555555550000000070dbd880001d7773733a2f2f72656c61792e6578616d706c652e636f6d2f76312f7773c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+  "root_key_hex": "784ed546d54b678494999c61684eee8957b1a4d9e1b34dcb2fe8e38c27f7fa00",
+  "client_private_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+  "desktop_private_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+  "client_public_hex": "675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f",
+  "desktop_public_hex": "493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d",
+  "dh_hex": "fbfb11adeb1d6f71c0571bc1b5dd87519f9a6620b10a5ebc314cbd420c43ba43",
+  "session_transcript_hex": "7269776f726b2f76322f73657373696f6e00111111111111411181111111111111112222222222224222822222222222222233333333333343338333333333333333675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d",
+  "session_salt_hex": "82266c6ef97319f60c41b087d89e7f57fefae6ae75c4d210570b87f7c9091491",
+  "hs_key_hex": "10f22bb8ea5ba028180c8acfe505a3b75dc279510d56e47cd314565c21715249",
+  "c2d_key_hex": "7af2fe326edcb8c502b4b0b1d2963c5d322c38fa0c7b7e5e484fee9d096c6f49",
+  "d2c_key_hex": "8cb246b1580519f4fca6df806107cc653ee47a13bba1261c1750d303ed48b80d",
+  "session_id": "giZsbvlzGfYMQbCH2J5_Vw",
+  "pair_hello": {
+    "v": 2,
+    "type": "pair_hello",
+    "invite_id": "55555555-5555-4555-8555-555555555555",
+    "desktop_id": "11111111-1111-4111-8111-111111111111",
+    "device_id": "22222222-2222-4222-8222-222222222222",
+    "route_id": "33333333-3333-4333-8333-333333333333",
+    "client_nonce": "wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t8",
+    "mac": "u8wpFmv2AfZ31YxBiUGnZirHHecrXG7-zva1QhAwjPY"
+  },
+  "pair_accept": {
+    "v": 2,
+    "type": "pair_accept",
+    "desktop_nonce": "4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8",
+    "mac": "j5Bc1uFqBLNy2DFw52PTkwiBHBsAhUhK321g6h756qQ"
+  },
+  "pair_finish": {
+    "v": 2,
+    "type": "pair_finish",
+    "mac": "Rmt2U83IjT2UFuM-kDBHyl60wSBnEEKISydEBcol8J4"
+  },
+  "client_hello": {
+    "v": 2,
+    "type": "client_hello",
+    "desktop_id": "11111111-1111-4111-8111-111111111111",
+    "device_id": "22222222-2222-4222-8222-222222222222",
+    "route_id": "33333333-3333-4333-8333-333333333333",
+    "client_eph": "Z13VdO13iTELPS52gfN5C0ZsdzsVIf7PNld5WDcepS8",
+    "mac": "yBwrismj7fEtfjIHnQZf3RY7HJUzVfLTI5O9ujBs-eE"
+  },
+  "server_hello": {
+    "v": 2,
+    "type": "server_hello",
+    "desktop_eph": "ST6C_HRGSlkmiBdiPSBTxeuOLMSpiLT-4XnsawENUx0",
+    "mac": "Qr2j6Mc0fyK8UKyNK0rBxs0Hq63-es0VeSs1RmiNSFA"
+  },
+  "client_finish": {
+    "v": 2,
+    "type": "client_finish",
+    "mac": "w7WItp6m27wuiMC58qi3oWCOIV6yWyx864cnghRRZns"
+  },
+  "frames": [
+    {
+      "plaintext_utf8": "{\"v\":1,\"type\":\"request\",\"id\":\"44444444-4444-4444-8444-444444444444\",\"method\":\"projects.list\",\"params\":{}}",
+      "nonce_hex": "000000000000000000000000",
+      "aad_hex": "7269776f726b2f76322f6672616d650082266c6ef97319f60c41b087d89e7f57000000000000000000",
+      "envelope": {
+        "v": 2,
+        "type": "encrypted",
+        "session_id": "giZsbvlzGfYMQbCH2J5_Vw",
+        "direction": "c2d",
+        "counter": "0",
+        "ciphertext": "XuWi8BQJniTEOzp6jNf6LCg1-eNYS6Lr131vg2PRUoZQAj4Keus1Pb0DIpAqEl0BUiRkf2YSJCbVNV_p7ERmb9_MJwjuLFp7E7d8H3I31iG0BHzD85Mx21udMEl4mhaCBLhnmXmeN3MGMrYes1aaRU_nFmgMkV6Tvg"
+      }
+    },
+    {
+      "plaintext_utf8": "{\"v\":1,\"type\":\"ready\",\"desktop_id\":\"11111111-1111-4111-8111-111111111111\",\"device_id\":\"22222222-2222-4222-8222-222222222222\"}",
+      "nonce_hex": "000000000000000000000000",
+      "aad_hex": "7269776f726b2f76322f6672616d650082266c6ef97319f60c41b087d89e7f57010000000000000000",
+      "envelope": {
+        "v": 2,
+        "type": "encrypted",
+        "session_id": "giZsbvlzGfYMQbCH2J5_Vw",
+        "direction": "d2c",
+        "counter": "0",
+        "ciphertext": "5CtRl9lidFJMYXNO-TLZ23_jsa_WmjXgBalE6jxBq78RryqDAIQdbRP7Jdxr2OHb-dh2Qz2AyxnSJs0_y0OPBoLucOtygKbKSTPlmXcbgMLY39MTTL-O03P6xGYF5YqF7GZhgdsR83SYTJw-BEx_tl9jQFcZFA6oFrUlnae7ZaxoUcjAgoKDNaRFvmlP"
+      }
+    }
+  ]
+}

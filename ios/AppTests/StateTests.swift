@@ -19,7 +19,14 @@ private actor FixtureTransport: RemoteTransport {
     private var waiters: [CheckedContinuation<Void, any Error>] = []
     func setSessions(_ sessions: [RemoteSession]) { listedShells = sessions }
     func setMissing(_ id: String) { missingOutputs.insert(id) }
-    func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws { connected = true; connections += 1 }
+    func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing {
+        connected = true
+        connections += 1
+        if pairing.v == 2, pairing.root_key == nil {
+            return pairing.established(rootKey: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+        }
+        return pairing
+    }
     func disconnect() async { connected = false; events.append("transport.disconnect") }
     func setOversize(above lines: Int?, code: String = "response_too_large") { oversizeAbove = lines; oversizeCode = code }
     func lineRequests() -> [Int] { outputLineRequests }
@@ -461,5 +468,27 @@ private actor FixtureTransport: RemoteTransport {
         try model.resetLibrary()
         XCTAssertFalse(model.loadFailed)
         XCTAssertNil(try keychain.read([String: String].self))
+    }
+    func testV2ConnectStoresTheRootAndDropsTheInviteSecret() async throws {
+        let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+        defer { try? keychain.delete() }
+        let secret = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        let pairing = try Pairing.parse("""
+        {"v":2,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","invite_id":"55555555-5555-4555-8555-555555555555","invite_secret":"\(secret)","expires_at":1893456000,"invite_state":"pending"}
+        """)
+        var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+        desktop.selectedProjectID = project
+        desktop.selectedSessionID = shell
+        try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+        let model = RemoteModel(client: FixtureTransport(), keychain: keychain)
+        await model.connect()
+        XCTAssertEqual(model.state, .connected)
+        let saved = try XCTUnwrap(keychain.read(Library.self)?.desktops.first?.pairing)
+        XCTAssertEqual(saved.invite_state, "established")
+        XCTAssertNil(saved.invite_secret)
+        XCTAssertEqual(saved.root_key, "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+        let stored = String(data: try JSONEncoder().encode(saved), encoding: .utf8)!
+        XCTAssertFalse(stored.contains(secret))
+        await model.disconnect()
     }
 }

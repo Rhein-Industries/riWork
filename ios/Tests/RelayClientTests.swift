@@ -307,7 +307,7 @@ private final class ScriptedDesktop: @unchecked Sendable {
         let connect = Task { try await client.connect(pairing: self.pairing()) }
         await eventually("register sent") { socket.sentCount == 1 }
         socket.push(.object(["v": .number(1), "type": .string("peer"), "online": .bool(false)]))
-        do { try await connect.value; XCTFail() } catch { XCTAssertTrue(error.localizedDescription.contains("offline"), error.localizedDescription) }
+        do { _ = try await connect.value; XCTFail() } catch { XCTAssertTrue(error.localizedDescription.contains("offline"), error.localizedDescription) }
         XCTAssertTrue(socket.cancelled)
     }
     func testDesktopThatComesOnlineWhileRegisteringCompletesTheHandshake() async throws {
@@ -315,7 +315,7 @@ private final class ScriptedDesktop: @unchecked Sendable {
         let connect = Task { try await client.connect(pairing: self.pairing()) }
         await eventually("register sent") { socket.sentCount == 1 }
         socket.push(.object(["v": .number(1), "type": .string("peer"), "online": .bool(true)]))
-        try await connect.value
+        _ = try await connect.value
         _ = try await client.request(method: "projects.list")
         XCTAssertEqual(desktop.violations, 0)
     }
@@ -325,7 +325,7 @@ private final class ScriptedDesktop: @unchecked Sendable {
         let connect = Task { try await client.connect(pairing: self.pairing()) }
         await eventually("register sent") { socket.sentCount == 1 }
         socket.closeFromPeer(code: .policyViolation, reason: "duplicate")
-        do { try await connect.value; XCTFail() } catch {
+        do { _ = try await connect.value; XCTFail() } catch {
             guard case RemoteError.relayClosed(let code, let reason) = error else { return XCTFail("\(error)") }
             XCTAssertEqual(code, 1008); XCTAssertEqual(reason, "duplicate")
             XCTAssertTrue(error.localizedDescription.contains("duplicate"))

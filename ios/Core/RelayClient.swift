@@ -66,7 +66,8 @@ public actor RelayClient: RemoteTransport {
         self.handshakeTimeout = handshakeTimeout
     }
     public func isConnected() -> Bool { cipher != nil && socket != nil }
-    public func connect(pairing: Pairing, allowLocalDevelopment: Bool = false) async throws {
+    @discardableResult
+    public func connect(pairing: Pairing, allowLocalDevelopment: Bool = false) async throws -> Pairing {
         disconnect()
         try pairing.validate(allowLocalDevelopment: allowLocalDevelopment)
         guard let url = URL(string: pairing.relay_url) else { throw RemoteError.invalidPairing("Invalid relay URL.") }
@@ -83,21 +84,59 @@ public actor RelayClient: RemoteTransport {
                 let peer = try await Self.receive(on: ws, deadline: deadline)
                 guard peer["v"] == .number(1), peer["type"].string == "peer", peer["online"] == .bool(true) else { throw RemoteError.remote("Desktop is offline. Start its connector and reconnect.") }
             }
-            let handshake = try ClientHandshake(pairing: pairing)
-            try await Self.send(handshake.hello, on: ws)
-            let hello = try await Self.receive(on: ws, deadline: deadline)
-            let accepted = try handshake.accept(hello)
-            try await Self.send(accepted.finish, on: ws)
-            var sessionCipher = accepted.cipher
+            let started: (Pairing, SessionCipher)
+            if pairing.v == 1 { started = try await handshakeV1(pairing, on: ws, deadline: deadline) }
+            else if pairing.v == 2 { started = try await handshakeV2(pairing, on: ws, deadline: deadline) }
+            else { throw RemoteError.invalidPairing("Unsupported version \(pairing.v).") }
+            var sessionCipher = started.1
             let ready = try sessionCipher.open(try await Self.receive(on: ws, deadline: deadline))
             guard generation == token, ready["type"].string == "ready", ready["desktop_id"].string == pairing.desktop_id, ready["device_id"].string == pairing.device_id else { throw RemoteError.protocolViolation("Desktop did not authenticate readiness.") }
             cipher = sessionCipher
             reader = Task { await self.readLoop(ws: ws, token: token) }
             keepAlive = Task { await self.keepAliveLoop(ws: ws, token: token) }
+            return started.0
         } catch {
             let failure = await Self.explain(error, on: ws, current: generation == token)
             if generation == token { endConnection(error: failure) }
             throw failure
+        }
+    }
+    private func handshakeV1(_ pairing: Pairing, on ws: any WebSocketConnection, deadline: Date) async throws -> (Pairing, SessionCipher) {
+        let handshake = try ClientHandshake(pairing: pairing)
+        try await Self.send(handshake.hello, on: ws)
+        let hello = try await Self.receive(on: ws, deadline: deadline)
+        let accepted = try handshake.accept(hello)
+        try await Self.send(accepted.finish, on: ws)
+        return (pairing, accepted.cipher)
+    }
+    /// Redeems a pending invite on this socket, then opens a fresh X25519 session. An established root skips the invite.
+    private func handshakeV2(_ pairing: Pairing, on ws: any WebSocketConnection, deadline: Date) async throws -> (Pairing, SessionCipher) {
+        var current = pairing
+        if current.root_key == nil {
+            let invite = try V2Invite(pairing: current)
+            try await Self.send(invite.hello, on: ws)
+            let response = try await Self.receive(on: ws, deadline: deadline)
+            if let failure = Self.pairingFailure(response) { throw failure }
+            let accepted = try invite.accept(response)
+            try await Self.send(accepted.finish, on: ws)
+            current = accepted.established
+        }
+        let session = try V2SessionHandshake(pairing: current)
+        try await Self.send(session.hello, on: ws)
+        let server = try await Self.receive(on: ws, deadline: deadline)
+        if let failure = Self.pairingFailure(server) { throw failure }
+        let accepted = try session.accept(server)
+        try await Self.send(accepted.finish, on: ws)
+        return (current, accepted.cipher)
+    }
+    /// Known pairing failures only. Anything else is a generic rejection so a peer cannot put secrets in the message.
+    private static func pairingFailure(_ frame: JSONValue) -> RemoteError? {
+        guard frame["type"].string == "pair_error" else { return nil }
+        switch frame["error"].string {
+        case "invite_expired", "invite_replay", "invite_race", "invite_rejected", "invite_malformed":
+            return .protocolViolation("Pairing was rejected (\(frame["error"].string ?? "")).")
+        default:
+            return .protocolViolation("Pairing was rejected.")
         }
     }
     public func disconnect() { endConnection(error: RemoteError.disconnected) }
@@ -240,7 +279,7 @@ public actor RelayClient: RemoteTransport {
         } else { message = try await ws.receive() }
         guard case .text(let text) = message, text.utf8.count <= 262144 else { throw RemoteError.protocolViolation("Expected bounded text frame.") }
         let result = try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
-        guard result["v"] == .number(1) else { throw RemoteError.protocolViolation("Unsupported relay version.") }
+        guard result["v"] == .number(1) || result["v"] == .number(2) else { throw RemoteError.protocolViolation("Unsupported relay version.") }
         return result
     }
 }

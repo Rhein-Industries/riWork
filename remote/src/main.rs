@@ -42,6 +42,12 @@ enum Action {
         allow_insecure_loopback: bool,
         #[arg(long)]
         show_link: bool,
+        /// 1 is the frozen long-lived PSK. 2 is a single-use expiring invite.
+        #[arg(long, default_value_t = 1)]
+        protocol: u8,
+        /// v2 invite lifetime in seconds (30..=3600). Ignored for protocol 1.
+        #[arg(long, default_value_t = 600)]
+        ttl_seconds: u64,
     },
     /// Revoke a device locally; live connector closes its access within one second.
     Revoke { device_id: String },
@@ -72,13 +78,17 @@ async fn main() -> Result<()> {
             relay_routes,
             allow_insecure_loopback,
             show_link,
+            protocol,
+            ttl_seconds,
         } => {
-            let p = Storage::from_env()?.pair(
+            let p = Storage::from_env()?.pair_with(
                 relay,
                 name,
                 allow_insecure_loopback,
                 &out,
                 relay_routes.as_deref(),
+                protocol,
+                ttl_seconds,
             )?;
             println!(
                 "Paired device {}. Secret pairing JSON: {}",
@@ -102,7 +112,7 @@ async fn main() -> Result<()> {
             let c = Storage::from_env()?.config()?;
             // Unix seconds, null when unknown: legacy pairings have no paired_at, and a
             // device that never completed a handshake has never authenticated.
-            println!("{}",serde_json::to_string_pretty(&c.devices.iter().map(|d|serde_json::json!({"device_id":d.pairing.device_id,"device_name":d.pairing.device_name,"route_id":d.pairing.route_id,"revoked":d.revoked,"paired_at_unix":d.paired_at_unix,"first_authenticated_unix":d.first_authenticated_unix,"last_authenticated_unix":d.last_authenticated_unix})).collect::<Vec<_>>())?);
+            println!("{}",serde_json::to_string_pretty(&c.devices.iter().map(|d|serde_json::json!({"device_id":d.pairing.device_id,"device_name":d.pairing.device_name,"route_id":d.pairing.route_id,"revoked":d.revoked,"protocol":d.pairing.v,"invite_state":d.pairing.invite_state,"expires_at":d.pairing.expires_at,"paired_at_unix":d.paired_at_unix,"first_authenticated_unix":d.first_authenticated_unix,"last_authenticated_unix":d.last_authenticated_unix})).collect::<Vec<_>>())?);
         }
         Action::Start { riwork } => {
             let path = riwork
