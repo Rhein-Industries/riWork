@@ -11,10 +11,10 @@ use gpui::{
 
 use crate::{
     icons::{self, ActionGlyph, Icon},
-    panels::ControlTooltip,
     settings::{CodexAccountsState, Settings, refresh_codex_accounts},
     store::{Project, ProjectCodexAccount, ProjectFolder, State, Store},
     theme::{self, Palette},
+    tooltip::{self, Look},
     utf16_to_byte,
 };
 
@@ -900,7 +900,7 @@ impl Render for ProjectSettingsPanel {
                                     let button = if icons::labels_as_icons(cx) {
                                         button.w(px(34.0)).justify_center()
                                             .child(icons::icon(Icon::Action(ActionGlyph::NewFolder), colors.magenta))
-                                            .tooltip(move |_, cx| cx.new(|_| ControlTooltip(if subfolder { "New subfolder" } else { "New folder" })).into())
+                                            .child(tooltip::anchor(if subfolder { "New subfolder" } else { "New folder" }, Look::Control))
                                     } else {
                                         button.px(px(12.0)).child(if subfolder { "+ SUBFOLDER" } else { "+ FOLDER" })
                                     };

@@ -31,6 +31,7 @@ mod status_bar;
 mod store;
 mod terminal_lifecycle;
 mod theme;
+mod tooltip;
 mod update;
 mod usage;
 
@@ -70,6 +71,7 @@ use sessions::{HarnessKind, SessionManager, SessionMetrics, ShellKind, ShellSess
 use settings::{CuaSetupState, Settings, SettingsEvent, SettingsPanel, SettingsStore};
 use store::{Project, ProjectCodexAccount, SearchHit, State, Store};
 use theme::{Appearance, Palette, ThemeChoice};
+use tooltip::Look;
 use usage::ProviderUsage;
 
 gpui_libghostty::bind_gpui!(gpui);
@@ -812,6 +814,8 @@ impl Workspace {
             workspace.open_panel(PanelKind::Settings, workspace.active_pane, window, cx);
         }
         cx.observe_window_bounds(window, |workspace, window, cx| {
+            // A hint stays where it opened, so a moved or resized window leaves it behind.
+            tooltip::hide(cx);
             workspace.remember_window_size(window, true, cx);
         })
         .detach();
@@ -833,6 +837,8 @@ impl Workspace {
         cx.observe_window_activation(window, |_, window, cx| {
             if window.is_window_active() {
                 dock_menu::set_frontmost(window.window_handle().window_id().as_u64(), cx);
+            } else {
+                tooltip::hide(cx);
             }
         })
         .detach();
@@ -2674,6 +2680,7 @@ impl Workspace {
         if self.project_id == project.id {
             return;
         }
+        tooltip::hide(cx);
         self.save_layout();
         if let Some(layout) = self.layout_snapshot() {
             self.carry_layout = Some(layout);
@@ -4285,9 +4292,7 @@ impl Workspace {
                             .items_center()
                             .justify_center()
                             .child(icons::icon(Icon::Panel(kind), tab_color))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| PaneActionTooltip(panel_tooltip(kind))).into()
-                            })
+                            .child(tooltip::anchor(panel_tooltip(kind), Look::Pane))
                             .into_any_element(),
                         None => display_title.clone().into_any_element(),
                     })
@@ -4303,7 +4308,7 @@ impl Workspace {
                             .rounded(px(3.0))
                             .hover(|style| style.bg(rgb(colors.divider)))
                             .child(icons::icon(Icon::Close, colors.muted))
-                            .tooltip(|_, cx| cx.new(|_| PaneActionTooltip("Close tab · ⌘W")).into())
+                            .child(tooltip::anchor("Close tab · ⌘W", Look::Pane))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |workspace, _, window, cx| {
                                 cx.stop_propagation();
@@ -5512,7 +5517,7 @@ impl Workspace {
                         "focus" => "Focus this tab · ⌘⇧F",
                         _ => "Add tabs and manage this pane",
                     };
-                    button.tooltip(move |_, cx| cx.new(|_| PaneActionTooltip(label)).into())
+                    button.child(tooltip::anchor(label, Look::Pane))
                 },
             )
             .on_click(
@@ -5902,22 +5907,6 @@ fn pane_menu_heading(label: &'static str, colors: Palette) -> AnyElement {
         .text_size(px(9.0))
         .child(label)
         .into_any_element()
-}
-
-struct PaneActionTooltip(&'static str);
-impl Render for PaneActionTooltip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme::palette(cx);
-        div()
-            .px(px(9.0))
-            .py(px(6.0))
-            .bg(rgb(colors.panel_active))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .text_color(rgb(colors.text))
-            .text_size(px(11.0))
-            .child(self.0)
-    }
 }
 
 /// Whether a pane is locked. The user's explicit set wins (an empty set unlocks
@@ -6604,8 +6593,10 @@ fn main() {
             MenuItem::action("Quit RiWork", Quit),
         ])]);
         dock_menu::init(cx);
+        tooltip::init(cx);
         cx.on_window_closed(|cx, window| {
-            if cx.windows().is_empty() {
+            // A hint window is not a reason to stay open.
+            if cx.windows().iter().all(tooltip::is_popup) {
                 cx.quit();
             } else {
                 dock_menu::window_closed(window, cx);
@@ -6822,7 +6813,11 @@ fn open_workspace_window(
             width: 1220.0,
             height: 780.0,
         });
-    let cascade = cx.windows().len();
+    let cascade = cx
+        .windows()
+        .iter()
+        .filter(|handle| !tooltip::is_popup(handle))
+        .count();
     let frame = match cx.primary_display().map(|display| display.visible_bounds()) {
         Some(display) => layouts::WindowFrame::opening(
             saved_size,
