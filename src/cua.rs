@@ -4,16 +4,20 @@ use std::{
     env,
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
-    sync::mpsc,
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
+    sync::{
+        Arc, Mutex, MutexGuard, TryLockError,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
 
 use fs2::FileExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const INSTALLER_URL: &str = "https://cua.ai/driver/install.sh";
@@ -631,30 +635,41 @@ impl CuaManager {
         Ok(status)
     }
 
-    /// Keep stdout exclusively for the MCP protocol. Grok launches call
-    /// `prepare_for_grok` first, so this start is not racing Grok's 30-second
-    /// limit. Codex and a direct `riwork cua mcp` still start the service here.
+    /// Serve Cua Driver over MCP stdio. Stdout carries only the protocol.
+    ///
+    /// This process stays between the agent and `cua-driver mcp` instead of
+    /// replacing itself with it. The driver's MCP process dies whenever the
+    /// shared desktop service ends, and an exec'd agent connection would die
+    /// with it for good. The proxy restarts the service and the driver, replays
+    /// the agent's handshake and carries on. Grok launches call
+    /// `prepare_for_grok` first, so the first start is not racing Grok's
+    /// 30-second limit. Codex and a direct `riwork cua mcp` still start the
+    /// service here.
     pub fn run_mcp(&self) -> Result<(), String> {
-        self.ensure_started()?;
-        let driver = self.trusted_driver()?;
-        let mut command = Command::new(driver);
-        command.arg("mcp");
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            Err(format!("Cannot launch Cua Driver MCP: {}", command.exec()))
-        }
-        #[cfg(not(unix))]
-        {
-            let status = command
-                .status()
-                .map_err(|error| format!("Cannot launch Cua Driver MCP: {error}"))?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(format!("Cua Driver MCP exited with {status}"))
-            }
-        }
+        self.run_mcp_with(
+            McpIo {
+                input: Box::new(BufReader::with_capacity(64 * 1024, io::stdin())),
+                output: Box::new(io::stdout()),
+                stderr: Box::new(io::stderr()),
+            },
+            &McpPolicy::standard(),
+        )
+    }
+
+    fn run_mcp_with(&self, io: McpIo, policy: &McpPolicy) -> Result<(), String> {
+        // Each start re-runs the signature-checked path, so a driver replaced
+        // while the proxy was up is the one that gets launched.
+        let prepare = || {
+            self.ensure_started()?;
+            self.trusted_driver()
+        };
+        let log = self.clone();
+        run_mcp_proxy(
+            &prepare,
+            io,
+            policy,
+            Box::new(move |message| log.record_driver_log(&format!("MCP proxy: {message}"))),
+        )
     }
 
     pub fn ensure_harness_shims(&self, riwork_executable: &Path) -> Result<PathBuf, String> {
@@ -1519,6 +1534,915 @@ impl TemporaryDirectory {
 impl Drop for TemporaryDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+// The MCP stdio proxy.
+//
+// `riwork cua mcp` sits between an agent and `cua-driver mcp`. MCP stdio is
+// newline-delimited JSON-RPC, so the proxy forwards whole lines verbatim, in
+// order, and looks inside them only to keep the bookkeeping a restart needs:
+// which client requests have no answer yet, the client's `initialize`
+// parameters, and whether it sent `notifications/initialized`.
+//
+// When the driver's MCP process ends while the client is still connected, the
+// proxy answers every unanswered request with a JSON-RPC error, makes sure the
+// desktop service is running, starts a new driver, replays the handshake and
+// carries on. Data flows on three kinds of thread: one pumping the client's
+// input, one per driver pumping its output, and the calling thread, which
+// supervises. Locks are taken in the order child_input, output, state; `state`
+// is never held across a write.
+
+/// Longest single MCP message (one line) buffered in either direction.
+const MCP_LINE_LIMIT: usize = 16 * 1024 * 1024;
+/// Client requests the proxy tracks at once; more than a driver is ever sent.
+const MCP_MAX_IN_FLIGHT: usize = 4096;
+/// JSON-RPC server error code used for every error the proxy makes up.
+const MCP_PROXY_ERROR: i64 = -32000;
+/// JSON-RPC "invalid request", used when a client line is too long to read.
+const MCP_INVALID_REQUEST: i64 = -32600;
+const MCP_RESTART_MESSAGE: &str = "Cua Driver restarted; retry the request";
+const MCP_POLL: Duration = Duration::from_millis(100);
+/// How long a driver whose output has closed may take to exit by itself.
+const MCP_EXIT_GRACE: Duration = Duration::from_millis(200);
+/// How long output still in flight from a driver that has exited may take to arrive.
+const MCP_DRAIN_GRACE: Duration = Duration::from_millis(300);
+
+struct McpIo {
+    input: Box<dyn BufRead + Send>,
+    output: Box<dyn Write + Send>,
+    stderr: Box<dyn Write + Send>,
+}
+
+#[derive(Clone, Debug)]
+struct McpPolicy {
+    /// Pauses before successive restart attempts; the last one repeats.
+    backoff: Vec<Duration>,
+    /// A driver that stayed up this long starts the schedule over.
+    stable_after: Duration,
+    /// How long a new driver has to answer the replayed `initialize`.
+    replay_timeout: Duration,
+    line_limit: usize,
+}
+
+impl McpPolicy {
+    fn standard() -> Self {
+        Self {
+            backoff: [1, 2, 5, 10, 30].map(Duration::from_secs).to_vec(),
+            stable_after: Duration::from_secs(30),
+            replay_timeout: MCP_READY_TIMEOUT,
+            line_limit: MCP_LINE_LIMIT,
+        }
+    }
+
+    fn delay(&self, attempt: usize) -> Duration {
+        self.backoff
+            .get(attempt)
+            .or(self.backoff.last())
+            .copied()
+            .unwrap_or(Duration::from_secs(1))
+    }
+}
+
+/// The parts of a JSON-RPC message the proxy needs. Payloads are skipped
+/// without being built, so a screenshot response costs no copy.
+#[derive(Deserialize)]
+struct Envelope {
+    id: Option<Value>,
+    method: Option<String>,
+    result: Option<serde::de::IgnoredAny>,
+    error: Option<serde::de::IgnoredAny>,
+}
+
+impl Envelope {
+    fn request_id(&self) -> Option<&Value> {
+        self.method.as_ref().and(self.id.as_ref())
+    }
+
+    fn response_id(&self) -> Option<&Value> {
+        self.method.as_ref().map_or(self.id.as_ref(), |_| None)
+    }
+
+    fn succeeded(&self) -> bool {
+        self.result.is_some() && self.error.is_none()
+    }
+}
+
+/// `None` for anything that is not a JSON object or array of them.
+fn parse_envelopes(line: &[u8]) -> Option<Vec<Envelope>> {
+    match line.iter().find(|byte| !byte.is_ascii_whitespace())? {
+        b'{' => serde_json::from_slice::<Envelope>(line)
+            .ok()
+            .map(|envelope| vec![envelope]),
+        b'[' => serde_json::from_slice::<Vec<Envelope>>(line).ok(),
+        _ => None,
+    }
+}
+
+fn error_line(id: &Value, code: i64, message: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message },
+    }))
+    .unwrap_or_default()
+}
+
+fn write_line<W: Write + ?Sized>(writer: &mut W, line: &[u8]) -> io::Result<()> {
+    writer.write_all(line)?;
+    writer.write_all(b"\n")?;
+    writer.flush()
+}
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+enum Frame {
+    Line(Vec<u8>),
+    /// A line over the limit, discarded up to its newline without being kept.
+    TooLong,
+    Eof,
+}
+
+/// Read one line, without its newline, holding at most `limit` bytes of it.
+fn read_frame(reader: &mut dyn BufRead, limit: usize) -> io::Result<Frame> {
+    let mut line = Vec::new();
+    let mut too_long = false;
+    loop {
+        let buffer = match reader.fill_buf() {
+            Ok(buffer) => buffer,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if buffer.is_empty() {
+            return Ok(if too_long {
+                Frame::TooLong
+            } else if line.is_empty() {
+                Frame::Eof
+            } else {
+                Frame::Line(line)
+            });
+        }
+        let newline = buffer.iter().position(|byte| *byte == b'\n');
+        let chunk = &buffer[..newline.unwrap_or(buffer.len())];
+        if !too_long {
+            if line.len() + chunk.len() > limit {
+                too_long = true;
+                line = Vec::new();
+            } else {
+                line.extend_from_slice(chunk);
+            }
+        }
+        let used = chunk.len() + usize::from(newline.is_some());
+        reader.consume(used);
+        if newline.is_some() {
+            return Ok(if too_long {
+                Frame::TooLong
+            } else {
+                Frame::Line(line)
+            });
+        }
+    }
+}
+
+enum McpEvent {
+    /// The client closed its input, or its output stopped accepting messages.
+    ClientGone,
+    /// The driver of this epoch stopped producing output (or broke the protocol).
+    ChildEnded {
+        epoch: u64,
+        reason: String,
+        oversized: bool,
+    },
+    /// The driver of this epoch answered the proxy's own `initialize`.
+    InitReplied {
+        epoch: u64,
+        ok: bool,
+        list_changed: bool,
+    },
+}
+
+/// Everything the proxy remembers about the session. Each driver process
+/// belongs to an epoch; anything it says after the epoch moves on is dropped.
+#[derive(Default)]
+struct McpState {
+    epoch: u64,
+    /// Client traffic reaches the driver only while this is set.
+    ready: bool,
+    /// Ids of client requests the driver has not answered, in arrival order.
+    in_flight: Vec<Value>,
+    /// The client's `initialize` request still waiting for its answer.
+    initializing: Option<(Value, Value)>,
+    /// Params of the `initialize` the driver accepted for this client.
+    initialize: Option<Value>,
+    initialized: bool,
+    /// Id of the proxy's own `initialize` while its answer is pending.
+    replay_id: Option<Value>,
+}
+
+impl McpState {
+    fn take_in_flight(&mut self, id: &Value) {
+        if let Some(position) = self.in_flight.iter().position(|pending| pending == id) {
+            self.in_flight.remove(position);
+        }
+    }
+}
+
+enum DriverLine {
+    Forward,
+    Drop,
+    Replay { ok: bool },
+}
+
+impl McpState {
+    fn on_driver_message(&mut self, epoch: u64, envelopes: &[Envelope]) -> DriverLine {
+        if epoch != self.epoch {
+            return DriverLine::Drop;
+        }
+        if let [only] = envelopes
+            && let Some(id) = only.response_id()
+            && self.replay_id.as_ref() == Some(id)
+        {
+            self.replay_id = None;
+            return DriverLine::Replay {
+                ok: only.succeeded(),
+            };
+        }
+        for envelope in envelopes {
+            let Some(id) = envelope.response_id() else {
+                continue;
+            };
+            self.take_in_flight(id);
+            if self
+                .initializing
+                .as_ref()
+                .is_some_and(|(pending, _)| pending == id)
+                && let Some((_, params)) = self.initializing.take()
+                && envelope.succeeded()
+            {
+                self.initialize = Some(params);
+                self.initialized = false;
+            }
+        }
+        DriverLine::Forward
+    }
+}
+
+struct McpProxy {
+    /// The client's stdout. One message at a time.
+    output: Mutex<Box<dyn Write + Send>>,
+    stderr: Mutex<Box<dyn Write + Send>>,
+    /// The current driver's stdin and the epoch it belongs to.
+    child_input: Mutex<Option<(u64, ChildStdin)>>,
+    state: Mutex<McpState>,
+    events: mpsc::Sender<McpEvent>,
+    on_note: Box<dyn Fn(&str) + Send + Sync>,
+    line_limit: usize,
+    client_gone: AtomicBool,
+    output_failed: AtomicBool,
+}
+
+struct LiveChild {
+    process: Child,
+    epoch: u64,
+    started: Instant,
+}
+
+enum StartError {
+    ClientGone,
+    Failed(String),
+}
+
+enum Watch {
+    ClientGone,
+    Ended { reason: String, oversized: bool },
+}
+
+fn run_mcp_proxy(
+    prepare: &dyn Fn() -> Result<PathBuf, String>,
+    io: McpIo,
+    policy: &McpPolicy,
+    on_note: Box<dyn Fn(&str) + Send + Sync>,
+) -> Result<(), String> {
+    let (sender, events) = mpsc::channel();
+    let proxy = Arc::new(McpProxy {
+        output: Mutex::new(io.output),
+        stderr: Mutex::new(io.stderr),
+        child_input: Mutex::new(None),
+        state: Mutex::new(McpState::default()),
+        events: sender,
+        on_note,
+        line_limit: policy.line_limit,
+        client_gone: AtomicBool::new(false),
+        output_failed: AtomicBool::new(false),
+    });
+    // Failing to start at all is reported the way an exec failure was: the
+    // agent's launcher shows this message. Later failures are retried.
+    let child = match proxy.start_child(prepare, policy, &events) {
+        Ok(child) => child,
+        Err(StartError::Failed(message)) => return Err(message),
+        Err(StartError::ClientGone) => return Ok(()),
+    };
+    let input = io.input;
+    let reader = Arc::clone(&proxy);
+    thread::spawn(move || reader.pump_client(input));
+    proxy.supervise(prepare, policy, &events, child);
+    if proxy.output_failed.load(Ordering::SeqCst) {
+        return Err("The MCP client stopped reading Cua Driver's output".to_owned());
+    }
+    Ok(())
+}
+
+impl McpProxy {
+    fn note(&self, message: &str) {
+        (self.on_note)(message);
+        self.write_stderr(&format!("riwork: {message}\n"));
+    }
+
+    /// Text the driver put on stdout that is not an MCP message must not
+    /// reach the client, whose parser would fail on it.
+    fn stray_output(&self, line: &[u8]) {
+        let text = String::from_utf8_lossy(line);
+        self.write_stderr(&format!(
+            "riwork: ignored non-MCP output from Cua Driver: {}\n",
+            snippet(&text)
+        ));
+    }
+
+    /// Best effort. An agent that stops draining stderr blocks the driver's
+    /// stderr relay while it holds this lock; that must not stall a restart.
+    fn write_stderr(&self, text: &str) {
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let mut sink = loop {
+            match self.stderr.try_lock() {
+                Ok(sink) => break sink,
+                Err(TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(TryLockError::WouldBlock) => return,
+            }
+        };
+        let _ = sink.write_all(text.as_bytes());
+        let _ = sink.flush();
+    }
+
+    /// Callers hold `output`, so a message is never interleaved with another.
+    fn write_message(&self, output: &mut dyn Write, line: &[u8]) {
+        if write_line(output, line).is_err() && !self.client_gone.swap(true, Ordering::SeqCst) {
+            self.output_failed.store(true, Ordering::SeqCst);
+            let _ = self.events.send(McpEvent::ClientGone);
+        }
+    }
+
+    fn reject(&self, ids: &[Value], code: i64, message: &str) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut output = locked(&self.output);
+        for id in ids {
+            self.write_message(&mut **output, &error_line(id, code, message));
+        }
+    }
+
+    fn pump_client(&self, mut input: Box<dyn BufRead + Send>) {
+        loop {
+            match read_frame(&mut *input, self.line_limit) {
+                Ok(Frame::Line(line)) => {
+                    if !line.iter().all(u8::is_ascii_whitespace) {
+                        self.forward_client_line(&line);
+                    }
+                }
+                Ok(Frame::TooLong) => {
+                    // Its id was never read, so the error cannot name one.
+                    self.note(&format!(
+                        "dropped an MCP message from the client longer than {} bytes",
+                        self.line_limit
+                    ));
+                    self.reject(
+                        &[Value::Null],
+                        MCP_INVALID_REQUEST,
+                        &format!("MCP message exceeds the {} byte limit", self.line_limit),
+                    );
+                }
+                Ok(Frame::Eof) => break,
+                Err(error) => {
+                    self.note(&format!("cannot read the MCP client's input: {error}"));
+                    break;
+                }
+            }
+        }
+        self.client_gone.store(true, Ordering::SeqCst);
+        let _ = self.events.send(McpEvent::ClientGone);
+    }
+
+    fn forward_client_line(&self, line: &[u8]) {
+        let envelopes = parse_envelopes(line);
+        let requests: Vec<Value> = envelopes
+            .iter()
+            .flatten()
+            .filter_map(|envelope| envelope.request_id().cloned())
+            .collect();
+        let initialized = envelopes
+            .iter()
+            .flatten()
+            .any(|envelope| envelope.method.as_deref() == Some("notifications/initialized"));
+        // A cancelled request may never be answered; do not wait for it.
+        let cancelled = match envelopes.as_deref() {
+            Some([only]) if only.method.as_deref() == Some("notifications/cancelled") => {
+                serde_json::from_slice::<Value>(line)
+                    .ok()
+                    .and_then(|message| message.pointer("/params/requestId").cloned())
+            }
+            _ => None,
+        };
+        let initialize = match envelopes.as_deref() {
+            Some([only]) if only.method.as_deref() == Some("initialize") => only
+                .id
+                .clone()
+                .zip(serde_json::from_slice::<Value>(line).ok()),
+            _ => None,
+        }
+        .map(|(id, message)| (id, message.get("params").cloned().unwrap_or(Value::Null)));
+
+        // The writer lock orders this against a restart's own writes.
+        let mut slot = locked(&self.child_input);
+        let verdict = {
+            let mut state = locked(&self.state);
+            if initialized {
+                state.initialized = true;
+            }
+            if let Some(id) = &cancelled {
+                state.take_in_flight(id);
+            }
+            if !state.ready {
+                Err(MCP_RESTART_MESSAGE)
+            } else if state.in_flight.len() + requests.len() > MCP_MAX_IN_FLIGHT {
+                Err("Too many MCP requests are waiting for Cua Driver")
+            } else {
+                state.in_flight.extend(requests.iter().cloned());
+                state.initializing = initialize.or(state.initializing.take());
+                Ok(state.epoch)
+            }
+        };
+        let epoch = match verdict {
+            Ok(epoch) => epoch,
+            Err(message) => {
+                drop(slot);
+                self.reject(&requests, MCP_PROXY_ERROR, message);
+                return;
+            }
+        };
+        let written = match slot.as_mut() {
+            Some((current, stdin)) if *current == epoch => write_line(stdin, line),
+            // The driver is being replaced, and the restart answers these.
+            _ => return,
+        };
+        drop(slot);
+        if written.is_err() {
+            self.fail_requests(epoch, &requests);
+            let _ = self.events.send(McpEvent::ChildEnded {
+                epoch,
+                reason: "stopped reading its input".to_owned(),
+                oversized: false,
+            });
+        }
+    }
+
+    /// The driver did not take these requests; answer those still unanswered.
+    fn fail_requests(&self, epoch: u64, ids: &[Value]) {
+        let mut output = locked(&self.output);
+        let failed: Vec<Value> = {
+            let mut state = locked(&self.state);
+            if state.epoch != epoch {
+                return;
+            }
+            ids.iter()
+                .filter(|id| {
+                    let before = state.in_flight.len();
+                    state.take_in_flight(id);
+                    state.in_flight.len() != before
+                })
+                .cloned()
+                .collect()
+        };
+        for id in &failed {
+            self.write_message(
+                &mut **output,
+                &error_line(id, MCP_PROXY_ERROR, MCP_RESTART_MESSAGE),
+            );
+        }
+    }
+
+    fn pump_child(&self, epoch: u64, stdout: ChildStdout) {
+        let mut reader = BufReader::with_capacity(64 * 1024, stdout);
+        let (reason, oversized) = loop {
+            match read_frame(&mut reader, self.line_limit) {
+                Ok(Frame::Line(line)) => self.forward_child_line(epoch, &line),
+                Ok(Frame::TooLong) => {
+                    break (
+                        format!("sent a message over the {} byte limit", self.line_limit),
+                        true,
+                    );
+                }
+                Ok(Frame::Eof) => break ("closed its output".to_owned(), false),
+                Err(error) => break (format!("failed reading its output ({error})"), false),
+            }
+        };
+        let _ = self.events.send(McpEvent::ChildEnded {
+            epoch,
+            reason,
+            oversized,
+        });
+    }
+
+    fn forward_child_line(&self, epoch: u64, line: &[u8]) {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            return;
+        }
+        let Some(envelopes) = parse_envelopes(line) else {
+            self.stray_output(line);
+            return;
+        };
+        let mut output = locked(&self.output);
+        let action = locked(&self.state).on_driver_message(epoch, &envelopes);
+        match action {
+            DriverLine::Forward => self.write_message(&mut **output, line),
+            DriverLine::Drop => {}
+            DriverLine::Replay { ok } => {
+                drop(output);
+                let list_changed = serde_json::from_slice::<Value>(line)
+                    .ok()
+                    .and_then(|message| {
+                        message
+                            .pointer("/result/capabilities/tools/listChanged")
+                            .and_then(Value::as_bool)
+                    })
+                    .unwrap_or(false);
+                let _ = self.events.send(McpEvent::InitReplied {
+                    epoch,
+                    ok,
+                    list_changed,
+                });
+            }
+        }
+    }
+
+    /// Answer every client request the ended driver left unanswered and start
+    /// a new epoch, so nothing the old driver says can arrive afterwards.
+    fn sweep(&self, message: &str) {
+        let mut output = locked(&self.output);
+        let ids = {
+            let mut state = locked(&self.state);
+            state.ready = false;
+            state.epoch += 1;
+            state.replay_id = None;
+            state.initializing = None;
+            std::mem::take(&mut state.in_flight)
+        };
+        for id in &ids {
+            self.write_message(&mut **output, &error_line(id, MCP_PROXY_ERROR, message));
+        }
+    }
+
+    /// Make sure the desktop service is up, start a driver and, when the
+    /// client had completed its handshake, replay it.
+    fn start_child(
+        self: &Arc<Self>,
+        prepare: &dyn Fn() -> Result<PathBuf, String>,
+        policy: &McpPolicy,
+        events: &mpsc::Receiver<McpEvent>,
+    ) -> Result<LiveChild, StartError> {
+        let driver = prepare().map_err(StartError::Failed)?;
+        if self.client_gone.load(Ordering::SeqCst) {
+            return Err(StartError::ClientGone);
+        }
+        let epoch = locked(&self.state).epoch;
+        let mut command = Command::new(&driver);
+        command
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        detach_process(&mut command);
+        let mut process = command.spawn().map_err(|error| {
+            StartError::Failed(format!("Cannot launch Cua Driver MCP: {error}"))
+        })?;
+        let (Some(stdin), Some(stdout), Some(stderr)) = (
+            process.stdin.take(),
+            process.stdout.take(),
+            process.stderr.take(),
+        ) else {
+            terminate_child(&mut process);
+            return Err(StartError::Failed(
+                "Cannot connect to Cua Driver MCP".to_owned(),
+            ));
+        };
+        *locked(&self.child_input) = Some((epoch, stdin));
+        let reader = Arc::clone(self);
+        thread::spawn(move || reader.pump_child(epoch, stdout));
+        let relay = Arc::clone(self);
+        thread::spawn(move || relay.pump_child_stderr(stderr));
+        let mut child = LiveChild {
+            process,
+            epoch,
+            started: Instant::now(),
+        };
+        match self.bring_up(&mut child, policy, events) {
+            Ok(()) => Ok(child),
+            Err(error) => {
+                self.abandon(child);
+                Err(error)
+            }
+        }
+    }
+}
+
+impl McpProxy {
+    fn pump_child_stderr(&self, mut stderr: ChildStderr) {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match stderr.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(size) => {
+                    let mut sink = locked(&self.stderr);
+                    let _ = sink.write_all(&buffer[..size]);
+                    let _ = sink.flush();
+                }
+            }
+        }
+    }
+
+    /// Open the new driver to client traffic, after replaying the handshake
+    /// the client had already completed with the old one.
+    fn bring_up(
+        &self,
+        child: &mut LiveChild,
+        policy: &McpPolicy,
+        events: &mpsc::Receiver<McpEvent>,
+    ) -> Result<(), StartError> {
+        let Some(params) = locked(&self.state).initialize.clone() else {
+            locked(&self.state).ready = true;
+            return Ok(());
+        };
+        let id = Value::String(format!("riwork-cua-proxy-initialize-{}", child.epoch));
+        let mut request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "initialize",
+        });
+        if !params.is_null() {
+            request["params"] = params;
+        }
+        let request = serde_json::to_vec(&request)
+            .map_err(|error| StartError::Failed(format!("Cannot replay initialize: {error}")))?;
+        {
+            let mut slot = locked(&self.child_input);
+            locked(&self.state).replay_id = Some(id);
+            let Some((_, stdin)) = slot.as_mut() else {
+                return Err(StartError::Failed("Cua Driver MCP has no input".to_owned()));
+            };
+            write_line(stdin, &request).map_err(|error| {
+                StartError::Failed(format!(
+                    "Cannot replay initialize to Cua Driver MCP: {error}"
+                ))
+            })?;
+        }
+        let (ok, list_changed) = self.await_replay(child, policy, events)?;
+        if !ok {
+            return Err(StartError::Failed(
+                "Cua Driver MCP rejected the replayed initialize".to_owned(),
+            ));
+        }
+        {
+            // Under the writer lock, the client's own `initialized` either
+            // is seen here or is forwarded once the driver is ready, not both.
+            let mut slot = locked(&self.child_input);
+            let replay_initialized = locked(&self.state).initialized;
+            if replay_initialized {
+                let notification = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+                let Some((_, stdin)) = slot.as_mut() else {
+                    return Err(StartError::Failed("Cua Driver MCP has no input".to_owned()));
+                };
+                write_line(stdin, notification).map_err(|error| {
+                    StartError::Failed(format!("Cannot replay initialized: {error}"))
+                })?;
+            }
+            locked(&self.state).ready = true;
+        }
+        if list_changed {
+            let mut output = locked(&self.output);
+            self.write_message(
+                &mut **output,
+                br#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#,
+            );
+        }
+        Ok(())
+    }
+
+    /// `(succeeded, tools may have changed)` from the driver's answer.
+    fn await_replay(
+        &self,
+        child: &mut LiveChild,
+        policy: &McpPolicy,
+        events: &mpsc::Receiver<McpEvent>,
+    ) -> Result<(bool, bool), StartError> {
+        let deadline = Instant::now() + policy.replay_timeout;
+        loop {
+            if self.client_gone.load(Ordering::SeqCst) {
+                return Err(StartError::ClientGone);
+            }
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(StartError::Failed(format!(
+                    "Cua Driver MCP did not answer the replayed initialize within {:.1} seconds",
+                    policy.replay_timeout.as_secs_f32()
+                )));
+            };
+            match events.recv_timeout(left.min(MCP_POLL)) {
+                Ok(McpEvent::InitReplied {
+                    epoch,
+                    ok,
+                    list_changed,
+                }) if epoch == child.epoch => return Ok((ok, list_changed)),
+                Ok(McpEvent::ChildEnded { epoch, reason, .. }) if epoch == child.epoch => {
+                    return Err(StartError::Failed(format!(
+                        "Cua Driver MCP {reason} before answering the replayed initialize"
+                    )));
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Ok(Some(status)) = child.process.try_wait() {
+                        return Err(StartError::Failed(format!(
+                            "Cua Driver MCP exited ({status}) before answering the replayed initialize"
+                        )));
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(StartError::ClientGone),
+            }
+        }
+    }
+
+    /// Stop a driver that has ended, or is being given up on, and detach it.
+    /// Returns how it ended, for the log.
+    fn retire(&self, mut child: LiveChild) -> String {
+        let deadline = Instant::now() + MCP_EXIT_GRACE;
+        let detail = loop {
+            match child.process.try_wait() {
+                Ok(Some(status)) => break format!("{status}"),
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+                _ => {
+                    // Only a driver that has not been reaped: a reaped pid may
+                    // already belong to someone else.
+                    terminate_child(&mut child.process);
+                    break "stopped by RiWork".to_owned();
+                }
+            }
+        };
+        *locked(&self.child_input) = None;
+        detail
+    }
+
+    /// Give up on a driver that never became ready. The epoch moves on so
+    /// whatever it still says is dropped.
+    fn abandon(&self, child: LiveChild) {
+        self.retire(child);
+        self.sweep(MCP_RESTART_MESSAGE);
+    }
+
+    fn watch(&self, child: &mut LiveChild, events: &mpsc::Receiver<McpEvent>) -> Watch {
+        loop {
+            if self.client_gone.load(Ordering::SeqCst) {
+                return Watch::ClientGone;
+            }
+            match events.recv_timeout(MCP_POLL) {
+                Ok(McpEvent::ClientGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Watch::ClientGone;
+                }
+                Ok(McpEvent::ChildEnded {
+                    epoch,
+                    reason,
+                    oversized,
+                }) if epoch == child.epoch => return Watch::Ended { reason, oversized },
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if matches!(child.process.try_wait(), Ok(Some(_))) {
+                        // Its last words may still be on their way.
+                        self.await_output_end(child.epoch, events);
+                        return Watch::Ended {
+                            reason: "exited".to_owned(),
+                            oversized: false,
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    fn await_output_end(&self, epoch: u64, events: &mpsc::Receiver<McpEvent>) {
+        let deadline = Instant::now() + MCP_DRAIN_GRACE;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match events.recv_timeout(left) {
+                Ok(McpEvent::ChildEnded { epoch: ended, .. }) if ended == epoch => return,
+                Ok(_) => {}
+                Err(_) => return,
+            }
+        }
+    }
+
+    /// Wait out `delay`. True if the client left in the meantime.
+    fn pause(&self, delay: Duration, events: &mpsc::Receiver<McpEvent>) -> bool {
+        let deadline = Instant::now() + delay;
+        loop {
+            if self.client_gone.load(Ordering::SeqCst) {
+                return true;
+            }
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let _ = events.recv_timeout(left);
+        }
+    }
+
+    /// The client is gone: close the driver's input, and stop it if it does
+    /// not exit by itself.
+    fn shutdown(&self, child: LiveChild, events: &mpsc::Receiver<McpEvent>) {
+        let LiveChild {
+            mut process, epoch, ..
+        } = child;
+        self.close_child_input(&mut process);
+        finish_mcp_child(&mut process);
+        self.await_output_end(epoch, events);
+    }
+
+    /// Close the driver's stdin. A writer stuck on a driver that stopped
+    /// reading holds the lock, and only stopping the driver frees it.
+    fn close_child_input(&self, process: &mut Child) {
+        let mut slot = match self.child_input.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                if matches!(process.try_wait(), Ok(None)) {
+                    terminate_child(process);
+                }
+                locked(&self.child_input)
+            }
+        };
+        *slot = None;
+    }
+
+    fn supervise(
+        self: &Arc<Self>,
+        prepare: &dyn Fn() -> Result<PathBuf, String>,
+        policy: &McpPolicy,
+        events: &mpsc::Receiver<McpEvent>,
+        mut child: LiveChild,
+    ) {
+        let mut attempt = 0;
+        loop {
+            match self.watch(&mut child, events) {
+                Watch::ClientGone => {
+                    self.shutdown(child, events);
+                    return;
+                }
+                Watch::Ended { reason, oversized } => {
+                    let lived = child.started.elapsed();
+                    let detail = self.retire(child);
+                    self.sweep(&if oversized {
+                        format!(
+                            "Cua Driver sent a message over the {} byte limit; the driver was restarted",
+                            policy.line_limit
+                        )
+                    } else {
+                        MCP_RESTART_MESSAGE.to_owned()
+                    });
+                    self.note(&format!("Cua Driver MCP {reason} ({detail}); restarting"));
+                    if lived >= policy.stable_after {
+                        attempt = 0;
+                    }
+                    child = loop {
+                        let delay = policy.delay(attempt);
+                        attempt += 1;
+                        if self.pause(delay, events) {
+                            return;
+                        }
+                        match self.start_child(prepare, policy, events) {
+                            Ok(next) => {
+                                self.note("Cua Driver MCP restarted");
+                                break next;
+                            }
+                            Err(StartError::ClientGone) => return,
+                            Err(StartError::Failed(cause)) => self.note(&format!(
+                                "Cannot restart Cua Driver MCP: {cause}; retrying in {:?}",
+                                policy.delay(attempt)
+                            )),
+                        }
+                    };
+                }
+            }
+        }
     }
 }
 
@@ -2506,5 +3430,1004 @@ else:
             }
             Verdict::Trusted => panic!("an ad-hoc lookalike was trusted"),
         }
+    }
+    // ---- MCP stdio proxy ----
+
+    /// A driver double for `riwork cua mcp`: `status`/`serve` behave like the
+    /// daemon (a marker file), and `mcp` speaks enough MCP to be supervised.
+    /// Each `mcp` start consumes the next word of the `plan` file, which picks
+    /// how that process misbehaves: `ok`, `noisy`, `stubborn` (ignores EOF and
+    /// SIGTERM), `deaf` (never reads its input), `exit-on-init`, `init-error`, `init-hang`. Everything it does is
+    /// logged to files in the directory.
+    fn install_mcp_double(path: &Path, dir: &Path) {
+        let script = r##"#!/usr/bin/python3
+import json, os, signal, sys, time
+
+d = "__DIR__"
+marker = os.path.join(d, "running")
+
+def log(name, text):
+    with open(os.path.join(d, name), "a", encoding="utf-8") as handle:
+        handle.write(text + "\n")
+
+cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+if cmd == "--version":
+    print("cua-driver test")
+elif cmd == "status":
+    if os.path.exists(marker):
+        print("Cua Driver daemon is running")
+        raise SystemExit(0)
+    raise SystemExit(1)
+elif cmd == "serve":
+    log("calls", "serve")
+    with open(marker, "w", encoding="utf-8") as handle:
+        handle.write(str(os.getpid()))
+    while True:
+        time.sleep(0.2)
+elif cmd == "mcp":
+    step = "ok"
+    plan = os.path.join(d, "plan")
+    if os.path.exists(plan):
+        with open(plan, encoding="utf-8") as handle:
+            words = handle.read().split()
+        if words:
+            step = words[0]
+            with open(plan, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(words[1:]))
+    log("starts", "%f %s %d" % (time.time(), step, os.getpid()))
+    with open(os.path.join(d, "mcp.pid"), "w", encoding="utf-8") as handle:
+        handle.write(str(os.getpid()))
+    print("driver says hello", file=sys.stderr, flush=True)
+
+    def send(message):
+        sys.stdout.write(json.dumps(message) + "\n")
+        sys.stdout.flush()
+
+    if step == "noisy":
+        sys.stdout.write("starting up, not JSON\n")
+        sys.stdout.flush()
+    if step == "stubborn":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    if step == "deaf":
+        send({"jsonrpc": "2.0", "method": "notifications/message", "params": {"data": "first"}})
+        time.sleep(1.5)
+        send({"jsonrpc": "2.0", "method": "notifications/message", "params": {"data": "second"}})
+        while True:
+            time.sleep(1)
+    for raw in sys.stdin:
+        text = raw.rstrip("\n")
+        log("received", text if len(text) < 300 else "<%d bytes>" % len(text))
+        try:
+            message = json.loads(text)
+        except ValueError:
+            continue
+        method = message.get("method")
+        mid = message.get("id")
+        if method == "initialize":
+            if step == "exit-on-init":
+                raise SystemExit(5)
+            if step == "init-hang":
+                continue
+            if step == "init-error":
+                send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32603, "message": "initialize refused"}})
+                continue
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {"listChanged": True}},
+                "serverInfo": {"name": "double", "version": "1"}}})
+        elif method == "tools/list":
+            send({"jsonrpc": "2.0", "id": mid, "result": {"tools": [{"name": "echo", "inputSchema": {"type": "object"}}]}})
+        elif method == "ping":
+            send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        elif method == "tools/call":
+            name = message["params"]["name"]
+            if name == "die":
+                os._exit(3)
+            elif name == "die-with-daemon":
+                try:
+                    with open(marker, encoding="utf-8") as handle:
+                        os.kill(int(handle.read().strip()), signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+                if os.path.exists(marker):
+                    os.remove(marker)
+                os._exit(3)
+            elif name == "hold":
+                pass
+            elif name == "notify":
+                send({"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": "info", "data": "working"}})
+                send({"jsonrpc": "2.0", "id": "srv-1", "method": "roots/list"})
+                send({"jsonrpc": "2.0", "id": mid, "result": {"content": []}})
+            elif name == "big":
+                size = message["params"]["arguments"]["size"]
+                send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": "x" * size}]}})
+            else:
+                send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": json.dumps(message["params"].get("arguments"))}]}})
+        elif method is None and mid is not None:
+            log("responses", json.dumps(mid))
+    if step == "stubborn":
+        while True:
+            time.sleep(1)
+else:
+    raise SystemExit(99)
+"##
+        .replace("__DIR__", &dir.display().to_string());
+        atomic_executable(path, script.as_bytes()).unwrap();
+    }
+
+    /// Client input for the proxy: chunks from a channel, EOF once it closes.
+    struct ChannelReader {
+        chunks: mpsc::Receiver<Vec<u8>>,
+        pending: Vec<u8>,
+        offset: usize,
+    }
+
+    impl Read for ChannelReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            while self.offset == self.pending.len() {
+                match self.chunks.recv() {
+                    Ok(chunk) => (self.pending, self.offset) = (chunk, 0),
+                    Err(_) => return Ok(0),
+                }
+            }
+            let size = buffer.len().min(self.pending.len() - self.offset);
+            buffer[..size].copy_from_slice(&self.pending[self.offset..self.offset + size]);
+            self.offset += size;
+            Ok(size)
+        }
+    }
+
+    /// Client output from the proxy, delivered a line at a time.
+    struct ChannelWriter {
+        lines: mpsc::Sender<Vec<u8>>,
+        partial: Vec<u8>,
+        /// Set once the client stops reading its end.
+        broken: Arc<AtomicBool>,
+    }
+
+    impl Write for ChannelWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if self.broken.load(Ordering::SeqCst) {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            self.partial.extend_from_slice(buffer);
+            while let Some(end) = self.partial.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.partial.drain(..=end).collect();
+                let _ = self.lines.send(line[..end].to_vec());
+            }
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedBuffer {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&locked(&self.0)).into_owned()
+        }
+    }
+
+    impl Write for SharedBuffer {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            locked(&self.0).extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The agent's side of the proxy.
+    struct ProxyClient {
+        input: Option<mpsc::Sender<Vec<u8>>>,
+        lines: mpsc::Receiver<Vec<u8>>,
+        stderr: SharedBuffer,
+        broken: Arc<AtomicBool>,
+        seen: std::cell::RefCell<Vec<Value>>,
+        longest: std::cell::Cell<usize>,
+        run: Option<thread::JoinHandle<Result<(), String>>>,
+    }
+
+    const CLIENT_PATIENCE: Duration = Duration::from_secs(30);
+
+    impl ProxyClient {
+        fn launch(run: impl FnOnce(McpIo) -> Result<(), String> + Send + 'static) -> Self {
+            let (input, chunks) = mpsc::channel();
+            let (sender, lines) = mpsc::channel();
+            let stderr = SharedBuffer::default();
+            let broken = Arc::new(AtomicBool::new(false));
+            let io = McpIo {
+                input: Box::new(BufReader::new(ChannelReader {
+                    chunks,
+                    pending: Vec::new(),
+                    offset: 0,
+                })),
+                output: Box::new(ChannelWriter {
+                    lines: sender,
+                    partial: Vec::new(),
+                    broken: Arc::clone(&broken),
+                }),
+                stderr: Box::new(stderr.clone()),
+            };
+            Self {
+                input: Some(input),
+                lines,
+                stderr,
+                broken,
+                seen: Default::default(),
+                longest: Default::default(),
+                run: Some(thread::spawn(move || run(io))),
+            }
+        }
+
+        fn send_raw(&self, text: &str) {
+            self.input
+                .as_ref()
+                .unwrap()
+                .send(format!("{text}\n").into_bytes())
+                .unwrap();
+        }
+
+        fn send(&self, message: Value) {
+            self.send_raw(&message.to_string());
+        }
+
+        fn raw_within(&self, timeout: Duration) -> Option<String> {
+            let line = self.lines.recv_timeout(timeout).ok()?;
+            self.longest.set(self.longest.get().max(line.len()));
+            Some(String::from_utf8(line).unwrap())
+        }
+
+        fn raw(&self) -> String {
+            self.raw_within(CLIENT_PATIENCE)
+                .unwrap_or_else(|| panic!("no message from the proxy\n{}", self.stderr.text()))
+        }
+
+        fn recv(&self) -> Value {
+            let raw = self.raw();
+            let message: Value = serde_json::from_str(&raw)
+                .unwrap_or_else(|error| panic!("stdout carried non-JSON ({error}): {raw}"));
+            self.seen.borrow_mut().push(message.clone());
+            message
+        }
+
+        /// The response to `id`, skipping notifications and server requests.
+        fn recv_reply(&self, id: &Value) -> Value {
+            loop {
+                let message = self.recv();
+                if message.get("method").is_none() && message.get("id") == Some(id) {
+                    return message;
+                }
+            }
+        }
+
+        fn wait_for_method(&self, method: &str) {
+            let has = |seen: &[Value]| seen.iter().any(|m| m["method"] == method);
+            while !has(&self.seen.borrow()) {
+                self.recv();
+            }
+        }
+
+        fn request(&self, id: Value, method: &str, params: Value) -> Value {
+            self.send(serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": method, "params": params,
+            }));
+            self.recv_reply(&id)
+        }
+
+        fn handshake(&self) -> Value {
+            let reply = self.request(
+                serde_json::json!(1),
+                "initialize",
+                serde_json::json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "test-agent", "version": "9" },
+                }),
+            );
+            self.send(
+                serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+            );
+            reply
+        }
+
+        /// Ask for the tool list until it is answered with a result. Every
+        /// attempt must get exactly one reply, an error while the driver is down.
+        fn wait_until_serving(&self) -> Value {
+            for attempt in 0..400 {
+                let id = serde_json::json!(format!("probe-{attempt}"));
+                let reply = self.request(id, "tools/list", serde_json::json!({}));
+                if reply.get("result").is_some() {
+                    return reply;
+                }
+                assert_eq!(reply["error"]["code"], -32000, "{reply}");
+                thread::sleep(Duration::from_millis(50));
+            }
+            panic!("the proxy never recovered\n{}", self.stderr.text());
+        }
+
+        fn close(&mut self) {
+            self.input = None;
+        }
+
+        fn finish(&mut self) -> Result<(), String> {
+            self.close();
+            let run = self.run.take().unwrap();
+            let deadline = Instant::now() + CLIENT_PATIENCE;
+            while !run.is_finished() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the proxy did not exit\n{}",
+                    self.stderr.text()
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            run.join().unwrap()
+        }
+    }
+
+    struct McpWorld {
+        dir: PathBuf,
+        manager: CuaManager,
+        _stop: StopDaemon,
+        _temp: TemporaryDirectory,
+    }
+
+    impl McpWorld {
+        fn new(plan: &[&str]) -> Self {
+            let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-test").unwrap();
+            let dir = temp.path.clone();
+            install_mcp_double(&dir.join("driver"), &dir);
+            fs::write(dir.join("plan"), plan.join("\n")).unwrap();
+            Self {
+                manager: handshake_manager(dir.join("home"), dir.join("driver")),
+                _stop: StopDaemon(dir.join("running")),
+                dir,
+                _temp: temp,
+            }
+        }
+
+        /// The real launch path: `ensure_started`, signature check and all.
+        fn start(&self, policy: McpPolicy) -> ProxyClient {
+            let manager = self.manager.clone();
+            ProxyClient::launch(move |io| manager.run_mcp_with(io, &policy))
+        }
+
+        fn read(&self, name: &str) -> String {
+            fs::read_to_string(self.dir.join(name)).unwrap_or_default()
+        }
+
+        /// Wall-clock start time and pid of every `mcp` process the double ran.
+        fn starts(&self) -> Vec<(f64, u32)> {
+            self.read("starts")
+                .lines()
+                .map(|line| {
+                    let mut words = line.split(' ');
+                    let time = words.next().unwrap().parse().unwrap();
+                    let pid = words.nth(1).unwrap().parse().unwrap();
+                    (time, pid)
+                })
+                .collect()
+        }
+
+        /// The messages the double received, as JSON, in order.
+        fn received(&self) -> Vec<Value> {
+            self.read("received")
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap_or(Value::String(line.to_owned())))
+                .collect()
+        }
+
+        fn received_methods(&self) -> Vec<String> {
+            self.received()
+                .iter()
+                .map(|message| message["method"].as_str().unwrap_or("?").to_owned())
+                .collect()
+        }
+
+        fn wait_for(&self, what: &str, done: impl Fn() -> bool) {
+            let deadline = Instant::now() + CLIENT_PATIENCE;
+            while !done() {
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    fn quick_policy() -> McpPolicy {
+        McpPolicy {
+            backoff: vec![Duration::from_millis(50), Duration::from_millis(100)],
+            stable_after: Duration::from_secs(30),
+            replay_timeout: Duration::from_secs(20),
+            line_limit: MCP_LINE_LIMIT,
+        }
+    }
+
+    fn tool_call(name: &str, arguments: Value) -> Value {
+        serde_json::json!({ "name": name, "arguments": arguments })
+    }
+
+    fn pid_gone(pid: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_alive(pid) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+
+    #[test]
+    fn the_proxy_forwards_requests_notifications_and_server_messages_verbatim() {
+        let world = McpWorld::new(&["noisy"]);
+        let mut client = world.start(quick_policy());
+        let reply = client.handshake();
+        assert_eq!(reply["id"], 1);
+        assert_eq!(reply["result"]["serverInfo"]["name"], "double");
+
+        // Spacing and key order reach the driver untouched, and an id keeps its
+        // type: 5 and "5" are different requests.
+        let odd = r#"{"method":"ping",  "id": 5 ,"jsonrpc":"2.0"}"#;
+        client.send_raw(odd);
+        client.send_raw(r#"{"jsonrpc":"2.0","id":"5","method":"ping"}"#);
+        let (number, string) = (client.recv(), client.recv());
+        assert_eq!(number["id"], serde_json::json!(5));
+        assert_eq!(string["id"], serde_json::json!("5"));
+
+        // Driver-initiated messages arrive in the order it wrote them, and the
+        // client's answer to its request goes back to it.
+        client.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+            "params": tool_call("notify", serde_json::json!({})),
+        }));
+        let (notification, request, response) = (client.recv(), client.recv(), client.recv());
+        assert_eq!(notification["method"], "notifications/message");
+        assert!(notification.get("id").is_none());
+        assert_eq!(request["method"], "roots/list");
+        assert_eq!(request["id"], "srv-1");
+        assert_eq!(response["id"], 8);
+        client.send_raw(r#"{"jsonrpc":"2.0","id":"srv-1","result":{"roots":[]}}"#);
+        world.wait_for("the client's answer", || {
+            world.read("responses").contains("\"srv-1\"")
+        });
+        assert!(world.read("received").lines().any(|line| line == odd));
+
+        // Nothing but MCP reached stdout; the driver's chatter went to stderr.
+        let stderr = client.stderr.text();
+        assert!(stderr.contains("driver says hello"), "{stderr}");
+        assert!(stderr.contains("starting up, not JSON"), "{stderr}");
+        assert!(
+            !client
+                .seen
+                .borrow()
+                .iter()
+                .any(|m| m.to_string().contains("starting up")),
+        );
+
+        let pid = world.starts()[0].1;
+        assert_eq!(client.finish(), Ok(()));
+        assert!(pid_gone(pid));
+        assert_eq!(world.starts().len(), 1, "nothing was restarted");
+    }
+
+    #[test]
+    fn a_driver_that_ends_mid_session_is_replaced_and_the_handshake_replayed() {
+        let world = McpWorld::new(&[]);
+        let mut client = world.start(quick_policy());
+        let first = client.handshake();
+        let ids = [
+            serde_json::json!(7),
+            serde_json::json!("7"),
+            serde_json::json!("abc"),
+            serde_json::json!(9_007_199_254_740_993_u64),
+            serde_json::json!(-3),
+        ];
+        for id in &ids[..4] {
+            client.send(serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": tool_call("hold", serde_json::json!({})),
+            }));
+        }
+        client.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": -3, "method": "tools/call",
+            "params": tool_call("die", serde_json::json!({})),
+        }));
+
+        // Every request the driver never answered gets an error, in the order
+        // they were sent, each keeping its id exactly.
+        for id in &ids {
+            let raw = client.raw();
+            let reply: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(&reply["id"], id, "{raw}");
+            assert_eq!(reply["error"]["code"], -32000, "{raw}");
+            assert_eq!(
+                reply["error"]["message"],
+                "Cua Driver restarted; retry the request"
+            );
+            assert!(raw.contains(&format!("\"id\":{id}")), "{raw}");
+            client.seen.borrow_mut().push(reply);
+        }
+
+        // Later requests work on the new driver, and the client never saw the
+        // replayed handshake.
+        let listed = client.wait_until_serving();
+        assert_eq!(listed["result"]["tools"][0]["name"], "echo");
+        client.wait_for_method("notifications/tools/list_changed");
+        assert!(client.seen.borrow().iter().all(|m| {
+            !m["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("riwork-cua-proxy"))
+        }));
+        // Only the answer the client itself asked for was ever delivered.
+        assert_eq!(
+            client.seen.borrow().iter().filter(|m| m["id"] == 1).count(),
+            1,
+            "{first}"
+        );
+
+        assert_eq!(world.starts().len(), 2);
+        let received = world.received();
+        let methods = world.received_methods();
+        assert_eq!(
+            methods[..9],
+            [
+                "initialize",
+                "notifications/initialized",
+                "tools/call",
+                "tools/call",
+                "tools/call",
+                "tools/call",
+                "tools/call",
+                "initialize",
+                "notifications/initialized",
+            ]
+        );
+        assert!(methods[9..].iter().all(|method| method == "tools/list"));
+        let (original, replay) = (&received[0], &received[7]);
+        assert_eq!(original["id"], 1);
+        assert!(
+            replay["id"]
+                .as_str()
+                .unwrap()
+                .starts_with("riwork-cua-proxy-"),
+            "{replay}"
+        );
+        assert_eq!(replay["params"], original["params"]);
+        assert_eq!(replay["params"]["clientInfo"]["name"], "test-agent");
+
+        let stderr = client.stderr.text();
+        assert!(stderr.contains("restarting"), "{stderr}");
+        let log = fs::read_to_string(world.dir.join("home/cua/driver.log")).unwrap();
+        assert!(
+            log.contains("MCP proxy: Cua Driver MCP closed its output"),
+            "{log}"
+        );
+        assert_eq!(client.finish(), Ok(()));
+    }
+
+    #[test]
+    fn a_handshake_the_client_never_finished_is_not_replayed() {
+        // The first driver dies while `initialize` is unanswered, so the client
+        // sees an error and initializes again against a fresh driver.
+        let world = McpWorld::new(&["exit-on-init"]);
+        let mut client = world.start(quick_policy());
+        let id = serde_json::json!(1);
+        let failed = client.request(id, "initialize", serde_json::json!({ "attempt": 1 }));
+        assert_eq!(failed["error"]["code"], -32000, "{failed}");
+        let mut attempt = 1;
+        let reply = loop {
+            attempt += 1;
+            let reply = client.request(
+                serde_json::json!(attempt),
+                "initialize",
+                serde_json::json!({ "attempt": attempt }),
+            );
+            if reply.get("result").is_some() {
+                break reply;
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(reply["id"], attempt);
+        let received = world.received();
+        assert!(
+            received.iter().all(|m| !m["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("riwork-cua-proxy"))),
+            "{received:?}"
+        );
+        assert_eq!(world.starts().len(), 2);
+        assert_eq!(client.finish(), Ok(()));
+    }
+
+    #[test]
+    fn initialized_is_replayed_only_if_the_client_had_sent_it() {
+        let world = McpWorld::new(&[]);
+        let mut client = world.start(quick_policy());
+        client.request(
+            serde_json::json!(1),
+            "initialize",
+            serde_json::json!({ "clientInfo": { "name": "slow-starter" } }),
+        );
+        let died = client.request(
+            serde_json::json!(2),
+            "tools/call",
+            tool_call("die", serde_json::json!({})),
+        );
+        assert_eq!(died["error"]["code"], -32000);
+        client.wait_until_serving();
+        assert_eq!(
+            world.received_methods()[..3],
+            ["initialize", "tools/call", "initialize"]
+        );
+        // Sent after the restart, it goes straight through, once.
+        client.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        world.wait_for("the notification", || {
+            world
+                .received_methods()
+                .contains(&"notifications/initialized".to_owned())
+        });
+        client.request(serde_json::json!(3), "ping", serde_json::json!({}));
+        let count = world
+            .received_methods()
+            .iter()
+            .filter(|method| *method == "notifications/initialized")
+            .count();
+        assert_eq!(count, 1);
+        assert_eq!(client.finish(), Ok(()));
+    }
+
+    #[test]
+    fn the_desktop_service_is_started_again_before_the_driver_is() {
+        let world = McpWorld::new(&[]);
+        let mut client = world.start(quick_policy());
+        client.handshake();
+        assert_eq!(world.read("calls").matches("serve").count(), 1);
+        // The driver's connection ends because the service did.
+        let died = client.request(
+            serde_json::json!(2),
+            "tools/call",
+            tool_call("die-with-daemon", serde_json::json!({})),
+        );
+        assert_eq!(died["error"]["code"], -32000, "{died}");
+        assert!(!world.dir.join("running").exists());
+        client.wait_until_serving();
+        assert_eq!(world.read("calls").matches("serve").count(), 2);
+        assert!(world.dir.join("running").exists());
+        assert_eq!(client.finish(), Ok(()));
+    }
+
+    #[test]
+    fn a_failing_initialize_replay_backs_off_and_then_recovers() {
+        let world = McpWorld::new(&["ok", "exit-on-init", "init-error", "init-hang", "ok"]);
+        let policy = McpPolicy {
+            backoff: [150, 250, 350].map(Duration::from_millis).to_vec(),
+            replay_timeout: Duration::from_millis(1500),
+            ..quick_policy()
+        };
+        let mut client = world.start(policy);
+        client.handshake();
+        let died = client.request(
+            serde_json::json!(2),
+            "tools/call",
+            tool_call("die", serde_json::json!({})),
+        );
+        assert_eq!(died["error"]["code"], -32000);
+        // Down for seconds, and every request in that time is still answered.
+        client.wait_until_serving();
+
+        let starts = world.starts();
+        assert_eq!(starts.len(), 5, "{starts:?}");
+        let gap = |later: usize| starts[later].0 - starts[later - 1].0;
+        assert!(gap(1) >= 0.14, "{starts:?}");
+        assert!(gap(2) >= 0.24, "{starts:?}");
+        assert!(gap(3) >= 0.34, "{starts:?}");
+        // The silent driver was given its full timeout, then the last pause repeated.
+        assert!(gap(4) >= 1.2, "{starts:?}");
+        let stderr = client.stderr.text();
+        assert!(
+            stderr.contains("rejected the replayed initialize"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("closed its output before answering the replayed initialize"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("did not answer the replayed initialize"),
+            "{stderr}"
+        );
+        // Recovered means recovered: no further restarts.
+        thread::sleep(Duration::from_millis(600));
+        assert_eq!(world.starts().len(), 5);
+        assert_eq!(client.finish(), Ok(()));
+    }
+
+    /// A proxy whose driver has just died and which cannot start another until
+    /// `allow` is set. `calls` holds the time of each launch attempt.
+    struct DownDriver {
+        client: ProxyClient,
+        allow: Arc<AtomicBool>,
+        calls: Arc<Mutex<Vec<Instant>>>,
+        _world: McpWorld,
+    }
+
+    fn driver_that_cannot_restart() -> DownDriver {
+        let world = McpWorld::new(&[]);
+        let driver = world.dir.join("driver");
+        let allow = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let client = {
+            let (allow, calls) = (Arc::clone(&allow), Arc::clone(&calls));
+            ProxyClient::launch(move |io| {
+                let prepare = move || {
+                    let mut calls = locked(&calls);
+                    calls.push(Instant::now());
+                    if calls.len() == 1 || allow.load(Ordering::SeqCst) {
+                        Ok(driver.clone())
+                    } else {
+                        Err("driver unavailable".to_owned())
+                    }
+                };
+                let policy = McpPolicy {
+                    backoff: [100, 200].map(Duration::from_millis).to_vec(),
+                    ..quick_policy()
+                };
+                run_mcp_proxy(&prepare, io, &policy, Box::new(|_| {}))
+            })
+        };
+        client.handshake();
+        let died = client.request(
+            serde_json::json!(2),
+            "tools/call",
+            tool_call("die", serde_json::json!({})),
+        );
+        assert_eq!(died["error"]["code"], -32000);
+        DownDriver {
+            client,
+            allow,
+            calls,
+            _world: world,
+        }
+    }
+
+    #[test]
+    fn requests_are_answered_at_once_while_the_driver_cannot_be_started() {
+        let mut down = driver_that_cannot_restart();
+        for attempt in 0..3 {
+            let started = Instant::now();
+            let reply = down.client.request(
+                serde_json::json!(format!("waiting-{attempt}")),
+                "tools/list",
+                serde_json::json!({}),
+            );
+            assert_eq!(reply["error"]["code"], -32000, "{reply}");
+            assert_eq!(
+                reply["error"]["message"],
+                "Cua Driver restarted; retry the request"
+            );
+            assert!(started.elapsed() < Duration::from_secs(5));
+        }
+        // A notification sent while down is dropped, not queued for later.
+        down.client.send(serde_json::json!({
+            "jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1},
+        }));
+        thread::sleep(Duration::from_millis(700));
+        let calls = locked(&down.calls).clone();
+        // Backing off, not spinning: one launch attempt per pause.
+        assert!((3..=8).contains(&calls.len()), "{} attempts", calls.len());
+        for pair in calls[1..].windows(2).skip(1) {
+            assert!(pair[1] - pair[0] >= Duration::from_millis(190));
+        }
+        down.allow.store(true, Ordering::SeqCst);
+        down.client.wait_until_serving();
+        let world = &down._world;
+        assert!(!world.read("received").contains("notifications/cancelled"));
+        assert_eq!(down.client.finish(), Ok(()));
+    }
+
+    #[test]
+    fn a_client_that_leaves_while_the_driver_is_down_ends_the_proxy() {
+        let mut down = driver_that_cannot_restart();
+        let started = Instant::now();
+        assert_eq!(down.client.finish(), Ok(()));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn client_eof_stops_the_driver_and_exits_cleanly() {
+        let world = McpWorld::new(&[]);
+        let mut client = world.start(quick_policy());
+        client.handshake();
+        let pid = world.starts()[0].1;
+        assert!(process_alive(pid));
+        assert_eq!(client.finish(), Ok(()));
+        assert!(pid_gone(pid));
+        assert_eq!(world.starts().len(), 1, "EOF is not a reason to restart");
+    }
+
+    #[test]
+    fn client_eof_kills_a_driver_that_ignores_it() {
+        let world = McpWorld::new(&["stubborn"]);
+        let mut client = world.start(quick_policy());
+        client.handshake();
+        let pid = world.starts()[0].1;
+        let closed = Instant::now();
+        assert_eq!(client.finish(), Ok(()));
+        assert!(pid_gone(pid), "the driver outlived the proxy");
+        assert!(closed.elapsed() < Duration::from_secs(10));
+        assert_eq!(world.starts().len(), 1);
+    }
+
+    #[test]
+    fn a_client_line_over_the_cap_is_refused_without_reaching_the_driver() {
+        let world = McpWorld::new(&[]);
+        let mut client = world.start(McpPolicy {
+            line_limit: 2048,
+            ..quick_policy()
+        });
+        client.handshake();
+        client.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+            "params": tool_call("echo", serde_json::json!({ "pad": "a".repeat(5000) })),
+        }));
+        let refused = client.recv();
+        assert!(refused["id"].is_null(), "{refused}");
+        assert_eq!(refused["error"]["code"], -32600);
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("2048")
+        );
+        // The stream is still in step: the next message is read normally.
+        let pong = client.request(serde_json::json!(12), "ping", serde_json::json!({}));
+        assert!(pong.get("result").is_some());
+        assert!(!world.read("received").contains("bytes>"));
+        assert!(client.stderr.text().contains("longer than 2048"));
+        assert_eq!(world.starts().len(), 1);
+        assert_eq!(client.finish(), Ok(()));
+    }
+
+    #[test]
+    fn a_driver_line_over_the_cap_restarts_the_driver_and_fails_the_request() {
+        let world = McpWorld::new(&[]);
+        let mut client = world.start(McpPolicy {
+            line_limit: 2048,
+            ..quick_policy()
+        });
+        client.handshake();
+        let failed = client.request(
+            serde_json::json!("big"),
+            "tools/call",
+            tool_call("big", serde_json::json!({ "size": 5000 })),
+        );
+        assert_eq!(failed["error"]["code"], -32000, "{failed}");
+        assert!(
+            failed["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("2048")
+        );
+        client.wait_until_serving();
+        assert_eq!(world.starts().len(), 2);
+        assert!(
+            client.longest.get() < 2048,
+            "the oversized line reached the client"
+        );
+        assert_eq!(client.finish(), Ok(()));
+    }
+
+    #[test]
+    fn a_driver_that_cannot_start_at_first_fails_with_its_reason() {
+        let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-test").unwrap();
+        let manager = handshake_manager(temp.path.join("home"), temp.path.join("missing-driver"));
+        let mut client = ProxyClient::launch(move |io| manager.run_mcp_with(io, &quick_policy()));
+        let error = client.finish().unwrap_err();
+        assert!(error.contains("not an executable"), "{error}");
+    }
+
+    #[test]
+    fn a_write_stuck_on_a_driver_that_stopped_reading_cannot_block_shutdown() {
+        let world = McpWorld::new(&["deaf"]);
+        let mut client = world.start(quick_policy());
+        assert_eq!(client.recv()["params"]["data"], "first");
+        let pid = world.starts()[0].1;
+        // The proxy's client reader blocks in a write the driver never drains.
+        client.send_raw(&format!(
+            r#"{{"jsonrpc":"2.0","method":"notifications/x","params":{{"pad":"{}"}}}}"#,
+            "p".repeat(1 << 20)
+        ));
+        thread::sleep(Duration::from_millis(300));
+        // The client stops reading; the driver's next message finds that out.
+        client.broken.store(true, Ordering::SeqCst);
+        let error = client.finish().unwrap_err();
+        assert!(error.contains("stopped reading"), "{error}");
+        assert!(pid_gone(pid), "the deaf driver outlived the proxy");
+    }
+
+    #[test]
+    fn a_cancelled_request_is_not_waited_for_after_a_restart() {
+        let world = McpWorld::new(&[]);
+        let mut client = world.start(quick_policy());
+        client.handshake();
+        let hold = |id: u64| {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": tool_call("hold", serde_json::json!({})),
+            })
+        };
+        client.send(hold(5));
+        client.send(hold(6));
+        client.send(serde_json::json!({
+            "jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": { "requestId": 5, "reason": "user" },
+        }));
+        client.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": tool_call("die", serde_json::json!({})),
+        }));
+        // 5 was cancelled, so only 6 and 7 are owed an answer.
+        let failed: Vec<Value> = (0..2).map(|_| client.recv()["id"].clone()).collect();
+        assert_eq!(failed, [serde_json::json!(6), serde_json::json!(7)]);
+        client.wait_until_serving();
+        assert!(client.seen.borrow().iter().all(|m| m["id"] != 5));
+        // The cancellation itself still reached the driver.
+        assert!(world.read("received").contains("notifications/cancelled"));
+        assert_eq!(client.finish(), Ok(()));
+    }
+
+    fn frames(data: &[u8], capacity: usize, limit: usize) -> Vec<String> {
+        let mut reader = BufReader::with_capacity(capacity, io::Cursor::new(data.to_vec()));
+        let mut seen = Vec::new();
+        loop {
+            match read_frame(&mut reader, limit).unwrap() {
+                Frame::Line(line) => seen.push(format!("line:{}", String::from_utf8_lossy(&line))),
+                Frame::TooLong => seen.push("too-long".to_owned()),
+                Frame::Eof => return seen,
+            }
+        }
+    }
+
+    #[test]
+    fn frames_split_on_newlines_and_oversized_ones_are_dropped_unbuffered() {
+        let mut data = b"one\n\ntwo words\n".to_vec();
+        data.extend(vec![b'x'; 50]);
+        data.extend(b"\nafter\nlast");
+        // A four-byte buffer makes every line arrive in pieces.
+        for capacity in [4, 7, 8192] {
+            assert_eq!(
+                frames(&data, capacity, 10),
+                [
+                    "line:one",
+                    "line:",
+                    "line:two words",
+                    "too-long",
+                    "line:after",
+                    "line:last"
+                ]
+            );
+        }
+        // Over the cap at end of input is reported once, then EOF.
+        assert_eq!(frames(&[b'y'; 30], 4, 10), ["too-long"]);
+        assert_eq!(frames(b"exactly10!\n", 4, 10), ["line:exactly10!"]);
+        assert_eq!(frames(b"", 4, 10), Vec::<String>::new());
+    }
+
+    #[test]
+    fn restart_pauses_grow_to_a_cap_and_lines_are_capped_at_16_mib() {
+        let policy = McpPolicy::standard();
+        let delays: Vec<u64> = (0..8)
+            .map(|attempt| policy.delay(attempt).as_secs())
+            .collect();
+        assert_eq!(delays, [1, 2, 5, 10, 30, 30, 30, 30]);
+        assert_eq!(policy.line_limit, 16 * 1024 * 1024);
     }
 }
