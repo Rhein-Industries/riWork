@@ -1,5 +1,7 @@
 mod activity;
 mod agent_hooks;
+mod appearance_file;
+mod appearance_sync;
 mod cli;
 mod codex_accounts;
 mod cua;
@@ -887,11 +889,7 @@ impl Workspace {
     }
 
     fn terminal_theme(settings: &Settings, appearance: &Appearance) -> Option<TerminalTheme> {
-        appearance.terminal.or_else(|| {
-            settings
-                .use_riwork_colors
-                .then(theme::riwork_terminal_theme)
-        })
+        appearance.terminal_override(settings.use_riwork_colors)
     }
 
     fn spawn_tab(
@@ -6521,7 +6519,7 @@ fn main() {
     application().run(move |cx: &mut App| {
         cx.set_app_identity("dev.riwork.shell", "RiWork");
         schedules::start(state_home.clone(), cx);
-        notifications::start(state_home, cx);
+        notifications::start(state_home.clone(), cx);
         cx.on_system_notification_response(|response, cx| {
             if response.action_id.as_ref().is_some_and(|action| action.as_ref() != "open") { return; }
             if let Some((project_id, shell_id)) = notifications::response_target(&response.tag) {
@@ -6542,6 +6540,8 @@ fn main() {
             });
         cx.set_global(Appearance::resolve(settings.theme));
         cx.set_global(settings);
+        // After both globals exist: publishes now and again on every change.
+        appearance_sync::start(state_home, cx);
         settings::refresh_codex_accounts(cx);
         cx.spawn(async move |cx| {
             loop {

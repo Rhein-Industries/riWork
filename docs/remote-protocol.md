@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-09-30: Additive `appearance.get`, so the phone can show the desktop's colors; see "Theme sync extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive `shell.keys` and cursor/size fields on `shell.output`, for typing straight into a shell from the phone; see "Direct typing extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-29: Protocol v2 is specified in [remote-protocol-v2.md](remote-protocol-v2.md). The v1 bytes in this document are unchanged. `pair` still defaults to v1. v2 is opt-in (`--protocol 2`). A v1 device is not rewritten in place; moving a phone to v2 is revoke plus a new pairing.
 
@@ -147,6 +148,7 @@ unsolicited response except handshake `ready`.
 | `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200` | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) |
 | `shell.input` | `{"shell_id":"UUID","line":"one physical line"}` | `{"shell_id":"UUID","status":"sent"}` |
 | `shell.keys` | `{"shell_id":"UUID","batch":"UUID","items":[{"text":"ls"},{"key":"Enter"}]}` (Direct typing) | `{"shell_id":"UUID","batch":"UUID","status":"sent\|duplicate\|uncertain"}` |
+| `appearance.get` | `{}` (Theme sync) | the appearance object below: `{"v":1,"updated_at":1790000000,"dark":true,"palette":{...},"terminal":{...}}` |
 | `shell.resize` | `{"shell_id":"UUID","columns":43,"rows":17}` | `{"shell_id":"UUID","columns":43,"rows":17}` |
 | `shell.resize.clear` | `{"shell_id":"UUID"}` | `{"shell_id":"UUID","status":"cleared"}` |
 
@@ -350,6 +352,67 @@ Old clients ignore them.
   example an older desktop), the four fields are omitted together and the call
   still succeeds.
 
+### Theme sync extension (v1 and v2, 2026-09-30)
+
+Additive and compatible, like the direct typing extension: one new read-only
+method, no change to the handshake, envelopes, fixtures or any existing method,
+and it applies to protocol v1 and v2 sessions alike. A client that never calls it
+behaves exactly as before. The iOS side is built against this text.
+
+**`appearance.get`** returns the colors the desktop shows, so the phone can match
+them. Params are exactly `{}` (unknown fields fail `invalid_request`, as for every
+method). It is read-only, needs no shell selection, enters no ledger and may be
+repeated freely. Result:
+
+```json
+{
+  "v": 1,
+  "updated_at": 1790000000,
+  "dark": true,
+  "palette": {"bg":"#090d14","panel":"#101720","panel_active":"#14212a","divider":"#253c45",
+              "cyan":"#55e6dc","magenta":"#ce78ef","gold":"#f4bf75","text":"#d3e1e6","muted":"#708993"},
+  "terminal": {"background":"#090d14","foreground":"#d3e1e6",
+               "palette":["#131b25","#f0738b","#61d5ae","#f4bf75","#78a9ff","#ce78ef","#55e6dc","#d3e1e6",
+                          "#58707b","#ff8ba0","#83ebc3","#ffd191","#9bc0ff","#dfa3f7","#84f3ea","#ffffff"]}
+}
+```
+
+- Every color is lowercase `#rrggbb`. `v` is 1; a client rejects another value.
+  Clients tolerate additive fields.
+- `palette` is the application palette (backgrounds, dividers, accents, text).
+  `terminal` is what the desktop's terminals show: the background, the foreground
+  and the 16 ANSI colors in index order (exactly 16). It follows the selected theme,
+  the Ghostty configuration while following Ghostty, and the "Use RiWork terminal
+  colors" option. It is omitted when the desktop could not read its terminal colors.
+- `dark` is true when the palette background is dark: its relative luminance
+  (WCAG, on the linearized sRGB channels) is below 0.5.
+- `updated_at` is Unix seconds of the last change to the colors. It does not move
+  when the desktop restarts with the same colors. There is no push: a client reads
+  the object again when it wants to follow later changes, and compares the object
+  (or `updated_at`).
+- Errors: `not_found` with the message "appearance not published" when the desktop
+  has not published usable colors: the file is missing, unreadable, not valid or
+  over 16 KiB (open the RiWork app on the desktop to publish). `invalid_request`
+  for bad params, and
+  `cli_error` as elsewhere; a connector paired with an older `riwork` CLI answers
+  `cli_error` "the installed riwork CLI does not support appearance; update RiWork".
+- A desktop whose connector predates this method answers `invalid_request`
+  "unsupported RPC method". The phone treats it, and `not_found`, as "no desktop
+  colors" and keeps its own theme.
+
+Where the colors come from. The GUI publishes `appearance.json` in `RIWORK_HOME`
+(mode 600, written to a temporary file and renamed into place) at startup and
+whenever the resolved palette or terminal colors change: a theme choice, an edit to
+the Ghostty configuration, or the terminal colors option. It writes only when the
+colors differ from the file, so several windows or app processes, which share the
+one settings-level appearance, publish the same content without rewriting it. The
+connector never reads the file itself: `appearance.get` runs
+`riwork appearance --json`, which prints the file validated and re-serialized in
+the shape above and exits non-zero with "RiWork has not published its appearance
+yet; open the RiWork app" when the file is missing or invalid. `riwork appearance`
+without `--json` prints a short summary. The connector re-validates the CLI output
+and treats output over 16 KiB as invalid.
+
 ## Fixtures and change log
 
 `remote/fixtures/v1.json` supplies deterministic PSK, UUIDs, nonces, proof MACs,
@@ -388,6 +451,15 @@ ready response. Values are test-only and must never provision production devices
   `shell.output` result, whose last `rows` lines are the visible screen. A client
   that ignores both is unaffected; `shell.input` and its ledger are untouched. Needs
   the iOS worker's agreement; the iOS side implements the same text.
+
+- 2026-09-30: additive and backward compatible. `appearance.get` (read-only, params
+  `{}`) returns the desktop's published palette and terminal colors (`v`,
+  `updated_at`, `dark`, `palette`, optional `terminal`, lowercase `#rrggbb`), or
+  `not_found` "appearance not published". The desktop GUI writes `appearance.json` in
+  `RIWORK_HOME`; `riwork appearance [--json]` reads it. A client that never calls the
+  method is unaffected, and an older desktop answers `invalid_request` "unsupported
+  RPC method". Needs the iOS worker's agreement; the iOS side implements the same
+  text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),
