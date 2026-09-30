@@ -19,6 +19,8 @@ import RiWorkCore
     private(set) var shownDesktopID: String?
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var cache: [String: DesktopAppearance] = [:]
+    /// The interface size every style is drawn at (see `InterfaceScale`).
+    private(set) var scale = InterfaceScale.standard
 
     static let keyPrefix = "riwork.appearance."
     static let recentKey = "riwork.appearance.recent"
@@ -55,7 +57,14 @@ import RiWorkCore
     /// (renaming it) while another one is shown.
     func style(for desktopID: String) -> DesktopStyle {
         if desktopID == shownDesktopID { return style }
-        return stored(for: desktopID).map { DesktopStyle(DesktopTheme.resolve($0)) } ?? .builtIn
+        return stored(for: desktopID).map { DesktopStyle(DesktopTheme.resolve($0), scale: scale) } ?? DesktopStyle(.builtIn, scale: scale)
+    }
+    /// A new interface size: every style is redrawn at it.
+    func setScale(_ value: Double) {
+        let next = InterfaceScale.clamped(value)
+        guard next != scale else { return }
+        scale = next
+        apply(appearance)
     }
     /// Launch, or the library changed: show the selected desktop, else the most recently used one that still exists.
     func showInitial(selected: String?, existing: [String]) {
@@ -71,7 +80,7 @@ import RiWorkCore
         apply(desktopID.flatMap(stored(for:)))
     }
     private func apply(_ appearance: DesktopAppearance?) {
-        let next = DesktopStyle(DesktopTheme.resolve(appearance))
+        let next = DesktopStyle(DesktopTheme.resolve(appearance), scale: scale)
         self.appearance = appearance
         // An equal theme is not assigned: observers of `style` are not woken for nothing.
         if next != style { style = next }

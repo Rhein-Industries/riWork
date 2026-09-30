@@ -186,7 +186,11 @@ extension RemoteModel {
             lastKeyBatchStart = .now
             noteKeyActivity()
             do {
+                // Echo latency starts when the batch leaves; the pending long poll returns on the echo by itself.
+                let sentAt = ProcessInfo.processInfo.systemUptime
+                latency.keysSent(at: sentAt)
                 let status = try await client.keys(shellID: key.shellID, batch: batch.id, items: batch.items)
+                latency.keysAnswered(seconds: ProcessInfo.processInfo.systemUptime - sentAt)
                 keysSupport = .supported
                 failures = 0
                 finishBatch(batch.id, for: key)

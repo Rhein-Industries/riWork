@@ -24,6 +24,9 @@ enum ConnectionState: Equatable {
     var shells: [RemoteSession] = []
     var orchestrators: [RemoteSession] = []
     var output = ""
+    /// `output` with its colors and attributes, parsed off the main actor. `outputVersion` changes whenever it does.
+    var styledOutput = StyledScreen.empty
+    var outputVersion = 0
     /// Where the desktop's cursor is in `output` (Character offset), when it reported one.
     var outputCursorOffset: Int?
     /// The desktop pane is in copy mode.
@@ -52,6 +55,18 @@ enum ConnectionState: Equatable {
     var typedCount = 0
     var preferLineComposer = false
     var terminalFontSize = TerminalFontSize.standard
+    // MARK: Display, live sync and latency (RemoteModel+Display.swift, RemoteModel+Live.swift)
+    /// Scale of the app chrome (headers, lists, key bar, buttons), 0.8-1.3. The terminal text size is separate.
+    var interfaceScale = InterfaceScale.standard
+    var showLatency = false
+    /// Draw bold text in the bright variant of ANSI colors 0-7 (Ghostty's `bold-is-bright`). Off, like Ghostty's default.
+    var boldIsBright = false
+    /// How the screen is followed: a long poll that the desktop answers on change, or interval polling.
+    var syncMode: SyncMode = .unknown
+    /// Round trips, echo latency and payload size for the overlay. Cheap to keep; only the overlay reads it.
+    var latency = LatencyBook()
+    /// The app is in the foreground (scene active). The live loop waits while it is not.
+    var appActive = true
     /// Sessions in focus mode during this app run.
     var focusedSessionIDs: Set<String> = []
     /// The synced colors: what is drawn now, and the last palette known per desktop (pipeline in RemoteModel+Theme.swift).
@@ -79,6 +94,22 @@ enum ConnectionState: Equatable {
     var sessionAutoSwitches = 0
     @ObservationIgnored private var outputReadInFlight = false
     @ObservationIgnored private var outputReadQueued = false
+    /// Callers that asked for a read while one was in flight; resumed when that read (and the one folded in for them) is done.
+    @ObservationIgnored private var outputReadWaiters: [CheckedContinuation<Void, Never>] = []
+    /// The `hash` of the screen on the phone, for the session in `outputSessionID`. Sent back as `if_changed`.
+    @ObservationIgnored var outputHash: String?
+    /// The `shell.output` request on the wire, so it can be cancelled alone (session change, pause) without touching the loop.
+    @ObservationIgnored private var outputFlight: Task<JSONValue, any Error>?
+    @ObservationIgnored private var outputFlightIsLongPoll = false
+    @ObservationIgnored var liveBackoff = LongPollBackoff()
+    /// Cancelled long polls that the desktop is still holding (it allows two waiting requests per device).
+    @ObservationIgnored var waitSlots = WaitSlots()
+    /// Whether the desktop takes `styled`, `if_changed` and `wait_ms`. Cleared for the connection when it refuses them (an older
+    /// desktop answers `invalid_request`, unknown field); the app then reads plain text by interval polling.
+    @ObservationIgnored var outputExtensions = true
+    /// The message a failed screen read put up, so it can be taken down again when reads work.
+    @ObservationIgnored private var outputErrorMessage: String?
+    @ObservationIgnored let liveWaitMilliseconds: Int
     @ObservationIgnored var pollSleeper: Task<Void, Never>?
     @ObservationIgnored private var pollDueAt: Date?
     @ObservationIgnored var lastKeyActivity: Date?
@@ -120,7 +151,9 @@ enum ConnectionState: Equatable {
          keyFlushInterval: Duration = .milliseconds(40), previewDelay: Duration = .milliseconds(300), reconnectBackoff: Duration = .seconds(1),
          defaults: UserDefaults = .standard, themeRefreshInterval: Duration = .seconds(60), themeMinimumGap: Duration = .seconds(5),
          cellMetrics: @escaping @MainActor (Double) -> (width: Double, height: Double) = { TerminalFont.cell(size: $0) },
-         keepAwake: @escaping @MainActor (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 }) {
+         keepAwake: @escaping @MainActor (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 },
+         liveWaitMilliseconds: Int = LiveSync.waitMilliseconds) {
+        self.liveWaitMilliseconds = liveWaitMilliseconds
         self.client = client
         self.keychain = keychain
         self.pollInterval = pollInterval
@@ -136,9 +169,14 @@ enum ConnectionState: Equatable {
         self.keepAwake = keepAwake
         preferLineComposer = defaults.bool(forKey: Self.lineComposerKey)
         terminalFontSize = defaults.object(forKey: Self.fontSizeKey) == nil ? TerminalFontSize.standard : TerminalFontSize.clamped(defaults.double(forKey: Self.fontSizeKey))
+        interfaceScale = defaults.object(forKey: Self.interfaceScaleKey) == nil ? InterfaceScale.standard : InterfaceScale.clamped(defaults.double(forKey: Self.interfaceScaleKey))
+        showLatency = defaults.bool(forKey: Self.showLatencyKey)
+        boldIsBright = defaults.bool(forKey: Self.boldIsBrightKey)
+        theme.setScale(interfaceScale)
         loadLibrary()
     }
     static let lineComposerKey = "riwork.lineComposer", fontSizeKey = "riwork.terminalFontSize"
+    static let interfaceScaleKey = "riwork.interfaceScale", showLatencyKey = "riwork.showLatency", boldIsBrightKey = "riwork.boldIsBright"
     /// Only "item not found" means an empty library. Any other failure blocks writes so a retry can still succeed.
     func loadLibrary() {
         var chosen: String?
@@ -188,6 +226,9 @@ enum ConnectionState: Equatable {
     func setTerminalVisible(_ visible: Bool) {
         terminalVisible = visible
         updateKeepAwake()
+        // The long poll is not renewed while the terminal is off screen (one already out just runs its course), and picks up
+        // again, from the hash it has, when the terminal returns.
+        if visible { wakeLive() }
         scheduleViewportUpdate()
     }
     private func scheduleViewportUpdate() {
@@ -199,7 +240,9 @@ enum ConnectionState: Equatable {
             let token = generation
             do {
                 try await synchronizeViewport(token: token)
-                if terminalVisible, state == .connected { await readOutput() }
+                // A live desktop answers the long poll on its own when the resize reflows the screen; only interval polling
+                // needs a read to see the new size sooner.
+                if terminalVisible, state == .connected, syncMode != .live { await readOutput() }
             } catch { if generation == token { self.error = error.localizedDescription } }
         }
     }
@@ -303,6 +346,8 @@ enum ConnectionState: Equatable {
         missingSessionIDs = []; loadedProjectID = nil; outputLines = [:]
         // A fresh connection may reach an upgraded desktop: detect direct typing again. Buffers survive.
         keysSupport = .unknown
+        // And for waiting on changes: the first screen tells whether this desktop sends a `hash`.
+        syncMode = .unknown; outputHash = nil; liveBackoff = LongPollBackoff(); waitSlots.reset(); outputExtensions = true; latency.reset()
         // The same for its colors, and the last palette for this desktop is on screen while the first fetch is on its way.
         themeSupport = .unknown; appearanceFlight = nil
         theme.select(desktop.id)
@@ -364,7 +409,10 @@ enum ConnectionState: Equatable {
         if wantsConnection, state == .suspended { await connect() }
     }
     private func clearSnapshot() { projects = []; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true }
-    private func resetOutput() { lastScreen = nil; output = ""; outputCursorOffset = nil; outputInMode = false; outputSessionID = nil; lastOutputAt = nil }
+    private func resetOutput() {
+        lastScreen = nil; output = ""; styledOutput = .empty; outputVersion &+= 1; outputHash = nil
+        outputCursorOffset = nil; outputInMode = false; outputSessionID = nil; lastOutputAt = nil
+    }
     func refresh() async {
         guard state == .connected else { return }
         failedViewport = nil; viewportError = nil; missingSessionIDs = []; outputLines = [:]
@@ -447,69 +495,166 @@ enum ConnectionState: Equatable {
             if outputSessionID != session.id { resetOutput() }
             draft = ""; deliveryNotice = nil
             await readOutput()
+            wakeLive()
         } catch { handle(error) }
     }
-    func readOutput() async { await readOutput(recoverMissing: true) }
-    /// One screen read in flight at a time. A request that arrives meanwhile is folded into one more read afterwards,
-    /// so a caller that wants fresh output never gets a second concurrent poll on the wire.
-    private func readOutput(recoverMissing: Bool) async {
-        guard state == .connected, let id = sessionID, !missingSessionIDs.contains(id) else { return }
-        if outputReadInFlight { outputReadQueued = true; return }
+    /// What one screen read came to.
+    enum OutputOutcome: Equatable { case changed, unchanged, skipped, failed, interrupted }
+
+    /// Reads the screen now. Returns once a read that started after this call has finished.
+    func readOutput() async { await readOutput(recoverMissing: true, longPoll: false) }
+
+    /// One screen read in flight at a time. A request that arrives meanwhile cuts a long poll short and is folded into one more
+    /// (immediate) read afterwards, so a caller that wants fresh output never gets a second concurrent poll on the wire and never
+    /// waits behind a request the desktop is holding back.
+    @discardableResult
+    func readOutput(recoverMissing: Bool, longPoll: Bool) async -> OutputOutcome {
+        guard state == .connected, let id = sessionID, !missingSessionIDs.contains(id) else { return .skipped }
+        if outputReadInFlight {
+            interruptLongPoll()
+            outputReadQueued = true
+            await withCheckedContinuation { outputReadWaiters.append($0) }
+            return .interrupted
+        }
         outputReadInFlight = true
-        defer { outputReadInFlight = false }
+        defer {
+            outputReadInFlight = false
+            let waiting = outputReadWaiters
+            outputReadWaiters = []
+            for waiter in waiting { waiter.resume() }
+        }
+        var outcome = OutputOutcome.skipped
+        var waits = longPoll
         repeat {
             outputReadQueued = false
-            await readOutputOnce(recoverMissing: recoverMissing)
+            outcome = await readOutputOnce(recoverMissing: recoverMissing, longPoll: waits)
+            // Whatever was queued meanwhile wants the screen now.
+            waits = false
         } while outputReadQueued && state == .connected && !Task.isCancelled
+        return outcome
     }
-    private func readOutputOnce(recoverMissing: Bool) async {
-        guard state == .connected, let id = sessionID, !missingSessionIDs.contains(id) else { return }
+    private func readOutputOnce(recoverMissing: Bool, longPoll: Bool) async -> OutputOutcome {
+        guard state == .connected, let id = sessionID, !missingSessionIDs.contains(id) else { return .skipped }
         let token = generation
         do {
             try await synchronizeViewport(token: token)
-            guard generation == token, sessionID == id else { return }
-            let screen = try ShellOutput(result: try await fetchOutput(id: id))
-            guard screen.shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
-            guard generation == token, sessionID == id else { return }
-            // An unchanged screen is not re-rendered: polling is fast while typing and most polls see the same thing.
-            if screen != lastScreen || outputSessionID != id {
-                let rendered = screen.screen
-                output = rendered.text; outputCursorOffset = rendered.cursorOffset; outputInMode = screen.inMode
-                lastScreen = screen
+            guard generation == token, sessionID == id else { return .skipped }
+            // Paused between the decision to wait and the request itself: do not start a wait nobody is looking at.
+            // Or a caller arrived meanwhile who wants the screen now: its read comes first.
+            if longPoll, !liveWanted || outputReadQueued { return .interrupted }
+            // Once the desktop has shown a hash, ask it to answer only when the screen differs from the one we hold.
+            let known = syncMode == .live && outputSessionID == id ? outputHash : nil
+            let wait = longPoll && known != nil ? liveWaitMilliseconds : 0
+            let started = ProcessInfo.processInfo.systemUptime
+            let raw = try await fetchOutput(id: id, ifChanged: known, wait: wait)
+            let elapsed = ProcessInfo.processInfo.systemUptime - started
+            guard generation == token, sessionID == id else { return .skipped }
+            switch try OutputReply(result: raw) {
+            case .unchanged(let shellID, let hash):
+                guard shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
+                latency.outputAnswered(seconds: elapsed, waited: Double(wait) / 1000, unchanged: true, bytes: nil)
+                guard known != nil, hash == known else {
+                    // An answer to a question we did not ask: forget the hash so the next read brings the whole screen.
+                    outputHash = nil
+                    return .unchanged
+                }
+                outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
+                clearOutputError()
+                return .unchanged
+            case .screen(let screen):
+                guard screen.shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
+                let live = screen.hash != nil
+                if live { if syncMode != .live { syncMode = .live; wakeLive() } } else if syncMode != .poll { syncMode = .poll }
+                var changed = false
+                // An unchanged screen is not re-parsed or re-rendered: reads are frequent while typing and most see the same thing.
+                if screen != lastScreen || outputSessionID != id {
+                    // Colors, symbols and cursor are worked out off the main actor; a full 500-line screen must not stall touches.
+                    let styled = await Task.detached(priority: .userInitiated) { screen.styledScreen }.value
+                    guard generation == token, sessionID == id else { return .skipped }
+                    output = styled.text; styledOutput = styled; outputVersion &+= 1
+                    outputCursorOffset = styled.cursorOffset; outputInMode = screen.inMode
+                    lastScreen = screen
+                    latency.screenChanged(at: ProcessInfo.processInfo.systemUptime)
+                    changed = true
+                }
+                latency.outputAnswered(seconds: elapsed, waited: Double(wait) / 1000, unchanged: false, bytes: changed ? screen.text.utf8.count : nil)
+                outputHash = screen.hash
+                outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
+                clearOutputError()
+                return changed ? .changed : .unchanged
             }
-            outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
         } catch {
-            guard generation == token, sessionID == id else { return }
+            guard generation == token, sessionID == id else { return .skipped }
+            // A cancelled read (the loop paused, another caller wants the screen now, the view went away) is not a failure.
+            if error is CancellationError { return Task.isCancelled ? .skipped : .interrupted }
             if case RemoteError.rpc("not_found", _) = error {
                 missingSessionIDs.insert(id); snapshotStale = true
                 do {
                     if recoverMissing, let project = projectID {
                         // Refresh project sessions once. The failed UUID cannot be polled again.
                         let managers = try await rpc("orchestrators.list")["orchestrators"].decode([RemoteSession].self)
-                        guard generation == token, projectID == project else { return }
+                        guard generation == token, projectID == project else { return .skipped }
                         orchestrators = managers
                         try await loadProject(project, token: token)
                     } else {
                         try reconcileSelectedSession()
                         if sessionID == nil { try await synchronizeViewport(token: token) }
                     }
-                    if recoverMissing, sessionID != nil { await readOutputOnce(recoverMissing: false) }
-                } catch { handle(error) }
-            } else { handle(error) }
+                    if recoverMissing, sessionID != nil { return await readOutputOnce(recoverMissing: false, longPoll: false) }
+                    return .skipped
+                } catch { handle(error); noteOutputError(); return .failed }
+            } else { handle(error); noteOutputError(); return .failed }
         }
+    }
+    private func noteOutputError() { outputErrorMessage = error }
+    /// A read worked again: the message an earlier failed read put up is taken down (a different message is left alone).
+    private func clearOutputError() {
+        if let shown = outputErrorMessage, error == shown { error = nil }
+        outputErrorMessage = nil
     }
     /// The desktop refuses a reply over 128 KiB (`response_too_large`, or `cli_error` from the capture), which wide
     /// grids or multibyte scrollback can exceed at 500 lines. Halve until it fits and remember that per session
     /// (until reconnect or an explicit refresh), so a session that keeps failing costs one attempt per poll.
-    private func fetchOutput(id: String) async throws -> JSONValue {
+    private func fetchOutput(id: String, ifChanged: String?, wait: Int) async throws -> JSONValue {
         var lines = outputLines[id] ?? Self.defaultOutputLines
+        var wait = wait
         while true {
-            do { return try await rpc("shell.output", ["shell_id": .string(id), "lines": .number(Double(lines))]) }
+            let extended = outputExtensions
+            let request = OutputRequest(shellID: id, lines: lines, ifChanged: extended ? ifChanged : nil, waitMilliseconds: extended ? wait : 0, styled: extended)
+            do { return try await requestOutput(request) }
+            catch RemoteError.rpc(let code, let message) where extended && LiveSync.rejectsNewParameters(code: code, message: message) {
+                // An older desktop does not know the new parameters: plain reads for the rest of this connection.
+                outputExtensions = false
+            }
+            catch RemoteError.rpc("cli_error", _) where extended && wait > 0 {
+                // A wait that failed says nothing about the size of the reply: ask again without waiting before shrinking anything.
+                wait = 0
+            }
             catch RemoteError.rpc(let code, _) where (code == "cli_error" || code == "response_too_large") && lines > Self.minimumOutputLines {
                 lines = max(Self.minimumOutputLines, lines / 2)
                 outputLines[id] = lines
             }
         }
+    }
+    /// The one `shell.output` request. It runs as its own task so a long poll can be cancelled alone: cancelling it detaches only
+    /// this request (RelayClient keeps the socket and counters); the desktop's late answer is dropped.
+    private func requestOutput(_ request: OutputRequest) async throws -> JSONValue {
+        let flight = Task { [client] in try await client.request(method: "shell.output", params: request.params, id: UUID().uuidString.lowercased()) }
+        outputFlight = flight; outputFlightIsLongPoll = request.isLongPoll
+        let started = ProcessInfo.processInfo.systemUptime
+        let token = generation
+        defer { if outputFlight == flight { outputFlight = nil; outputFlightIsLongPoll = false } }
+        do {
+            return try await withTaskCancellationHandler { try await flight.value } onCancel: { flight.cancel() }
+        } catch is CancellationError {
+            // The desktop does not know: it keeps this wait, and its slot, until the wait runs out (a new connection starts clean).
+            if request.isLongPoll, generation == token { waitSlots.abandon(startedAt: started, wait: Double(request.waitMilliseconds) / 1000) }
+            throw CancellationError()
+        }
+    }
+    /// Cuts a pending long poll short. Nothing else is touched: the loop sees the read end and decides what comes next.
+    func interruptLongPoll() {
+        if outputFlightIsLongPoll { outputFlight?.cancel() }
     }
     func submit(expectedSessionID: String? = nil, line: String? = nil) async {
         guard canSend, let session, let desktopID = selectedDesktopID,
@@ -578,6 +723,11 @@ enum ConnectionState: Equatable {
         polling = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.generation == token else { return }
+                // A desktop that answers on change is followed by a long poll; every other one by the interval below.
+                if self.syncMode == .live {
+                    guard await self.liveTurn(token: token) else { return }
+                    continue
+                }
                 guard await self.pollSleep() else { continue }
                 guard !Task.isCancelled, self.generation == token else { return }
                 if !(await self.client.isConnected()) {
@@ -588,6 +738,53 @@ enum ConnectionState: Equatable {
                 await self.readOutput()
             }
         }
+    }
+
+    // MARK: Live sync
+
+    /// The long poll runs only for a shell that is on screen, in the foreground, on a live connection.
+    var liveWanted: Bool { state == .connected && terminalVisible && appActive && sessionID != nil }
+
+    /// One turn of the live loop: a read that the desktop holds back until the screen differs from the one we hold (or 8 s pass),
+    /// re-issued at once whether it came back changed or unchanged. Returns false when the loop should end (the link is gone).
+    private func liveTurn(token: UUID) async -> Bool {
+        if !(await client.isConnected()) {
+            guard !Task.isCancelled, generation == token else { return false }
+            state = .failed; snapshotStale = true; error = "Desktop disconnected. Reconnect to refresh output."
+            scheduleReconnectIfNeeded()
+            return false
+        }
+        guard liveWanted else { await liveIdle(.seconds(2)); return !Task.isCancelled }
+        // Two waiting requests is all the desktop allows; cancelled ones still count until their wait runs out. In the rare burst of
+        // cancellations that fills both slots, the screen is followed by short reads until one frees up.
+        let canWait = waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
+        let outcome = await readOutput(recoverMissing: true, longPoll: canWait)
+        guard !Task.isCancelled, generation == token else { return false }
+        switch outcome {
+        case .changed, .unchanged: liveBackoff.success()
+        case .failed: await liveIdle(liveBackoff.failure())
+        case .skipped: await liveIdle(.seconds(1))
+        case .interrupted: break
+        }
+        if !canWait, outcome != .failed { await liveIdle(.milliseconds(300)) }
+        return !Task.isCancelled
+    }
+    /// A wait that `wakeLive()` ends early (resume, a session switch).
+    private func liveIdle(_ delay: Duration) async {
+        let sleeper = Task<Void, Never> { _ = try? await Task.sleep(for: delay) }
+        pollSleeper = sleeper
+        await withTaskCancellationHandler { await sleeper.value } onCancel: { sleeper.cancel() }
+        pollSleeper = nil
+    }
+    /// Ends the loop's idle wait or interval sleep now, so it re-reads what it should be doing (the terminal returned, the app
+    /// became active, another session was chosen).
+    func wakeLive() { pollSleeper?.cancel() }
+    /// The scene became active or left the foreground. No new long poll starts while it is not active (the one out runs its
+    /// course, at most one wait; leaving for the background closes the connection anyway), and the loop resumes when it is.
+    func setAppActive(_ active: Bool) {
+        guard appActive != active else { return }
+        appActive = active
+        if active { wakeLive() }
     }
 }
 

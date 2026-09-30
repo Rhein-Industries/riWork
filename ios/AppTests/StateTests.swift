@@ -32,6 +32,19 @@ actor FixtureTransport: RemoteTransport {
     var outputExtras: [String: JSONValue] = [:]
     var inFlight: [String: Int] = [:]
     var maxInFlight: [String: Int] = [:]
+    // Live sync, like a desktop that can wait for a change: results carry a hash, `if_changed` is answered `unchanged`, and
+    // `wait_ms` holds the request back until the screen changes (at most `longPollCap`, so tests do not wait 8 s).
+    var hashMode = false
+    var screenVersion = 0
+    var longPollCap = Duration.milliseconds(120)
+    var outputRequestLog: [[String: JSONValue]] = []
+    var outputRequestTimes: [ContinuousClock.Instant] = []
+    var failOutputs = 0
+    var failOutputCode = "unavailable"
+    /// An older desktop: it knows `shell_id` and `lines` only and refuses anything else (`invalid_request`, unknown field); or a
+    /// newer connector whose `riwork` CLI is older (`cli_error`).
+    enum OldDesktop { case no, strictFields, oldCLI }
+    var oldDesktop = OldDesktop.no
     private var waiters: [CheckedContinuation<Void, any Error>] = []
     func setSessions(_ sessions: [RemoteSession]) { listedShells = sessions }
     func setMissing(_ id: String) { missingOutputs.insert(id) }
@@ -53,7 +66,14 @@ actor FixtureTransport: RemoteTransport {
     private func cancelWaiters() { let all = waiters; waiters = []; all.forEach { $0.resume(throwing: CancellationError()) } }
     func isConnected() async -> Bool { connected }
     func setUncertain() { inputUncertain = true }
-    func setOutput(_ text: String, extras: [String: JSONValue] = [:]) { outputText = text; outputExtras = extras }
+    func setOutput(_ text: String, extras: [String: JSONValue] = [:]) { outputText = text; outputExtras = extras; screenVersion += 1 }
+    func setHashMode(_ on: Bool, cap: Duration = .milliseconds(120)) { hashMode = on; longPollCap = cap }
+    func outputRequests() -> [[String: JSONValue]] { outputRequestLog }
+    func outputTimes() -> [ContinuousClock.Instant] { outputRequestTimes }
+    func currentHash() -> String { "hash-\(screenVersion)" }
+    func failNextOutputs(_ count: Int, code: String = "unavailable") { failOutputs = count; failOutputCode = code }
+    func pendingOutputFailures() -> Int { failOutputs }
+    func setOldDesktop(_ kind: OldDesktop) { oldDesktop = kind }
     func setKeysMode(_ mode: KeysMode) { keysMode = mode }
     func setKeysDelay(_ delay: Duration?) { keysDelay = delay }
     func setAppearance(_ mode: AppearanceMode) { appearanceMode = mode }
@@ -62,6 +82,7 @@ actor FixtureTransport: RemoteTransport {
     func calls() -> [KeyCall] { keyCalls }
     func resizeRequests() -> [TerminalViewport] { resizes }
     func peakInFlight(_ method: String) -> Int { maxInFlight[method] ?? 0 }
+    func inFlightCount(_ method: String) -> Int { inFlight[method] ?? 0 }
     /// What reached the shell, in order, once per batch (a retried batch counts once, as the desktop dedupes it).
     func delivered(shell: String) -> String {
         var seen: Set<String> = []
@@ -104,12 +125,31 @@ actor FixtureTransport: RemoteTransport {
             var lines = 0
             if case .number(let value)? = params["lines"] { lines = Int(value) }
             outputLineRequests.append(lines)
+            outputRequestLog.append(params)
+            outputRequestTimes.append(.now)
+            if failOutputs > 0 { failOutputs -= 1; throw RemoteError.rpc(code: failOutputCode, message: "output failed") }
+            if params["styled"] != nil || params["if_changed"] != nil || params["wait_ms"] != nil {
+                switch oldDesktop {
+                case .no: break
+                case .strictFields: throw RemoteError.rpc(code: "invalid_request", message: "unknown field `styled`, expected `shell_id` or `lines`")
+                case .oldCLI: throw RemoteError.rpc(code: "cli_error", message: "the installed riwork CLI does not support styled output or waiting for changes; update RiWork")
+                }
+            }
             if let oversizeAbove, lines > oversizeAbove { throw RemoteError.rpc(code: oversizeCode, message: "reply too large") }
             if let shell = params["shell_id"]?.string, missingOutputs.contains(shell) {
                 throw RemoteError.rpc(code: "not_found", message: "Selected session is unavailable.")
             }
+            if hashMode, case .string(let known)? = params["if_changed"], known == currentHash() {
+                if case .number(let wait)? = params["wait_ms"], wait > 0 {
+                    let version = screenVersion
+                    let deadline = ContinuousClock.now + min(.milliseconds(Int(wait)), longPollCap)
+                    while screenVersion == version, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(3)) }
+                }
+                if known == currentHash() { return .object(["shell_id": params["shell_id"]!, "unchanged": .bool(true), "hash": .string(known)]) }
+            }
             var reply: [String: JSONValue] = ["shell_id": params["shell_id"]!, "output": .string(outputText)]
             reply.merge(outputExtras) { $1 }
+            if hashMode { reply["hash"] = .string(currentHash()) }
             return .object(reply)
         case "shell.input":
             inputs.append(id)

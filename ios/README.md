@@ -162,9 +162,38 @@ input (⏎ ⇥ ⌫ ⎋ ↑ ↓ ← → ^C), cut at the front, only once it is ol
 link is down; its ✕ discards it. `input_unavailable` and `not_found` keep the buffer and say
 why; `uncertain` shows a short note. The buffer lives in memory only.
 
-The screen is read every ~300 ms for 2 s after typing, every 1 s for the next 10 s, then
-every 3 s, one read in flight at a time. When `shell.output` carries `cursor`/`rows`, a block
-cursor is drawn there; `in_mode` shows a COPY MODE badge.
+**Live sync.** Every `shell.output` asks for `styled: true`. A desktop whose result carries a `hash` is followed by a long
+poll: one request in flight with `if_changed: <hash>` and `wait_ms: 8000`, re-issued the moment it comes back, changed or
+`unchanged`, so a change (an echo, agent output) reaches the phone as soon as the desktop sees it. Typing starts no extra reads;
+the pending one returns on the echo. The request timeout is the wait plus 20 s. A desktop that does not know the new parameters answers `invalid_request` (unknown field), or a connector with an older CLI `cli_error` "does not support styled output": the app then falls back, for that connection, to plain reads and interval polling. The loop does not start a new wait while the
+terminal is off screen or the app is not active (one already out runs its course) and resumes from its hash; errors back off
+250 ms → 2 s; oversize replies still halve `lines`. The desktop allows two waiting requests per device, so a wait cancelled here
+(a session switch, a caller that wants the screen now) is counted until it runs out, and in the rare burst that fills both
+slots the screen is followed by short reads meanwhile. An older desktop (no `hash`) keeps the interval polling: about every
+300 ms for 2 s after typing, every 1 s for the next 10 s, then every 3 s, one read in flight at a time. `RelayClient` already
+matches responses to requests by id, so replies may arrive out of order and a pending wait never delays `shell.keys`.
+When `shell.output` carries `cursor`/`rows`, a block cursor is drawn there; `in_mode` shows a COPY MODE badge.
+
+**Colors and symbols.** The styled output holds only SGR sequences (`;` and `:` forms): 16 colors from the synced terminal
+palette (or a built-in set that suits the desktop's light or dark side), xterm-256, truecolor, bold, dim (half opacity over the
+background, like Ghostty's `faint-opacity`), italic, underline, strikethrough, inverse, hidden and every reset. Malformed or
+unknown sequences are dropped whole and never crash. Bold text is not made bright (Ghostty's `bold-is-bright` is off; the
+`riwork.boldIsBright` default turns it on). Parsing (`Core/StyledScreen.swift`) happens off the main actor and yields the screen
+line by line; the terminal draws only the lines on screen in a lazy stack and redraws only lines that changed, so a
+500 × 300 screen stays smooth (a single large `Text` took seconds). Every line is exactly one grid row and each glyph that
+borrows a font is kerned back to the cells the terminal counts for it, so attributes and fallback fonts never move a column.
+Symbols that can also be emoji but are text by default (⏺ ⏸ ⚠ ✔ ▶ ℹ …) get U+FE0E, so they draw as monochrome text glyphs in the
+foreground color as on the Mac; genuine emoji (✅ 🚀, FE0F, keycaps, ZWJ, flags, skin tones) are left alone. Drag-selecting
+works within a line; **Copy screen text** in the menu copies the whole screen.
+
+**Display settings** (terminal menu → Display…, or the slider button in the desktop list): interface size 80–130 % in 5 % steps
+(a scale factor on fonts and touch targets of the header, lists, key bar and buttons, in `DesktopStyle`; Dynamic Type still
+applies on top), terminal text size 8–24 pt, and **Show latency**. Values are saved and take effect at once; a size that changes
+the terminal pane recomputes the grid and resizes the desktop pane (debounced) as before. The latency overlay (top right of the
+terminal, top left in focus mode; touches pass through) shows the mode (live/poll), the last payload, the last and average (20
+samples) round trip of `shell.keys` and `shell.output`, the echo latency (keys sent → first changed screen) and the age of the
+last change. Long polls have no round trip of their own: a read that did not wait counts, and so does an `unchanged` answer
+that ran out its wait (its time past the wait).
 
 **Focus mode** (header button, or double-tap the header) hides the header, tabs, status rows and badges and gives the shell
 the whole screen inside the safe area, keeping the display awake. Only the

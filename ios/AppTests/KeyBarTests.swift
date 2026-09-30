@@ -101,6 +101,39 @@ import RiWorkCore
         XCTAssertTrue(bar.scrollView.touchesShouldCancel(in: bar.buttons[.key(.left)]!), "a finger that moves off a key scrolls the row")
     }
 
+    // MARK: Interface size
+
+    func testTheBarScalesWithTheInterfaceSizeAndStaysTheSameAtTheStandardSize() throws {
+        let bar = makeBar()
+        layout(bar)
+        let standardEscape = try frame(.key(.escape), in: bar)
+        XCTAssertEqual(bar.barHeight, 44)
+        XCTAssertEqual(bar.intrinsicContentSize.height, 44)
+        let standardWidth = bar.scrollView.contentSize.width
+        bar.style = DesktopStyle(.builtIn, scale: 1.3)
+        bar.frame.size.height = bar.barHeight
+        layout(bar)
+        XCTAssertEqual(bar.barHeight, 57)
+        XCTAssertEqual(bar.intrinsicContentSize.height, 57, "the bar tells iOS its new height")
+        XCTAssertGreaterThan(try frame(.key(.escape), in: bar).width, standardEscape.width)
+        XCTAssertEqual(try frame(.key(.escape), in: bar).height, 56, accuracy: 1, "keys fill the strip below its 1 pt rule")
+        XCTAssertGreaterThan(bar.scrollView.contentSize.width, standardWidth)
+        XCTAssertGreaterThanOrEqual(try frame(.hide, in: bar).width, 57 - 1, "Hide keeps a target as large as the bar")
+        let big = try XCTUnwrap(bar.buttons[.key(.escape)]?.configuration?.attributedTitle)
+        XCTAssertEqual((big.runs.first?.uiKit.font)?.pointSize ?? 0, 13 * 1.3, accuracy: 0.01)
+        bar.style = DesktopStyle(.builtIn, scale: 0.8)
+        bar.frame.size.height = bar.barHeight
+        layout(bar)
+        XCTAssertEqual(bar.intrinsicContentSize.height, 35)
+        XCTAssertLessThan(bar.scrollView.contentSize.width, standardWidth)
+        bar.style = DesktopStyle(.builtIn)
+        bar.frame.size.height = bar.barHeight
+        layout(bar)
+        XCTAssertEqual(bar.intrinsicContentSize.height, 44)
+        XCTAssertEqual(try frame(.key(.escape), in: bar).width, standardEscape.width, accuracy: 0.5, "back at 100 % everything is where it was")
+        XCTAssertEqual(bar.scrollView.contentSize.width, standardWidth, accuracy: 0.5)
+    }
+
     // MARK: Ends of the row and where the bar is
 
     func testAboveTheSoftwareKeyboardTheRowStartsAtTheEdge() throws {

@@ -19,6 +19,7 @@ struct RemoteRootView: View {
     @Bindable var model: RemoteModel
     @State private var path: [RemoteRoute] = []
     @State private var pairingRequest: PairingRequest?
+    @State private var showingDisplay = false
     @State private var renaming: SavedDesktop?
     @State private var removing: SavedDesktop?
     // A double Back tap during the pop animation would otherwise pop an empty stack and trap.
@@ -27,6 +28,7 @@ struct RemoteRootView: View {
         NavigationStack(path: $path) {
             VStack(spacing: 0) {
                 WorkspaceBar(title: "RIWORK") {
+                    Button("Display settings", systemImage: "textformat.size") { showingDisplay = true }.labelStyle(.iconOnly)
                     Button("Add desktop", systemImage: "plus") { pairingRequest = PairingRequest(text: "") }.labelStyle(.iconOnly).disabled(model.loadFailed)
                 }
                 if model.loadFailed {
@@ -43,14 +45,14 @@ struct RemoteRootView: View {
                                         Task { await model.activate(desktop.id) }
                                     } label: {
                                         HStack(spacing: 8) {
-                                            Image(systemName: "desktopcomputer").font(.system(size: 14)).foregroundStyle(style.accent)
+                                            Image(systemName: "desktopcomputer").font(.system(size: style.pt(14))).foregroundStyle(style.accent)
                                             VStack(alignment: .leading, spacing: 2) {
-                                                Text(desktop.name).font(.custom("Menlo-Bold", size: 13, relativeTo: .headline)).foregroundStyle(style.text)
-                                                Text(desktop.pairing.relayHost).font(.custom("Menlo", size: 11, relativeTo: .caption)).foregroundStyle(style.muted)
+                                                Text(desktop.name).font(style.mono(13, bold: true, relativeTo: .headline)).foregroundStyle(style.text)
+                                                Text(desktop.pairing.relayHost).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted)
                                             }
                                             Spacer(minLength: 4)
-                                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(style.muted)
-                                        }.frame(minHeight: 44).contentShape(Rectangle())
+                                            Image(systemName: "chevron.right").font(style.system(.caption)).foregroundStyle(style.muted)
+                                        }.frame(minHeight: style.pt(44)).contentShape(Rectangle())
                                     }.buttonStyle(.plain).accessibilityHint("Choose a project on this desktop")
                                     Menu {
                                         Button("Rename", systemImage: "pencil") { renaming = desktop }
@@ -71,10 +73,10 @@ struct RemoteRootView: View {
                             }
                             Button("Pair a desktop", systemImage: "plus.circle") { pairingRequest = PairingRequest(text: "") }.listRowBackground(style.background)
                         }
-                        Section { Label("Pairing keys stay in Keychain.", systemImage: "lock.shield").font(.caption).foregroundStyle(style.muted).listRowBackground(style.background) }
+                        Section { Label("Pairing keys stay in Keychain.", systemImage: "lock.shield").font(style.system(.caption)).foregroundStyle(style.muted).listRowBackground(style.background) }
                     }
                     .listStyle(.plain).scrollContentBackground(.hidden)
-                    .environment(\.defaultMinListRowHeight, 44)
+                    .environment(\.defaultMinListRowHeight, style.pt(44))
                 }
             }
             .background(style.background)
@@ -99,6 +101,7 @@ struct RemoteRootView: View {
                 Task { await model.activate(id) }
             }).desktopThemed(model.theme.style)
         }
+        .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
         // Renaming belongs to that one desktop, so it wears that desktop's colors even while another one is shown.
         .sheet(item: $renaming) { RenameDesktopSheet(model: model, desktop: $0).desktopThemed(model.theme.style(for: $0.id)) }
         .alert("Remove pairing?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { desktop in
@@ -119,7 +122,7 @@ private struct LibraryFailureView: View {
     @State private var resetError: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("SAVED PAIRINGS UNAVAILABLE", systemImage: "exclamationmark.lock").font(.custom("Menlo-Bold", size: 14, relativeTo: .headline))
+            Label("SAVED PAIRINGS UNAVAILABLE", systemImage: "exclamationmark.lock").font(style.mono(14, bold: true, relativeTo: .headline))
             Text(model.loadFailure ?? "").foregroundStyle(style.warning).textSelection(.enabled)
             Text("Nothing was changed or deleted. Pairing and removing desktops is paused until this loads.").foregroundStyle(style.muted)
             if let resetError { Text(resetError).foregroundStyle(style.error) }
@@ -138,7 +141,7 @@ private struct EmptyDesktopOverlay: View {
     var add: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("NO DESKTOP CONNECTED", systemImage: "terminal").font(.custom("Menlo-Bold", size: 14, relativeTo: .headline))
+            Label("NO DESKTOP CONNECTED", systemImage: "terminal").font(style.mono(14, bold: true, relativeTo: .headline))
             Text("Pair a desktop, choose a project, then continue in its open terminal tabs.").foregroundStyle(style.muted)
             Button("Pair a desktop", systemImage: "plus", action: add).buttonStyle(DesktopButtonStyle(prominent: true))
         }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center).background(style.background)
@@ -152,7 +155,7 @@ struct ConnectionPanel: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle().fill(model.state == .connected ? style.accent : style.warning).frame(width: 6, height: 6)
-                Text(model.state.label).font(.custom("Menlo", size: 11, relativeTo: .caption))
+                Text(model.state.label).font(style.mono(11, relativeTo: .caption))
                 Spacer(minLength: 4)
                 if model.state == .connecting { ProgressView().controlSize(.small) }
                 if model.state == .connected {
@@ -166,7 +169,7 @@ struct ConnectionPanel: View {
             }
             if let error = model.error {
                 HStack(alignment: .top) {
-                    Text(error).font(.caption).foregroundStyle(style.warning).textSelection(.enabled)
+                    Text(error).font(style.system(.caption)).foregroundStyle(style.warning).textSelection(.enabled)
                     Button("Dismiss message", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly)
                 }
             }
@@ -187,24 +190,24 @@ struct ProjectSelectionView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(style.muted)
                 TextField("Find a project", text: $search).textFieldStyle(.plain).autocorrectionDisabled()
                 if !search.isEmpty { Button("Clear filter", systemImage: "xmark") { search = "" }.labelStyle(.iconOnly) }
-            }.padding(.horizontal, 12).frame(minHeight: 44)
+            }.padding(.horizontal, 12).frame(minHeight: style.pt(44))
             DesktopRule()
             if model.snapshotStale && !model.projects.isEmpty {
                 Label("Saved projects · reconnect to refresh", systemImage: "clock.badge.exclamationmark")
-                    .font(.caption).foregroundStyle(style.warning).padding(8)
+                    .font(style.system(.caption)).foregroundStyle(style.warning).padding(8)
             }
             List {
                 ForEach(model.projects.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }) { project in
                     Button { onSelect(project) } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: "folder").font(.system(size: 14)).foregroundStyle(style.accent)
+                            Image(systemName: "folder").font(.system(size: style.pt(14))).foregroundStyle(style.accent)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(project.name).font(.custom("Menlo-Bold", size: 13, relativeTo: .headline)).foregroundStyle(style.text)
-                                Text(project.root).font(.custom("Menlo", size: 11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
+                                Text(project.name).font(style.mono(13, bold: true, relativeTo: .headline)).foregroundStyle(style.text)
+                                Text(project.root).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
                             }
                             Spacer(minLength: 4)
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(style.muted)
-                        }.frame(minHeight: 40).contentShape(Rectangle())
+                            Image(systemName: "chevron.right").font(style.system(.caption)).foregroundStyle(style.muted)
+                        }.frame(minHeight: style.pt(40)).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityHint("Open tabs for this project’s existing terminals")
                         .listRowBackground(style.background).listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
                         .listRowSeparatorTint(style.divider)
@@ -213,7 +216,7 @@ struct ProjectSelectionView: View {
                     Text(model.loading ? "Loading projects…" : "No projects. Open a project on your desktop and refresh.")
                         .foregroundStyle(style.muted).listRowBackground(style.background)
                 }
-            }.listStyle(.plain).scrollContentBackground(.hidden).environment(\.defaultMinListRowHeight, 44)
+            }.listStyle(.plain).scrollContentBackground(.hidden).environment(\.defaultMinListRowHeight, style.pt(44))
                 .refreshable { await model.refresh() }
         }.background(style.background)
     }
@@ -225,6 +228,7 @@ struct TerminalTabsView: View {
     let project: RemoteProject
     var onBack: () -> Void
     @State private var sessionInfo: SessionInfo?
+    @State private var showingDisplay = false
     @State private var followOutput = true
     private var openSessions: [RemoteSession] { model.openSessions }
     private var focused: Bool { model.focusMode && model.sessionID != nil }
@@ -240,6 +244,7 @@ struct TerminalTabsView: View {
                     }.labelStyle(.iconOnly).disabled(model.sessionID == nil)
                     Menu {
                         Toggle("Follow output", isOn: $followOutput)
+                        Button("Display…", systemImage: "textformat.size") { showingDisplay = true }
                         Menu("Text size · \(Int(model.terminalFontSize)) pt", systemImage: "textformat.size") {
                             Button("Larger", systemImage: "plus") { model.stepTerminalFontSize(1) }.disabled(model.terminalFontSize >= TerminalFontSize.range.upperBound)
                             Button("Smaller", systemImage: "minus") { model.stepTerminalFontSize(-1) }.disabled(model.terminalFontSize <= TerminalFontSize.range.lowerBound)
@@ -248,6 +253,7 @@ struct TerminalTabsView: View {
                         if model.keysSupport != .unsupported {
                             Toggle("Line composer instead of direct typing", isOn: Binding(get: { model.preferLineComposer }, set: { model.setPreferLineComposer($0) }))
                         }
+                        Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.output.replacingOccurrences(of: "\u{FE0E}", with: "") }.disabled(model.output.isEmpty)
                         Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                         Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                         Divider()
@@ -260,7 +266,7 @@ struct TerminalTabsView: View {
             if model.sessionID == nil && openSessions.isEmpty {
                 VStack {
                     VStack(alignment: .leading, spacing: 12) {
-                        Label("NO OPEN TERMINALS", systemImage: "terminal").font(.custom("Menlo-Bold", size: 14, relativeTo: .headline))
+                        Label("NO OPEN TERMINALS", systemImage: "terminal").font(style.mono(14, bold: true, relativeTo: .headline))
                         Text("Open a terminal in this project on your desktop, then refresh.").foregroundStyle(style.muted)
                     }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                     PendingInputNotice(model: model)
@@ -273,6 +279,7 @@ struct TerminalTabsView: View {
         .onChange(of: model.sessionID) { _, _ in sessionInfo = nil; followOutput = true }
         .onChange(of: model.focusMode) { _, _ in model.updateKeepAwake() }
         .sheet(item: $sessionInfo) { SessionInfoSheet(info: $0).desktopThemed(model.theme.style) }
+        .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
         .task(id: project.id) { await model.chooseProject(project.id) }
         .onAppear { model.setTerminalVisible(true) }
         .onDisappear { model.setTerminalVisible(false) }
@@ -288,10 +295,10 @@ struct TerminalTabsView: View {
                                 Label { Text(session.title) } icon: {
                                     Image(systemName: session.kind == "orchestrator" ? "point.3.connected.trianglepath.dotted" : "terminal")
                                         .foregroundStyle(session.kind == "orchestrator" ? style.magenta : style.text)
-                                }.font(.custom("Menlo", size: 12, relativeTo: .subheadline)).lineLimit(1)
-                                Text(tabDetail(session)).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                                }.font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
+                                Text(tabDetail(session)).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
                             }
-                            .padding(.horizontal, 10).frame(minHeight: 36)
+                            .padding(.horizontal, 10).frame(minHeight: style.pt(36))
                             .background(model.sessionID == session.id ? style.active : style.panel)
                             .overlay(alignment: .trailing) { Rectangle().fill(style.divider).frame(width: 1) }
                             .overlay(alignment: .bottom) { Rectangle().fill(model.sessionID == session.id ? style.accent : style.divider).frame(height: 1) }
@@ -327,17 +334,17 @@ private struct SessionInfoSheet: View {
             WorkspaceBar(title: "SESSION INFO") { Button("Done") { dismiss() } }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(info.title).font(.custom("Menlo-Bold", size: 14, relativeTo: .headline))
-                    Text(info.kind).font(.caption).foregroundStyle(style.muted)
+                    Text(info.title).font(style.mono(14, bold: true, relativeTo: .headline))
+                    Text(info.kind).font(style.system(.caption)).foregroundStyle(style.muted)
                     DesktopRule()
-                    Text("SESSION UUID").font(.caption).foregroundStyle(style.muted)
+                    Text("SESSION UUID").font(style.system(.caption)).foregroundStyle(style.muted)
                     Text(info.id).textSelection(.enabled).accessibilityLabel("Session UUID: \(info.id)")
-                    Text("WORKING DIRECTORY").font(.caption).foregroundStyle(style.muted)
+                    Text("WORKING DIRECTORY").font(style.system(.caption)).foregroundStyle(style.muted)
                     Text(info.cwd).textSelection(.enabled)
                 }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
             }
         }.background(style.background).foregroundStyle(style.text)
-            .font(.custom("Menlo", size: 13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
+            .font(style.mono(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
             .presentationDetents([.medium, .large]).presentationCornerRadius(8)
     }
 }
@@ -349,12 +356,12 @@ private struct PendingInputNotice: View {
     var body: some View {
         if let pending = model.pendingInput {
             VStack(alignment: .leading, spacing: 6) {
-                Label(model.sending ? "Submitting once…" : "Unconfirmed submission", systemImage: "exclamationmark.bubble").font(.subheadline.bold())
-                Text("Session \(pending.shellID.prefix(8)) · request \(pending.id.prefix(8))").font(.caption.monospaced())
-                Text(pending.line).font(.caption.monospaced()).lineLimit(4).textSelection(.enabled)
+                Label(model.sending ? "Submitting once…" : "Unconfirmed submission", systemImage: "exclamationmark.bubble").font(style.system(.subheadline, weight: .bold))
+                Text("Session \(pending.shellID.prefix(8)) · request \(pending.id.prefix(8))").font(style.mono(12, relativeTo: .caption))
+                Text(pending.line).font(style.mono(12, relativeTo: .caption)).lineLimit(4).textSelection(.enabled)
                 if !model.sending {
-                    Text("Check that session’s output. This input will not be resent.").font(.footnote)
-                    Button("I reviewed the output…") { acknowledge = true }.font(.subheadline)
+                    Text("Check that session’s output. This input will not be resent.").font(style.system(.footnote))
+                    Button("I reviewed the output…") { acknowledge = true }.font(style.system(.subheadline))
                 }
             }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(style.warning.opacity(0.12))
                 .alert("Acknowledge unconfirmed input?", isPresented: $acknowledge) {
@@ -389,7 +396,7 @@ struct SessionConsole: View {
                         if let error = model.error {
                             HStack(alignment: .top) {
                                 Image(systemName: "exclamationmark.circle")
-                                Text(error).font(.footnote)
+                                Text(error).font(style.system(.footnote))
                                 Spacer(minLength: 0)
                                 Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly)
                             }.padding(.horizontal, 12).padding(.vertical, 8).background(style.warning.opacity(0.1))
@@ -419,15 +426,15 @@ struct SessionConsole: View {
     private var statusStrip: some View {
         HStack(spacing: 6) {
             Image(systemName: outputStale ? "clock.badge.exclamationmark" : "checkmark.circle")
-            Text(outputStale ? "Stale · \(model.state.label.lowercased())" : "Latest snapshot")
-            if let date = model.lastOutputAt { Text(date, style: .time) }
+            Text(outputStale ? "Stale · \(model.state.label.lowercased())" : (model.syncMode == .live ? "Live" : "Latest snapshot"))
+            if model.syncMode != .live || outputStale, let date = model.lastOutputAt { Text(date, style: .time) }
             if model.outputInMode { CopyModeBadge() }
             Spacer(minLength: 4)
             if let viewport = model.appliedViewport, model.viewportSessionID == model.sessionID {
                 Text("\(viewport.columns)×\(viewport.rows)").monospacedDigit()
                     .accessibilityLabel("Terminal size \(viewport.columns) columns, \(viewport.rows) rows")
             }
-        }.font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(outputStale ? style.warning : style.muted)
+        }.font(style.mono(10, relativeTo: .caption2)).foregroundStyle(outputStale ? style.warning : style.muted)
             .padding(.horizontal, 8).padding(.vertical, 2).background(style.panel)
     }
     private var terminal: some View {
@@ -439,8 +446,8 @@ struct SessionConsole: View {
                     } else if model.output.isEmpty {
                         Text(model.lastOutputAt == nil ? "Output will appear when this session is connected." : "The session has no output yet.").foregroundStyle(style.terminalForeground.opacity(0.6)).padding(20)
                     } else {
-                        TerminalScreenText.text(output: model.output, cursorOffset: cursorVisible ? model.outputCursorOffset : nil, style: style)
-                            .font(.custom("Menlo", fixedSize: fontSize)).foregroundStyle(style.terminalForeground).fixedSize(horizontal: true, vertical: true)
+                        TerminalScreenView(screen: model.styledOutput, showCursor: cursorVisible, fontSize: fontSize,
+                                           committedSize: model.terminalFontSize, boldIsBright: model.boldIsBright)
                             .textSelection(.enabled).padding(model.terminalLayout.padding).accessibilityLabel("Terminal output")
                     }
                     Color.clear.frame(height: 1).id("output-end")
@@ -467,6 +474,10 @@ struct SessionConsole: View {
             .onChange(of: model.typedCount) { _, _ in followOutput = true; proxy.scrollTo("output-end", anchor: .bottomLeading) }
             .simultaneousGesture(TapGesture().onEnded { terminalTapped() })
             .simultaneousGesture(magnify)
+            // Top right, where lines end; top left in focus mode, where the text controls are.
+            .overlay(alignment: focused ? .topLeading : .topTrailing) {
+                if model.showLatency { LatencyOverlay(latency: model.latency, mode: model.syncMode) }
+            }
             .overlay(alignment: .topTrailing) {
                 if focused {
                     FocusControls(visible: controlsVisible, fontSize: model.terminalFontSize,
@@ -502,22 +513,23 @@ struct SessionConsole: View {
             composer
         }
     }
-    private static let chipHeight = 28.0, noticeHeight = 24.0
+    private var chipHeight: Double { Double(style.pt(28)) }
+    private var noticeHeight: Double { Double(style.pt(24)) }
     private var directNotice: String? { model.directTyping ? model.deliveryNotice : nil }
     private var floatingInset: Double {
         guard model.directTyping else { return 0 }
-        return (model.keyPreview != nil ? Self.chipHeight : 0) + (directNotice != nil ? Self.noticeHeight : 0)
+        return (model.keyPreview != nil ? chipHeight : 0) + (directNotice != nil ? noticeHeight : 0)
     }
     /// Pending-input chip and short notices (also in focus mode), floating at the bottom of the terminal.
     @ViewBuilder private var floatingStatus: some View {
         if model.directTyping {
             VStack(spacing: 0) {
                 if let notice = directNotice {
-                    Text(notice).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
-                        .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: Self.noticeHeight, alignment: .leading)
+                    Text(notice).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                        .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: noticeHeight, alignment: .leading)
                         .background(style.panel).overlay(alignment: .top) { DesktopRule() }
                 }
-                if let preview = model.keyPreview { KeyPreviewChip(preview: preview, discard: model.discardPendingKeys).frame(height: Self.chipHeight) }
+                if let preview = model.keyPreview { KeyPreviewChip(preview: preview, discard: model.discardPendingKeys).frame(height: chipHeight) }
             }
         }
     }
@@ -533,13 +545,13 @@ struct SessionConsole: View {
             Button(keyFocus.isActive ? "Hide keyboard" : "Show keyboard", systemImage: keyFocus.isActive ? "keyboard.chevron.compact.down" : "keyboard") {
                 if keyFocus.isActive { keyFocus.dismiss() } else { keyFocus.focus() }
             }.labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: true))
-        }.font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(style.muted)
-            .padding(.leading, 8).frame(minHeight: 36).background(style.panel).overlay(alignment: .top) { DesktopRule() }
+        }.font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+            .padding(.leading, 8).frame(minHeight: style.pt(36)).background(style.panel).overlay(alignment: .top) { DesktopRule() }
     }
     /// The line composer: today's behaviour, for desktops that cannot take keys and for anyone who prefers it.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !focused, let notice = model.deliveryNotice { Text(notice).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(style.muted) }
+            if !focused, let notice = model.deliveryNotice { Text(notice).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted) }
             HStack {
                 CommandField(text: $model.draft, placeholder: "Continue the selected session…", isEnabled: model.canEditDraft,
                              label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
@@ -552,7 +564,7 @@ struct SessionConsole: View {
                     .accessibilityHint("Submits this line once followed by Return")
             }
             if !focused {
-                Text("One line + Return · selected \(model.session?.shortID ?? "—")").font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                Text("One line + Return · selected \(model.session?.shortID ?? "—")").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                 if model.state != .connected { Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting) }
             }
         }.padding(8).background(style.panel).overlay(alignment: .top) { DesktopRule() }

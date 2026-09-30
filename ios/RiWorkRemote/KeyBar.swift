@@ -22,9 +22,12 @@ private final class KeyScrollView: UIScrollView {
     enum Presentation: Equatable { case strip, pill }
     private enum Role { case plain, hotkey, muted }
 
-    /// The strip: a 1 pt rule and the keys.
+    /// The strip at the standard interface size: a 1 pt rule and the keys.
     static let height = CGFloat(KeyBarGeometry.height)
-    private static let pillHeight: CGFloat = 40
+    /// The strip at the current interface size (`InterfaceScale`); the bar is exactly this tall wherever iOS puts it.
+    var barHeight: CGFloat { CGFloat(KeyBarGeometry.height(scale: style.scale)) }
+    /// A length of the bar at the current interface size, on whole points.
+    private func unit(_ points: CGFloat) -> CGFloat { CGFloat(InterfaceScale.scaled(Double(points), by: style.scale)) }
     /// Symbols that are awkward to reach on the iOS keyboard, sent as text.
     static let symbols: [String] = ["|", "/", "\\", "~", "-", "_", "`", "*", "&", "$", ">", "<", "{", "}", "[", "]", ";", ":", "'", "\""]
     static let symbolNames: [String: String] = [
@@ -40,7 +43,13 @@ private final class KeyScrollView: UIScrollView {
     /// The hotkeys the person added. They follow the built-in ones.
     var hotkeys: [Hotkey] = [] { didSet { if hotkeys != oldValue { rebuild() } } }
     var presentation = Presentation.strip { didSet { if presentation != oldValue { restyle() } } }
-    var style = DesktopStyle.builtIn { didSet { if style != oldValue { restyle() } } }
+    var style = DesktopStyle.builtIn {
+        didSet {
+            guard style != oldValue else { return }
+            // A new interface size changes every key's size and the bar's height; colors only need a restyle.
+            if style.scale != oldValue.scale { applyScale() } else { restyle() }
+        }
+    }
     /// Where the bar is and the padding at the ends of the row that follows from it.
     private(set) var position = KeyBarPosition.aboveKeyboard
     private(set) var padding = KeyBarPadding.zero
@@ -58,6 +67,7 @@ private final class KeyScrollView: UIScrollView {
     private var roles: [Action: Role] = [:]
     private var rowLeading: NSLayoutConstraint!, rowTrailing: NSLayoutConstraint!, rowTop: NSLayoutConstraint!, rowBottom: NSLayoutConstraint!
     private var stackLeading: NSLayoutConstraint!, hideTrailing: NSLayoutConstraint!
+    private var hideWidth: NSLayoutConstraint!, hideMinWidth: NSLayoutConstraint?, dividerInsets: [NSLayoutConstraint] = [], stackTrailing: NSLayoutConstraint!
     private var controlArmed = false, altArmed = false
     private var repeatTask: Task<Void, Never>?
     private var didRepeat = false
@@ -94,14 +104,18 @@ private final class KeyScrollView: UIScrollView {
         rowTop = row.topAnchor.constraint(equalTo: topAnchor, constant: 1)
         rowBottom = bottomAnchor.constraint(equalTo: row.bottomAnchor)
         stackLeading = stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor)
+        stackTrailing = stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -4)
+        let hideDividerTop = hideDivider.topAnchor.constraint(equalTo: row.topAnchor, constant: 10)
+        let hideDividerBottom = hideDivider.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -10)
+        dividerInsets = [hideDividerTop, hideDividerBottom]
         NSLayoutConstraint.activate([
             rule.topAnchor.constraint(equalTo: topAnchor), rule.leadingAnchor.constraint(equalTo: leadingAnchor),
             rule.trailingAnchor.constraint(equalTo: trailingAnchor), rule.heightAnchor.constraint(equalToConstant: 1),
             rowLeading, rowTrailing, rowTop, rowBottom,
             scroll.leadingAnchor.constraint(equalTo: row.leadingAnchor), scroll.topAnchor.constraint(equalTo: row.topAnchor), scroll.bottomAnchor.constraint(equalTo: row.bottomAnchor),
-            hideDivider.topAnchor.constraint(equalTo: row.topAnchor, constant: 10), hideDivider.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -10),
+            hideDividerTop, hideDividerBottom,
             hideDivider.widthAnchor.constraint(equalToConstant: 1), scroll.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor),
-            stackLeading, stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -4),
+            stackLeading, stackTrailing,
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor), stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)
         ])
@@ -109,16 +123,31 @@ private final class KeyScrollView: UIScrollView {
         hide.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(hide)
         hideTrailing = row.trailingAnchor.constraint(equalTo: hide.trailingAnchor)
+        hideWidth = hide.widthAnchor.constraint(equalToConstant: 44)
         NSLayoutConstraint.activate([
             hideTrailing, hide.leadingAnchor.constraint(equalTo: hideDivider.trailingAnchor), hide.topAnchor.constraint(equalTo: row.topAnchor),
-            hide.bottomAnchor.constraint(equalTo: row.bottomAnchor), hide.widthAnchor.constraint(equalToConstant: 44)
+            hide.bottomAnchor.constraint(equalTo: row.bottomAnchor), hideWidth
         ])
         rebuild()
         restyle()
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: KeyBarView, _) in view.restyle() }
     }
     required init?(coder: NSCoder) { fatalError("KeyBarView is created in code") }
-    override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: Self.height) }
+    override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: barHeight) }
+
+    /// A new interface size: the bar's height, every key's font, insets and width, and the fixed pieces around them.
+    private func applyScale() {
+        hideWidth.constant = unit(44)
+        for constraint in dividerInsets { constraint.constant = constraint === dividerInsets.first ? unit(10) : -unit(10) }
+        stackTrailing.constant = -unit(4)
+        if let hide = buttons[.hide] {
+            hide.configuration?.image = UIImage(systemName: "keyboard.chevron.compact.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14 * CGFloat(style.scale), weight: .regular))
+            hideMinWidth?.constant = unit(40)
+        }
+        rebuild()
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+    }
 
     // MARK: Keys
 
@@ -158,7 +187,7 @@ private final class KeyScrollView: UIScrollView {
         line.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(line)
         NSLayoutConstraint.activate([
-            holder.widthAnchor.constraint(equalToConstant: 9), line.widthAnchor.constraint(equalToConstant: 1), line.heightAnchor.constraint(equalToConstant: 20),
+            holder.widthAnchor.constraint(equalToConstant: unit(9)), line.widthAnchor.constraint(equalToConstant: 1), line.heightAnchor.constraint(equalToConstant: unit(20)),
             line.centerXAnchor.constraint(equalTo: holder.centerXAnchor), line.centerYAnchor.constraint(equalTo: holder.centerYAnchor)
         ])
         dividers.append(line)
@@ -167,20 +196,22 @@ private final class KeyScrollView: UIScrollView {
     private func makeButton(_ action: Action, title: String?, symbol: String?, label: String, role: Role, wide: Bool = true) -> UIButton {
         let button = UIButton(type: .system)
         var configuration = UIButton.Configuration.plain()
-        let inset: CGFloat = wide ? 9 : 5
+        let inset: CGFloat = unit(wide ? 9 : 5)
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: inset, bottom: 0, trailing: inset)
         if let title {
             let size: CGFloat = wide ? 13 : 16
-            configuration.attributedTitle = AttributedString(title, attributes: AttributeContainer([.font: UIFont(name: "Menlo", size: size) ?? .monospacedSystemFont(ofSize: size, weight: .regular)]))
+            configuration.attributedTitle = AttributedString(title, attributes: AttributeContainer([.font: style.uiFont("Menlo", size: size)]))
         }
-        if let symbol { configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .regular)) }
+        if let symbol { configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14 * CGFloat(style.scale), weight: .regular)) }
         configuration.titleLineBreakMode = .byClipping
         button.configuration = configuration
         button.accessibilityLabel = label
         button.accessibilityIdentifier = "keybar.\(label)"
         button.setContentHuggingPriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
-        button.widthAnchor.constraint(greaterThanOrEqualToConstant: wide ? 40 : 30).isActive = true
+        let minimumWidth = button.widthAnchor.constraint(greaterThanOrEqualToConstant: unit(wide ? 40 : 30))
+        minimumWidth.isActive = true
+        if action == .hide { hideMinWidth = minimumWidth }
         button.addAction(UIAction { [weak self] _ in self?.tapped(action) }, for: .touchUpInside)
         if case .key(let key) = action, Self.repeating.contains(key) {
             button.addAction(UIAction { [weak self] _ in self?.beginRepeat(action) }, for: .touchDown)
@@ -233,7 +264,7 @@ private final class KeyScrollView: UIScrollView {
         hideDivider.backgroundColor = style.dividerUI
         for line in dividers { line.backgroundColor = style.dividerUI }
         row.backgroundColor = pill ? style.panelUI : .clear
-        row.layer.cornerRadius = pill ? Self.pillHeight / 2 : 0
+        row.layer.cornerRadius = pill ? (barHeight - 4) / 2 : 0
         row.layer.cornerCurve = .continuous
         row.layer.borderWidth = pill ? 1 : 0
         row.layer.borderColor = style.dividerUI.resolvedColor(with: traitCollection).cgColor
