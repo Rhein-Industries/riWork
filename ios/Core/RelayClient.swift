@@ -13,6 +13,7 @@ public enum RequestValidation {
         case "worktrees.list", "shells.list": required = ["project_id"]; optional = []
         case "tasks.list": required = ["project_id"]; optional = ["worktree_id"]
         case "shell.output": required = ["shell_id"]; optional = ["lines", "styled", "if_changed", "wait_ms"]
+        case "shell.history": required = ["shell_id", "end", "lines"]; optional = ["styled"]
         case "shell.input": required = ["shell_id", "line"]; optional = []
         case "shell.keys": required = ["shell_id", "batch", "items"]; optional = []
         case "shell.resize": required = ["shell_id", "columns", "rows"]; optional = []
@@ -30,6 +31,11 @@ public enum RequestValidation {
             if let styled = params["styled"], case .bool = styled {} else if params["styled"] != nil { throw RemoteError.protocolViolation("Output styled must be a boolean.") }
             if let changed = params["if_changed"] { guard case .string(let hash) = changed, LiveSync.isUsableHash(hash) else { throw RemoteError.protocolViolation("Output if_changed must be a short printable string.") } }
             if let wait = params["wait_ms"] { guard case .number(let value) = wait, value >= 0, value <= Double(LiveSync.maximumWaitMilliseconds), value.rounded() == value else { throw RemoteError.protocolViolation("Output wait_ms must be 0–10000.") } }
+        }
+        if method == "shell.history" {
+            guard case .number(let end)? = params["end"], end >= 0, end <= 4_294_967_295, end.rounded() == end else { throw RemoteError.protocolViolation("History end must be 0–4294967295.") }
+            guard case .number(let lines)? = params["lines"], lines >= 1, lines <= Double(HistoryLimits.maximumPageLines), lines.rounded() == lines else { throw RemoteError.protocolViolation("History lines must be 1–1000.") }
+            if let styled = params["styled"], case .bool = styled {} else if params["styled"] != nil { throw RemoteError.protocolViolation("History styled must be a boolean.") }
         }
         if method == "shell.input" { guard let line = params["line"]?.string else { throw RemoteError.protocolViolation("Missing input.") }; try InputValidation.validate(line) }
         if let lines = params["lines"] { guard case .number(let value) = lines, value >= 1, value <= 2000, value.rounded() == value else { throw RemoteError.protocolViolation("Output lines must be 1–2000.") } }

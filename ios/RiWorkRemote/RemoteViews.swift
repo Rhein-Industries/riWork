@@ -243,7 +243,8 @@ struct TerminalTabsView: View {
                         if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind) }
                     }.labelStyle(.iconOnly).disabled(model.sessionID == nil)
                     Menu {
-                        Toggle("Follow output", isOn: $followOutput)
+                        if UIDevice.current.userInterfaceIdiom == .pad { Toggle("Follow output", isOn: $followOutput) }
+                        else { Button("Jump to latest output", systemImage: "arrow.down.to.line") { model.jumpToLatest() } }
                         Button("Display…", systemImage: "textformat.size") { showingDisplay = true }
                         Menu("Text size · \(Int(model.terminalFontSize)) pt", systemImage: "textformat.size") {
                             Button("Larger", systemImage: "plus") { model.stepTerminalFontSize(1) }.disabled(model.terminalFontSize >= TerminalFontSize.range.upperBound)
@@ -253,6 +254,7 @@ struct TerminalTabsView: View {
                         if model.keysSupport != .unsupported {
                             Toggle("Line composer instead of direct typing", isOn: Binding(get: { model.preferLineComposer }, set: { model.setPreferLineComposer($0) }))
                         }
+                        // The latest answer only: the screen and the scrollback that came with it (up to 500 lines), not every page loaded since.
                         Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.output.replacingOccurrences(of: "\u{FE0E}", with: "") }.disabled(model.output.isEmpty)
                         Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                         Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
@@ -437,7 +439,54 @@ struct SessionConsole: View {
         }.font(style.mono(10, relativeTo: .caption2)).foregroundStyle(outputStale ? style.warning : style.muted)
             .padding(.horizontal, 8).padding(.vertical, 2).background(style.panel)
     }
+    /// The iPad keeps the terminal it has always had (two axes, a follow toggle); the iPhone has `PhoneTerminal`.
+    private var usesPhoneTerminal: Bool { UIDevice.current.userInterfaceIdiom != .pad }
     private var terminal: some View {
+        Group {
+            if usesPhoneTerminal { phoneTerminal } else { legacyTerminal }
+        }
+        .background(style.terminalBackground)
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .onAppear { paneSize = geometry.size; model.reportTerminalArea(geometry.size) }
+                    .onChange(of: geometry.size) { _, size in paneSize = size; model.reportTerminalArea(size) }
+            }
+        }
+        // The chip and notices float over the pane instead of taking room from it, so they appearing or vanishing never
+        // changes the terminal's size (and so never resizes the desktop). Content gets a matching bottom margin.
+        .overlay(alignment: .bottom) { floatingStatus }
+        .onChange(of: model.sessionAutoSwitches) { _, _ in keyFocus.dismiss() }
+        .simultaneousGesture(TapGesture().onEnded { terminalTapped() })
+        .simultaneousGesture(magnify)
+        // Top right, where lines end; top left in focus mode, where the text controls are.
+        .overlay(alignment: focused ? .topLeading : .topTrailing) {
+            if model.showLatency { LatencyOverlay(latency: model.latency, mode: model.syncMode) }
+        }
+        .overlay(alignment: .topTrailing) {
+            if focused {
+                FocusControls(visible: controlsVisible, fontSize: model.terminalFontSize,
+                              smaller: { model.stepTerminalFontSize(-1); revealControls() }, larger: { model.stepTerminalFontSize(1); revealControls() },
+                              exit: { model.setFocusMode(false) })
+            }
+        }
+        .task(id: controlsReveal) {
+            controlsVisible = true
+            try? await Task.sleep(for: .seconds(3.5))
+            if !Task.isCancelled { controlsVisible = false }
+        }
+        .onChange(of: focused) { _, _ in revealControls() }
+        .accessibilityHint(model.directTyping ? "Double tap to type into the terminal" : "")
+        .accessibilityAction(named: "Show keyboard") { keyFocus.focus() }
+    }
+    /// iPhone: vertical only, sticky bottom, history paging, paged swipes for full-screen programs. One scroll view per shell, so
+    /// opening or switching to a shell starts at its bottom.
+    private var phoneTerminal: some View {
+        PhoneTerminal(model: model, fontSize: fontSize, committedSize: model.terminalFontSize, showCursor: cursorVisible,
+                      padding: model.terminalLayout.padding, floatingInset: floatingInset)
+            .id(model.sessionID)
+    }
+    private var legacyTerminal: some View {
         ScrollViewReader { proxy in
             ScrollView([.horizontal, .vertical]) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -455,44 +504,11 @@ struct SessionConsole: View {
             }
             .defaultScrollAnchor(.bottomLeading, for: .initialOffset)
             .defaultScrollAnchor(.topLeading, for: .alignment)
-            .background(style.terminalBackground)
-            .background {
-                GeometryReader { geometry in
-                    Color.clear
-                        .onAppear { paneSize = geometry.size; model.reportTerminalArea(geometry.size) }
-                        .onChange(of: geometry.size) { _, size in paneSize = size; model.reportTerminalArea(size) }
-                }
-            }
-            // The chip and notices float over the pane instead of taking room from it, so they appearing or vanishing never
-            // changes the terminal's size (and so never resizes the desktop). Content gets a matching bottom margin.
             .contentMargins(.bottom, floatingInset, for: .scrollContent)
-            .overlay(alignment: .bottom) { floatingStatus }
             .onChange(of: floatingInset) { _, _ in if followOutput { proxy.scrollTo("output-end", anchor: .bottomLeading) } }
-            .onChange(of: model.sessionAutoSwitches) { _, _ in keyFocus.dismiss() }
             .onChange(of: model.output) { _, _ in if followOutput { proxy.scrollTo("output-end", anchor: .bottomLeading) } }
             // Typing pins the view to the bottom, where the prompt and cursor are.
             .onChange(of: model.typedCount) { _, _ in followOutput = true; proxy.scrollTo("output-end", anchor: .bottomLeading) }
-            .simultaneousGesture(TapGesture().onEnded { terminalTapped() })
-            .simultaneousGesture(magnify)
-            // Top right, where lines end; top left in focus mode, where the text controls are.
-            .overlay(alignment: focused ? .topLeading : .topTrailing) {
-                if model.showLatency { LatencyOverlay(latency: model.latency, mode: model.syncMode) }
-            }
-            .overlay(alignment: .topTrailing) {
-                if focused {
-                    FocusControls(visible: controlsVisible, fontSize: model.terminalFontSize,
-                                  smaller: { model.stepTerminalFontSize(-1); revealControls() }, larger: { model.stepTerminalFontSize(1); revealControls() },
-                                  exit: { model.setFocusMode(false) })
-                }
-            }
-            .task(id: controlsReveal) {
-                controlsVisible = true
-                try? await Task.sleep(for: .seconds(3.5))
-                if !Task.isCancelled { controlsVisible = false }
-            }
-            .onChange(of: focused) { _, _ in revealControls() }
-            .accessibilityHint(model.directTyping ? "Double tap to type into the terminal" : "")
-            .accessibilityAction(named: "Show keyboard") { keyFocus.focus() }
         }
     }
     private var magnify: some Gesture {

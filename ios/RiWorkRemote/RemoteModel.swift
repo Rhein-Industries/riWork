@@ -55,6 +55,31 @@ enum ConnectionState: Equatable {
     var typedCount = 0
     var preferLineComposer = false
     var terminalFontSize = TerminalFontSize.standard
+    // MARK: Scrolling (history paging and the alternate screen: RemoteModel+Scroll.swift)
+    /// The lines shown for the selected shell: scrollback and screen, each under an index that does not change while lines are
+    /// added above or below it. `output` and `styledOutput` stay the latest live answer alone.
+    var terminal = TerminalBuffer()
+    /// A full-screen program (vim, less, htop) is on the alternate screen. It has no scrollback: swipes page the program instead.
+    var alternateScreen = false
+    /// An older page of scrollback is being fetched, or the last try failed.
+    var historyLoading = false
+    var historyFailed = false
+    /// Whether the desktop understands `shell.history`. Learned from the first call, reset by every new connection.
+    var historySupport: HistorySupport = .unknown
+    /// Whether the view follows new output, and how many lines arrived while it did not. The view reports its scroll position here.
+    var scrollFollow = StickyBottom()
+    /// Counts requests to jump to the latest output (sending a line, the menu); typing has `typedCount`.
+    var jumpRequests = 0
+    @ObservationIgnored var historyTask: Task<Void, Never>?
+    @ObservationIgnored var historyRun = UUID()
+    /// Per session: lines per page after `response_too_large` halved them. Forgotten on reconnect and refresh.
+    @ObservationIgnored var historyPageLines: [String: Int] = [:]
+    /// Whether `shell.history` is asked with `styled`. Cleared for the connection when the desktop rejects the field.
+    @ObservationIgnored var historyStyled = true
+    @ObservationIgnored var historyRetryAfter: ContinuousClock.Instant?
+    /// The view is being scrolled by a finger or its momentum: a page of older lines waits for it to stop, since it would move what is
+    /// under the finger.
+    @ObservationIgnored var scrollBusy = false
     // MARK: Display, live sync and latency (RemoteModel+Display.swift, RemoteModel+Live.swift)
     /// Scale of the app chrome (headers, lists, key bar, buttons), 0.8-1.3. The terminal text size is separate.
     var interfaceScale = InterfaceScale.standard
@@ -348,6 +373,8 @@ enum ConnectionState: Equatable {
         keysSupport = .unknown
         // And for waiting on changes: the first screen tells whether this desktop sends a `hash`.
         syncMode = .unknown; outputHash = nil; liveBackoff = LongPollBackoff(); waitSlots.reset(); outputExtensions = true; latency.reset()
+        // And for paging history: the first page tells whether this desktop has `shell.history`.
+        historySupport = .unknown; historyStyled = true; historyPageLines = [:]; historyRetryAfter = nil; cancelHistory()
         // The same for its colors, and the last palette for this desktop is on screen while the first fetch is on its way.
         themeSupport = .unknown; appearanceFlight = nil
         theme.select(desktop.id)
@@ -396,6 +423,7 @@ enum ConnectionState: Equatable {
         state = background && wantsConnection ? .suspended : .disconnected
         snapshotStale = true; loading = false
         polling?.cancel(); polling = nil
+        cancelHistory()
         // Clear only this authenticated connection's override before closing, when possible. Unstructured so a
         // cancelled caller cannot skip it; the cancelled poll it waits behind only detaches its own request.
         await Task { try? await self.synchronizeViewport(token: token, forceRelease: true) }.value
@@ -412,10 +440,11 @@ enum ConnectionState: Equatable {
     private func resetOutput() {
         lastScreen = nil; output = ""; styledOutput = .empty; outputVersion &+= 1; outputHash = nil
         outputCursorOffset = nil; outputInMode = false; outputSessionID = nil; lastOutputAt = nil
+        resetTerminal()
     }
     func refresh() async {
         guard state == .connected else { return }
-        failedViewport = nil; viewportError = nil; missingSessionIDs = []; outputLines = [:]
+        failedViewport = nil; viewportError = nil; missingSessionIDs = []; outputLines = [:]; historyPageLines = [:]; historyRetryAfter = nil
         do { try await refresh(token: generation) } catch { handle(error) }
     }
     private func rpc(_ method: String, _ params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
@@ -560,6 +589,8 @@ enum ConnectionState: Equatable {
                 }
                 outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
                 clearOutputError()
+                // The same screen, but a full-screen program may have come or gone with it.
+                if let alternate = OutputExtras(result: raw).alternate { setAlternateScreen(alternate) }
                 return .unchanged
             case .screen(let screen):
                 guard screen.shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
@@ -573,6 +604,7 @@ enum ConnectionState: Equatable {
                     guard generation == token, sessionID == id else { return .skipped }
                     output = styled.text; styledOutput = styled; outputVersion &+= 1
                     outputCursorOffset = styled.cursorOffset; outputInMode = screen.inMode
+                    takeIn(screen: screen, styled: styled)
                     lastScreen = screen
                     latency.screenChanged(at: ProcessInfo.processInfo.systemUptime)
                     changed = true
@@ -666,6 +698,7 @@ enum ConnectionState: Equatable {
             try updateDesktop { $0.pendingInput = operation }
         } catch { self.error = error.localizedDescription; return }
         sending = true; deliveryNotice = nil
+        jumpToLatest()
         defer { sending = false }
         do {
             let result = try await rpc("shell.input", ["shell_id": .string(operation.shellID), "line": .string(operation.line)], id: operation.id)

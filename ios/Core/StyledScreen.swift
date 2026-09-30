@@ -17,6 +17,15 @@ public struct StyledLine: Sendable, Equatable {
     public init(text: String, runs: [StyleRun], columns: Int) { self.text = text; self.runs = runs; self.columns = columns }
 }
 
+extension StyledLine {
+    /// The same line of text, allowing for trailing spaces that one capture kept and another trimmed.
+    public func sameText(as other: StyledLine) -> Bool {
+        if text == other.text { return true }
+        func trimmed(_ text: String) -> Substring { text.dropLast(text.reversed().prefix { $0 == " " }.count) }
+        return trimmed(text) == trimmed(other.text)
+    }
+}
+
 /// A screen ready to draw: the text, its styles as runs that cover the whole text (line breaks included), and the cursor cell.
 /// Colors are still symbolic (`TerminalColor`), so a new palette needs no new parse.
 ///
@@ -32,10 +41,13 @@ public struct StyledScreen: Sendable, Equatable {
     public let cursorColumn: Int?
     /// The widest line in terminal cells.
     public let columns: Int
+    /// How many of `lines` lie above the visible screen (scrollback). Zero when the desktop did not say where the screen starts.
+    public let historyLines: Int
     public static let empty = StyledScreen(text: "", runs: [], cursorOffset: nil, lines: [], cursorLine: nil, cursorColumn: nil, columns: 0)
-    public init(text: String, runs: [StyleRun], cursorOffset: Int?, lines: [StyledLine] = [], cursorLine: Int? = nil, cursorColumn: Int? = nil, columns: Int = 0) {
+    public init(text: String, runs: [StyleRun], cursorOffset: Int?, lines: [StyledLine] = [], cursorLine: Int? = nil, cursorColumn: Int? = nil, columns: Int = 0, historyLines: Int = 0) {
         self.text = text; self.runs = runs; self.cursorOffset = cursorOffset
         self.lines = lines; self.cursorLine = cursorLine; self.cursorColumn = cursorColumn; self.columns = columns
+        self.historyLines = max(0, min(historyLines, lines.count))
     }
     /// The same screen without styles.
     public var plain: TerminalScreen { TerminalScreen(text: text, cursorOffset: cursorOffset) }
@@ -227,7 +239,7 @@ extension TerminalText {
 
     /// The lines, text and runs of rows. A line whose runs cannot describe its text exactly (which takes grapheme rules that merge
     /// characters across cells) is drawn unstyled rather than misaligned.
-    private static func build(_ screen: ScannedScreen, rows: [[StyledCell]], cursor: (row: Int, index: Int)?) -> StyledScreen {
+    private static func build(_ screen: ScannedScreen, rows: [[StyledCell]], cursor: (row: Int, index: Int)?, historyLines: Int = 0) -> StyledScreen {
         var lines: [StyledLine] = []
         lines.reserveCapacity(rows.count)
         var columns = 0
@@ -271,7 +283,7 @@ extension TerminalText {
             for run in line.runs { add(run) }
             offset += line.text.count
         }
-        return StyledScreen(text: text, runs: runs, cursorOffset: cursorOffset, lines: lines, cursorLine: cursorLine, cursorColumn: cursorColumn, columns: columns)
+        return StyledScreen(text: text, runs: runs, cursorOffset: cursorOffset, lines: lines, cursorLine: cursorLine, cursorColumn: cursorColumn, columns: columns, historyLines: historyLines)
     }
 
     /// The styled counterpart of `screen(_:cursor:rows:)`: the same rows, trimming and cursor cell, with the SGR styles kept and
@@ -289,7 +301,9 @@ extension TerminalText {
         var rows = scanned.rows
         // A trailing newline terminates the last line; it does not start another one.
         if rows.count > 1, rows.last?.isEmpty == true { rows.removeLast() }
-        let row = max(0, rows.count - screenRows) + cursor.y
+        // The lines above the screen are scrollback; the screen starts `historyLines` lines in.
+        let historyLines = max(0, rows.count - screenRows)
+        let row = historyLines + cursor.y
         while rows.count <= row { rows.append([]) }
         while rows.count - 1 > row, let last = rows.last, scanned.isBlank(last) { rows.removeLast() }
         var cells = rows[row]
@@ -305,6 +319,17 @@ extension TerminalText {
         }
         rows[row] = cells
         scanned.rows = rows
-        return build(scanned, rows: rows, cursor: (row, index))
+        return build(scanned, rows: rows, cursor: (row, index), historyLines: historyLines)
+    }
+
+    /// The lines of a `shell.history` page: scrollback lines, top to bottom, each ending with a line break, with the same styles and
+    /// text presentation as the live screen. The line break after the last line ends it; it does not start another (a blank last line
+    /// is "\n\n"). The caller checks the number of lines against the `line_count` the desktop reported.
+    public static func styledLines(page input: String, textPresentation forceText: Bool = true) -> [StyledLine] {
+        if input.isEmpty { return [] }
+        let scanned = scanStyled(input, keepCells: true, textPresentation: forceText)
+        var rows = scanned.rows
+        if input.utf8.last == 0x0A, rows.last?.isEmpty == true { rows.removeLast() }
+        return build(scanned, rows: rows, cursor: nil).lines
     }
 }

@@ -72,11 +72,7 @@ struct TerminalScreenView: View {
     let boldIsBright: Bool
 
     private var settings: TerminalRenderer.Settings {
-        let dark = colorScheme == .dark
-        let colors = style.theme.terminalColors(dark: dark, boldIsBright: boldIsBright)
-        let cursor = style.theme.terminalCursor
-        return TerminalRenderer.Settings(colors: colors, cursorBackground: dark ? cursor.dark : cursor.light, cursorForeground: colors.background,
-                                         showCursor: showCursor, fontSize: committedSize)
+        TerminalRenderer.Settings(style: style, dark: colorScheme == .dark, showCursor: showCursor, committedSize: committedSize, boldIsBright: boldIsBright)
     }
     var body: some View {
         let current = settings
@@ -92,8 +88,18 @@ struct TerminalScreenView: View {
     }
 }
 
+extension TerminalRenderer.Settings {
+    /// The synced terminal colors and cursor for the current appearance.
+    init(style: DesktopStyle, dark: Bool, showCursor: Bool, committedSize: Double, boldIsBright: Bool) {
+        let colors = style.theme.terminalColors(dark: dark, boldIsBright: boldIsBright)
+        let cursor = style.theme.terminalCursor
+        self.init(colors: colors, cursorBackground: dark ? cursor.dark : cursor.light, cursorForeground: colors.background,
+                  showCursor: showCursor, fontSize: committedSize)
+    }
+}
+
 /// One grid row. Equatable, so an unchanged line is not built again when the screen around it changes.
-private struct TerminalRow: View, Equatable {
+struct TerminalRow: View, Equatable {
     let line: StyledLine
     let cursorColumn: Int?
     let settings: TerminalRenderer.Settings
