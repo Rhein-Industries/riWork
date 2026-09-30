@@ -6,14 +6,11 @@ import SwiftUI
     var body: some Scene {
         WindowGroup {
             RemoteRootView(model: model)
-                .tint(DesktopStyle.accent)
-                .foregroundStyle(DesktopStyle.text)
-                .font(.custom("Menlo", size: 13, relativeTo: .body))
-                .buttonStyle(DesktopButtonStyle())
+                .desktopThemed(model.theme.style)
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .background: BackgroundGrace.run("RiWork viewport release") { await model.disconnect(background: true) }
-                    case .active: Task { await model.resume() }
+                    case .active: Task { await model.appDidBecomeActive() }
                     default: break
                     }
                 }

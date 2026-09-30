@@ -1,38 +1,82 @@
 import SwiftUI
 import UIKit
+import RiWorkCore
 
-/// Derived from src/theme.rs: Gruvbox Light in light appearance, RiWork in dark.
-/// The v1 relay does not export desktop theme settings.
-enum DesktopStyle {
-    private static func dynamic(_ light: UInt32, _ dark: UInt32) -> UIColor {
-        UIColor { traits in
-            let rgb = traits.userInterfaceStyle == .dark ? dark : light
-            return UIColor(red: CGFloat((rgb >> 16) & 255) / 255,
-                           green: CGFloat((rgb >> 8) & 255) / 255,
-                           blue: CGFloat(rgb & 255) / 255, alpha: 1)
+/// The colors the app draws with, for SwiftUI (`Color`) and for UIKit controls (`…UI`).
+///
+/// Built from a `DesktopTheme` (RiWorkCore): the desktop's synced palette when one is known, otherwise the built-in
+/// Gruvbox Light / RiWork pair. Views read it from the environment (`@Environment(\.desktopStyle)`), so a new palette
+/// re-colors them in place, without rebuilding anything or touching focus. UIKit-backed controls get the dynamic
+/// `UIColor` itself; converting a SwiftUI `Color` back would freeze one appearance.
+struct DesktopStyle: Equatable, @unchecked Sendable {
+    let theme: DesktopTheme
+    let textUI, mutedUI, accentUI, magentaUI, goldUI, errorUI: UIColor
+    let backgroundUI, panelUI, activeUI, dividerUI: UIColor
+    let terminalBackgroundUI, terminalForegroundUI, terminalCursorUI: UIColor
+
+    init(_ theme: DesktopTheme) {
+        self.theme = theme
+        func ui(_ color: ThemeColor) -> UIColor {
+            if color.isFixed { return Self.uiColor(color.light) }
+            let light = Self.uiColor(color.light), dark = Self.uiColor(color.dark)
+            return UIColor { $0.userInterfaceStyle == .dark ? dark : light }
         }
+        textUI = ui(theme.text); mutedUI = ui(theme.muted); accentUI = ui(theme.accent); magentaUI = ui(theme.magenta)
+        goldUI = ui(theme.gold); errorUI = ui(theme.error)
+        backgroundUI = ui(theme.background); panelUI = ui(theme.panel); activeUI = ui(theme.active); dividerUI = ui(theme.divider)
+        terminalBackgroundUI = ui(theme.terminalBackground); terminalForegroundUI = ui(theme.terminalForeground); terminalCursorUI = ui(theme.terminalCursor)
     }
-    private static func color(_ light: UInt32, _ dark: UInt32) -> Color { Color(uiColor: dynamic(light, dark)) }
-    // UIKit-backed controls need the dynamic UIColor itself; converting a SwiftUI Color back would freeze one appearance.
-    static let textUI = dynamic(0x3c3836, 0xd3e1e6)
-    static let mutedUI = dynamic(0x756f5e, 0x8fa6ae)
-    static let accentUI = dynamic(0x427b58, 0x55e6dc)
-    static let backgroundUI = dynamic(0xfbf1c7, 0x090d14)
-    static let panelUI = dynamic(0xf4ebc2, 0x101720)
-    static let activeUI = dynamic(0xede3bc, 0x14212a)
-    static let dividerUI = dynamic(0xd5ccb6, 0x253c45)
-    static let background = color(0xfbf1c7, 0x090d14)
-    static let panel = color(0xf4ebc2, 0x101720)
-    static let active = color(0xede3bc, 0x14212a)
-    static let divider = color(0xd5ccb6, 0x253c45)
-    static let text = color(0x3c3836, 0xd3e1e6)
-    static let muted = color(0x756f5e, 0x8fa6ae)
-    static let accent = color(0x427b58, 0x55e6dc)
-    static let warning = color(0x9d5015, 0xf4bf75)
-    static let error = color(0x9d0006, 0xf0738b)
+    static func uiColor(_ rgb: RGB) -> UIColor {
+        UIColor(red: CGFloat(rgb.red) / 255, green: CGFloat(rgb.green) / 255, blue: CGFloat(rgb.blue) / 255, alpha: 1)
+    }
+    static func == (lhs: DesktopStyle, rhs: DesktopStyle) -> Bool { lhs.theme == rhs.theme }
+    static let builtIn = DesktopStyle(.builtIn)
+
+    var text: Color { Color(uiColor: textUI) }
+    var muted: Color { Color(uiColor: mutedUI) }
+    /// The desktop's cyan.
+    var accent: Color { Color(uiColor: accentUI) }
+    /// The desktop's magenta: the secondary accent.
+    var magenta: Color { Color(uiColor: magentaUI) }
+    /// The desktop's gold: warnings and things that need attention.
+    var gold: Color { Color(uiColor: goldUI) }
+    var warning: Color { gold }
+    var error: Color { Color(uiColor: errorUI) }
+    var background: Color { Color(uiColor: backgroundUI) }
+    var panel: Color { Color(uiColor: panelUI) }
+    var active: Color { Color(uiColor: activeUI) }
+    var divider: Color { Color(uiColor: dividerUI) }
+    var terminalBackground: Color { Color(uiColor: terminalBackgroundUI) }
+    var terminalForeground: Color { Color(uiColor: terminalForegroundUI) }
+    var terminalCursor: Color { Color(uiColor: terminalCursorUI) }
+    /// The desktop's light or dark side, once synced; nil while built in, so the phone's own setting applies.
+    /// It also decides the status bar style and how system controls (menus, alerts, keyboards) draw.
+    var colorScheme: ColorScheme? { theme.dark.map { $0 ? .dark : .light } }
+}
+
+extension EnvironmentValues {
+    @Entry var desktopStyle = DesktopStyle.builtIn
+}
+
+/// Applied once at the root: the style in the environment plus the defaults every screen shares.
+private struct DesktopThemed: ViewModifier {
+    let style: DesktopStyle
+    func body(content: Content) -> some View {
+        content
+            .environment(\.desktopStyle, style)
+            .tint(style.accent)
+            .foregroundStyle(style.text)
+            .font(.custom("Menlo", size: 13, relativeTo: .body))
+            .buttonStyle(DesktopButtonStyle())
+            .preferredColorScheme(style.colorScheme)
+    }
+}
+extension View {
+    func desktopThemed(_ style: DesktopStyle) -> some View { modifier(DesktopThemed(style: style)) }
 }
 
 struct DesktopButtonStyle: ButtonStyle {
+    @Environment(\.desktopStyle) private var style
     var prominent = false
     /// Terminal chrome: 40-point targets instead of 44 so the shell gets the room.
     var compact = false
@@ -40,19 +84,21 @@ struct DesktopButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.custom("Menlo", size: 12, relativeTo: .subheadline))
-            .foregroundStyle(prominent ? DesktopStyle.accent : DesktopStyle.text)
+            .foregroundStyle(prominent ? style.accent : style.text)
             .padding(.horizontal, compact ? 6 : 10).frame(minWidth: compact ? 40 : 44, minHeight: compact ? 40 : 44)
-            .background(configuration.isPressed ? DesktopStyle.active : (prominent ? DesktopStyle.active : .clear))
-            .overlay(alignment: .bottom) { if prominent { Rectangle().fill(DesktopStyle.accent).frame(height: 1) } }
+            .background(configuration.isPressed ? style.active : (prominent ? style.active : .clear))
+            .overlay(alignment: .bottom) { if prominent { Rectangle().fill(style.accent).frame(height: 1) } }
             .contentShape(Rectangle()).opacity(isEnabled ? 1 : 0.45)
     }
 }
 
 struct DesktopRule: View {
-    var body: some View { Rectangle().fill(DesktopStyle.divider).frame(height: 1).accessibilityHidden(true) }
+    @Environment(\.desktopStyle) private var style
+    var body: some View { Rectangle().fill(style.divider).frame(height: 1).accessibilityHidden(true) }
 }
 
 struct WorkspaceBar<Actions: View>: View {
+    @Environment(\.desktopStyle) private var style
     let title: String
     var back: (() -> Void)?
     /// The terminal screen's header: shorter, with 40-point controls.
@@ -66,7 +112,7 @@ struct WorkspaceBar<Actions: View>: View {
                 Text(title).font(.custom("Menlo-Bold", size: 13, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 4)
                 actions().buttonStyle(DesktopButtonStyle(compact: compact))
-            }.padding(.horizontal, compact ? 4 : 8).frame(minHeight: compact ? 40 : 44).background(DesktopStyle.panel)
+            }.padding(.horizontal, compact ? 4 : 8).frame(minHeight: compact ? 40 : 44).background(style.panel)
                 .contentShape(Rectangle())
                 .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap?() }, including: onDoubleTap == nil ? .none : .all)
             DesktopRule()
@@ -75,9 +121,10 @@ struct WorkspaceBar<Actions: View>: View {
 }
 
 struct DesktopField: ViewModifier {
+    @Environment(\.desktopStyle) private var style
     func body(content: Content) -> some View {
         content.textFieldStyle(.plain).padding(8)
-            .background(DesktopStyle.background)
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(DesktopStyle.divider, lineWidth: 1))
+            .background(style.background)
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(style.divider, lineWidth: 1))
     }
 }

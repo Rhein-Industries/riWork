@@ -7,8 +7,20 @@ creates, splits, closes or replaces a desktop session.
 The interface follows RiWork’s compact desktop layout: flat rows and tab strips,
 thin dividers, Menlo text and a small workspace bar. Light appearance uses the
 desktop’s Gruvbox Light palette; dark appearance uses its RiWork palette. Buttons
-retain 44-point touch targets, accessible labels and text scaling. v1 does not
-export desktop theme preferences, so automatic theme synchronization is not available.
+retain 44-point touch targets, accessible labels and text scaling.
+
+**Theme sync.** A desktop that supports `appearance.get` (`{"v":1,"updated_at","dark","palette":{bg, panel,
+panel_active, divider, cyan, magenta, gold, text, muted},"terminal":{background, foreground, palette[16]}}`, colors
+as `#rrggbb`) lets the phone draw with its current colors: cyan is the accent, gold marks warnings, magenta is the
+secondary accent (orchestrators, hotkeys), the terminal uses `terminal.background/foreground` (else `bg`/`text`) for its
+background, text and block cursor, and `dark` sets the status bar and system controls. The phone asks on connect, when
+the app becomes active and every 60 s while connected, one request at a time, and only redraws when the colors actually
+changed. The last palette is kept per paired desktop (UserDefaults) and applied at launch and on connect, before the
+first answer; the desktop list wears the most recently used desktop's colors. `not_found` ("appearance not published")
+keeps the last palette; `unsupported RPC method` stops the asking for that connection and restores the built-in style;
+an unreadable palette (invalid hex, wrong count, `v` other than 1) is ignored. A synced text/background pair below a
+3:1 contrast ratio falls back to the built-in pair for that element. Without a palette the built-in Gruvbox Light /
+RiWork colors apply.
 
 ## Open, build and install
 
@@ -119,9 +131,21 @@ at. The line composer above stays for older desktops (detected on the first key:
 and can be chosen anyway from the terminal menu. Detection is per connection.
 
 A hidden `UIKeyInput` view captures the keys (autocorrection, smart punctuation and
-prediction off; return key "return"). A key bar sits above the keyboard: Esc, Tab, a
-sticky Ctrl (armed until the next letter, sent as `C-<letter>`), arrows (hold to
-repeat), Paste and Hide keyboard. A hardware keyboard sends arrows, Esc, Tab,
+prediction off; return key "return"). A key bar sits on the keyboard, always 44 pt tall and exactly where iOS
+puts it: on top of the software keyboard, or alone at the bottom edge when a hardware keyboard is attached. It
+scrolls sideways: Esc, Tab, a sticky Ctrl (armed until the next letter, sent as `C-<letter>`), a sticky Alt (Meta,
+sent as `Escape` followed by the next key or text, readline style), arrows, Shift-Tab, Home, End, PgUp, PgDn, Delete,
+Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held) and Paste, then the hotkeys, then the
+symbols that are awkward on the iOS keyboard (`` | / \ ~ - _ ` * & $ > < { } [ ] ; : ' " ``), then a "+" that opens the
+hotkey editor. Hide keyboard stays at the right end. The ends of the row are padded so the first and last key clear
+the display's rounded corners (about 20-28 pt derived from the safe area, not from a device model); in focus mode with
+a hardware keyboard the bar is a centered pill. The iPhone is portrait only.
+
+**Hotkeys** send a fixed sequence of text and special keys, validated against the `shell.keys` contract (text without
+control characters, whitelisted key names only, at most 64 steps). Built in: Ctrl+C, D, Z, L, R, A, E, U, W and Esc Esc.
+Your own (a name of up to 12 characters plus steps, e.g. "/clear" then Enter, or Ctrl+C then "exit" then Enter) can be
+added, edited, deleted and reordered in the editor, and are kept on the device (UserDefaults). A hotkey ignores an armed
+Ctrl/Alt. A hardware keyboard sends arrows, Esc, Tab,
 Shift-Tab, Home/End/Page keys and Ctrl-letters. Newlines in typed or pasted text
 become Enter, tabs become Tab, other control characters are dropped.
 
@@ -143,7 +167,7 @@ every 3 s, one read in flight at a time. When `shell.output` carries `cursor`/`r
 cursor is drawn there; `in_mode` shows a COPY MODE badge.
 
 **Focus mode** (header button, or double-tap the header) hides the header, tabs, status rows and badges and gives the shell
-the whole screen inside the safe area, in portrait or landscape, keeping the display awake. Only the
+the whole screen inside the safe area, keeping the display awake. Only the
 terminal, the keyboard with its key bar and the pending chip remain, plus a translucent
 corner control (text size, leave) that fades after a few seconds and returns on tap.
 The choice is remembered per session for the app run. Text size (8–24 pt, default 12) is set by

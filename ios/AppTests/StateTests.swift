@@ -24,6 +24,10 @@ actor FixtureTransport: RemoteTransport {
     var keyCalls: [KeyCall] = []
     var seenBatches: Set<String> = []
     var resizes: [TerminalViewport] = []
+    // appearance.get behaviour, like the desktop's: a palette, "not published yet", an old desktop, or nonsense.
+    enum AppearanceMode { case notPublished, unsupported, garbage, ok(JSONValue) }
+    var appearanceMode = AppearanceMode.notPublished
+    var appearanceCalls = 0
     var outputText = "existing session output"
     var outputExtras: [String: JSONValue] = [:]
     var inFlight: [String: Int] = [:]
@@ -52,6 +56,8 @@ actor FixtureTransport: RemoteTransport {
     func setOutput(_ text: String, extras: [String: JSONValue] = [:]) { outputText = text; outputExtras = extras }
     func setKeysMode(_ mode: KeysMode) { keysMode = mode }
     func setKeysDelay(_ delay: Duration?) { keysDelay = delay }
+    func setAppearance(_ mode: AppearanceMode) { appearanceMode = mode }
+    func appearanceRequests() -> Int { appearanceCalls }
     func setConnected(_ value: Bool) { connected = value }
     func calls() -> [KeyCall] { keyCalls }
     func resizeRequests() -> [TerminalViewport] { resizes }
@@ -71,7 +77,8 @@ actor FixtureTransport: RemoteTransport {
     func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue {
         guard connected else { throw RemoteError.disconnected }
         try RequestValidation.validate(method: method, params: params, id: id)
-        events.append("\(method):\(params["shell_id"]?.string ?? "")")
+        // Theme sync runs on its own schedule; keeping it out of `events` leaves the ordering assertions about everything else intact.
+        if method == "appearance.get" { appearanceCalls += 1 } else { events.append("\(method):\(params["shell_id"]?.string ?? "")") }
         inFlight[method, default: 0] += 1
         maxInFlight[method] = max(maxInFlight[method] ?? 0, inFlight[method]!)
         defer { inFlight[method, default: 1] -= 1 }
@@ -130,6 +137,13 @@ actor FixtureTransport: RemoteTransport {
             if case .number(let c)? = params["columns"], case .number(let r)? = params["rows"] { resizes.append(TerminalViewport(columns: Int(c), rows: Int(r))) }
             return .object(["shell_id": params["shell_id"]!, "columns": params["columns"]!, "rows": params["rows"]!])
         case "shell.resize.clear": return .object(["shell_id": params["shell_id"]!, "status": .string("cleared")])
+        case "appearance.get":
+            switch appearanceMode {
+            case .notPublished: throw RemoteError.rpc(code: "not_found", message: "appearance not published")
+            case .unsupported: throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method")
+            case .garbage: return .object(["v": .number(1), "dark": .string("yes")])
+            case .ok(let value): return value
+            }
         default: throw RemoteError.protocolViolation("Unknown method")
         }
         return try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))

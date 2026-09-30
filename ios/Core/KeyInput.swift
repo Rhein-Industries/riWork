@@ -35,6 +35,28 @@ public enum TerminalKey: Sendable, Hashable {
         return Self.named.first(where: { $0.1 == self })!.0
     }
     public var isValid: Bool { if case .control(let letter) = self { Self.isControlLetter(letter) } else { true } }
+    /// Every key a person can pick for a hotkey step: the named keys, then `C-a` … `C-z`.
+    public static let choices: [TerminalKey] = named.map(\.1) + (97...122).map { .control(Character(Unicode.Scalar(UInt8($0)))) }
+    /// A readable name for menus and the key bar's accessibility labels.
+    public var title: String {
+        switch self {
+        case .enter: "Enter"
+        case .tab: "Tab"
+        case .backTab: "Shift-Tab"
+        case .escape: "Esc"
+        case .backspace: "Backspace"
+        case .delete: "Delete"
+        case .up: "Up"
+        case .down: "Down"
+        case .left: "Left"
+        case .right: "Right"
+        case .home: "Home"
+        case .end: "End"
+        case .pageUp: "Page Up"
+        case .pageDown: "Page Down"
+        case .control(let letter): "Ctrl+\(String(letter).uppercased())"
+        }
+    }
     /// Compact glyph for the pending-input preview.
     public var symbol: String {
         switch self {
@@ -290,10 +312,15 @@ public struct KeyBuffer: Sendable, Equatable {
 public struct KeyMapper: Sendable, Equatable {
     /// Sticky Ctrl: the next letter becomes `C-<letter>`.
     public private(set) var controlArmed = false
+    /// Sticky Alt (Meta), readline style: the next key or text is preceded by Escape, so Alt+b is `Escape`, `b`.
+    public private(set) var altArmed = false
     public init() {}
 
     public mutating func toggleControl() { controlArmed.toggle() }
+    public mutating func toggleAlt() { altArmed.toggle() }
     public mutating func disarmControl() { controlArmed = false }
+    /// Both modifiers, for when the keyboard goes away.
+    public mutating func disarmModifiers() { controlArmed = false; altArmed = false }
 
     public mutating func insert(_ text: String) -> [KeyItem] {
         var rest = Substring(text)
@@ -302,16 +329,27 @@ public struct KeyMapper: Sendable, Equatable {
             controlArmed = false
             if let key = TerminalKey.control(forLetter: first) { items.append(.key(key)); rest = rest.dropFirst() }
         }
-        return items + Self.items(for: String(rest))
+        return meta(items + Self.items(for: String(rest)))
     }
     public mutating func deleteBackward() -> [KeyItem] {
         controlArmed = false
-        return [.key(.backspace)]
+        return meta([.key(.backspace)])
     }
-    /// A bar or hardware key. Any key press consumes an armed Ctrl.
+    /// A bar or hardware key. Any key press consumes an armed Ctrl and an armed Alt.
     public mutating func press(_ key: TerminalKey) -> [KeyItem] {
         controlArmed = false
-        return [.key(key)]
+        return meta([.key(key)])
+    }
+    /// A hotkey is complete in itself: it goes out as defined, and consumes both modifiers.
+    public mutating func run(_ hotkey: Hotkey) -> [KeyItem] {
+        disarmModifiers()
+        return hotkey.items
+    }
+    /// An armed Alt puts Escape in front of what is about to be sent, once. Nothing to send keeps it armed.
+    private mutating func meta(_ items: [KeyItem]) -> [KeyItem] {
+        guard altArmed, !items.isEmpty else { return items }
+        altArmed = false
+        return [.key(.escape)] + items
     }
 
     /// CR, LF and CRLF become Enter, tab becomes Tab, other control characters and U+2028/2029 are dropped,
