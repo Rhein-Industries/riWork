@@ -126,6 +126,21 @@ input outcomes), so a retry with a new request ID answers `duplicate` or
 size and copy-mode state that place the phone's cursor. Like `shell.input`, it
 is arbitrary command execution as the desktop user.
 
+`shell.output` can also follow a terminal live (the contract is in
+[remote-protocol.md](../docs/remote-protocol.md)). `styled` keeps the colors and
+attributes as SGR sequences and removes every other escape (the CLI filters, and the
+connector refuses to pass on anything else). `if_changed` with a `hash` from an
+earlier result and `wait_ms` (0 to 10000) makes the desktop capture again about every
+80 ms inside the one `riwork shell output ... --if-changed=HASH --wait-ms N` process
+and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time. That
+call may take ten seconds, so the connector no longer handles a device's requests one
+at a time: `lanes.rs` lets one ordered request (`shell.keys`, `shell.input`,
+`shell.resize`, `shell.resize.clear`, in arrival order) and three others run at once,
+at most two of them waits, queues the rest in arrival order, and the connection loop
+alone seals and sends the responses (out of order by request, in order by counter). A
+wait ends, and its CLI process is killed, when the connection closes, the phone goes
+offline or the device is revoked (checked every 250 ms while requests are pending).
+
 `appearance.get` returns the colors the desktop published, so the phone can match its
 theme (the contract is in [remote-protocol.md](../docs/remote-protocol.md)). It runs
 `riwork appearance --json` (no shell selection, no ledger), re-validates the output

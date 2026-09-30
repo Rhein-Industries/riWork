@@ -30,6 +30,7 @@ mod session_reload;
 mod session_viewport;
 mod sessions;
 mod settings;
+mod sgr;
 mod status_bar;
 mod store;
 mod terminal_lifecycle;

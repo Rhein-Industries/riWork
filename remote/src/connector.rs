@@ -5,6 +5,7 @@ use crate::{
         ClientFinish, ClientHello, ClientHelloV2, Envelope, PairFinish, PairHello, Pending,
         Session, accept_client_hello_v2, accept_hello, decode, random32,
     },
+    lanes::{Lane, Lanes, MAX_QUEUED, classify},
     log_safe,
     rpc::Rpc,
     viewport::Viewport,
@@ -15,6 +16,7 @@ use serde_json::{Value, json};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::{
     sync::watch,
+    task::JoinSet,
     time::{Duration, Instant, interval, sleep, timeout},
 };
 use tokio_tungstenite::{
@@ -250,6 +252,10 @@ pub(crate) struct Timing {
     /// The viewport lease is renewed only while the phone was heard from this
     /// recently, so a vanished phone stops holding the desktop terminal at its size.
     mobile_active: Duration,
+    /// While requests are pending, how often the device is checked for
+    /// revocation. Without pending requests the connector's own device watch
+    /// (every 250 ms) already ends a revoked device's connection.
+    revoke_poll: Duration,
 }
 impl Default for Timing {
     fn default() -> Self {
@@ -258,9 +264,70 @@ impl Default for Timing {
             idle: Duration::from_secs(60),
             renew: Duration::from_secs(3),
             mobile_active: Duration::from_secs(20),
+            revoke_poll: Duration::from_millis(250),
         }
     }
 }
+
+/// The viewport of one session, shared by the requests running for it. `None`
+/// once the session is over, so a straggler cannot resize for a session that
+/// no longer exists.
+type SharedViewport = Arc<tokio::sync::Mutex<Option<Viewport>>>;
+
+/// A received request waiting for a slot; see `lanes`.
+struct Queued {
+    /// The session it arrived in.
+    epoch: u64,
+    viewport: SharedViewport,
+    request: Value,
+}
+
+/// How a request ended. `outcome` is `None` when it was cut short because its
+/// session ended; an `Err` closes the connection, as it always did.
+struct Done {
+    lane: Lane,
+    epoch: u64,
+    outcome: Option<Result<Value>>,
+}
+
+/// Starts every queued request that has a slot, each as a task of its own so
+/// that a slow one never keeps the connection loop, or another request, waiting.
+/// `session_ended` carries the number of the current session: a request of an
+/// earlier one that may be cut short (`Lane::cancellable`) is dropped when
+/// it changes, and with it its CLI process.
+fn start_ready(
+    lanes: &mut Lanes<Queued>,
+    tasks: &mut JoinSet<Done>,
+    rpc: &Arc<Rpc>,
+    device: &str,
+    session_ended: &watch::Sender<u64>,
+) {
+    while let Some((lane, queued)) = lanes.next_ready() {
+        let (rpc, device, mut ended) = (rpc.clone(), device.to_owned(), session_ended.subscribe());
+        tasks.spawn(async move {
+            let Queued {
+                epoch,
+                viewport,
+                request,
+            } = queued;
+            let run = rpc.handle_shared(&device, request, &viewport);
+            let outcome = if lane.cancellable() {
+                tokio::select! {
+                    result = run => Some(result),
+                    _ = ended.wait_for(|current| *current != epoch) => None,
+                }
+            } else {
+                Some(run.await)
+            };
+            Done {
+                lane,
+                epoch,
+                outcome,
+            }
+        });
+    }
+}
+
 /// Records the handshake off the async threads; a failure only costs the audit trail.
 fn record_authentication(storage: Storage, id: String, name: String) {
     tokio::task::spawn_blocking(move || {
@@ -275,10 +342,19 @@ fn record_authentication(storage: Storage, id: String, name: String) {
         }
     });
 }
-async fn run_device(device: &Device, rpc: &Rpc) -> Result<()> {
+async fn run_device(device: &Device, rpc: &Arc<Rpc>) -> Result<()> {
     run_device_with(device, rpc, Timing::default()).await
 }
-pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) -> Result<()> {
+/// One connection of one device, until it fails or is dropped.
+///
+/// Requests are read, decrypted and answered by this one loop, but they are
+/// carried out concurrently (see `lanes`) so that a `shell.output` that waits
+/// for a change never delays typing or a resize. Responses go out in the order
+/// they finish, each matched to its request by id. The loop alone seals and
+/// sends frames, so their counters stay in order. Everything a connection
+/// started ends with it: the tasks are aborted when the loop returns or is
+/// cancelled, which kills their CLI processes.
+pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Timing) -> Result<()> {
     // Reload so a v2 invite redeemed on the previous connection is not stale.
     let device = rpc
         .storage
@@ -301,27 +377,68 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) 
     let mut pending: Option<Pending> = None;
     let mut pair_state: Option<(Vec<u8>, [u8; 32])> = None;
     let mut session: Option<Session> = None;
-    let mut viewport: Option<Viewport> = None;
+    let mut viewport: Option<SharedViewport> = None;
+    // Request tasks; dropped (so aborted) with this function, however it ends.
+    let mut tasks: JoinSet<Done> = JoinSet::new();
+    let mut lanes: Lanes<Queued> = Lanes::default();
+    // Counts sessions: bumped when one ends, so that what its requests still
+    // produce is neither sent nor waited for.
+    let (session_ended, _) = watch::channel(0u64);
+    let mut epoch = 0u64;
     let mut deadline: Option<Instant> =
         online.then(|| Instant::now() + Duration::from_secs(HANDSHAKE_SECONDS));
     let mut heartbeat = interval(timing.ping);
     let mut renew = interval(timing.renew);
+    let mut revocation = interval(timing.revoke_poll);
+    revocation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await;
     let mut last_rx = Instant::now();
     let mut last_mobile = Instant::now();
     loop {
         let idle_at = last_rx + timing.idle;
+        // Reading pauses only when a device has queued more than it should.
+        let reading = lanes.queued() < MAX_QUEUED;
         // Biased: frames already waiting after a slow RPC must be read before the
-        // idle deadline is judged. Ticks come first so a busy peer cannot starve them.
+        // idle deadline is judged. Ticks come first so a busy peer cannot starve
+        // them, then finished requests, so answers do not wait behind new ones.
         let value = tokio::select! {
             biased;
             _=renew.tick()=>{
-                if let Some(v)=&viewport && last_mobile.elapsed()<=timing.mobile_active {rpc.renew_viewport(v).await?;}
+                // A resize that is running renews the lease itself.
+                if let Some(shared)=&viewport
+                    && last_mobile.elapsed()<=timing.mobile_active
+                    && let Ok(held)=shared.try_lock()
+                    && let Some(v)=held.as_ref()
+                {
+                    rpc.renew_viewport(v).await?;
+                }
                 continue;
             },
             _=heartbeat.tick()=>{timeout(Duration::from_secs(10),ws.send(Message::Ping(vec![].into()))).await??;continue;},
-            value=receive_json_seen(&mut ws,&mut last_rx)=>value?,
-            _=tokio::time::sleep_until(idle_at)=>{
+            _=revocation.tick(), if !tasks.is_empty() || lanes.queued()>0 =>{
+                // A long wait must not outlive the device's authorization.
+                ensure!(rpc.storage.authorized(&p.device_id)?, "device revoked during RPC");
+                continue;
+            },
+            Some(joined)=tasks.join_next(), if !tasks.is_empty() =>{
+                let done=joined.context("request task failed")?;
+                lanes.finished(done.lane);
+                start_ready(&mut lanes,&mut tasks,rpc,&p.device_id,&session_ended);
+                if done.epoch==epoch && let Some(outcome)=done.outcome {
+                    let response=outcome?;
+                    ensure!(
+                        rpc.storage.authorized(&p.device_id)?,
+                        "device revoked during RPC"
+                    );
+                    let s=session.as_mut().context("response without a session")?;
+                    let reply=s.seal("d2c",&serde_json::to_vec(&response)?)?;
+                    send_json(&mut ws,&reply).await?;
+                }
+                continue;
+            },
+            value=receive_json_seen(&mut ws,&mut last_rx), if reading =>value?,
+            // Not while reading is paused: that silence is our doing, not the relay's.
+            _=tokio::time::sleep_until(idle_at), if reading =>{
                 // The receive branch above may have consumed a pong in this very poll.
                 if last_rx.elapsed()>=timing.idle {bail!("relay silent past the liveness deadline");}
                 continue;
@@ -333,9 +450,18 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) 
             Some("peer") => {
                 ensure!(ver == Some(1), "unsupported version");
                 let online = value["online"].as_bool().context("missing peer status")?;
-                // Ordered peer control messages reset old transport state.
-                if let Some(mut v) = viewport.take() {
-                    rpc.clear_viewport(&mut v).await?;
+                // Ordered peer control messages reset old transport state. What the
+                // old session still asks for and can be dropped is: waits end, their
+                // CLI processes with them. Typing and resizing finish; nobody is
+                // left to hear about it.
+                epoch += 1;
+                session_ended.send_replace(epoch);
+                lanes.drop_queued_cancellable();
+                if let Some(shared) = viewport.take() {
+                    // Waits for a resize that is running; the tasks run on their own.
+                    if let Some(mut v) = shared.lock().await.take() {
+                        rpc.clear_viewport(&mut v).await?;
+                    }
                 }
                 session = None;
                 pending = None;
@@ -410,7 +536,10 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) 
                 let e = s.seal("d2c", &serde_json::to_vec(&ready)?)?;
                 send_json(&mut ws, &e).await?;
                 session = Some(s);
-                viewport = Some(Viewport::new(rpc.cli.clone(), p.device_id.clone()));
+                viewport = Some(Arc::new(tokio::sync::Mutex::new(Some(Viewport::new(
+                    rpc.cli.clone(),
+                    p.device_id.clone(),
+                )))));
                 deadline = None;
                 last_mobile = Instant::now();
                 record_authentication(
@@ -427,16 +556,18 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Rpc, timing: Timing) 
                 let plaintext = s.open("c2d", &envelope)?;
                 last_mobile = Instant::now();
                 // Unparseable plaintext is answered as an invalid request, not a dropped session.
-                let request = serde_json::from_slice(&plaintext).unwrap_or(Value::Null);
-                let response = rpc
-                    .handle_in(&p.device_id, request, viewport.as_mut())
-                    .await?;
-                ensure!(
-                    rpc.storage.authorized(&p.device_id)?,
-                    "device revoked during RPC"
+                let request: Value = serde_json::from_slice(&plaintext).unwrap_or(Value::Null);
+                lanes.push(
+                    classify(&request),
+                    Queued {
+                        epoch,
+                        viewport: viewport
+                            .clone()
+                            .context("RPC before authenticated handshake")?,
+                        request,
+                    },
                 );
-                let reply = s.seal("d2c", &serde_json::to_vec(&response)?)?;
-                send_json(&mut ws, &reply).await?;
+                start_ready(&mut lanes, &mut tasks, rpc, &p.device_id, &session_ended);
             }
             _ => bail!("unexpected endpoint frame"),
         }
@@ -556,7 +687,7 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, relay.router()).await });
         let shell = uuid::Uuid::new_v4().to_string();
         let (cli, log) = scripted_cli(tmp.path(), &shell);
-        let rpc = Rpc::new(cli, storage.clone());
+        let rpc = Arc::new(Rpc::new(cli, storage.clone()));
         // Short enough to test. Pings every 100 ms against a 1 s idle deadline also
         // prove a healthy but quiet connection is not mistaken for a dead one.
         let timing = Timing {
@@ -564,6 +695,7 @@ mod tests {
             idle: Duration::from_secs(1),
             renew: Duration::from_millis(50),
             mobile_active: Duration::from_secs(1),
+            revoke_poll: Duration::from_millis(50),
         };
         let pairing = device.pairing.clone();
         let connector = tokio::spawn(async move { run_device_with(&device, &rpc, timing).await });
@@ -637,7 +769,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (storage, device, _) = paired(tmp.path(), &url).await;
         let (cli, _) = scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string());
-        let rpc = Rpc::new(cli, storage);
+        let rpc = Arc::new(Rpc::new(cli, storage));
         let timing = Timing {
             ping: Duration::from_millis(100),
             idle: Duration::from_millis(400),
@@ -679,7 +811,7 @@ mod tests {
         let relay = Relay::new(private_read::<Routes>(&routes, 1 << 20).unwrap(), 8).unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, relay.router()).await });
         let (cli, _) = scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string());
-        let rpc = Rpc::new(cli, storage.clone());
+        let rpc = Arc::new(Rpc::new(cli, storage.clone()));
         let hold = storage.testing_hold_invite(export.invite_id.as_deref().unwrap());
         let device = storage.config().unwrap().devices.remove(0);
         let connector =
@@ -710,10 +842,10 @@ mod tests {
         );
 
         let device = storage.fresh_device(&export.device_id).unwrap().unwrap();
-        let rpc = Rpc::new(
+        let rpc = Arc::new(Rpc::new(
             scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string()).0,
             storage.clone(),
-        );
+        ));
         let connector =
             tokio::spawn(async move { run_device_with(&device, &rpc, Timing::default()).await });
         let mut ws = connect_mobile(&export).await;
@@ -731,10 +863,10 @@ mod tests {
         assert!(reason.contains("unsupported version"), "{reason}");
 
         let device = storage.fresh_device(&export.device_id).unwrap().unwrap();
-        let rpc = Rpc::new(
+        let rpc = Arc::new(Rpc::new(
             scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string()).0,
             storage.clone(),
-        );
+        ));
         let connector =
             tokio::spawn(async move { run_device_with(&device, &rpc, Timing::default()).await });
         let (mut ws, mut session, root) = establish_v2(&export, &invite_secret).await;
@@ -1010,7 +1142,7 @@ mod tests {
 
         let pairing = device.pairing.clone();
         let (cli, _) = scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string());
-        let rpc = Rpc::new(cli, storage.clone());
+        let rpc = Arc::new(Rpc::new(cli, storage.clone()));
         let connector =
             tokio::spawn(async move { run_device_with(&device, &rpc, Timing::default()).await });
         let (mut ws, mut session) = timeout(Duration::from_secs(20), mobile(&pairing))
@@ -1025,7 +1157,7 @@ mod tests {
 
         let device = storage.fresh_device(&export.device_id).unwrap().unwrap();
         let (cli, _) = scripted_cli(tmp.path(), &uuid::Uuid::new_v4().to_string());
-        let rpc = Rpc::new(cli, storage.clone());
+        let rpc = Arc::new(Rpc::new(cli, storage.clone()));
         let connector =
             tokio::spawn(async move { run_device_with(&device, &rpc, Timing::default()).await });
         let (mut ws, mut session, root) = timeout(
@@ -1061,5 +1193,474 @@ mod tests {
         connector.abort();
         server.abort();
         front_task.abort();
+    }
+
+    // Concurrent requests of one device.
+
+    /// A stand-in CLI whose `shell output` blocks until the file `gate` exists
+    /// in its directory (and records its process ID), whose `shell keys`
+    /// sleeps if `keys-slow` exists and blocks on `keys-gate` while
+    /// `keys-block` exists, and whose `shell resize` is quick. Every call is
+    /// logged in `cli.log`; the start and end of `shell keys` and `shell
+    /// resize` in `order.log`. Answers are the CLI's `--json` forms.
+    fn gated_cli(dir: &Path, shell: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let cli = dir.join("gated-riwork");
+        let script = r#"#!/bin/sh
+D='@DIR@'
+S='@SHELL@'
+printf '%s\n' "$*" >> "$D/cli.log"
+wait_for() { i=0; while [ ! -e "$D/$1" ] && [ "$i" -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; }
+case "$1 $2" in
+'shell list') printf '[{"id":"%s","alive":true}]' "$S";;
+'orchestrator list'|'project list') echo '[]';;
+'shell output')
+  echo $$ >> "$D/output.pids"
+  wait_for gate
+  if [ -e "$D/unchanged" ]; then
+    printf '{"id":"%s","unchanged":true,"hash":"0123456789abcdef"}' "$S"
+  else
+    printf '{"id":"%s","output":"hi\\n","hash":"0123456789abcdef"}' "$S"
+  fi;;
+'shell keys')
+  echo "begin keys $5" >> "$D/order.log"
+  if [ -e "$D/keys-slow" ]; then sleep 0.3; fi
+  if [ -e "$D/keys-block" ]; then wait_for keys-gate; fi
+  echo "end keys $5" >> "$D/order.log";;
+'shell resize')
+  echo "begin resize" >> "$D/order.log"
+  sleep 0.1
+  echo "end resize" >> "$D/order.log";;
+esac
+"#
+        .replace("@DIR@", &dir.to_string_lossy())
+        .replace("@SHELL@", shell);
+        std::fs::write(&cli, script).unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        cli
+    }
+    fn touch(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), "").unwrap();
+    }
+    fn logged(dir: &Path, name: &str, prefix: &str) -> usize {
+        std::fs::read_to_string(dir.join(name))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.starts_with(prefix))
+            .count()
+    }
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// One connector on a real relay, served by `gated_cli`.
+    struct Rig {
+        _tmp: tempfile::TempDir,
+        dir: PathBuf,
+        storage: Storage,
+        pairing: Pairing,
+        shell: String,
+        connector: tokio::task::JoinHandle<Result<()>>,
+        server: tokio::task::JoinHandle<std::io::Result<()>>,
+    }
+    impl Rig {
+        async fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/v1/ws", listener.local_addr().unwrap());
+            let (storage, device, routes) = paired(tmp.path(), &url).await;
+            let relay = Relay::new(private_read::<Routes>(&routes, 1 << 20).unwrap(), 8).unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, relay.router()).await });
+            let shell = uuid::Uuid::new_v4().to_string();
+            let dir = tmp.path().to_path_buf();
+            let rpc = Arc::new(Rpc::new(gated_cli(&dir, &shell), storage.clone()));
+            let timing = Timing {
+                ping: Duration::from_secs(20),
+                idle: Duration::from_secs(60),
+                // No lease renewals in the middle of an ordering test.
+                renew: Duration::from_secs(300),
+                mobile_active: Duration::from_secs(20),
+                revoke_poll: Duration::from_millis(50),
+            };
+            let pairing = device.pairing.clone();
+            let connector =
+                tokio::spawn(async move { run_device_with(&device, &rpc, timing).await });
+            Self {
+                _tmp: tmp,
+                dir,
+                storage,
+                pairing,
+                shell,
+                connector,
+                server,
+            }
+        }
+        fn count(&self, prefix: &str) -> usize {
+            logged(&self.dir, "cli.log", prefix)
+        }
+        fn output_calls(&self) -> usize {
+            self.count("shell output")
+        }
+        fn output_pids(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.join("output.pids"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+        fn output_request(&self, params: Value) -> Value {
+            let mut params = params;
+            params["shell_id"] = json!(self.shell);
+            params
+        }
+    }
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            self.connector.abort();
+            self.server.abort();
+        }
+    }
+    fn wait_params(shell: &str, wait_ms: u64) -> Value {
+        json!({"shell_id":shell,"if_changed":"0123456789abcdef","wait_ms":wait_ms})
+    }
+
+    async fn send_request(ws: &mut Socket, s: &mut Session, method: &str, params: Value) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        let request = json!({"v":1,"type":"request","id":id,"method":method,"params":params});
+        send_json(
+            ws,
+            &s.seal("c2d", &serde_json::to_vec(&request).unwrap())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        id
+    }
+    /// The next frame of the connector. Opening it proves it carries the next
+    /// counter, so a run of these also proves frames left in counter order.
+    async fn next_response(ws: &mut Socket, s: &mut Session) -> Value {
+        let frame = timeout(Duration::from_secs(15), receive_json(ws))
+            .await
+            .expect("connector answers")
+            .unwrap();
+        let envelope: Envelope = serde_json::from_value(frame).unwrap();
+        serde_json::from_slice(&s.open("d2c", &envelope).unwrap()).unwrap()
+    }
+    async fn expect_response(ws: &mut Socket, s: &mut Session, id: &str) -> Value {
+        let response = next_response(ws, s).await;
+        assert_eq!(response["id"], id, "{response}");
+        response
+    }
+    fn keys_params(shell: &str, text: &str) -> Value {
+        json!({"shell_id":shell,"batch":uuid::Uuid::new_v4().to_string(),"items":[{"text":text}]})
+    }
+
+    #[tokio::test]
+    async fn typing_resizing_and_reads_are_answered_while_an_output_wait_is_pending() {
+        let rig = Rig::new().await;
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        let wait = send_request(
+            &mut ws,
+            &mut s,
+            "shell.output",
+            wait_params(&rig.shell, 10_000),
+        )
+        .await;
+        eventually(|| rig.output_calls() == 1).await;
+
+        // The wait is stuck in its CLI; everything else still gets through, and
+        // the answers are the next frames, so none was queued behind the wait.
+        let keys = send_request(
+            &mut ws,
+            &mut s,
+            "shell.keys",
+            keys_params(&rig.shell, "typed"),
+        )
+        .await;
+        let reply = expect_response(&mut ws, &mut s, &keys).await;
+        assert_eq!(reply["result"]["status"], "sent", "{reply}");
+        let resize = send_request(
+            &mut ws,
+            &mut s,
+            "shell.resize",
+            json!({"shell_id":rig.shell,"columns":43,"rows":17}),
+        )
+        .await;
+        let reply = expect_response(&mut ws, &mut s, &resize).await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        let list = send_request(&mut ws, &mut s, "projects.list", json!({})).await;
+        assert_eq!(expect_response(&mut ws, &mut s, &list).await["ok"], true);
+        let clear = send_request(
+            &mut ws,
+            &mut s,
+            "shell.resize.clear",
+            json!({"shell_id":rig.shell}),
+        )
+        .await;
+        assert_eq!(expect_response(&mut ws, &mut s, &clear).await["ok"], true);
+        assert_eq!(rig.count("shell keys"), 1);
+        assert_eq!(
+            rig.output_calls(),
+            1,
+            "the wait is still the only output call"
+        );
+
+        // The wait, sent first, is answered last, by its own id.
+        touch(&rig.dir, "gate");
+        let reply = expect_response(&mut ws, &mut s, &wait).await;
+        assert_eq!(reply["result"]["hash"], "0123456789abcdef", "{reply}");
+        assert_eq!(reply["result"]["output"], "hi\n");
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_wait_is_answered_without_output() {
+        let rig = Rig::new().await;
+        touch(&rig.dir, "gate");
+        touch(&rig.dir, "unchanged");
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        let reply = call(
+            &mut ws,
+            &mut s,
+            "shell.output",
+            wait_params(&rig.shell, 2_000),
+        )
+        .await;
+        assert_eq!(
+            reply["result"],
+            json!({"shell_id":rig.shell,"unchanged":true,"hash":"0123456789abcdef"}),
+            "{reply}"
+        );
+        let logged = std::fs::read_to_string(rig.dir.join("cli.log")).unwrap();
+        let call_line = logged
+            .lines()
+            .find(|line| line.starts_with("shell output"))
+            .unwrap();
+        assert!(
+            call_line.contains("--if-changed=0123456789abcdef --wait-ms 2000 --json"),
+            "{call_line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn at_most_four_requests_run_at_once_and_the_rest_wait_their_turn() {
+        let rig = Rig::new().await;
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        // Five plain reads, all stuck in their CLI: three run, two queue.
+        let mut reads = Vec::new();
+        for _ in 0..5 {
+            reads.push(
+                send_request(
+                    &mut ws,
+                    &mut s,
+                    "shell.output",
+                    rig.output_request(json!({})),
+                )
+                .await,
+            );
+        }
+        eventually(|| rig.output_calls() == 3).await;
+        sleep(Duration::from_millis(400)).await;
+        assert_eq!(rig.output_calls(), 3, "a fourth read started");
+
+        // Typing has a slot of its own, however many reads are stuck.
+        let keys = send_request(
+            &mut ws,
+            &mut s,
+            "shell.keys",
+            keys_params(&rig.shell, "typed"),
+        )
+        .await;
+        expect_response(&mut ws, &mut s, &keys).await;
+        // A sixth read queues behind the others, not in front of them.
+        let late = send_request(&mut ws, &mut s, "projects.list", json!({})).await;
+        sleep(Duration::from_millis(300)).await;
+        assert_eq!(rig.output_calls(), 3);
+
+        touch(&rig.dir, "gate");
+        let mut answered = Vec::new();
+        for _ in 0..6 {
+            let response = next_response(&mut ws, &mut s).await;
+            assert_eq!(response["ok"], true, "{response}");
+            answered.push(response["id"].as_str().unwrap().to_owned());
+        }
+        let mut expected: Vec<String> = reads.clone();
+        expected.push(late);
+        answered.sort();
+        expected.sort();
+        assert_eq!(answered, expected, "every request is answered once, by id");
+        assert_eq!(rig.output_calls(), 5);
+    }
+
+    #[tokio::test]
+    async fn at_most_two_waits_run_and_a_third_read_slot_stays_free() {
+        let rig = Rig::new().await;
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        let mut waits = Vec::new();
+        for _ in 0..3 {
+            waits.push(
+                send_request(
+                    &mut ws,
+                    &mut s,
+                    "shell.output",
+                    wait_params(&rig.shell, 10_000),
+                )
+                .await,
+            );
+        }
+        eventually(|| rig.output_calls() == 2).await;
+        sleep(Duration::from_millis(400)).await;
+        assert_eq!(rig.output_calls(), 2, "a third wait started");
+        // Reads still get through while the waits hold their slots.
+        let list = send_request(
+            &mut ws,
+            &mut s,
+            "shells.list",
+            json!({"project_id":uuid::Uuid::new_v4().to_string()}),
+        )
+        .await;
+        expect_response(&mut ws, &mut s, &list).await;
+        let read = send_request(
+            &mut ws,
+            &mut s,
+            "shell.output",
+            rig.output_request(json!({"if_changed":"x"})),
+        )
+        .await;
+        // A plain read (no wait) needs the CLI, which is gated too: it runs
+        // in the third slot, which is why the wait limit is below the slots.
+        eventually(|| rig.output_calls() == 3).await;
+        touch(&rig.dir, "gate");
+        let mut answered = Vec::new();
+        for _ in 0..4 {
+            answered.push(
+                next_response(&mut ws, &mut s).await["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+        }
+        let mut expected = waits.clone();
+        expected.push(read);
+        answered.sort();
+        expected.sort();
+        assert_eq!(answered, expected);
+        assert_eq!(rig.output_calls(), 4);
+    }
+
+    #[tokio::test]
+    async fn typing_and_resizing_run_one_at_a_time_in_the_order_they_were_sent() {
+        let rig = Rig::new().await;
+        touch(&rig.dir, "keys-slow");
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        let first = send_request(
+            &mut ws,
+            &mut s,
+            "shell.keys",
+            keys_params(&rig.shell, "one"),
+        )
+        .await;
+        let resize = send_request(
+            &mut ws,
+            &mut s,
+            "shell.resize",
+            json!({"shell_id":rig.shell,"columns":50,"rows":20}),
+        )
+        .await;
+        let second = send_request(
+            &mut ws,
+            &mut s,
+            "shell.keys",
+            keys_params(&rig.shell, "two"),
+        )
+        .await;
+        // Answered in the order sent, since each had to wait for the one before.
+        for id in [&first, &resize, &second] {
+            assert_eq!(expect_response(&mut ws, &mut s, id).await["ok"], true);
+        }
+        let order = std::fs::read_to_string(rig.dir.join("order.log")).unwrap();
+        assert_eq!(
+            order.lines().collect::<Vec<_>>(),
+            [
+                "begin keys t:one",
+                "end keys t:one",
+                "begin resize",
+                "end resize",
+                "begin keys t:two",
+                "end keys t:two",
+            ],
+            "{order}"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoking_the_device_ends_a_pending_wait_and_its_cli_process() {
+        let mut rig = Rig::new().await;
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        send_request(
+            &mut ws,
+            &mut s,
+            "shell.output",
+            wait_params(&rig.shell, 10_000),
+        )
+        .await;
+        eventually(|| rig.output_calls() == 1).await;
+        let pids = rig.output_pids();
+        assert_eq!(pids.len(), 1);
+        assert!(alive(&pids[0]));
+
+        let revoked = Instant::now();
+        rig.storage.revoke(&rig.pairing.device_id).unwrap();
+        let outcome = timeout(Duration::from_secs(5), &mut rig.connector)
+            .await
+            .expect("the connection closes long before the wait would have ended")
+            .unwrap();
+        let reason = format!("{:#}", outcome.unwrap_err());
+        assert!(reason.contains("revoked"), "{reason}");
+        assert!(revoked.elapsed() < Duration::from_secs(5));
+        // The wait's CLI is not left running until its own timeout.
+        eventually(|| !alive(&pids[0])).await;
+    }
+
+    #[tokio::test]
+    async fn the_phone_disconnecting_ends_a_pending_wait_and_the_next_session_starts_clean() {
+        let rig = Rig::new().await;
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        send_request(
+            &mut ws,
+            &mut s,
+            "shell.output",
+            wait_params(&rig.shell, 10_000),
+        )
+        .await;
+        // Typing that is still running when the phone goes away.
+        touch(&rig.dir, "keys-block");
+        send_request(
+            &mut ws,
+            &mut s,
+            "shell.keys",
+            keys_params(&rig.shell, "late"),
+        )
+        .await;
+        eventually(|| rig.output_calls() == 1 && rig.count("shell keys") == 1).await;
+        let pids = rig.output_pids();
+        ws.close(None).await.unwrap();
+        drop(ws);
+        // The wait goes with the session; the connector itself keeps running.
+        eventually(|| !alive(&pids[0])).await;
+        assert!(!rig.connector.is_finished());
+
+        // A new session gets its own answers and never the old session's.
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        let list = send_request(&mut ws, &mut s, "projects.list", json!({})).await;
+        assert_eq!(expect_response(&mut ws, &mut s, &list).await["ok"], true);
+        // The old typing finishes now; its answer has nowhere to go.
+        touch(&rig.dir, "keys-gate");
+        eventually(|| logged(&rig.dir, "order.log", "end keys") == 1).await;
+        let again = send_request(&mut ws, &mut s, "projects.list", json!({})).await;
+        assert_eq!(expect_response(&mut ws, &mut s, &again).await["ok"], true);
     }
 }

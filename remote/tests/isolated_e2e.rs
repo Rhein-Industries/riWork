@@ -1078,3 +1078,183 @@ async fn direct_typing_through_the_real_relay_connector_cli_and_tmux() -> Result
     assert_eq!(gone["error"]["code"], "not_found", "{gone}");
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires RIWORK_TEST_CLI; isolated real tmux/CLI/relay/connector, one disposable shell that only prints"]
+async fn live_output_styled_waiting_and_typing_through_the_real_relay_connector_cli_and_tmux()
+-> Result<()> {
+    let cli = PathBuf::from(std::env::var_os("RIWORK_TEST_CLI").context("set RIWORK_TEST_CLI")?);
+    ensure!(cli.is_absolute(), "absolute CLI path required");
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home)?;
+    let mut f = Fixture {
+        temp,
+        home,
+        cli,
+        shells: vec![],
+        connector: None,
+        relay: None,
+    };
+    let project_dir = f.temp.path().join("project");
+    std::fs::create_dir(&project_dir)?;
+    let project = f
+        .cli(&["project", "add", project_dir.to_str().unwrap()])
+        .await?;
+    // No echo, so typing never changes the screen; it prints once, waits for
+    // the file, then prints again.
+    let go = f.temp.path().join("go");
+    let script = format!(
+        "stty -echo; printf '\\033[1;31mred\\033[0m first\\n\\033]0;title\\007\\033[?25h'; \
+         while [ ! -e '{}' ]; do sleep 0.05; done; printf 'second\\n'; exec sleep 300",
+        go.display()
+    );
+    let shell = f
+        .cli(&[
+            "shell",
+            "create",
+            "--project",
+            project["id"].as_str().unwrap(),
+            "--command",
+            &format!("/bin/sh -c \"{script}\""),
+        ])
+        .await?;
+    let id = shell["id"].as_str().unwrap().to_owned();
+    f.shells.push(id.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let storage = Storage::at(f.home.clone())?;
+    let routes_path = f.temp.path().join("routes.json");
+    let pair = storage.pair(
+        format!("ws://{}/v1/ws", listener.local_addr()?),
+        "live".into(),
+        true,
+        &f.temp.path().join("pair.json"),
+        Some(&routes_path),
+    )?;
+    let relay = Relay::new(private_read::<Routes>(&routes_path, 1_048_576)?, 16)?;
+    f.relay = Some(tokio::spawn(async move {
+        axum::serve(listener, relay.router()).await.unwrap();
+    }));
+    f.start_connector().await?;
+    let (mut ws, mut s) = mobile(&pair).await?;
+    async fn send_only(ws: &mut Socket, s: &mut Session, r: &Value) -> Result<()> {
+        send_json(ws, &s.seal("c2d", &serde_json::to_vec(r)?)?).await
+    }
+    async fn next(ws: &mut Socket, s: &mut Session, secs: u64) -> Result<Value> {
+        let v = timeout(Duration::from_secs(secs), receive_json(ws)).await??;
+        let e: Envelope = serde_json::from_value(v)?;
+        Ok(serde_json::from_slice(&s.open("d2c", &e)?)?)
+    }
+
+    // Styled: colors survive, the title escape and the cursor command do not.
+    let mut styled = Value::Null;
+    for _ in 0..100 {
+        let v = call(
+            &mut ws,
+            &mut s,
+            "shell.output",
+            json!({"shell_id":id,"styled":true,"lines":50}),
+        )
+        .await?;
+        if v["result"]["output"]
+            .as_str()
+            .is_some_and(|o| o.contains("first"))
+        {
+            styled = v["result"].clone();
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    let text = styled["output"].as_str().context("styled output")?;
+    assert!(text.contains("\u{1b}[31m"), "{text:?}");
+    assert!(text.contains("red\u{1b}[0m first"), "{text:?}");
+    assert!(!text.contains("title") && !text.contains('\u{7}') && !text.contains("?25"));
+    assert!(
+        text.chars()
+            .all(|c| !c.is_control() || c == '\n' || c == '\u{1b}')
+    );
+    let hash = styled["hash"].as_str().context("hash")?.to_owned();
+    assert_eq!(hash.len(), 16);
+    let plain = call(
+        &mut ws,
+        &mut s,
+        "shell.output",
+        json!({"shell_id":id,"lines":50}),
+    )
+    .await?;
+    assert!(
+        plain["result"]["output"]
+            .as_str()
+            .unwrap()
+            .contains("red first")
+    );
+    assert!(
+        !plain["result"]["output"]
+            .as_str()
+            .unwrap()
+            .contains('\u{1b}')
+    );
+    assert_ne!(
+        plain["result"]["hash"], styled["hash"],
+        "styled is another question"
+    );
+
+    // Nothing changes: unchanged after the wait, without output.
+    let started = std::time::Instant::now();
+    let same = call(
+        &mut ws,
+        &mut s,
+        "shell.output",
+        json!({"shell_id":id,"styled":true,"lines":50,"if_changed":hash,"wait_ms":500}),
+    )
+    .await?;
+    assert_eq!(
+        same["result"],
+        json!({"shell_id":id,"unchanged":true,"hash":hash}),
+        "{same}"
+    );
+    assert!(started.elapsed() >= Duration::from_millis(500));
+
+    // A long wait does not hold up typing or reads; when the screen changes
+    // it ends, long before its 10 seconds. (A resize would end it too: rows
+    // and columns are part of what the hash names.)
+    let wait = request(
+        &Uuid::new_v4().to_string(),
+        "shell.output",
+        json!({"shell_id":id,"styled":true,"lines":50,"if_changed":hash,"wait_ms":10000}),
+    );
+    send_only(&mut ws, &mut s, &wait).await?;
+    sleep(Duration::from_millis(300)).await;
+    let began = std::time::Instant::now();
+    let keys = request(
+        &Uuid::new_v4().to_string(),
+        "shell.keys",
+        json!({"shell_id":id,"batch":Uuid::new_v4().to_string(),"items":[{"text":"abc"}]}),
+    );
+    send_only(&mut ws, &mut s, &keys).await?;
+    let reply = next(&mut ws, &mut s, 5).await?;
+    assert_eq!(
+        reply["id"], keys["id"],
+        "typing was answered first: {reply}"
+    );
+    assert_eq!(reply["result"]["status"], "sent", "{reply}");
+    let projects = request(&Uuid::new_v4().to_string(), "projects.list", json!({}));
+    send_only(&mut ws, &mut s, &projects).await?;
+    let reply = next(&mut ws, &mut s, 5).await?;
+    assert_eq!(reply["id"], projects["id"], "{reply}");
+    assert_eq!(reply["result"]["projects"].as_array().unwrap().len(), 1);
+    assert!(began.elapsed() < Duration::from_secs(8));
+    std::fs::write(&go, "")?;
+    let reply = next(&mut ws, &mut s, 8).await?;
+    assert_eq!(reply["id"], wait["id"], "{reply}");
+    let output = reply["result"]["output"]
+        .as_str()
+        .context("changed output")?;
+    assert!(output.contains("second"), "{reply}");
+    assert_ne!(reply["result"]["hash"], json!(hash));
+    assert!(
+        began.elapsed() < Duration::from_secs(9),
+        "the wait ended at the change"
+    );
+    Ok(())
+}

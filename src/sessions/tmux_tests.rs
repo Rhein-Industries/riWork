@@ -1609,3 +1609,295 @@ fn text_then_enter_runs_the_command_in_a_real_shell() {
     let screen = fixture.wait_for_screen(&id, |screen| lines(screen, "two") == 2);
     assert_eq!(lines(&screen, "one"), 1, "{screen}");
 }
+
+// Styled capture and the change-detection loop of `shell output`.
+
+/// `text` without its well-formed SGR sequences; anything else escaped fails.
+fn without_sgr(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        assert_eq!(chars.next(), Some('['), "escape other than CSI in {text:?}");
+        loop {
+            match chars.next() {
+                Some('m') => break,
+                Some(c) if c.is_ascii_digit() || c == ';' || c == ':' => {}
+                other => panic!("not an SGR sequence ({other:?}) in {text:?}"),
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn styled_capture_keeps_the_sgr_sequences_tmux_writes_and_nothing_else() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // Colors (16, 256, truecolor), attributes, an OSC 8 hyperlink and a
+    // line-drawing charset: `capture-pane -e` writes all of them.
+    let id = fixture.pane(
+        40,
+        6,
+        "printf '\\033[1;31mred\\033[0m plain \\033[38;5;200m256\\033[0m \\033[38;2;10;20;30mtrue\\033[0m\\n\
+         \\033[3mit\\033[23m \\033[4mun\\033[24m \\033[7minv\\033[27m \\033[2mdim\\033[22m \\033[48;2;1;2;3mbg\\033[0m\\n\
+         \\033]8;;http://x\\033\\\\link\\033]8;;\\033\\\\ \\033(0lqk\\033(Bdone'; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("done"));
+    let raw = fixture
+        .manager
+        .tmux_text(&[
+            "capture-pane",
+            "-p",
+            "-e",
+            "-t",
+            &pane_target(&id),
+            "-S",
+            "-100",
+        ])
+        .unwrap();
+    // The premise: tmux really writes more than SGR here.
+    assert!(raw.contains("\u{1b}]8;;"), "no OSC in {raw:?}");
+    assert!(
+        raw.contains('\u{e}') && raw.contains('\u{f}'),
+        "no SO/SI in {raw:?}"
+    );
+
+    let styled = fixture
+        .manager
+        .capture_screen_styled(&id, 100, true)
+        .unwrap();
+    let plain = fixture
+        .manager
+        .capture_screen_styled(&id, 100, false)
+        .unwrap();
+    for sgr in [
+        "\u{1b}[1m",
+        "\u{1b}[31m",
+        "\u{1b}[38;5;200m",
+        "\u{1b}[38;2;10;20;30m",
+        "\u{1b}[48;2;1;2;3m",
+        "\u{1b}[3m",
+        "\u{1b}[4m",
+        "\u{1b}[7m",
+        "\u{1b}[2m",
+        "\u{1b}[0m",
+    ] {
+        assert!(
+            styled.output.contains(sgr),
+            "{sgr:?} missing in {:?}",
+            styled.output
+        );
+    }
+    // Nothing but SGR is escaped, and no control character but the newline.
+    let text = without_sgr(&styled.output);
+    assert!(
+        text.chars().all(|c| !c.is_control() || c == '\n'),
+        "{:?}",
+        styled.output
+    );
+    // The text is the plain capture's, line for line, screen and all.
+    assert_eq!(text, plain.output);
+    assert_eq!(styled.screen, plain.screen);
+    assert!(plain.output.contains("link"), "{:?}", plain.output);
+    assert!(!plain.output.contains('\u{1b}'));
+    assert_eq!(styled.output.lines().count(), plain.output.lines().count());
+    assert_eq!(
+        styled.output.matches('\n').count(),
+        plain.output.matches('\n').count()
+    );
+
+    // The screen rule holds for every `--lines`: the last `rows` lines.
+    for lines in [1, 3, 100_000] {
+        let styled = fixture
+            .manager
+            .capture_screen_styled(&id, lines, true)
+            .unwrap();
+        let plain = fixture
+            .manager
+            .capture_screen_styled(&id, lines, false)
+            .unwrap();
+        assert_eq!(without_sgr(&styled.output), plain.output, "--lines {lines}");
+        assert_eq!(styled.screen, plain.screen);
+        assert!(styled.output.lines().count() >= 6);
+    }
+    // Styled or not, a missing shell is an error.
+    assert!(
+        fixture
+            .manager
+            .capture_screen_styled(&Uuid::new_v4().to_string(), 10, true)
+            .is_err()
+    );
+}
+
+#[test]
+fn styled_capture_falls_back_to_a_filtered_plain_capture_when_the_report_fails() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.pane(30, 4, "printf '\\033[31mred\\033[0m'; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("red"));
+    let tmux = fixture.manager.tmux.clone();
+    let picky = fixture.root.join("picky-tmux");
+    Fixture::script(
+        &picky,
+        &format!(
+            "case \"$*\" in *display-message*capture-pane*|*capture-pane*display-message*) echo 'no lists' >&2; exit 1;; esac; exec {} \"$@\"",
+            quote_arg(&tmux.to_string_lossy()),
+        ),
+    );
+    let manager = SessionManager {
+        home: fixture.root.clone(),
+        tmux: picky,
+        socket_name: fixture.manager.socket_name.clone(),
+    };
+    let capture = manager.capture_screen_styled(&id, 10, true).unwrap();
+    assert_eq!(capture.screen, None);
+    assert!(
+        capture.output.starts_with("\u{1b}[31mred"),
+        "{:?}",
+        capture.output
+    );
+    assert_eq!(without_sgr(&capture.output), "red\n\n\n\n");
+}
+
+/// Polls `read_output` on a real pane: one that prints `first`, waits for a
+/// file named `go` in its directory, then prints `second`.
+#[test]
+fn read_output_waits_for_a_real_change_and_reports_unchanged_on_timeout() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.pane(
+        30,
+        4,
+        "printf first; while [ ! -f go ]; do sleep 0.05; done; printf second; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("first"));
+    let ask = |if_changed: Option<&str>, wait_ms: u64, styled: bool| {
+        let started = Instant::now();
+        let read = fixture
+            .manager
+            .read_output(
+                &id,
+                &OutputQuery {
+                    lines: 100,
+                    styled,
+                    if_changed,
+                    wait: Duration::from_millis(wait_ms),
+                },
+            )
+            .unwrap();
+        (read, started.elapsed())
+    };
+    let changed = |read: OutputRead| match read {
+        OutputRead::Changed { capture, hash } => (capture, hash),
+        other => panic!("expected content, got {other:?}"),
+    };
+
+    // No hash: content and its hash, at once.
+    let (read, elapsed) = ask(None, 5_000, false);
+    let (first, h1) = changed(read);
+    assert_eq!(first.output, "first\n\n\n\n");
+    assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
+    // The same question about the same screen has the same hash, and a
+    // different question has another one.
+    assert_eq!(changed(ask(None, 0, false).0).1, h1);
+    let (styled, hs) = changed(ask(None, 0, true).0);
+    assert_ne!(hs, h1);
+    assert_eq!(styled.output, first.output);
+    // A hash that does not match is answered with the content, not a wait.
+    let (read, elapsed) = ask(Some("0000000000000000"), 5_000, false);
+    assert_eq!(changed(read).1, h1);
+    assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
+
+    // Nothing changes: unchanged, after the wait and not much later.
+    let (read, elapsed) = ask(Some(&h1), 500, false);
+    assert_eq!(read, OutputRead::Unchanged { hash: h1.clone() });
+    assert!(elapsed >= Duration::from_millis(500), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    let (read, elapsed) = ask(Some(&h1), 0, false);
+    assert_eq!(read, OutputRead::Unchanged { hash: h1.clone() });
+    assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
+
+    // A change ends a long wait as soon as it happens.
+    let (read, elapsed) = std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| ask(Some(&h1), 10_000, false));
+        std::thread::sleep(Duration::from_millis(400));
+        fs::write(fixture.root.join("work").join("go"), "").unwrap();
+        waiter.join().unwrap()
+    });
+    let (second, h2) = changed(read);
+    assert_eq!(second.output, "firstsecond\n\n\n\n");
+    assert_ne!(h2, h1);
+    assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "returned at {elapsed:?}, not at the change"
+    );
+
+    // The new screen is stable again, and the cursor and mode are in the hash.
+    let (read, _) = ask(Some(&h2), 300, false);
+    assert_eq!(read, OutputRead::Unchanged { hash: h2.clone() });
+    fixture
+        .manager
+        .tmux_checked(&["copy-mode", "-t", &pane_target(&id)])
+        .unwrap();
+    let (moded, h3) = changed(ask(Some(&h2), 0, false).0);
+    assert_eq!(moded.output, second.output);
+    assert!(moded.screen.unwrap().in_mode);
+    assert_ne!(h3, h2);
+}
+
+#[test]
+fn read_output_ends_a_wait_with_an_error_when_the_shell_goes_away() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.pane(30, 4, "printf still; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("still"));
+    let hash = match fixture
+        .manager
+        .read_output(
+            &id,
+            &OutputQuery {
+                lines: 10,
+                styled: false,
+                if_changed: None,
+                wait: Duration::ZERO,
+            },
+        )
+        .unwrap()
+    {
+        OutputRead::Changed { hash, .. } => hash,
+        other => panic!("{other:?}"),
+    };
+    let (result, elapsed) = std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            let started = Instant::now();
+            let result = fixture.manager.read_output(
+                &id,
+                &OutputQuery {
+                    lines: 10,
+                    styled: false,
+                    if_changed: Some(&hash),
+                    wait: Duration::from_secs(10),
+                },
+            );
+            (result, started.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        fixture.manager.kill_tmux_session(&id).unwrap();
+        waiter.join().unwrap()
+    });
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("exited") || error.contains("tmux"),
+        "{error}"
+    );
+    assert!(elapsed < Duration::from_secs(6), "{elapsed:?}");
+}
