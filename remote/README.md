@@ -141,6 +141,20 @@ alone seals and sends the responses (out of order by request, in order by counte
 wait ends, and its CLI process is killed, when the connection closes, the phone goes
 offline or the device is revoked (checked every 250 ms while requests are pending).
 
+`shell.history` reads scrollback above the screen a page at a time (the contract is in
+[remote-protocol.md](../docs/remote-protocol.md)): `end` lines skipped above the
+screen, then `lines` (1 to 1000) older ones, optionally `styled`, answered as
+`{"shell_id","output","line_count","history_size","complete"}` from
+`riwork shell history SHELL_UUID --end N --lines M [--styled] --json`. The connector
+validates the request before anything runs, checks the shell like `shell.output`
+(`not_found` for an unknown or dead one) and refuses a CLI page that does not match
+what it asked for, or whose styled text holds anything but SGR. It never waits, so
+`lanes.rs` counts it with the other reads: one of the three shared slots, never the
+ordered slot of typing and resizing and never a wait slot. A page too big for one
+response is `response_too_large` and the phone asks for fewer lines. `shell.output`
+also passes on `history_size` and `alternate` from the CLI, in its `unchanged` answer
+too.
+
 `appearance.get` returns the colors the desktop published, so the phone can match its
 theme (the contract is in [remote-protocol.md](../docs/remote-protocol.md)). It runs
 `riwork appearance --json` (no shell selection, no ledger), re-validates the output

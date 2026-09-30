@@ -1202,7 +1202,9 @@ mod tests {
     /// sleeps if `keys-slow` exists and blocks on `keys-gate` while
     /// `keys-block` exists, and whose `shell resize` is quick. Every call is
     /// logged in `cli.log`; the start and end of `shell keys` and `shell
-    /// resize` in `order.log`. Answers are the CLI's `--json` forms.
+    /// resize` in `order.log`. Answers are the CLI's `--json` forms. `shell
+    /// history` blocks like `shell output` until the file `history-gate`
+    /// exists.
     fn gated_cli(dir: &Path, shell: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let cli = dir.join("gated-riwork");
@@ -1222,6 +1224,10 @@ case "$1 $2" in
   else
     printf '{"id":"%s","output":"hi\\n","hash":"0123456789abcdef"}' "$S"
   fi;;
+'shell history')
+  echo $$ >> "$D/history.pids"
+  wait_for history-gate
+  printf '{"id":"%s","output":"1\\n2","line_count":2,"history_size":10,"complete":false}' "$S";;
 'shell keys')
   echo "begin keys $5" >> "$D/order.log"
   if [ -e "$D/keys-slow" ]; then sleep 0.3; fi
@@ -1414,6 +1420,111 @@ esac
         let reply = expect_response(&mut ws, &mut s, &wait).await;
         assert_eq!(reply["result"]["hash"], "0123456789abcdef", "{reply}");
         assert_eq!(reply["result"]["output"], "hi\n");
+    }
+
+    fn history_params(shell: &str) -> Value {
+        json!({"shell_id":shell,"end":0,"lines":100})
+    }
+
+    #[tokio::test]
+    async fn history_pages_in_flight_do_not_hold_up_typing_resizing_or_reads() {
+        let rig = Rig::new().await;
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        // Three pages, all stuck in their CLI: every shared slot is taken.
+        let mut pages = Vec::new();
+        for _ in 0..3 {
+            pages.push(
+                send_request(&mut ws, &mut s, "shell.history", history_params(&rig.shell)).await,
+            );
+        }
+        eventually(|| rig.count("shell history") == 3).await;
+
+        // Typing and resizing have a slot of their own, so they are answered
+        // now, as the next frames, none of them queued behind a page.
+        let keys = send_request(
+            &mut ws,
+            &mut s,
+            "shell.keys",
+            keys_params(&rig.shell, "typed"),
+        )
+        .await;
+        let reply = expect_response(&mut ws, &mut s, &keys).await;
+        assert_eq!(reply["result"]["status"], "sent", "{reply}");
+        let resize = send_request(
+            &mut ws,
+            &mut s,
+            "shell.resize",
+            json!({"shell_id":rig.shell,"columns":43,"rows":17}),
+        )
+        .await;
+        assert_eq!(expect_response(&mut ws, &mut s, &resize).await["ok"], true);
+        assert_eq!(rig.count("shell keys"), 1);
+        // A fourth page waits for a slot, in arrival order, and is not started.
+        let fourth =
+            send_request(&mut ws, &mut s, "shell.history", history_params(&rig.shell)).await;
+        sleep(Duration::from_millis(400)).await;
+        assert_eq!(rig.count("shell history"), 3, "a fourth page started");
+
+        touch(&rig.dir, "history-gate");
+        let mut answered = Vec::new();
+        for _ in 0..4 {
+            let response = next_response(&mut ws, &mut s).await;
+            assert_eq!(response["ok"], true, "{response}");
+            assert_eq!(
+                response["result"],
+                json!({"shell_id":rig.shell,"output":"1\n2","line_count":2,
+                       "history_size":10,"complete":false}),
+                "{response}"
+            );
+            answered.push(response["id"].as_str().unwrap().to_owned());
+        }
+        let mut expected = pages.clone();
+        expected.push(fourth);
+        answered.sort();
+        expected.sort();
+        assert_eq!(answered, expected, "every page is answered once, by id");
+        assert_eq!(rig.count("shell history"), 4);
+        let call = std::fs::read_to_string(rig.dir.join("cli.log"))
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with("shell history"))
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            call,
+            format!("shell history {} --end 0 --lines 100 --json", rig.shell)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_history_page_does_not_take_a_wait_slot() {
+        let rig = Rig::new().await;
+        let (mut ws, mut s) = mobile(&rig.pairing).await;
+        // Two waits hold both poll slots; a page still runs in the third.
+        let mut waits = Vec::new();
+        for _ in 0..2 {
+            waits.push(
+                send_request(
+                    &mut ws,
+                    &mut s,
+                    "shell.output",
+                    wait_params(&rig.shell, 10_000),
+                )
+                .await,
+            );
+        }
+        eventually(|| rig.output_calls() == 2).await;
+        let page = send_request(&mut ws, &mut s, "shell.history", history_params(&rig.shell)).await;
+        eventually(|| rig.count("shell history") == 1).await;
+        touch(&rig.dir, "history-gate");
+        let reply = expect_response(&mut ws, &mut s, &page).await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["line_count"], 2);
+        touch(&rig.dir, "gate");
+        for _ in 0..2 {
+            let reply = next_response(&mut ws, &mut s).await;
+            assert!(waits.contains(&reply["id"].as_str().unwrap().to_owned()));
+        }
     }
 
     #[tokio::test]

@@ -1326,7 +1326,7 @@ fn a_wedged_tmux_fails_a_batch_within_the_bound() {
     assert!(!error.starts_with("not_sent: "), "{error}");
 }
 
-const VALID_REPORT: &str = "8|30|2|1|0|0\n";
+const VALID_REPORT: &str = "8|30|2|1|0|0|0\n";
 
 #[test]
 fn capture_screen_ends_with_exactly_the_visible_rows_blank_ones_included() {
@@ -1344,7 +1344,9 @@ fn capture_screen_ends_with_exactly_the_visible_rows_blank_ones_included() {
             cursor: Cursor { x: 2, y: 1 },
             rows: 8,
             cols: 30,
-            in_mode: false
+            in_mode: false,
+            history_size: 0,
+            alternate: false
         })
     );
     // No more lines than history plus rows, and the text is the plain capture.
@@ -1451,7 +1453,7 @@ fn capture_screen_falls_back_to_a_plain_capture_when_the_report_fails() {
 #[test]
 fn align_screen_restores_trimmed_rows_and_refuses_what_it_cannot_align() {
     let report =
-        |rows, cols, x, y, mode, history| format!("{rows}|{cols}|{x}|{y}|{mode}|{history}\n");
+        |rows, cols, x, y, mode, history| format!("{rows}|{cols}|{x}|{y}|{mode}|{history}|0\n");
     // The full capture passes through untouched.
     let full = "1\n2\nhi\n\n\n";
     let kept = align_screen(full, &report(3, 40, 2, 0, 0, 2), 100).unwrap();
@@ -1462,7 +1464,9 @@ fn align_screen_restores_trimmed_rows_and_refuses_what_it_cannot_align() {
             cursor: Cursor { x: 2, y: 0 },
             rows: 3,
             cols: 40,
-            in_mode: false
+            in_mode: false,
+            history_size: 2,
+            alternate: false
         })
     );
     // A tmux that trimmed the trailing blank rows gets them back, whether it
@@ -1489,19 +1493,27 @@ fn align_screen_restores_trimmed_rows_and_refuses_what_it_cannot_align() {
             .unwrap()
             .in_mode
     );
+    // The history size and the alternate screen are reported.
+    let alternate = align_screen("1\n2\nhi\n\n\n", "3|40|2|0|0|2|1\n", 100).unwrap();
+    let screen = alternate.screen.unwrap();
+    assert_eq!((screen.history_size, screen.alternate), (2, true));
     // An unreadable or impossible report leaves the screen out.
     for bad in [
         "",
+        "8|30|2|1|0|0",
         "8|30|2|1|0",
-        "8|30|2|1|0|0|0",
-        "a|30|2|1|0|0",
-        "0|30|2|1|0|0",
-        "8|0|2|1|0|0",
-        "8|30|2|8|0|0",
-        "8|30|2|-1|0|0",
-        "8|30|2|1|2|0",
-        "8|30|2|1||0",
-        "8,30,2,1,0,0",
+        "8|30|2|1|0|0|0|0",
+        "a|30|2|1|0|0|0",
+        "0|30|2|1|0|0|0",
+        "8|0|2|1|0|0|0",
+        "8|30|2|8|0|0|0",
+        "8|30|2|-1|0|0|0",
+        "8|30|2|1|2|0|0",
+        "8|30|2|1|0|0|2",
+        "8|30|2|1|0|0|",
+        "8|30|2|1|0||0",
+        "8|30|2|1||0|0",
+        "8,30,2,1,0,0,0",
     ] {
         assert!(
             align_screen("a\n", &format!("{bad}\n"), 5).is_none(),
@@ -1798,6 +1810,14 @@ fn read_output_waits_for_a_real_change_and_reports_unchanged_on_timeout() {
         OutputRead::Changed { capture, hash } => (capture, hash),
         other => panic!("expected content, got {other:?}"),
     };
+    // The hash, `history_size` and `alternate` of an unchanged answer.
+    let unchanged = |read: OutputRead| match read {
+        OutputRead::Unchanged {
+            hash,
+            screen: Some(screen),
+        } => (hash, screen.history_size, screen.alternate),
+        other => panic!("expected unchanged, got {other:?}"),
+    };
 
     // No hash: content and its hash, at once.
     let (read, elapsed) = ask(None, 5_000, false);
@@ -1817,11 +1837,11 @@ fn read_output_waits_for_a_real_change_and_reports_unchanged_on_timeout() {
 
     // Nothing changes: unchanged, after the wait and not much later.
     let (read, elapsed) = ask(Some(&h1), 500, false);
-    assert_eq!(read, OutputRead::Unchanged { hash: h1.clone() });
+    assert_eq!(unchanged(read), (h1.clone(), 0, false));
     assert!(elapsed >= Duration::from_millis(500), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
     let (read, elapsed) = ask(Some(&h1), 0, false);
-    assert_eq!(read, OutputRead::Unchanged { hash: h1.clone() });
+    assert_eq!(unchanged(read), (h1.clone(), 0, false));
     assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
 
     // A change ends a long wait as soon as it happens.
@@ -1842,7 +1862,7 @@ fn read_output_waits_for_a_real_change_and_reports_unchanged_on_timeout() {
 
     // The new screen is stable again, and the cursor and mode are in the hash.
     let (read, _) = ask(Some(&h2), 300, false);
-    assert_eq!(read, OutputRead::Unchanged { hash: h2.clone() });
+    assert_eq!(unchanged(read), (h2.clone(), 0, false));
     fixture
         .manager
         .tmux_checked(&["copy-mode", "-t", &pane_target(&id)])
@@ -1900,4 +1920,683 @@ fn read_output_ends_a_wait_with_an_error_when_the_shell_goes_away() {
         "{error}"
     );
     assert!(elapsed < Duration::from_secs(6), "{elapsed:?}");
+}
+
+// Scrollback pages (`read_history`) and the `history_size` and `alternate`
+// fields of `shell output`.
+
+impl Fixture {
+    /// Like `pane`, with the 100000 lines of history RiWork gives its panes
+    /// (tmux's own default is 2000).
+    fn deep_pane(&self, columns: u32, rows: u32, script: &str) -> String {
+        let id = Uuid::new_v4().to_string();
+        let work = self.root.join("work");
+        fs::create_dir_all(&work).unwrap();
+        self.manager
+            .tmux_checked(&[
+                "start-server",
+                ";",
+                "set-option",
+                "-g",
+                "history-limit",
+                &HISTORY_LINES.to_string(),
+                ";",
+                "new-session",
+                "-d",
+                "-s",
+                &id,
+                "-c",
+                &work.to_string_lossy(),
+                "-x",
+                &columns.to_string(),
+                "-y",
+                &rows.to_string(),
+                &format!("sh -c {}", quote_arg(script)),
+            ])
+            .unwrap();
+        self.registry(vec![shell(&id, None, None)]);
+        id
+    }
+
+    /// `#{history_size}` as tmux itself says it.
+    fn tmux_history_size(&self, id: &str) -> u32 {
+        self.pane_format(id, "#{history_size}").parse().unwrap()
+    }
+}
+
+/// The numbers `first..=last`, one per line, joined by newlines.
+fn numbers(first: u32, last: u32) -> String {
+    (first..=last)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn page(
+    fixture: &Fixture,
+    id: &str,
+    end: u32,
+    lines: u32,
+    styled: bool,
+) -> Result<HistoryPage, String> {
+    fixture.manager.read_history(id, end, lines, styled)
+}
+
+#[test]
+fn history_pages_hold_exactly_the_numbered_lines_above_the_screen() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // 5000 numbered lines and an unterminated "x" through a 10-row pane: the
+    // screen is 4992..5000 and the "x", so lines 1..=4991 are history.
+    let id = fixture.deep_pane(40, 10, "seq 1 5000; printf x; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.ends_with("\n5000\nx\n"));
+    let total = 4991;
+    assert_eq!(fixture.tmux_history_size(&id), total);
+
+    // What every page must be, worked out from the numbering alone.
+    let expected = |end: u32, lines: u32| -> HistoryPage {
+        if end >= total {
+            return HistoryPage {
+                output: String::new(),
+                line_count: 0,
+                history_size: total,
+                complete: true,
+            };
+        }
+        let last = total - end;
+        let first = (last + 1).saturating_sub(lines).max(1);
+        HistoryPage {
+            output: numbers(first, last),
+            line_count: last - first + 1,
+            history_size: total,
+            complete: first == 1,
+        }
+    };
+    let cases = [
+        (0, 1),
+        (0, 2),
+        (0, 10),
+        (0, 1000),
+        (1, 1),
+        (1, 999),
+        (7, 100),
+        (100, 1000),
+        (1000, 1000),
+        (3000, 1000),
+        // Ends exactly at the top, and one line short of it.
+        (total - 1000, 1000),
+        (total - 1001, 1000),
+        (total - 999, 1000),
+        (total - 5, 5),
+        (total - 5, 6),
+        (total - 6, 5),
+        (total - 2, 1),
+        (total - 2, 2),
+        (total - 1, 1),
+        (total - 1, 1000),
+        // At and beyond the top of the history: nothing, and complete.
+        (total, 1),
+        (total, 1000),
+        (total + 1, 10),
+        (total + 100_000, 1000),
+        (u32::MAX - 1, 1),
+        (u32::MAX, 1000),
+    ];
+    for (end, lines) in cases {
+        let got = page(&fixture, &id, end, lines, false).unwrap();
+        assert_eq!(got, expected(end, lines), "end {end} lines {lines}");
+    }
+    // Spot checks against the literal numbers, so the table above is not
+    // just the code's own arithmetic.
+    assert_eq!(
+        page(&fixture, &id, 0, 3, false).unwrap().output,
+        "4989\n4990\n4991"
+    );
+    assert_eq!(
+        page(&fixture, &id, 4, 2, false).unwrap().output,
+        "4986\n4987"
+    );
+    let top = page(&fixture, &id, total - 3, 100, false).unwrap();
+    assert_eq!(
+        (top.output.as_str(), top.line_count, top.complete),
+        ("1\n2\n3", 3, true)
+    );
+    // Exactly the lines a screen capture holds above the screen.
+    let capture = fixture.manager.capture_screen(&id, 60).unwrap();
+    let rows = capture.screen.unwrap().rows as usize;
+    let all: Vec<&str> = capture.output.lines().collect();
+    assert_eq!(all.len(), 60 + rows);
+    assert_eq!(
+        all[..60].join("\n"),
+        page(&fixture, &id, 0, 60, false).unwrap().output
+    );
+}
+
+#[test]
+fn paging_upward_from_the_screen_rebuilds_the_history_without_gaps_or_overlaps() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.deep_pane(40, 10, "seq 1 5000; printf x; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.ends_with("\n5000\nx\n"));
+    // One line at a time, as far as it takes to be sure: the newest 50.
+    let mut end = 0;
+    let mut singles = Vec::new();
+    for _ in 0..50 {
+        let got = page(&fixture, &id, end, 1, false).unwrap();
+        assert_eq!((got.line_count, got.history_size), (1, 4991));
+        end += got.line_count;
+        singles.push(got.output);
+    }
+    singles.reverse();
+    assert_eq!(singles.join("\n"), numbers(4942, 4991));
+    // Whole history, from the screen up to the top, in pages of every size.
+    for size in [333, 1000, 999, 250] {
+        let mut pages = Vec::new();
+        let mut end = 0;
+        loop {
+            let got = page(&fixture, &id, end, size, false).unwrap();
+            assert_eq!(got.history_size, 4991, "size {size}");
+            end += got.line_count;
+            let done = got.complete;
+            pages.push(got);
+            if done {
+                break;
+            }
+            assert!(pages.len() < 1000, "never reached the top");
+        }
+        // Only the last page is complete, and pages are full until then.
+        let (last, rest) = pages.split_last().unwrap();
+        assert!(rest.iter().all(|p| !p.complete && p.line_count == size));
+        assert_eq!(pages.len() as u32, 4991_u32.div_ceil(size), "size {size}");
+        assert_eq!(end, 4991);
+        // Oldest page first: the numbers are 1..=4991, each exactly once.
+        let rebuilt: Vec<&str> = pages
+            .iter()
+            .rev()
+            .flat_map(|p| p.output.split('\n'))
+            .collect();
+        let wanted: Vec<String> = (1..=4991).map(|n| n.to_string()).collect();
+        assert_eq!(rebuilt, wanted, "size {size}");
+        assert_eq!(last.output.split('\n').next(), Some("1"));
+        // One more page above the top is empty.
+        let beyond = page(&fixture, &id, end, size, false).unwrap();
+        assert_eq!((beyond.line_count, beyond.complete), (0, true));
+        assert_eq!(beyond.output, "");
+    }
+}
+
+#[test]
+fn history_pages_keep_blank_lines_and_the_count_tells_one_blank_line_from_none() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // Eleven lines through a 4-row pane: a, two blanks, b, two blanks, 1 to 4
+    // and "end"; the screen is 2, 3, 4 and "end", the history the other seven.
+    let id = fixture.deep_pane(
+        20,
+        4,
+        "printf 'a\\n\\n\\nb\\n\\n\\n'; seq 1 4; printf end; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("end"));
+    assert_eq!(fixture.tmux_history_size(&id), 7);
+    let get = |end, lines| page(&fixture, &id, end, lines, false).unwrap();
+    let whole = get(0, 7);
+    assert_eq!(whole.output, "a\n\n\nb\n\n\n1");
+    assert_eq!((whole.line_count, whole.complete), (7, true));
+    // Blank lines at the bottom of a page are lines: nothing is trimmed.
+    let two_blanks = get(1, 2);
+    assert_eq!(two_blanks.output, "\n");
+    assert_eq!(two_blanks.line_count, 2);
+    assert_eq!(get(2, 3).output, "\nb\n");
+    assert_eq!(get(2, 3).line_count, 3);
+    // One blank line and no line are both "" but not the same page.
+    let one = get(1, 1);
+    assert_eq!(
+        (one.output.as_str(), one.line_count, one.complete),
+        ("", 1, false)
+    );
+    let none = get(7, 1);
+    assert_eq!(
+        (none.output.as_str(), none.line_count, none.complete),
+        ("", 0, true)
+    );
+    let top_blank = get(5, 1);
+    assert_eq!((top_blank.output.as_str(), top_blank.line_count), ("", 1));
+    assert!(!top_blank.complete);
+    let first = get(6, 1);
+    assert_eq!((first.output.as_str(), first.complete), ("a", true));
+    // A page that ends in blank lines, mid-history.
+    assert_eq!(get(3, 4).output, "a\n\n\nb");
+    assert_eq!(get(1, 4).output, "\nb\n\n");
+}
+
+#[test]
+fn history_pages_stay_whole_while_the_pane_is_printing() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // A producer that outruns the requests: history grows and, past 100000
+    // lines, loses its oldest lines between pages. Every page is still a run
+    // of consecutive numbers, because it comes with its own history size.
+    let id = fixture.deep_pane(40, 10, "seq 1 400000; printf done; exec sleep 60");
+    for round in 0..30_u32 {
+        let got = page(&fixture, &id, round * 97, 200, false).unwrap();
+        let values: Vec<u32> = got
+            .output
+            .split('\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| line.parse().expect(&got.output))
+            .collect();
+        assert_eq!(values.len() as u32, got.line_count);
+        assert!(
+            values.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "{values:?}"
+        );
+        assert!(got.history_size <= HISTORY_LINES as u32);
+    }
+    fixture.wait_for_screen(&id, |screen| screen.contains("done"));
+    // Settled: the newest history line is just above the screen.
+    let capture = fixture.manager.capture_screen(&id, 1).unwrap();
+    let above = page(&fixture, &id, 0, 1, false).unwrap();
+    let lines: Vec<&str> = capture.output.lines().collect();
+    assert_eq!(lines[0], above.output);
+}
+
+#[test]
+fn styled_history_pages_keep_sgr_and_the_plain_pages_lines() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // 300 colored numbers, each followed by an OSC 8 hyperlink.
+    let id = fixture.deep_pane(
+        40,
+        6,
+        "for i in $(seq 1 300); do printf '\\033[1;31m%s\\033[0m \\033]8;;http://x\\033\\\\link\\033]8;;\\033\\\\ \\033[38;2;1;2;3mc\\033[0m\\n' \"$i\"; done; printf done; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("done"));
+    let total = fixture.tmux_history_size(&id);
+    assert_eq!(total, 301 - 6);
+    let raw = fixture
+        .manager
+        .tmux_text(&[
+            "capture-pane",
+            "-p",
+            "-e",
+            "-t",
+            &pane_target(&id),
+            "-S",
+            "-20",
+            "-E",
+            "-1",
+        ])
+        .unwrap();
+    // The premise: tmux writes more than SGR here.
+    assert!(raw.contains("\u{1b}]8;;"), "no OSC in {raw:?}");
+    for (end, lines) in [(0, 20), (13, 100), (total - 40, 1000), (total - 1, 5)] {
+        let styled = page(&fixture, &id, end, lines, true).unwrap();
+        let plain = page(&fixture, &id, end, lines, false).unwrap();
+        assert!(
+            styled.output.contains("\u{1b}[1m") && styled.output.contains("\u{1b}[31m"),
+            "{:?}",
+            styled.output
+        );
+        assert!(styled.output.contains("\u{1b}[38;2;1;2;3m"));
+        // Nothing but SGR is escaped, and no control character but the newline.
+        let text = without_sgr(&styled.output);
+        assert!(text.chars().all(|c| !c.is_control() || c == '\n'));
+        // The same lines as the plain page, line for line.
+        assert_eq!(text, plain.output, "end {end} lines {lines}");
+        assert!(!plain.output.contains('\u{1b}'));
+        assert!(plain.output.contains("link"));
+        assert_eq!(
+            (styled.line_count, styled.history_size, styled.complete),
+            (plain.line_count, plain.history_size, plain.complete)
+        );
+        assert_eq!(
+            styled.output.split('\n').count() as u32,
+            styled.line_count,
+            "{:?}",
+            styled.output
+        );
+    }
+    // The styled page beyond the top is as empty as the plain one.
+    let beyond = page(&fixture, &id, total, 10, true).unwrap();
+    assert_eq!(
+        (beyond.output.as_str(), beyond.line_count, beyond.complete),
+        ("", 0, true)
+    );
+}
+
+#[test]
+fn a_styled_page_starts_from_the_default_attributes_so_it_can_be_drawn_alone() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // Red is switched on once, before the first number, and never off again.
+    let id = fixture.deep_pane(
+        20,
+        4,
+        "printf '\\033[31m'; seq 1 60; printf '\\033[0mdone'; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("done"));
+    // A page from the middle of the run, not its start: every line, the first
+    // included, says what it needs without the lines above it.
+    let mid = page(&fixture, &id, 10, 5, true).unwrap();
+    assert_eq!(without_sgr(&mid.output), "43\n44\n45\n46\n47", "{mid:?}");
+    for line in mid.output.split('\n') {
+        assert!(
+            line.starts_with("\u{1b}[31m"),
+            "{line:?} in {:?}",
+            mid.output
+        );
+    }
+    let first = page(&fixture, &id, 10, 1, true).unwrap();
+    assert!(first.output.starts_with("\u{1b}[31m"), "{first:?}");
+}
+
+#[test]
+fn a_history_page_needs_a_live_shell_and_one_to_a_thousand_lines() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.deep_pane(30, 4, "seq 1 20; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("20"));
+    for lines in [0, 1001, u32::MAX] {
+        let error = page(&fixture, &id, 0, lines, false).unwrap_err();
+        assert!(error.contains("--lines"), "{error}");
+    }
+    assert!(page(&fixture, &id, 0, 1, false).is_ok());
+    assert!(page(&fixture, &id, 0, 1000, false).is_ok());
+    let unknown = Uuid::new_v4().to_string();
+    let error = page(&fixture, &unknown, 0, 5, false).unwrap_err();
+    assert!(error.starts_with("unknown shell"), "{error}");
+    let error = page(&fixture, "not-a-uuid", 0, 5, false).unwrap_err();
+    assert!(error.starts_with("invalid UUID"), "{error}");
+    // A shell that has exited is refused like `capture`.
+    fixture.manager.kill_tmux_session(&id).unwrap();
+    let dead = fixture.manager.read_history(&id, 0, 5, false);
+    assert!(dead.is_err(), "{dead:?}");
+}
+
+#[test]
+fn the_alternate_screen_is_reported_and_the_history_above_it_stays_readable() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // 30 lines make 25 of history in a 6-row pane (30 lines and the cursor's
+    // row, less the screen). A full-screen program then takes over the screen.
+    let id = fixture.deep_pane(
+        30,
+        6,
+        "seq 1 30; printf '\\033[?1049h\\033[2;3Hzz'; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("zz"));
+    let capture = fixture.manager.capture_screen(&id, 100_000).unwrap();
+    let screen = capture.screen.expect("screen");
+    assert_eq!((screen.history_size, screen.alternate), (25, true));
+    assert_eq!(fixture.pane_format(&id, "#{alternate_on}"), "1");
+    let got = page(&fixture, &id, 0, 1000, false).unwrap();
+    assert_eq!(got.output, numbers(1, 25));
+    assert_eq!((got.history_size, got.complete), (25, true));
+    // The JSON-level read says the same.
+    match fixture
+        .manager
+        .read_output(
+            &id,
+            &OutputQuery {
+                lines: 100,
+                styled: false,
+                if_changed: None,
+                wait: Duration::ZERO,
+            },
+        )
+        .unwrap()
+    {
+        OutputRead::Changed { capture, .. } => {
+            let screen = capture.screen.unwrap();
+            assert_eq!((screen.history_size, screen.alternate), (25, true));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn alternate_follows_a_real_pager_in_and_out() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let has_less = Command::new("less")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !has_less {
+        return;
+    }
+    // LESS may hold the user's -F or -X, which would keep less off the
+    // alternate screen.
+    let id = fixture.deep_pane(
+        30,
+        6,
+        "seq 1 100; seq 1 300 | env -u LESS less -+F -+X; printf after; exec sleep 60",
+    );
+    let read = || {
+        fixture
+            .manager
+            .capture_screen(&id, 100)
+            .unwrap()
+            .screen
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let inside = loop {
+        let screen = read();
+        if screen.alternate {
+            break screen;
+        }
+        assert!(Instant::now() < deadline, "less never took the screen");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    // The 100 lines and the cursor's row, less the 6 rows of the screen.
+    assert_eq!(inside.history_size, 95);
+    let got = page(&fixture, &id, 0, 5, false).unwrap();
+    assert_eq!(got.output, numbers(91, 95));
+    // Quitting the pager gives the normal screen back.
+    fixture.type_items(&id, &[typed("q")]);
+    fixture.wait_for_screen(&id, |screen| screen.contains("after"));
+    let outside = read();
+    assert!(!outside.alternate);
+    assert!(outside.history_size >= inside.history_size);
+    assert_eq!(fixture.pane_format(&id, "#{alternate_on}"), "0");
+}
+
+#[test]
+fn output_reports_the_history_size_and_its_growth_changes_the_hash() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // The screen is three x's over the cursor's row. Printing another x
+    // scrolls, and looks exactly the same; only the history grows.
+    let id = fixture.deep_pane(
+        20,
+        4,
+        "for i in 1 2 3 4 5 6; do echo x; done; while [ ! -f go ]; do sleep 0.05; done; echo x; echo x; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.ends_with("x\nx\nx\n\n"));
+    let ask = |if_changed: Option<&str>| {
+        fixture
+            .manager
+            .read_output(
+                &id,
+                &OutputQuery {
+                    lines: 50,
+                    styled: false,
+                    if_changed,
+                    wait: Duration::ZERO,
+                },
+            )
+            .unwrap()
+    };
+    let OutputRead::Changed {
+        capture: before,
+        hash: h1,
+    } = ask(None)
+    else {
+        panic!("expected content");
+    };
+    let screen = before.screen.unwrap();
+    assert_eq!((screen.history_size, screen.alternate), (3, false));
+    assert_eq!(fixture.tmux_history_size(&id), 3);
+    assert_eq!(page(&fixture, &id, 0, 50, false).unwrap().history_size, 3);
+    // Unchanged still says how long the history is.
+    let OutputRead::Unchanged {
+        hash,
+        screen: Some(screen),
+    } = ask(Some(&h1))
+    else {
+        panic!("expected unchanged");
+    };
+    assert_eq!(
+        (hash.as_str(), screen.history_size, screen.alternate),
+        (h1.as_str(), 3, false)
+    );
+
+    fs::write(fixture.root.join("work").join("go"), "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let after = loop {
+        if let OutputRead::Changed { capture, hash } = ask(Some(&h1)) {
+            break (capture, hash);
+        }
+        assert!(Instant::now() < deadline, "the history never grew");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let (after, h2) = after;
+    // The history is longer; the lines it shows are not. Both are in the hash.
+    assert_eq!(after.screen.unwrap().history_size, 5);
+    assert_eq!(fixture.tmux_history_size(&id), 5);
+    assert_ne!(h2, h1);
+    let screen_text = |capture: &Capture| {
+        let lines: Vec<&str> = capture.output.lines().collect();
+        lines[lines.len() - 4..].join("\n")
+    };
+    assert_eq!(screen_text(&after), screen_text(&before));
+    let OutputRead::Unchanged {
+        hash,
+        screen: Some(screen),
+    } = ask(Some(&h2))
+    else {
+        panic!("expected unchanged");
+    };
+    assert_eq!((hash, screen.history_size), (h2, 5));
+}
+
+#[test]
+fn a_full_screen_program_changes_the_hash_and_the_reported_fields() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.deep_pane(
+        30,
+        5,
+        "seq 1 12; while [ ! -f go ]; do sleep 0.05; done; printf '\\033[?1049h\\033[2J\\033[Halt'; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("12"));
+    let ask = |if_changed: Option<&str>| {
+        fixture
+            .manager
+            .read_output(
+                &id,
+                &OutputQuery {
+                    lines: 100,
+                    styled: false,
+                    if_changed,
+                    wait: Duration::ZERO,
+                },
+            )
+            .unwrap()
+    };
+    let OutputRead::Changed { capture, hash: h1 } = ask(None) else {
+        panic!("expected content");
+    };
+    let screen = capture.screen.unwrap();
+    assert_eq!((screen.history_size, screen.alternate), (8, false));
+    fs::write(fixture.root.join("work").join("go"), "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let (capture, h2) = loop {
+        if let OutputRead::Changed { capture, hash } = ask(Some(&h1)) {
+            break (capture, hash);
+        }
+        assert!(Instant::now() < deadline, "the program never started");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let screen = capture.screen.unwrap();
+    assert_eq!((screen.history_size, screen.alternate), (8, true));
+    assert_ne!(h2, h1);
+    let OutputRead::Unchanged {
+        hash,
+        screen: Some(screen),
+    } = ask(Some(&h2))
+    else {
+        panic!("expected unchanged");
+    };
+    assert_eq!((hash, screen.history_size, screen.alternate), (h2, 8, true));
+}
+
+#[test]
+fn a_history_page_is_what_the_capture_holds_and_never_more_than_the_history() {
+    let page = |text: &str, history, end, lines| history_page(text, history, end, lines);
+    let ok = |text: &str, history, end, lines| page(text, history, end, lines).unwrap();
+    // A page in the middle, and the newline after its last line is not part of it.
+    assert_eq!(
+        ok("1\n2\n3\n", 10, 4, 3),
+        HistoryPage {
+            output: "1\n2\n3".into(),
+            line_count: 3,
+            history_size: 10,
+            complete: false
+        }
+    );
+    // Reaching the top exactly, and going past it, are both complete; the
+    // count is what exists.
+    assert!(ok("1\n2\n3\n", 10, 7, 3).complete);
+    let clamped = ok("1\n2\n", 10, 8, 5);
+    assert_eq!(
+        (
+            clamped.output.as_str(),
+            clamped.line_count,
+            clamped.complete
+        ),
+        ("1\n2", 2, true)
+    );
+    assert!(!ok("2\n", 10, 8, 1).complete);
+    // A page above the top: tmux prints line 0 for it, which is not the page.
+    for (end, lines) in [(10, 3), (11, 3), (u32::MAX, 1000)] {
+        let empty = ok("1\n", 10, end, lines);
+        assert_eq!(
+            empty,
+            HistoryPage {
+                output: String::new(),
+                line_count: 0,
+                history_size: 10,
+                complete: true
+            }
+        );
+    }
+    let nothing = ok("", 0, 0, 5);
+    assert_eq!((nothing.line_count, nothing.complete), (0, true));
+    // No overflow at the largest numbers.
+    assert!(ok("x\n", 1, 0, 1000).complete);
+    assert!(!ok("x\n", u32::MAX, 0, 1).complete);
+    // Blank lines are lines, and a tmux that trimmed the last ones gets them back.
+    assert_eq!(ok("a\n\n\n", 5, 0, 3).output, "a\n\n");
+    assert_eq!(ok("a\n", 5, 0, 3).output, "a\n\n");
+    assert_eq!(ok("a", 5, 0, 3).output, "a\n\n");
+    assert_eq!(ok("", 5, 0, 2).output, "\n");
+    assert_eq!(ok("\n", 5, 0, 1).output, "");
+    assert_eq!(ok("", 5, 0, 1).output, "");
+    assert_eq!(ok("", 5, 0, 1).line_count, 1);
+    // More lines than the page can hold is an error, not a longer page.
+    assert!(page("1\n2\n3\n4\n", 10, 0, 3).is_err());
+    assert!(page("1\n2\n", 10, 9, 5).is_err());
 }

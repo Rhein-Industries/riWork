@@ -12,6 +12,8 @@ fn capture(output: &str) -> Capture {
             rows: 2,
             cols: 40,
             in_mode: false,
+            history_size: 0,
+            alternate: false,
         }),
     }
 }
@@ -79,8 +81,9 @@ fn hash_is_sixteen_hex_digits_and_is_pinned_across_builds() {
     );
     // The value is part of the protocol: a hash a phone kept must still match
     // after the desktop restarts or updates. Change the algorithm only with a
-    // new version tag, never silently.
-    assert_eq!(hash, "5c8d784b64f5ff73");
+    // new version tag, never silently (v2 added `history_size` and
+    // `alternate`; a v1 hash simply never matches again).
+    assert_eq!(hash, "b0cf30d132bb77f2");
     assert_eq!(hash, output_hash(200, false, &capture("hi\n\n")));
 }
 
@@ -103,6 +106,8 @@ fn hash_covers_text_screen_lines_and_styling() {
         |s: &mut Screen| s.rows += 1,
         |s: &mut Screen| s.cols += 1,
         |s: &mut Screen| s.in_mode = true,
+        |s: &mut Screen| s.history_size += 1,
+        |s: &mut Screen| s.alternate = true,
     ] {
         let mut other = base.clone();
         change(other.screen.as_mut().unwrap());
@@ -161,7 +166,14 @@ fn the_same_hash_with_no_wait_is_unchanged_after_one_capture() {
     let mut script = Script::new(usize::MAX);
     let hash = script.hash();
     let read = script.run(&query(Some(&hash), 0)).unwrap();
-    assert_eq!(read, OutputRead::Unchanged { hash });
+    // The screen comes along: `history_size` and `alternate` are still told.
+    assert_eq!(
+        read,
+        OutputRead::Unchanged {
+            hash,
+            screen: script.same.screen
+        }
+    );
     assert_eq!((script.captures, script.pauses.len()), (1, 0));
 }
 
@@ -195,7 +207,13 @@ fn no_change_returns_unchanged_when_the_wait_is_over_and_not_much_later() {
     let started = Instant::now();
     let read = script.run(&query(Some(&hash), 400)).unwrap();
     let elapsed = started.elapsed();
-    assert_eq!(read, OutputRead::Unchanged { hash });
+    assert_eq!(
+        read,
+        OutputRead::Unchanged {
+            hash,
+            screen: script.same.screen
+        }
+    );
     assert!(elapsed >= Duration::from_millis(400), "{elapsed:?}");
     assert!(elapsed < Duration::from_millis(400) + Duration::from_secs(2));
     // Captured about every 80 ms; never a pause longer than that, and the

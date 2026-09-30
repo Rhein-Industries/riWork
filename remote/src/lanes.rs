@@ -9,7 +9,10 @@
 //!   `shell.resize.clear`. One at a time, in arrival order. This is what
 //!   keeps the batch ledger, the viewport and the order of typed text intact.
 //! - `LongPoll`: a `shell.output` that waits for a change. At most two.
-//! - `Read`: everything else, including a `shell.output` that does not wait.
+//! - `Read`: everything else, including a `shell.output` that does not wait and
+//!   `shell.history`, a page of scrollback that never waits. It changes
+//!   nothing, so it needs no order, and it takes one of the three shared
+//!   slots, never the `Ordered` one.
 //!
 //! At most four requests run at once: the one `Ordered` slot and three shared
 //! by `LongPoll` and `Read`. So a wait, or three, can never keep a typing
@@ -65,6 +68,7 @@ pub fn classify(request: &Value) -> Lane {
         {
             Lane::LongPoll
         }
+        // `shell.history` and every other method: shared, never waiting.
         _ => Lane::Read,
     }
 }
@@ -181,6 +185,20 @@ mod tests {
                 classify(&request(method, json!({}))),
                 Lane::Read,
                 "{method}"
+            );
+        }
+        // A scrollback page never waits, whatever it is sent with: it is a
+        // plain read, so it can never hold up typing or take a poll slot.
+        for params in [
+            json!({"shell_id":"s","end":0,"lines":100}),
+            json!({"shell_id":"s","end":0,"lines":1000,"styled":true}),
+            json!({"if_changed":"h","wait_ms":5000}),
+            json!(null),
+        ] {
+            assert_eq!(
+                classify(&request("shell.history", params)),
+                Lane::Read,
+                "shell.history"
             );
         }
         let output = |params| classify(&request("shell.output", params));

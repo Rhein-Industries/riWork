@@ -741,3 +741,142 @@ fn shell_keys_types_into_a_pane_and_output_json_reports_the_screen() {
     assert!(quiet.status.success());
     assert!(quiet.stdout.is_empty());
 }
+
+#[test]
+fn shell_history_pages_the_scrollback_and_output_json_tells_how_long_it_is() {
+    let home = Home::new();
+    let repo = repository(&home, "scrollback");
+    home.ok(&["project", "add", repo.to_str().unwrap(), "--json"]);
+    let created = home.ok(&[
+        "shell",
+        "create",
+        "--command",
+        "seq 1 500; printf x; exec sleep 300",
+        "--json",
+    ]);
+    let id = created["id"].as_str().unwrap().to_owned();
+    let output_of = || home.ok(&["shell", "output", &id, "--lines", "5", "--json"]);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let screen = loop {
+        let screen = output_of();
+        if screen["output"].as_str().unwrap().ends_with("500\nx\n") {
+            break screen;
+        }
+        assert!(Instant::now() < deadline, "{screen}");
+        thread::sleep(Duration::from_millis(25));
+    };
+    // The 500 lines and the line with the "x", less the rows of the screen.
+    let rows = screen["rows"].as_u64().unwrap();
+    let history = 501 - rows;
+    assert_eq!(screen["history_size"], history, "{screen}");
+    assert_eq!(screen["alternate"], false);
+    let expected_hash = screen["hash"].as_str().unwrap().to_owned();
+    // The unchanged form carries both fields next to the hash.
+    let unchanged = home.ok(&[
+        "shell",
+        "output",
+        &id,
+        "--lines",
+        "5",
+        "--json",
+        &format!("--if-changed={expected_hash}"),
+    ]);
+    assert_eq!(
+        unchanged,
+        json!({"id": id, "unchanged": true, "hash": expected_hash,
+               "history_size": history, "alternate": false})
+    );
+
+    let lines = |first: u64, last: u64| {
+        (first..=last)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let page = home.ok(&[
+        "shell", "history", &id, "--end", "0", "--lines", "3", "--json",
+    ]);
+    assert_eq!(
+        page,
+        json!({"id": id, "output": lines(history - 2, history), "line_count": 3,
+               "history_size": history, "complete": false})
+    );
+    // Earlier pages, up to the very top and beyond it.
+    let higher = home.ok(&[
+        "shell", "history", &id, "--end", "10", "--lines", "4", "--styled", "--json",
+    ]);
+    assert_eq!(higher["output"], lines(history - 13, history - 10));
+    let top = home.ok(&[
+        "shell",
+        "history",
+        &id,
+        "--end",
+        &(history - 2).to_string(),
+        "--lines",
+        "1000",
+        "--json",
+    ]);
+    assert_eq!(
+        (
+            top["output"].as_str(),
+            top["line_count"].as_u64(),
+            top["complete"].as_bool()
+        ),
+        (Some("1\n2"), Some(2), Some(true))
+    );
+    let beyond = home.ok(&[
+        "shell",
+        "history",
+        &id,
+        "--end",
+        &history.to_string(),
+        "--lines",
+        "5",
+        "--json",
+    ]);
+    assert_eq!(
+        beyond,
+        json!({"id": id, "output": "", "line_count": 0, "history_size": history, "complete": true})
+    );
+    // Without --json the page is the text, one line per line.
+    let text = home.run(&["shell", "history", &id, "--end", "0", "--lines", "3"]);
+    assert!(text.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&text.stdout),
+        format!("{}\n", lines(history - 2, history))
+    );
+    let nothing = home.run(&[
+        "shell",
+        "history",
+        &id,
+        "--end",
+        &history.to_string(),
+        "--lines",
+        "3",
+    ]);
+    assert!(nothing.status.success() && nothing.stdout.is_empty());
+
+    // Usage errors exit 2 and print nothing on stdout; a missing shell is an error.
+    for args in [
+        vec!["shell", "history"],
+        vec!["shell", "history", &id],
+        vec!["shell", "history", &id, "--end", "0"],
+        vec!["shell", "history", &id, "--lines", "5"],
+        vec!["shell", "history", &id, "--end", "0", "--lines", "0"],
+        vec!["shell", "history", &id, "--end", "0", "--lines", "1001"],
+        vec!["shell", "history", &id, "--end", "-1", "--lines", "5"],
+        vec!["shell", "history", &id, "--end", "x", "--lines", "5"],
+        vec![
+            "shell", "history", &id, "--end", "0", "--lines", "5", "extra",
+        ],
+    ] {
+        let output = home.run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+    let missing = Uuid::new_v4().to_string();
+    let output = home.run(&["shell", "history", &missing, "--end", "0", "--lines", "5"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown shell"));
+    assert!(!home.runtime().exists(), "a GUI instance was registered");
+}

@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-09-30: Additive deep scrollback: `shell.history` (pages of scrollback above the screen, plain or styled) and the `history_size` and `alternate` fields on the `shell.output` result, also in its `unchanged` form and in its `hash`; see "Deep scrollback extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive live terminal sync: optional `styled`, `if_changed` and `wait_ms` on `shell.output`, a `hash` on its result and an `unchanged` result, and requests of one device are now carried out concurrently (responses may arrive out of order, matched by `id`); see "Live terminal extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive `appearance.get`, so the phone can show the desktop's colors; see "Theme sync extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive `shell.keys` and cursor/size fields on `shell.output`, for typing straight into a shell from the phone; see "Direct typing extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -147,7 +148,8 @@ unsolicited response except handshake `ready`.
 | `tasks.list` | `{"project_id":"UUID"}` optionally `"worktree_id":"UUID"` | `{"tasks":[Task]}` |
 | `shells.list` | `{"project_id":"UUID"}` | `{"shells":[Session]}` (existing project shells) |
 | `orchestrators.list` | `{}` | `{"orchestrators":[Session]}` (global + project) |
-| `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200`, and additively `"styled":true`, `"if_changed":"HASH"`, `"wait_ms":5000` (see Live terminal) | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) and `"hash":"0123456789abcdef"`; or `{"shell_id":"UUID","unchanged":true,"hash":"0123456789abcdef"}` (see Live terminal) |
+| `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200`, and additively `"styled":true`, `"if_changed":"HASH"`, `"wait_ms":5000` (see Live terminal) | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) and `"hash":"0123456789abcdef"`, `"history_size":4991,"alternate":false` (see Deep scrollback); or `{"shell_id":"UUID","unchanged":true,"hash":"0123456789abcdef","history_size":4991,"alternate":false}` (see Live terminal) |
+| `shell.history` | `{"shell_id":"UUID","end":0,"lines":200}` optionally `"styled":true` (see Deep scrollback) | `{"shell_id":"UUID","output":"older lines","line_count":200,"history_size":4991,"complete":false}` |
 | `shell.input` | `{"shell_id":"UUID","line":"one physical line"}` | `{"shell_id":"UUID","status":"sent"}` |
 | `shell.keys` | `{"shell_id":"UUID","batch":"UUID","items":[{"text":"ls"},{"key":"Enter"}]}` (Direct typing) | `{"shell_id":"UUID","batch":"UUID","status":"sent\|duplicate\|uncertain"}` |
 | `appearance.get` | `{}` (Theme sync) | the appearance object below: `{"v":1,"updated_at":1790000000,"dark":true,"palette":{...},"terminal":{...}}` |
@@ -376,8 +378,9 @@ before, plus a `hash` field it may ignore. The iOS side is built against this te
 **`hash`.** Every result that carries `output` also carries `"hash"`: a short
 string, in practice 16 lowercase hex digits (clients treat it as an opaque string
 of at most 64 characters). It names the whole answer: the `output` text exactly as
-returned (styled or plain, as asked), the cursor, `rows`, `cols` and `in_mode` (or
-that the desktop could not report them), the `lines` value the request used
+returned (styled or plain, as asked), the cursor, `rows`, `cols`, `in_mode`,
+`history_size` and `alternate` (or that the desktop could not report them), the
+`lines` value the request used
 (after clamping) and the `styled` flag. The same request parameters against the
 same screen give the same hash, in any connection and after a desktop restart. A
 hash therefore only ever matches an answer to the same question: after changing
@@ -400,7 +403,8 @@ a secret and not a proof of anything.
 {"shell_id":"UUID","unchanged":true,"hash":"SAME_HASH"}
 ```
 
-  with no `output`, `cursor`, `rows`, `cols` or `in_mode`. The call takes `wait_ms`
+  with no `output`, `cursor`, `rows`, `cols` or `in_mode` (since the deep scrollback
+  extension it also carries `history_size` and `alternate`, see below). The call takes `wait_ms`
   plus at most a capture or two (each limited to 5 seconds by the CLI); a client's
   timeout for a waiting call should allow `wait_ms` plus about 20 seconds. The
   connector gives the CLI `wait_ms` plus 8 seconds (never less than 15) before it
@@ -457,7 +461,7 @@ never delays anything else from the same device, above all `shell.keys` and
   viewport keep their meaning: a `shell.keys` batch is still delivered once per
   device and batch UUID, and resizing is still consistent per connection.
 - At most 4 requests run at once per device: one of those four, and three others
-  (reads such as `projects.list`, `appearance.get` and `shell.output`), of which at
+  (reads such as `projects.list`, `appearance.get`, `shell.history` and `shell.output`), of which at
   most 2 may be waiting `shell.output` calls (`if_changed` with a positive
   `wait_ms`). So typing and resizing always have a slot of their own and a plain
   read always has one too. Further requests wait in arrival order and start as
@@ -474,6 +478,134 @@ never delays anything else from the same device, above all `shell.keys` and
   request from the connection within the last 20 seconds; a pending wait does not
   count by itself, so a client that holds an override and waits for changes sends
   its next request (a re-poll counts) before the lease lapses.
+
+### Deep scrollback extension (v1 and v2, 2026-09-30)
+
+Additive and compatible, like the two before it: two result fields on
+`shell.output` and one new method, `shell.history`. No change to the handshake,
+envelopes, fixtures, any other method or the concurrency rules; it applies to
+protocol v1 and v2 sessions alike. A client that ignores the new fields and never
+calls the method is unaffected. The iOS side is built against this text.
+
+tmux keeps up to 100000 lines of scrollback per shell. `shell.output` only ever
+returns the newest `lines` (at most 2000) of them together with the screen;
+`shell.history` reads the rest, a page at a time.
+
+**`shell.output` result fields.** Every result that carries `output`, and the
+`unchanged` result, gains:
+
+```json
+{"shell_id":"UUID","output":"terminal text","history_size":4991,"alternate":false,"hash":"..."}
+{"shell_id":"UUID","unchanged":true,"hash":"...","history_size":4991,"alternate":false}
+```
+
+- `history_size` (integer, at least 0): the number of scrollback lines above the
+  visible screen when the desktop captured the pane (tmux `history_size`). It
+  counts lines the screen has scrolled away, not `output`'s own lines: `output`
+  holds `min(lines, history_size) + rows` of them.
+- `alternate` (boolean): true while a full-screen program (vim, less, htop) is on
+  the terminal's alternate screen (tmux `alternate_on`). The alternate screen has
+  no scrollback of its own; the `history_size` lines above it are the normal
+  screen's, are still there, and `shell.history` still reads them. The visible
+  screen, `output`'s last `rows` lines, is the program's.
+- Both are part of the `hash`: the same screen with a longer history, or with the
+  program entering or leaving the alternate screen, has another hash. So a client
+  that polls with `if_changed` learns of output that scrolled lines away without
+  changing what is visible (a screen full of identical lines), and the
+  `unchanged` result, which says the hash still matches, carries the same two
+  values as the answer it stands for, so `history_size` can be followed without
+  fetching any text.
+- Both are present or both absent. They are absent when the desktop could not
+  read the pane report and from a desktop that predates this extension; treat
+  that as unknown. The hash now covers these fields, so a hash handed out before
+  the desktop was updated never matches again: the client is simply sent the full
+  answer once.
+
+**`shell.history`** reads one page of scrollback, oldest lines first within the
+page. Params (unknown fields fail `invalid_request`):
+
+```json
+{"shell_id":"UUID","end":0,"lines":200,"styled":false}
+```
+
+- `end` (integer `0..=4294967295`, required): how many scrollback lines directly
+  above the screen to skip. `0` makes the page end at the line just above the
+  screen, `200` at the line 201 above it.
+- `lines` (integer `1..=1000`, required): the page size. Anything else, a float
+  or a string fails `invalid_request`.
+- `styled` (boolean, default `false`): as for `shell.output`, see "SGR only".
+
+The page holds the scrollback lines from `end + lines` above the screen down to
+`end + 1` above it, both included (in tmux terms `capture-pane -p [-e] -S
+-(end+lines) -E -(end+1)`), clamped at the top of the history. With
+`history_size` H, line 1 of the history is the oldest and line H is the one just
+above the screen, so the page is lines `max(1, H-end-lines+1)` through `H-end`.
+For example, with H = 5000:
+
+| `end` | `lines` | page | `line_count` | `complete` |
+| --- | --- | --- | --- | --- |
+| 0 | 3 | lines 4998, 4999, 5000 | 3 | false |
+| 3 | 2 | lines 4996, 4997 | 2 | false |
+| 4990 | 100 | lines 1 to 10 | 10 | true |
+| 4900 | 100 | lines 1 to 100 | 100 | true |
+| 4999 | 1000 | line 1 | 1 | true |
+| 5000 or more | any | none | 0 | true |
+
+Result:
+
+```json
+{"shell_id":"UUID","output":"line\nline\nline","line_count":3,"history_size":5000,"complete":false}
+```
+
+- `output` is the page's lines from top to bottom joined by `\n`, with **no**
+  newline after the last one. `line_count` is how many lines that is, so a split at
+  `\n` gives exactly `line_count` pieces, and the count tells an empty page
+  (`""`, 0 lines) from one blank line (`""`, 1 line). Lines are exactly the
+  scrollback lines, one per terminal row like `shell.output` (wrapped lines are not
+  joined), blank ones included at the top, in the middle and at the bottom of a
+  page: nothing is trimmed. They are the lines `shell.output` returns above its
+  screen, with the same trailing-space handling; with `styled` the same SGR-only
+  filter as `shell.output` is the only difference, and removing the SGR sequences
+  gives exactly the plain page.
+- `line_count` is `min(lines, history_size - end)`, or 0 when `end >= history_size`.
+- `history_size` is the history length at the moment of the capture. The page and
+  this number come from one tmux command list, so they agree even while the shell
+  prints.
+- `complete` is true when the page reached the very top of the history, so no older
+  line exists (`end + lines >= history_size`). It is also true for an empty page:
+  when `end >= history_size`, `output` is `""`, `line_count` 0 and `complete`
+  true.
+- A styled page starts from the default text attributes, exactly as tmux writes it:
+  the first line carries whatever sequences it needs, so a page can be drawn on its
+  own. Within a page, state carries across line ends as for `shell.output`.
+
+*Paging.* To read further up, ask again with `end` increased by `line_count`, until
+`complete` is true. `end` counts from the screen, so it moves when the shell prints:
+if `history_size` grew by `d` since the page before, add `d` to the next `end` to
+continue from the line just above that page. Once the history is full (100000
+lines), `history_size` stops growing while the oldest lines fall off the top, so a
+client cannot tell how far the lines have moved; it should treat pages of a shell
+that is printing heavily as a snapshot of the moment they were read. `shell.history`
+never waits and changes nothing; the only way to learn of new history is
+`history_size` in `shell.output`.
+
+*Errors.* `invalid_request` for any parameter above or a UUID that is not one;
+`not_found` for an unknown shell or one that is not alive (the same rules and
+message as `shell.output`); `response_too_large` when the page does not fit one
+encrypted response (128 KiB: a 1000-line page of wide styled lines can), in which
+case the client halves `lines` and asks again; `cli_error` for anything the desktop
+CLI reports, and for a CLI too old to know `riwork shell history` ("the installed
+riwork CLI does not support shell history; update RiWork"). A desktop whose
+connector predates this extension answers `invalid_request` "unsupported RPC
+method"; a client then offers only the newest `lines` of `shell.output`.
+
+*Scheduling.* `shell.history` runs in the shared lanes with the other reads (see
+Concurrency): it takes one of the three shared slots, never the slot of typing and
+resizing, and never one of the two wait slots, so a page in flight cannot delay
+`shell.keys`, `shell.resize` or a waiting `shell.output`. Three slow pages at once
+leave only the ordered slot free, and further reads queue. A page is one bounded
+tmux call, and the connector gives the CLI the usual 15 seconds before it fails the
+call with `cli_error`.
 
 ### Theme sync extension (v1 and v2, 2026-09-30)
 
@@ -595,6 +727,18 @@ ready response. Values are test-only and must never provision production devices
   connection closes or the device is revoked. A client that sends none of the new
   parameters and awaits each response before the next request is unaffected. Needs
   the iOS worker's agreement; the iOS side implements the same text.
+
+- 2026-09-30: additive and backward compatible. Deep scrollback. `shell.history`
+  (`shell_id`, `end`, `lines` 1 to 1000, optional `styled`) returns a page of the
+  scrollback above the screen: the lines from `end + lines` to `end + 1` above it,
+  clamped at the top, as `output` (lines joined by `\n`, no newline after the last),
+  `line_count`, `history_size` and `complete` (the page reached the top; empty and
+  complete when `end >= history_size`); it never waits and runs in the shared lanes.
+  The `shell.output` result, and its `unchanged` form, gain `history_size` (scrollback
+  lines above the screen) and `alternate` (a full-screen program is on the alternate
+  screen), both covered by the `hash`, so the hashes handed out before the desktop
+  is updated stop matching (the client is sent the full answer once). Needs the iOS
+  worker's agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

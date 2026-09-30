@@ -837,40 +837,13 @@ impl SessionManager {
     fn capture_live_screen(&self, id: &str, lines: usize, styled: bool) -> Result<Capture, String> {
         let lines = lines.clamp(1, HISTORY_LINES);
         let pane = pane_target(id);
-        let marker = format!("riwork-screen-{}:", Uuid::new_v4().simple());
         let start = format!("-{lines}");
-        let report = format!(
-            "{marker}#{{pane_height}}|#{{pane_width}}|#{{cursor_x}}|#{{cursor_y}}|#{{pane_in_mode}}|#{{history_size}}"
-        );
-        let mut args = vec!["capture-pane", "-p"];
-        if styled {
-            args.push("-e");
-        }
-        args.extend([
-            "-t",
-            &pane,
-            "-S",
-            &start,
-            ";",
-            "display-message",
-            "-p",
-            "-t",
-            &pane,
-            &report,
-        ]);
-        if let Ok(output) = self.tmux_checked(&args) {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if let Some((output, report)) = text.rsplit_once(&marker) {
-                // Filtering keeps every newline, so the alignment still holds.
-                let output = if styled {
-                    crate::sgr::keep_sgr_only(output)
-                } else {
-                    output.to_owned()
-                };
-                if let Some(capture) = align_screen(&output, report, lines) {
-                    return Ok(capture);
-                }
-            }
+        if let Ok((output, report)) =
+            self.capture_with_report(&pane, styled, &["-S", &start], SCREEN_REPORT)
+            // Filtering keeps every newline, so the alignment still holds.
+            && let Some(capture) = align_screen(&output, &report, lines)
+        {
+            return Ok(capture);
         }
         // The plain capture again, this time also failing for a shell that
         // has exited since the caller looked.
@@ -879,6 +852,41 @@ impl SessionManager {
             output: self.capture_text(id, lines, styled)?,
             screen: None,
         })
+    }
+
+    /// `capture-pane -p` of `pane` over `range` (`-S`/`-E` arguments) and a
+    /// `display-message` of `format`, as one tmux command list, so no pane
+    /// output can land between the two. Returns the capture (with `styled`,
+    /// reduced to SGR by `sgr::keep_sgr_only`, which keeps every newline) and
+    /// what the format expanded to. This is the capture `shell output` and
+    /// `shell history` share.
+    fn capture_with_report(
+        &self,
+        pane: &str,
+        styled: bool,
+        range: &[&str],
+        format: &str,
+    ) -> Result<(String, String), String> {
+        let marker = format!("riwork-screen-{}:", Uuid::new_v4().simple());
+        let report = format!("{marker}{format}");
+        let mut args = vec!["capture-pane", "-p"];
+        if styled {
+            args.push("-e");
+        }
+        args.extend(["-t", pane]);
+        args.extend(range);
+        args.extend([";", "display-message", "-p", "-t", pane, &report]);
+        let output = self.tmux_checked(&args)?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let (captured, report) = text
+            .rsplit_once(&marker)
+            .ok_or_else(|| "tmux did not report on the pane".to_owned())?;
+        let captured = if styled {
+            crate::sgr::keep_sgr_only(captured)
+        } else {
+            captured.to_owned()
+        };
+        Ok((captured, report.to_owned()))
     }
 
     /// What `shell output --json` answers. Without `if_changed` this is one
@@ -893,6 +901,47 @@ impl SessionManager {
         poll_output(query, std::thread::sleep, || {
             self.capture_live_screen(id, lines, query.styled)
         })
+    }
+
+    /// One page of a shell's scrollback, see `HistoryPage`. `end` scrollback
+    /// lines directly above the screen are skipped and the page holds the
+    /// `lines` (1 to `HISTORY_PAGE_MAX`) above those, or fewer at the top of
+    /// the history. `shell history` never waits.
+    ///
+    /// The page is `capture-pane -p [-e] -S -(end+lines) -E -(end+1)`. tmux
+    /// does not clamp `-E` like `-S`: a page that ends above the top of the
+    /// history would print line 0 again. The history size therefore comes from
+    /// the same tmux command list (so no output can land between the two), and
+    /// decides what the page is: nothing for `end >= history_size`, otherwise
+    /// exactly `min(lines, history_size - end)` lines, which the capture has
+    /// to match.
+    pub fn read_history(
+        &self,
+        id: &str,
+        end: u32,
+        lines: u32,
+        styled: bool,
+    ) -> Result<HistoryPage, String> {
+        if !(1..=HISTORY_PAGE_MAX).contains(&lines) {
+            return Err(format!("--lines must be from 1 to {HISTORY_PAGE_MAX}"));
+        }
+        self.require_live(id)?;
+        // tmux misreads line numbers that do not fit its 32 bits; nothing is
+        // that deep, and a page that far up is empty either way.
+        let line = |n: u64| format!("-{}", n.min(TMUX_LINE_LIMIT));
+        let start = line(u64::from(end) + u64::from(lines));
+        let stop = line(u64::from(end) + 1);
+        let (page, report) = self.capture_with_report(
+            &pane_target(id),
+            styled,
+            &["-S", &start, "-E", &stop],
+            "#{history_size}",
+        )?;
+        let history_size: u32 = report
+            .trim()
+            .parse()
+            .map_err(|_| format!("tmux reported the history size as {:?}", report.trim()))?;
+        history_page(&page, history_size, end, lines)
     }
 
     /// Type literal text and named keys into an existing shell's pane, in
@@ -3795,6 +3844,25 @@ pub struct Capture {
     pub screen: Option<Screen>,
 }
 
+/// The most lines one `read_history` page may hold.
+pub const HISTORY_PAGE_MAX: u32 = 1000;
+/// The largest line number handed to tmux, which silently misreads larger ones.
+const TMUX_LINE_LIMIT: u64 = 1_000_000_000;
+
+/// A page of scrollback: lines above the screen, oldest first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryPage {
+    /// The lines, top to bottom, joined by `\n` with no newline after the
+    /// last one: exactly `line_count` lines, blank ones included (so one blank
+    /// line and no line are both `""`; `line_count` tells them apart).
+    pub output: String,
+    pub line_count: u32,
+    /// Scrollback lines above the screen when the page was captured.
+    pub history_size: u32,
+    /// The page reaches the top of the history: no older line exists.
+    pub complete: bool,
+}
+
 /// How long a `read_output` with `if_changed` sleeps between two captures.
 pub const OUTPUT_POLL: Duration = Duration::from_millis(80);
 /// The longest `OutputQuery::wait`; longer ones are shortened to it.
@@ -3816,8 +3884,16 @@ pub struct OutputQuery<'a> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutputRead {
-    Changed { capture: Capture, hash: String },
-    Unchanged { hash: String },
+    Changed {
+        capture: Capture,
+        hash: String,
+    },
+    /// Nothing changed. `screen` is the current one, for the fields an
+    /// unchanged answer still carries (`history_size`, `alternate`).
+    Unchanged {
+        hash: String,
+        screen: Option<Screen>,
+    },
 }
 
 /// Capture until `query.if_changed` no longer matches or `query.wait` is
@@ -3842,7 +3918,10 @@ fn poll_output(
         }
         let now = std::time::Instant::now();
         if now >= deadline {
-            return Ok(OutputRead::Unchanged { hash });
+            return Ok(OutputRead::Unchanged {
+                hash,
+                screen: current.screen,
+            });
         }
         pause(OUTPUT_POLL.min(deadline - now));
     }
@@ -3858,8 +3937,9 @@ fn output_deadline(start: std::time::Instant, wait: Duration) -> std::time::Inst
 /// gives the same hash in every process and version, and any visible change,
 /// or a different question, gives another one:
 /// the output text (styled or plain as asked), the cursor, rows, columns,
-/// whether the pane is in a mode (or that there is no screen), the number of
-/// lines asked for (after clamping) and the styled flag.
+/// whether the pane is in a mode, the scrollback size and whether the
+/// alternate screen is on (or that there is no screen), the number of lines
+/// asked for (after clamping) and the styled flag.
 fn output_hash(lines: usize, styled: bool, capture: &Capture) -> String {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -3872,7 +3952,7 @@ fn output_hash(lines: usize, styled: bool, capture: &Capture) -> String {
         feed(state, &value.to_le_bytes());
     }
     let mut state = OFFSET;
-    feed(&mut state, b"riwork/shell-output/v1\0");
+    feed(&mut state, b"riwork/shell-output/v2\0");
     number(&mut state, lines as u64);
     number(&mut state, u64::from(styled));
     number(&mut state, capture.output.len() as u64);
@@ -3886,6 +3966,8 @@ fn output_hash(lines: usize, styled: bool, capture: &Capture) -> String {
             number(&mut state, u64::from(screen.rows));
             number(&mut state, u64::from(screen.cols));
             number(&mut state, u64::from(screen.in_mode));
+            number(&mut state, u64::from(screen.history_size));
+            number(&mut state, u64::from(screen.alternate));
         }
     }
     // FNV-1a leaves the high bits of a short input weakly mixed.
@@ -3898,12 +3980,18 @@ fn output_hash(lines: usize, styled: bool, capture: &Capture) -> String {
 /// The visible screen of a captured pane. `x` and `y` are 0-based cursor cells
 /// (`#{cursor_x}`, `#{cursor_y}`) within the last `rows` lines of the output.
 /// `x` counts terminal cells, so a wide character before the cursor takes two.
+/// `history_size` (`#{history_size}`) is the number of scrollback lines above
+/// the screen, and `alternate` (`#{alternate_on}`) whether a full-screen
+/// program is on the alternate screen, which has no scrollback of its own: the
+/// history above it is the normal screen's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Screen {
     pub cursor: Cursor,
     pub rows: u32,
     pub cols: u32,
     pub in_mode: bool,
+    pub history_size: u32,
+    pub alternate: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -3911,6 +3999,9 @@ pub struct Cursor {
     pub x: u32,
     pub y: u32,
 }
+
+/// What the tmux report of a screen capture asks for; see `align_screen`.
+const SCREEN_REPORT: &str = "#{pane_height}|#{pane_width}|#{cursor_x}|#{cursor_y}|#{pane_in_mode}|#{history_size}|#{alternate_on}";
 
 /// The screen rule of `shell output`: the last `rows` lines of the output are
 /// the visible screen, exactly `rows` of them, blank ones included.
@@ -3922,17 +4013,18 @@ pub struct Cursor {
 /// back. Output with more lines than that cannot be aligned, and the screen
 /// is left out rather than misreported.
 ///
-/// `report` is `HEIGHT|WIDTH|CURSOR_X|CURSOR_Y|IN_MODE|HISTORY_SIZE`.
+/// `report` is `SCREEN_REPORT` expanded:
+/// `HEIGHT|WIDTH|CURSOR_X|CURSOR_Y|IN_MODE|HISTORY_SIZE|ALTERNATE`.
 fn align_screen(output: &str, report: &str, requested: usize) -> Option<Capture> {
     let fields: Vec<u32> = report
         .trim_end_matches('\n')
         .split('|')
         .map(|field| field.parse().ok())
         .collect::<Option<_>>()?;
-    let [rows, cols, x, y, in_mode, history] = fields[..] else {
+    let [rows, cols, x, y, in_mode, history, alternate] = fields[..] else {
         return None;
     };
-    if rows == 0 || cols == 0 || y >= rows || in_mode > 1 {
+    if rows == 0 || cols == 0 || y >= rows || in_mode > 1 || alternate > 1 {
         return None;
     }
     let expected = (rows as usize).saturating_add(requested.min(history as usize));
@@ -3955,7 +4047,57 @@ fn align_screen(output: &str, report: &str, requested: usize) -> Option<Capture>
             rows,
             cols,
             in_mode: in_mode == 1,
+            history_size: history,
+            alternate: alternate == 1,
         }),
+    })
+}
+
+/// The `HistoryPage` of a `read_history` capture. `page` is what
+/// `capture-pane -p -S -(end+lines) -E -(end+1)` printed and `history_size`
+/// what tmux said in the same command list.
+///
+/// tmux clamps `-S` at the top of the history but `-E` to line 0, so a page
+/// that ends above the top prints the very first line; for `end >=
+/// history_size` the page is empty. Otherwise it holds
+/// `min(lines, history_size - end)` lines, one per row like `capture_screen`,
+/// and it is `complete` when it includes the first line of the history. A
+/// tmux that trimmed blank lines at the end gets them back, as in
+/// `align_screen`; more lines than that cannot be a page and are an error.
+fn history_page(
+    page: &str,
+    history_size: u32,
+    end: u32,
+    lines: u32,
+) -> Result<HistoryPage, String> {
+    if end >= history_size {
+        return Ok(HistoryPage {
+            output: String::new(),
+            line_count: 0,
+            history_size,
+            complete: true,
+        });
+    }
+    let line_count = (history_size - end).min(lines);
+    let expected = line_count as usize;
+    let have = page.matches('\n').count() + usize::from(!page.is_empty() && !page.ends_with('\n'));
+    if have > expected {
+        return Err(format!(
+            "tmux returned {have} history lines for a page of {expected}"
+        ));
+    }
+    let mut output = page.to_owned();
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str(&"\n".repeat(expected - have));
+    // Lines are joined by a newline: none follows the last one.
+    output.pop();
+    Ok(HistoryPage {
+        output,
+        line_count,
+        history_size,
+        complete: u64::from(end) + u64::from(lines) >= u64::from(history_size),
     })
 }
 
