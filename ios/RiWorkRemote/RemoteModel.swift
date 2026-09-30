@@ -54,6 +54,12 @@ enum ConnectionState: Equatable {
     var terminalFontSize = TerminalFontSize.standard
     /// Sessions in focus mode during this app run.
     var focusedSessionIDs: Set<String> = []
+    /// The synced colors: what is drawn now, and the last palette known per desktop (pipeline in RemoteModel+Theme.swift).
+    let theme: ThemeStore
+    /// The hotkeys added to the key bar.
+    let hotkeys: HotkeyStore
+    /// Whether the connected desktop offers `appearance.get`. Learned from the first answer, reset by every new connection.
+    @ObservationIgnored var themeSupport: ThemeSyncSupport = .unknown
     /// Set when the Keychain library could not be read. Saved pairings are then untouched and never overwritten.
     var loadFailure: String?
     var loadFailed: Bool { loadFailure != nil }
@@ -89,6 +95,13 @@ enum ConnectionState: Equatable {
     @ObservationIgnored var revealTask: Task<Void, Never>?
     @ObservationIgnored var reconnectTask: Task<Void, Never>?
     @ObservationIgnored var reconnectID = UUID()
+    // Theme sync plumbing (RemoteModel+Theme.swift).
+    @ObservationIgnored let themeRefreshInterval: Duration
+    @ObservationIgnored let themeMinimumGap: Duration
+    @ObservationIgnored var themeTask: Task<Void, Never>?
+    @ObservationIgnored var appearanceFlight: UUID?
+    @ObservationIgnored var appearanceInFlight: Bool { appearanceFlight != nil }
+    @ObservationIgnored var lastAppearanceFetch: ContinuousClock.Instant?
     @ObservationIgnored var noticeID = UUID()
     /// The pane size the view reported; the grid is recomputed from it whenever layout, font or focus changes.
     @ObservationIgnored var terminalArea: CGSize?
@@ -105,7 +118,7 @@ enum ConnectionState: Equatable {
 
     init(client: any RemoteTransport = RelayClient(), keychain: KeychainStore = KeychainStore(), pollInterval: Duration = .seconds(3),
          keyFlushInterval: Duration = .milliseconds(40), previewDelay: Duration = .milliseconds(300), reconnectBackoff: Duration = .seconds(1),
-         defaults: UserDefaults = .standard,
+         defaults: UserDefaults = .standard, themeRefreshInterval: Duration = .seconds(60), themeMinimumGap: Duration = .seconds(5),
          cellMetrics: @escaping @MainActor (Double) -> (width: Double, height: Double) = { TerminalFont.cell(size: $0) },
          keepAwake: @escaping @MainActor (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 }) {
         self.client = client
@@ -115,6 +128,10 @@ enum ConnectionState: Equatable {
         self.previewDelay = previewDelay
         self.reconnectBackoff = reconnectBackoff
         self.defaults = defaults
+        self.themeRefreshInterval = themeRefreshInterval
+        self.themeMinimumGap = themeMinimumGap
+        self.theme = ThemeStore(defaults: defaults)
+        self.hotkeys = HotkeyStore(defaults: defaults)
         self.cellMetrics = cellMetrics
         self.keepAwake = keepAwake
         preferLineComposer = defaults.bool(forKey: Self.lineComposerKey)
@@ -124,20 +141,27 @@ enum ConnectionState: Equatable {
     static let lineComposerKey = "riwork.lineComposer", fontSizeKey = "riwork.terminalFontSize"
     /// Only "item not found" means an empty library. Any other failure blocks writes so a retry can still succeed.
     func loadLibrary() {
+        var chosen: String?
         do {
             let library = try keychain.read(Library.self) ?? Library()
             desktops = library.desktops
             selectedDesktopID = library.selectedDesktopID ?? desktops.first?.id
+            chosen = library.selectedDesktopID
             loadFailure = nil
         } catch {
             desktops = []; selectedDesktopID = nil
             loadFailure = error is KeychainError ? error.localizedDescription : "Saved pairings could not be read (\(error.localizedDescription)). They were left untouched."
         }
+        // Before anything connects, the desktop list wears the last palette of the desktop that was chosen, or else of the most
+        // recently used one that still exists, so the first frame already has it. Never chosen: the built-in style.
+        theme.showInitial(selected: chosen, existing: desktops.map(\.id))
     }
     /// Last resort when the stored library can never be decoded; the user confirms first.
     func resetLibrary() throws {
         try keychain.delete()
+        for desktop in desktops { theme.forget(desktop.id) }
         desktops = []; selectedDesktopID = nil; loadFailure = nil; error = nil
+        theme.showInitial(selected: nil, existing: [])
     }
     var desktop: SavedDesktop? { desktops.first(where: { $0.id == selectedDesktopID }) }
     var projectID: String? { desktop?.selectedProjectID }
@@ -254,11 +278,15 @@ enum ConnectionState: Equatable {
         let previous = desktops
         desktops.removeAll { $0.id == id }
         do { try persist() } catch { desktops = previous; throw error }
+        theme.forget(id)
+        theme.showInitial(selected: selectedDesktopID, existing: desktops.map(\.id))
     }
     func activate(_ id: String) async {
         if selectedDesktopID != id {
             await disconnect()
             selectedDesktopID = id; clearSnapshot(); draft = ""; deliveryNotice = nil
+            // The new desktop's last palette is drawn before it has even connected.
+            theme.select(id)
             // Typed-but-unsent input belongs to the desktop it was typed for; leaving it does not queue it for later.
             discardKeyBuffers(exceptDesktop: id)
             do { try persist() } catch { self.error = error.localizedDescription; return }
@@ -269,11 +297,15 @@ enum ConnectionState: Equatable {
         guard let desktop, state != .connecting else { return }
         wantsConnection = true
         polling?.cancel()
+        stopThemeSync()
         generation = UUID(); let token = generation
         viewportSessionID = nil; appliedViewport = nil; failedViewport = nil; viewportError = nil
         missingSessionIDs = []; loadedProjectID = nil; outputLines = [:]
         // A fresh connection may reach an upgraded desktop: detect direct typing again. Buffers survive.
         keysSupport = .unknown
+        // The same for its colors, and the last palette for this desktop is on screen while the first fetch is on its way.
+        themeSupport = .unknown; appearanceFlight = nil
+        theme.select(desktop.id)
         keySender?.cancel(); keySender = nil
         for key in Array(keyBuffers.keys) { keyBuffers[key]?.block = nil }
         state = .connecting; error = nil; snapshotStale = true
@@ -285,6 +317,7 @@ enum ConnectionState: Equatable {
             }
             guard generation == token else { return }
             state = .connected
+            startThemeSync(token: token)
             try await refresh(token: token)
             guard generation == token else { return }
             startPolling(token: token)
@@ -312,6 +345,7 @@ enum ConnectionState: Equatable {
         if !background { wantsConnection = false }
         reconnectTask?.cancel(); reconnectTask = nil
         keySender?.cancel(); keySender = nil
+        stopThemeSync()
         pollSleeper?.cancel()
         // A manual disconnect stays disconnected through backgrounding; only an active connection is "paused".
         state = background && wantsConnection ? .suspended : .disconnected

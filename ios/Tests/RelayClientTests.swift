@@ -98,6 +98,9 @@ private final class ScriptedDesktop: @unchecked Sendable {
     var corruptServerProof = false
     var withholdReady = false
     var policy: @Sendable (String) -> Policy = { _ in .respond }
+    /// What the desktop answers for a method instead of echoing it, and the errors it answers with.
+    var results: [String: JSONValue] = [:]
+    var failures: [String: (code: String, message: String)] = [:]
 
     init(socket: ScriptedSocket, pairing: Pairing) {
         self.socket = socket; self.pairing = pairing
@@ -156,7 +159,10 @@ private final class ScriptedDesktop: @unchecked Sendable {
         let result: JSONValue = request["method"].string == "shell.keys"
             ? .object(["shell_id": request["params"]["shell_id"], "batch": request["params"]["batch"], "status": .string("sent")])
             : .object(["method": request["method"]])
-        let response = JSONValue.object(["v": .number(1), "type": .string("response"), "id": .string(id), "ok": .bool(true), "result": result])
+        var response = JSONValue.object(["v": .number(1), "type": .string("response"), "id": .string(id), "ok": .bool(true), "result": results[request["method"].string ?? ""] ?? result])
+        if let failure = failures[request["method"].string ?? ""] {
+            response = .object(["v": .number(1), "type": .string("response"), "id": .string(id), "ok": .bool(false), "error": .object(["code": .string(failure.code), "message": .string(failure.message)])])
+        }
         switch policy(request["method"].string ?? "") {
         case .respond: socket.push(seal(response))
         case .hold: lock.withLock { held[id] = response }
@@ -323,6 +329,57 @@ private final class ScriptedDesktop: @unchecked Sendable {
         XCTAssertEqual(desktop.violations, 0)
         let alive = await client.isConnected()
         XCTAssertTrue(alive)
+    }
+
+    // MARK: appearance.get
+
+    private let appearanceResult: JSONValue = .object([
+        "v": .number(1), "updated_at": .number(1_790_000_000), "dark": .bool(true),
+        "palette": .object(["bg": .string("#090d14"), "panel": .string("#101720"), "panel_active": .string("#14212a"), "divider": .string("#253c45"),
+                            "cyan": .string("#55e6dc"), "magenta": .string("#ce78ef"), "gold": .string("#f4bf75"), "text": .string("#d3e1e6"), "muted": .string("#708993")])
+    ])
+
+    func testAppearanceGetRoundTripsThroughTheRealClientOnTheNextCounter() async throws {
+        let (client, _, desktop) = try await connected { $0.results["appearance.get"] = self.appearanceResult }
+        _ = try await client.request(method: "projects.list")
+        let appearance = try await client.appearance()
+        XCTAssertEqual(appearance.palette.cyan, RGB(0x55e6dc))
+        XCTAssertTrue(appearance.dark)
+        XCTAssertNil(appearance.terminal)
+        XCTAssertEqual(desktop.methods(), ["projects.list", "appearance.get"])
+        XCTAssertEqual(desktop.counters(), [0, 1])
+        XCTAssertEqual(desktop.params()[1], .object([:]), "appearance.get takes no parameters")
+        XCTAssertEqual(desktop.violations, 0)
+        let alive = await client.isConnected()
+        XCTAssertTrue(alive)
+    }
+    func testAppearanceGetRejectsParametersBeforeAnythingIsSealed() async throws {
+        let (client, _, desktop) = try await connected()
+        do { _ = try await client.request(method: "appearance.get", params: ["shell_id": .string(shell)]); XCTFail("accepted parameters") }
+        catch RemoteError.protocolViolation {} catch { XCTFail("wrong error \(error)") }
+        XCTAssertEqual(desktop.requestCount, 0)
+    }
+    func testAppearanceGetErrorsKeepTheirCodesAndTheConnection() async throws {
+        let (client, _, desktop) = try await connected {
+            $0.failures["appearance.get"] = (code: "not_found", message: "appearance not published")
+        }
+        do { _ = try await client.appearance(); XCTFail("expected not_found") }
+        catch let error as RemoteError {
+            guard case .rpc(let code, let message) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(code, "not_found")
+            XCTAssertEqual(message, "appearance not published")
+            XCTAssertFalse(RemoteError.isUnsupportedMethod(error), "an unpublished appearance is not an old desktop")
+        }
+        desktop.failures["appearance.get"] = (code: "invalid_request", message: "unsupported RPC method")
+        do { _ = try await client.appearance(); XCTFail("expected unsupported") }
+        catch { XCTAssertTrue(RemoteError.isUnsupportedMethod(error), "\(error)") }
+        desktop.failures["appearance.get"] = nil
+        desktop.results["appearance.get"] = .object(["v": .number(2)])
+        do { _ = try await client.appearance(); XCTFail("expected version error") }
+        catch { XCTAssertEqual(error as? AppearanceError, .unsupportedVersion) }
+        let alive = await client.isConnected()
+        XCTAssertTrue(alive, "an answer that cannot be used is not a reason to drop the connection")
+        XCTAssertEqual(desktop.violations, 0)
     }
 
     func testConnectionLossDuringShellKeysIsNotUncertainWhereShellInputIs() async throws {

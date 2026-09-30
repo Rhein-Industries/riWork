@@ -31,15 +31,22 @@ struct CommandField: UIViewRepresentable {
         field.enablesReturnKeyAutomatically = true
         field.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "Menlo", size: 13) ?? .monospacedSystemFont(ofSize: 13, weight: .regular))
         field.adjustsFontForContentSizeCategory = true
-        field.textColor = DesktopStyle.textUI
-        field.tintColor = DesktopStyle.accentUI
-        field.attributedPlaceholder = NSAttributedString(string: placeholder, attributes: [.foregroundColor: DesktopStyle.mutedUI])
+        colorize(field, context.environment.desktopStyle, coordinator: context.coordinator)
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return field
     }
+    /// Colors are applied on creation and again only when the synced palette changes, so typing is never disturbed.
+    private func colorize(_ field: UITextField, _ style: DesktopStyle, coordinator: Coordinator) {
+        guard coordinator.appliedStyle != style || coordinator.appliedPlaceholder != placeholder else { return }
+        coordinator.appliedStyle = style; coordinator.appliedPlaceholder = placeholder
+        field.textColor = style.textUI
+        field.tintColor = style.accentUI
+        field.attributedPlaceholder = NSAttributedString(string: placeholder, attributes: [.foregroundColor: style.mutedUI])
+    }
     func updateUIView(_ field: UITextField, context: Context) {
         context.coordinator.parent = self
+        colorize(field, context.environment.desktopStyle, coordinator: context.coordinator)
         if field.text != text { field.text = text }
         field.isEnabled = isEnabled
         field.alpha = isEnabled ? 1 : 0.45
@@ -51,6 +58,8 @@ struct CommandField: UIViewRepresentable {
 
     @MainActor final class Coordinator: NSObject, UITextFieldDelegate {
         var parent: CommandField
+        var appliedStyle: DesktopStyle?
+        var appliedPlaceholder: String?
         init(_ parent: CommandField) { self.parent = parent }
         @objc func changed(_ field: UITextField) { parent.text = field.text ?? "" }
         func textFieldShouldReturn(_ textField: UITextField) -> Bool { parent.onSubmit(); return false }

@@ -9,7 +9,7 @@ public enum RequestValidation {
         let required: Set<String>
         let optional: Set<String>
         switch method {
-        case "projects.list", "orchestrators.list": required = []; optional = []
+        case "projects.list", "orchestrators.list", "appearance.get": required = []; optional = []
         case "worktrees.list", "shells.list": required = ["project_id"]; optional = []
         case "tasks.list": required = ["project_id"]; optional = ["worktree_id"]
         case "shell.output": required = ["shell_id"]; optional = ["lines"]

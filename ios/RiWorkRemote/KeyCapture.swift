@@ -12,108 +12,17 @@ enum TerminalFont {
     }
 }
 
-/// The compact key row above the keyboard: Esc, Tab, sticky Ctrl, arrows, paste, and hide-keyboard.
-@MainActor final class KeyBarView: UIInputView {
-    enum Action: Hashable {
-        case key(TerminalKey), control, paste, hide
-    }
-    static let height: CGFloat = 44
-    var onAction: ((Action) -> Void)?
-    private(set) var buttons: [Action: UIButton] = [:]
-    private var repeatTask: Task<Void, Never>?
-    private var didRepeat = false
-
-    init() {
-        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height), inputViewStyle: .keyboard)
-        allowsSelfSizing = true
-        backgroundColor = DesktopStyle.panelUI
-        autoresizingMask = .flexibleWidth
-        let rule = UIView()
-        rule.backgroundColor = DesktopStyle.dividerUI
-        rule.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(rule)
-        let stack = UIStackView()
-        stack.axis = .horizontal
-        stack.distribution = .fillEqually
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            rule.topAnchor.constraint(equalTo: topAnchor), rule.leadingAnchor.constraint(equalTo: leadingAnchor),
-            rule.trailingAnchor.constraint(equalTo: trailingAnchor), rule.heightAnchor.constraint(equalToConstant: 1),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 1), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor), stack.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor)
-        ])
-        let layout: [(Action, String?, String?, String)] = [
-            (.key(.escape), "Esc", nil, "Escape"), (.key(.tab), "Tab", nil, "Tab"), (.control, "Ctrl", nil, "Control"),
-            (.key(.left), nil, "arrow.left", "Left arrow"), (.key(.up), nil, "arrow.up", "Up arrow"),
-            (.key(.down), nil, "arrow.down", "Down arrow"), (.key(.right), nil, "arrow.right", "Right arrow"),
-            (.paste, nil, "doc.on.clipboard", "Paste"), (.hide, nil, "keyboard.chevron.compact.down", "Hide keyboard")
-        ]
-        for (action, title, symbol, label) in layout {
-            let button = UIButton(type: .system)
-            var configuration = UIButton.Configuration.plain()
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 2)
-            configuration.baseForegroundColor = DesktopStyle.textUI
-            if let title {
-                configuration.attributedTitle = AttributedString(title, attributes: AttributeContainer([.font: UIFont(name: "Menlo", size: 13) ?? .monospacedSystemFont(ofSize: 13, weight: .regular)]))
-            }
-            if let symbol { configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .regular)) }
-            button.configuration = configuration
-            button.accessibilityLabel = label
-            button.accessibilityIdentifier = "keybar.\(label)"
-            button.addAction(UIAction { [weak self] _ in self?.tapped(action) }, for: .touchUpInside)
-            if case .key(let key) = action, [.left, .up, .down, .right].contains(key) {
-                button.addAction(UIAction { [weak self] _ in self?.beginRepeat(action) }, for: .touchDown)
-                button.addAction(UIAction { [weak self] _ in self?.endRepeat() }, for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
-            }
-            stack.addArrangedSubview(button)
-            buttons[action] = button
-        }
-        setControlArmed(false)
-    }
-    required init?(coder: NSCoder) { fatalError("KeyBarView is created in code") }
-    override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: Self.height) }
-
-    /// Ctrl is sticky: it stays highlighted until the next key uses it.
-    func setControlArmed(_ armed: Bool) {
-        guard let button = buttons[.control] else { return }
-        button.configuration?.baseForegroundColor = armed ? DesktopStyle.accentUI : DesktopStyle.textUI
-        button.configuration?.background.backgroundColor = armed ? DesktopStyle.activeUI : .clear
-        button.isSelected = armed
-        button.accessibilityValue = armed ? "armed" : "not armed"
-        button.accessibilityTraits = armed ? [.button, .selected] : .button
-    }
-    /// Programmatic press, used by the buttons and by tests.
-    func tapped(_ action: Action) {
-        // A key that already repeated while held is not sent once more on release.
-        if didRepeat { didRepeat = false; return }
-        onAction?(action)
-    }
-    private func beginRepeat(_ action: Action) {
-        didRepeat = false
-        repeatTask?.cancel()
-        repeatTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(400))
-            while !Task.isCancelled, let self {
-                self.didRepeat = true
-                self.onAction?(action)
-                try? await Task.sleep(for: .milliseconds(70))
-            }
-        }
-    }
-    private func endRepeat() { repeatTask?.cancel(); repeatTask = nil }
-    /// The bar going away (keyboard hidden) while a finger is down must not leave an arrow repeating.
-    override func didMoveToWindow() { super.didMoveToWindow(); if window == nil { endRepeat() } }
-}
-
 /// A view that becomes first responder to bring up the keyboard, and turns everything typed into `KeyItem`s.
 /// It draws nothing: the terminal's own screen shows what the shell echoes.
 @MainActor final class KeyCaptureView: UIView, UIKeyInput {
     /// Returns false when the input was refused (buffer full).
     var onItems: (([KeyItem]) -> Bool)?
     var onActiveChange: ((Bool) -> Void)?
-    private(set) var mapper = KeyMapper() { didSet { bar.setControlArmed(mapper.controlArmed) } }
+    private(set) var mapper = KeyMapper() { didSet { bar.setArmed(control: mapper.controlArmed, alt: mapper.altArmed) } }
     let bar = KeyBarView()
+    /// The hotkeys the person added; the built-in ones are always there.
+    var hotkeys: [Hotkey] = [] { didSet { bar.hotkeys = hotkeys } }
+    var onEditHotkeys: (() -> Void)?
     var isEnabled = true { didSet { if !isEnabled, isFirstResponder { _ = resignFirstResponder() } } }
 
     // Text input traits: every one of these would change what the shell receives.
@@ -141,6 +50,10 @@ enum TerminalFont {
 
     override var canBecomeFirstResponder: Bool { isEnabled }
     override var inputAccessoryView: UIView? { bar }
+    /// Replaces the software keyboard. Tests set an empty view: that is how iOS lays out a hardware keyboard (the bar alone
+    /// at the bottom edge), which a simulator cannot attach.
+    var inputViewStandIn: UIView?
+    override var inputView: UIView? { inputViewStandIn }
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()
         if became { onActiveChange?(true) }
@@ -148,7 +61,7 @@ enum TerminalFont {
     }
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        if resigned { mapper.disarmControl(); bar.setControlArmed(false); onActiveChange?(false) }
+        if resigned { mapper.disarmModifiers(); onActiveChange?(false) }
         return resigned
     }
 
@@ -175,8 +88,12 @@ enum TerminalFont {
         switch action {
         case .key(let key): emit(mapper.press(key))
         case .control: mapper.toggleControl()
+        case .alt: mapper.toggleAlt()
+        case .text(let symbol): emit(mapper.insert(symbol))
         case .paste: paste(nil)
         case .hide: _ = resignFirstResponder()
+        case .hotkey(let id): if let hotkey = (Hotkey.builtIn + hotkeys).first(where: { $0.id == id }) { emit(mapper.run(hotkey)) }
+        case .editHotkeys: onEditHotkeys?()
         }
     }
 
@@ -217,6 +134,10 @@ struct KeyCapture: UIViewRepresentable {
     let focus: KeyFocus
     var isEnabled: Bool
     var label: String
+    /// Focus mode draws the bar as a pill when it is alone at the bottom edge (hardware keyboard).
+    var presentation = KeyBarView.Presentation.strip
+    var hotkeys: [Hotkey] = []
+    var onEditHotkeys: () -> Void = {}
     var onItems: ([KeyItem]) -> Bool
 
     func makeUIView(context: Context) -> KeyCaptureView {
@@ -229,6 +150,11 @@ struct KeyCapture: UIViewRepresentable {
         view.onItems = onItems
         view.isEnabled = isEnabled
         view.accessibilityLabel = label
+        // New colors reach the bar in place: the view, its focus and the keyboard are not rebuilt, so typing goes on.
+        view.bar.style = context.environment.desktopStyle
+        view.bar.presentation = presentation
+        view.hotkeys = hotkeys
+        view.onEditHotkeys = onEditHotkeys
         focus.view = view
     }
     static func dismantleUIView(_ view: KeyCaptureView, coordinator: ()) {

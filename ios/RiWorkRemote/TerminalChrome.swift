@@ -4,13 +4,14 @@ import RiWorkCore
 
 /// The small single-line chip above the key bar: pending input as text and key glyphs, plus why it is waiting.
 struct KeyPreviewChip: View {
+    @Environment(\.desktopStyle) private var style
     let preview: KeyPreview
     var discard: () -> Void
     private var tint: Color {
         switch preview.tone {
-        case .sending: DesktopStyle.muted
-        case .offline, .full: DesktopStyle.warning
-        case .blocked: DesktopStyle.error
+        case .sending: style.muted
+        case .offline, .full: style.warning
+        case .blocked: style.error
         }
     }
     var body: some View {
@@ -20,9 +21,9 @@ struct KeyPreviewChip: View {
             Text(preview.label).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(tint)
                 .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
             Button { discard() } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 13)).frame(width: 30, height: 28).contentShape(Rectangle()) }
-                .buttonStyle(.plain).foregroundStyle(DesktopStyle.muted).accessibilityLabel("Discard pending input")
+                .buttonStyle(.plain).foregroundStyle(style.muted).accessibilityLabel("Discard pending input")
         }
-        .padding(.leading, 8).frame(minHeight: 28).background(DesktopStyle.panel)
+        .padding(.leading, 8).frame(minHeight: 28).background(style.panel)
         .overlay(alignment: .top) { DesktopRule() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Pending input: \(preview.text). \(preview.label)")
@@ -31,6 +32,7 @@ struct KeyPreviewChip: View {
 
 /// Translucent corner controls in focus mode. Fully visible after a tap, then fades to a faint ghost.
 struct FocusControls: View {
+    @Environment(\.desktopStyle) private var style
     var visible: Bool
     var fontSize: Double
     var smaller: () -> Void
@@ -44,7 +46,7 @@ struct FocusControls: View {
         }
         .labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: true))
         .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(DesktopStyle.divider, lineWidth: 1))
+        .overlay(Capsule().stroke(style.divider, lineWidth: 1))
         .opacity(visible ? 1 : 0.18)
         // A faded control is not tappable: the first tap only brings it back.
         .allowsHitTesting(visible)
@@ -54,14 +56,15 @@ struct FocusControls: View {
 }
 
 /// The screen text with the desktop cursor drawn as an inverted block, when the desktop reported one.
+/// The block is the terminal's cursor color and the character under it takes the terminal background.
 enum TerminalScreenText {
-    static func text(output: String, cursorOffset: Int?) -> Text {
+    static func text(output: String, cursorOffset: Int?, style: DesktopStyle) -> Text {
         guard let cursorOffset, cursorOffset >= 0, cursorOffset < output.count else { return Text(output) }
         let index = output.index(output.startIndex, offsetBy: cursorOffset)
         var attributed = AttributedString(output[..<index])
         var cell = AttributedString(String(output[index]))
-        cell.backgroundColor = DesktopStyle.accent
-        cell.foregroundColor = DesktopStyle.background
+        cell.backgroundColor = style.terminalCursor
+        cell.foregroundColor = style.terminalBackground
         attributed += cell
         attributed += AttributedString(output[output.index(after: index)...])
         return Text(attributed)
@@ -70,10 +73,11 @@ enum TerminalScreenText {
 
 /// Small badge when the pane is in tmux copy mode.
 struct CopyModeBadge: View {
+    @Environment(\.desktopStyle) private var style
     var body: some View {
-        Text("COPY MODE").font(.custom("Menlo-Bold", size: 9, relativeTo: .caption2)).foregroundStyle(DesktopStyle.warning)
+        Text("COPY MODE").font(.custom("Menlo-Bold", size: 9, relativeTo: .caption2)).foregroundStyle(style.warning)
             .padding(.horizontal, 4).padding(.vertical, 1)
-            .overlay(RoundedRectangle(cornerRadius: 2).stroke(DesktopStyle.warning.opacity(0.6), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 2).stroke(style.warning.opacity(0.6), lineWidth: 1))
             .accessibilityLabel("Terminal is in copy mode")
     }
 }
