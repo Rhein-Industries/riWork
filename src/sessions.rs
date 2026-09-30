@@ -16,6 +16,8 @@ use std::{
 };
 use uuid::Uuid;
 
+use crate::session_keys::tmux_argument;
+
 mod sample;
 pub use sample::SessionSample;
 
@@ -784,6 +786,68 @@ impl SessionManager {
         let output =
             self.tmux_checked(&["capture-pane", "-p", "-t", &pane_target(id), "-S", &start])?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Like `capture`, plus what a remote screen needs to place a cursor: the
+    /// pane size, the cursor cell and whether the pane is in a mode.
+    ///
+    /// The capture and the pane report run as one tmux command list, so no
+    /// pane output can land between them. The last `rows` lines of
+    /// `Capture::output` are exactly the visible screen, trailing blank rows
+    /// included; see `align_screen`. If the report cannot be read, the output
+    /// is returned as `capture` would return it, without a screen.
+    pub fn capture_screen(&self, id: &str, lines: usize) -> Result<Capture, String> {
+        self.require_live(id)?;
+        let lines = lines.clamp(1, HISTORY_LINES);
+        let pane = pane_target(id);
+        let marker = format!("riwork-screen-{}:", Uuid::new_v4().simple());
+        let start = format!("-{lines}");
+        let report = format!(
+            "{marker}#{{pane_height}}|#{{pane_width}}|#{{cursor_x}}|#{{cursor_y}}|#{{pane_in_mode}}|#{{history_size}}"
+        );
+        let combined = self.tmux_checked(&[
+            "capture-pane",
+            "-p",
+            "-t",
+            &pane,
+            "-S",
+            &start,
+            ";",
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            &report,
+        ]);
+        if let Ok(output) = combined {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if let Some((output, report)) = text.rsplit_once(&marker)
+                && let Some(capture) = align_screen(output, report, lines)
+            {
+                return Ok(capture);
+            }
+        }
+        Ok(Capture {
+            output: self.capture(id, lines)?,
+            screen: None,
+        })
+    }
+
+    /// Type literal text and named keys into an existing shell's pane, in
+    /// order, as one batch under the shell's input lock. Errors that begin
+    /// with a `session_keys` token happened before any key was sent.
+    pub fn send_keys(&self, id: &str, items: &[crate::session_keys::Item]) -> Result<(), String> {
+        use crate::session_keys::{INVALID_REQUEST, NOT_FOUND, NOT_SENT};
+        self.require_live(id).map_err(|error| {
+            if error.starts_with("invalid UUID") {
+                format!("{INVALID_REQUEST}{error}")
+            } else if error.starts_with("unknown shell") || error.ends_with("has exited") {
+                format!("{NOT_FOUND}{error}")
+            } else {
+                format!("{NOT_SENT}{error}")
+            }
+        })?;
+        crate::session_keys::send(&self.home, id, items, &|args| self.tmux_text(args))
     }
 
     /// A pane identity changes on respawn, even when its RiWork UUID is retained.
@@ -3662,14 +3726,75 @@ fn tmux_label(args: &[&str]) -> String {
     )
 }
 
-/// tmux reads an argument that ends in `;` as the end of a command, and one
-/// that ends in `\;` as a literal `;`. Every argument sent through
-/// `Command::args` therefore has its trailing `;` written as `\;`.
-fn tmux_argument(argument: &str) -> String {
-    match argument.strip_suffix(';') {
-        Some(rest) => format!("{rest}\\;"),
-        None => argument.to_owned(),
+/// A pane capture and, when tmux could report it, the screen geometry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Capture {
+    pub output: String,
+    pub screen: Option<Screen>,
+}
+
+/// The visible screen of a captured pane. `x` and `y` are 0-based cursor cells
+/// (`#{cursor_x}`, `#{cursor_y}`) within the last `rows` lines of the output.
+/// `x` counts terminal cells, so a wide character before the cursor takes two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Screen {
+    pub cursor: Cursor,
+    pub rows: u32,
+    pub cols: u32,
+    pub in_mode: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Cursor {
+    pub x: u32,
+    pub y: u32,
+}
+
+/// The screen rule of `shell output`: the last `rows` lines of the output are
+/// the visible screen, exactly `rows` of them, blank ones included.
+///
+/// `capture-pane -p -S -N` prints `min(N, history_size) + rows` lines, one per
+/// screen row, and tmux 3.6 keeps the blank rows at the bottom. A tmux that
+/// trimmed them would leave the output short, and the cursor would then point
+/// at the wrong line; the missing rows are all at the end, so they are put
+/// back. Output with more lines than that cannot be aligned, and the screen
+/// is left out rather than misreported.
+///
+/// `report` is `HEIGHT|WIDTH|CURSOR_X|CURSOR_Y|IN_MODE|HISTORY_SIZE`.
+fn align_screen(output: &str, report: &str, requested: usize) -> Option<Capture> {
+    let fields: Vec<u32> = report
+        .trim_end_matches('\n')
+        .split('|')
+        .map(|field| field.parse().ok())
+        .collect::<Option<_>>()?;
+    let [rows, cols, x, y, in_mode, history] = fields[..] else {
+        return None;
+    };
+    if rows == 0 || cols == 0 || y >= rows || in_mode > 1 {
+        return None;
     }
+    let expected = (rows as usize).saturating_add(requested.min(history as usize));
+    let have =
+        output.matches('\n').count() + usize::from(!output.is_empty() && !output.ends_with('\n'));
+    if have > expected {
+        return None;
+    }
+    let mut output = output.to_owned();
+    if have < expected {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&"\n".repeat(expected - have));
+    }
+    Some(Capture {
+        output,
+        screen: Some(Screen {
+            cursor: Cursor { x, y },
+            rows,
+            cols,
+            in_mode: in_mode == 1,
+        }),
+    })
 }
 
 /// tmux expands formats in `-c`, so `#T` or `#{...}` in a directory name would

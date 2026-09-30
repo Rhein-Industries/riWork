@@ -143,7 +143,10 @@ by the relay.
 
 Ephemeral private copies are wiped after the shared secret is mixed in.
 Library copies inside the X25519 implementation may outlive that wipe.
-`shell.input` is unchanged and is not a cryptographic boundary.
+`shell.input` is unchanged and is not a cryptographic boundary. The 2026-09-30 direct typing
+extension (`shell.keys` and the screen fields of `shell.output`, specified in
+[remote-protocol.md](remote-protocol.md)) is independent of the crypto version and
+applies to v2 sessions exactly as to v1.
 
 ## Vectors and tests
 

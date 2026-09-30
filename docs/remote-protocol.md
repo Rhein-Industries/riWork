@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-09-30: Additive `shell.keys` and cursor/size fields on `shell.output`, for typing straight into a shell from the phone; see "Direct typing extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-29: Protocol v2 is specified in [remote-protocol-v2.md](remote-protocol-v2.md). The v1 bytes in this document are unchanged. `pair` still defaults to v1. v2 is opt-in (`--protocol 2`). A v1 device is not rewritten in place; moving a phone to v2 is revoke plus a new pairing.
 
 v1 has no RPC that creates projects, shells, workers,
@@ -143,8 +144,9 @@ unsolicited response except handshake `ready`.
 | `tasks.list` | `{"project_id":"UUID"}` optionally `"worktree_id":"UUID"` | `{"tasks":[Task]}` |
 | `shells.list` | `{"project_id":"UUID"}` | `{"shells":[Session]}` (existing project shells) |
 | `orchestrators.list` | `{}` | `{"orchestrators":[Session]}` (global + project) |
-| `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200` | `{"shell_id":"UUID","output":"terminal text"}` |
+| `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200` | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) |
 | `shell.input` | `{"shell_id":"UUID","line":"one physical line"}` | `{"shell_id":"UUID","status":"sent"}` |
+| `shell.keys` | `{"shell_id":"UUID","batch":"UUID","items":[{"text":"ls"},{"key":"Enter"}]}` (Direct typing) | `{"shell_id":"UUID","batch":"UUID","status":"sent\|duplicate\|uncertain"}` |
 | `shell.resize` | `{"shell_id":"UUID","columns":43,"rows":17}` | `{"shell_id":"UUID","columns":43,"rows":17}` |
 | `shell.resize.clear` | `{"shell_id":"UUID"}` | `{"shell_id":"UUID","status":"cleared"}` |
 
@@ -162,8 +164,8 @@ creation, close, tmux attachment or free-form CLI RPC. `shell.input` intentional
 submits terminal input followed by Return and can run commands in the selected
 shell (an unrestricted harness, a Vim tab, a plain shell prompt); clients must show
 the selected shell before sending. CR, LF, NUL and other
-Unicode control characters are forbidden. v1 supports line submission only (no
-terminal action method). Use CLI argv directly, never an intermediate shell.
+Unicode control characters are forbidden. The v1 base supports line submission
+only; keystroke-level typing is the additive `shell.keys` below. Use CLI argv directly, never an intermediate shell.
 
 ### Mobile terminal viewport extension (v1, 2026-09-27)
 
@@ -244,6 +246,110 @@ undone. Remove the relay route and restart relay to invalidate its routing token
 endpoint revocation alone already denies endpoint access. A transport dying must
 never kill/recreate/close a tmux or harness session.
 
+### Direct typing extension (v1 and v2, 2026-09-30)
+
+Additive and compatible: two changes, no change to the handshake, envelopes,
+fixtures or any existing method. They apply to protocol v1 and v2 sessions alike
+(the methods do not depend on the crypto version). A client that ignores them
+behaves exactly as before. Needs the iOS worker's agreement; the iOS side is built
+against this text.
+
+**`shell.keys`** types into a shell as the user types, like a terminal. It adds no
+Return and no line: literal text and named keys go to the pane in order.
+
+```json
+{"shell_id":"UUID","batch":"UUID","items":[{"text":"ls -la"},{"key":"Enter"}]}
+```
+
+- `shell_id` is the full shell UUID, resolved like `shell.input` (existing project
+  shells and orchestrators, alive). `batch` is a UUID chosen by the client for this
+  batch.
+- `items` holds 1..=64 items, in delivery order. Each is exactly one of
+  `{"text":"..."}` or `{"key":"NAME"}`. An item with both, neither, a null, another
+  field, or a non-string value fails `invalid_request`, as does an unknown top-level
+  field.
+- `text` is literal, 1..=4096 UTF-8 bytes, and is never interpreted (no shell
+  expansion, no key names, a trailing `;` or `\;` arrives as written). It must not
+  contain any `char::is_control` character (NUL, CR, LF, Tab, Escape, DEL, C1
+  controls) or U+2028 / U+2029: send `Enter` and `Tab` as keys. The text of all
+  items in a batch adds up to at most 4096 bytes.
+- `key` is one of `Enter`, `Tab`, `BTab` (Shift-Tab), `Escape`, `Backspace`,
+  `Delete` (forward delete), `Up`, `Down`, `Left`, `Right`, `Home`, `End`,
+  `PageUp`, `PageDown`, or `C-a` to `C-z` (Control plus a lowercase letter). Names
+  are case-sensitive.
+
+Result: `{"shell_id":"UUID","batch":"UUID","status":"sent"}`. `status` is
+
+- `sent`: the batch was delivered to the pane.
+- `duplicate`: this batch UUID was already delivered for this device; nothing was
+  sent again.
+- `uncertain`: an earlier attempt with this batch UUID started and its outcome is
+  unknown (for example the connector died mid-send); nothing was sent again. The
+  client must not invent a new batch UUID to type the same text again without
+  looking at the screen.
+
+Errors use the usual shape: `invalid_request` (any validation failure, before
+anything runs), `not_found` (unknown or dead shell, or one the device cannot reach,
+as for `shell.input`), `input_unavailable` (new: the pane has terminal input
+disabled), and `cli_error` as elsewhere. A pane in copy mode
+is taken out of it first so the keys reach the program.
+
+Delivery and retries:
+
+- The desktop processes a device's batches one at a time, and serializes typing per
+  shell across devices and local CLI callers with the lock `shell.input` uses. The
+  client sends its batches sequentially and waits for each result.
+- Dedupe is by `batch` and never by request `id`, which stays unique per request as
+  before. A retry uses a new request `id` and the same `batch`; the same batch with
+  other contents is still `duplicate`.
+- The desktop keeps a per-device ledger of the 4096 most recent batches
+  (`keys-DEVICE_UUID.json`, mode 600, atomic writes), separate from the `shell.input`
+  outcome ledger, oldest pruned first. It records a batch as pending before typing
+  and as sent afterwards, and it survives reconnects and connector restarts. A batch
+  pruned after 4096 newer ones is new again.
+- `invalid_request`, `not_found` and `input_unavailable` mean nothing was typed and
+  the batch is not recorded, so the same batch UUID may be retried later. A
+  `cli_error` after typing began leaves the batch pending: a retry answers
+  `uncertain`. A `cli_error` before typing began (the desktop could not reach
+  tmux) also forgets the batch. Either way a retry is always safe.
+- Delivery note, not a wire change: when a key item directly follows a text item in
+  a batch, the desktop sends the key about 150 ms after the text (Codex reads
+  characters arriving within 120 ms of each other as a paste and would take an
+  `Enter` for a newline). Consecutive text items go together, keys with no text
+  before them are not delayed, and a batch with no text-then-key boundary is
+  delivered at once. The pauses happen inside the one `shell.keys` call, under the
+  shell's input lock, so the reply comes after them: a batch that alternates text
+  and keys takes up to 32 x 150 ms, and a client's timeout for `shell.keys` should
+  allow about 6 s plus the usual round trip.
+- Batches that the phone could not deliver are the phone's to buffer; the desktop
+  holds nothing. Because typed text may run commands, `shell.keys` has the same
+  authority as `shell.input`.
+
+**`shell.output` additive result fields.** The result gains the four fields below.
+Old clients ignore them.
+
+```json
+{"shell_id":"UUID","output":"terminal text","cursor":{"x":5,"y":2},"rows":24,"cols":80,"in_mode":false}
+```
+
+- `rows` and `cols` are the pane size in cells; `cursor.x` and `cursor.y` are the
+  0-based cursor cell within the visible screen (tmux `cursor_x`, `cursor_y`). `x`
+  counts terminal cells, so a wide character before the cursor takes two.
+  `in_mode` is true while the pane is in copy mode (the text is still the live
+  screen, not the copy-mode view).
+- The screen rule: `output` is the scrollback requested by `lines` followed by the
+  visible screen, and the visible screen is **exactly the last `rows` lines of
+  `output`**, blank rows at the bottom included. Every line ends with `\n`, one line
+  per screen row (wrapped lines are not joined), so split at `\n`, drop the empty
+  piece after the final `\n`, and take the last `rows` pieces; `cursor.y` indexes
+  them. `output` therefore holds `min(lines, scrollback) + rows` lines. The desktop
+  captures the text and the pane report in one tmux command list, and adds any
+  bottom rows a tmux would trim, so this holds for full-screen programs and copy
+  mode too.
+- If the desktop cannot read the pane report, or it does not fit the text (for
+  example an older desktop), the four fields are omitted together and the call
+  still succeeds.
+
 ## Fixtures and change log
 
 `remote/fixtures/v1.json` supplies deterministic PSK, UUIDs, nonces, proof MACs,
@@ -274,6 +380,14 @@ ready response. Values are test-only and must never provision production devices
   instead of `cleared`; the viewport lease is renewed only within 20 seconds of
   authenticated phone traffic. The API-level wording in the introduction now states
   that `shell.input` amounts to arbitrary command execution (documentation only).
+
+- 2026-09-30: additive and backward compatible. `shell.keys` (ordered batch of
+  literal text and named keys, exactly-once per device by batch UUID with a separate
+  4096-entry write-ahead ledger, `duplicate`/`uncertain` results, new error code
+  `input_unavailable`) and the `cursor`, `rows`, `cols`, `in_mode` fields on the
+  `shell.output` result, whose last `rows` lines are the visible screen. A client
+  that ignores both is unaffected; `shell.input` and its ledger are untouched. Needs
+  the iOS worker's agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

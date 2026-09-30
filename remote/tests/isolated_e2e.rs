@@ -910,3 +910,171 @@ async fn return_only_and_long_inputs_are_serialized_in_disposable_cli_session() 
     );
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires RIWORK_TEST_CLI; isolated real tmux/CLI/relay/connector, types into one disposable cat pane"]
+async fn direct_typing_through_the_real_relay_connector_cli_and_tmux() -> Result<()> {
+    let cli = PathBuf::from(std::env::var_os("RIWORK_TEST_CLI").context("set RIWORK_TEST_CLI")?);
+    ensure!(cli.is_absolute(), "absolute CLI path required");
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home)?;
+    let mut f = Fixture {
+        temp,
+        home,
+        cli,
+        shells: vec![],
+        connector: None,
+        relay: None,
+    };
+    let project_dir = f.temp.path().join("project");
+    std::fs::create_dir(&project_dir)?;
+    let project = f
+        .cli(&["project", "add", project_dir.to_str().unwrap()])
+        .await?;
+    let shell = f
+        .cli(&[
+            "shell",
+            "create",
+            "--project",
+            project["id"].as_str().unwrap(),
+            "--command",
+            "/bin/cat",
+        ])
+        .await?;
+    let id = shell["id"].as_str().unwrap().to_owned();
+    f.shells.push(id.clone());
+    let pane = format!("{id}:0.0");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let storage = Storage::at(f.home.clone())?;
+    let routes_path = f.temp.path().join("routes.json");
+    let pair = storage.pair(
+        format!("ws://{}/v1/ws", listener.local_addr()?),
+        "typing".into(),
+        true,
+        &f.temp.path().join("pair.json"),
+        Some(&routes_path),
+    )?;
+    let relay = Relay::new(private_read::<Routes>(&routes_path, 1_048_576)?, 16)?;
+    f.relay = Some(tokio::spawn(async move {
+        axum::serve(listener, relay.router()).await.unwrap();
+    }));
+    f.start_connector().await?;
+    let (mut ws, mut s) = mobile(&pair).await?;
+    let keys = |batch: &str, items: Value| {
+        request(
+            &Uuid::new_v4().to_string(),
+            "shell.keys",
+            json!({"shell_id":id,"batch":batch,"items":items}),
+        )
+    };
+    async fn screen(ws: &mut Socket, s: &mut Session, id: &str, wanted: &str) -> Result<Value> {
+        for _ in 0..100 {
+            let v = call(ws, s, "shell.output", json!({"shell_id":id,"lines":50})).await?;
+            if v["result"]["output"]
+                .as_str()
+                .unwrap_or("")
+                .contains(wanted)
+            {
+                return Ok(v["result"].clone());
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        anyhow::bail!("screen never showed {wanted:?}")
+    }
+
+    // Text ending in `;` then Enter: cat echoes it and prints it back.
+    let batch = Uuid::new_v4().to_string();
+    let items = json!([{"text":"hello;"},{"key":"Enter"}]);
+    let sent = rpc(&mut ws, &mut s, &keys(&batch, items.clone())).await?;
+    assert_eq!(
+        sent["result"],
+        json!({"shell_id":id,"batch":batch,"status":"sent"}),
+        "{sent}"
+    );
+    let out = screen(&mut ws, &mut s, &id, "hello;\nhello;\n").await?;
+    // The additive screen fields: the last `rows` lines are the visible screen.
+    let rows = out["rows"].as_u64().context("rows")? as usize;
+    assert!(out["cols"].as_u64().context("cols")? >= 20);
+    assert_eq!(out["in_mode"], false);
+    let lines: Vec<&str> = out["output"].as_str().unwrap().lines().collect();
+    assert!(lines.len() >= rows);
+    let visible = &lines[lines.len() - rows..];
+    assert_eq!(&visible[..2], ["hello;", "hello;"]);
+    assert_eq!(out["cursor"], json!({"x":0,"y":2}));
+
+    // A retry (new request id, same batch) sends nothing, also across a restart.
+    let retry = rpc(&mut ws, &mut s, &keys(&batch, items.clone())).await?;
+    assert_eq!(retry["result"]["status"], "duplicate", "{retry}");
+    ws.close(None).await?;
+    f.stop_connector().await?;
+    f.start_connector().await?;
+    let (mut ws, mut s) = mobile(&pair).await?;
+    let retry = rpc(&mut ws, &mut s, &keys(&batch, items.clone())).await?;
+    assert_eq!(retry["result"]["status"], "duplicate", "{retry}");
+    sleep(Duration::from_millis(300)).await;
+    let out = screen(&mut ws, &mut s, &id, "hello;").await?;
+    assert_eq!(out["output"].as_str().unwrap().matches("hello;").count(), 2);
+
+    // Input disabled: refused, not recorded, and the same batch goes through later.
+    let blocked = Uuid::new_v4().to_string();
+    f.tmux(&["select-pane", "-d", "-t", &pane])?;
+    let refused = rpc(&mut ws, &mut s, &keys(&blocked, json!([{"text":"late"}]))).await?;
+    assert_eq!(refused["error"]["code"], "input_unavailable", "{refused}");
+    f.tmux(&["select-pane", "-e", "-t", &pane])?;
+    // Copy mode is left first, so the keys reach cat.
+    f.tmux(&["copy-mode", "-t", &pane])?;
+    let in_mode = call(&mut ws, &mut s, "shell.output", json!({"shell_id":id})).await?;
+    assert_eq!(in_mode["result"]["in_mode"], true, "{in_mode}");
+    let sent = rpc(
+        &mut ws,
+        &mut s,
+        &keys(&blocked, json!([{"text":"late"},{"key":"Enter"}])),
+    )
+    .await?;
+    assert_eq!(sent["result"]["status"], "sent", "{sent}");
+    let out = screen(&mut ws, &mut s, &id, "late\nlate\n").await?;
+    assert_eq!(out["in_mode"], false);
+
+    // A crash between the pending record and the send: uncertain, never resent.
+    ws.close(None).await?;
+    f.stop_connector().await?;
+    let crashed = Uuid::new_v4().to_string();
+    let ledger_path = storage.dir.join(format!("keys-{}.json", pair.device_id));
+    let mut ledger: Value = private_read(&ledger_path, 8 * 1024 * 1024)?;
+    ledger["batches"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"batch":crashed,"state":"pending"}));
+    private_write(&ledger_path, &ledger)?;
+    f.start_connector().await?;
+    let (mut ws, mut s) = mobile(&pair).await?;
+    let unknown = rpc(&mut ws, &mut s, &keys(&crashed, json!([{"text":"never"}]))).await?;
+    assert_eq!(unknown["result"]["status"], "uncertain", "{unknown}");
+    sleep(Duration::from_millis(300)).await;
+    let out = call(&mut ws, &mut s, "shell.output", json!({"shell_id":id})).await?;
+    assert!(!out["result"]["output"].as_str().unwrap().contains("never"));
+    // Ctrl-D ends cat: the dead shell is not_found for a new batch.
+    let ended = rpc(
+        &mut ws,
+        &mut s,
+        &keys(&Uuid::new_v4().to_string(), json!([{"key":"C-d"}])),
+    )
+    .await?;
+    assert_eq!(ended["result"]["status"], "sent", "{ended}");
+    let mut gone = Value::Null;
+    for _ in 0..100 {
+        gone = rpc(
+            &mut ws,
+            &mut s,
+            &keys(&Uuid::new_v4().to_string(), json!([{"text":"x"}])),
+        )
+        .await?;
+        if gone["ok"] == false {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(gone["error"]["code"], "not_found", "{gone}");
+    Ok(())
+}

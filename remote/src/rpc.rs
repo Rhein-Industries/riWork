@@ -109,6 +109,13 @@ struct Input {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Keys {
+    shell_id: String,
+    batch: String,
+    items: Vec<Value>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Resize {
     shell_id: String,
     columns: u32,
@@ -159,6 +166,171 @@ struct Record {
 #[serde(deny_unknown_fields)]
 struct Ledger {
     entries: BTreeMap<String, Record>,
+}
+
+/// Direct-typing limits. `src/session_keys.rs` enforces the same ones in the
+/// CLI; the two test matrices must stay identical.
+const KEYS_MAX_ITEMS: usize = 64;
+const KEYS_MAX_TEXT_BYTES: usize = 4096;
+const KEY_NAMES: [&str; 14] = [
+    "Enter",
+    "Tab",
+    "BTab",
+    "Escape",
+    "Backspace",
+    "Delete",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+];
+/// Batches remembered per device, oldest pruned first.
+pub const KEYS_LEDGER_MAX: usize = 4096;
+
+fn valid_key(name: &str) -> bool {
+    KEY_NAMES.contains(&name) || matches!(name.as_bytes(), [b'C', b'-', b'a'..=b'z'])
+}
+/// One `shell.keys` item as the CLI's argv encoding: `t:TEXT` or `k:KEY`.
+fn key_item(index: usize, item: &Value) -> std::result::Result<(String, usize), Fault> {
+    let n = index + 1;
+    let object = item
+        .as_object()
+        .ok_or_else(|| invalid(format!("item {n} must be an object")))?;
+    if object.keys().any(|k| k != "text" && k != "key") {
+        return Err(invalid(format!("item {n} takes only \"text\" or \"key\"")));
+    }
+    match (object.get("text"), object.get("key")) {
+        (Some(Value::String(text)), None) => {
+            if text.is_empty() || text.len() > KEYS_MAX_TEXT_BYTES {
+                return Err(invalid(format!(
+                    "item {n}: text must be 1..={KEYS_MAX_TEXT_BYTES} bytes"
+                )));
+            }
+            if text
+                .chars()
+                .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+            {
+                return Err(invalid(format!(
+                    "item {n}: text must not contain control characters; send a key for Enter or Tab"
+                )));
+            }
+            Ok((format!("t:{text}"), text.len()))
+        }
+        (None, Some(Value::String(key))) => {
+            if !valid_key(key) {
+                return Err(invalid(format!("item {n}: unknown key")));
+            }
+            Ok((format!("k:{key}"), 0))
+        }
+        (Some(_), Some(_)) => Err(invalid(format!(
+            "item {n} takes either \"text\" or \"key\", not both"
+        ))),
+        (None, None) => Err(invalid(format!("item {n} needs a \"text\" or a \"key\""))),
+        _ => Err(invalid(format!("item {n}: text and key must be strings"))),
+    }
+}
+/// The whole batch as CLI items: 1..=64 items, at most 4096 text bytes.
+fn key_items(items: &[Value]) -> std::result::Result<Vec<String>, Fault> {
+    if items.is_empty() || items.len() > KEYS_MAX_ITEMS {
+        return Err(invalid(format!(
+            "items must hold 1..={KEYS_MAX_ITEMS} entries"
+        )));
+    }
+    let mut total = 0usize;
+    let mut argv = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let (encoded, text_bytes) = key_item(index, item)?;
+        total += text_bytes;
+        argv.push(encoded);
+    }
+    if total > KEYS_MAX_TEXT_BYTES {
+        return Err(invalid(format!(
+            "items may hold at most {KEYS_MAX_TEXT_BYTES} text bytes in all"
+        )));
+    }
+    Ok(argv)
+}
+/// What a failed `riwork shell keys` says about the batch. A CLI error that
+/// begins with one of its tokens happened before any key was typed, so the
+/// batch can be forgotten and retried; anything else may have typed part of it.
+/// Only the first line of stderr counts: text a shell echoes cannot forge it.
+fn keys_fault(error: &anyhow::Error) -> (Fault, bool) {
+    let message = error.to_string();
+    let detail = message.strip_prefix("RiWork CLI failed: riwork: ");
+    let tokens: [(&str, &'static str); 4] = [
+        ("input_unavailable: ", "input_unavailable"),
+        ("not_found: ", "not_found"),
+        ("invalid_request: ", "invalid_request"),
+        ("not_sent: ", "cli_error"),
+    ];
+    if let Some(detail) = detail {
+        // A CLI from before direct typing has no `shell keys`: nothing was typed.
+        if detail.starts_with("Unknown shell command 'keys'") {
+            return (
+                Fault::new(
+                    "cli_error",
+                    "the installed riwork CLI does not support shell keys; update RiWork",
+                ),
+                true,
+            );
+        }
+        for (token, code) in tokens {
+            if let Some(rest) = detail.strip_prefix(token) {
+                return (
+                    Fault::new(code, rest.lines().next().unwrap_or_default()),
+                    true,
+                );
+            }
+        }
+    }
+    (
+        Fault::new(
+            "cli_error",
+            format!(
+                "{message}; the batch may be partly typed, so repeating its batch UUID reports uncertain"
+            ),
+        ),
+        false,
+    )
+}
+/// The screen fields of the CLI's `shell output`, all or none: a cursor that
+/// does not land on the last `rows` lines of the text is not passed on.
+fn screen_fields(cli: &Value, output: &str) -> Option<Value> {
+    let number = |v: &Value| v.as_u64().and_then(|n| u32::try_from(n).ok());
+    let cursor = cli.get("cursor")?;
+    let (x, y) = (number(cursor.get("x")?)?, number(cursor.get("y")?)?);
+    let (rows, cols) = (number(cli.get("rows")?)?, number(cli.get("cols")?)?);
+    let in_mode = cli.get("in_mode")?.as_bool()?;
+    if rows == 0 || cols == 0 || y >= rows || output.lines().count() < rows as usize {
+        return None;
+    }
+    Some(json!({"cursor":{"x":x,"y":y},"rows":rows,"cols":cols,"in_mode":in_mode}))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BatchState {
+    /// Recorded before typing. If it is still pending, the outcome is unknown.
+    Pending,
+    Sent,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchRecord {
+    batch: String,
+    state: BatchState,
+}
+/// Direct-typing batches of one device, oldest first, in `keys-DEVICE.json`.
+/// Deliberately not the input outcome ledger: batches are keyed by their own
+/// UUID, carry no request digest, and are pruned instead of filling up.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchLedger {
+    batches: Vec<BatchRecord>,
 }
 
 pub struct Rpc {
@@ -416,7 +588,15 @@ impl Rpc {
                     .get("output")
                     .and_then(Value::as_str)
                     .ok_or_else(|| cli_fault("missing CLI output"))?;
-                Ok(json!({"shell_id":p.shell_id,"output":text}))
+                let mut result = json!({"shell_id":p.shell_id,"output":text});
+                // Additive: the last `rows` lines of `output` are the visible
+                // screen. Absent when the desktop could not read the pane.
+                if let (Some(screen), Some(map)) = (screen_fields(&v, text), result.as_object_mut())
+                    && let Some(fields) = screen.as_object()
+                {
+                    map.extend(fields.clone());
+                }
+                Ok(result)
             }
             "shell.resize" => {
                 let p: Resize = params(r)?;
@@ -480,6 +660,13 @@ impl Rpc {
                     ));
                 }
                 self.input(device, r, p).await
+            }
+            "shell.keys" => {
+                let p: Keys = params(r)?;
+                id(&p.shell_id)?;
+                id(&p.batch)?;
+                let items = key_items(&p.items)?;
+                self.keys(device, p, items).await
             }
             _ => Err(invalid("unsupported RPC method")),
         }
@@ -599,5 +786,76 @@ impl Rpc {
             ));
         }
         result
+    }
+    /// Type one batch into a shell, exactly once per (device, batch UUID).
+    async fn keys(
+        &self,
+        device: &str,
+        p: Keys,
+        items: Vec<String>,
+    ) -> std::result::Result<Value, Fault> {
+        id(device)?;
+        // One batch at a time per device, so a retry that overlaps its own
+        // first attempt waits for it and then reports `duplicate`. The file
+        // lock keeps external recovery tooling out of the ledger meanwhile.
+        let device_lock = self.input_lock(&format!("keys-{device}"));
+        let _device_guard = device_lock.lock().await;
+        let _lock = self
+            .storage
+            .lock(&format!("keys-{device}.lock"))
+            .map_err(cli_fault)?;
+        let path = self.storage.dir.join(format!("keys-{device}.json"));
+        let mut ledger: BatchLedger = if path.exists() {
+            private_read(&path, 8 * 1024 * 1024).map_err(cli_fault)?
+        } else {
+            BatchLedger::default()
+        };
+        let reply =
+            |status: &str| Ok(json!({"shell_id":p.shell_id,"batch":p.batch,"status":status}));
+        // A repeat is answered from the ledger alone, before any CLI runs.
+        if let Some(record) = ledger.batches.iter().find(|r| r.batch == p.batch) {
+            return reply(match record.state {
+                BatchState::Sent => "duplicate",
+                BatchState::Pending => "uncertain",
+            });
+        }
+        let shell_lock = self.input_lock(&p.shell_id);
+        let _shell_guard = shell_lock.lock().await;
+        self.selected(&p.shell_id).await?;
+        if !self.storage.authorized(device).map_err(cli_fault)? {
+            return Err(Fault::new("not_found", "device revoked"));
+        }
+        let excess = (ledger.batches.len() + 1).saturating_sub(KEYS_LEDGER_MAX);
+        ledger.batches.drain(..excess);
+        ledger.batches.push(BatchRecord {
+            batch: p.batch.clone(),
+            state: BatchState::Pending,
+        });
+        private_write(&path, &ledger).map_err(cli_fault)?; // durable before typing
+        let mut args: Vec<String> = ["shell", "keys", p.shell_id.as_str(), "--"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        args.extend(items);
+        match self.raw(args).await {
+            Ok(_) => {
+                if let Some(record) = ledger.batches.last_mut() {
+                    record.state = BatchState::Sent;
+                }
+                // The keys are typed either way; if this write fails the batch
+                // stays pending and a repeat reports uncertain, never a resend.
+                let _ = private_write(&path, &ledger);
+                reply("sent")
+            }
+            Err(error) => {
+                let (fault, not_sent) = keys_fault(&error);
+                if not_sent {
+                    // Nothing was typed: forget the batch so a retry can send it.
+                    ledger.batches.pop();
+                    let _ = private_write(&path, &ledger);
+                }
+                Err(fault)
+            }
+        }
     }
 }

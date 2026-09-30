@@ -115,6 +115,17 @@ under the same shell lock and input-mode checks.
 `sent` confirms terminal submission, not a model/server acknowledgment. No second
 Return is sent automatically if an outcome is uncertain.
 
+`shell.keys` types into the shell as it happens, without a line or a Return of
+its own: an ordered batch of literal `text` and named `key` items (the contract is
+in [remote-protocol.md](../docs/remote-protocol.md)), delivered by
+`riwork shell keys SHELL_UUID -- t:TEXT k:KEY...` under the same per-shell lock as
+`shell.input`. Each batch UUID is recorded in a write-ahead ledger of the 4096 most
+recent batches per device (`keys-DEVICE_UUID.json`, mode 600, separate from the
+input outcomes), so a retry with a new request ID answers `duplicate` or
+`uncertain` instead of typing twice. `shell.output` also reports the cursor, pane
+size and copy-mode state that place the phone's cursor. Like `shell.input`, it
+is arbitrary command execution as the desktop user.
+
 Revocation stops live endpoint access within one second and removes its local
 PSK/tokens. Remove that route from the relay manifest and restart the relay to
 invalidate relay tokens too. Other paired devices keep their endpoint secrets;

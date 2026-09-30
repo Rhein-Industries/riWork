@@ -87,6 +87,7 @@ riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted]
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N]      Read current shell output by UUID
 riwork shell send ID TEXT               Paste a complete line and submit once
+riwork shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no Return added
 riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
 riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
 riwork shell cwd|metrics|attach|close ID
@@ -113,6 +114,14 @@ worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
 first, so a branch name shared by several projects is not ambiguous.
+shell keys takes 1 to 64 items after `--`: t:TEXT (literal, 1 to 4096 bytes, no
+control characters) or k:KEY, one of Enter Tab BTab Escape Backspace Delete Up
+Down Left Right Home End PageUp PageDown or C-a to C-z. At most 4096 text bytes
+in all. Items go to the pane in order under the shell's input lock, leaving
+copy mode first; a key directly after text goes 150 ms later, outside Codex's
+paste detection. An error naming input_unavailable means the pane's input is off.
+shell output --json also reports cursor {x,y}, rows, cols and in_mode; the last
+`rows` lines of its output are the visible screen.
 Orchestrator commands without --project use the global session; list shows all
 scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
@@ -168,7 +177,12 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             args.first().map(String::as_str),
             Some("agent-notify" | "agent-hook")
         );
-    let json = if literal_arguments {
+    let json = if matches!(args.get(..2), Some([shell, keys]) if shell == "shell" && keys == "keys")
+    {
+        // Only a --json before the `--` is ours; every argument after it is a
+        // typed item, whatever it looks like.
+        take_flag_before_separator(&mut args, "--json")
+    } else if literal_arguments {
         // Forwarded harness options and sent shell input must remain literal.
         false
     } else {
@@ -1467,11 +1481,27 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 .transpose()?
                 .unwrap_or(200);
             let id = take_single(args, "shell output ID [--lines N]")?;
-            let output = manager.capture(&id, lines)?;
             if json {
-                print_json(&json!({ "id": id, "output": output }))?;
+                let capture = manager.capture_screen(&id, lines)?;
+                let mut value = json!({ "id": id, "output": capture.output });
+                // The last `rows` lines of `output` are the visible screen.
+                // Absent when tmux could not report the pane.
+                if let Some(screen) = capture.screen {
+                    value["cursor"] = json!(screen.cursor);
+                    value["rows"] = json!(screen.rows);
+                    value["cols"] = json!(screen.cols);
+                    value["in_mode"] = json!(screen.in_mode);
+                }
+                print_json(&value)?;
             } else {
-                print!("{output}");
+                print!("{}", manager.capture(&id, lines)?);
+            }
+        }
+        "keys" => {
+            let (id, items) = parse_keys_arguments(args)?;
+            manager.send_keys(&id, &items)?;
+            if json {
+                print_json(&json!({ "id": id, "sent": items.len() }))?;
             }
         }
         "resize" | "resize-clear" | "viewport-watch" => {
@@ -2026,6 +2056,36 @@ fn take_option(args: &mut Vec<String>, option: &str) -> Result<Option<String>, S
     Ok(result)
 }
 
+/// `ID -- ITEM...` of `shell keys`, with `--json` already taken. Everything
+/// after the `--` is an item: `t:` text may look like an option.
+fn parse_keys_arguments(
+    mut args: Vec<String>,
+) -> Result<(String, Vec<crate::session_keys::Item>), String> {
+    const USAGE: &str = "shell keys ID [--json] -- ITEM...  (ITEM is t:TEXT or k:KEY)";
+    let usage = || format!("Usage: riwork {USAGE}");
+    let separator = args.iter().position(|arg| arg == "--").ok_or_else(usage)?;
+    let items = args.split_off(separator + 1);
+    args.pop();
+    let id = take_single(args, USAGE)?;
+    let items = crate::session_keys::parse_items(&items)
+        .map_err(|error| format!("{}{error}", crate::session_keys::INVALID_REQUEST))?;
+    Ok((id, items))
+}
+
+/// Like `take_flag`, but only looks at the arguments before the first `--`.
+fn take_flag_before_separator(args: &mut Vec<String>, flag: &str) -> bool {
+    let end = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    if let Some(index) = args[..end].iter().position(|arg| arg == flag) {
+        args.remove(index);
+        true
+    } else {
+        false
+    }
+}
+
 fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
     if let Some(index) = args.iter().position(|arg| arg == flag) {
         args.remove(index);
@@ -2078,9 +2138,10 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_hook_command, frozen_codex_usage_home, opens_workspace, reload_failure_details,
-        reload_summary, schedule_line, scoped_codex_usage_home, take_orchestrator_project,
-        take_update_profile, terminal_safe, unknown_invocation, unreadable_reload_error,
+        agent_hook_command, frozen_codex_usage_home, opens_workspace, parse_keys_arguments,
+        reload_failure_details, reload_summary, schedule_line, scoped_codex_usage_home,
+        take_flag_before_separator, take_orchestrator_project, take_update_profile, terminal_safe,
+        unknown_invocation, unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
@@ -2271,6 +2332,83 @@ mod tests {
         for values in [["--debug", "--release"], ["--release", "--debug"]] {
             assert!(take_update_profile(&mut args(&values)).is_err());
         }
+    }
+
+    #[test]
+    fn keys_json_flag_is_only_taken_before_the_separator() {
+        for (original, taken, rest) in [
+            (
+                &["shell", "keys", "ID", "--json", "--", "k:Enter"][..],
+                true,
+                &["shell", "keys", "ID", "--", "k:Enter"][..],
+            ),
+            (
+                &["shell", "keys", "ID", "--", "--json"],
+                false,
+                &["shell", "keys", "ID", "--", "--json"],
+            ),
+            (
+                &["shell", "keys", "ID", "--", "t:x", "--json"],
+                false,
+                &["shell", "keys", "ID", "--", "t:x", "--json"],
+            ),
+            (&["shell", "keys", "ID"], false, &["shell", "keys", "ID"]),
+        ] {
+            let mut input = args(original);
+            assert_eq!(take_flag_before_separator(&mut input, "--json"), taken);
+            assert_eq!(input, args(rest), "{original:?}");
+        }
+    }
+
+    #[test]
+    fn keys_arguments_are_an_id_then_items_after_the_separator() {
+        use crate::session_keys::{Item, Key};
+        let (id, items) = parse_keys_arguments(args(&[
+            "ID",
+            "--",
+            "t:ls;",
+            "k:Enter",
+            "t:--json",
+            "t:k:Enter",
+            "k:C-c",
+            "k:PageDown",
+        ]))
+        .unwrap();
+        assert_eq!(id, "ID");
+        assert_eq!(
+            items,
+            [
+                Item::Text("ls;".into()),
+                Item::Key(Key::Enter),
+                Item::Text("--json".into()),
+                Item::Text("k:Enter".into()),
+                Item::Key(Key::Ctrl(b'c')),
+                Item::Key(Key::PageDown),
+            ]
+        );
+        for bad in [
+            &[][..],
+            &["ID"],
+            &["--", "k:Enter"],
+            &["ID", "k:Enter"],
+            &["ID", "extra", "--", "k:Enter"],
+            &["--json", "--", "k:Enter"],
+            &["ID", "--"],
+            &["ID", "--", "Enter"],
+            &["ID", "--", "k:Return"],
+            &["ID", "--", "t:"],
+            &["ID", "--", "t:a\nb"],
+            &["ID", "--", "k:Enter", "--", "k:Enter"],
+        ] {
+            assert!(parse_keys_arguments(args(bad)).is_err(), "{bad:?}");
+        }
+        let mut sixty_five = vec!["ID", "--"];
+        sixty_five.extend(std::iter::repeat_n("k:Up", 65));
+        assert!(parse_keys_arguments(args(&sixty_five)).is_err());
+        sixty_five.truncate(2 + 64);
+        assert_eq!(parse_keys_arguments(args(&sixty_five)).unwrap().1.len(), 64);
+        let error = parse_keys_arguments(args(&["ID", "--", "k:Nope"])).unwrap_err();
+        assert!(error.starts_with("invalid_request: item 1: "), "{error}");
     }
 
     #[test]

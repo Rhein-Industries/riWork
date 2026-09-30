@@ -626,3 +626,118 @@ fn grok_shell_usage_reports_the_session_grok_lists_for_the_panes_process() {
         "{usage}"
     );
 }
+
+#[test]
+fn shell_keys_rejects_bad_invocations_before_reaching_any_shell() {
+    let home = Home::new();
+    let shell = Uuid::new_v4().to_string();
+    let too_long = format!("t:{}", "a".repeat(4097));
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["shell", "keys"],
+        vec!["shell", "keys", &shell],
+        vec!["shell", "keys", &shell, "--json"],
+        vec!["shell", "keys", &shell, "--"],
+        vec!["shell", "keys", &shell, "k:Enter"],
+        vec!["shell", "keys", "--", "k:Enter"],
+        vec!["shell", "keys", &shell, "extra", "--", "k:Enter"],
+        vec!["shell", "keys", &shell, "--", "Enter"],
+        vec!["shell", "keys", &shell, "--", "k:Return"],
+        vec!["shell", "keys", &shell, "--", "k:enter"],
+        vec!["shell", "keys", &shell, "--", "k:C-A"],
+        vec!["shell", "keys", &shell, "--", "k:C-1"],
+        vec!["shell", "keys", &shell, "--", "t:"],
+        vec!["shell", "keys", &shell, "--", "t:a\tb"],
+        vec!["shell", "keys", &shell, "--", "t:a\nb"],
+        vec!["shell", "keys", &shell, "--", "--json"],
+        vec!["shell", "keys", &shell, "--", "k:Enter", "--", "k:Enter"],
+        vec!["shell", "keys", &shell, "--", &too_long],
+        vec!["shell", "keys", "12345678", "--", "k:Enter"],
+    ];
+    for args in cases {
+        let output = home.run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Usage: riwork shell keys") || stderr.contains("invalid_request: "),
+            "{args:?}: {stderr}"
+        );
+    }
+    // Sixty-five items, and 4097 text bytes across two items.
+    let mut many = vec!["shell", "keys", &shell, "--"];
+    many.extend(std::iter::repeat_n("k:Up", 65));
+    let output = home.run(&many);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid_request: "));
+    let (half, rest) = (
+        format!("t:{}", "a".repeat(2048)),
+        format!("t:{}", "a".repeat(2049)),
+    );
+    let output = home.run(&["shell", "keys", &shell, "--", &half, &rest]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid_request: "));
+    // A well-formed batch for a shell that does not exist is a lookup failure.
+    let output = home.run(&["shell", "keys", &shell, "--", "t:x", "k:Enter"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not_found: "));
+    assert!(!home.runtime().exists(), "a GUI instance was registered");
+}
+
+#[test]
+fn shell_keys_types_into_a_pane_and_output_json_reports_the_screen() {
+    let home = Home::new();
+    let repo = repository(&home, "typing");
+    home.ok(&["project", "add", repo.to_str().unwrap(), "--json"]);
+    let created = home.ok(&["shell", "create", "--command", "/bin/cat", "--json"]);
+    let id = created["id"].as_str().unwrap().to_owned();
+    let output_of = |lines: &str| home.ok(&["shell", "output", &id, "--lines", lines, "--json"]);
+
+    let wait_for = |wanted: &str| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let screen = output_of("50");
+            if screen["output"].as_str().unwrap().contains(wanted) {
+                break screen;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "typed text never arrived: {screen}"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    };
+    // Text ending in `;`, then Enter, in one batch. `--json` is ours before
+    // the `--`; after it, it is literal text like any other.
+    let sent = home.ok(&["shell", "keys", &id, "--json", "--", "t:hello;", "k:Enter"]);
+    assert_eq!(sent, json!({"id": id, "sent": 2}));
+    wait_for("hello;\nhello;\n");
+    let sent = home.ok(&["shell", "keys", &id, "--json", "--", "t:--json", "t: \\;"]);
+    assert_eq!(sent, json!({"id": id, "sent": 2}));
+    let screen = wait_for("hello;\nhello;\n--json \\;");
+    // The last `rows` lines of the output are the visible screen, and the
+    // cursor is a cell of it: after the second line's text, on the third row.
+    let rows = screen["rows"].as_u64().unwrap() as usize;
+    let cols = screen["cols"].as_u64().unwrap();
+    assert!(rows >= 2 && cols >= 20, "{screen}");
+    assert_eq!(screen["in_mode"], false);
+    let lines: Vec<&str> = screen["output"].as_str().unwrap().lines().collect();
+    let visible = &lines[lines.len() - rows..];
+    assert_eq!(&visible[..3], ["hello;", "hello;", "--json \\;"]);
+    let cursor = &screen["cursor"];
+    assert_eq!(
+        (cursor["x"].as_u64(), cursor["y"].as_u64()),
+        (Some(9), Some(2)),
+        "{screen}"
+    );
+    assert_eq!(visible[cursor["y"].as_u64().unwrap() as usize].len(), 9);
+    // The plain form is unchanged: the same text, no JSON.
+    let text = home.run(&["shell", "output", &id, "--lines", "50"]);
+    assert_eq!(
+        String::from_utf8_lossy(&text.stdout),
+        screen["output"].as_str().unwrap()
+    );
+    // Text mode of keys prints nothing.
+    let quiet = home.run(&["shell", "keys", &id, "--", "k:Enter"]);
+    assert!(quiet.status.success());
+    assert!(quiet.stdout.is_empty());
+}
