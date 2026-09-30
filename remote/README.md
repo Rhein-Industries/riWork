@@ -126,6 +126,14 @@ input outcomes), so a retry with a new request ID answers `duplicate` or
 size and copy-mode state that place the phone's cursor. Like `shell.input`, it
 is arbitrary command execution as the desktop user.
 
+`appearance.get` returns the colors the desktop published, so the phone can match its
+theme (the contract is in [remote-protocol.md](../docs/remote-protocol.md)). It runs
+`riwork appearance --json` (no shell selection, no ledger), re-validates the output
+(version 1, lowercase `#rrggbb` colors, exactly 16 terminal colors, at most 16 KiB)
+and answers `not_found` "appearance not published" when the desktop app has not
+published a usable `appearance.json` yet. Its tests use a stub CLI and compile the
+desktop's `src/appearance_file.rs` to keep the two validators identical.
+
 Revocation stops live endpoint access within one second and removes its local
 PSK/tokens. Remove that route from the relay manifest and restart the relay to
 invalidate relay tokens too. Other paired devices keep their endpoint secrets;

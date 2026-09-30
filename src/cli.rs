@@ -54,6 +54,7 @@ riwork reload [--all] [--session] [--shell ID]   Reload windows; optionally resu
 riwork update [--source PATH] [--release | --debug] [--no-reload]   Build release by default, install, and reload all windows
 riwork instances                        List running RiWork apps and their windows
 riwork usage [--shell ID]               Read harness usage (Grok: session tokens and cost)
+riwork appearance [--json]              Show the colors RiWork publishes to the phone companion
 riwork setup                            Install and start Cua.ai Driver
 riwork cua setup|status|permissions      Manage native computer use
 riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
@@ -207,6 +208,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "schedule"
             | "search"
             | "usage"
+            | "appearance"
             | "telemetry"
             | "agent-notify"
             | "agent-hook"
@@ -267,6 +269,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             crate::session_reload::run_reload_worker(std::path::Path::new(&path))?;
         }
         "usage" => usage_command(args, json)?,
+        "appearance" => appearance_command(args, json)?,
         "setup" => {
             ensure_empty(&args)?;
             print_cua_status(&CuaManager::open_default()?.setup()?, json)?;
@@ -692,6 +695,64 @@ fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
         println!("Opened {} (PID {})", root.display(), child.id());
     }
     Ok(())
+}
+
+/// The file the running app publishes; this never starts the app or writes.
+fn appearance_command(args: Vec<String>, json: bool) -> Result<(), String> {
+    ensure_empty(&args)?;
+    let home = crate::paths::riwork_home()?;
+    // Missing, oversize and invalid files read alike: nothing usable is published.
+    let published = crate::appearance_file::read(&home)
+        .ok_or_else(|| crate::appearance_file::NOT_PUBLISHED.to_owned())?;
+    if json {
+        return print_json(&published);
+    }
+    print!("{}", appearance_summary(&published));
+    Ok(())
+}
+
+fn appearance_summary(published: &crate::appearance_file::Published) -> String {
+    let palette = &published.palette;
+    let updated = i64::try_from(published.updated_at)
+        .ok()
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map_or_else(
+            || published.updated_at.to_string(),
+            |time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        );
+    let terminal = match &published.terminal {
+        Some(terminal) => format!(
+            "background {} foreground {} and {} palette colors",
+            terminal.background.hex(),
+            terminal.foreground.hex(),
+            terminal.palette.len()
+        ),
+        None => "colors unknown".to_owned(),
+    };
+    [
+        format!(
+            "Appearance: {} (updated {updated})",
+            if published.dark { "dark" } else { "light" }
+        ),
+        format!(
+            "Palette:    bg {} panel {} panel_active {} divider {}",
+            palette.bg.hex(),
+            palette.panel.hex(),
+            palette.panel_active.hex(),
+            palette.divider.hex()
+        ),
+        format!(
+            "            cyan {} magenta {} gold {} text {} muted {}",
+            palette.cyan.hex(),
+            palette.magenta.hex(),
+            palette.gold.hex(),
+            palette.text.hex(),
+            palette.muted.hex()
+        ),
+        format!("Terminal:   {terminal}"),
+    ]
+    .join("\n")
+        + "\n"
 }
 
 fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
@@ -2138,14 +2199,37 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_hook_command, frozen_codex_usage_home, opens_workspace, parse_keys_arguments,
-        reload_failure_details, reload_summary, schedule_line, scoped_codex_usage_home,
-        take_flag_before_separator, take_orchestrator_project, take_update_profile, terminal_safe,
-        unknown_invocation, unreadable_reload_error,
+        agent_hook_command, appearance_summary, frozen_codex_usage_home, opens_workspace,
+        parse_keys_arguments, reload_failure_details, reload_summary, schedule_line,
+        scoped_codex_usage_home, take_flag_before_separator, take_orchestrator_project,
+        take_update_profile, terminal_safe, unknown_invocation, unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
     use std::{io, path::PathBuf};
+
+    #[test]
+    fn appearance_summary_names_mode_colors_and_terminal() {
+        let mut published =
+            crate::theme::Appearance::resolve(crate::theme::ThemeChoice::RiWork).published(false);
+        published.updated_at = 1_790_000_000;
+        assert_eq!(
+            appearance_summary(&published),
+            "Appearance: dark (updated 2026-09-21 14:13:20 UTC)\n\
+             Palette:    bg #090d14 panel #101720 panel_active #14212a divider #253c45\n\
+             \x20           cyan #55e6dc magenta #ce78ef gold #f4bf75 text #d3e1e6 muted #708993\n\
+             Terminal:   background #090d14 foreground #d3e1e6 and 16 palette colors\n"
+        );
+        published.dark = false;
+        published.terminal = None;
+        published.updated_at = u64::MAX;
+        let summary = appearance_summary(&published);
+        assert!(summary.starts_with("Appearance: light (updated 18446744073709551615)\n"));
+        assert!(
+            summary.ends_with("Terminal:   colors unknown\n"),
+            "{summary}"
+        );
+    }
 
     #[test]
     fn claude_notification_input_failures_always_return_nonblocking_success() {

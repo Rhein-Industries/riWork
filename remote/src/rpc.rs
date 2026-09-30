@@ -1,6 +1,6 @@
 //! Narrow CLI allowlist plus a durable write-ahead input outcome ledger.
 use crate::{
-    MAX_PLAINTEXT,
+    MAX_PLAINTEXT, appearance,
     config::{Storage, private_read, private_write},
     crypto::uuid,
     viewport::Viewport,
@@ -296,6 +296,30 @@ fn keys_fault(error: &anyhow::Error) -> (Fault, bool) {
         ),
         false,
     )
+}
+fn appearance_not_published() -> Fault {
+    Fault::new("not_found", "appearance not published")
+}
+/// What a failed `riwork appearance --json` says. The CLI reports a missing or
+/// invalid file with one message; output past the document limit is invalid too.
+fn appearance_fault(error: &anyhow::Error) -> Fault {
+    if error.is::<OutputTooLarge>() {
+        return appearance_not_published();
+    }
+    let message = error.to_string();
+    if let Some(detail) = message.strip_prefix("RiWork CLI failed: riwork: ") {
+        if detail.starts_with("RiWork has not published its appearance yet") {
+            return appearance_not_published();
+        }
+        // A CLI from before theme sync has no `appearance` command.
+        if detail.starts_with("'appearance' is not a riwork command") {
+            return Fault::new(
+                "cli_error",
+                "the installed riwork CLI does not support appearance; update RiWork",
+            );
+        }
+    }
+    cli_fault(error)
 }
 /// The screen fields of the CLI's `shell output`, all or none: a cursor that
 /// does not land on the last `rows` lines of the text is not passed on.
@@ -661,6 +685,10 @@ impl Rpc {
                 }
                 self.input(device, r, p).await
             }
+            "appearance.get" => {
+                let _: Empty = params(r)?;
+                self.appearance().await
+            }
             "shell.keys" => {
                 let p: Keys = params(r)?;
                 id(&p.shell_id)?;
@@ -670,6 +698,14 @@ impl Rpc {
             }
             _ => Err(invalid("unsupported RPC method")),
         }
+    }
+    /// The colors the desktop published for the phone: read-only, no shell.
+    async fn appearance(&self) -> std::result::Result<Value, Fault> {
+        let data = self
+            .raw(vec!["appearance".into(), "--json".into()])
+            .await
+            .map_err(|e| appearance_fault(&e))?;
+        appearance::validate(&data).ok_or_else(appearance_not_published)
     }
     pub async fn renew_viewport(&self, v: &Viewport) -> Result<()> {
         if let Some((shell, columns, rows)) = &v.selected {

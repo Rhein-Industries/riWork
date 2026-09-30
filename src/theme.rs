@@ -1,5 +1,6 @@
 //! Application palettes and colors resolved by the same Ghostty library as terminals.
 
+use crate::appearance_file::{PaletteColors, Published, Rgb, TerminalColors};
 use gpui::{App, Global};
 use gpui_libghostty::{TerminalColor, TerminalTheme};
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,44 @@ impl Appearance {
             error: None,
         }
     }
+
+    /// The colors terminals are forced to: the selected preset's, or RiWork's
+    /// while following Ghostty with the RiWork terminal colors option on. None
+    /// leaves terminals with the user's own Ghostty configuration.
+    pub fn terminal_override(&self, use_riwork_colors: bool) -> Option<TerminalTheme> {
+        self.terminal
+            .or_else(|| use_riwork_colors.then(riwork_terminal_theme))
+    }
+
+    /// The terminal colors the desktop actually shows, if they are known.
+    pub fn shown_terminal(&self, use_riwork_colors: bool) -> Option<TerminalTheme> {
+        self.terminal_override(use_riwork_colors).or(self.ghostty)
+    }
+
+    /// What the phone companion mirrors, not yet stamped with a time.
+    pub fn published(&self, use_riwork_colors: bool) -> Published {
+        let palette = self.palette;
+        Published::new(
+            is_dark(palette.bg),
+            PaletteColors {
+                bg: Rgb(palette.bg),
+                panel: Rgb(palette.panel),
+                panel_active: Rgb(palette.panel_active),
+                divider: Rgb(palette.divider),
+                cyan: Rgb(palette.cyan),
+                magenta: Rgb(palette.magenta),
+                gold: Rgb(palette.gold),
+                text: Rgb(palette.text),
+                muted: Rgb(palette.muted),
+            },
+            self.shown_terminal(use_riwork_colors)
+                .map(|theme| TerminalColors {
+                    background: Rgb(color_u32(theme.background)),
+                    foreground: Rgb(color_u32(theme.foreground)),
+                    palette: theme.palette.map(|color| Rgb(color_u32(color))),
+                }),
+        )
+    }
 }
 
 /// Resolves the appearance for `choice` again, or returns None when following
@@ -274,6 +313,11 @@ fn luminance(color: u32) -> f64 {
         }
     };
     0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+}
+
+/// A background reads as dark when its relative luminance is below one half.
+pub fn is_dark(color: u32) -> bool {
+    luminance(color) < 0.5
 }
 
 fn contrast(first: u32, second: u32) -> f64 {
@@ -884,6 +928,157 @@ mod tests {
         }
         assert!(luminance(Appearance::resolve(ThemeChoice::GruvboxLight).palette.bg) > 0.8);
         assert!(luminance(Appearance::resolve(ThemeChoice::TokyoNight).palette.bg) < 0.1);
+    }
+
+    #[test]
+    fn dark_means_relative_luminance_below_one_half() {
+        assert!(is_dark(0x000000));
+        assert!(!is_dark(0xffffff));
+        assert!(is_dark(Palette::RIWORK.bg));
+        assert!(is_dark(0x808080));
+        assert!(!is_dark(0xc0c0c0));
+        // 0.5 in linear light is a little under sRGB 0xbc.
+        assert!(luminance(0xbbbbbb) < 0.5 && is_dark(0xbbbbbb));
+        assert!(luminance(0xbcbcbc) >= 0.5 && !is_dark(0xbcbcbc));
+        // Brightness is luminance, not a channel: pure blue is dark, green is not.
+        assert!(is_dark(0x0000ff));
+        assert!(!is_dark(0x00ff00));
+        for (choice, dark) in [
+            (ThemeChoice::RiWork, true),
+            (ThemeChoice::Catppuccin, true),
+            (ThemeChoice::TokyoNight, true),
+            (ThemeChoice::GruvboxLight, false),
+        ] {
+            let published = Appearance::resolve(choice).published(false);
+            assert_eq!(published.dark, dark, "{choice:?}");
+        }
+    }
+
+    fn following_ghostty(theme: Option<TerminalTheme>) -> Appearance {
+        Appearance {
+            selected: ThemeChoice::Ghostty,
+            palette: theme
+                .as_ref()
+                .map_or(Palette::RIWORK, Palette::from_terminal),
+            terminal: None,
+            ghostty: theme,
+            error: None,
+        }
+    }
+
+    fn rgb(theme: &TerminalTheme) -> TerminalColors {
+        TerminalColors {
+            background: Rgb(color_u32(theme.background)),
+            foreground: Rgb(color_u32(theme.foreground)),
+            palette: theme.palette.map(|color| Rgb(color_u32(color))),
+        }
+    }
+
+    #[test]
+    fn published_palette_and_terminal_mirror_a_selected_theme() {
+        for choice in ThemeChoice::ALL
+            .into_iter()
+            .filter(|choice| *choice != ThemeChoice::Ghostty)
+        {
+            let appearance = Appearance::resolve(choice);
+            // A selected theme forces its own terminal colors, whatever the option says.
+            for option in [false, true] {
+                let published = appearance.published(option);
+                assert_eq!(published.v, 1);
+                assert_eq!(published.updated_at, 0);
+                let palette = appearance.palette;
+                assert_eq!(
+                    [
+                        published.palette.bg,
+                        published.palette.panel,
+                        published.palette.panel_active,
+                        published.palette.divider,
+                        published.palette.cyan,
+                        published.palette.magenta,
+                        published.palette.gold,
+                        published.palette.text,
+                        published.palette.muted,
+                    ],
+                    [
+                        Rgb(palette.bg),
+                        Rgb(palette.panel),
+                        Rgb(palette.panel_active),
+                        Rgb(palette.divider),
+                        Rgb(palette.cyan),
+                        Rgb(palette.magenta),
+                        Rgb(palette.gold),
+                        Rgb(palette.text),
+                        Rgb(palette.muted),
+                    ],
+                    "{choice:?}"
+                );
+                assert_eq!(
+                    published.terminal,
+                    Some(rgb(&preset(choice))),
+                    "{choice:?} option={option}"
+                );
+            }
+        }
+        let riwork = Appearance::resolve(ThemeChoice::RiWork).published(false);
+        assert_eq!(riwork.palette.bg.hex(), "#090d14");
+        assert_eq!(riwork.palette.cyan.hex(), "#55e6dc");
+        let terminal = riwork.terminal.unwrap();
+        assert_eq!(terminal.background.hex(), "#090d14");
+        assert_eq!(terminal.foreground.hex(), "#d3e1e6");
+        assert_eq!(terminal.palette[1].hex(), "#f0738b");
+        assert_eq!(terminal.palette[15].hex(), "#ffffff");
+    }
+
+    #[test]
+    fn published_terminal_follows_what_the_desktop_shows_while_following_ghostty() {
+        let ghostty = terminal_theme(
+            0x282c34,
+            0xabb2bf,
+            std::array::from_fn(|index| 0x101010 * (index as u32 % 15) + index as u32),
+        );
+        let appearance = following_ghostty(Some(ghostty));
+        // Ghostty's own colors, unless the RiWork terminal colors option is on.
+        assert_eq!(appearance.shown_terminal(false), Some(ghostty));
+        assert_eq!(appearance.published(false).terminal, Some(rgb(&ghostty)));
+        assert_eq!(
+            appearance.shown_terminal(true),
+            Some(riwork_terminal_theme())
+        );
+        assert_eq!(
+            appearance.published(true).terminal,
+            Some(rgb(&riwork_terminal_theme()))
+        );
+        // The application palette is Ghostty's either way.
+        assert_eq!(
+            appearance.published(true).palette,
+            appearance.published(false).palette
+        );
+        assert_eq!(appearance.published(false).palette.bg.hex(), "#282c34");
+        assert!(appearance.published(false).dark);
+
+        // A configuration that could not be read: the palette falls back to
+        // RiWork's and the terminal colors are unknown, unless the option forces them.
+        let failed = following_ghostty(None);
+        assert_eq!(failed.published(false).terminal, None);
+        assert_eq!(failed.published(false).palette.bg.hex(), "#090d14");
+        assert_eq!(
+            failed.published(true).terminal,
+            Some(rgb(&riwork_terminal_theme()))
+        );
+
+        let light = following_ghostty(Some(terminal_theme(0xfdf6e3, 0x657b83, [0x657b83; 16])));
+        assert!(!light.published(false).dark);
+    }
+
+    #[test]
+    fn terminal_override_is_what_terminals_are_forced_to() {
+        let riwork = riwork_terminal_theme();
+        let following = following_ghostty(Some(riwork));
+        assert_eq!(following.terminal_override(false), None);
+        assert_eq!(following.terminal_override(true), Some(riwork));
+        let gruvbox = Appearance::resolve(ThemeChoice::GruvboxLight);
+        assert_eq!(gruvbox.terminal_override(false), gruvbox.terminal);
+        assert_eq!(gruvbox.terminal_override(true), gruvbox.terminal);
     }
 
     #[test]
