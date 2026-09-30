@@ -177,6 +177,13 @@ private final class ScriptedDesktop: @unchecked Sendable {
     func sealAndPush(_ payload: JSONValue) { socket.push(seal(payload)) }
 }
 
+private final class Order: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [String] = []
+    func append(_ value: String) { lock.withLock { list.append(value) } }
+    var values: [String] { lock.withLock { list } }
+}
+
 @MainActor final class RelayClientTests: XCTestCase {
     private let shell = "44444444-4444-4444-8444-444444444444"
     private func pairing() throws -> Pairing {
@@ -329,6 +336,106 @@ private final class ScriptedDesktop: @unchecked Sendable {
         XCTAssertEqual(desktop.violations, 0)
         let alive = await client.isConnected()
         XCTAssertTrue(alive)
+    }
+
+    // MARK: concurrent requests and long polls
+
+    private func longPoll(hash: String = "h1", wait: Double = 8000) -> [String: JSONValue] {
+        ["shell_id": .string(shell), "styled": .bool(true), "if_changed": .string(hash), "wait_ms": .number(wait)]
+    }
+
+    func testResponsesMayArriveOutOfOrderAndEachIsMatchedToItsRequest() async throws {
+        let (client, _, desktop) = try await connected { $0.policy = { $0 == "shell.output" ? .hold : .respond } }
+        let first = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", second = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        let a = Task { try await client.request(method: "shell.output", params: self.longPoll(hash: "one"), id: first) }
+        let b = Task { try await client.request(method: "shell.output", params: self.longPoll(hash: "two"), id: second) }
+        await eventually("both long polls reached the desktop") { desktop.requestCount == 2 }
+        // Answers to later requests overtake both of them.
+        let projects = try await client.request(method: "projects.list")
+        let status = try await client.keys(shellID: shell, batch: batch, items: [.text("ls"), .key(.enter)])
+        XCTAssertEqual(projects["method"].string, "projects.list")
+        XCTAssertEqual(status, .sent)
+        // The second long poll is answered before the first.
+        let order = Order()
+        let watchA = Task { _ = try await a.value; order.append("a") }
+        let watchB = Task { _ = try await b.value; order.append("b") }
+        desktop.release(id: second)
+        await eventually("the second answer arrived") { order.values == ["b"] }
+        desktop.release(id: first)
+        try await watchA.value; try await watchB.value
+        XCTAssertEqual(order.values, ["b", "a"])
+        XCTAssertEqual(desktop.counters(), [0, 1, 2, 3], "each request spent the next counter, in the order it was made")
+        XCTAssertEqual(desktop.violations, 0)
+        let alive = await client.isConnected()
+        XCTAssertTrue(alive)
+    }
+
+    func testKeysAreNotBlockedByALongPollInFlight() async throws {
+        let (client, _, desktop) = try await connected { $0.policy = { $0 == "shell.output" ? .hold : .respond } }
+        let id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        let poll = Task { try await client.request(method: "shell.output", params: self.longPoll(), id: id) }
+        await eventually("the long poll is waiting on the desktop") { desktop.requestCount == 1 }
+        for index in 0..<5 {
+            let status = try await client.keys(shellID: shell, batch: UUID().uuidString.lowercased(), items: [.text("k\(index)")])
+            XCTAssertEqual(status, .sent)
+        }
+        XCTAssertEqual(desktop.methods(), ["shell.output"] + Array(repeating: "shell.keys", count: 5))
+        XCTAssertEqual(desktop.params()[0]["wait_ms"], .number(8000))
+        XCTAssertEqual(desktop.params()[0]["if_changed"].string, "h1")
+        XCTAssertEqual(desktop.params()[0]["styled"], .bool(true))
+        desktop.release(id: id)
+        let result = try await poll.value
+        XCTAssertEqual(result["method"].string, "shell.output")
+        XCTAssertEqual(desktop.violations, 0)
+    }
+
+    func testALongPollIsNotTimedOutByTheShortRequestTimeout() async throws {
+        // The configured timeout is 120 ms; a request that asks the desktop to wait 8 s must outlive it.
+        let (client, _, desktop) = try await connected(requestTimeout: .milliseconds(120)) { $0.policy = { $0 == "shell.output" ? .hold : .respond } }
+        let id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        let poll = Task { try await client.request(method: "shell.output", params: self.longPoll(), id: id) }
+        await eventually("the desktop holds it") { desktop.requestCount == 1 }
+        try await Task.sleep(for: .milliseconds(450))
+        let alive = await client.isConnected()
+        XCTAssertTrue(alive, "the connection was not torn down while the desktop was still waiting")
+        desktop.release(id: id)
+        let result = try await poll.value
+        XCTAssertEqual(result["method"].string, "shell.output")
+        // A plain read that the desktop never answers still times out at the configured time and ends the connection.
+        desktop.policy = { _ in .silent }
+        do { _ = try await client.request(method: "shell.output", params: self.outputParams()); XCTFail("expected a timeout") }
+        catch { guard case RemoteError.timeout = error else { return XCTFail("\(error)") } }
+        let after = await client.isConnected()
+        XCTAssertFalse(after)
+    }
+
+    func testCancellingALongPollDetachesOnlyItAndItsLateAnswerIsDropped() async throws {
+        let (client, socket, desktop) = try await connected { $0.policy = { $0 == "shell.output" ? .hold : .respond } }
+        let id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        let poll = Task { try await client.request(method: "shell.output", params: self.longPoll(), id: id) }
+        await eventually("the desktop holds it") { desktop.requestCount == 1 }
+        poll.cancel()
+        do { _ = try await poll.value; XCTFail("a cancelled request must throw") } catch { XCTAssertTrue(error is CancellationError, "\(error)") }
+        // A replacement long poll goes out at once, on the next counter, while the desktop still holds the old one.
+        let next = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        let replacement = Task { try await client.request(method: "shell.output", params: self.longPoll(hash: "h2"), id: next) }
+        await eventually("the replacement reached the desktop") { desktop.requestCount == 2 }
+        desktop.release(id: id)      // the desktop finally answers the cancelled one
+        desktop.release(id: next)
+        let result = try await replacement.value
+        XCTAssertEqual(result["method"].string, "shell.output")
+        XCTAssertFalse(socket.cancelled)
+        XCTAssertEqual(desktop.counters(), [0, 1])
+        XCTAssertEqual(desktop.violations, 0)
+        let alive = await client.isConnected()
+        XCTAssertTrue(alive)
+    }
+
+    func testAnUnchangedAnswerParsesAsAnUnchangedReplyThroughTheRealClient() async throws {
+        let (client, _, desktop) = try await connected { $0.results["shell.output"] = .object(["shell_id": .string(self.shell), "unchanged": .bool(true), "hash": .string("h1")]) }
+        let result = try await client.request(method: "shell.output", params: longPoll())
+        XCTAssertEqual(try OutputReply(result: result), .unchanged(shellID: shell, hash: "h1"))
+        XCTAssertEqual(desktop.violations, 0)
     }
 
     // MARK: appearance.get

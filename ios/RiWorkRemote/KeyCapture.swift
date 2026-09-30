@@ -6,9 +6,20 @@ import RiWorkCore
 /// Menlo metrics for the terminal grid, measured the same way the text is drawn.
 enum TerminalFont {
     static func uiFont(size: Double) -> UIFont { UIFont(name: "Menlo-Regular", size: size) ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular) }
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cells: [Double: (width: Double, height: Double)] = [:]
+    /// The size of one grid cell. Measured once per size: the terminal asks for it on every line it draws.
     static func cell(size: Double) -> (width: Double, height: Double) {
+        lock.lock()
+        if let known = cells[size] { lock.unlock(); return known }
+        lock.unlock()
         let font = uiFont(size: size)
-        return (("M" as NSString).size(withAttributes: [.font: font]).width, font.lineHeight)
+        let measured: (width: Double, height: Double) = (Double(("M" as NSString).size(withAttributes: [.font: font]).width), Double(font.lineHeight))
+        lock.lock()
+        if cells.count > 256 { cells.removeAll() }
+        cells[size] = measured
+        lock.unlock()
+        return measured
     }
 }
 
@@ -151,7 +162,10 @@ struct KeyCapture: UIViewRepresentable {
         view.isEnabled = isEnabled
         view.accessibilityLabel = label
         // New colors reach the bar in place: the view, its focus and the keyboard are not rebuilt, so typing goes on.
+        let previousScale = view.bar.style.scale
         view.bar.style = context.environment.desktopStyle
+        // A bar that is on screen tells iOS its new height; the keyboard is asked to lay it out again.
+        if view.bar.style.scale != previousScale, view.isFirstResponder { view.reloadInputViews() }
         view.bar.presentation = presentation
         view.hotkeys = hotkeys
         view.onEditHotkeys = onEditHotkeys

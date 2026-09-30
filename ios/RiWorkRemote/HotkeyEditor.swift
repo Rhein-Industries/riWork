@@ -65,23 +65,23 @@ struct HotkeyEditorSheet: View {
                 }
                 Section {
                     Text("A hotkey sends its steps to the terminal in order, like typing them. Text is typed as it is; use the Enter key step for a new line.")
-                        .font(.caption).foregroundStyle(style.muted).listRowBackground(style.background)
+                        .font(style.system(.caption)).foregroundStyle(style.muted).listRowBackground(style.background)
                 }
             }
             .listStyle(.plain).scrollContentBackground(.hidden)
             .environment(\.editMode, .constant(reordering ? .active : .inactive))
         }
         .background(style.background).foregroundStyle(style.text)
-        .font(.custom("Menlo", size: 13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
+        .font(style.mono(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
         .sheet(item: $draft) { HotkeyForm(store: store, draft: $0).desktopThemed(style) }
         .presentationDetents([.medium, .large]).presentationCornerRadius(8)
     }
     private func row(_ hotkey: Hotkey, tint: Color) -> some View {
         HStack(spacing: 10) {
-            Text(hotkey.label).font(.custom("Menlo-Bold", size: 13, relativeTo: .body)).foregroundStyle(tint).frame(minWidth: 64, alignment: .leading)
-            Text(hotkey.summary).font(.custom("Menlo", size: 11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
+            Text(hotkey.label).font(style.mono(13, bold: true, relativeTo: .body)).foregroundStyle(tint).frame(minWidth: 64, alignment: .leading)
+            Text(hotkey.summary).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
             Spacer(minLength: 0)
-        }.frame(minHeight: 40).contentShape(Rectangle())
+        }.frame(minHeight: style.pt(40)).contentShape(Rectangle())
     }
 }
 
@@ -128,11 +128,11 @@ struct HotkeyForm: View {
                     }.disabled(draft.steps.count >= Hotkey.maxSteps).listRowBackground(style.background)
                 }
                 Section("Sends") {
-                    Text(draft.hotkey.summary.isEmpty ? "Nothing yet" : draft.hotkey.summary).font(.custom("Menlo", size: 12, relativeTo: .caption)).foregroundStyle(style.muted)
+                    Text(draft.hotkey.summary.isEmpty ? "Nothing yet" : draft.hotkey.summary).font(style.mono(12, relativeTo: .caption)).foregroundStyle(style.muted)
                     if let problem = draft.problem, showsProblem {
-                        Label(problem.localizedDescription, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(style.warning)
+                        Label(problem.localizedDescription, systemImage: "exclamationmark.circle").font(style.system(.caption)).foregroundStyle(style.warning)
                     }
-                    if let failure { Label(failure, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(style.error) }
+                    if let failure { Label(failure, systemImage: "exclamationmark.circle").font(style.system(.caption)).foregroundStyle(style.error) }
                 }.listRowBackground(style.background)
                 if !draft.isNew {
                     Section {
@@ -145,7 +145,7 @@ struct HotkeyForm: View {
             .environment(\.editMode, .constant(.active))
         }
         .background(style.background).foregroundStyle(style.text)
-        .font(.custom("Menlo", size: 13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
+        .font(style.mono(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
         .presentationDetents([.large]).presentationCornerRadius(8)
     }
     /// The first thing a new form says is not a complaint.
@@ -159,7 +159,7 @@ struct HotkeyForm: View {
                 Picker("Key", selection: step.key) { ForEach(TerminalKey.choices, id: \.self) { Text($0.title).tag($0) } }.pickerStyle(.menu).labelsHidden()
                 Spacer(minLength: 0)
             }
-        }.frame(minHeight: 40)
+        }.frame(minHeight: style.pt(40))
     }
     private func save() {
         let hotkey = draft.hotkey

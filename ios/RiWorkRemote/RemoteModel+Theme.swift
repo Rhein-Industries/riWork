@@ -49,6 +49,7 @@ extension RemoteModel {
     /// The app became active. Reconnecting is `resume()`'s job (its `connect()` fetches by itself); when the connection stayed up,
     /// colors may have changed meanwhile, so ask, unless a fetch just happened.
     func appDidBecomeActive() async {
+        setAppActive(true)
         await resume()
         guard state == .connected else { return }
         if let last = lastAppearanceFetch, ContinuousClock.now - last < themeMinimumGap { return }

@@ -12,7 +12,7 @@ public enum RequestValidation {
         case "projects.list", "orchestrators.list", "appearance.get": required = []; optional = []
         case "worktrees.list", "shells.list": required = ["project_id"]; optional = []
         case "tasks.list": required = ["project_id"]; optional = ["worktree_id"]
-        case "shell.output": required = ["shell_id"]; optional = ["lines"]
+        case "shell.output": required = ["shell_id"]; optional = ["lines", "styled", "if_changed", "wait_ms"]
         case "shell.input": required = ["shell_id", "line"]; optional = []
         case "shell.keys": required = ["shell_id", "batch", "items"]; optional = []
         case "shell.resize": required = ["shell_id", "columns", "rows"]; optional = []
@@ -25,6 +25,11 @@ public enum RequestValidation {
         if method == "shell.keys" {
             guard case .array(let raw)? = params["items"] else { throw RemoteError.protocolViolation("Missing key items.") }
             try KeyItem.validate(batch: try raw.map { try KeyItem(json: $0) })
+        }
+        if method == "shell.output" {
+            if let styled = params["styled"], case .bool = styled {} else if params["styled"] != nil { throw RemoteError.protocolViolation("Output styled must be a boolean.") }
+            if let changed = params["if_changed"] { guard case .string(let hash) = changed, LiveSync.isUsableHash(hash) else { throw RemoteError.protocolViolation("Output if_changed must be a short printable string.") } }
+            if let wait = params["wait_ms"] { guard case .number(let value) = wait, value >= 0, value <= Double(LiveSync.maximumWaitMilliseconds), value.rounded() == value else { throw RemoteError.protocolViolation("Output wait_ms must be 0–10000.") } }
         }
         if method == "shell.input" { guard let line = params["line"]?.string else { throw RemoteError.protocolViolation("Missing input.") }; try InputValidation.validate(line) }
         if let lines = params["lines"] { guard case .number(let value) = lines, value >= 1, value <= 2000, value.rounded() == value else { throw RemoteError.protocolViolation("Output lines must be 1–2000.") } }
@@ -71,9 +76,16 @@ public actor RelayClient: RemoteTransport {
         self.handshakeTimeout = handshakeTimeout
     }
     /// `shell.keys` may pause ~150 ms between a text and the key after it (about 5 s for a 64-item batch), so it never
-    /// gets less than 10 s: a timeout tears the whole connection down.
-    static func timeout(for method: String, default base: Duration) -> Duration {
-        method == "shell.keys" ? max(base, .seconds(10)) : base
+    /// gets less than 10 s: a timeout tears the whole connection down. A `shell.output` that asks the desktop to wait for a
+    /// change (`wait_ms`) gets that wait plus 20 s (the connector gives up after the wait plus 8 s), for the same reason.
+    static func timeout(for method: String, params: [String: JSONValue] = [:], default base: Duration) -> Duration {
+        switch method {
+        case "shell.keys": return max(base, .seconds(10))
+        case "shell.output":
+            if case .number(let wait)? = params["wait_ms"], wait.isFinite, wait > 0 { return max(base, LiveSync.timeout(waitMilliseconds: Int(min(wait, Double(LiveSync.maximumWaitMilliseconds))))) }
+            return base
+        default: return base
+        }
     }
     public func isConnected() -> Bool { cipher != nil && socket != nil }
     @discardableResult
@@ -176,7 +188,7 @@ public actor RelayClient: RemoteTransport {
         let token = generation
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let deadline = Task { [requestTimeout = Self.timeout(for: method, default: requestTimeout)] in
+                let deadline = Task { [requestTimeout = Self.timeout(for: method, params: params, default: requestTimeout)] in
                     do { try await Task.sleep(for: requestTimeout) } catch { return }
                     self.expire(id: id, token: token)
                 }

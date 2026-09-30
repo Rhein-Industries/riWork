@@ -10,12 +10,16 @@ import RiWorkCore
 /// `UIColor` itself; converting a SwiftUI `Color` back would freeze one appearance.
 struct DesktopStyle: Equatable, @unchecked Sendable {
     let theme: DesktopTheme
+    /// The interface size (`InterfaceScale`): a factor for fonts and touch targets, so headers, lists, the key bar and buttons
+    /// grow or shrink together. Dynamic Type is not touched; it still applies on top.
+    let scale: Double
     let textUI, mutedUI, accentUI, magentaUI, goldUI, errorUI: UIColor
     let backgroundUI, panelUI, activeUI, dividerUI: UIColor
     let terminalBackgroundUI, terminalForegroundUI, terminalCursorUI: UIColor
 
-    init(_ theme: DesktopTheme) {
+    init(_ theme: DesktopTheme, scale: Double = InterfaceScale.standard) {
         self.theme = theme
+        self.scale = InterfaceScale.clamped(scale)
         func ui(_ color: ThemeColor) -> UIColor {
             if color.isFixed { return Self.uiColor(color.light) }
             let light = Self.uiColor(color.light), dark = Self.uiColor(color.dark)
@@ -29,8 +33,46 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
     static func uiColor(_ rgb: RGB) -> UIColor {
         UIColor(red: CGFloat(rgb.red) / 255, green: CGFloat(rgb.green) / 255, blue: CGFloat(rgb.blue) / 255, alpha: 1)
     }
-    static func == (lhs: DesktopStyle, rhs: DesktopStyle) -> Bool { lhs.theme == rhs.theme }
+    static func == (lhs: DesktopStyle, rhs: DesktopStyle) -> Bool { lhs.theme == rhs.theme && lhs.scale == rhs.scale }
     static let builtIn = DesktopStyle(.builtIn)
+
+    // MARK: Metrics
+
+    /// A size in points at the current interface scale, on whole points.
+    func pt(_ points: CGFloat) -> CGFloat { CGFloat(InterfaceScale.scaled(Double(points), by: scale)) }
+    /// Menlo, the app's text face, at the scale. `relativeTo` keeps it following Dynamic Type as before.
+    func mono(_ size: CGFloat, bold: Bool = false, relativeTo textStyle: Font.TextStyle = .body) -> Font {
+        .custom(bold ? "Menlo-Bold" : "Menlo", size: size * CGFloat(scale), relativeTo: textStyle)
+    }
+    /// The system face for secondary text (captions, footnotes) at the scale.
+    func system(_ textStyle: Font.TextStyle, weight: Font.Weight = .regular) -> Font {
+        let base: CGFloat = switch textStyle {
+        case .caption2: 11
+        case .caption: 12
+        case .footnote: 13
+        case .subheadline: 15
+        case .callout: 16
+        case .headline, .body: 17
+        default: 17
+        }
+        let metrics = UIFontMetrics(forTextStyle: Self.uiTextStyle(textStyle))
+        return .system(size: metrics.scaledValue(for: base) * CGFloat(scale), weight: weight)
+    }
+    private static func uiTextStyle(_ style: Font.TextStyle) -> UIFont.TextStyle {
+        switch style {
+        case .caption2: .caption2
+        case .caption: .caption1
+        case .footnote: .footnote
+        case .subheadline: .subheadline
+        case .callout: .callout
+        case .headline: .headline
+        default: .body
+        }
+    }
+    /// A UIKit font at the scale (key bar, text fields).
+    func uiFont(_ name: String, size: CGFloat) -> UIFont {
+        UIFont(name: name, size: size * CGFloat(scale)) ?? .monospacedSystemFont(ofSize: size * CGFloat(scale), weight: .regular)
+    }
 
     var text: Color { Color(uiColor: textUI) }
     var muted: Color { Color(uiColor: mutedUI) }
@@ -66,7 +108,7 @@ private struct DesktopThemed: ViewModifier {
             .environment(\.desktopStyle, style)
             .tint(style.accent)
             .foregroundStyle(style.text)
-            .font(.custom("Menlo", size: 13, relativeTo: .body))
+            .font(style.mono(13))
             .buttonStyle(DesktopButtonStyle())
             .preferredColorScheme(style.colorScheme)
     }
@@ -83,9 +125,9 @@ struct DesktopButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.custom("Menlo", size: 12, relativeTo: .subheadline))
+            .font(style.mono(12, relativeTo: .subheadline))
             .foregroundStyle(prominent ? style.accent : style.text)
-            .padding(.horizontal, compact ? 6 : 10).frame(minWidth: compact ? 40 : 44, minHeight: compact ? 40 : 44)
+            .padding(.horizontal, style.pt(compact ? 6 : 10)).frame(minWidth: style.pt(compact ? 40 : 44), minHeight: style.pt(compact ? 40 : 44))
             .background(configuration.isPressed ? style.active : (prominent ? style.active : .clear))
             .overlay(alignment: .bottom) { if prominent { Rectangle().fill(style.accent).frame(height: 1) } }
             .contentShape(Rectangle()).opacity(isEnabled ? 1 : 0.45)
@@ -109,10 +151,10 @@ struct WorkspaceBar<Actions: View>: View {
         VStack(spacing: 0) {
             HStack(spacing: compact ? 2 : 4) {
                 if let back { Button("Back", systemImage: "chevron.left", action: back).labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: compact)) }
-                Text(title).font(.custom("Menlo-Bold", size: 13, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
+                Text(title).font(style.mono(13, bold: true, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 4)
                 actions().buttonStyle(DesktopButtonStyle(compact: compact))
-            }.padding(.horizontal, compact ? 4 : 8).frame(minHeight: compact ? 40 : 44).background(style.panel)
+            }.padding(.horizontal, compact ? 4 : 8).frame(minHeight: style.pt(compact ? 40 : 44)).background(style.panel)
                 .contentShape(Rectangle())
                 .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap?() }, including: onDoubleTap == nil ? .none : .all)
             DesktopRule()

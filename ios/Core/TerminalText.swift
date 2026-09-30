@@ -36,6 +36,7 @@ public enum TerminalText {
 
     /// Terminal cells a character occupies: 2 for East Asian wide and emoji, 1 otherwise.
     public static func cellWidth(_ character: Character) -> Int {
+        if character.isASCII { return 1 }
         guard let scalar = character.unicodeScalars.first else { return 1 }
         // Emoji presentation (✅ ✨ 🚀 …) is East Asian Wide, so tmux counts two cells.
         if scalar.properties.isEmojiPresentation { return 2 }
@@ -91,6 +92,8 @@ public struct ShellOutput: Sendable, Equatable {
     public let rows: Int?
     public let cols: Int?
     public let inMode: Bool
+    /// The desktop's fingerprint of this screen. Present when the desktop can wait for a change (`if_changed`); absent on older ones.
+    public let hash: String?
 
     public init(result: JSONValue) throws {
         guard let shellID = result["shell_id"].string, let text = result["output"].string else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
@@ -106,8 +109,11 @@ public struct ShellOutput: Sendable, Equatable {
         if let x = count(result["cursor"]["x"], maximum: 10_000), let y = count(result["cursor"]["y"], maximum: 10_000), let rows, y < rows { cursor = Cursor(x: x, y: y) }
         else { cursor = nil }
         if case .bool(let mode) = result["in_mode"] { inMode = mode } else { inMode = false }
+        hash = OutputReply.hash(result["hash"])
     }
     public var screen: TerminalScreen { TerminalText.screen(text, cursor: cursor.map { ($0.x, $0.y) }, rows: rows) }
+    /// The screen with its colors and attributes and text presentation forced on symbols. Pure and slow enough to keep off the main actor.
+    public var styledScreen: StyledScreen { TerminalText.styledScreen(text, cursor: cursor.map { ($0.x, $0.y) }, rows: rows) }
 }
 
 /// How often to read the screen: fast right after keys were typed or sent, then slower, then the resting interval.

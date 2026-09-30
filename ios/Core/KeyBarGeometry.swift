@@ -33,6 +33,8 @@ public enum KeyBarPosition: Sendable, Equatable {
 public enum KeyBarGeometry {
     /// The bar's height: a 1 pt rule and the keys. It does not change with the keyboard.
     public static let height = 44.0
+    /// The bar's height at an interface scale (see `InterfaceScale`).
+    public static func height(scale: Double) -> Double { InterfaceScale.scaled(height, by: scale) }
     public static let clearance: ClosedRange<Double> = 20...28
     private static let insetToRadius = 1.0 / 0.62
 

@@ -25,6 +25,9 @@ public struct DesktopTheme: Sendable, Equatable {
     public var terminalBackground: ThemeColor, terminalForeground: ThemeColor
     /// The block cursor. The character under it is drawn in `terminalBackground`.
     public var terminalCursor: ThemeColor
+    /// The terminal's 16 ANSI colors, as the shell's SGR 30-37 / 90-97 / 40-47 / 100-107 and palette entries 0-15 name them.
+    /// The desktop's own when it published a terminal palette, otherwise a built-in set that suits its light or dark side.
+    public var ansi: [ThemeColor]
     /// `nil` while built in (follow the phone's appearance); otherwise the desktop's `dark` flag, which also drives the status bar.
     public var dark: Bool?
     public var isSynced: Bool { dark != nil }
@@ -47,8 +50,16 @@ public struct DesktopTheme: Sendable, Equatable {
         return DesktopTheme(
             background: pair(\.bg), panel: pair(\.panel), active: pair(\.active), divider: pair(\.divider), text: pair(\.text), muted: pair(\.muted),
             accent: pair(\.accent), magenta: pair(\.magenta), gold: pair(\.gold), error: pair(\.error),
-            terminalBackground: pair(\.bg), terminalForeground: pair(\.text), terminalCursor: pair(\.accent), dark: nil)
+            terminalBackground: pair(\.bg), terminalForeground: pair(\.text), terminalCursor: pair(\.accent),
+            ansi: (0..<TerminalColors.paletteCount).map { ThemeColor(light: TerminalRenderColors.fallbackAnsi(dark: false)[$0], dark: TerminalRenderColors.fallbackAnsi(dark: true)[$0]) },
+            dark: nil)
     }()
+
+    /// The colors a screen is drawn with, for the light or the dark side (a synced theme has one side only).
+    public func terminalColors(dark: Bool, boldIsBright: Bool = false) -> TerminalRenderColors {
+        func pick(_ color: ThemeColor) -> RGB { dark ? color.dark : color.light }
+        return TerminalRenderColors(foreground: pick(terminalForeground), background: pick(terminalBackground), ansi: ansi.map(pick), boldIsBright: boldIsBright)
+    }
 
     /// The theme for a desktop's appearance, or the built-in one when there is none.
     ///
@@ -85,6 +96,7 @@ public struct DesktopTheme: Sendable, Equatable {
             accent: fixed(guarded(p.cyan, builtIn: builtIn.accent)), magenta: fixed(guarded(p.magenta, builtIn: builtIn.magenta)),
             gold: fixed(guarded(p.gold, builtIn: builtIn.gold)), error: fixed(guarded(builtIn.error, builtIn: builtIn.error)),
             terminalBackground: fixed(background), terminalForeground: fixed(foreground), terminalCursor: fixed(foreground),
+            ansi: (appearance.terminal?.palette ?? TerminalRenderColors.fallbackAnsi(dark: appearance.dark)).map(fixed),
             dark: appearance.dark)
     }
 }

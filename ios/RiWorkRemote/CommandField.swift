@@ -40,6 +40,7 @@ struct CommandField: UIViewRepresentable {
     private func colorize(_ field: UITextField, _ style: DesktopStyle, coordinator: Coordinator) {
         guard coordinator.appliedStyle != style || coordinator.appliedPlaceholder != placeholder else { return }
         coordinator.appliedStyle = style; coordinator.appliedPlaceholder = placeholder
+        field.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: style.uiFont("Menlo", size: 13))
         field.textColor = style.textUI
         field.tintColor = style.accentUI
         field.attributedPlaceholder = NSAttributedString(string: placeholder, attributes: [.foregroundColor: style.mutedUI])
