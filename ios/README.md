@@ -110,6 +110,46 @@ and line before sending. An uncertain result blocks further submission and
 survives reconnect/app restart. Review the indicated session before acknowledging
 the warning. Acknowledgement does not submit or retry anything.
 
+### Direct typing, focus mode and text size
+
+When the desktop supports `shell.keys`, tapping the terminal opens the keyboard and
+every key goes straight to the shell, which echoes it on the screen you are looking
+at. The line composer above stays for older desktops (detected on the first key: an
+`invalid_request` "unsupported RPC method" hands what was typed back to the composer)
+and can be chosen anyway from the terminal menu. Detection is per connection.
+
+A hidden `UIKeyInput` view captures the keys (autocorrection, smart punctuation and
+prediction off; return key "return"). A key bar sits above the keyboard: Esc, Tab, a
+sticky Ctrl (armed until the next letter, sent as `C-<letter>`), arrows (hold to
+repeat), Paste and Hide keyboard. A hardware keyboard sends arrows, Esc, Tab,
+Shift-Tab, Home/End/Page keys and Ctrl-letters. Newlines in typed or pasted text
+become Enter, tabs become Tab, other control characters are dropped.
+
+Keys are queued in order per shell and sent by one sender with exactly one batch in
+flight, coalescing adjacent text every ~40 ms (or at once when idle). A batch ends at an
+Enter (the desktop pauses ~150 ms whenever a key follows text, so typical batches are
+`[text, Enter]`), and `shell.keys` gets a request timeout of at least 10 s. A batch gets its
+UUID when it is formed and keeps it until it succeeds; after a lost connection or timeout it
+is resent unchanged with a new request id, and the desktop answers `duplicate` if it
+already arrived. While the connection is down (the app reconnects by itself while input
+waits) keys stay in a local buffer of at most 4096 characters / 512 items, per shell; more
+is refused with "Buffer full". A small chip above the keyboard shows the pending
+input (⏎ ⇥ ⌫ ⎋ ↑ ↓ ← → ^C), cut at the front, only once it is older than 300 ms or the
+link is down; its ✕ discards it. `input_unavailable` and `not_found` keep the buffer and say
+why; `uncertain` shows a short note. The buffer lives in memory only.
+
+The screen is read every ~300 ms for 2 s after typing, every 1 s for the next 10 s, then
+every 3 s, one read in flight at a time. When `shell.output` carries `cursor`/`rows`, a block
+cursor is drawn there; `in_mode` shows a COPY MODE badge.
+
+**Focus mode** (header button, or double-tap the header) hides the header, tabs, status rows and badges and gives the shell
+the whole screen inside the safe area, in portrait or landscape, keeping the display awake. Only the
+terminal, the keyboard with its key bar and the pending chip remain, plus a translucent
+corner control (text size, leave) that fades after a few seconds and returns on tap.
+The choice is remembered per session for the app run. Text size (8–24 pt, default 12) is set by
+pinching, the menu or the corner control, and is saved. Focus mode, rotation, the keyboard and text
+size all recompute the terminal grid; the resize request is debounced (150 ms).
+
 Backgrounding runs the viewport release under a UIKit background task, then discards
 connection keys and marks output stale; if iOS runs out of time the desktop restores its
 size within 15 seconds anyway. Returning reconnects if the connection was active, with a

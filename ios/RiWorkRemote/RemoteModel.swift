@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 import RiWorkCore
 
 struct Library: Codable {
@@ -23,6 +24,10 @@ enum ConnectionState: Equatable {
     var shells: [RemoteSession] = []
     var orchestrators: [RemoteSession] = []
     var output = ""
+    /// Where the desktop's cursor is in `output` (Character offset), when it reported one.
+    var outputCursorOffset: Int?
+    /// The desktop pane is in copy mode.
+    var outputInMode = false
     var outputSessionID: String?
     var lastOutputAt: Date?
     var snapshotStale = true
@@ -35,17 +40,58 @@ enum ConnectionState: Equatable {
     var viewportError: String?
     var terminalVisible = false
     var draft = ""
+    // MARK: Direct typing, layout and focus (pipeline in RemoteModel+Keys.swift)
+    /// Whether the desktop understands `shell.keys`. Learned from the first call, reset by every new connection.
+    var keysSupport: KeysSupport = .unknown
+    /// Unsent keystrokes per (desktop, shell). Memory only: typed text is never persisted.
+    var keyBuffers: [KeyBufferKey: KeyBuffer] = [:]
+    var keysFull: Set<KeyBufferKey> = []
+    /// Bumped when the pending-input preview may need to appear because time passed.
+    var keyRevealTick = 0
+    /// Counts accepted keystroke groups; the view keeps the screen scrolled to the bottom while it changes.
+    var typedCount = 0
+    var preferLineComposer = false
+    var terminalFontSize = TerminalFontSize.standard
+    /// Sessions in focus mode during this app run.
+    var focusedSessionIDs: Set<String> = []
     /// Set when the Keychain library could not be read. Saved pairings are then untouched and never overwritten.
     var loadFailure: String?
     var loadFailed: Bool { loadFailure != nil }
     @ObservationIgnored private let keychain: KeychainStore
-    @ObservationIgnored private let client: any RemoteTransport
+    @ObservationIgnored let client: any RemoteTransport
     @ObservationIgnored private let pollInterval: Duration
-    @ObservationIgnored private var polling: Task<Void, Never>?
-    @ObservationIgnored private var generation = UUID()
-    @ObservationIgnored private var wantsConnection = false
+    @ObservationIgnored var polling: Task<Void, Never>?
+    @ObservationIgnored var generation = UUID()
+    @ObservationIgnored var wantsConnection = false
     // A not_found UUID is excluded until an explicit refresh or fresh connection.
-    private var missingSessionIDs: Set<String> = []
+    var missingSessionIDs: Set<String> = []
+    @ObservationIgnored private var lastScreen: ShellOutput?
+    @ObservationIgnored private var drainingForBackground = false
+    @ObservationIgnored private var resumeAfterDrain = false
+    /// Counts times the selected terminal was replaced without a tap (it closed); the view drops the keyboard so
+    /// keystrokes meant for one shell never continue into another.
+    var sessionAutoSwitches = 0
+    @ObservationIgnored private var outputReadInFlight = false
+    @ObservationIgnored private var outputReadQueued = false
+    @ObservationIgnored var pollSleeper: Task<Void, Never>?
+    @ObservationIgnored private var pollDueAt: Date?
+    @ObservationIgnored var lastKeyActivity: Date?
+    // Direct-typing plumbing (RemoteModel+Keys.swift).
+    @ObservationIgnored let keyFlushInterval: Duration
+    @ObservationIgnored let previewDelay: Duration
+    @ObservationIgnored let reconnectBackoff: Duration
+    @ObservationIgnored let defaults: UserDefaults
+    @ObservationIgnored let cellMetrics: @MainActor (Double) -> (width: Double, height: Double)
+    @ObservationIgnored let keepAwake: @MainActor (Bool) -> Void
+    @ObservationIgnored var keySender: Task<Void, Never>?
+    @ObservationIgnored var keySenderID = UUID()
+    @ObservationIgnored var lastKeyBatchStart: ContinuousClock.Instant?
+    @ObservationIgnored var revealTask: Task<Void, Never>?
+    @ObservationIgnored var reconnectTask: Task<Void, Never>?
+    @ObservationIgnored var reconnectID = UUID()
+    @ObservationIgnored var noticeID = UUID()
+    /// The pane size the view reported; the grid is recomputed from it whenever layout, font or focus changes.
+    @ObservationIgnored var terminalArea: CGSize?
     // The project whose worktrees and shells are current for this connection; a cancelled load leaves it unset.
     @ObservationIgnored private var loadedProjectID: String?
     // Per-session `lines` that fit the desktop's 128 KiB reply cap; wide grids or multibyte scrollback need fewer.
@@ -57,12 +103,25 @@ enum ConnectionState: Equatable {
     @ObservationIgnored private var failedViewport: ViewportTarget?
     private struct ViewportTarget: Equatable { let shellID: String; let viewport: TerminalViewport }
 
-    init(client: any RemoteTransport = RelayClient(), keychain: KeychainStore = KeychainStore(), pollInterval: Duration = .seconds(3)) {
+    init(client: any RemoteTransport = RelayClient(), keychain: KeychainStore = KeychainStore(), pollInterval: Duration = .seconds(3),
+         keyFlushInterval: Duration = .milliseconds(40), previewDelay: Duration = .milliseconds(300), reconnectBackoff: Duration = .seconds(1),
+         defaults: UserDefaults = .standard,
+         cellMetrics: @escaping @MainActor (Double) -> (width: Double, height: Double) = { TerminalFont.cell(size: $0) },
+         keepAwake: @escaping @MainActor (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 }) {
         self.client = client
         self.keychain = keychain
         self.pollInterval = pollInterval
+        self.keyFlushInterval = keyFlushInterval
+        self.previewDelay = previewDelay
+        self.reconnectBackoff = reconnectBackoff
+        self.defaults = defaults
+        self.cellMetrics = cellMetrics
+        self.keepAwake = keepAwake
+        preferLineComposer = defaults.bool(forKey: Self.lineComposerKey)
+        terminalFontSize = defaults.object(forKey: Self.fontSizeKey) == nil ? TerminalFontSize.standard : TerminalFontSize.clamped(defaults.double(forKey: Self.fontSizeKey))
         loadLibrary()
     }
+    static let lineComposerKey = "riwork.lineComposer", fontSizeKey = "riwork.terminalFontSize"
     /// Only "item not found" means an empty library. Any other failure blocks writes so a retry can still succeed.
     func loadLibrary() {
         do {
@@ -104,6 +163,7 @@ enum ConnectionState: Equatable {
     }
     func setTerminalVisible(_ visible: Bool) {
         terminalVisible = visible
+        updateKeepAwake()
         scheduleViewportUpdate()
     }
     private func scheduleViewportUpdate() {
@@ -190,6 +250,7 @@ enum ConnectionState: Equatable {
     }
     func remove(id: String) async throws {
         if selectedDesktopID == id { await disconnect(); selectedDesktopID = nil; clearSnapshot() }
+        discardKeyBuffers(forDesktop: id)
         let previous = desktops
         desktops.removeAll { $0.id == id }
         do { try persist() } catch { desktops = previous; throw error }
@@ -198,6 +259,8 @@ enum ConnectionState: Equatable {
         if selectedDesktopID != id {
             await disconnect()
             selectedDesktopID = id; clearSnapshot(); draft = ""; deliveryNotice = nil
+            // Typed-but-unsent input belongs to the desktop it was typed for; leaving it does not queue it for later.
+            discardKeyBuffers(exceptDesktop: id)
             do { try persist() } catch { self.error = error.localizedDescription; return }
         }
         if state != .connected && state != .connecting { await connect() }
@@ -209,6 +272,10 @@ enum ConnectionState: Equatable {
         generation = UUID(); let token = generation
         viewportSessionID = nil; appliedViewport = nil; failedViewport = nil; viewportError = nil
         missingSessionIDs = []; loadedProjectID = nil; outputLines = [:]
+        // A fresh connection may reach an upgraded desktop: detect direct typing again. Buffers survive.
+        keysSupport = .unknown
+        keySender?.cancel(); keySender = nil
+        for key in Array(keyBuffers.keys) { keyBuffers[key]?.block = nil }
         state = .connecting; error = nil; snapshotStale = true
         do {
             let established = try await client.connect(pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment)
@@ -221,15 +288,31 @@ enum ConnectionState: Equatable {
             try await refresh(token: token)
             guard generation == token else { return }
             startPolling(token: token)
+            kickKeySender()
         } catch {
             guard generation == token else { return }
             state = .failed; snapshotStale = true; self.error = error.localizedDescription
             await client.disconnect()
+            scheduleReconnectIfNeeded()
         }
     }
     func disconnect(background: Bool = false) async {
+        // Leaving the app right after typing: give what is queued a moment to reach the desktop. Coming back during
+        // that moment must still reconnect afterwards, which `resume()` records instead of acting on a live connection.
+        if background, state == .connected {
+            drainingForBackground = true
+            await drainKeys(timeout: .seconds(1))
+            drainingForBackground = false
+        }
+        await performDisconnect(background: background)
+        if resumeAfterDrain { resumeAfterDrain = false; await resume() }
+    }
+    private func performDisconnect(background: Bool) async {
         let token = generation
         if !background { wantsConnection = false }
+        reconnectTask?.cancel(); reconnectTask = nil
+        keySender?.cancel(); keySender = nil
+        pollSleeper?.cancel()
         // A manual disconnect stays disconnected through backgrounding; only an active connection is "paused".
         state = background && wantsConnection ? .suspended : .disconnected
         snapshotStale = true; loading = false
@@ -242,8 +325,12 @@ enum ConnectionState: Equatable {
         viewportSessionID = nil; appliedViewport = nil; failedViewport = nil
         await client.disconnect()
     }
-    func resume() async { if wantsConnection, state == .suspended { await connect() } }
-    private func clearSnapshot() { projects = []; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; output = ""; outputSessionID = nil; lastOutputAt = nil; snapshotStale = true }
+    func resume() async {
+        if drainingForBackground { resumeAfterDrain = true; return }
+        if wantsConnection, state == .suspended { await connect() }
+    }
+    private func clearSnapshot() { projects = []; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true }
+    private func resetOutput() { lastScreen = nil; output = ""; outputCursorOffset = nil; outputInMode = false; outputSessionID = nil; lastOutputAt = nil }
     func refresh() async {
         guard state == .connected else { return }
         failedViewport = nil; viewportError = nil; missingSessionIDs = []; outputLines = [:]
@@ -278,7 +365,7 @@ enum ConnectionState: Equatable {
                     $0.selectedSessionID = $0.projectSessionIDs?[id]
                 }
             }
-            output = ""; outputSessionID = nil; lastOutputAt = nil; draft = ""; deliveryNotice = nil
+            resetOutput(); draft = ""; deliveryNotice = nil
             worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
             if state == .connected {
                 try await loadProject(id, token: generation)
@@ -310,8 +397,9 @@ enum ConnectionState: Equatable {
             }
             // pendingInput belongs to its original shell, even if that tab has closed.
         }
-        output = ""; outputSessionID = nil; lastOutputAt = nil; snapshotStale = true
+        resetOutput(); snapshotStale = true
         draft = ""; deliveryNotice = nil; error = nil; viewportError = nil; failedViewport = nil
+        if selected != nil { sessionAutoSwitches &+= 1 }
     }
     func chooseSession(_ session: RemoteSession) async {
         guard openSessions.contains(where: { $0.id == session.id }) else { return }
@@ -322,22 +410,40 @@ enum ConnectionState: Equatable {
                     var selections = $0.projectSessionIDs ?? [:]; selections[project] = session.id; $0.projectSessionIDs = selections
                 }
             }
-            if outputSessionID != session.id { output = ""; outputSessionID = nil; lastOutputAt = nil }
+            if outputSessionID != session.id { resetOutput() }
             draft = ""; deliveryNotice = nil
             await readOutput()
         } catch { handle(error) }
     }
     func readOutput() async { await readOutput(recoverMissing: true) }
+    /// One screen read in flight at a time. A request that arrives meanwhile is folded into one more read afterwards,
+    /// so a caller that wants fresh output never gets a second concurrent poll on the wire.
     private func readOutput(recoverMissing: Bool) async {
+        guard state == .connected, let id = sessionID, !missingSessionIDs.contains(id) else { return }
+        if outputReadInFlight { outputReadQueued = true; return }
+        outputReadInFlight = true
+        defer { outputReadInFlight = false }
+        repeat {
+            outputReadQueued = false
+            await readOutputOnce(recoverMissing: recoverMissing)
+        } while outputReadQueued && state == .connected && !Task.isCancelled
+    }
+    private func readOutputOnce(recoverMissing: Bool) async {
         guard state == .connected, let id = sessionID, !missingSessionIDs.contains(id) else { return }
         let token = generation
         do {
             try await synchronizeViewport(token: token)
             guard generation == token, sessionID == id else { return }
-            let result = try await fetchOutput(id: id)
-            guard result["shell_id"].string == id, let text = result["output"].string else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
+            let screen = try ShellOutput(result: try await fetchOutput(id: id))
+            guard screen.shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
             guard generation == token, sessionID == id else { return }
-            output = TerminalText.readable(text); outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
+            // An unchanged screen is not re-rendered: polling is fast while typing and most polls see the same thing.
+            if screen != lastScreen || outputSessionID != id {
+                let rendered = screen.screen
+                output = rendered.text; outputCursorOffset = rendered.cursorOffset; outputInMode = screen.inMode
+                lastScreen = screen
+            }
+            outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
         } catch {
             guard generation == token, sessionID == id else { return }
             if case RemoteError.rpc("not_found", _) = error {
@@ -353,7 +459,7 @@ enum ConnectionState: Equatable {
                         try reconcileSelectedSession()
                         if sessionID == nil { try await synchronizeViewport(token: token) }
                     }
-                    if recoverMissing, sessionID != nil { await readOutput(recoverMissing: false) }
+                    if recoverMissing, sessionID != nil { await readOutputOnce(recoverMissing: false) }
                 } catch { handle(error) }
             } else { handle(error) }
         }
@@ -411,18 +517,46 @@ enum ConnectionState: Equatable {
         self.error = error.localizedDescription
         snapshotStale = true
         Task {
-            if !(await client.isConnected()), state == .connected { state = .failed; snapshotStale = true; polling?.cancel() }
+            if !(await client.isConnected()), state == .connected { state = .failed; snapshotStale = true; polling?.cancel(); scheduleReconnectIfNeeded() }
         }
     }
+    /// How long to wait before the next screen read: quick right after keys were typed or sent, then slower, then the resting interval.
+    func pollDelay(now: Date = Date()) -> Duration {
+        PollCadence(resting: pollInterval).interval(sinceKeyActivity: lastKeyActivity.map { now.timeIntervalSince($0) })
+    }
+    /// Typing or sending just happened: note it, and cut a long idle wait short so the echo shows up quickly.
+    func noteKeyActivity(now: Date = Date()) {
+        lastKeyActivity = now
+        let fast = PollCadence(resting: pollInterval).fast
+        if let due = pollDueAt, due.timeIntervalSince(now) > fast.timeInterval + 0.05 { pollSleeper?.cancel() }
+    }
+    /// True when the full wait elapsed; false when key activity cut it short (the caller then recomputes the delay).
+    private func pollSleep() async -> Bool {
+        let delay = pollDelay()
+        pollDueAt = Date().addingTimeInterval(delay.timeInterval)
+        let sleeper = Task<Void, Never> { _ = try? await Task.sleep(for: delay) }
+        pollSleeper = sleeper
+        await withTaskCancellationHandler { await sleeper.value } onCancel: { sleeper.cancel() }
+        pollSleeper = nil; pollDueAt = nil
+        return !sleeper.isCancelled
+    }
     private func startPolling(token: UUID) {
-        let interval = pollInterval
         polling = Task { [weak self] in
             while !Task.isCancelled {
-                do { try await Task.sleep(for: interval) } catch { return }
                 guard let self, self.generation == token else { return }
-                if !(await self.client.isConnected()) { self.state = .failed; self.snapshotStale = true; self.error = "Desktop disconnected. Reconnect to refresh output."; return }
+                guard await self.pollSleep() else { continue }
+                guard !Task.isCancelled, self.generation == token else { return }
+                if !(await self.client.isConnected()) {
+                    self.state = .failed; self.snapshotStale = true; self.error = "Desktop disconnected. Reconnect to refresh output."
+                    self.scheduleReconnectIfNeeded()
+                    return
+                }
                 await self.readOutput()
             }
         }
     }
+}
+
+extension Duration {
+    var timeInterval: TimeInterval { Double(components.seconds) + Double(components.attoseconds) / 1e18 }
 }

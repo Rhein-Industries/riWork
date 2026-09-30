@@ -220,45 +220,35 @@ struct TerminalTabsView: View {
     @State private var sessionInfo: SessionInfo?
     @State private var followOutput = true
     private var openSessions: [RemoteSession] { model.openSessions }
+    private var focused: Bool { model.focusMode && model.sessionID != nil }
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: project.name, back: onBack) {
-                Button("Session info", systemImage: "info.circle") {
-                    if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind) }
-                }.labelStyle(.iconOnly).disabled(model.sessionID == nil)
-                Menu {
-                    Toggle("Follow output", isOn: $followOutput)
-                    Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
-                    Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-                    Divider()
-                    if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
-                    else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
-                } label: { Label("Terminal tabs and connection", systemImage: "ellipsis") }.labelStyle(.iconOnly)
-            }
-            if !openSessions.isEmpty {
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 0) {
-                            ForEach(openSessions) { session in
-                                Button { Task { await model.chooseSession(session) } } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Label(session.title, systemImage: session.kind == "orchestrator" ? "point.3.connected.trianglepath.dotted" : "terminal")
-                                            .font(.custom("Menlo", size: 12, relativeTo: .subheadline)).lineLimit(1)
-                                        Text(tabDetail(session)).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(DesktopStyle.muted).lineLimit(1)
-                                    }
-                                    .padding(.horizontal, 10).frame(minHeight: 44)
-                                    .background(model.sessionID == session.id ? DesktopStyle.active : DesktopStyle.panel)
-                                    .overlay(alignment: .trailing) { Rectangle().fill(DesktopStyle.divider).frame(width: 1) }
-                                    .overlay(alignment: .bottom) { Rectangle().fill(model.sessionID == session.id ? DesktopStyle.accent : DesktopStyle.divider).frame(height: 1) }
-                                }
-                                .buttonStyle(.plain).id(session.id)
-                                .accessibilityLabel("\(session.title), \(session.shortID)")
-                                .accessibilityAddTraits(model.sessionID == session.id ? .isSelected : [])
-                            }
+            // Focus mode drops all of this: only the shell (and its keyboard) stays.
+            if !focused {
+                WorkspaceBar(title: project.name, back: onBack, compact: true, onDoubleTap: { if model.sessionID != nil { model.setFocusMode(true) } }) {
+                    Button("Focus mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.setFocusMode(true) }
+                        .labelStyle(.iconOnly).disabled(model.sessionID == nil)
+                    Button("Session info", systemImage: "info.circle") {
+                        if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind) }
+                    }.labelStyle(.iconOnly).disabled(model.sessionID == nil)
+                    Menu {
+                        Toggle("Follow output", isOn: $followOutput)
+                        Menu("Text size · \(Int(model.terminalFontSize)) pt", systemImage: "textformat.size") {
+                            Button("Larger", systemImage: "plus") { model.stepTerminalFontSize(1) }.disabled(model.terminalFontSize >= TerminalFontSize.range.upperBound)
+                            Button("Smaller", systemImage: "minus") { model.stepTerminalFontSize(-1) }.disabled(model.terminalFontSize <= TerminalFontSize.range.lowerBound)
+                            Button("Reset to \(Int(TerminalFontSize.standard)) pt", systemImage: "arrow.counterclockwise") { model.setTerminalFontSize(TerminalFontSize.standard) }
                         }
-                    }.scrollIndicators(.hidden)
-                        .onChange(of: model.sessionID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+                        if model.keysSupport != .unsupported {
+                            Toggle("Line composer instead of direct typing", isOn: Binding(get: { model.preferLineComposer }, set: { model.setPreferLineComposer($0) }))
+                        }
+                        Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
+                        Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                        Divider()
+                        if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
+                        else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
+                    } label: { Label("Terminal tabs and connection", systemImage: "ellipsis") }.labelStyle(.iconOnly)
                 }
+                if !openSessions.isEmpty { tabStrip }
             }
             if model.sessionID == nil && openSessions.isEmpty {
                 VStack {
@@ -270,12 +260,40 @@ struct TerminalTabsView: View {
                     ConnectionPanel(model: model).padding()
                 }
             } else { SessionConsole(model: model, followOutput: $followOutput) }
-        }.background(DesktopStyle.background)
+        }
+        .background(DesktopStyle.background.ignoresSafeArea())
+        .statusBarHidden(focused)
         .onChange(of: model.sessionID) { _, _ in sessionInfo = nil; followOutput = true }
+        .onChange(of: model.focusMode) { _, _ in model.updateKeepAwake() }
         .sheet(item: $sessionInfo) { SessionInfoSheet(info: $0) }
         .task(id: project.id) { await model.chooseProject(project.id) }
         .onAppear { model.setTerminalVisible(true) }
         .onDisappear { model.setTerminalVisible(false) }
+    }
+    private var tabStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(openSessions) { session in
+                        Button { Task { await model.chooseSession(session) } } label: {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Label(session.title, systemImage: session.kind == "orchestrator" ? "point.3.connected.trianglepath.dotted" : "terminal")
+                                    .font(.custom("Menlo", size: 12, relativeTo: .subheadline)).lineLimit(1)
+                                Text(tabDetail(session)).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(DesktopStyle.muted).lineLimit(1)
+                            }
+                            .padding(.horizontal, 10).frame(minHeight: 36)
+                            .background(model.sessionID == session.id ? DesktopStyle.active : DesktopStyle.panel)
+                            .overlay(alignment: .trailing) { Rectangle().fill(DesktopStyle.divider).frame(width: 1) }
+                            .overlay(alignment: .bottom) { Rectangle().fill(model.sessionID == session.id ? DesktopStyle.accent : DesktopStyle.divider).frame(height: 1) }
+                        }
+                        .buttonStyle(.plain).id(session.id)
+                        .accessibilityLabel("\(session.title), \(session.shortID)")
+                        .accessibilityAddTraits(model.sessionID == session.id ? .isSelected : [])
+                    }
+                }
+            }.scrollIndicators(.hidden)
+                .onChange(of: model.sessionID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+        }
     }
     private func tabDetail(_ session: RemoteSession) -> String {
         if let tree = model.worktrees.first(where: { $0.id == session.worktree_id }) { return "\(tree.branch) · \(session.shortID)" }
@@ -338,75 +356,188 @@ private struct PendingInputNotice: View {
 struct SessionConsole: View {
     @Bindable var model: RemoteModel
     @Binding var followOutput: Bool
-    @ScaledMetric(relativeTo: .body) private var terminalFontSize = 12.0
+    @State private var keyFocus = KeyFocus()
+    /// Live pinch scale. A GestureState resets by itself if the gesture is cancelled; the size is committed (and the
+    /// grid recomputed) only when the pinch ends.
+    @GestureState private var pinchScale: Double?
+    @State private var controlsVisible = true
+    @State private var controlsReveal = 0
+    /// The scroll pane's size. The screen is at least this big and pinned top-left, like a real terminal whose empty rows are below.
+    @State private var paneSize = CGSize.zero
+    private var fontSize: Double { pinchScale.map { TerminalFontSize.pinched(from: model.terminalFontSize, scale: $0) } ?? model.terminalFontSize }
+    private var focused: Bool { model.focusMode }
     var body: some View {
         Group {
             if model.sessionID != nil {
                 VStack(spacing: 0) {
-                    HStack(spacing: 6) {
-                        Image(systemName: outputStale ? "clock.badge.exclamationmark" : "checkmark.circle")
-                        Text(outputStale ? "Stale · \(model.state.label.lowercased())" : "Latest snapshot")
-                        if let date = model.lastOutputAt { Text(date, style: .time) }
-                        Spacer(minLength: 4)
-                        if let viewport = model.appliedViewport, model.viewportSessionID == model.sessionID {
-                            Text("\(viewport.columns)×\(viewport.rows)").monospacedDigit()
-                                .accessibilityLabel("Terminal size \(viewport.columns) columns, \(viewport.rows) rows")
+                    if !focused {
+                        statusStrip
+                        if let error = model.error {
+                            HStack(alignment: .top) {
+                                Image(systemName: "exclamationmark.circle")
+                                Text(error).font(.footnote)
+                                Spacer(minLength: 0)
+                                Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly)
+                            }.padding(.horizontal, 12).padding(.vertical, 8).background(DesktopStyle.warning.opacity(0.1))
                         }
-                    }.font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(outputStale ? DesktopStyle.warning : DesktopStyle.muted)
-                        .padding(.horizontal, 8).padding(.vertical, 4).background(DesktopStyle.panel)
-                    if let error = model.error {
-                        HStack(alignment: .top) {
-                            Image(systemName: "exclamationmark.circle")
-                            Text(error).font(.footnote)
-                            Spacer(minLength: 0)
-                            Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly)
-                        }.padding(12).background(DesktopStyle.warning.opacity(0.1))
+                        PendingInputNotice(model: model)
                     }
-                    PendingInputNotice(model: model)
-                    ScrollViewReader { proxy in
-                        ScrollView([.horizontal, .vertical]) {
-                            VStack(alignment: .leading, spacing: 0) {
-                                if model.state == .connected && !model.viewportReady && model.viewportError == nil {
-                                    ProgressView("Fitting desktop terminal…").padding(20)
-                                } else if model.output.isEmpty { Text(model.lastOutputAt == nil ? "Output will appear when this session is connected." : "The session has no output yet.").foregroundStyle(.secondary).padding(20) }
-                                else { Text(model.output).font(.custom("Menlo", fixedSize: terminalFontSize)).fixedSize(horizontal: true, vertical: true).textSelection(.enabled).padding(8).accessibilityLabel("Terminal output") }
-                                Color.clear.frame(height: 1).id("output-end")
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .defaultScrollAnchor(.bottomLeading, for: .initialOffset)
-                        .defaultScrollAnchor(.topLeading, for: .alignment)
-                        .background(DesktopStyle.background)
-                        .background {
-                            GeometryReader { geometry in
-                                Color.clear
-                                    .onAppear { reportViewport(geometry.size) }
-                                    .onChange(of: geometry.size) { _, size in reportViewport(size) }
-                                    .onChange(of: terminalFontSize) { _, _ in reportViewport(geometry.size) }
-                            }
-                        }
-                        .onChange(of: model.output) { _, _ in if followOutput { proxy.scrollTo("output-end", anchor: .bottomLeading) } }
+                    terminal
+                    bottomPanel
+                }
+                .background {
+                    if model.directTyping {
+                        KeyCapture(focus: keyFocus, isEnabled: model.session?.alive == true,
+                                   label: "Terminal input for \(model.session?.title ?? "session") \(model.session?.shortID ?? "")",
+                                   onItems: { model.type($0) == .accepted })
+                            .frame(width: 1, height: 1).accessibilityHidden(true)
                     }
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let notice = model.deliveryNotice { Text(notice).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(DesktopStyle.muted) }
-                        HStack {
-                            CommandField(text: $model.draft, placeholder: "Continue the selected session…", isEnabled: model.canEditDraft,
-                                         label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
-                                         onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
-                                .modifier(DesktopField())
-                            Button("Send", systemImage: "arrow.up", action: send)
-                                .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))
-                                .disabled(!canSubmit)
-                                .accessibilityLabel("Send to selected terminal")
-                                .accessibilityHint("Submits this line once followed by Return")
-                        }
-                        Text("One line + Return · selected \(model.session?.shortID ?? "—")").font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(DesktopStyle.muted)
-                        if model.state != .connected { Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting) }
-                    }.padding(8).background(DesktopStyle.panel).overlay(alignment: .top) { DesktopRule() }
                 }
             } else {
                 Text("Choose an open terminal tab.").foregroundStyle(DesktopStyle.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+    private var statusStrip: some View {
+        HStack(spacing: 6) {
+            Image(systemName: outputStale ? "clock.badge.exclamationmark" : "checkmark.circle")
+            Text(outputStale ? "Stale · \(model.state.label.lowercased())" : "Latest snapshot")
+            if let date = model.lastOutputAt { Text(date, style: .time) }
+            if model.outputInMode { CopyModeBadge() }
+            Spacer(minLength: 4)
+            if let viewport = model.appliedViewport, model.viewportSessionID == model.sessionID {
+                Text("\(viewport.columns)×\(viewport.rows)").monospacedDigit()
+                    .accessibilityLabel("Terminal size \(viewport.columns) columns, \(viewport.rows) rows")
+            }
+        }.font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(outputStale ? DesktopStyle.warning : DesktopStyle.muted)
+            .padding(.horizontal, 8).padding(.vertical, 2).background(DesktopStyle.panel)
+    }
+    private var terminal: some View {
+        ScrollViewReader { proxy in
+            ScrollView([.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if model.state == .connected && !model.viewportReady && model.viewportError == nil && model.output.isEmpty {
+                        ProgressView("Fitting desktop terminal…").padding(20)
+                    } else if model.output.isEmpty {
+                        Text(model.lastOutputAt == nil ? "Output will appear when this session is connected." : "The session has no output yet.").foregroundStyle(.secondary).padding(20)
+                    } else {
+                        TerminalScreenText.text(output: model.output, cursorOffset: cursorVisible ? model.outputCursorOffset : nil)
+                            .font(.custom("Menlo", fixedSize: fontSize)).fixedSize(horizontal: true, vertical: true)
+                            .textSelection(.enabled).padding(model.terminalLayout.padding).accessibilityLabel("Terminal output")
+                    }
+                    Color.clear.frame(height: 1).id("output-end")
+                }.frame(minWidth: paneSize.width, minHeight: max(0, paneSize.height - 1), alignment: .topLeading)
+            }
+            .defaultScrollAnchor(.bottomLeading, for: .initialOffset)
+            .defaultScrollAnchor(.topLeading, for: .alignment)
+            .background(DesktopStyle.background)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { paneSize = geometry.size; model.reportTerminalArea(geometry.size) }
+                        .onChange(of: geometry.size) { _, size in paneSize = size; model.reportTerminalArea(size) }
+                }
+            }
+            // The chip and notices float over the pane instead of taking room from it, so they appearing or vanishing never
+            // changes the terminal's size (and so never resizes the desktop). Content gets a matching bottom margin.
+            .contentMargins(.bottom, floatingInset, for: .scrollContent)
+            .overlay(alignment: .bottom) { floatingStatus }
+            .onChange(of: floatingInset) { _, _ in if followOutput { proxy.scrollTo("output-end", anchor: .bottomLeading) } }
+            .onChange(of: model.sessionAutoSwitches) { _, _ in keyFocus.dismiss() }
+            .onChange(of: model.output) { _, _ in if followOutput { proxy.scrollTo("output-end", anchor: .bottomLeading) } }
+            // Typing pins the view to the bottom, where the prompt and cursor are.
+            .onChange(of: model.typedCount) { _, _ in followOutput = true; proxy.scrollTo("output-end", anchor: .bottomLeading) }
+            .simultaneousGesture(TapGesture().onEnded { terminalTapped() })
+            .simultaneousGesture(magnify)
+            .overlay(alignment: .topTrailing) {
+                if focused {
+                    FocusControls(visible: controlsVisible, fontSize: model.terminalFontSize,
+                                  smaller: { model.stepTerminalFontSize(-1); revealControls() }, larger: { model.stepTerminalFontSize(1); revealControls() },
+                                  exit: { model.setFocusMode(false) })
+                }
+            }
+            .task(id: controlsReveal) {
+                controlsVisible = true
+                try? await Task.sleep(for: .seconds(3.5))
+                if !Task.isCancelled { controlsVisible = false }
+            }
+            .onChange(of: focused) { _, _ in revealControls() }
+            .accessibilityHint(model.directTyping ? "Double tap to type into the terminal" : "")
+            .accessibilityAction(named: "Show keyboard") { keyFocus.focus() }
+        }
+    }
+    private var magnify: some Gesture {
+        MagnifyGesture()
+            .updating($pinchScale) { value, state, _ in state = value.magnification }
+            .onEnded { value in model.setTerminalFontSize(TerminalFontSize.pinched(from: model.terminalFontSize, scale: value.magnification)) }
+    }
+    private func revealControls() { controlsReveal += 1 }
+    private func terminalTapped() {
+        if focused { revealControls() }
+        if model.directTyping { keyFocus.focus() }
+    }
+    @ViewBuilder private var bottomPanel: some View {
+        if model.directTyping {
+            // Present exactly while the keyboard is down, so it changes the pane only when the keyboard does.
+            if !focused && !keyFocus.isActive { directBar }
+        } else if model.sessionID != nil {
+            composer
+        }
+    }
+    private static let chipHeight = 28.0, noticeHeight = 24.0
+    private var directNotice: String? { model.directTyping ? model.deliveryNotice : nil }
+    private var floatingInset: Double {
+        guard model.directTyping else { return 0 }
+        return (model.keyPreview != nil ? Self.chipHeight : 0) + (directNotice != nil ? Self.noticeHeight : 0)
+    }
+    /// Pending-input chip and short notices (also in focus mode), floating at the bottom of the terminal.
+    @ViewBuilder private var floatingStatus: some View {
+        if model.directTyping {
+            VStack(spacing: 0) {
+                if let notice = directNotice {
+                    Text(notice).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(DesktopStyle.muted).lineLimit(1)
+                        .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: Self.noticeHeight, alignment: .leading)
+                        .background(DesktopStyle.panel).overlay(alignment: .top) { DesktopRule() }
+                }
+                if let preview = model.keyPreview { KeyPreviewChip(preview: preview, discard: model.discardPendingKeys).frame(height: Self.chipHeight) }
+            }
+        }
+    }
+    /// Shown while the keyboard is down or something needs saying. Names the shell that keystrokes go to.
+    private var directBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "keyboard")
+            Text("Tap the terminal to type · \(model.session?.shortID ?? "—")").lineLimit(1)
+            Spacer(minLength: 4)
+            if model.state != .connected {
+                Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting).buttonStyle(DesktopButtonStyle(compact: true))
+            }
+            Button(keyFocus.isActive ? "Hide keyboard" : "Show keyboard", systemImage: keyFocus.isActive ? "keyboard.chevron.compact.down" : "keyboard") {
+                if keyFocus.isActive { keyFocus.dismiss() } else { keyFocus.focus() }
+            }.labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: true))
+        }.font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(DesktopStyle.muted)
+            .padding(.leading, 8).frame(minHeight: 36).background(DesktopStyle.panel).overlay(alignment: .top) { DesktopRule() }
+    }
+    /// The line composer: today's behaviour, for desktops that cannot take keys and for anyone who prefers it.
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !focused, let notice = model.deliveryNotice { Text(notice).font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(DesktopStyle.muted) }
+            HStack {
+                CommandField(text: $model.draft, placeholder: "Continue the selected session…", isEnabled: model.canEditDraft,
+                             label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
+                             onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
+                    .modifier(DesktopField())
+                Button("Send", systemImage: "arrow.up", action: send)
+                    .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))
+                    .disabled(!canSubmit)
+                    .accessibilityLabel("Send to selected terminal")
+                    .accessibilityHint("Submits this line once followed by Return")
+            }
+            if !focused {
+                Text("One line + Return · selected \(model.session?.shortID ?? "—")").font(.custom("Menlo", size: 10, relativeTo: .caption2)).foregroundStyle(DesktopStyle.muted)
+                if model.state != .connected { Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting) }
+            }
+        }.padding(8).background(DesktopStyle.panel).overlay(alignment: .top) { DesktopRule() }
     }
     private var canSubmit: Bool { model.canSend && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private func send() {
@@ -414,10 +545,7 @@ struct SessionConsole: View {
         let line = model.draft
         Task { await model.submit(expectedSessionID: selectedID, line: line) }
     }
+    /// The cursor is drawn only for a live, current screen of this session (not while a resize is settling).
+    private var cursorVisible: Bool { model.state == .connected && !model.snapshotStale && model.outputSessionID == model.sessionID && model.session?.alive == true }
     private var outputStale: Bool { model.state != .connected || model.snapshotStale || model.outputSessionID != model.sessionID || model.session?.alive != true || !model.viewportReady }
-    private func reportViewport(_ size: CGSize) {
-        let font = UIFont(name: "Menlo-Regular", size: terminalFontSize) ?? UIFont.monospacedSystemFont(ofSize: terminalFontSize, weight: .regular)
-        let width = ("M" as NSString).size(withAttributes: [.font: font]).width
-        model.reportViewport(TerminalViewport.fit(width: size.width - 16, height: size.height - 16, cellWidth: width, lineHeight: font.lineHeight))
-    }
 }
