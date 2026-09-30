@@ -149,7 +149,9 @@ extension (`shell.keys` and the screen fields of `shell.output`, specified in
 applies to v2 sessions exactly as to v1. So does the 2026-09-30 theme sync extension
 (`appearance.get`, read-only, in the same document), and the 2026-09-30 live terminal
 extension (`styled`, `if_changed`, `wait_ms` and `hash` on `shell.output`, and the
-concurrent handling of a device's requests, in the same document).
+concurrent handling of a device's requests, in the same document), and the
+2026-09-30 deep scrollback extension (`shell.history`, and `history_size` and
+`alternate` on `shell.output`, in the same document).
 
 ## Vectors and tests
 

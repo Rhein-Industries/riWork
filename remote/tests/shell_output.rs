@@ -303,6 +303,104 @@ async fn an_unchanged_answer_has_no_output_and_the_same_hash() {
 }
 
 #[tokio::test]
+async fn history_size_and_alternate_are_passed_on_in_both_forms() {
+    let f = Fixture::new();
+    f.cli_says(json!({
+        "id": f.shell, "output": "ab\ncd\n", "hash": HASH,
+        "cursor": {"x":1,"y":1}, "rows": 2, "cols": 80, "in_mode": false,
+        "history_size": 4991, "alternate": true
+    }));
+    let response = f.output(json!({})).await;
+    assert_eq!(
+        response["result"],
+        json!({"shell_id":f.shell,"output":"ab\ncd\n","cursor":{"x":1,"y":1},
+               "rows":2,"cols":80,"in_mode":false,"hash":HASH,
+               "history_size":4991,"alternate":true})
+    );
+    // They do not depend on the screen fields being usable.
+    f.cli_says(json!({
+        "id": f.shell, "output": "ab\n", "hash": HASH,
+        "history_size": 0, "alternate": false
+    }));
+    let response = f.output(json!({})).await;
+    assert_eq!(
+        response["result"],
+        json!({"shell_id":f.shell,"output":"ab\n","hash":HASH,
+               "history_size":0,"alternate":false})
+    );
+    // The unchanged form carries both, and nothing else of the screen.
+    f.cli_says(json!({
+        "id": f.shell, "unchanged": true, "hash": HASH,
+        "history_size": 12, "alternate": false, "cursor": {"x":0,"y":0}
+    }));
+    let response = f.output(json!({"if_changed":HASH,"wait_ms":100})).await;
+    assert_eq!(
+        response["result"],
+        json!({"shell_id":f.shell,"unchanged":true,"hash":HASH,
+               "history_size":12,"alternate":false})
+    );
+    // A CLI from before scrollback paging does not say; the result is as before.
+    f.cli_says(json!({"id":f.shell,"unchanged":true,"hash":HASH}));
+    let response = f.output(json!({"if_changed":HASH})).await;
+    assert_eq!(
+        response["result"],
+        json!({"shell_id":f.shell,"unchanged":true,"hash":HASH})
+    );
+    f.cli_says(json!({"id":f.shell,"output":"ab\n","hash":HASH}));
+    let response = f.output(json!({})).await;
+    assert_eq!(
+        response["result"],
+        json!({"shell_id":f.shell,"output":"ab\n","hash":HASH})
+    );
+    // Both or neither, and only well-formed: a half or a bad one is left out.
+    for (size, alternate) in [
+        (json!(5), json!(null)),
+        (json!(null), json!(true)),
+        (json!("5"), json!(true)),
+        (json!(-1), json!(true)),
+        (json!(1.5), json!(true)),
+        (json!(4294967296u64), json!(true)),
+        (json!(5), json!("yes")),
+        (json!(5), json!(1)),
+    ] {
+        for unchanged in [false, true] {
+            let mut cli = if unchanged {
+                json!({"id":f.shell,"unchanged":true,"hash":HASH})
+            } else {
+                json!({"id":f.shell,"output":"ab\n","hash":HASH})
+            };
+            cli["history_size"] = size.clone();
+            cli["alternate"] = alternate.clone();
+            f.cli_says(cli);
+            let asked = if unchanged {
+                json!({"if_changed":HASH})
+            } else {
+                json!({})
+            };
+            let response = f.output(asked).await;
+            assert_eq!(response["ok"], true, "{size} {alternate}: {response}");
+            assert_eq!(
+                response["result"].get("history_size"),
+                None,
+                "{size} {alternate}"
+            );
+            assert_eq!(
+                response["result"].get("alternate"),
+                None,
+                "{size} {alternate}"
+            );
+        }
+    }
+    // The largest size there is, exactly.
+    f.cli_says(json!({
+        "id": f.shell, "output": "x\n", "hash": HASH,
+        "history_size": 4294967295u64, "alternate": false
+    }));
+    let response = f.output(json!({})).await;
+    assert_eq!(response["result"]["history_size"], 4294967295u64);
+}
+
+#[tokio::test]
 async fn an_unchanged_answer_nobody_asked_for_is_a_cli_error() {
     let f = Fixture::new();
     for (params, cli) in [

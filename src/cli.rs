@@ -88,6 +88,7 @@ riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted]
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
 riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
+riwork shell history ID --end N --lines M [--styled] [--json]   Read a page of older scrollback
 riwork shell send ID TEXT               Paste a complete line and submit once
 riwork shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no Return added
 riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
@@ -123,13 +124,22 @@ in all. Items go to the pane in order under the shell's input lock, leaving
 copy mode first; a key directly after text goes 150 ms later, outside Codex's
 paste detection. An error naming input_unavailable means the pane's input is off.
 shell output --json also reports cursor {x,y}, rows, cols and in_mode; the last
-`rows` lines of its output are the visible screen, and a `hash` of everything
-the answer says. --styled keeps colors and text attributes as SGR sequences
+`rows` lines of its output are the visible screen. It reports history_size (the
+scrollback lines above the screen) and alternate (a full-screen program is on
+the alternate screen), and a `hash` of everything the answer says. --styled
+keeps colors and text attributes as SGR sequences
 (ESC [ ... m) and removes every other escape and control sequence. With
 --if-changed HASH (a `hash` from an earlier answer to the same question) the
 shell is captured again about every 80 ms for up to --wait-ms (0 to 10000,
 default 0) while the hash stays the same; if it does, the answer is
-{id, unchanged: true, hash} and carries no output.
+{id, unchanged: true, hash, history_size, alternate} and carries no output.
+shell history ID --end N --lines M reads scrollback without the screen: skip the N
+lines directly above it (0 starts at the line just above the screen), then take
+the M (1 to 1000) above those, clamped at the top of the history. --json gives
+{id, output, line_count, history_size, complete}: output is the lines top to
+bottom joined by newlines, unaltered and with no newline after the last one;
+complete is true when the page reaches the first line, and N at or beyond
+history_size gives an empty page. --styled filters like shell output --styled.
 Orchestrator commands without --project use the global session; list shows all
 scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
@@ -1551,6 +1561,16 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 print!("{}", manager.capture(&request.id, request.lines)?);
             }
         }
+        "history" => {
+            let request = parse_history_arguments(args)?;
+            let page =
+                manager.read_history(&request.id, request.end, request.lines, request.styled)?;
+            if json {
+                print_json(&history_json(&request.id, &page))?;
+            } else if page.line_count > 0 {
+                println!("{}", page.output);
+            }
+        }
         "keys" => {
             let (id, items) = parse_keys_arguments(args)?;
             manager.send_keys(&id, &items)?;
@@ -2182,12 +2202,65 @@ fn parse_output_arguments(mut args: Vec<String>, json: bool) -> Result<OutputArg
     })
 }
 
+/// The arguments of `shell history`, with `--json` already taken.
+#[derive(Debug, PartialEq, Eq)]
+struct HistoryArguments {
+    id: String,
+    end: u32,
+    lines: u32,
+    styled: bool,
+}
+
+const HISTORY_USAGE: &str = "shell history ID --end N --lines M [--styled] [--json]";
+
+fn parse_history_arguments(mut args: Vec<String>) -> Result<HistoryArguments, String> {
+    let usage = || format!("Usage: riwork {HISTORY_USAGE}");
+    let end = take_option(&mut args, "--end")?
+        .ok_or_else(usage)?
+        .parse::<u32>()
+        .map_err(|_| "--end needs an integer from 0 to 4294967295".to_owned())?;
+    let max = crate::sessions::HISTORY_PAGE_MAX;
+    let lines = take_option(&mut args, "--lines")?
+        .ok_or_else(usage)?
+        .parse::<u32>()
+        .ok()
+        .filter(|lines| (1..=max).contains(lines))
+        .ok_or_else(|| format!("--lines needs an integer from 1 to {max}"))?;
+    let styled = take_flag(&mut args, "--styled");
+    let id = take_single(args, HISTORY_USAGE)?;
+    Ok(HistoryArguments {
+        id,
+        end,
+        lines,
+        styled,
+    })
+}
+
+/// The `--json` answer of `shell history`.
+fn history_json(id: &str, page: &crate::sessions::HistoryPage) -> serde_json::Value {
+    json!({
+        "id": id,
+        "output": page.output,
+        "line_count": page.line_count,
+        "history_size": page.history_size,
+        "complete": page.complete,
+    })
+}
+
 /// The `--json` answer of `shell output`. The hash is always there; the text
-/// and screen fields are absent when nothing changed.
+/// and screen fields are absent when nothing changed, except `history_size`
+/// and `alternate`, which tell how far the scrollback has grown.
 fn output_json(id: &str, read: crate::sessions::OutputRead) -> serde_json::Value {
     use crate::sessions::OutputRead;
     match read {
-        OutputRead::Unchanged { hash } => json!({ "id": id, "unchanged": true, "hash": hash }),
+        OutputRead::Unchanged { hash, screen } => {
+            let mut value = json!({ "id": id, "unchanged": true, "hash": hash });
+            if let Some(screen) = screen {
+                value["history_size"] = json!(screen.history_size);
+                value["alternate"] = json!(screen.alternate);
+            }
+            value
+        }
         OutputRead::Changed { capture, hash } => {
             let mut value = json!({ "id": id, "output": capture.output });
             // The last `rows` lines of `output` are the visible screen.
@@ -2197,6 +2270,8 @@ fn output_json(id: &str, read: crate::sessions::OutputRead) -> serde_json::Value
                 value["rows"] = json!(screen.rows);
                 value["cols"] = json!(screen.cols);
                 value["in_mode"] = json!(screen.in_mode);
+                value["history_size"] = json!(screen.history_size);
+                value["alternate"] = json!(screen.alternate);
             }
             value["hash"] = json!(hash);
             value
@@ -2299,11 +2374,11 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_hook_command, appearance_summary, frozen_codex_usage_home, opens_workspace,
-        output_json, parse_keys_arguments, parse_output_arguments, reload_failure_details,
-        reload_summary, schedule_line, scoped_codex_usage_home, take_flag_before_separator,
-        take_orchestrator_project, take_update_profile, terminal_safe, unknown_invocation,
-        unreadable_reload_error,
+        HistoryArguments, agent_hook_command, appearance_summary, frozen_codex_usage_home,
+        history_json, opens_workspace, output_json, parse_history_arguments, parse_keys_arguments,
+        parse_output_arguments, reload_failure_details, reload_summary, schedule_line,
+        scoped_codex_usage_home, take_flag_before_separator, take_orchestrator_project,
+        take_update_profile, terminal_safe, unknown_invocation, unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
@@ -2407,6 +2482,8 @@ mod tests {
                 rows: 2,
                 cols: 40,
                 in_mode: false,
+                history_size: 1234,
+                alternate: true,
             }),
         };
         let changed = output_json(
@@ -2420,7 +2497,8 @@ mod tests {
             changed,
             serde_json::json!({
                 "id": SHELL, "output": "hi\n\n", "cursor": {"x":2,"y":0}, "rows": 2,
-                "cols": 40, "in_mode": false, "hash": "00ff00ff00ff00ff"
+                "cols": 40, "in_mode": false, "history_size": 1234, "alternate": true,
+                "hash": "00ff00ff00ff00ff"
             })
         );
         let no_screen = output_json(
@@ -2437,15 +2515,98 @@ mod tests {
             no_screen,
             serde_json::json!({"id": SHELL, "output": "hi\n", "hash": "aa"})
         );
+        // The unchanged form still tells how far the scrollback has grown.
         let unchanged = output_json(
             SHELL,
             OutputRead::Unchanged {
                 hash: "00ff00ff00ff00ff".into(),
+                screen: capture.screen,
             },
         );
         assert_eq!(
             unchanged,
-            serde_json::json!({"id": SHELL, "unchanged": true, "hash": "00ff00ff00ff00ff"})
+            serde_json::json!({
+                "id": SHELL, "unchanged": true, "hash": "00ff00ff00ff00ff",
+                "history_size": 1234, "alternate": true
+            })
+        );
+        // Without a screen (tmux could not report the pane) it is the hash only.
+        let bare = output_json(
+            SHELL,
+            OutputRead::Unchanged {
+                hash: "aa".into(),
+                screen: None,
+            },
+        );
+        assert_eq!(
+            bare,
+            serde_json::json!({"id": SHELL, "unchanged": true, "hash": "aa"})
+        );
+    }
+
+    #[test]
+    fn shell_history_arguments_need_end_and_lines_and_bound_the_page() {
+        let parse = |extra: &str| parse_history_arguments(words(&format!("{SHELL} {extra}")));
+        let page = parse("--end 0 --lines 1").unwrap();
+        assert_eq!(
+            page,
+            HistoryArguments {
+                id: SHELL.into(),
+                end: 0,
+                lines: 1,
+                styled: false
+            }
+        );
+        // Any order, before or after the ID, styled or not.
+        let all = parse_history_arguments(words(&format!(
+            "--styled --lines 1000 {SHELL} --end 4294967295"
+        )))
+        .unwrap();
+        assert_eq!((all.end, all.lines, all.styled), (u32::MAX, 1000, true));
+        for bad in [
+            "",
+            "--end 0",
+            "--lines 10",
+            "--end 0 --lines 0",
+            "--end 0 --lines 1001",
+            "--end 0 --lines -1",
+            "--end 0 --lines 1.5",
+            "--end 0 --lines ten",
+            "--end -1 --lines 10",
+            "--end 4294967296 --lines 10",
+            "--end x --lines 10",
+            "--end 0 --end 1 --lines 10",
+            "--end 0 --lines 10 --lines 10",
+            "--end 0 --lines 10 --styled --styled",
+            "--end 0 --lines 10 extra",
+            "--end 0 --lines 10 --if-changed h",
+            "--end --lines 10",
+            "--end 0 --lines",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        assert!(parse_history_arguments(words("--end 0 --lines 10")).is_err());
+        assert!(
+            parse_history_arguments(words(&format!("{SHELL} {SHELL} --end 0 --lines 1"))).is_err()
+        );
+        let usage = parse("").unwrap_err();
+        assert!(usage.contains("Usage: riwork shell history"), "{usage}");
+    }
+
+    #[test]
+    fn shell_history_json_names_the_page() {
+        let page = crate::sessions::HistoryPage {
+            output: "1\n\n3".into(),
+            line_count: 3,
+            history_size: 40,
+            complete: false,
+        };
+        assert_eq!(
+            history_json(SHELL, &page),
+            serde_json::json!({
+                "id": SHELL, "output": "1\n\n3", "line_count": 3,
+                "history_size": 40, "complete": false
+            })
         );
     }
 

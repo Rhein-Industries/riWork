@@ -106,6 +106,14 @@ struct Output {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct History {
+    shell_id: String,
+    end: u32,
+    lines: u32,
+    styled: Option<bool>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Input {
     shell_id: String,
     line: String,
@@ -137,6 +145,9 @@ fn id(s: &str) -> std::result::Result<(), Fault> {
 }
 /// The longest a `shell.output` may wait for a change.
 pub const MAX_WAIT_MS: i64 = 10_000;
+/// The most lines one `shell.history` page may hold (`src/sessions.rs` limits
+/// the CLI to the same number).
+pub const HISTORY_PAGE_MAX: u32 = 1000;
 /// A CLI call that is not a wait. Above the tmux timeout of a single capture.
 const CLI_TIMEOUT: Duration = Duration::from_secs(15);
 /// What a waiting CLI call may take beyond its wait: the captures around it.
@@ -349,6 +360,23 @@ fn keys_fault(error: &anyhow::Error) -> (Fault, bool) {
         false,
     )
 }
+/// What a failed `riwork shell history --json` says.
+fn history_fault(fault: Fault) -> Fault {
+    if fault.code == "response_too_large" {
+        return Fault::new(
+            "response_too_large",
+            "the page exceeds the encrypted response limit; request fewer lines",
+        );
+    }
+    // A CLI from before scrollback paging has no `shell history`.
+    if fault.code == "cli_error" && fault.message.contains("Unknown shell command 'history'") {
+        return Fault::new(
+            "cli_error",
+            "the installed riwork CLI does not support shell history; update RiWork",
+        );
+    }
+    fault
+}
 fn appearance_not_published() -> Fault {
     Fault::new("not_found", "appearance not published")
 }
@@ -385,6 +413,45 @@ fn screen_fields(cli: &Value, output: &str) -> Option<Value> {
         return None;
     }
     Some(json!({"cursor":{"x":x,"y":y},"rows":rows,"cols":cols,"in_mode":in_mode}))
+}
+
+/// `history_size` and `alternate` of the CLI's `shell output`, both or neither:
+/// the scrollback lines above the screen, and whether a full-screen program is
+/// on the alternate screen.
+fn scrollback_fields(cli: &Value) -> Option<(u32, bool)> {
+    let size = cli.get("history_size")?.as_u64()?;
+    Some((u32::try_from(size).ok()?, cli.get("alternate")?.as_bool()?))
+}
+/// What `shell.history` answers for the CLI's `riwork shell history --json`
+/// page, or `None` if it is not a page of at most `lines` lines: `output` is
+/// the lines joined by newlines, `line_count` of them (none is `""` with a
+/// count of 0, one blank line is `""` with a count of 1).
+fn history_result(shell: &str, cli: &Value, lines: u32, styled: bool) -> Option<Value> {
+    let text = cli.get("output")?.as_str()?;
+    let number = |name: &str| cli.get(name)?.as_u64().and_then(|n| u32::try_from(n).ok());
+    let (line_count, history_size) = (number("line_count")?, number("history_size")?);
+    let complete = cli.get("complete")?.as_bool()?;
+    let found = if line_count == 0 {
+        usize::from(!text.is_empty())
+    } else {
+        text.split('\n').count()
+    };
+    // A page is never empty unless it is the end of the history, and never
+    // holds more than was asked for.
+    let coherent = found == line_count as usize
+        && line_count <= lines
+        && (line_count > 0 || complete)
+        && (line_count == 0 || line_count <= history_size);
+    if !coherent || (styled && !sgr_only(text)) {
+        return None;
+    }
+    Some(json!({
+        "shell_id": shell,
+        "output": text,
+        "line_count": line_count,
+        "history_size": history_size,
+        "complete": complete
+    }))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -768,7 +835,14 @@ impl Rpc {
                     // Only ever the answer to a hash this request sent.
                     return match (&p.if_changed, hash) {
                         (Some(asked), Some(hash)) if asked == hash => {
-                            Ok(json!({"shell_id":p.shell_id,"unchanged":true,"hash":hash}))
+                            let mut result =
+                                json!({"shell_id":p.shell_id,"unchanged":true,"hash":hash});
+                            // Additive: the phone tracks the scrollback's growth.
+                            if let Some((size, alternate)) = scrollback_fields(&v) {
+                                result["history_size"] = json!(size);
+                                result["alternate"] = json!(alternate);
+                            }
+                            Ok(result)
                         }
                         _ => Err(cli_fault(
                             "CLI reported unchanged output that was not asked",
@@ -792,11 +866,48 @@ impl Rpc {
                 {
                     map.extend(fields.clone());
                 }
+                // Additive: the scrollback lines above the screen, and whether
+                // a full-screen program is on the alternate screen.
+                if let Some((size, alternate)) = scrollback_fields(&v) {
+                    result["history_size"] = json!(size);
+                    result["alternate"] = json!(alternate);
+                }
                 // Additive: names this exact answer, for `if_changed`.
                 if let Some(hash) = hash {
                     result["hash"] = json!(hash);
                 }
                 Ok(result)
+            }
+            "shell.history" => {
+                let p: History = params(r)?;
+                if !(1..=HISTORY_PAGE_MAX).contains(&p.lines) {
+                    return Err(invalid(format!("lines must be 1..={HISTORY_PAGE_MAX}")));
+                }
+                let styled = p.styled.unwrap_or(false);
+                self.selected(&p.shell_id).await?;
+                let mut args: Vec<String> = [
+                    "shell",
+                    "history",
+                    p.shell_id.as_str(),
+                    "--end",
+                    &p.end.to_string(),
+                    "--lines",
+                    &p.lines.to_string(),
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect();
+                if styled {
+                    args.push("--styled".into());
+                }
+                // Never a wait, so the same limit as any other call.
+                let v = self
+                    .read_within(args, CLI_TIMEOUT)
+                    .await
+                    .map_err(history_fault)?;
+                history_result(&p.shell_id, &v, p.lines, styled).ok_or_else(|| {
+                    cli_fault("CLI returned a history page that does not fit the request")
+                })
             }
             "shell.resize" => {
                 let p: Resize = params(r)?;
