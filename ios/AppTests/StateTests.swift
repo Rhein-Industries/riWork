@@ -2,7 +2,7 @@ import XCTest
 import RiWorkCore
 @testable import RiWorkRemote
 
-private actor FixtureTransport: RemoteTransport {
+actor FixtureTransport: RemoteTransport {
     var connected = false
     var connections = 0
     var inputs: [String] = []
@@ -16,6 +16,18 @@ private actor FixtureTransport: RemoteTransport {
     var oversizeCode = "response_too_large"
     var blockedMethod: String?
     var blockedCount = 0
+    // shell.keys behaviour, like the desktop's batch ledger.
+    enum KeysMode { case ok, unsupported, inputUnavailable, notFound, uncertain, dropLinkAfterDelivery }
+    struct KeyCall { let request: String; let batch: String; let shell: String; let items: [JSONValue] }
+    var keysMode = KeysMode.ok
+    var keysDelay: Duration?
+    var keyCalls: [KeyCall] = []
+    var seenBatches: Set<String> = []
+    var resizes: [TerminalViewport] = []
+    var outputText = "existing session output"
+    var outputExtras: [String: JSONValue] = [:]
+    var inFlight: [String: Int] = [:]
+    var maxInFlight: [String: Int] = [:]
     private var waiters: [CheckedContinuation<Void, any Error>] = []
     func setSessions(_ sessions: [RemoteSession]) { listedShells = sessions }
     func setMissing(_ id: String) { missingOutputs.insert(id) }
@@ -37,6 +49,22 @@ private actor FixtureTransport: RemoteTransport {
     private func cancelWaiters() { let all = waiters; waiters = []; all.forEach { $0.resume(throwing: CancellationError()) } }
     func isConnected() async -> Bool { connected }
     func setUncertain() { inputUncertain = true }
+    func setOutput(_ text: String, extras: [String: JSONValue] = [:]) { outputText = text; outputExtras = extras }
+    func setKeysMode(_ mode: KeysMode) { keysMode = mode }
+    func setKeysDelay(_ delay: Duration?) { keysDelay = delay }
+    func setConnected(_ value: Bool) { connected = value }
+    func calls() -> [KeyCall] { keyCalls }
+    func resizeRequests() -> [TerminalViewport] { resizes }
+    func peakInFlight(_ method: String) -> Int { maxInFlight[method] ?? 0 }
+    /// What reached the shell, in order, once per batch (a retried batch counts once, as the desktop dedupes it).
+    func delivered(shell: String) -> String {
+        var seen: Set<String> = []
+        var out = ""
+        for call in keyCalls where call.shell == shell && seenBatches.contains(call.batch) && seen.insert(call.batch).inserted {
+            for item in call.items { out += (try? KeyItem(json: item))?.symbol ?? "?" }
+        }
+        return out
+    }
     func counts() -> (Int, [String]) { (connections, inputs) }
     func operations() -> [String] { events }
     func lines() -> [String] { inputLines }
@@ -44,6 +72,9 @@ private actor FixtureTransport: RemoteTransport {
         guard connected else { throw RemoteError.disconnected }
         try RequestValidation.validate(method: method, params: params, id: id)
         events.append("\(method):\(params["shell_id"]?.string ?? "")")
+        inFlight[method, default: 0] += 1
+        maxInFlight[method] = max(maxInFlight[method] ?? 0, inFlight[method]!)
+        defer { inFlight[method, default: 1] -= 1 }
         if blockedMethod == method {
             blockedCount += 1
             try await withTaskCancellationHandler {
@@ -70,13 +101,34 @@ private actor FixtureTransport: RemoteTransport {
             if let shell = params["shell_id"]?.string, missingOutputs.contains(shell) {
                 throw RemoteError.rpc(code: "not_found", message: "Selected session is unavailable.")
             }
-            return .object(["shell_id": params["shell_id"]!, "output": .string("existing session output")])
+            var reply: [String: JSONValue] = ["shell_id": params["shell_id"]!, "output": .string(outputText)]
+            reply.merge(outputExtras) { $1 }
+            return .object(reply)
         case "shell.input":
             inputs.append(id)
             inputLines.append(params["line"]!.string!)
             if inputUncertain { connected = false; throw RemoteError.uncertainDelivery }
             return .object(["shell_id": params["shell_id"]!, "status": .string("sent")])
-        case "shell.resize": return .object(["shell_id": params["shell_id"]!, "columns": params["columns"]!, "rows": params["rows"]!])
+        case "shell.keys":
+            let batch = params["batch"]!.string!
+            keyCalls.append(KeyCall(request: id, batch: batch, shell: params["shell_id"]!.string!, items: params["items"]!.array))
+            switch keysMode {
+            case .unsupported: throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method")
+            case .inputUnavailable: throw RemoteError.rpc(code: "input_unavailable", message: "The pane has input disabled.")
+            case .notFound: throw RemoteError.rpc(code: "not_found", message: "Selected session is unavailable.")
+            case .uncertain: return .object(["shell_id": params["shell_id"]!, "batch": params["batch"]!, "status": .string("uncertain")])
+            case .dropLinkAfterDelivery:
+                // The desktop took the batch, then the link died before the phone heard back.
+                keysMode = .ok; seenBatches.insert(batch); connected = false
+                throw RemoteError.disconnected
+            case .ok: break
+            }
+            if let keysDelay { try await Task.sleep(for: keysDelay) }
+            let status = seenBatches.insert(batch).inserted ? "sent" : "duplicate"
+            return .object(["shell_id": params["shell_id"]!, "batch": params["batch"]!, "status": .string(status)])
+        case "shell.resize":
+            if case .number(let c)? = params["columns"], case .number(let r)? = params["rows"] { resizes.append(TerminalViewport(columns: Int(c), rows: Int(r))) }
+            return .object(["shell_id": params["shell_id"]!, "columns": params["columns"]!, "rows": params["rows"]!])
         case "shell.resize.clear": return .object(["shell_id": params["shell_id"]!, "status": .string("cleared")])
         default: throw RemoteError.protocolViolation("Unknown method")
         }

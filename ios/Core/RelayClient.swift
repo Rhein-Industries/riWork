@@ -14,13 +14,18 @@ public enum RequestValidation {
         case "tasks.list": required = ["project_id"]; optional = ["worktree_id"]
         case "shell.output": required = ["shell_id"]; optional = ["lines"]
         case "shell.input": required = ["shell_id", "line"]; optional = []
+        case "shell.keys": required = ["shell_id", "batch", "items"]; optional = []
         case "shell.resize": required = ["shell_id", "columns", "rows"]; optional = []
         case "shell.resize.clear": required = ["shell_id"]; optional = []
         default: throw RemoteError.protocolViolation("Unsupported operation.")
         }
         let keys = Set(params.keys)
         guard required.isSubset(of: keys), keys.isSubset(of: required.union(optional)) else { throw RemoteError.protocolViolation("Invalid request parameters.") }
-        for key in ["project_id", "worktree_id", "shell_id"] where params[key] != nil { try uuid(params[key]?.string) }
+        for key in ["project_id", "worktree_id", "shell_id", "batch"] where params[key] != nil { try uuid(params[key]?.string) }
+        if method == "shell.keys" {
+            guard case .array(let raw)? = params["items"] else { throw RemoteError.protocolViolation("Missing key items.") }
+            try KeyItem.validate(batch: try raw.map { try KeyItem(json: $0) })
+        }
         if method == "shell.input" { guard let line = params["line"]?.string else { throw RemoteError.protocolViolation("Missing input.") }; try InputValidation.validate(line) }
         if let lines = params["lines"] { guard case .number(let value) = lines, value >= 1, value <= 2000, value.rounded() == value else { throw RemoteError.protocolViolation("Output lines must be 1–2000.") } }
         if method == "shell.resize" {
@@ -64,6 +69,11 @@ public actor RelayClient: RemoteTransport {
         self.requestTimeout = requestTimeout
         self.pingInterval = pingInterval
         self.handshakeTimeout = handshakeTimeout
+    }
+    /// `shell.keys` may pause ~150 ms between a text and the key after it (about 5 s for a 64-item batch), so it never
+    /// gets less than 10 s: a timeout tears the whole connection down.
+    static func timeout(for method: String, default base: Duration) -> Duration {
+        method == "shell.keys" ? max(base, .seconds(10)) : base
     }
     public func isConnected() -> Bool { cipher != nil && socket != nil }
     @discardableResult
@@ -166,10 +176,12 @@ public actor RelayClient: RemoteTransport {
         let token = generation
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let deadline = Task { [requestTimeout] in
+                let deadline = Task { [requestTimeout = Self.timeout(for: method, default: requestTimeout)] in
                     do { try await Task.sleep(for: requestTimeout) } catch { return }
                     self.expire(id: id, token: token)
                 }
+                // Only `shell.input` reports an unknown outcome as uncertain. `shell.keys` carries a batch id the desktop dedupes,
+                // so a lost connection or cancelled caller surfaces as itself and the batch is simply retried.
                 pending[id] = Pending(continuation: continuation, isInput: method == "shell.input", timeout: deadline)
                 let previous = sendTail
                 // The counter is already spent, so this frame is sent even if its caller is cancelled.

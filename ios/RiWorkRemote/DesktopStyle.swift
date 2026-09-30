@@ -17,6 +17,10 @@ enum DesktopStyle {
     static let textUI = dynamic(0x3c3836, 0xd3e1e6)
     static let mutedUI = dynamic(0x756f5e, 0x8fa6ae)
     static let accentUI = dynamic(0x427b58, 0x55e6dc)
+    static let backgroundUI = dynamic(0xfbf1c7, 0x090d14)
+    static let panelUI = dynamic(0xf4ebc2, 0x101720)
+    static let activeUI = dynamic(0xede3bc, 0x14212a)
+    static let dividerUI = dynamic(0xd5ccb6, 0x253c45)
     static let background = color(0xfbf1c7, 0x090d14)
     static let panel = color(0xf4ebc2, 0x101720)
     static let active = color(0xede3bc, 0x14212a)
@@ -30,12 +34,14 @@ enum DesktopStyle {
 
 struct DesktopButtonStyle: ButtonStyle {
     var prominent = false
+    /// Terminal chrome: 40-point targets instead of 44 so the shell gets the room.
+    var compact = false
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.custom("Menlo", size: 12, relativeTo: .subheadline))
             .foregroundStyle(prominent ? DesktopStyle.accent : DesktopStyle.text)
-            .padding(.horizontal, 10).frame(minWidth: 44, minHeight: 44)
+            .padding(.horizontal, compact ? 6 : 10).frame(minWidth: compact ? 40 : 44, minHeight: compact ? 40 : 44)
             .background(configuration.isPressed ? DesktopStyle.active : (prominent ? DesktopStyle.active : .clear))
             .overlay(alignment: .bottom) { if prominent { Rectangle().fill(DesktopStyle.accent).frame(height: 1) } }
             .contentShape(Rectangle()).opacity(isEnabled ? 1 : 0.45)
@@ -49,15 +55,20 @@ struct DesktopRule: View {
 struct WorkspaceBar<Actions: View>: View {
     let title: String
     var back: (() -> Void)?
+    /// The terminal screen's header: shorter, with 40-point controls.
+    var compact = false
+    var onDoubleTap: (() -> Void)?
     @ViewBuilder var actions: () -> Actions
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 4) {
-                if let back { Button("Back", systemImage: "chevron.left", action: back).labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle()) }
+            HStack(spacing: compact ? 2 : 4) {
+                if let back { Button("Back", systemImage: "chevron.left", action: back).labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: compact)) }
                 Text(title).font(.custom("Menlo-Bold", size: 13, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 4)
-                actions()
-            }.padding(.horizontal, 8).frame(minHeight: 44).background(DesktopStyle.panel)
+                actions().buttonStyle(DesktopButtonStyle(compact: compact))
+            }.padding(.horizontal, compact ? 4 : 8).frame(minHeight: compact ? 40 : 44).background(DesktopStyle.panel)
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap?() }, including: onDoubleTap == nil ? .none : .all)
             DesktopRule()
         }
     }

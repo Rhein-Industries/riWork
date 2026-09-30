@@ -90,7 +90,7 @@ private final class ScriptedDesktop: @unchecked Sendable {
     private let lock = NSLock()
     private var cipher: SessionCipher?
     private var c2dNext: UInt64 = 0, d2cNext: UInt64 = 0
-    private var requests: [(id: String, method: String, counter: UInt64)] = []
+    private var requests: [(id: String, method: String, counter: UInt64, params: JSONValue)] = []
     private var counterViolations = 0
     private var held: [String: JSONValue] = [:]
     var silent = false
@@ -107,6 +107,8 @@ private final class ScriptedDesktop: @unchecked Sendable {
     var violations: Int { lock.withLock { counterViolations } }
     func methods() -> [String] { lock.withLock { requests.map(\.method) } }
     func counters() -> [UInt64] { lock.withLock { requests.map(\.counter) } }
+    func ids() -> [String] { lock.withLock { requests.map(\.id) } }
+    func params() -> [JSONValue] { lock.withLock { requests.map(\.params) } }
 
     private func handle(_ text: String) {
         guard !silent, let frame = try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) else { return }
@@ -146,11 +148,15 @@ private final class ScriptedDesktop: @unchecked Sendable {
                   let plain = try? ChaChaPoly.open(box, using: cipher.c2d, authenticating: cipher.aad(direction: "c2d", counter: counter)),
                   let value = try? JSONDecoder().decode(JSONValue.self, from: plain) else { counterViolations += 1; return nil }
             c2dNext += 1
-            requests.append((value["id"].string ?? "", value["method"].string ?? "", counter))
+            requests.append((value["id"].string ?? "", value["method"].string ?? "", counter, value["params"]))
             return value
         }
         guard let request, let id = request["id"].string else { return }
-        let response = JSONValue.object(["v": .number(1), "type": .string("response"), "id": .string(id), "ok": .bool(true), "result": .object(["method": request["method"]])])
+        // `shell.keys` is answered the way the desktop does (the request's identity plus a status); everything else echoes its method.
+        let result: JSONValue = request["method"].string == "shell.keys"
+            ? .object(["shell_id": request["params"]["shell_id"], "batch": request["params"]["batch"], "status": .string("sent")])
+            : .object(["method": request["method"]])
+        let response = JSONValue.object(["v": .number(1), "type": .string("response"), "id": .string(id), "ok": .bool(true), "result": result])
         switch policy(request["method"].string ?? "") {
         case .respond: socket.push(seal(response))
         case .hold: lock.withLock { held[id] = response }
@@ -189,6 +195,19 @@ private final class ScriptedDesktop: @unchecked Sendable {
         XCTAssertTrue(met, what)
     }
     private func outputParams() -> [String: JSONValue] { ["shell_id": .string(shell)] }
+    private let batch = "55555555-5555-4555-8555-555555555555"
+    private func keysParams(items: [KeyItem] = [.text("ls"), .key(.enter)], batch: String? = nil) -> [String: JSONValue] {
+        ["shell_id": .string(shell), "batch": .string(batch ?? self.batch), "items": .array(items.map(\.json))]
+    }
+    private func isUncertain(_ error: any Error) -> Bool { if case RemoteError.uncertainDelivery = error { true } else { false } }
+    /// What a request fails with when the connection ends while it is in flight and unanswered.
+    private func failure(of method: String, params: [String: JSONValue], requestTimeout: Duration = .seconds(5), ending end: (RelayClient, ScriptedSocket) async -> Void) async throws -> any Error {
+        let (client, socket, desktop) = try await connected(requestTimeout: requestTimeout) { $0.policy = { _ in .silent } }
+        let call = Task { try await client.request(method: method, params: params, id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd") }
+        await eventually("\(method) reached the desktop") { desktop.requestCount == 1 }
+        await end(client, socket)
+        do { _ = try await call.value; XCTFail("\(method) succeeded although the connection ended"); return RemoteError.remote("succeeded") } catch { return error }
+    }
 
     func testHandshakeReachesReadyAndRequestsRoundTrip() async throws {
         let (client, _, desktop) = try await connected()
@@ -279,6 +298,189 @@ private final class ScriptedDesktop: @unchecked Sendable {
         XCTAssertTrue(socket.cancelled)
         let alive = await client.isConnected()
         XCTAssertFalse(alive)
+    }
+
+    // MARK: shell.keys
+
+    func testShellKeysRoundTripsThroughTheRealClientOnTheNextCounter() async throws {
+        let (client, _, desktop) = try await connected()
+        _ = try await client.request(method: "projects.list")
+        let items: [KeyItem] = [.text("ls -la"), .key(.enter), .key(.control("c")), .text("héllo 🙂")]
+        let status = try await client.keys(shellID: shell, batch: batch, items: items)
+        XCTAssertEqual(status, .sent)
+        XCTAssertEqual(desktop.methods(), ["projects.list", "shell.keys"])
+        XCTAssertEqual(desktop.counters(), [0, 1], "shell.keys takes the next counter")
+        let sent = desktop.params()[1]
+        XCTAssertEqual(sent["shell_id"].string, shell)
+        XCTAssertEqual(sent["batch"].string, batch)
+        XCTAssertEqual(sent["items"], .array(items.map(\.json)))
+        // The raw request returns the desktop's result untouched.
+        let raw = try await client.request(method: "shell.keys", params: keysParams(), id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+        XCTAssertEqual(raw["shell_id"].string, shell)
+        XCTAssertEqual(raw["batch"].string, batch)
+        XCTAssertEqual(raw["status"].string, "sent")
+        XCTAssertEqual(desktop.counters(), [0, 1, 2])
+        XCTAssertEqual(desktop.violations, 0)
+        let alive = await client.isConnected()
+        XCTAssertTrue(alive)
+    }
+
+    func testConnectionLossDuringShellKeysIsNotUncertainWhereShellInputIs() async throws {
+        let inputParams: [String: JSONValue] = ["shell_id": .string(shell), "line": .string("echo hi")]
+        // The relay closes the socket.
+        let closeRelay: (RelayClient, ScriptedSocket) async -> Void = { _, socket in socket.closeFromPeer(code: .noStatusReceived) }
+        let keysClosed = try await failure(of: "shell.keys", params: keysParams(), ending: closeRelay)
+        guard case RemoteError.relayClosed(let code, _) = keysClosed else { return XCTFail("\(keysClosed)") }
+        XCTAssertEqual(code, 1005)
+        let inputClosed = try await failure(of: "shell.input", params: inputParams, ending: closeRelay)
+        XCTAssertTrue(isUncertain(inputClosed), "\(inputClosed)")
+
+        // The app disconnects.
+        let disconnect: (RelayClient, ScriptedSocket) async -> Void = { client, _ in await client.disconnect() }
+        let keysDisconnected = try await failure(of: "shell.keys", params: keysParams(), ending: disconnect)
+        guard case RemoteError.disconnected = keysDisconnected else { return XCTFail("\(keysDisconnected)") }
+        let inputDisconnected = try await failure(of: "shell.input", params: inputParams, ending: disconnect)
+        XCTAssertTrue(isUncertain(inputDisconnected), "\(inputDisconnected)")
+
+        // The desktop goes quiet and the request times out. shell.keys has its own, longer floor (see the next test),
+        // so only shell.input is timed out here.
+        let wait: (RelayClient, ScriptedSocket) async -> Void = { _, _ in }
+        let inputTimedOut = try await failure(of: "shell.input", params: inputParams, requestTimeout: .milliseconds(120), ending: wait)
+        XCTAssertTrue(isUncertain(inputTimedOut), "\(inputTimedOut)")
+    }
+
+    /// The desktop pauses ~150 ms between a text and the key after it, so a 64-item batch can take ~5 s to answer.
+    func testShellKeysGetsALongerTimeoutFloorWhileOtherCallsKeepTheConfiguredTimeout() async throws {
+        XCTAssertEqual(RelayClient.timeout(for: "shell.keys", default: .milliseconds(120)), .seconds(10))
+        XCTAssertGreaterThanOrEqual(RelayClient.timeout(for: "shell.keys", default: .seconds(1)), .seconds(6), "never below the desktop's worst case")
+        XCTAssertEqual(RelayClient.timeout(for: "shell.keys", default: .seconds(15)), .seconds(15), "a longer configured timeout is kept")
+        XCTAssertEqual(RelayClient.timeout(for: "shell.output", default: .milliseconds(120)), .milliseconds(120))
+        XCTAssertEqual(RelayClient.timeout(for: "shell.input", default: .milliseconds(120)), .milliseconds(120))
+        // Behaviour: an answer that arrives after the configured timeout would have fired still completes the call.
+        let (client, _, desktop) = try await connected(requestTimeout: .milliseconds(120)) { $0.policy = { $0 == "shell.keys" ? .hold : .respond } }
+        let id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        let call = Task { try await client.keys(shellID: self.shell, batch: self.batch, items: [.text("ls"), .key(.enter)], id: id) }
+        await eventually("the desktop saw the batch") { desktop.requestCount == 1 }
+        try await Task.sleep(for: .milliseconds(400))
+        let stillUp = await client.isConnected()
+        XCTAssertTrue(stillUp, "the 120 ms request timeout did not tear the connection down")
+        desktop.release(id: id)
+        let status = try await call.value
+        XCTAssertEqual(status, .sent)
+        XCTAssertEqual(desktop.violations, 0)
+    }
+
+    func testShellKeysOnAClientThatIsNotConnectedFailsAsDisconnected() async throws {
+        let (client, socket, desktop) = try rig()
+        do { _ = try await client.keys(shellID: shell, batch: batch, items: [.key(.enter)]); XCTFail() } catch {
+            guard case RemoteError.disconnected = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertEqual(socket.sentCount, 0)
+        XCTAssertEqual(desktop.requestCount, 0)
+    }
+
+    func testCancellingShellKeysThrowsCancellationErrorAndKeepsTheConnectionAndCounterSequence() async throws {
+        let (client, socket, desktop) = try await connected { $0.policy = { $0 == "shell.keys" ? .hold : .respond } }
+        let id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        let keys = Task { try await client.request(method: "shell.keys", params: self.keysParams(), id: id) }
+        await eventually("desktop saw the keys") { desktop.requestCount == 1 }
+        keys.cancel()
+        do { _ = try await keys.value; XCTFail("a cancelled request must throw") } catch {
+            XCTAssertTrue(error is CancellationError, "not uncertain, the batch is simply retried: \(error)")
+            XCTAssertFalse(isUncertain(error))
+        }
+        let stillConnected = await client.isConnected()
+        XCTAssertTrue(stillConnected, "cancelling one caller must not drop the socket")
+        XCTAssertFalse(socket.cancelled)
+        // The next request uses the next counter, and the abandoned request's late response is dropped.
+        let next = try await client.request(method: "projects.list")
+        XCTAssertEqual(next["method"].string, "projects.list")
+        desktop.release(id: id)
+        let after = try await client.request(method: "orchestrators.list")
+        XCTAssertEqual(after["method"].string, "orchestrators.list")
+        XCTAssertEqual(desktop.violations, 0)
+        XCTAssertEqual(desktop.methods(), ["shell.keys", "projects.list", "orchestrators.list"])
+        XCTAssertEqual(desktop.counters(), [0, 1, 2])
+        let alive = await client.isConnected()
+        XCTAssertTrue(alive)
+    }
+
+    func testRetryingABatchWithANewRequestIDIsADistinctRequest() async throws {
+        let (client, _, desktop) = try await connected { $0.policy = { $0 == "shell.keys" ? .hold : .respond } }
+        let items: [KeyItem] = [.text("git status"), .key(.enter)]
+        let first = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", second = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        let attempt = Task { try await client.keys(shellID: self.shell, batch: self.batch, items: items, id: first) }
+        await eventually("first attempt reached the desktop") { desktop.requestCount == 1 }
+        attempt.cancel()
+        do { _ = try await attempt.value; XCTFail() } catch { XCTAssertTrue(error is CancellationError, "\(error)") }
+        // Same batch, new request id: the client accepts it while the first is still abandoned and unanswered.
+        let retry = Task { try await client.keys(shellID: self.shell, batch: self.batch, items: items, id: second) }
+        await eventually("retry reached the desktop") { desktop.requestCount == 2 }
+        desktop.release(id: second)
+        let status = try await retry.value
+        XCTAssertEqual(status, .sent)
+        desktop.release(id: first)   // the stale answer to the abandoned attempt is discarded
+        _ = try await client.request(method: "projects.list")
+        XCTAssertEqual(Array(desktop.ids().prefix(2)), [first, second])
+        XCTAssertNotEqual(desktop.ids()[0], desktop.ids()[1])
+        XCTAssertEqual(desktop.params()[0], desktop.params()[1], "same batch, same content")
+        XCTAssertEqual(desktop.params()[1]["batch"].string, batch)
+        XCTAssertEqual(desktop.methods(), ["shell.keys", "shell.keys", "projects.list"])
+        XCTAssertEqual(desktop.counters(), [0, 1, 2], "each attempt spends its own counter")
+        XCTAssertEqual(desktop.violations, 0)
+        let alive = await client.isConnected()
+        XCTAssertTrue(alive)
+    }
+
+    func testEachKeysCallGetsAFreshRequestIDByDefault() async throws {
+        let (client, _, desktop) = try await connected()
+        for _ in 0..<3 { let status = try await client.keys(shellID: shell, batch: batch, items: [.text("x")]); XCTAssertEqual(status, .sent) }
+        XCTAssertEqual(Set(desktop.ids()).count, 3)
+        XCTAssertEqual(Set(desktop.params().map { $0["batch"].string }), [batch])
+        XCTAssertEqual(desktop.counters(), [0, 1, 2])
+        XCTAssertEqual(desktop.violations, 0)
+    }
+
+    func testInvalidShellKeysRequestsAreRejectedBeforeAnythingIsSealed() async throws {
+        let (client, socket, desktop) = try await connected()
+        let framesBefore = socket.sentCount
+        let enter = JSONValue.object(["key": .string("Enter")])
+        var missingBatch = keysParams(); missingBatch["batch"] = nil
+        var extra = keysParams(); extra["line"] = .string("ls")
+        var missingShell = keysParams(); missingShell["shell_id"] = nil
+        var notArray = keysParams(); notArray["items"] = enter
+        let invalid: [(String, [String: JSONValue])] = [
+            ("65 items", ["shell_id": .string(shell), "batch": .string(batch), "items": .array(Array(repeating: enter, count: 65))]),
+            ("no items", ["shell_id": .string(shell), "batch": .string(batch), "items": .array([])]),
+            ("upper-case batch", keysParams(batch: "ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF")),
+            ("short batch", keysParams(batch: "5555")),
+            ("missing batch", missingBatch),
+            ("missing shell", missingShell),
+            ("unknown parameter", extra),
+            ("items not an array", notArray),
+            ("text and key together", ["shell_id": .string(shell), "batch": .string(batch), "items": .array([.object(["text": .string("a"), "key": .string("Enter")])])]),
+            ("unknown key", ["shell_id": .string(shell), "batch": .string(batch), "items": .array([.object(["key": .string("C-A")])])]),
+            ("newline in text", ["shell_id": .string(shell), "batch": .string(batch), "items": .array([.object(["text": .string("a\nb")])])]),
+            ("4097 text bytes", ["shell_id": .string(shell), "batch": .string(batch), "items": .array([.object(["text": .string(String(repeating: "a", count: 4097))])])])
+        ]
+        for (why, params) in invalid {
+            do { _ = try await client.request(method: "shell.keys", params: params); XCTFail("accepted: \(why)") } catch {
+                guard case RemoteError.protocolViolation = error else { return XCTFail("\(why): \(error)") }
+            }
+        }
+        // The typed API refuses the same before it asks the transport for anything.
+        for items in [[], [KeyItem.text("a\u{1b}")], Array(repeating: KeyItem.key(.tab), count: 65)] {
+            do { _ = try await client.keys(shellID: shell, batch: batch, items: items); XCTFail() } catch { guard case RemoteError.protocolViolation = error else { return XCTFail("\(error)") } }
+        }
+        do { _ = try await client.keys(shellID: shell, batch: batch, items: [.key(.enter)], id: "not-a-uuid"); XCTFail() } catch { guard case RemoteError.protocolViolation = error else { return XCTFail("\(error)") } }
+        XCTAssertEqual(desktop.requestCount, 0)
+        XCTAssertEqual(socket.sentCount, framesBefore, "no frame was sealed or sent")
+        // No counter was consumed: the next valid request is still counter 0.
+        _ = try await client.request(method: "projects.list")
+        XCTAssertEqual(desktop.counters(), [0])
+        XCTAssertEqual(desktop.violations, 0)
+        let alive = await client.isConnected()
+        XCTAssertTrue(alive)
     }
 
     // MARK: handshake failures and timeouts
