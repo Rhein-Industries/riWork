@@ -94,6 +94,10 @@ public struct ShellOutput: Sendable, Equatable {
     public let inMode: Bool
     /// The desktop's fingerprint of this screen. Present when the desktop can wait for a change (`if_changed`); absent on older ones.
     public let hash: String?
+    /// How many scrollback lines lie above the screen on the desktop (`history_size`). Absent on desktops that cannot page history.
+    public let historySize: Int?
+    /// A full-screen program (vim, less, htop) is on the alternate screen (`alternate`). Absent on older desktops.
+    public let alternate: Bool?
 
     public init(result: JSONValue) throws {
         guard let shellID = result["shell_id"].string, let text = result["output"].string else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
@@ -110,6 +114,9 @@ public struct ShellOutput: Sendable, Equatable {
         else { cursor = nil }
         if case .bool(let mode) = result["in_mode"] { inMode = mode } else { inMode = false }
         hash = OutputReply.hash(result["hash"])
+        let extras = OutputExtras(result: result)
+        historySize = extras.historySize
+        alternate = extras.alternate
     }
     public var screen: TerminalScreen { TerminalText.screen(text, cursor: cursor.map { ($0.x, $0.y) }, rows: rows) }
     /// The screen with its colors and attributes and text presentation forced on symbols. Pure and slow enough to keep off the main actor.

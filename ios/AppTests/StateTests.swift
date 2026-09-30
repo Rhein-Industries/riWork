@@ -45,6 +45,14 @@ actor FixtureTransport: RemoteTransport {
     /// newer connector whose `riwork` CLI is older (`cli_error`).
     enum OldDesktop { case no, strictFields, oldCLI }
     var oldDesktop = OldDesktop.no
+    // Scrolling: a scripted scrollback (like tmux's) that `shell.output` and `shell.history` answer from, when set.
+    var scrollback: ScriptedScrollback?
+    var reportsHistorySize = true
+    var alternate: Bool?
+    enum HistoryMode { case ok, unsupported, rejectsStyled, tooLarge(above: Int), failing(code: String), wrongCount }
+    var historyMode = HistoryMode.ok
+    var historyRequestLog: [[String: JSONValue]] = []
+    var historyGated = false
     private var waiters: [CheckedContinuation<Void, any Error>] = []
     func setSessions(_ sessions: [RemoteSession]) { listedShells = sessions }
     func setMissing(_ id: String) { missingOutputs.insert(id) }
@@ -74,6 +82,17 @@ actor FixtureTransport: RemoteTransport {
     func failNextOutputs(_ count: Int, code: String = "unavailable") { failOutputs = count; failOutputCode = code }
     func pendingOutputFailures() -> Int { failOutputs }
     func setOldDesktop(_ kind: OldDesktop) { oldDesktop = kind }
+    func setScrollback(_ value: ScriptedScrollback?, reportsHistorySize: Bool = true) { scrollback = value; self.reportsHistorySize = reportsHistorySize; screenVersion += 1 }
+    /// Output arrives on the scripted desktop: its screen changes, so a waiting long poll returns.
+    func write(_ count: Int) { scrollback?.write(count); screenVersion += 1 }
+    func setAlternate(_ on: Bool?) { alternate = on; screenVersion += 1 }
+    /// The flag changes but the screen (and so its hash) does not: only `unchanged` answers carry it.
+    func setAlternateQuietly(_ on: Bool?) { alternate = on }
+    func setHistoryMode(_ mode: HistoryMode) { historyMode = mode }
+    func historyRequests() -> [[String: JSONValue]] { historyRequestLog }
+    /// Holds `shell.history` requests back (after they are logged) until released, so output can arrive while a page is on its way.
+    func gateHistory(_ on: Bool) { historyGated = on }
+    func scriptedScrollback() -> ScriptedScrollback? { scrollback }
     func setKeysMode(_ mode: KeysMode) { keysMode = mode }
     func setKeysDelay(_ delay: Duration?) { keysDelay = delay }
     func setAppearance(_ mode: AppearanceMode) { appearanceMode = mode }
@@ -145,12 +164,37 @@ actor FixtureTransport: RemoteTransport {
                     let deadline = ContinuousClock.now + min(.milliseconds(Int(wait)), longPollCap)
                     while screenVersion == version, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(3)) }
                 }
-                if known == currentHash() { return .object(["shell_id": params["shell_id"]!, "unchanged": .bool(true), "hash": .string(known)]) }
+                if known == currentHash() {
+                    var unchanged: [String: JSONValue] = ["shell_id": params["shell_id"]!, "unchanged": .bool(true), "hash": .string(known)]
+                    if let scrollback {
+                        if reportsHistorySize { unchanged["history_size"] = .number(Double(alternate == true ? 0 : scrollback.historySize)) }
+                        if let alternate { unchanged["alternate"] = .bool(alternate) }
+                    }
+                    return .object(unchanged)
+                }
             }
             var reply: [String: JSONValue] = ["shell_id": params["shell_id"]!, "output": .string(outputText)]
             reply.merge(outputExtras) { $1 }
+            if let scrollback { reply.merge(scrollback.outputFields(lines: lines, reportsHistorySize: reportsHistorySize, alternate: alternate)) { $1 } }
+            else if let alternate { reply["alternate"] = .bool(alternate) }
             if hashMode { reply["hash"] = .string(currentHash()) }
             return .object(reply)
+        case "shell.history":
+            historyRequestLog.append(params)
+            switch historyMode {
+            case .ok: break
+            case .unsupported: throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method")
+            case .rejectsStyled: if params["styled"] != nil { throw RemoteError.rpc(code: "invalid_request", message: "unknown field `styled`") }
+            case .tooLarge(let above): if case .number(let n)? = params["lines"], Int(n) > above { throw RemoteError.rpc(code: "response_too_large", message: "reply too large") }
+            case .failing(let code): throw RemoteError.rpc(code: code, message: "history failed")
+            case .wrongCount: break
+            }
+            if let shell = params["shell_id"]?.string, missingOutputs.contains(shell) { throw RemoteError.rpc(code: "not_found", message: "Selected session is unavailable.") }
+            while historyGated { try await Task.sleep(for: .milliseconds(3)) }
+            guard let scrollback, case .number(let end)? = params["end"], case .number(let count)? = params["lines"] else { throw RemoteError.rpc(code: "invalid_request", message: "no scrollback") }
+            var fields = scrollback.historyFields(shellID: params["shell_id"]!, end: Int(end), lines: Int(count))
+            if case .wrongCount = historyMode, case .number(let n)? = fields["line_count"] { fields["line_count"] = .number(n + 1) }
+            return .object(fields)
         case "shell.input":
             inputs.append(id)
             inputLines.append(params["line"]!.string!)

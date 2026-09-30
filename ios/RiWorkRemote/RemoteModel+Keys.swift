@@ -92,8 +92,19 @@ extension RemoteModel {
 
     /// Queues keystrokes for the selected shell. They are sent at once when the connection is up and idle.
     @discardableResult
-    func type(_ items: [KeyItem]) -> KeyAcceptance {
-        guard directTyping, let key = typingKey, let session, session.alive, !missingSessionIDs.contains(session.id) else { return .unavailable }
+    func type(_ items: [KeyItem]) -> KeyAcceptance { enqueue(items, typing: true) }
+
+    /// Page Up or Page Down for a full-screen program, from a swipe on the alternate screen. It is not typing: it does not bring the
+    /// view to the bottom, and it needs only a desktop that takes keys (not direct typing to be switched on). A swipe is not worth
+    /// holding for a reconnect, so it is dropped while offline.
+    @discardableResult
+    func sendPageKey(_ key: TerminalKey) -> KeyAcceptance {
+        guard state == .connected else { return .unavailable }
+        return enqueue([.key(key)], typing: false)
+    }
+
+    private func enqueue(_ items: [KeyItem], typing: Bool) -> KeyAcceptance {
+        guard typing ? directTyping : keysSupport != .unsupported, let key = typingKey, let session, session.alive, !missingSessionIDs.contains(session.id) else { return .unavailable }
         // Whatever the caller hands over, only contract-valid items are queued: literal text loses control characters
         // (newlines become Enter), unknown keys are dropped.
         let items = items.flatMap { item -> [KeyItem] in
@@ -114,7 +125,7 @@ extension RemoteModel {
         }
         keysFull.remove(key)
         keyBuffers[key] = buffer
-        typedCount &+= 1
+        if typing { typedCount &+= 1; scrollFollow.jumpToBottom() }
         noteKeyActivity(now: now)
         scheduleReveal()
         kickKeySender()

@@ -184,7 +184,31 @@ line by line; the terminal draws only the lines on screen in a lazy stack and re
 borrows a font is kerned back to the cells the terminal counts for it, so attributes and fallback fonts never move a column.
 Symbols that can also be emoji but are text by default (⏺ ⏸ ⚠ ✔ ▶ ℹ …) get U+FE0E, so they draw as monochrome text glyphs in the
 foreground color as on the Mac; genuine emoji (✅ 🚀, FE0F, keycaps, ZWJ, flags, skin tones) are left alone. Drag-selecting
-works within a line; **Copy screen text** in the menu copies the whole screen.
+works within a line; **Copy screen text** in the menu copies the latest answer: the screen and the last 500 lines of scrollback
+that came with it, not the older pages loaded by scrolling.
+
+**Scrolling** (iPhone; the iPad keeps its two-axis scroll view and follow toggle). The terminal scrolls vertically only: the
+desktop pane has the phone's width, and a rare longer line is clipped at the edge. Every line held has an absolute index that
+never changes while lines are added above or below it (`Core/TerminalBuffer.swift`: the first answer numbers the screen's top
+row `history_size`, scrolled-in lines keep counting), and the lazy rows are keyed by it with `scrollPosition(id:)`, so neither
+live output at the bottom nor an older page at the top moves the line being read. The view follows new output only while it is at
+the bottom or within a line of it. Scrolled up, it stays put, and a pill "↓ Live · N new" (just "↓ Live" when far away and nothing
+new) takes the reader back and resumes following; typing, key-bar keys, sending a line and the menu's "Jump to latest output" do
+the same. A shell is opened, and switched to, at its bottom. A page of older lines put in under a moving finger or momentum would
+move what is under it, so it waits until the view is at rest. Near the top, within a screen of the first loaded line, the phone
+asks `shell.history` for the next older page (`end` = the lines already held above the screen, `lines` 300, `styled`), one request at
+a time, while the long poll and typing carry on: "Loading…" shows in a row at the top and "Beginning of history" once `complete`.
+`response_too_large` halves `lines` (kept per session); a desktop without the method (`unsupported RPC method`) or that rejects
+`styled` (retried once without it) falls back to today's behaviour: the screen and the latest 500 lines, no paging. The page is
+placed by the `history_size` it carries, so lines that scrolled in meanwhile are found as a shared overlap, compared and left out;
+a page that does not line up is dropped with everything older than the live answer and fetched again. A desktop whose history is
+full (it drops its oldest lines, `history_size` stops growing) is followed by matching the lines of consecutive answers, and its
+pages overlap the lines held by 8 so the seam is checked. A pane re-wrapped by a resize cannot be matched and renumbers the
+lines. At most 20,000 lines of scrollback are held; past that no older page is asked for and live output pushes out the oldest.
+On the alternate screen (`alternate`: vim, less, htop) there is no scrollback: the normal lines wait unchanged, the program's
+screen is shown without scrolling, and a vertical swipe sends Page Up (content dragged down) or Page Down through `shell.keys`,
+one per 80 % of the view's height (a quick flick that would carry that far sends one too), at most one every 120 ms; a chip "Scrolling the app" is clear for the first three programs
+and faint after.
 
 **Display settings** (terminal menu → Display…, or the slider button in the desktop list): interface size 80–130 % in 5 % steps
 (a scale factor on fonts and touch targets of the header, lists, key bar and buttons, in `DesktopStyle`; Dynamic Type still
