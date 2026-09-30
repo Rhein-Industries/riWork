@@ -931,3 +931,681 @@ fn windows_share_one_tmux_sample_until_this_process_changes_a_session() {
     fixture.manager.current_directories(&shells).unwrap();
     assert_eq!(tmux_calls() - before, 4);
 }
+
+// Direct typing: `send_keys` and the screen geometry of `capture_screen`.
+
+use crate::session_keys::{Item, Key};
+
+impl Fixture {
+    /// A registered session running `script` in a `columns` x `rows` pane, in
+    /// a directory of its own.
+    fn pane(&self, columns: u32, rows: u32, script: &str) -> String {
+        let id = Uuid::new_v4().to_string();
+        fs::create_dir_all(self.root.join("work")).unwrap();
+        self.manager
+            .tmux_checked(&[
+                "new-session",
+                "-d",
+                "-s",
+                &id,
+                "-c",
+                &self.root.join("work").to_string_lossy(),
+                "-x",
+                &columns.to_string(),
+                "-y",
+                &rows.to_string(),
+                &format!("sh -c {}", quote_arg(script)),
+            ])
+            .unwrap();
+        self.registry(vec![shell(&id, None, None)]);
+        id
+    }
+
+    fn recording_pane(&self) -> String {
+        let id = self.recording_session();
+        self.registry(vec![shell(&id, None, None)]);
+        id
+    }
+
+    fn pane_format(&self, id: &str, format: &str) -> String {
+        self.manager
+            .tmux_text(&["display-message", "-p", "-t", &pane_target(id), format])
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    /// The screen once `wanted` accepts it; a failure shows the last screen.
+    fn wait_for_screen(&self, id: &str, wanted: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let screen = self.manager.capture(id, 100).unwrap();
+            if wanted(&screen) {
+                return screen;
+            }
+            assert!(Instant::now() < deadline, "screen never matched:\n{screen}");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn wait_for_command(&self, id: &str, command: &str) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while self.pane_format(id, "#{pane_current_command}") != command {
+            assert!(Instant::now() < deadline, "pane never ran {command}");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn type_items(&self, id: &str, items: &[Item]) {
+        self.manager.send_keys(id, items).unwrap();
+    }
+}
+
+fn typed(text: &str) -> Item {
+    Item::Text(text.to_owned())
+}
+
+fn key(name: &str) -> Item {
+    Item::Key(Key::parse(name).unwrap())
+}
+
+#[test]
+fn typed_text_survives_tmux_command_parsing_verbatim() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.recording_pane();
+    let cases = [
+        "select 1;".to_owned(),
+        "find . -exec ls {} \\;".to_owned(),
+        "\\;".to_owned(),
+        "\\\\;".to_owned(),
+        ";".to_owned(),
+        ";;".to_owned(),
+        "a; b ;c;".to_owned(),
+        "ends with backslash\\".to_owned(),
+        " ".to_owned(),
+        "  spaces   inside  and around  ".to_owned(),
+        "héllo ✓ 日本語 🚀;".to_owned(),
+        "-b -t leading dash; #{pane_id} $(touch never) `x` '\"".to_owned(),
+        "-l".to_owned(),
+        "--".to_owned(),
+        format!("{};", "0123456789abcdef".repeat(255)),
+    ];
+    let mut expected = Vec::new();
+    for text in &cases {
+        fixture.type_items(&id, &[typed(text)]);
+        // Text alone never adds a Return.
+        expected.extend_from_slice(text.as_bytes());
+        let received = fixture.wait_for_received(expected.len());
+        assert!(
+            received == expected,
+            "unexpected input after {:?}: got {} bytes, wanted {}",
+            &text[..text.len().min(40)],
+            received.len(),
+            expected.len()
+        );
+    }
+    // Items of one batch arrive in order, whatever their kind.
+    let batch = [
+        typed("ls;"),
+        key("Enter"),
+        typed("\\;"),
+        key("Tab"),
+        key("C-c"),
+        typed(";"),
+        key("Up"),
+    ];
+    fixture.type_items(&id, &batch);
+    expected.extend_from_slice(b"ls;\r\\;\t\x03;\x1b[A");
+    assert_eq!(fixture.wait_for_received(expected.len()), expected);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(fixture.received(), expected, "nothing extra was typed");
+}
+
+#[test]
+fn every_key_sends_the_bytes_a_terminal_would() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.recording_pane();
+    let mut keys = vec![
+        ("Enter", b"\r".to_vec()),
+        ("Tab", b"\t".to_vec()),
+        ("BTab", b"\x1b[Z".to_vec()),
+        ("Escape", b"\x1b".to_vec()),
+        ("Backspace", b"\x7f".to_vec()),
+        ("Delete", b"\x1b[3~".to_vec()),
+        ("Up", b"\x1b[A".to_vec()),
+        ("Down", b"\x1b[B".to_vec()),
+        ("Right", b"\x1b[C".to_vec()),
+        ("Left", b"\x1b[D".to_vec()),
+        ("Home", b"\x1b[1~".to_vec()),
+        ("End", b"\x1b[4~".to_vec()),
+        ("PageUp", b"\x1b[5~".to_vec()),
+        ("PageDown", b"\x1b[6~".to_vec()),
+    ];
+    let controls: Vec<(String, Vec<u8>)> = (b'a'..=b'z')
+        .map(|letter| (format!("C-{}", char::from(letter)), vec![letter - b'a' + 1]))
+        .collect();
+    keys.extend(
+        controls
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.clone())),
+    );
+    let mut expected = Vec::new();
+    for (name, bytes) in &keys {
+        fixture.type_items(&id, &[key(name)]);
+        expected.extend_from_slice(bytes);
+        assert_eq!(
+            fixture.wait_for_received(expected.len()),
+            expected,
+            "{name}"
+        );
+    }
+    // The same keys as one batch: runs of keys share a tmux command.
+    let all: Vec<Item> = keys.iter().map(|(name, _)| key(name)).collect();
+    fixture.type_items(&id, &all);
+    let once = expected.clone();
+    expected.extend_from_slice(&once);
+    assert_eq!(fixture.wait_for_received(expected.len()), expected);
+}
+
+#[test]
+fn typing_edits_and_runs_commands_in_a_real_shell() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let work = fixture.root.join("work");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("unique-file-name-xyz"), "").unwrap();
+    let id = fixture.pane(
+        80,
+        24,
+        "exec env PS1='PROMPT> ' HISTFILE=/dev/null BASH_SILENCE_DEPRECATION_WARNING=1 bash --noprofile --norc -i",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("PROMPT>"));
+    let lines = |screen: &str, wanted: &str| screen.lines().filter(|line| *line == wanted).count();
+
+    // Backspace edits the line; Enter runs it.
+    fixture.type_items(
+        &id,
+        &[
+            typed("echo abx"),
+            key("Backspace"),
+            typed("c"),
+            key("Enter"),
+        ],
+    );
+    let screen = fixture.wait_for_screen(&id, |screen| lines(screen, "abc") == 1);
+    assert!(screen.contains("PROMPT> echo abc"), "{screen}");
+
+    // Up recalls it; the run repeats.
+    fixture.type_items(&id, &[key("Up"), key("Enter")]);
+    fixture.wait_for_screen(&id, |screen| lines(screen, "abc") == 2);
+
+    // Left, Home, Right, Delete and End move within the line. A key at the
+    // very end of one batch and at the start of the next both land.
+    fixture.type_items(
+        &id,
+        &[typed("echo 12"), key("Left"), typed("X"), key("Enter")],
+    );
+    fixture.wait_for_screen(&id, |screen| lines(screen, "1X2") == 1);
+    fixture.type_items(&id, &[typed("echo xyz"), key("Home")]);
+    fixture.type_items(
+        &id,
+        &[
+            key("Right"),
+            key("Right"),
+            key("Right"),
+            key("Right"),
+            key("Right"),
+            key("Delete"),
+            key("End"),
+            typed("!"),
+            key("Enter"),
+        ],
+    );
+    fixture.wait_for_screen(&id, |screen| lines(screen, "yz!") == 1);
+
+    // Tab completes a file name.
+    fixture.type_items(&id, &[typed("echo unique-fi"), key("Tab"), key("Enter")]);
+    fixture.wait_for_screen(&id, |screen| lines(screen, "unique-file-name-xyz") == 1);
+
+    // C-c stops a running command: the next line reaches the prompt, not sleep.
+    fixture.type_items(&id, &[typed("sleep 1000"), key("Enter")]);
+    fixture.wait_for_command(&id, "sleep");
+    fixture.type_items(&id, &[key("C-c")]);
+    fixture.wait_for_command(&id, "bash");
+    fixture.type_items(&id, &[typed("echo alive"), key("Enter")]);
+    fixture.wait_for_screen(&id, |screen| lines(screen, "alive") == 1);
+
+    // C-d at an empty prompt ends the shell.
+    fixture.type_items(&id, &[key("C-d")]);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while fixture.manager.is_alive(&id).unwrap() {
+        assert!(Instant::now() < deadline, "C-d never ended the shell");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn copy_mode_is_left_before_typing_so_keys_reach_the_program() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.recording_pane();
+    let pane = pane_target(&id);
+    fixture
+        .manager
+        .tmux_checked(&["copy-mode", "-t", &pane])
+        .unwrap();
+    assert_eq!(fixture.pane_format(&id, "#{pane_in_mode}"), "1");
+    fixture.type_items(&id, &[typed("q"), key("Enter"), key("C-c")]);
+    assert_eq!(fixture.pane_format(&id, "#{pane_in_mode}"), "0");
+    assert_eq!(fixture.wait_for_received(3), b"q\r\x03");
+    // Without a mode, no cancel is attempted and nothing else is typed.
+    fixture.type_items(&id, &[typed("z")]);
+    assert_eq!(fixture.wait_for_received(4), b"q\r\x03z");
+}
+
+#[test]
+fn disabled_terminal_input_is_refused_and_nothing_is_typed() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.recording_pane();
+    let pane = pane_target(&id);
+    fixture
+        .manager
+        .tmux_checked(&["select-pane", "-d", "-t", &pane])
+        .unwrap();
+    assert_eq!(fixture.pane_format(&id, "#{pane_input_off}"), "1");
+    for items in [
+        vec![typed("nope;")],
+        vec![key("Enter")],
+        vec![typed("a"), key("C-c")],
+    ] {
+        let error = fixture.manager.send_keys(&id, &items).unwrap_err();
+        assert!(error.starts_with("input_unavailable: "), "{error}");
+    }
+    // Copy mode does not excuse it: the pane is not cancelled out of either.
+    fixture
+        .manager
+        .tmux_checked(&["copy-mode", "-t", &pane])
+        .unwrap();
+    let error = fixture.manager.send_keys(&id, &[key("Enter")]).unwrap_err();
+    assert!(error.starts_with("input_unavailable: "), "{error}");
+    assert_eq!(fixture.pane_format(&id, "#{pane_in_mode}"), "1");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(fixture.received(), b"");
+
+    fixture
+        .manager
+        .tmux_checked(&["select-pane", "-e", "-t", &pane])
+        .unwrap();
+    fixture.type_items(&id, &[typed("ok")]);
+    assert_eq!(fixture.wait_for_received(2), b"ok");
+}
+
+#[test]
+fn unknown_and_exited_shells_are_not_found_and_bad_ids_are_invalid() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.recording_pane();
+    let items = [key("Enter")];
+    let unknown = Uuid::new_v4().to_string();
+    let error = fixture.manager.send_keys(&unknown, &items).unwrap_err();
+    assert!(error.starts_with("not_found: "), "{error}");
+    let error = fixture.manager.send_keys("12345678", &items).unwrap_err();
+    assert!(error.starts_with("invalid_request: "), "{error}");
+    fixture.manager.kill_tmux_session(&id).unwrap();
+    let error = fixture.manager.send_keys(&id, &items).unwrap_err();
+    assert!(error.starts_with("not_found: "), "{error}");
+    // Anything else that keeps tmux from answering is "not sent", not "not found".
+    let broken = fixture.root.join("broken-tmux");
+    Fixture::script(&broken, "echo 'protocol error' >&2; exit 1");
+    let manager = SessionManager {
+        home: fixture.root.clone(),
+        tmux: broken,
+        socket_name: fixture.manager.socket_name.clone(),
+    };
+    let error = manager.send_keys(&id, &items).unwrap_err();
+    assert!(error.starts_with("not_sent: "), "{error}");
+}
+
+#[test]
+fn a_batch_waits_for_the_shells_input_lock() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.recording_pane();
+    let held = crate::session_viewport::lock(&fixture.root, &id, "input").unwrap();
+    std::thread::scope(|scope| {
+        let typing = scope.spawn(|| fixture.manager.send_keys(&id, &[typed("locked")]));
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            !typing.is_finished(),
+            "typed while another writer held the lock"
+        );
+        assert_eq!(fixture.received(), b"");
+        drop(held);
+        typing.join().unwrap().unwrap();
+    });
+    assert_eq!(fixture.wait_for_received(6), b"locked");
+}
+
+#[test]
+fn a_wedged_tmux_fails_a_batch_within_the_bound() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.recording_pane();
+    // Every call goes through the bounded runner: none may hang the caller.
+    let tmux = fixture.manager.tmux.clone();
+    let wedged = fixture.root.join("wedged-tmux");
+    Fixture::script(
+        &wedged,
+        &format!(
+            "case \"$*\" in *kill-server|*socket_path*) exec {} \"$@\";; *send-keys*) exec sleep 60;; esac; exec {} \"$@\"",
+            quote_arg(&tmux.to_string_lossy()),
+            quote_arg(&tmux.to_string_lossy()),
+        ),
+    );
+    let manager = SessionManager {
+        home: fixture.root.clone(),
+        tmux: wedged,
+        socket_name: fixture.manager.socket_name.clone(),
+    };
+    let started = Instant::now();
+    let error = manager.send_keys(&id, &[typed("x")]).unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert!(error.contains("did not finish"), "{error}");
+    // A batch that may have been half-sent does not claim it was not sent.
+    assert!(!error.starts_with("not_sent: "), "{error}");
+}
+
+const VALID_REPORT: &str = "8|30|2|1|0|0\n";
+
+#[test]
+fn capture_screen_ends_with_exactly_the_visible_rows_blank_ones_included() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // Two lines of a 30x8 pane; the cursor rests after "cd".
+    let id = fixture.pane(30, 8, "printf 'ab\\ncd'; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("cd"));
+    let capture = fixture.manager.capture_screen(&id, 200).unwrap();
+    assert_eq!(capture.output, "ab\ncd\n\n\n\n\n\n\n");
+    assert_eq!(
+        capture.screen,
+        Some(Screen {
+            cursor: Cursor { x: 2, y: 1 },
+            rows: 8,
+            cols: 30,
+            in_mode: false
+        })
+    );
+    // No more lines than history plus rows, and the text is the plain capture.
+    assert_eq!(capture.output, fixture.manager.capture(&id, 200).unwrap());
+    assert_eq!(capture.output.lines().count(), 8);
+    // A missing shell is an error, as for `capture`.
+    assert!(
+        fixture
+            .manager
+            .capture_screen(&Uuid::new_v4().to_string(), 10)
+            .is_err()
+    );
+}
+
+#[test]
+fn capture_screen_keeps_the_last_rows_lines_as_the_screen_over_history() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // 31 printed rows through a 5-row pane: 26 scroll into history.
+    let id = fixture.pane(20, 5, "seq 1 30; printf x; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.ends_with("\nx\n"));
+    for (lines, total) in [(1, 6), (3, 8), (26, 31), (200, 31), (100_000, 31)] {
+        let capture = fixture.manager.capture_screen(&id, lines).unwrap();
+        let all: Vec<&str> = capture.output.lines().collect();
+        let screen = capture.screen.expect("screen");
+        assert_eq!(all.len(), total, "--lines {lines}");
+        assert_eq!((screen.rows, screen.cols), (5, 20));
+        assert_eq!(all[all.len() - 5..], ["27", "28", "29", "30", "x"]);
+        // The cursor is on the last screen row, right after the "x".
+        assert_eq!(screen.cursor, Cursor { x: 1, y: 4 });
+        assert_eq!(all[all.len() - 5 + screen.cursor.y as usize], "x");
+    }
+    // Blank rows at the bottom of a screen that has history are still counted.
+    let id = fixture.pane(
+        20,
+        5,
+        "seq 1 12; printf '\\033[2J\\033[Htop'; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("top"));
+    let capture = fixture.manager.capture_screen(&id, 4).unwrap();
+    let all: Vec<&str> = capture.output.lines().collect();
+    assert_eq!(all.len(), 4 + 5, "{:?}", capture.output);
+    assert_eq!(all[all.len() - 5..], ["top", "", "", "", ""]);
+    assert_eq!(capture.screen.unwrap().cursor, Cursor { x: 3, y: 0 });
+}
+
+#[test]
+fn capture_screen_follows_the_alternate_screen_and_reports_copy_mode() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // History from the normal screen, then a full-screen program.
+    let id = fixture.pane(
+        30,
+        6,
+        "seq 1 30; printf '\\033[?1049h\\033[2;3Hzz'; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("zz"));
+    let capture = fixture.manager.capture_screen(&id, 100_000).unwrap();
+    let all: Vec<&str> = capture.output.lines().collect();
+    let screen = capture.screen.expect("screen");
+    assert_eq!((screen.rows, screen.cols), (6, 30));
+    assert_eq!(all[all.len() - 6..], ["", "  zz", "", "", "", ""]);
+    assert_eq!(screen.cursor, Cursor { x: 4, y: 1 });
+    assert!(!screen.in_mode);
+
+    fixture
+        .manager
+        .tmux_checked(&["copy-mode", "-t", &pane_target(&id)])
+        .unwrap();
+    let in_mode = fixture.manager.capture_screen(&id, 100_000).unwrap();
+    assert!(in_mode.screen.unwrap().in_mode);
+    assert_eq!(in_mode.output, capture.output);
+}
+
+#[test]
+fn capture_screen_falls_back_to_a_plain_capture_when_the_report_fails() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.pane(30, 4, "printf hi; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("hi"));
+    // A tmux that cannot run the combined command still captures.
+    let tmux = fixture.manager.tmux.clone();
+    let picky = fixture.root.join("picky-tmux");
+    Fixture::script(
+        &picky,
+        &format!(
+            "case \"$*\" in *display-message*capture-pane*|*capture-pane*display-message*) echo 'no lists' >&2; exit 1;; esac; exec {} \"$@\"",
+            quote_arg(&tmux.to_string_lossy()),
+        ),
+    );
+    let manager = SessionManager {
+        home: fixture.root.clone(),
+        tmux: picky,
+        socket_name: fixture.manager.socket_name.clone(),
+    };
+    let capture = manager.capture_screen(&id, 10).unwrap();
+    assert_eq!(capture.screen, None);
+    assert_eq!(capture.output, "hi\n\n\n\n");
+}
+
+#[test]
+fn align_screen_restores_trimmed_rows_and_refuses_what_it_cannot_align() {
+    let report =
+        |rows, cols, x, y, mode, history| format!("{rows}|{cols}|{x}|{y}|{mode}|{history}\n");
+    // The full capture passes through untouched.
+    let full = "1\n2\nhi\n\n\n";
+    let kept = align_screen(full, &report(3, 40, 2, 0, 0, 2), 100).unwrap();
+    assert_eq!(kept.output, full);
+    assert_eq!(
+        kept.screen,
+        Some(Screen {
+            cursor: Cursor { x: 2, y: 0 },
+            rows: 3,
+            cols: 40,
+            in_mode: false
+        })
+    );
+    // A tmux that trimmed the trailing blank rows gets them back, whether it
+    // dropped some or all of them, or the last newline.
+    for trimmed in ["1\n2\nhi\n\n", "1\n2\nhi\n", "1\n2\nhi"] {
+        let aligned = align_screen(trimmed, &report(5, 40, 2, 2, 0, 2), 100).unwrap();
+        assert_eq!(aligned.output, "1\n2\nhi\n\n\n\n\n", "{trimmed:?}");
+    }
+    // Only as much history as exists is expected, and `requested` caps it.
+    let capped = align_screen("9\nhi\n", &report(3, 40, 0, 0, 0, 50), 1).unwrap();
+    assert_eq!(capped.output, "9\nhi\n\n\n");
+    assert_eq!(
+        align_screen("", &report(2, 10, 0, 0, 0, 0), 5)
+            .unwrap()
+            .output,
+        "\n\n"
+    );
+    assert!(align_screen("a\nb\nc\nd\n", &report(2, 10, 0, 0, 0, 0), 5).is_none());
+    // Copy mode is reported.
+    assert!(
+        align_screen("a\n", &report(1, 10, 0, 0, 1, 0), 5)
+            .unwrap()
+            .screen
+            .unwrap()
+            .in_mode
+    );
+    // An unreadable or impossible report leaves the screen out.
+    for bad in [
+        "",
+        "8|30|2|1|0",
+        "8|30|2|1|0|0|0",
+        "a|30|2|1|0|0",
+        "0|30|2|1|0|0",
+        "8|0|2|1|0|0",
+        "8|30|2|8|0|0",
+        "8|30|2|-1|0|0",
+        "8|30|2|1|2|0",
+        "8|30|2|1||0",
+        "8,30,2,1,0,0",
+    ] {
+        assert!(
+            align_screen("a\n", &format!("{bad}\n"), 5).is_none(),
+            "{bad:?}"
+        );
+    }
+    assert!(align_screen("a\n", VALID_REPORT, 5).is_some());
+}
+
+#[test]
+fn a_key_after_text_arrives_after_the_pause_and_the_line_still_runs() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // A pane that stamps every read from the terminal with a clock.
+    let log = fixture.root.join("reads.log");
+    let reader = fixture.root.join("reader.py");
+    fs::write(
+        &reader,
+        "import os, sys, time\n\
+         out = open(sys.argv[1], 'a', buffering=1)\n\
+         out.write('ready\\n')\n\
+         while True:\n\
+         \tdata = os.read(0, 4096)\n\
+         \tif not data:\n\
+         \t\tbreak\n\
+         \tout.write('%.6f %s\\n' % (time.monotonic(), data.hex()))\n",
+    )
+    .unwrap();
+    let id = fixture.pane(
+        80,
+        24,
+        &format!(
+            "stty raw -echo; exec /usr/bin/python3 {} {}",
+            quote_arg(&reader.to_string_lossy()),
+            quote_arg(&log.to_string_lossy())
+        ),
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !fs::read_to_string(&log)
+        .unwrap_or_default()
+        .contains("ready")
+    {
+        assert!(Instant::now() < deadline, "reader never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let started = Instant::now();
+    fixture.type_items(&id, &[typed("echo hi"), key("Enter")]);
+    assert!(started.elapsed() >= crate::session_keys::KEY_AFTER_TEXT_PAUSE);
+    let reads = || -> Vec<(f64, String)> {
+        fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(time, hex)| (time.parse().unwrap(), hex.to_owned()))
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !reads().iter().any(|(_, hex)| hex.ends_with("0d")) {
+        assert!(Instant::now() < deadline, "Enter never arrived");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let reads = reads();
+    let (enter_at, enter) = reads.last().unwrap();
+    assert_eq!(enter, "0d", "Enter arrives on its own");
+    let text: String = reads[..reads.len() - 1]
+        .iter()
+        .map(|(_, hex)| hex.as_str())
+        .collect();
+    assert_eq!(text, "6563686f206869", "echo hi");
+    let last_text_at = reads[reads.len() - 2].0;
+    assert!(
+        enter_at - last_text_at >= 0.14,
+        "Enter followed the text by {:.0} ms",
+        (enter_at - last_text_at) * 1000.0
+    );
+}
+
+#[test]
+fn text_then_enter_runs_the_command_in_a_real_shell() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.pane(
+        80,
+        24,
+        "exec env PS1='PROMPT> ' HISTFILE=/dev/null BASH_SILENCE_DEPRECATION_WARNING=1 bash --noprofile --norc -i",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("PROMPT>"));
+    fixture.type_items(&id, &[typed("echo hi"), key("Enter")]);
+    let lines = |screen: &str, wanted: &str| screen.lines().filter(|line| *line == wanted).count();
+    fixture.wait_for_screen(&id, |screen| lines(screen, "hi") == 1);
+    // Several boundaries in one batch: each Enter runs the text before it.
+    fixture.type_items(
+        &id,
+        &[
+            typed("echo one"),
+            key("Enter"),
+            typed("echo two"),
+            key("Enter"),
+            key("Up"),
+            key("Enter"),
+        ],
+    );
+    let screen = fixture.wait_for_screen(&id, |screen| lines(screen, "two") == 2);
+    assert_eq!(lines(&screen, "one"), 1, "{screen}");
+}

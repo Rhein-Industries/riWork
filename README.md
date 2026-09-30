@@ -197,6 +197,7 @@ riwork shell output SHELL_UUID --lines 100
 riwork shell cwd SHELL_UUID
 riwork shell metrics SHELL_UUID
 riwork shell send SHELL_UUID "pwd"
+riwork shell keys SHELL_UUID -- t:'git status' k:Enter
 riwork shell attach SHELL_UUID
 ```
 
@@ -205,6 +206,8 @@ Every shell has a UUID. `shell output` captures tmux scrollback and the current 
 Mouse-wheel and trackpad scrolling use tmux's scrollback. Scrolling up enters copy mode; scroll back to the bottom or press Escape to return to the live terminal. New sessions enable mouse reporting, and existing sessions are upgraded when reattached. A new session keeps up to 100,000 lines of scrollback; tmux applies that limit only to panes created after it is set, so sessions started by older builds keep tmux's default of 2,000 lines.
 
 RiWork's tmux server always lives in tmux's default socket directory: an inherited `TMUX_TMPDIR` is ignored, so the app, the CLI, and a terminal that sets it all reach the same server. A project folder whose name tmux would misread (`C#Tools`, `#{…}`, or a name ending in `;`) starts its shells in that folder; if tmux still cannot start a shell in the requested folder, creation fails with an error instead of opening in your home directory. Variables that name a CLI profile (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`) and `RIWORK_CUA_DRIVER` are cleared from the server's environment when the app was started without them, so a value left by an earlier launch cannot reach a new session, and your own zsh startup files remain free to set them.
+
+`shell keys` types like a keyboard instead: after `--` come 1 to 64 items, each `t:TEXT` (literal text of 1 to 4096 bytes without control characters, sent verbatim, trailing `;` and `\;` included) or `k:KEY` (`Enter`, `Tab`, `BTab`, `Escape`, `Backspace`, `Delete`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown` or `C-a` to `C-z`), with at most 4096 text bytes in all. No Return is added. The items reach the pane in order under the same input lock as `shell send`, and a key that directly follows text is sent about 150 ms later so Codex does not read the pair as a paste; a pane in copy mode is taken out of it first, and a pane whose terminal input is disabled is refused. `shell output --json` also reports `cursor` (`x`, `y`), `rows`, `cols` and `in_mode`; the last `rows` lines of its `output` are the visible screen. The phone companion uses both for direct typing.
 
 `shell send` pastes the text verbatim, whatever its length or trailing characters such as `;`, and presses Return once. Every tmux call is limited to five seconds, so an unresponsive tmux server produces an error instead of freezing the app. A Vim editor session ends when Vim quits, and RiWork then removes its entry from the Shells panel; exited agent and plain shells keep theirs.
 

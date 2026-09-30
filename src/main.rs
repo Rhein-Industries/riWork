@@ -23,6 +23,7 @@ mod schedule_panel;
 mod schedule_service;
 mod schedules;
 mod session_input;
+mod session_keys;
 mod session_reload;
 mod session_viewport;
 mod sessions;

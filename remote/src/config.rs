@@ -234,9 +234,12 @@ pub fn private_write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     };
     let tmp = parent.join(format!(".remote-{}.tmp", Uuid::new_v4()));
     let result = (|| {
+        // One write: streaming the serializer into the file would cost a
+        // system call per token, seconds for a full input outcome ledger.
+        let mut data = serde_json::to_vec_pretty(value)?;
+        data.push(b'\n');
         let mut f = options().write(true).create_new(true).open(&tmp)?;
-        serde_json::to_writer_pretty(&mut f, value)?;
-        f.write_all(b"\n")?;
+        f.write_all(&data)?;
         f.sync_all()?;
         fs::rename(&tmp, path)?;
         File::open(parent)?.sync_all()?;
