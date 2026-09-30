@@ -782,10 +782,32 @@ impl SessionManager {
     /// Capture scrollback and the visible screen as plain text.
     pub fn capture(&self, id: &str, lines: usize) -> Result<String, String> {
         self.require_live(id)?;
+        self.capture_text(id, lines, false)
+    }
+
+    /// The scrollback capture of a shell known to be live. `styled` keeps the
+    /// SGR sequences of `capture-pane -e` and removes every other escape.
+    fn capture_text(&self, id: &str, lines: usize, styled: bool) -> Result<String, String> {
         let start = format!("-{}", lines.clamp(1, HISTORY_LINES));
-        let output =
-            self.tmux_checked(&["capture-pane", "-p", "-t", &pane_target(id), "-S", &start])?;
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        let mut args = vec!["capture-pane", "-p"];
+        if styled {
+            args.push("-e");
+        }
+        let pane = pane_target(id);
+        args.extend(["-t", &pane, "-S", &start]);
+        let output = self.tmux_checked(&args)?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        Ok(if styled {
+            crate::sgr::keep_sgr_only(&text)
+        } else {
+            text.into_owned()
+        })
+    }
+
+    /// The plain `capture_screen_styled`.
+    #[cfg(test)]
+    pub fn capture_screen(&self, id: &str, lines: usize) -> Result<Capture, String> {
+        self.capture_screen_styled(id, lines, false)
     }
 
     /// Like `capture`, plus what a remote screen needs to place a cursor: the
@@ -796,8 +818,23 @@ impl SessionManager {
     /// `Capture::output` are exactly the visible screen, trailing blank rows
     /// included; see `align_screen`. If the report cannot be read, the output
     /// is returned as `capture` would return it, without a screen.
-    pub fn capture_screen(&self, id: &str, lines: usize) -> Result<Capture, String> {
+    ///
+    /// With `styled` the output also holds the colors and text attributes as
+    /// SGR sequences and no other escape or control sequence (see
+    /// `sgr::keep_sgr_only`); the lines are the same ones.
+    pub fn capture_screen_styled(
+        &self,
+        id: &str,
+        lines: usize,
+        styled: bool,
+    ) -> Result<Capture, String> {
         self.require_live(id)?;
+        self.capture_live_screen(id, lines, styled)
+    }
+
+    /// `capture_screen_styled` for a shell that was just checked to be live;
+    /// a wait loop asks tmux once per poll instead of twice.
+    fn capture_live_screen(&self, id: &str, lines: usize, styled: bool) -> Result<Capture, String> {
         let lines = lines.clamp(1, HISTORY_LINES);
         let pane = pane_target(id);
         let marker = format!("riwork-screen-{}:", Uuid::new_v4().simple());
@@ -805,9 +842,11 @@ impl SessionManager {
         let report = format!(
             "{marker}#{{pane_height}}|#{{pane_width}}|#{{cursor_x}}|#{{cursor_y}}|#{{pane_in_mode}}|#{{history_size}}"
         );
-        let combined = self.tmux_checked(&[
-            "capture-pane",
-            "-p",
+        let mut args = vec!["capture-pane", "-p"];
+        if styled {
+            args.push("-e");
+        }
+        args.extend([
             "-t",
             &pane,
             "-S",
@@ -819,17 +858,40 @@ impl SessionManager {
             &pane,
             &report,
         ]);
-        if let Ok(output) = combined {
+        if let Ok(output) = self.tmux_checked(&args) {
             let text = String::from_utf8_lossy(&output.stdout);
-            if let Some((output, report)) = text.rsplit_once(&marker)
-                && let Some(capture) = align_screen(output, report, lines)
-            {
-                return Ok(capture);
+            if let Some((output, report)) = text.rsplit_once(&marker) {
+                // Filtering keeps every newline, so the alignment still holds.
+                let output = if styled {
+                    crate::sgr::keep_sgr_only(output)
+                } else {
+                    output.to_owned()
+                };
+                if let Some(capture) = align_screen(&output, report, lines) {
+                    return Ok(capture);
+                }
             }
         }
+        // The plain capture again, this time also failing for a shell that
+        // has exited since the caller looked.
+        self.require_live(id)?;
         Ok(Capture {
-            output: self.capture(id, lines)?,
+            output: self.capture_text(id, lines, styled)?,
             screen: None,
+        })
+    }
+
+    /// What `shell output --json` answers. Without `if_changed` this is one
+    /// capture with its hash. With it, a capture whose hash is still
+    /// `if_changed` is not returned: the shell is captured again about every
+    /// `OUTPUT_POLL`, inside this call, until the hash differs or `wait` has
+    /// passed, and only then is `Unchanged` the answer. One bounded tmux call
+    /// per poll; `wait` is capped at `MAX_OUTPUT_WAIT`.
+    pub fn read_output(&self, id: &str, query: &OutputQuery<'_>) -> Result<OutputRead, String> {
+        self.require_live(id)?;
+        let lines = query.lines.clamp(1, HISTORY_LINES);
+        poll_output(query, std::thread::sleep, || {
+            self.capture_live_screen(id, lines, query.styled)
         })
     }
 
@@ -3733,6 +3795,106 @@ pub struct Capture {
     pub screen: Option<Screen>,
 }
 
+/// How long a `read_output` with `if_changed` sleeps between two captures.
+pub const OUTPUT_POLL: Duration = Duration::from_millis(80);
+/// The longest `OutputQuery::wait`; longer ones are shortened to it.
+pub const MAX_OUTPUT_WAIT: Duration = Duration::from_secs(10);
+
+/// One `shell output --json` question.
+#[derive(Clone, Copy, Debug)]
+pub struct OutputQuery<'a> {
+    pub lines: usize,
+    /// Keep colors and text attributes as SGR sequences, and nothing else
+    /// escaped.
+    pub styled: bool,
+    /// The `hash` of an earlier answer to the same question. While the
+    /// content still hashes to it, nothing is returned but `Unchanged`.
+    pub if_changed: Option<&'a str>,
+    /// How long to wait for a change; only used with `if_changed`.
+    pub wait: Duration,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OutputRead {
+    Changed { capture: Capture, hash: String },
+    Unchanged { hash: String },
+}
+
+/// Capture until `query.if_changed` no longer matches or `query.wait` is
+/// over. `pause` sleeps between two captures; the deadline is real time, so
+/// the time a capture takes counts against the wait and the whole call stays
+/// within `wait` plus one capture (each bounded by the tmux timeout).
+fn poll_output(
+    query: &OutputQuery<'_>,
+    mut pause: impl FnMut(Duration),
+    mut capture: impl FnMut() -> Result<Capture, String>,
+) -> Result<OutputRead, String> {
+    let lines = query.lines.clamp(1, HISTORY_LINES);
+    let deadline = output_deadline(std::time::Instant::now(), query.wait);
+    loop {
+        let current = capture()?;
+        let hash = output_hash(lines, query.styled, &current);
+        if query.if_changed != Some(hash.as_str()) {
+            return Ok(OutputRead::Changed {
+                capture: current,
+                hash,
+            });
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Ok(OutputRead::Unchanged { hash });
+        }
+        pause(OUTPUT_POLL.min(deadline - now));
+    }
+}
+
+fn output_deadline(start: std::time::Instant, wait: Duration) -> std::time::Instant {
+    start + wait.min(MAX_OUTPUT_WAIT)
+}
+
+/// A short, stable fingerprint of an answer: 16 lowercase hex digits of a
+/// 64-bit FNV-1a with a final mix. It covers everything the answer says and
+/// everything that shaped it, so the same question about the same screen
+/// gives the same hash in every process and version, and any visible change,
+/// or a different question, gives another one:
+/// the output text (styled or plain as asked), the cursor, rows, columns,
+/// whether the pane is in a mode (or that there is no screen), the number of
+/// lines asked for (after clamping) and the styled flag.
+fn output_hash(lines: usize, styled: bool, capture: &Capture) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    fn feed(state: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            *state = (*state ^ u64::from(*byte)).wrapping_mul(PRIME);
+        }
+    }
+    fn number(state: &mut u64, value: u64) {
+        feed(state, &value.to_le_bytes());
+    }
+    let mut state = OFFSET;
+    feed(&mut state, b"riwork/shell-output/v1\0");
+    number(&mut state, lines as u64);
+    number(&mut state, u64::from(styled));
+    number(&mut state, capture.output.len() as u64);
+    feed(&mut state, capture.output.as_bytes());
+    match &capture.screen {
+        None => number(&mut state, 0),
+        Some(screen) => {
+            number(&mut state, 1);
+            number(&mut state, u64::from(screen.cursor.x));
+            number(&mut state, u64::from(screen.cursor.y));
+            number(&mut state, u64::from(screen.rows));
+            number(&mut state, u64::from(screen.cols));
+            number(&mut state, u64::from(screen.in_mode));
+        }
+    }
+    // FNV-1a leaves the high bits of a short input weakly mixed.
+    state ^= state >> 32;
+    state = state.wrapping_mul(0xd6e8_feb8_6659_fd93);
+    state ^= state >> 32;
+    format!("{state:016x}")
+}
+
 /// The visible screen of a captured pane. `x` and `y` are 0-based cursor cells
 /// (`#{cursor_x}`, `#{cursor_y}`) within the last `rows` lines of the output.
 /// `x` counts terminal cells, so a wide character before the cursor takes two.
@@ -4182,6 +4344,9 @@ fn strip_schedule_sgr(text: &str) -> String {
     }
     output
 }
+
+#[cfg(test)]
+mod output_tests;
 
 #[cfg(test)]
 mod tmux_tests;

@@ -86,7 +86,8 @@ riwork remote --help                    Pairing, relay and connector command opt
 riwork shell create [--project ID | --worktree ID] [--command CMD]
 riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted]
 riwork shell list [--project ID | --all]
-riwork shell output ID [--lines N]      Read current shell output by UUID
+riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
+riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
 riwork shell send ID TEXT               Paste a complete line and submit once
 riwork shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no Return added
 riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
@@ -122,7 +123,13 @@ in all. Items go to the pane in order under the shell's input lock, leaving
 copy mode first; a key directly after text goes 150 ms later, outside Codex's
 paste detection. An error naming input_unavailable means the pane's input is off.
 shell output --json also reports cursor {x,y}, rows, cols and in_mode; the last
-`rows` lines of its output are the visible screen.
+`rows` lines of its output are the visible screen, and a `hash` of everything
+the answer says. --styled keeps colors and text attributes as SGR sequences
+(ESC [ ... m) and removes every other escape and control sequence. With
+--if-changed HASH (a `hash` from an earlier answer to the same question) the
+shell is captured again about every 80 ms for up to --wait-ms (0 to 10000,
+default 0) while the hash stays the same; if it does, the answer is
+{id, unchanged: true, hash} and carries no output.
 Orchestrator commands without --project use the global session; list shows all
 scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
@@ -1533,29 +1540,15 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             }
         }
         "output" => {
-            let lines = take_option(&mut args, "--lines")?
-                .map(|value| {
-                    value
-                        .parse::<usize>()
-                        .map_err(|_| "--lines needs a positive integer".to_owned())
-                })
-                .transpose()?
-                .unwrap_or(200);
-            let id = take_single(args, "shell output ID [--lines N]")?;
+            let request = parse_output_arguments(args, json)?;
             if json {
-                let capture = manager.capture_screen(&id, lines)?;
-                let mut value = json!({ "id": id, "output": capture.output });
-                // The last `rows` lines of `output` are the visible screen.
-                // Absent when tmux could not report the pane.
-                if let Some(screen) = capture.screen {
-                    value["cursor"] = json!(screen.cursor);
-                    value["rows"] = json!(screen.rows);
-                    value["cols"] = json!(screen.cols);
-                    value["in_mode"] = json!(screen.in_mode);
-                }
-                print_json(&value)?;
+                let read = manager.read_output(&request.id, &request.query())?;
+                print_json(&output_json(&request.id, read))?;
+            } else if request.styled {
+                let capture = manager.capture_screen_styled(&request.id, request.lines, true)?;
+                print!("{}", capture.output);
             } else {
-                print!("{}", manager.capture(&id, lines)?);
+                print!("{}", manager.capture(&request.id, request.lines)?);
             }
         }
         "keys" => {
@@ -2117,6 +2110,113 @@ fn take_option(args: &mut Vec<String>, option: &str) -> Result<Option<String>, S
     Ok(result)
 }
 
+/// The arguments of `shell output`, with `--json` already taken.
+#[derive(Debug, PartialEq, Eq)]
+struct OutputArguments {
+    id: String,
+    lines: usize,
+    styled: bool,
+    if_changed: Option<String>,
+    wait_ms: u64,
+}
+
+impl OutputArguments {
+    fn query(&self) -> crate::sessions::OutputQuery<'_> {
+        crate::sessions::OutputQuery {
+            lines: self.lines,
+            styled: self.styled,
+            if_changed: self.if_changed.as_deref(),
+            wait: std::time::Duration::from_millis(self.wait_ms),
+        }
+    }
+}
+
+const OUTPUT_USAGE: &str =
+    "shell output ID [--lines N] [--styled] [--json [--if-changed HASH [--wait-ms N]]]";
+
+fn parse_output_arguments(mut args: Vec<String>, json: bool) -> Result<OutputArguments, String> {
+    let lines = take_option(&mut args, "--lines")?
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| "--lines needs a positive integer".to_owned())
+        })
+        .transpose()?
+        .unwrap_or(200);
+    let styled = take_flag(&mut args, "--styled");
+    // `--if-changed=HASH` cannot be mistaken for another option, whatever the
+    // hash looks like; the spaced form is for people typing a real hash.
+    let joined = take_joined_option(&mut args, "--if-changed")?;
+    let spaced = take_option(&mut args, "--if-changed")?;
+    if joined.is_some() && spaced.is_some() {
+        return Err("--if-changed can only be given once".to_owned());
+    }
+    let if_changed = joined.or(spaced);
+    if let Some(hash) = &if_changed
+        && (hash.is_empty() || hash.len() > 64 || hash.chars().any(char::is_control))
+    {
+        return Err("--if-changed needs the hash of an earlier answer".to_owned());
+    }
+    let wait_ms = take_option(&mut args, "--wait-ms")?
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .ok()
+                .filter(|ms| *ms <= crate::sessions::MAX_OUTPUT_WAIT.as_millis() as u64)
+                .ok_or_else(|| "--wait-ms needs an integer from 0 to 10000".to_owned())
+        })
+        .transpose()?;
+    if wait_ms.is_some() && if_changed.is_none() {
+        return Err("--wait-ms needs --if-changed".to_owned());
+    }
+    if if_changed.is_some() && !json {
+        return Err("--if-changed needs --json".to_owned());
+    }
+    let id = take_single(args, OUTPUT_USAGE)?;
+    Ok(OutputArguments {
+        id,
+        lines,
+        styled,
+        if_changed,
+        wait_ms: wait_ms.unwrap_or(0),
+    })
+}
+
+/// The `--json` answer of `shell output`. The hash is always there; the text
+/// and screen fields are absent when nothing changed.
+fn output_json(id: &str, read: crate::sessions::OutputRead) -> serde_json::Value {
+    use crate::sessions::OutputRead;
+    match read {
+        OutputRead::Unchanged { hash } => json!({ "id": id, "unchanged": true, "hash": hash }),
+        OutputRead::Changed { capture, hash } => {
+            let mut value = json!({ "id": id, "output": capture.output });
+            // The last `rows` lines of `output` are the visible screen.
+            // Absent when tmux could not report the pane.
+            if let Some(screen) = capture.screen {
+                value["cursor"] = json!(screen.cursor);
+                value["rows"] = json!(screen.rows);
+                value["cols"] = json!(screen.cols);
+                value["in_mode"] = json!(screen.in_mode);
+            }
+            value["hash"] = json!(hash);
+            value
+        }
+    }
+}
+
+/// `--name=VALUE`, removed from `args`; the value may be anything.
+fn take_joined_option(args: &mut Vec<String>, name: &str) -> Result<Option<String>, String> {
+    let prefix = format!("{name}=");
+    let mut result = None;
+    while let Some(index) = args.iter().position(|arg| arg.starts_with(&prefix)) {
+        let value = args.remove(index)[prefix.len()..].to_owned();
+        if result.replace(value).is_some() {
+            return Err(format!("{name} can only be given once"));
+        }
+    }
+    Ok(result)
+}
+
 /// `ID -- ITEM...` of `shell keys`, with `--json` already taken. Everything
 /// after the `--` is an item: `t:` text may look like an option.
 fn parse_keys_arguments(
@@ -2200,13 +2300,154 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 mod tests {
     use super::{
         agent_hook_command, appearance_summary, frozen_codex_usage_home, opens_workspace,
-        parse_keys_arguments, reload_failure_details, reload_summary, schedule_line,
-        scoped_codex_usage_home, take_flag_before_separator, take_orchestrator_project,
-        take_update_profile, terminal_safe, unknown_invocation, unreadable_reload_error,
+        output_json, parse_keys_arguments, parse_output_arguments, reload_failure_details,
+        reload_summary, schedule_line, scoped_codex_usage_home, take_flag_before_separator,
+        take_orchestrator_project, take_update_profile, terminal_safe, unknown_invocation,
+        unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
     use std::{io, path::PathBuf};
+
+    fn words(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_owned).collect()
+    }
+    const SHELL: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn shell_output_arguments_keep_the_old_forms_and_add_the_new_ones() {
+        let plain = parse_output_arguments(words(SHELL), false).unwrap();
+        assert_eq!((plain.lines, plain.styled, plain.wait_ms), (200, false, 0));
+        assert_eq!(plain.if_changed, None);
+        let lines = parse_output_arguments(words(&format!("{SHELL} --lines 30")), true).unwrap();
+        assert_eq!((lines.id.as_str(), lines.lines), (SHELL, 30));
+        // Options come in any order, before or after the ID.
+        let all = parse_output_arguments(
+            words(&format!(
+                "--styled {SHELL} --wait-ms 2500 --if-changed 0123456789abcdef --lines 7"
+            )),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                all.lines,
+                all.styled,
+                all.wait_ms,
+                all.if_changed.as_deref()
+            ),
+            (7, true, 2500, Some("0123456789abcdef"))
+        );
+        let query = all.query();
+        assert_eq!(query.wait, std::time::Duration::from_millis(2500));
+        assert_eq!(query.if_changed, Some("0123456789abcdef"));
+        // Styled text works without --json; a hash comparison does not.
+        assert!(parse_output_arguments(words(&format!("{SHELL} --styled")), false).is_ok());
+        // If-changed without a wait does not wait.
+        let once =
+            parse_output_arguments(words(&format!("{SHELL} --if-changed abc")), true).unwrap();
+        assert_eq!(once.wait_ms, 0);
+    }
+
+    #[test]
+    fn shell_output_arguments_bound_the_wait_and_refuse_nonsense() {
+        let with = |extra: &str| parse_output_arguments(words(&format!("{SHELL} {extra}")), true);
+        assert!(with("--if-changed h --wait-ms 10000").is_ok());
+        assert!(with("--if-changed h --wait-ms 0").is_ok());
+        for bad in [
+            "--if-changed h --wait-ms 10001",
+            "--if-changed h --wait-ms -1",
+            "--if-changed h --wait-ms 1.5",
+            "--if-changed h --wait-ms soon",
+            "--if-changed h --wait-ms",
+            "--wait-ms 100",
+            "--if-changed",
+            "--if-changed h --if-changed i",
+            "--if-changed h --if-changed=i",
+            "--if-changed=",
+            "--styled --styled",
+        ] {
+            assert!(with(bad).is_err(), "{bad}");
+        }
+        let long = format!("--if-changed={}", "a".repeat(65));
+        assert!(with(&long).is_err());
+        assert!(with(&format!("--if-changed={}", "a".repeat(64))).is_ok());
+        let control = vec![SHELL.to_owned(), "--if-changed=tab\there".to_owned()];
+        assert!(parse_output_arguments(control, true).is_err());
+        assert!(parse_output_arguments(words(&format!("{SHELL} --if-changed h")), false).is_err());
+        assert!(parse_output_arguments(words("--lines 5"), true).is_err());
+        assert!(parse_output_arguments(words(&format!("{SHELL} extra")), true).is_err());
+    }
+
+    #[test]
+    fn a_hash_that_looks_like_an_option_stays_a_value_in_the_joined_form() {
+        for hash in ["--json", "--lines", "--wait-ms", "--styled", "-x"] {
+            let args = vec![
+                SHELL.to_owned(),
+                format!("--if-changed={hash}"),
+                "--wait-ms".to_owned(),
+                "50".to_owned(),
+            ];
+            let parsed = parse_output_arguments(args, true).unwrap();
+            assert_eq!(parsed.if_changed.as_deref(), Some(hash));
+            assert_eq!(
+                (parsed.lines, parsed.styled, parsed.wait_ms),
+                (200, false, 50)
+            );
+        }
+    }
+
+    #[test]
+    fn shell_output_json_always_has_a_hash_and_drops_the_text_when_unchanged() {
+        use crate::sessions::{Capture, Cursor, OutputRead, Screen};
+        let capture = Capture {
+            output: "hi\n\n".to_owned(),
+            screen: Some(Screen {
+                cursor: Cursor { x: 2, y: 0 },
+                rows: 2,
+                cols: 40,
+                in_mode: false,
+            }),
+        };
+        let changed = output_json(
+            SHELL,
+            OutputRead::Changed {
+                capture: capture.clone(),
+                hash: "00ff00ff00ff00ff".into(),
+            },
+        );
+        assert_eq!(
+            changed,
+            serde_json::json!({
+                "id": SHELL, "output": "hi\n\n", "cursor": {"x":2,"y":0}, "rows": 2,
+                "cols": 40, "in_mode": false, "hash": "00ff00ff00ff00ff"
+            })
+        );
+        let no_screen = output_json(
+            SHELL,
+            OutputRead::Changed {
+                capture: Capture {
+                    output: "hi\n".into(),
+                    screen: None,
+                },
+                hash: "aa".into(),
+            },
+        );
+        assert_eq!(
+            no_screen,
+            serde_json::json!({"id": SHELL, "output": "hi\n", "hash": "aa"})
+        );
+        let unchanged = output_json(
+            SHELL,
+            OutputRead::Unchanged {
+                hash: "00ff00ff00ff00ff".into(),
+            },
+        );
+        assert_eq!(
+            unchanged,
+            serde_json::json!({"id": SHELL, "unchanged": true, "hash": "00ff00ff00ff00ff"})
+        );
+    }
 
     #[test]
     fn appearance_summary_names_mode_colors_and_terminal() {

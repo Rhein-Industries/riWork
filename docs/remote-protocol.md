@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-09-30: Additive live terminal sync: optional `styled`, `if_changed` and `wait_ms` on `shell.output`, a `hash` on its result and an `unchanged` result, and requests of one device are now carried out concurrently (responses may arrive out of order, matched by `id`); see "Live terminal extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive `appearance.get`, so the phone can show the desktop's colors; see "Theme sync extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive `shell.keys` and cursor/size fields on `shell.output`, for typing straight into a shell from the phone; see "Direct typing extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-29: Protocol v2 is specified in [remote-protocol-v2.md](remote-protocol-v2.md). The v1 bytes in this document are unchanged. `pair` still defaults to v1. v2 is opt-in (`--protocol 2`). A v1 device is not rewritten in place; moving a phone to v2 is revoke plus a new pairing.
@@ -123,9 +124,10 @@ Limits: text WS message <=262144 bytes, decrypted JSON <=131072 bytes, shell lin
 Relay defaults: <=256 authenticated sockets, <=128 configured routes, outgoing queue
 <=16 messages/socket, no payload logging. Sockets that have not yet registered have
 a separate budget of 16; a newcomer beyond it drops the oldest, so idle unauthenticated
-sockets cannot lock out a real registration. RPC processing is serial per device;
-terminal input is additionally serialized per selected shell across devices and
-local CLI callers.
+sockets cannot lock out a real registration. Requests of a device are carried out
+concurrently, at most 4 at a time, with typing and resizing in arrival order (see
+"Live terminal extension"); terminal input is additionally serialized per selected
+shell across devices and local CLI callers.
 
 ## Encrypted RPC JSON
 
@@ -145,7 +147,7 @@ unsolicited response except handshake `ready`.
 | `tasks.list` | `{"project_id":"UUID"}` optionally `"worktree_id":"UUID"` | `{"tasks":[Task]}` |
 | `shells.list` | `{"project_id":"UUID"}` | `{"shells":[Session]}` (existing project shells) |
 | `orchestrators.list` | `{}` | `{"orchestrators":[Session]}` (global + project) |
-| `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200` | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) |
+| `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200`, and additively `"styled":true`, `"if_changed":"HASH"`, `"wait_ms":5000` (see Live terminal) | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) and `"hash":"0123456789abcdef"`; or `{"shell_id":"UUID","unchanged":true,"hash":"0123456789abcdef"}` (see Live terminal) |
 | `shell.input` | `{"shell_id":"UUID","line":"one physical line"}` | `{"shell_id":"UUID","status":"sent"}` |
 | `shell.keys` | `{"shell_id":"UUID","batch":"UUID","items":[{"text":"ls"},{"key":"Enter"}]}` (Direct typing) | `{"shell_id":"UUID","batch":"UUID","status":"sent\|duplicate\|uncertain"}` |
 | `appearance.get` | `{}` (Theme sync) | the appearance object below: `{"v":1,"updated_at":1790000000,"dark":true,"palette":{...},"terminal":{...}}` |
@@ -352,6 +354,127 @@ Old clients ignore them.
   example an older desktop), the four fields are omitted together and the call
   still succeeds.
 
+### Live terminal extension (v1 and v2, 2026-09-30)
+
+Additive and compatible, like the direct typing extension: three optional
+parameters and one result field on `shell.output`, one alternative result, and a
+change in how a device's requests are scheduled. No change to the handshake,
+envelopes, fixtures or any other method; it applies to protocol v1 and v2
+sessions alike. A client that sends none of the new parameters gets what it got
+before, plus a `hash` field it may ignore. The iOS side is built against this text.
+
+**`shell.output` parameters**, all optional:
+
+- `styled` (boolean, default `false`): keep colors and text attributes in `output`
+  as SGR sequences. See "SGR only" below.
+- `if_changed` (string): the `hash` of an earlier result. 1 to 64 printable ASCII
+  characters, no spaces; anything else fails `invalid_request`.
+- `wait_ms` (integer `0..=10000`, default `0`): how long to wait for a change. It
+  only means something together with `if_changed` and is ignored without it. A
+  value outside the range, or not an integer, fails `invalid_request` even then.
+
+**`hash`.** Every result that carries `output` also carries `"hash"`: a short
+string, in practice 16 lowercase hex digits (clients treat it as an opaque string
+of at most 64 characters). It names the whole answer: the `output` text exactly as
+returned (styled or plain, as asked), the cursor, `rows`, `cols` and `in_mode` (or
+that the desktop could not report them), the `lines` value the request used
+(after clamping) and the `styled` flag. The same request parameters against the
+same screen give the same hash, in any connection and after a desktop restart. A
+hash therefore only ever matches an answer to the same question: after changing
+`lines` or `styled`, an old hash never matches and the content is returned at once.
+Anything visible changes it: text, cursor movement, a resize, copy mode. It is not
+a secret and not a proof of anything.
+
+**Waiting.** With `if_changed`, the desktop looks at the pane and compares:
+
+- If the hash differs, the result is the usual full one (with its new `hash`), at
+  once.
+- If it is equal and `wait_ms` is `0`, the result is `unchanged`, at once.
+- If it is equal and `wait_ms` is positive, the desktop captures again about every
+  80 ms, inside one process (`riwork shell output ID --lines N --json [--styled]
+  --if-changed=HASH --wait-ms N`, not one process per check). It returns the full
+  result as soon as the hash differs. If nothing changed within `wait_ms`, it
+  returns
+
+```json
+{"shell_id":"UUID","unchanged":true,"hash":"SAME_HASH"}
+```
+
+  with no `output`, `cursor`, `rows`, `cols` or `in_mode`. The call takes `wait_ms`
+  plus at most a capture or two (each limited to 5 seconds by the CLI); a client's
+  timeout for a waiting call should allow `wait_ms` plus about 20 seconds. The
+  connector gives the CLI `wait_ms` plus 8 seconds (never less than 15) before it
+  fails the call with `cli_error`.
+- Errors are as before: `invalid_request` before anything runs, `not_found` for an
+  unknown or dead shell at the start, `cli_error` and `response_too_large`. A shell
+  that ends during a wait fails the call with `cli_error` ("has exited").
+- A wait ends early, and the desktop stops the capture process, when the
+  connection closes, the phone goes offline, or the device is revoked (see
+  Concurrency).
+- A connector paired with an older `riwork` CLI answers `cli_error` "the installed
+  riwork CLI does not support styled output or waiting for changes; update RiWork"
+  to a request that uses a new parameter. A desktop whose connector predates this
+  extension answers `invalid_request` (unknown field) to them; a client then falls
+  back to plain polling.
+
+**SGR only.** With `styled`, `output` keeps the SGR sequences exactly as tmux
+`capture-pane -e` writes them and nothing else that is escaped:
+
+- Kept: `ESC [ P m`, where `P` is 0 to 64 characters from `0-9`, `;` and `:`. That
+  covers reset, bold, dim, italic, underline, inverse, the 16, 256 and truecolor
+  foreground and background forms (`38;5;N`, `38;2;R;G;B`, and the same with
+  `:`), and their resets. Sequences are passed byte for byte.
+- Removed, whole: OSC (titles, hyperlinks `ESC ] 8 ; ; url ST`), DCS, SOS, PM and
+  APC strings; CSI with any final byte other than `m`, a private prefix
+  (`ESC [ > 4 ; 2 m` is not SGR) or intermediate bytes; charset selection
+  (`ESC ( 0`, SO and SI) and every other escape (`ESC 7`, `ESC c`, ...); the 8-bit
+  C1 forms of all of these (U+0080 to U+009F); and every control character except
+  `\n` and `\t`.
+- A sequence that is cut short is dropped up to the byte that cut it, which is then
+  read normally. A string sequence ends at BEL, `ESC \` or the end of the line. No
+  newline is ever removed, so the line count is unchanged.
+- The only ESC in a styled `output` is therefore the start of an SGR sequence. The
+  desktop filters, and the connector checks again and answers `cli_error` rather
+  than pass on anything else.
+- The lines are the ones of the plain capture: the screen rule is unchanged (the
+  visible screen is the last `rows` lines), and removing the SGR sequences from a
+  styled `output` gives exactly the plain `output` of the same screen. Text
+  attributes are state that carries across line ends: tmux does not reset at a
+  newline (a line may begin with `ESC [ 0 m`), so a renderer keeps its state from
+  one line to the next until it sees a reset. The `hash` of a styled answer covers
+  the styled text.
+
+**Concurrency.** Before this extension a device's requests were carried out one at
+a time. They are now carried out concurrently, so that a waiting `shell.output`
+never delays anything else from the same device, above all `shell.keys` and
+`shell.resize`:
+
+- Responses may arrive in any order. Each carries the `id` of its request; match
+  them by `id`. A client that has one request outstanding at a time sees no
+  difference.
+- `shell.keys`, `shell.input`, `shell.resize` and `shell.resize.clear` run one at a
+  time, in the order they arrived. Batch ledgers, the input outcome ledger and the
+  viewport keep their meaning: a `shell.keys` batch is still delivered once per
+  device and batch UUID, and resizing is still consistent per connection.
+- At most 4 requests run at once per device: one of those four, and three others
+  (reads such as `projects.list`, `appearance.get` and `shell.output`), of which at
+  most 2 may be waiting `shell.output` calls (`if_changed` with a positive
+  `wait_ms`). So typing and resizing always have a slot of their own and a plain
+  read always has one too. Further requests wait in arrival order and start as
+  slots free up; a request that has to wait does not hold up a later one it does
+  not compete with. Up to 64 requests may be waiting; beyond that the desktop stops
+  reading from the connection until it has started some.
+- Responses are encrypted and sent one at a time, so their counters stay in order.
+- Authorization is checked when a request starts and again before its response is
+  sent. A revoked device's connection closes within about 250 ms even while a wait
+  is pending, and the wait's capture process is stopped. A wait is also ended when
+  the phone goes offline or the connection closes. Typing and resizing that were
+  already accepted still finish, and their answers are dropped, as before.
+- The viewport lease is renewed as before, only while the desktop has received a
+  request from the connection within the last 20 seconds; a pending wait does not
+  count by itself, so a client that holds an override and waits for changes sends
+  its next request (a re-poll counts) before the lease lapses.
+
 ### Theme sync extension (v1 and v2, 2026-09-30)
 
 Additive and compatible, like the direct typing extension: one new read-only
@@ -460,6 +583,18 @@ ready response. Values are test-only and must never provision production devices
   method is unaffected, and an older desktop answers `invalid_request` "unsupported
   RPC method". Needs the iOS worker's agreement; the iOS side implements the same
   text.
+
+- 2026-09-30: additive and backward compatible. Live terminal sync. `shell.output`
+  accepts `styled` (SGR sequences kept, every other escape and control sequence
+  removed), `if_changed` (a previous `hash`) and `wait_ms` (0 to 10000, wait for a
+  change inside one desktop process, capturing about every 80 ms); its result gains
+  `hash`, or is `{"shell_id","unchanged":true,"hash"}` when nothing changed within
+  the wait. A device's requests are carried out concurrently (at most 4 in flight;
+  typing and resizing one at a time in arrival order; at most 2 waits), responses
+  may arrive out of order and are matched by `id`, and a pending wait ends when the
+  connection closes or the device is revoked. A client that sends none of the new
+  parameters and awaits each response before the next request is unaffected. Needs
+  the iOS worker's agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

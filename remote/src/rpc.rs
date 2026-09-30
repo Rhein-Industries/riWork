@@ -100,6 +100,9 @@ struct Tasks {
 struct Output {
     shell_id: String,
     lines: Option<u32>,
+    styled: Option<bool>,
+    if_changed: Option<String>,
+    wait_ms: Option<i64>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,6 +134,55 @@ fn params<T: serde::de::DeserializeOwned>(r: &Request) -> std::result::Result<T,
 }
 fn id(s: &str) -> std::result::Result<(), Fault> {
     uuid(s).map(|_| ()).map_err(invalid)
+}
+/// The longest a `shell.output` may wait for a change.
+pub const MAX_WAIT_MS: i64 = 10_000;
+/// A CLI call that is not a wait. Above the tmux timeout of a single capture.
+const CLI_TIMEOUT: Duration = Duration::from_secs(15);
+/// What a waiting CLI call may take beyond its wait: the captures around it.
+const CLI_WAIT_MARGIN: Duration = Duration::from_secs(8);
+
+/// How long the CLI may take for a `shell.output` that waits up to `wait_ms`:
+/// the wait plus the captures around it, and never less than any other call.
+/// The CLI itself ends within about `wait_ms`, so this only trips when it hangs.
+fn cli_limit(wait_ms: i64) -> Duration {
+    CLI_TIMEOUT.max(Duration::from_millis(wait_ms.clamp(0, MAX_WAIT_MS) as u64) + CLI_WAIT_MARGIN)
+}
+
+/// A hash as `shell.output` hands them out: short, printable, no spaces.
+fn hash_shaped(hash: &str) -> bool {
+    (1..=64).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_graphic())
+}
+/// Whether `text` holds no escape but well-formed SGR sequences
+/// (`ESC [ digits ; : m`) and no control character but the newline and tab.
+/// The CLI filters its styled output the same way; this refuses to pass on
+/// what a CLI that did not.
+fn sgr_only(text: &str) -> bool {
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => {
+                if chars.next() != Some('[') {
+                    return false;
+                }
+                let mut length = 0;
+                loop {
+                    match chars.next() {
+                        Some('m') => break,
+                        Some(c) if c.is_ascii_digit() || c == ';' || c == ':' => length += 1,
+                        _ => return false,
+                    }
+                    if length > 64 {
+                        return false;
+                    }
+                }
+            }
+            '\n' | '\t' => {}
+            c if c.is_control() => return false,
+            _ => {}
+        }
+    }
+    true
 }
 fn array(v: Value) -> std::result::Result<Vec<Value>, Fault> {
     v.as_array()
@@ -357,6 +409,39 @@ struct BatchLedger {
     batches: Vec<BatchRecord>,
 }
 
+/// How a request reaches the viewport of its connection.
+enum ViewportAccess<'a> {
+    /// No connection behind the request: resizing is refused.
+    Absent,
+    /// The caller has the viewport to itself for this one call.
+    Owned(&'a mut Viewport),
+    /// Concurrent requests share it. `None` once the connection is over.
+    Shared(&'a tokio::sync::Mutex<Option<Viewport>>),
+}
+impl<'a> ViewportAccess<'a> {
+    async fn hold(self) -> HeldViewport<'a> {
+        match self {
+            Self::Absent => HeldViewport::Absent,
+            Self::Owned(viewport) => HeldViewport::Owned(viewport),
+            Self::Shared(lock) => HeldViewport::Shared(lock.lock().await),
+        }
+    }
+}
+enum HeldViewport<'a> {
+    Absent,
+    Owned(&'a mut Viewport),
+    Shared(tokio::sync::MutexGuard<'a, Option<Viewport>>),
+}
+impl HeldViewport<'_> {
+    fn get(&mut self) -> Option<&mut Viewport> {
+        match self {
+            Self::Absent => None,
+            Self::Owned(viewport) => Some(viewport),
+            Self::Shared(guard) => guard.as_mut(),
+        }
+    }
+}
+
 pub struct Rpc {
     pub cli: PathBuf,
     pub storage: Storage,
@@ -381,6 +466,9 @@ impl Rpc {
         lock
     }
     async fn raw(&self, args: Vec<String>) -> Result<Vec<u8>> {
+        self.raw_within(args, CLI_TIMEOUT).await
+    }
+    async fn raw_within(&self, args: Vec<String>, limit: Duration) -> Result<Vec<u8>> {
         let mut child = Command::new(&self.cli)
             .args(args)
             .stdin(Stdio::null())
@@ -417,14 +505,19 @@ impl Rpc {
             );
             Ok(out)
         };
-        timeout(Duration::from_secs(15), run)
-            .await
-            .context("RiWork CLI timeout")?
+        timeout(limit, run).await.context("RiWork CLI timeout")?
     }
     async fn read(&self, args: &[&str]) -> std::result::Result<Value, Fault> {
-        let mut a: Vec<String> = args.iter().map(|x| (*x).to_owned()).collect();
+        self.read_within(args.iter().map(|x| (*x).to_owned()).collect(), CLI_TIMEOUT)
+            .await
+    }
+    async fn read_within(
+        &self,
+        mut a: Vec<String>,
+        limit: Duration,
+    ) -> std::result::Result<Value, Fault> {
         a.push("--json".into());
-        let data = self.raw(a).await.map_err(|e| {
+        let data = self.raw_within(a, limit).await.map_err(|e| {
             if e.is::<OutputTooLarge>() {
                 Fault::new(
                     "response_too_large",
@@ -456,13 +549,35 @@ impl Rpc {
         Ok(())
     }
     pub async fn handle(&self, device: &str, value: Value) -> Result<Value> {
-        self.handle_in(device, value, None).await
+        self.handle_with(device, value, ViewportAccess::Absent)
+            .await
     }
+    /// One request on a connection that owns its viewport for the call.
     pub async fn handle_in(
         &self,
         device: &str,
         value: Value,
         viewport: Option<&mut Viewport>,
+    ) -> Result<Value> {
+        let viewport = viewport.map_or(ViewportAccess::Absent, ViewportAccess::Owned);
+        self.handle_with(device, value, viewport).await
+    }
+    /// One request among concurrent ones on a connection: only the methods
+    /// that resize take the viewport lock, and hold it while they run.
+    pub async fn handle_shared(
+        &self,
+        device: &str,
+        value: Value,
+        viewport: &tokio::sync::Mutex<Option<Viewport>>,
+    ) -> Result<Value> {
+        self.handle_with(device, value, ViewportAccess::Shared(viewport))
+            .await
+    }
+    async fn handle_with(
+        &self,
+        device: &str,
+        value: Value,
+        viewport: ViewportAccess<'_>,
     ) -> Result<Value> {
         // Malformed requests get an error response, not a dropped session. Only
         // an ID that is a bounded string can be echoed for correlation.
@@ -517,7 +632,7 @@ impl Rpc {
         &self,
         device: &str,
         r: &Request,
-        viewport: Option<&mut Viewport>,
+        viewport: ViewportAccess<'_>,
     ) -> std::result::Result<Value, Fault> {
         match r.method.as_str() {
             "projects.list" => {
@@ -598,20 +713,77 @@ impl Rpc {
                 if !(1..=2000).contains(&lines) {
                     return Err(invalid("lines must be 1..2000"));
                 }
+                let wait_ms = p.wait_ms.unwrap_or(0);
+                if !(0..=MAX_WAIT_MS).contains(&wait_ms) {
+                    return Err(invalid(format!("wait_ms must be 0..{MAX_WAIT_MS}")));
+                }
+                if p.if_changed.as_deref().is_some_and(|h| !hash_shaped(h)) {
+                    return Err(invalid(
+                        "if_changed must be the hash of an earlier result: 1..64 printable characters",
+                    ));
+                }
+                let styled = p.styled.unwrap_or(false);
                 self.selected(&p.shell_id).await?;
-                let v = self
-                    .read(&[
-                        "shell",
-                        "output",
-                        &p.shell_id,
-                        "--lines",
-                        &lines.to_string(),
-                    ])
-                    .await?;
+                let mut args: Vec<String> = [
+                    "shell",
+                    "output",
+                    p.shell_id.as_str(),
+                    "--lines",
+                    &lines.to_string(),
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect();
+                if styled {
+                    args.push("--styled".into());
+                }
+                let mut limit = CLI_TIMEOUT;
+                if let Some(hash) = &p.if_changed {
+                    // `=`: whatever the hash looks like, it stays one value.
+                    args.push(format!("--if-changed={hash}"));
+                    // A wait without a hash to compare has nothing to wait for.
+                    args.push("--wait-ms".into());
+                    args.push(wait_ms.to_string());
+                    limit = cli_limit(wait_ms);
+                }
+                let v = self.read_within(args, limit).await.map_err(|fault| {
+                    // A CLI from before styled output and waiting refuses the flags.
+                    if fault.code == "cli_error"
+                        && fault.message.contains("Usage: riwork shell output")
+                        && (styled || p.if_changed.is_some())
+                    {
+                        Fault::new(
+                            "cli_error",
+                            "the installed riwork CLI does not support styled output or waiting for changes; update RiWork",
+                        )
+                    } else {
+                        fault
+                    }
+                })?;
+                let hash = v
+                    .get("hash")
+                    .and_then(Value::as_str)
+                    .filter(|h| hash_shaped(h));
+                if v.get("unchanged") == Some(&Value::Bool(true)) {
+                    // Only ever the answer to a hash this request sent.
+                    return match (&p.if_changed, hash) {
+                        (Some(asked), Some(hash)) if asked == hash => {
+                            Ok(json!({"shell_id":p.shell_id,"unchanged":true,"hash":hash}))
+                        }
+                        _ => Err(cli_fault(
+                            "CLI reported unchanged output that was not asked",
+                        )),
+                    };
+                }
                 let text = v
                     .get("output")
                     .and_then(Value::as_str)
                     .ok_or_else(|| cli_fault("missing CLI output"))?;
+                if styled && !sgr_only(text) {
+                    return Err(cli_fault(
+                        "CLI returned escape sequences other than SGR for styled output",
+                    ));
+                }
                 let mut result = json!({"shell_id":p.shell_id,"output":text});
                 // Additive: the last `rows` lines of `output` are the visible
                 // screen. Absent when the desktop could not read the pane.
@@ -619,6 +791,10 @@ impl Rpc {
                     && let Some(fields) = screen.as_object()
                 {
                     map.extend(fields.clone());
+                }
+                // Additive: names this exact answer, for `if_changed`.
+                if let Some(hash) = hash {
+                    result["hash"] = json!(hash);
                 }
                 Ok(result)
             }
@@ -628,7 +804,10 @@ impl Rpc {
                 if !(20..=300).contains(&p.columns) || !(8..=160).contains(&p.rows) {
                     return Err(invalid("columns must be 20..300 and rows 8..160"));
                 }
-                let v = viewport.ok_or_else(|| invalid("authenticated connection required"))?;
+                let mut held = viewport.hold().await;
+                let v = held
+                    .get()
+                    .ok_or_else(|| invalid("authenticated connection required"))?;
                 self.selected(&p.shell_id).await?;
                 if v.selected
                     .as_ref()
@@ -653,7 +832,10 @@ impl Rpc {
             "shell.resize.clear" => {
                 let p: Clear = params(r)?;
                 id(&p.shell_id)?;
-                let v = viewport.ok_or_else(|| invalid("authenticated connection required"))?;
+                let mut held = viewport.hold().await;
+                let v = held
+                    .get()
+                    .ok_or_else(|| invalid("authenticated connection required"))?;
                 // The CLI creates a lock file per shell ID it is asked about, so an
                 // arbitrary UUID must not reach it. A shell this connection pinned
                 // may have died since; clearing it must still work.
@@ -734,7 +916,11 @@ impl Rpc {
         p: Input,
     ) -> std::result::Result<Value, Fault> {
         id(device)?;
-        // Only one connector per home and one RPC loop per device; this lock also
+        // Requests of one device run concurrently, but the file lock below is
+        // a try-lock: without this, a second input would fail instead of wait.
+        let device_lock = self.input_lock(&format!("input-{device}"));
+        let _device_guard = device_lock.lock().await;
+        // Only one connector per home; this lock also
         // protects external recovery tooling and tests from racing input writes.
         let _lock = self
             .storage
@@ -892,6 +1078,87 @@ impl Rpc {
                 }
                 Err(fault)
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_waiting_cli_gets_the_wait_plus_a_margin_and_never_less_than_other_calls() {
+        assert_eq!(cli_limit(0), Duration::from_secs(15));
+        assert_eq!(cli_limit(5_000), Duration::from_secs(15));
+        assert_eq!(cli_limit(7_000), Duration::from_secs(15));
+        assert_eq!(cli_limit(8_000), Duration::from_secs(16));
+        assert_eq!(cli_limit(MAX_WAIT_MS), Duration::from_secs(18));
+        // The longest allowed wait leaves at least the margin (two tmux
+        // calls' worth of slack) before the connector gives up on the CLI.
+        assert!(
+            cli_limit(MAX_WAIT_MS)
+                >= Duration::from_millis(MAX_WAIT_MS as u64) + Duration::from_secs(5)
+        );
+        // Out of range never widens the limit.
+        assert_eq!(cli_limit(i64::MAX), cli_limit(MAX_WAIT_MS));
+        assert_eq!(cli_limit(-1), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn hashes_are_short_and_printable() {
+        for good in ["0123456789abcdef", "a", &"x".repeat(64), "A-b_c.d~"] {
+            assert!(hash_shaped(good), "{good}");
+        }
+        for bad in [
+            "",
+            &"x".repeat(65),
+            "a b",
+            "a\tb",
+            "a\nb",
+            "\u{e9}",
+            "a\u{7f}",
+            "a\u{1b}",
+        ] {
+            assert!(!hash_shaped(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_well_formed_sgr_passes_the_styled_check() {
+        for good in [
+            "",
+            "plain\n\ttext \u{e9}",
+            "\u{1b}[m",
+            "\u{1b}[0m",
+            "\u{1b}[1;31mred\u{1b}[0m\nnext",
+            "\u{1b}[38;5;200m\u{1b}[38;2;1;2;3m\u{1b}[38:2::1:2:3m",
+            &format!("\u{1b}[{}m", "1".repeat(64)),
+        ] {
+            assert!(sgr_only(good), "{good:?}");
+        }
+        for bad in [
+            "\u{1b}",
+            "\u{1b}[",
+            "\u{1b}[31",
+            "\u{1b}[2J",
+            "\u{1b}[?25l",
+            "\u{1b}[>4;2m",
+            "\u{1b}[1 m",
+            "\u{1b}]0;title\u{7}",
+            "\u{1b}]8;;u\u{1b}\\",
+            "\u{1b}(0",
+            "\u{1b}7",
+            "\u{1b}[31\u{1b}[0m",
+            &format!("\u{1b}[{}m", "1".repeat(65)),
+            "a\rb",
+            "a\u{7}b",
+            "a\u{e}b",
+            "a\u{0}b",
+            "a\u{7f}b",
+            "a\u{9b}31mb",
+            "a\u{85}b",
+        ] {
+            assert!(!sgr_only(bad), "{bad:?}");
         }
     }
 }
