@@ -21,6 +21,7 @@ public enum RequestValidation {
         case "shell.resize.clear": required = ["shell_id"]; optional = []
         case "shell.create": required = ["kind"]; optional = ["project_id", "worktree_id", "unrestricted", "command"]
         case "shell.close": required = ["shell_id"]; optional = []
+        case "project.create": required = ["name"]; optional = ["git"]
         default: throw RemoteError.protocolViolation("Unsupported operation.")
         }
         let keys = Set(params.keys)
@@ -45,6 +46,9 @@ public enum RequestValidation {
         }
         if method == "shell.create" {
             do { _ = try NewTerminalRequest(params: params) } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
+        }
+        if method == "project.create" {
+            do { _ = try NewProjectRequest(params: params) } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
         }
         if method == "shell.input" { guard let line = params["line"]?.string else { throw RemoteError.protocolViolation("Missing input.") }; try InputValidation.validate(line) }
         // `shell.history` has its own range (checked above); this one is the live read's.
@@ -109,6 +113,8 @@ public actor RelayClient: RemoteTransport {
         // Starting an agent can take 20 to 30 s on the desktop (it prepares its tools first); closing waits for tmux.
         case "shell.create": return max(base, .seconds(90))
         case "shell.close": return max(base, .seconds(30))
+        // The desktop makes the folder, runs `git init` and registers it (the connector gives its CLI 60 s).
+        case "project.create": return max(base, .seconds(90))
         case "shell.output":
             if case .number(let wait)? = params["wait_ms"], wait.isFinite, wait > 0 { return max(base, LiveSync.timeout(waitMilliseconds: Int(min(wait, Double(LiveSync.maximumWaitMilliseconds))))) }
             return base

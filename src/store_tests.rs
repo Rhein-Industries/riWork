@@ -1559,5 +1559,187 @@ fn global_and_project_scoped_worktree_lookups_share_one_selector_rule() {
     assert_eq!(scoped.project_id, projects[1]);
 }
 
+#[test]
+fn a_new_project_is_a_folder_that_did_not_exist_with_git_unless_declined() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    // Even the folder it lives in may be missing.
+    let git_root = fixture.path("projects/With Git");
+    let project = store
+        .create_new_project(&git_root, Some("With Git"), true)
+        .unwrap();
+    assert_eq!(project.root, git_root);
+    assert_eq!(project.name, "With Git");
+    assert!(git_root.join(".git").is_dir());
+    let plain_root = fixture.path("projects/Plain");
+    let plain = store.create_new_project(&plain_root, None, false).unwrap();
+    assert_eq!(plain.name, "Plain", "the folder's name when none is given");
+    assert!(plain_root.is_dir() && !plain_root.join(".git").exists());
+    let state = store.snapshot().unwrap();
+    assert_eq!(
+        state
+            .projects
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        ["With Git", "Plain"]
+    );
+    // Its root worktree is registered like any other project's.
+    assert!(
+        state
+            .worktrees
+            .iter()
+            .any(|worktree| worktree.project_id == project.id)
+    );
+}
+
+#[test]
+fn a_new_project_never_enters_what_is_already_at_its_path() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let folder = fixture.directory("projects/Taken");
+    fs::write(folder.join("keep.txt"), "mine").unwrap();
+    let file = fixture.path("projects/File");
+    fs::write(&file, "a file").unwrap();
+    let target = fixture.directory("elsewhere");
+    fs::write(target.join("keep.txt"), "also mine").unwrap();
+    let link = fixture.path("projects/Link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    for (path, untouched) in [
+        (&folder, folder.join("keep.txt")),
+        (&file, file.clone()),
+        (&link, target.join("keep.txt")),
+    ] {
+        let error = store.create_new_project(path, None, true).unwrap_err();
+        assert!(
+            error.starts_with(&format!("{ALREADY_EXISTS}folder ")),
+            "{error}"
+        );
+        assert!(untouched.is_file(), "{}", untouched.display());
+    }
+    // Nothing was initialized, nothing registered.
+    assert!(!folder.join(".git").exists() && !target.join(".git").exists());
+    assert!(store.snapshot().unwrap().projects.is_empty());
+    // Plain `create_project` is the one that adopts a folder it finds.
+    assert!(store.create_project(&folder, None, false).is_ok());
+}
+
+#[test]
+fn a_new_project_may_not_take_the_name_or_root_of_a_project() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let elsewhere = fixture.directory("code/Foo");
+    let existing = store.add_project(&elsewhere, None).unwrap();
+    // The name, in any case, whether or not the folder would be elsewhere.
+    for name in ["Foo", "foo", "FOO"] {
+        let root = fixture.path("projects").join(name);
+        let error = store
+            .create_new_project(&root, Some(name), true)
+            .unwrap_err();
+        assert!(
+            error.starts_with(&format!("{ALREADY_EXISTS}project ")),
+            "{name}: {error}"
+        );
+        assert!(!root.exists(), "{name}: the folder was made");
+    }
+    // A folder that is some project's root, under another name.
+    let bar = fixture.directory("projects/bar");
+    let renamed = store.add_project(&bar, Some("Renamed")).unwrap();
+    let error = store
+        .create_new_project(&bar, Some("bar"), true)
+        .unwrap_err();
+    assert!(
+        error.starts_with(&format!("{ALREADY_EXISTS}folder ")),
+        "{error}"
+    );
+    let state = store.snapshot().unwrap();
+    assert_eq!(state.projects.len(), 2);
+    assert_eq!(state.project(&renamed.id).unwrap().name, "Renamed");
+    assert_eq!(state.project(&existing.id).unwrap().name, "Foo");
+}
+
+#[test]
+fn a_project_made_through_another_handle_is_in_the_next_snapshot_of_a_running_app() {
+    // The running window compares a fresh `snapshot()` with the state it holds every two
+    // seconds (`Workspace::refresh`) and draws again when they differ. The store keeps no
+    // cache between reads, so a project made by the CLI, the phone's `project.create` or
+    // another window is in the very next one; nothing needs a restart or a reload.
+    let fixture = Fixture::new();
+    let app = fixture.store();
+    let held = app.snapshot().unwrap();
+    let cli = Store::open(fixture.path("state")).unwrap();
+    let project = cli
+        .create_new_project(fixture.path("projects/From The Phone"), None, false)
+        .unwrap();
+    let next = app.snapshot().unwrap();
+    assert_ne!(held, next);
+    assert_eq!(
+        next.projects
+            .iter()
+            .map(|p| (p.id.as_str(), p.name.as_str()))
+            .collect::<Vec<_>>(),
+        [(project.id.as_str(), "From The Phone")]
+    );
+    // And a snapshot taken again with nothing new equals the one before: no redraw for nothing.
+    assert_eq!(next, app.snapshot().unwrap());
+}
+
+#[test]
+fn of_several_callers_racing_for_one_name_exactly_one_makes_it() {
+    let fixture = Fixture::new();
+    let root = fixture.path("projects/Race");
+    let state = fixture.path("state");
+    Store::open(&state).unwrap();
+    let outcomes: Vec<Result<Project, String>> = (0..6)
+        .map(|_| {
+            let (root, state) = (root.clone(), state.clone());
+            std::thread::spawn(move || {
+                Store::open(state)
+                    .unwrap()
+                    .create_new_project(root, Some("Race"), true)
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(
+        outcomes.iter().filter(|o| o.is_ok()).count(),
+        1,
+        "{outcomes:?}"
+    );
+    for lost in outcomes.iter().filter_map(|o| o.as_ref().err()) {
+        assert!(lost.starts_with(ALREADY_EXISTS), "{lost}");
+    }
+    assert_eq!(fixture.store().snapshot().unwrap().projects.len(), 1);
+    assert!(root.join(".git").is_dir());
+}
+
+#[test]
+fn a_new_project_that_cannot_be_written_down_takes_its_folder_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    // Reading works, so the checks pass and the folder is made; writing the state does not.
+    store.snapshot().unwrap();
+    let state = fixture.path("state");
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
+    let results = [(true, "projects/Git"), (false, "projects/Plain")].map(|(git, relative)| {
+        let root = fixture.path(relative);
+        let result = store.create_new_project(&root, None, git);
+        (result, root)
+    });
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    for (result, root) in results {
+        let error = result.unwrap_err();
+        assert!(error.contains("Permission denied"), "{error}");
+        // Neither the folder, nor the `.git` the failed run put in it, is left to meet a retry.
+        assert!(!root.exists(), "{} was left behind", root.display());
+    }
+    // And a retry now works.
+    let root = fixture.path("projects/Git");
+    assert!(store.create_new_project(&root, None, true).is_ok());
+}
+
 #[path = "store_scan_tests.rs"]
 mod scan_tests;

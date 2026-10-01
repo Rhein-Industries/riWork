@@ -4,7 +4,8 @@ Choose a paired RiWork desktop and project, then switch between tabs for its
 open terminals, or open a new shell or agent on the desktop with ＋. One terminal
 fills the screen at a time. The app never splits or replaces a desktop session; it
 creates one only when asked (＋ or ⌘N, then Create), and closes one only after a
-confirmation. Reconnecting and switching tabs never create or close anything.
+confirmation. It creates a project only when asked too (＋ or ⌘⇧N on the project list, then Create).
+Reconnecting and switching tabs never create or close anything.
 
 The interface follows RiWork’s compact desktop layout: flat rows and tab strips,
 thin dividers, Menlo text and a small workspace bar. Light appearance uses the
@@ -159,6 +160,46 @@ hosting controller, and the terminal's key view claims no ⌘ combination, so it
 <terminal>? This ends its running process on the Mac." The phone first moves to the neighbouring tab, then `shell.close` ends the
 process and removes it from the Mac's list (a tab the Mac's window still has for it is left to the window, as with the CLI). Not offered for orchestrators. A
 failed close puts you back where you were; "already gone" counts as closed; a lost answer says the outcome is unknown and is not retried.
+
+### New project
+
+**＋ on the project list creates a project on the desktop** (`project.create`; see the "Project creation extension" in
+`docs/remote-protocol.md`), or **⌘⇧N** from a hardware keyboard while the list is the screen on top. There is a "New project" button in
+the empty list too. ⌘N is "New terminal" on the terminal screen, so ⌘⇧N is the same thing for a project; it is registered only on the
+project list, where the terminal's key view (and with it ⌘K, ⌘, and ⌘. of the hotkey menu, a person's hotkey shortcuts and the Clicks
+template's ⌘ and ⌘⇧ letters, none of which is N) is not on screen, so it collides with nothing. The sheet is a medium-height sheet:
+
+- **Name.** A text field that has the keyboard the moment the sheet is up, with autocorrection, smart punctuation, autocapitalization
+  and prediction off. The phone never sends a place: the desktop creates the folder in its own default projects folder and the sheet says
+  so. The name is trimmed, and checked as it is typed against the desktop's own rules (`Core/NewProject.swift`, `NewProjectName`, unit
+  tested): 1 to 100 characters (Unicode scalars, and at most 255 UTF-8 bytes), no control characters, no `/` or `\`, not starting with a
+  dot or a dash. An empty field says nothing until Return asks for a name; any other problem is shown under the field at once and Create
+  stays off. A line break in a paste is dropped.
+- **Create Git repository.** A switch, **on** every time the sheet opens (never remembered); the phone sends `git: false` only when it is
+  off, so the default stays the desktop's.
+- **Create** sends one `project.create`, shows progress, and on success the sheet goes away, the new project is selected (its terminal
+  screen opens) and the **New terminal** sheet comes up for it with its usual defaults, so a terminal in it is one Return away. Nothing is
+  started without that second Create: Escape leaves you in the new, empty project. Request timeout: 90 s.
+- **Errors are inline and the sheet stays open, the name is kept:** the desktop's own sentence for `already_exists` (a project of that
+  name, compared ignoring case, or a folder of that name in the Mac’s projects folder, which it never reuses; for example "A project
+  named "x" already exists on the desktop"), an
+  older desktop ("Update RiWork on your Mac to create projects from the phone."; found from the first answer `invalid_request`
+  "unsupported RPC method", kept for the connection and reset by every new connection, so ＋ and ⌘⇧N disappear and the open sheet
+  explains), or the desktop's own message (git failing, a CLI too old to create projects from the phone). Editing the name takes a
+  message down.
+- **Never retried.** A second tap or a held Return while a request is on its way is ignored, and a lost answer (timeout, dropped link)
+  is not asked again: the sheet says the project "may or may not have been created", to check the project list first (asking again would
+  only answer "already exists" if it was), and the button reads "Try again". An answer that is not the project that was asked for is
+  treated the same way, and the project list is read again at once.
+
+**Keyboard** (a Clicks or any hardware keyboard; nothing needs a tap first): type the name; ↩ creates (from the name, the switch or
+Create), ⎋ cancels, ⇥ / ⇧⇥ (and ↑ ↓) move the focus ring name → Git switch → Create, ← → move it while the switch or Create has it, Space
+flips the switch or presses Create when it has the ring. A keyboard without Tab or Esc (the Clicks keyboard has neither) has **⌘G**, which
+flips the Git switch from anywhere, also while typing, **⌘↩** for create and **⌘.** for cancel. Mechanism: the name is a `UITextField`
+subclass whose `keyCommands` carry tab, shift-tab, ↑ ↓, escape, ⌘., ⌘↩ and ⌘G with priority over the system, and whose delegate turns
+Return into create; while the switch or Create has the ring a small invisible key view takes the keyboard instead (it is not a text
+input, so no software keyboard appears) and also owns space, return and ← →. The ring follows the form (`NewProjectForm`, pure and
+tested), and tapping any control moves it, so touch and keyboard agree.
 
 ### Direct typing, focus mode and text size
 

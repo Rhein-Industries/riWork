@@ -173,6 +173,10 @@ const CLI_WAIT_MARGIN: Duration = Duration::from_secs(8);
 const CREATE_TIMEOUT: Duration = Duration::from_secs(60);
 /// The longest `command` a `shell.create` may carry.
 pub const CREATE_COMMAND_MAX: usize = 4096;
+/// The longest `name` a `project.create` may carry: this many characters (Unicode
+/// scalar values), and, because the name becomes a folder name, this many UTF-8 bytes.
+pub const PROJECT_NAME_MAX_CHARS: usize = 100;
+pub const PROJECT_NAME_MAX_BYTES: usize = 255;
 
 /// How long the CLI may take for a `shell.output` that waits up to `wait_ms`:
 /// the wait plus the captures around it, and never less than any other call.
@@ -230,6 +234,8 @@ fn project(v: Value, fields: &[&str]) -> Value {
     }
     Value::Object(m)
 }
+/// What the phone may know of a project, in `projects.list` and in `project.create`.
+const PROJECT_FIELDS: &[&str] = &["id", "name", "root", "created_at"];
 const SESSION_FIELDS: &[&str] = &[
     "id",
     "project_id",
@@ -472,6 +478,151 @@ fn close_fault(fault: Fault) -> Fault {
     } else {
         fault
     }
+}
+
+/// A validated `project.create`: a name for the folder and the project, and whether the
+/// new folder becomes a Git repository.
+#[derive(Debug, PartialEq, Eq)]
+struct ProjectSpec {
+    name: String,
+    git: bool,
+}
+const PROJECT_FIELDS_ACCEPTED: [&str; 2] = ["name", "git"];
+
+/// The params of `project.create`, strictly: an object with `name` (a string) and
+/// optionally `git` (a boolean, neither null), nothing else, before any CLI runs. There
+/// is no path: the project is always made in the desktop's default projects folder.
+fn project_spec(params: &Value) -> std::result::Result<ProjectSpec, Fault> {
+    let object = params
+        .as_object()
+        .ok_or_else(|| invalid("params must be an object"))?;
+    if let Some(unknown) = object
+        .keys()
+        .find(|k| !PROJECT_FIELDS_ACCEPTED.contains(&k.as_str()))
+    {
+        return Err(invalid(format!("unknown field {unknown}")));
+    }
+    let name = match object.get("name") {
+        Some(Value::String(name)) => name,
+        Some(_) => return Err(invalid("name must be a string")),
+        None => return Err(invalid("name is required")),
+    };
+    project_name(name)?;
+    let git = match object.get("git") {
+        None => true,
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => return Err(invalid("git must be a boolean")),
+    };
+    Ok(ProjectSpec {
+        name: name.clone(),
+        git,
+    })
+}
+/// A project name is one visible folder name, as `paths::default_new_project_path`
+/// requires of it, and is kept to what is safe to hand the CLI and to show:
+///
+/// - not empty, no whitespace at either end (the CLI trims, so a name that
+///   differs from its trimmed form would not be the folder that was validated);
+/// - at most 100 characters and 255 bytes (a folder name on the Mac);
+/// - no `char::is_control` character and no U+2028 / U+2029;
+/// - no `/` or `\`, and nothing that starts with `.` (which covers `.` and
+///   `..`, and hidden names the desktop reserves for tools);
+/// - nothing that starts with `-`, which the CLI would read as an option.
+fn project_name(name: &str) -> std::result::Result<(), Fault> {
+    if name.is_empty() {
+        return Err(invalid("name must not be empty"));
+    }
+    if name.trim() != name {
+        return Err(invalid("name must not start or end with whitespace"));
+    }
+    if name.chars().count() > PROJECT_NAME_MAX_CHARS || name.len() > PROJECT_NAME_MAX_BYTES {
+        return Err(invalid(format!(
+            "name must be at most {PROJECT_NAME_MAX_CHARS} characters and {PROJECT_NAME_MAX_BYTES} bytes"
+        )));
+    }
+    if name
+        .chars()
+        .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+    {
+        return Err(invalid("name must not contain control characters"));
+    }
+    if name.contains(['/', '\\']) {
+        return Err(invalid("name must be one folder name: no / or \\"));
+    }
+    if name.starts_with('.') {
+        return Err(invalid("name must not start with a dot"));
+    }
+    if name.starts_with('-') {
+        return Err(invalid("name must not start with -"));
+    }
+    Ok(())
+}
+/// The CLI's argv for a validated request. `--json` is added by `read`. The name is
+/// one argument after `--name`, never part of a string a shell reads. `--exclusive`
+/// makes the CLI refuse a folder or project that is there already instead of
+/// registering it; it is only sent to a CLI that said it knows the flag.
+fn project_args(spec: &ProjectSpec) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "project".into(),
+        "create".into(),
+        "--name".into(),
+        spec.name.clone(),
+    ];
+    if !spec.git {
+        args.push("--no-git".into());
+    }
+    args.push("--exclusive".into());
+    args
+}
+/// What a failed `riwork project create --exclusive` says, by the first line of its error
+/// (`riwork: ` already stripped). The CLI marks a name, folder or project that is taken with
+/// the token `already_exists: project ` or `already_exists: folder `; the sentences for the
+/// phone are the connector's own and say nothing about where on the desktop it looked.
+fn project_create_fault(fault: Fault, name: &str) -> Fault {
+    if fault.code != "cli_error" {
+        return fault;
+    }
+    if fault.message == "RiWork CLI timeout" {
+        return Fault::new(
+            "cli_error",
+            "creating the project took too long and was stopped; check the project list before trying again",
+        );
+    }
+    let Some(detail) = fault.message.strip_prefix("RiWork CLI failed: riwork: ") else {
+        return fault;
+    };
+    let line = detail.lines().next().unwrap_or_default();
+    if line.starts_with("already_exists: project ") {
+        Fault::new(
+            "already_exists",
+            format!("A project named \"{name}\" already exists on the desktop"),
+        )
+    } else if line.starts_with("already_exists: folder ") {
+        Fault::new(
+            "already_exists",
+            format!("A folder named \"{name}\" already exists in the desktop's projects folder"),
+        )
+    } else {
+        Fault::new("cli_error", line)
+    }
+}
+/// The `project.create` result for the project the CLI printed, or `None` if it is not the
+/// project that was asked for: a canonical id, the name that was sent, and a root that is
+/// an absolute path whose folder has that name (the default location is always
+/// `DEFAULT_FOLDER/NAME`).
+fn project_create_result(spec: &ProjectSpec, cli: &Value) -> Option<Value> {
+    let text = |name: &str| cli.get(name).and_then(Value::as_str);
+    let project_id = text("id")?;
+    id(project_id).ok()?;
+    let root = std::path::Path::new(text("root")?);
+    if text("name") != Some(spec.name.as_str())
+        || !root.is_absolute()
+        || root.file_name().and_then(|n| n.to_str()) != Some(spec.name.as_str())
+        || cli.get("created_at")?.as_u64().is_none()
+    {
+        return None;
+    }
+    Some(json!({"project_id": project_id, "project": project(cli.clone(), PROJECT_FIELDS)}))
 }
 
 /// Direct-typing limits. `src/session_keys.rs` enforces the same ones in the
@@ -1079,7 +1230,7 @@ impl Rpc {
                 let _: Empty = params(r)?;
                 let v = array(self.read(&["project", "list"]).await?)?
                     .into_iter()
-                    .map(|v| project(v, &["id", "name", "root", "created_at"]))
+                    .map(|v| project(v, PROJECT_FIELDS))
                     .collect::<Vec<_>>();
                 Ok(json!({"projects":v}))
             }
@@ -1382,6 +1533,10 @@ impl Rpc {
                 id(&p.shell_id)?;
                 self.close(device, &p.shell_id, viewport).await
             }
+            "project.create" => {
+                let spec = project_spec(&r.params)?;
+                self.create_project(device, spec).await
+            }
             _ => Err(invalid("unsupported RPC method")),
         }
     }
@@ -1425,6 +1580,65 @@ impl Rpc {
             }
             cli_fault("CLI returned a session that does not match the request")
         })
+    }
+    /// Make a new project in the desktop's default projects folder, as
+    /// `riwork project create --name NAME --exclusive` does: the folder (a Git
+    /// repository unless `git` is off) and the project. Nothing that is already
+    /// there is touched; a taken name or folder is `already_exists`. Runs in the
+    /// ordered lane, which a phone that drops does not cut short, and the CLI
+    /// itself runs in a task of its own (see below). Not idempotent: a repeat
+    /// finds the first and answers `already_exists`.
+    async fn create_project(
+        &self,
+        device: &str,
+        spec: ProjectSpec,
+    ) -> std::result::Result<Value, Fault> {
+        // Authorization was checked when the request started; this acts.
+        if !self.storage.authorized(device).map_err(cli_fault)? {
+            return Err(Fault::new("not_found", "device revoked"));
+        }
+        self.require_exclusive_project_create().await?;
+        // The CLI makes the folder and only then writes the project down; a CLI
+        // killed in between leaves a folder the next attempt would find taken.
+        // The connection's tasks are dropped (and their CLI processes killed)
+        // when it ends for any reason, so the CLI runs in a task that outlives
+        // the request: if the request is dropped, only the answer is lost.
+        let runner = self.detached();
+        let args = project_args(&spec);
+        let created = tokio::spawn(async move { runner.read_within(args, CREATE_TIMEOUT).await })
+            .await
+            .map_err(|e| cli_fault(format!("creating the project was interrupted: {e}")))?
+            .map_err(|fault| project_create_fault(fault, &spec.name))?;
+        project_create_result(&spec, &created)
+            .ok_or_else(|| cli_fault("CLI returned a project that does not match the request"))
+    }
+    /// Whether the installed CLI knows `project create --exclusive` (`riwork
+    /// capabilities`). A CLI that does not would read the flag as the project's
+    /// PATH and make a folder of that name next to the connector, so it is never
+    /// sent the flag. Asked every time, not remembered: a CLI updated while the
+    /// connector runs is believed at once, and a creation is rare.
+    async fn require_exclusive_project_create(&self) -> std::result::Result<(), Fault> {
+        let too_old = || {
+            Fault::new(
+                "cli_error",
+                "the installed riwork CLI cannot create projects from the phone; update RiWork",
+            )
+        };
+        match self.raw(vec!["capabilities".into(), "--json".into()]).await {
+            Ok(data) => {
+                let reply = serde_json::from_slice::<Value>(&data).unwrap_or(Value::Null);
+                if reply.get("v") == Some(&json!(1))
+                    && reply.get("project_create_exclusive") == Some(&Value::Bool(true))
+                {
+                    Ok(())
+                } else {
+                    Err(too_old())
+                }
+            }
+            // It ran and refused the question: a CLI from before capabilities.
+            Err(e) if e.to_string().starts_with("RiWork CLI failed") => Err(too_old()),
+            Err(e) => Err(cli_fault(e)),
+        }
     }
     /// An `Rpc` for the same CLI and home, to run a call in a task that is not
     /// tied to the request that started it.
@@ -1700,6 +1914,56 @@ impl Rpc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_names_are_one_visible_folder_name_within_the_limits() {
+        for good in ["a", "My App", "my--app", "app.", "\u{e9}", &"x".repeat(100)] {
+            assert!(project_name(good).is_ok(), "{good:?}");
+        }
+        // 255 bytes exactly, in three-byte characters: 85 of them.
+        assert!(project_name(&"\u{65e5}".repeat(85)).is_ok());
+        for bad in [
+            "",
+            " ",
+            " a",
+            "a ",
+            "a\u{a0}",
+            ".",
+            "..",
+            ".a",
+            "a/b",
+            "a\\b",
+            "a\u{0}b",
+            "a\tb",
+            "a\u{2028}b",
+            "-a",
+            "--json",
+            &"x".repeat(101),
+            &"\u{65e5}".repeat(86),
+        ] {
+            let fault = project_name(bad).unwrap_err();
+            assert_eq!(fault.code, "invalid_request", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_creation_the_connector_stopped_is_told_apart_from_one_that_failed() {
+        let stopped = project_create_fault(cli_fault("RiWork CLI timeout"), "Fresh");
+        assert_eq!(stopped.code, "cli_error");
+        assert!(
+            stopped
+                .message
+                .contains("check the project list before trying again"),
+            "{}",
+            stopped.message
+        );
+        // A fault that is not a CLI failure passes through untouched.
+        let big = project_create_fault(Fault::new("response_too_large", "x"), "Fresh");
+        assert_eq!(
+            (big.code, big.message.as_str()),
+            ("response_too_large", "x")
+        );
+    }
 
     #[test]
     fn a_waiting_cli_gets_the_wait_plus_a_margin_and_never_less_than_other_calls() {

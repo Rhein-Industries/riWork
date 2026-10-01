@@ -135,7 +135,7 @@ earlier result and `wait_ms` (0 to 10000) makes the one `riwork shell output ...
 (about every 80 ms where it cannot say) and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time. That
 call may take ten seconds, so the connector no longer handles a device's requests one
 at a time: `lanes.rs` lets one ordered request (`shell.keys`, `shell.input`,
-`shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, in arrival order) and three others run at once,
+`shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`, in arrival order) and three others run at once,
 at most two of them waits, queues the rest in arrival order, and the connection loop
 alone seals and sends the responses (out of order by request, in order by counter). A
 wait ends, and its CLI process is killed, when the connection closes, the phone goes
@@ -191,6 +191,24 @@ the session and the CLI registering it. A creation first looks the id up with
 branches and paths). They are not idempotent and not deduplicated. Their tests use a stub CLI (`tests/shell_create.rs`); the root crate's
 `tests/shell_create_cli.rs` pins the CLI sentences and output the connector relies on,
 and an ignored test drives the real CLI with `RIWORK_TEST_CLI`.
+
+`project.create` makes a new project in the desktop's default projects folder (the contract is in
+[remote-protocol.md](../docs/remote-protocol.md)). The phone sends a `name` and optionally `git`
+and never a path. The connector validates both before anything runs (one folder name of at most 100
+characters and 255 bytes, no control characters, no `/` or `\`, no leading `.` or `-`, no
+whitespace at either end), builds the argument vector of `riwork project create --name NAME
+[--no-git] --exclusive --json` itself (the name is one argument, nothing goes through a shell
+string), and only sends `--exclusive` after `riwork capabilities --json` said
+`project_create_exclusive` (an older CLI would read the flag as a PATH). `--exclusive` makes the CLI
+refuse a name or folder that exists instead of registering it, and the connector turns the CLI's
+`already_exists: project …` / `already_exists: folder …` into the code `already_exists` with a
+sentence of its own that names no path. It refuses a project that is not the one asked for, projects
+the result like `projects.list`, runs in the ordered lane like `shell.create`, and the CLI runs in a
+task of its own so no connection ending can kill it between making the folder and registering it. It
+is not idempotent and not deduplicated: a repeat answers `already_exists`. Its tests use a stub CLI
+(`tests/project_create.rs`); the root crate's `tests/project_create_cli.rs` pins the CLI sentences
+and output the connector relies on (in a throwaway `HOME` and `RIWORK_HOME`), and an ignored test
+drives the real CLI with `RIWORK_TEST_CLI` the same way.
 
 Revocation stops live endpoint access within one second and removes its local
 PSK/tokens. Remove that route from the relay manifest and restart the relay to
