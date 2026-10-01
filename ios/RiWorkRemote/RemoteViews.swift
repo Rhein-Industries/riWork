@@ -436,7 +436,10 @@ struct SessionConsole: View {
     @Bindable var model: RemoteModel
     @Binding var followOutput: Bool
     @State private var keyFocus = KeyFocus()
-    @State private var editingHotkeys = false
+    /// The hotkey menu (⌘K) and the editor it leads to.
+    @State private var palette = PaletteController()
+    @State private var editor: HotkeyEditorStart?
+    @Environment(\.scenePhase) private var scenePhase
     /// Live pinch scale. A GestureState resets by itself if the gesture is cancelled; the size is committed (and the
     /// grid recomputed) only when the pinch ends.
     @GestureState private var pinchScale: Double?
@@ -470,8 +473,9 @@ struct SessionConsole: View {
                         KeyCapture(focus: keyFocus, isEnabled: model.session?.alive == true,
                                    label: "Terminal input for \(model.session?.title ?? "session") \(model.session?.shortID ?? "")",
                                    presentation: focused ? .pill : .strip, hotkeys: model.hotkeys.custom,
-                                   // The keyboard goes first, so the editor is not competing with it for the screen.
-                                   onEditHotkeys: { keyFocus.dismiss(); editingHotkeys = true },
+                                   shortcuts: model.hotkeys.shortcuts, palette: palette,
+                                   onEditHotkeys: { openEditor(.list) }, onNewHotkey: { openEditor(.new) }, onEditHotkey: { openEditor(.edit($0)) },
+                                   onKeyEvent: { model.keyboard.events.record($0) },
                                    onItems: { model.type($0) == .accepted })
                             .frame(width: 1, height: 1).accessibilityHidden(true)
                     }
@@ -480,7 +484,33 @@ struct SessionConsole: View {
                 Text("Choose an open terminal tab.").foregroundStyle(style.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .sheet(isPresented: $editingHotkeys) { HotkeyEditorSheet(store: model.hotkeys).desktopThemed(model.theme.style) }
+        // The keyboard goes first (`openEditor`), so the editor is not competing with it for the screen, and comes back with the shell.
+        .sheet(item: $editor, onDismiss: { keyFocus.restoreAfterModalDismissal() }) {
+            HotkeyEditorSheet(store: model.hotkeys, keyboard: model.keyboard, start: $0).desktopThemed(model.theme.style)
+        }
+        .onAppear { configureFocus(); keyFocus.shellReady(readyShell) }
+        .onChange(of: model.sessionID) { _, _ in configureFocus() }
+        .onChange(of: readyShell) { _, shell in configureFocus(); keyFocus.shellReady(shell) }
+        // A hardware keyboard that arrives after the shell was ready, and the app coming back to the front.
+        .onChange(of: model.keyboard.hardware.isAttached) { _, _ in configureFocus(); keyFocus.autoFocus() }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { configureFocus(); keyFocus.autoFocus() } }
+        .onChange(of: model.keyboard.focusSetting) { _, _ in keyFocus.autoFocus() }
+    }
+    /// A shell is ready when it is connected, alive and showing its first live screen; that is when it may take the keyboard.
+    private var readyShell: String? {
+        guard model.directTyping, model.state == .connected, let id = model.sessionID, model.session?.alive == true,
+              model.outputSessionID == id, !model.snapshotStale else { return nil }
+        return id
+    }
+    private func configureFocus() {
+        keyFocus.shellID = model.sessionID
+        keyFocus.policy = { [model] in (model.keyboard.focusSetting, model.keyboard.hardware.isAttached, model.directTyping && model.session?.alive == true) }
+    }
+    /// Puts the keyboard away, shows the editor, and brings the keyboard back when it closes.
+    private func openEditor(_ start: HotkeyEditorStart) {
+        palette.close()
+        keyFocus.suspendForModal()
+        editor = start
     }
     private var statusStrip: some View {
         HStack(spacing: 6) {
@@ -513,13 +543,21 @@ struct SessionConsole: View {
         // The chip and notices float over the pane instead of taking room from it, so they appearing or vanishing never
         // changes the terminal's size (and so never resizes the desktop). Content gets a matching bottom margin.
         .overlay(alignment: .bottom) { floatingStatus }
-        .onChange(of: model.sessionAutoSwitches) { _, _ in keyFocus.dismiss() }
+        .onChange(of: model.sessionAutoSwitches) { _, _ in configureFocus(); keyFocus.shellReplacedWithoutTap() }
         .simultaneousGesture(TapGesture().onEnded { terminalTapped() })
         .simultaneousGesture(magnify)
         // Top right, where lines end; top left in focus mode, where the text controls are.
         .overlay(alignment: focused ? .topLeading : .topTrailing) {
             if model.showLatency { LatencyOverlay(latency: model.latency, mode: model.syncMode, link: { model.linkLines }) }
         }
+        // The key readout (Display settings): what the last key sent. Bottom left, clear of the hotkey menu at the top and of the
+        // pending-input chip.
+        .overlay(alignment: .bottomLeading) {
+            if model.keyboard.showKeyEvents { KeyEventOverlay(log: model.keyboard.events).padding(.bottom, floatingInset) }
+        }
+        // The hotkey menu (⌘K, or the key bar's ⌘ button): typed into from the keyboard, tapped for touch.
+        .overlay(alignment: .top) { HotkeyPaletteView(controller: palette) }
+        .animation(.easeInOut(duration: 0.12), value: palette.isOpen)
         .overlay(alignment: .topTrailing) {
             if focused {
                 FocusControls(visible: controlsVisible, fontSize: model.terminalFontSize,
@@ -616,7 +654,7 @@ struct SessionConsole: View {
                 Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting).buttonStyle(DesktopButtonStyle(compact: true))
             }
             Button(keyFocus.isActive ? "Hide keyboard" : "Show keyboard", systemImage: keyFocus.isActive ? "keyboard.chevron.compact.down" : "keyboard") {
-                if keyFocus.isActive { keyFocus.dismiss() } else { keyFocus.focus() }
+                if keyFocus.isActive { keyFocus.userDismiss() } else { keyFocus.focus() }
             }.labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: true))
         }.font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
             .padding(.leading, 8).frame(minHeight: style.pt(36)).background(style.panel).overlay(alignment: .top) { DesktopRule() }

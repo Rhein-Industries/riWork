@@ -76,8 +76,93 @@ import RiWorkCore
         XCTAssertEqual(again.hotkeys.custom.map(\.label), ["Mine"])
     }
 
+    // MARK: Shortcuts and templates
+
+    private func chord(_ letter: String, _ modifiers: ChordModifiers = .command) -> KeyChord { KeyChord(keyCode: HIDKey.code(forCharacter: letter)!, modifiers: modifiers) }
+
+    func testAShortcutOnAHotkeyIsPersisted() throws {
+        let defaults = scratchDefaults()
+        let store = HotkeyStore(defaults: defaults)
+        let esc = Hotkey(id: "esc", label: "Esc", steps: [.key(.escape)], chord: chord("e"), showsOnBar: false)
+        try store.add(esc)
+        let launched = HotkeyStore(defaults: defaults)
+        XCTAssertEqual(launched.custom, [esc])
+        XCTAssertEqual(launched.custom[0].chord, chord("e"))
+        XCTAssertEqual(launched.onBar, [], "a shortcut-only hotkey stays off the key bar")
+        XCTAssertEqual(launched.shortcutMap.action(for: chord("e")), .hotkey(esc))
+    }
+    func testTheSameShortcutCannotBeGivenTwiceEvenToTheMenu() throws {
+        let store = HotkeyStore(defaults: scratchDefaults())
+        try store.add(Hotkey(id: "a", label: "A", steps: [.text("a")], chord: chord("e")))
+        XCTAssertThrowsError(try store.add(Hotkey(id: "b", label: "B", steps: [.text("b")], chord: chord("e")))) { XCTAssertEqual($0 as? HotkeyError, .chordInUse("A")) }
+        let tap = KeyChord(keyCode: HIDKey.leftControl)
+        try store.addPaletteChord(tap)
+        XCTAssertThrowsError(try store.addPaletteChord(chord("e"))) { XCTAssertEqual($0 as? HotkeyError, .chordInUse("A")) }
+        XCTAssertThrowsError(try store.add(Hotkey(id: "c", label: "C", steps: [.text("c")], chord: tap)), "a tap on Control opens the menu")
+        XCTAssertEqual(store.custom.map(\.label), ["A"])
+    }
+    func testMenuShortcutsArePersistedAndRemovable() throws {
+        let defaults = scratchDefaults()
+        let store = HotkeyStore(defaults: defaults)
+        try store.addPaletteChord(KeyChord(keyCode: HIDKey.leftControl))
+        XCTAssertEqual(HotkeyStore(defaults: defaults).shortcuts.paletteChords, [KeyChord(keyCode: HIDKey.leftControl)])
+        store.removePaletteChord(KeyChord(keyCode: HIDKey.leftControl))
+        XCTAssertEqual(HotkeyStore(defaults: defaults).shortcuts.paletteChords, [])
+        defaults.set("garbage", forKey: HotkeyStore.shortcutsKey)
+        XCTAssertEqual(HotkeyStore(defaults: defaults).shortcuts.paletteChords, [], "unreadable shortcuts are none")
+    }
+    func testInstallingTheClicksTemplateKeepsWhatThePersonHadAndPersists() throws {
+        let defaults = scratchDefaults()
+        let store = HotkeyStore(defaults: defaults)
+        let mine = hotkey("Mine", [.text("/clear"), .key(.enter)])
+        try store.add(mine)
+        let result = store.install(.clicks)
+        XCTAssertEqual(result.added.count, HotkeyTemplate.clicks.hotkeys.count)
+        XCTAssertEqual(result.paletteChordsAdded, HotkeyTemplate.clicks.paletteChords)
+        XCTAssertEqual(store.custom.first, mine, "theirs stays first and unchanged")
+        XCTAssertEqual(store.custom.count, 1 + HotkeyTemplate.clicks.hotkeys.count)
+        XCTAssertEqual(store.onBar, [mine], "the template's shortcuts stay off the key bar")
+        let launched = HotkeyStore(defaults: defaults)
+        XCTAssertEqual(launched.custom, store.custom)
+        XCTAssertEqual(launched.shortcuts, store.shortcuts)
+        XCTAssertEqual(launched.shortcutMap.action(for: chord("e")), .hotkey(HotkeyTemplate.clicks.hotkeys[0]))
+        XCTAssertEqual(launched.shortcutMap.action(for: KeyChord(keyCode: HIDKey.leftControl)), .openPalette)
+    }
+    func testInstallingTwiceChangesNothingAndASecondInstallWritesNothing() throws {
+        let defaults = scratchDefaults()
+        let store = HotkeyStore(defaults: defaults)
+        store.install(.clicks)
+        let before = store.custom, shortcuts = store.shortcuts
+        let stored = defaults.string(forKey: HotkeyStore.key)
+        let again = store.install(.clicks)
+        XCTAssertFalse(again.changedAnything)
+        XCTAssertEqual(store.custom, before); XCTAssertEqual(store.shortcuts, shortcuts)
+        XCTAssertEqual(defaults.string(forKey: HotkeyStore.key), stored)
+    }
+    func testATemplateNeverTakesAShortcutThatAlreadyBelongsToThePersonOrTheMenu() throws {
+        let store = HotkeyStore(defaults: scratchDefaults())
+        try store.add(Hotkey(id: "mine", label: "Mine", steps: [.text("hello")], chord: chord("e")))
+        try store.addPaletteChord(KeyChord(keyCode: HIDKey.leftControl))
+        let result = store.install(.clicks)
+        XCTAssertEqual(result.skipped.map(\.hotkey.id), ["template.clicks.esc"])
+        XCTAssertEqual(store.shortcutMap.action(for: chord("e")), .hotkey(store.custom[0]), "theirs")
+        XCTAssertEqual(result.paletteChordsAdded, [KeyChord(keyCode: HIDKey.rightControl)], "the Control tap they had already is not added twice")
+    }
+
     // MARK: The editor's draft
 
+    func testADraftKeepsTheShortcutAndWhetherTheBarShowsIt() {
+        let original = Hotkey(id: "x", label: "Esc", steps: [.key(.escape)], chord: chord("e"), showsOnBar: false)
+        var draft = HotkeyDraft(original)
+        XCTAssertEqual(draft.chord, chord("e")); XCTAssertFalse(draft.showsOnBar)
+        XCTAssertEqual(draft.hotkey, original)
+        draft.chord = KeyChord(keyCode: HIDKey.e)   // a bare letter
+        XCTAssertNotNil(draft.problem, "an unusable shortcut stops the save")
+        draft.chord = nil; draft.showsOnBar = true
+        XCTAssertNil(draft.problem)
+        XCTAssertNil(draft.hotkey.chord)
+        XCTAssertNil(HotkeyDraft().chord); XCTAssertTrue(HotkeyDraft().showsOnBar)
+    }
     func testADraftRoundTripsAHotkey() {
         let original = hotkey("Bail", [.key(.control("c")), .text("exit"), .key(.enter)])
         let draft = HotkeyDraft(original)

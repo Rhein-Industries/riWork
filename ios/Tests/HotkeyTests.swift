@@ -138,8 +138,8 @@ final class HotkeyTests: XCTestCase {
         XCTAssertThrowsError(try library.update(hotkey("Ghost", id: "zzz"))) { XCTAssertEqual($0 as? HotkeyError, .unknown) }
         XCTAssertThrowsError(try library.update(hotkey("", id: "a"))) { _ in XCTAssertEqual(library.hotkeys[0].label, "Clear", "a refused edit changes nothing") }
         for index in 1..<HotkeyLibrary.maxHotkeys { try library.add(hotkey("H\(index)", id: "id\(index)")) }
-        XCTAssertThrowsError(try library.add(hotkey("Last", id: "over"))) { XCTAssertEqual($0 as? HotkeyError, .tooManyHotkeys(24)) }
-        XCTAssertEqual(library.hotkeys.count, 24)
+        XCTAssertThrowsError(try library.add(hotkey("Last", id: "over"))) { XCTAssertEqual($0 as? HotkeyError, .tooManyHotkeys(HotkeyLibrary.maxHotkeys)) }
+        XCTAssertEqual(library.hotkeys.count, HotkeyLibrary.maxHotkeys)
     }
     func testMovingMatchesSwiftUIsOnMove() throws {
         func order(_ offsets: [Int], to destination: Int) throws -> [String] {
@@ -179,7 +179,7 @@ final class HotkeyTests: XCTestCase {
         XCTAssertEqual(HotkeyLibrary(encoded: mixed).hotkeys.map(\.label), ["Good", "Also good"])
     }
     func testAStoredLibraryLongerThanTheLimitIsCut() throws {
-        let entries = (0..<40).map { "{\"id\":\"h\($0)\",\"label\":\"H\($0)\",\"steps\":[{\"key\":\"Tab\"}]}" }.joined(separator: ",")
+        let entries = (0..<(HotkeyLibrary.maxHotkeys + 16)).map { "{\"id\":\"h\($0)\",\"label\":\"H\($0)\",\"steps\":[{\"key\":\"Tab\"}]}" }.joined(separator: ",")
         XCTAssertEqual(HotkeyLibrary(encoded: "{\"v\":1,\"hotkeys\":[\(entries)]}").hotkeys.count, HotkeyLibrary.maxHotkeys)
     }
 }
@@ -255,5 +255,52 @@ final class AltMappingTests: XCTestCase {
         let batch = try XCTUnwrap(buffer.nextBatch())
         XCTAssertEqual(batch.items, [.key(.escape), .text("b")])
         XCTAssertNoThrow(try KeyItem.validate(batch: batch.items))
+    }
+}
+
+/// Shortcuts on hotkeys.
+final class HotkeyChordTests: XCTestCase {
+    private let command = KeyChord(keyCode: HIDKey.e, modifiers: .command)
+    private func hotkey(_ label: String = "Esc", id: String = "a", chord: KeyChord? = nil, onBar: Bool = true) -> Hotkey {
+        Hotkey(id: id, label: label, steps: [.key(.escape)], chord: chord, showsOnBar: onBar)
+    }
+
+    func testAHotkeyWithoutAShortcutIsAsItWasAndStoredWithoutOne() throws {
+        let plain = hotkey()
+        XCTAssertNil(plain.chord); XCTAssertTrue(plain.showsOnBar)
+        XCTAssertEqual(plain.json, .object(["id": .string("a"), "label": .string("Esc"), "steps": .array([.object(["key": .string("Escape")])])]), "the stored form did not change")
+    }
+    func testAShortcutAndTheBarFlagRoundTrip() throws {
+        let original = hotkey(chord: command, onBar: false)
+        XCTAssertEqual(try Hotkey(json: original.json), original)
+        XCTAssertEqual(original.json["bar"], .bool(false))
+        XCTAssertEqual(original.json["chord"]["code"], .number(Double(HIDKey.e)))
+    }
+    func testAnUnusableShortcutIsRefusedByValidationAndByStorage() throws {
+        XCTAssertThrowsError(try hotkey(chord: KeyChord(keyCode: HIDKey.e)).validate()) { error in
+            guard case HotkeyError.invalidChord = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertThrowsError(try hotkey(chord: .paletteDefault).validate(), "⌘K opens the menu")
+        let stored = "{\"id\":\"a\",\"label\":\"x\",\"steps\":[{\"key\":\"Tab\"}],\"chord\":{\"code\":4,\"mods\":0}}"
+        XCTAssertThrowsError(try Hotkey(json: try JSONDecoder().decode(JSONValue.self, from: Data(stored.utf8))))
+        XCTAssertEqual(HotkeyLibrary(encoded: "{\"v\":1,\"hotkeys\":[\(stored)]}").hotkeys, [], "dropped on load like any other bad entry")
+    }
+    func testTwoHotkeysCannotShareAShortcutAddingOrEditing() throws {
+        var library = HotkeyLibrary()
+        try library.add(hotkey("First", id: "a", chord: command))
+        XCTAssertThrowsError(try library.add(hotkey("Second", id: "b", chord: command))) { XCTAssertEqual($0 as? HotkeyError, .chordInUse("First")) }
+        try library.add(hotkey("Second", id: "b"))
+        XCTAssertThrowsError(try library.update(hotkey("Second", id: "b", chord: command))) { XCTAssertEqual($0 as? HotkeyError, .chordInUse("First")) }
+        XCTAssertNil(library.hotkeys[1].chord, "a refused edit changes nothing")
+        try library.update(hotkey("First again", id: "a", chord: command))
+        XCTAssertEqual(library.hotkeys[0].label, "First again", "keeping its own shortcut is fine")
+        XCTAssertEqual(library.hotkey(for: command)?.id, "a")
+        XCTAssertNil(library.hotkey(for: KeyChord(keyCode: HIDKey.e, modifiers: .control)))
+    }
+    func testStoredHotkeysThatShareAShortcutKeepTheFirstOnesAndLoseTheRest() {
+        let one = hotkey("One", id: "a", chord: command), two = hotkey("Two", id: "b", chord: command)
+        let loaded = HotkeyLibrary(encoded: HotkeyLibrary(hotkeys: [one, two]).encoded)
+        XCTAssertEqual(loaded.hotkeys.map(\.label), ["One", "Two"])
+        XCTAssertEqual(loaded.hotkeys.map(\.chord), [command, nil])
     }
 }

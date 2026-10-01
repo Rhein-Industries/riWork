@@ -86,10 +86,22 @@ struct DisplaySettingsSheet: View {
                 .listRowBackground(style.background).listRowSeparatorTint(style.divider)
 
                 Section {
+                    Picker("Focus keyboard when a shell opens", selection: Binding(get: { model.keyboard.focusSetting }, set: { model.keyboard.setFocusSetting($0) })) {
+                        ForEach(KeyboardFocusSetting.allCases) { Text($0.title).tag($0) }
+                    }.pickerStyle(.menu).frame(minHeight: style.pt(44))
+                } header: { Text("KEYBOARD").font(style.system(.caption)) } footer: {
+                    Text("Typing goes straight into a shell once it is ready. “Always” brings up the on-screen keyboard when there is no hardware keyboard; a keyboard you hid in a shell stays hidden there until you tap the terminal. ⌘K opens the hotkey menu.")
+                        .font(style.system(.caption))
+                }
+                .listRowBackground(style.background).listRowSeparatorTint(style.divider)
+
+                Section {
+                    Toggle("Show key events", isOn: Binding(get: { model.keyboard.showKeyEvents }, set: { model.keyboard.setShowKeyEvents($0) }))
+                        .frame(minHeight: style.pt(44))
                     Toggle("Show latency", isOn: Binding(get: { model.showLatency }, set: { model.setShowLatency($0) }))
                         .frame(minHeight: style.pt(44))
                 } header: { Text("DEBUG").font(style.system(.caption)) } footer: {
-                    Text("A small overlay in the terminal: round trips of keys and screen reads, echo latency, the age of the last change, live or poll, the last payload size, and the link: round trip, transfer rate and tier, the desktop's own time, compression, and what the history download is doing.")
+                    Text("Small overlays in the terminal. Key events: the last key's HID usage, modifiers and characters, which shows what a key such as the Clicks button sends. Latency: round trips of keys and screen reads, echo latency, the age of the last change, live or poll, the last payload size, and the link: round trip, transfer rate and tier, the desktop's own time, compression, and what the history download is doing.")
                         .font(style.system(.caption))
                 }
                 .listRowBackground(style.background).listRowSeparatorTint(style.divider)

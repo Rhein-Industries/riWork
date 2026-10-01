@@ -147,6 +147,8 @@ enum ConnectionState: Equatable {
     let theme: ThemeStore
     /// The hotkeys added to the key bar.
     let hotkeys: HotkeyStore
+    /// When the terminal takes the keyboard by itself, the hardware keyboard, and the key readout (KeyboardSettings.swift).
+    let keyboard: KeyboardPrefs
     /// Whether the connected desktop offers `appearance.get`. Learned from the first answer, reset by every new connection.
     @ObservationIgnored var themeSupport: ThemeSyncSupport = .unknown
     /// Set when the Keychain library could not be read. Saved pairings are then untouched and never overwritten.
@@ -226,7 +228,8 @@ enum ConnectionState: Equatable {
          defaults: UserDefaults = .standard, themeRefreshInterval: Duration = .seconds(60), themeMinimumGap: Duration = .seconds(5),
          cellMetrics: @escaping @MainActor (Double) -> (width: Double, height: Double) = { TerminalFont.cell(size: $0) },
          keepAwake: @escaping @MainActor (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 },
-         liveWaitMilliseconds: Int = LiveSync.waitMilliseconds, linkWatcher: (any LinkWatching)? = nil, prefetch: Bool = true) {
+         liveWaitMilliseconds: Int = LiveSync.waitMilliseconds, linkWatcher: (any LinkWatching)? = nil, prefetch: Bool = true,
+         hardwareKeyboard: HardwareKeyboardMonitor = HardwareKeyboardMonitor()) {
         self.liveWaitMilliseconds = liveWaitMilliseconds
         self.linkWatcher = linkWatcher
         self.prefetchEnabled = prefetch
@@ -241,6 +244,7 @@ enum ConnectionState: Equatable {
         self.themeMinimumGap = themeMinimumGap
         self.theme = ThemeStore(defaults: defaults)
         self.hotkeys = HotkeyStore(defaults: defaults)
+        self.keyboard = KeyboardPrefs(defaults: defaults, hardware: hardwareKeyboard)
         self.cellMetrics = cellMetrics
         self.keepAwake = keepAwake
         preferLineComposer = defaults.bool(forKey: Self.lineComposerKey)

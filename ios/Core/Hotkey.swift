@@ -11,6 +11,9 @@ public enum HotkeyError: Error, Equatable, LocalizedError, Sendable {
     case tooManyHotkeys(Int)
     case duplicate
     case unknown
+    case invalidChord(String)
+    /// The shortcut already belongs to another hotkey (its name).
+    case chordInUse(String)
     public var errorDescription: String? {
         switch self {
         case .emptyLabel: "Give the hotkey a name."
@@ -22,6 +25,8 @@ public enum HotkeyError: Error, Equatable, LocalizedError, Sendable {
         case .tooManyHotkeys(let limit): "You can keep at most \(limit) hotkeys."
         case .duplicate: "A hotkey with this identity already exists."
         case .unknown: "That hotkey no longer exists."
+        case .invalidChord(let reason): reason
+        case .chordInUse(let name): "That shortcut already runs “\(name)”."
         }
     }
 }
@@ -35,8 +40,13 @@ public struct Hotkey: Sendable, Hashable, Identifiable {
     public let id: String
     public var label: String
     public var steps: [KeyItem]
-    public init(id: String = UUID().uuidString.lowercased(), label: String, steps: [KeyItem]) {
-        self.id = id; self.label = label; self.steps = steps
+    /// A keyboard shortcut that runs this hotkey without opening the hotkey menu.
+    public var chord: KeyChord?
+    /// Whether the key bar shows a button for it. A hotkey that is only a shortcut (Esc on ⌘E) stays out of the bar's way and
+    /// is still there in the hotkey menu.
+    public var showsOnBar: Bool
+    public init(id: String = UUID().uuidString.lowercased(), label: String, steps: [KeyItem], chord: KeyChord? = nil, showsOnBar: Bool = true) {
+        self.id = id; self.label = label; self.steps = steps; self.chord = chord; self.showsOnBar = showsOnBar
     }
 
     /// Checks the label and every step against the `shell.keys` contract: text without control characters, only whitelisted keys,
@@ -54,6 +64,10 @@ public struct Hotkey: Sendable, Hashable, Identifiable {
         }
         do { try KeyItem.validate(batch: items) }
         catch { throw HotkeyError.invalidStep(index: steps.count - 1, reason: "there is more text than one send can carry.") }
+        if let chord {
+            do { try chord.validate() }
+            catch { throw HotkeyError.invalidChord((error as? ChordError)?.errorDescription ?? "That shortcut cannot be used.") }
+        }
     }
     private static func reason(for step: KeyItem) -> String {
         switch step {
@@ -91,33 +105,52 @@ public struct Hotkey: Sendable, Hashable, Identifiable {
 
     /// `{"id","label","steps":[{"text":…}|{"key":…}]}`, the steps in the wire form of `shell.keys`.
     public var json: JSONValue {
-        .object(["id": .string(id), "label": .string(label), "steps": .array(steps.map(\.json))])
+        var object: [String: JSONValue] = ["id": .string(id), "label": .string(label), "steps": .array(steps.map(\.json))]
+        if let chord { object["chord"] = chord.json }
+        if !showsOnBar { object["bar"] = .bool(false) }
+        return .object(object)
     }
     /// Strict: a hotkey that would not validate is not accepted from storage either.
     public init(json: JSONValue) throws {
         guard case .object = json, let id = json["id"].string, !id.isEmpty, id.utf8.count <= 64, case .array(let raw) = json["steps"], let label = json["label"].string else {
             throw HotkeyError.unknown
         }
-        self.init(id: id, label: label, steps: try raw.map { try KeyItem(json: $0) })
+        var chord: KeyChord?
+        if case .object = json["chord"] {
+            do { chord = try KeyChord(json: json["chord"]) } catch { throw HotkeyError.invalidChord("That shortcut cannot be used.") }
+        }
+        var onBar = true
+        if case .bool(let flag) = json["bar"] { onBar = flag }
+        self.init(id: id, label: label, steps: try raw.map { try KeyItem(json: $0) }, chord: chord, showsOnBar: onBar)
         try validate()
     }
 }
 
 /// The hotkeys a person has added: an ordered list with editing, kept small, and a stored form that survives bad data.
 public struct HotkeyLibrary: Sendable, Equatable {
-    public static let maxHotkeys = 24
+    /// Enough for a keyboard template (about fifteen) and a person's own on top; the key bar scrolls and the hotkey menu filters.
+    public static let maxHotkeys = 64
     public private(set) var hotkeys: [Hotkey]
     public init(hotkeys: [Hotkey] = []) { self.hotkeys = hotkeys }
+
+    /// The hotkey a shortcut runs, if any.
+    public func hotkey(for chord: KeyChord) -> Hotkey? { hotkeys.first { $0.chord == chord } }
+    private func conflict(for hotkey: Hotkey) -> Hotkey? {
+        guard let chord = hotkey.chord else { return nil }
+        return hotkeys.first { $0.id != hotkey.id && $0.chord == chord }
+    }
 
     public mutating func add(_ hotkey: Hotkey) throws {
         try hotkey.validate()
         guard !hotkey.isBuiltIn, !hotkeys.contains(where: { $0.id == hotkey.id }) else { throw HotkeyError.duplicate }
         guard hotkeys.count < Self.maxHotkeys else { throw HotkeyError.tooManyHotkeys(Self.maxHotkeys) }
+        if let other = conflict(for: hotkey) { throw HotkeyError.chordInUse(other.label) }
         hotkeys.append(hotkey)
     }
     public mutating func update(_ hotkey: Hotkey) throws {
         try hotkey.validate()
         guard let index = hotkeys.firstIndex(where: { $0.id == hotkey.id }) else { throw HotkeyError.unknown }
+        if let other = conflict(for: hotkey) { throw HotkeyError.chordInUse(other.label) }
         hotkeys[index] = hotkey
     }
     public mutating func remove(id: String) { hotkeys.removeAll { $0.id == id } }
@@ -145,9 +178,12 @@ public struct HotkeyLibrary: Sendable, Equatable {
     public init(encoded text: String?) {
         guard let text, let value = try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)), value["v"] == .number(1) else { self.init(); return }
         var seen = Set<String>()
+        var chords = Set<KeyChord>()
         var list: [Hotkey] = []
         for raw in value["hotkeys"].array {
-            guard list.count < Self.maxHotkeys, let hotkey = try? Hotkey(json: raw), !hotkey.isBuiltIn, seen.insert(hotkey.id).inserted else { continue }
+            guard list.count < Self.maxHotkeys, var hotkey = try? Hotkey(json: raw), !hotkey.isBuiltIn, seen.insert(hotkey.id).inserted else { continue }
+            // Two hotkeys on one shortcut: the first keeps it, the later one stays but loses it.
+            if let chord = hotkey.chord, !chords.insert(chord).inserted { hotkey.chord = nil }
             list.append(hotkey)
         }
         self.init(hotkeys: list)
