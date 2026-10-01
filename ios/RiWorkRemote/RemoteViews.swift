@@ -461,7 +461,7 @@ struct SessionConsole: View {
         .simultaneousGesture(magnify)
         // Top right, where lines end; top left in focus mode, where the text controls are.
         .overlay(alignment: focused ? .topLeading : .topTrailing) {
-            if model.showLatency { LatencyOverlay(latency: model.latency, mode: model.syncMode) }
+            if model.showLatency { LatencyOverlay(latency: model.latency, mode: model.syncMode, link: { model.linkLines }) }
         }
         .overlay(alignment: .topTrailing) {
             if focused {

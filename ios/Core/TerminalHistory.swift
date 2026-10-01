@@ -19,8 +19,10 @@ public enum HistoryLimits {
     public static let pageLines = 300
     /// The smallest page tried after `response_too_large`.
     public static let minimumPageLines = 10
-    /// The most the protocol allows per page.
-    public static let maximumPageLines = 1000
+    /// The most the protocol allows per page since 2026-10-01 (a desktop announces it in `ready`; see `DesktopFeatures`).
+    public static let maximumPageLines = 5000
+    /// What a desktop that does not announce a limit allows (the protocol said 1000 until 2026-10-01).
+    public static let legacyMaximumPageLines = 1000
     /// Scrollback lines kept on the phone. Older ones are not asked for, and the oldest held go first when live output pushes past it.
     ///
     /// A held line costs about 285 bytes on the heap (measured: 50,000 styled lines of ordinary build and test output came to 13.6 MB,
@@ -84,8 +86,9 @@ public struct HistoryReply: Sendable, Equatable {
     public let historySize: Int?
     /// No older lines exist above this page.
     public let complete: Bool
-    /// About what the page weighed on the wire: its text, with every escape character counted as the six bytes `\u001b` that JSON
-    /// makes of it. This is what the link was measured with.
+    /// About what the page weighed as JSON: its text, with every escape character counted as the six bytes `\u001b` that JSON
+    /// makes of it. The link is measured with the real size of the reply (`ReplyTiming`) where the transport has one; this is for the
+    /// transport that does not.
     public let wireBytes: Int
 
     public init(result: JSONValue) throws {

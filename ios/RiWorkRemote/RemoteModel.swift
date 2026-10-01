@@ -74,15 +74,32 @@ enum ConnectionState: Equatable {
     @ObservationIgnored var historyRun = UUID()
     /// Per session: lines per page after `response_too_large` halved them. Forgotten on reconnect and refresh.
     @ObservationIgnored var historyPageLines: [String: Int] = [:]
+    /// Pages in a row that landed under such a cap: after six it is raised by half, so one big page does not pin a session small.
+    @ObservationIgnored var historyCapStreak: [String: Int] = [:]
     /// Whether `shell.history` is asked with `styled`. Cleared for the connection when the desktop rejects the field.
     @ObservationIgnored var historyStyled = true
     @ObservationIgnored var historyRetryAfter: ContinuousClock.Instant?
     /// What pages of history say about the link: how fast it is. Forgotten when the kind of link changes.
     @ObservationIgnored var linkMeter = LinkMeter()
-    /// Low Data Mode, a metered link, Low Power Mode.
-    @ObservationIgnored var linkConditions = LinkConditions()
+    /// Low Data Mode, a metered link, Low Power Mode, as the path says right now; `linkConditions` is what the phone acts on: a
+    /// restriction is lifted only after the path has been free of it for a while, so flags that flap do not make the fetch flap.
+    @ObservationIgnored var rawLinkConditions = LinkConditions()
+    @ObservationIgnored var conditionHold = ConditionHold()
+    @ObservationIgnored var conditionLapse: Task<Void, Never>?
+    var linkConditions: LinkConditions { conditionHold.effective(rawLinkConditions, at: ProcessInfo.processInfo.systemUptime) }
     @ObservationIgnored let linkWatcher: (any LinkWatching)?
     @ObservationIgnored var linkInterface = "other"
+    /// What the person chose for the history download (Settings). Persisted.
+    var historyMode = HistoryMode.automatic
+    /// Ask the desktop to compress its replies when it offers to (Settings). Persisted.
+    var compressTraffic = true
+    /// What the desktop announced when this connection began, and whether it agreed to compress.
+    @ObservationIgnored var desktopFeatures = DesktopFeatures()
+    var compressionAgreed = false
+    /// How the latest `shell.output` reply travelled: what a line of this terminal weighs, before any page has said.
+    @ObservationIgnored var lastOutputTiming: ReplyTiming?
+    /// The most lines one history page may ask for on this connection: what the desktop announced, less if its CLI turned out to take fewer.
+    @ObservationIgnored var historyLineLimit = HistoryLimits.legacyMaximumPageLines
     /// Fetch history in the background (the default). Off, a page is fetched only when asked for (`loadOlderHistory`).
     @ObservationIgnored var prefetchEnabled: Bool
     /// The lines of shells that are not on screen, so that going back to one does not fetch them again.
@@ -222,13 +239,17 @@ enum ConnectionState: Equatable {
         interfaceScale = defaults.object(forKey: Self.interfaceScaleKey) == nil ? InterfaceScale.standard : InterfaceScale.clamped(defaults.double(forKey: Self.interfaceScaleKey))
         showLatency = defaults.bool(forKey: Self.showLatencyKey)
         boldIsBright = defaults.bool(forKey: Self.boldIsBrightKey)
+        historyMode = HistoryMode(rawValue: defaults.string(forKey: Self.historyModeKey) ?? "") ?? .automatic
+        compressTraffic = defaults.object(forKey: Self.compressTrafficKey) == nil ? true : defaults.bool(forKey: Self.compressTrafficKey)
         theme.setScale(interfaceScale)
         loadLibrary()
         if let linkWatcher {
-            linkConditions = linkWatcher.conditions; linkInterface = linkWatcher.interface
+            rawLinkConditions = linkWatcher.conditions; linkInterface = linkWatcher.interface
+            conditionHold.apply(rawLinkConditions, at: ProcessInfo.processInfo.systemUptime)
             linkWatcher.onChange = { [weak self] in self?.linkChanged() }
         }
     }
+    static let historyModeKey = "riwork.historyMode", compressTrafficKey = "riwork.compressTraffic"
     static let lineComposerKey = "riwork.lineComposer", fontSizeKey = "riwork.terminalFontSize"
     static let interfaceScaleKey = "riwork.interfaceScale", showLatencyKey = "riwork.showLatency", boldIsBrightKey = "riwork.boldIsBright"
     /// Only "item not found" means an empty library. Any other failure blocks writes so a retry can still succeed.
@@ -405,8 +426,10 @@ enum ConnectionState: Equatable {
         syncMode = .unknown; outputHash = nil; liveBackoff = LongPollBackoff(); waitSlots.reset(); outputExtensions = true; latency.reset()
         // And for paging history: the first page tells whether this desktop has `shell.history`.
         historySupport = .unknown; historyStyled = true; historyPageLines = [:]; historyRetryAfter = nil; historyMisses = 0; historyFailed = false; cancelHistory()
-        // The new connection may leave on another link: it is measured again.
-        linkMeter.reset(); settleUntil = nil
+        // The new connection may leave on another link: its speed and round trip are measured again (what the desktop and its history
+        // are like is not about the link, and is kept).
+        linkMeter.pathChanged(); settleUntil = nil
+        desktopFeatures = DesktopFeatures(); compressionAgreed = false; historyLineLimit = HistoryLimits.legacyMaximumPageLines
         linkWatcher?.start()
         // The same for its colors, and the last palette for this desktop is on screen while the first fetch is on its way.
         themeSupport = .unknown; appearanceFlight = nil
@@ -415,6 +438,7 @@ enum ConnectionState: Equatable {
         for key in Array(keyBuffers.keys) { keyBuffers[key]?.block = nil }
         state = .connecting; error = nil; snapshotStale = true
         do {
+            await client.setCompression(compressTraffic)
             let established = try await client.connect(pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment)
             guard generation == token else { return }
             if established != desktop.pairing {
@@ -422,6 +446,7 @@ enum ConnectionState: Equatable {
             }
             guard generation == token else { return }
             state = .connected
+            await learnDesktopFeatures(token: token)
             startThemeSync(token: token)
             try await refresh(token: token)
             guard generation == token else { return }
@@ -487,7 +512,10 @@ enum ConnectionState: Equatable {
         do { try await refresh(token: generation) } catch { handle(error) }
     }
     private func rpc(_ method: String, _ params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
-        try await client.request(method: method, params: params, id: id)
+        // The lists asked for when a connection opens are small replies: the first samples of the round trip, before any history page.
+        let reply = try await client.timedRequest(method: method, params: params, id: id)
+        noteReply(reply.timing)
+        return reply.value
     }
     private func refresh(token: UUID) async throws {
         loading = true
@@ -642,6 +670,7 @@ enum ConnectionState: Equatable {
                     // Colors, symbols and cursor are worked out off the main actor; a full 500-line screen must not stall touches.
                     let styled = await Task.detached(priority: .userInitiated) { screen.styledScreen }.value
                     guard generation == token, sessionID == id else { return .skipped }
+                    if let timing = lastOutputTiming { linkMeter.noteLines(wireBytes: timing.wireBytes, jsonBytes: timing.jsonBytes, lines: styled.lines.count) }
                     output = styled.text; styledOutput = styled; outputVersion &+= 1
                     outputCursorOffset = styled.cursorOffset; outputInMode = screen.inMode
                     takeIn(screen: screen, styled: styled)
@@ -713,7 +742,12 @@ enum ConnectionState: Equatable {
     /// The one `shell.output` request. It runs as its own task so a long poll can be cancelled alone: cancelling it detaches only
     /// this request (RelayClient keeps the socket and counters); the desktop's late answer is dropped.
     private func requestOutput(_ request: OutputRequest) async throws -> JSONValue {
-        let flight = Task { [client] in try await client.request(method: "shell.output", params: request.params, id: UUID().uuidString.lowercased()) }
+        let flight = Task { [client, weak self] in
+            let reply = try await client.timedRequest(method: "shell.output", params: request.params, id: UUID().uuidString.lowercased())
+            self?.noteReply(reply.timing)
+            self?.lastOutputTiming = reply.timing
+            return reply.value
+        }
         outputFlight = flight; outputFlightIsLongPoll = request.isLongPoll
         let started = ProcessInfo.processInfo.systemUptime
         let token = generation

@@ -143,7 +143,7 @@ offline or the device is revoked (checked every 250 ms while requests are pendin
 
 `shell.history` reads scrollback above the screen a page at a time (the contract is in
 [remote-protocol.md](../docs/remote-protocol.md)): `end` lines skipped above the
-screen, then `lines` (1 to 1000) older ones, optionally `styled`, answered as
+screen, then `lines` (1 to 5000; 1000 until 2026-10-01) older ones, optionally `styled`, answered as
 `{"shell_id","output","line_count","history_size","complete"}` from
 `riwork shell history SHELL_UUID --end N --lines M [--styled] --json`. The connector
 validates the request before anything runs, checks the shell like `shell.output`
@@ -154,6 +154,19 @@ ordered slot of typing and resizing and never a wait slot. A page too big for on
 response is `response_too_large` and the phone asks for fewer lines. `shell.output`
 also passes on `history_size` and `alternate` from the CLI, in its `unchanged` answer
 too.
+
+The link extension (the contract is in [remote-protocol.md](../docs/remote-protocol.md), "Link
+extension") is in `src/link.rs` and the sealing path of `connector.rs`. Every response gains
+`server_ms`, the time from decrypting the request to having its reply ready. `ready` announces
+`features` (`deflate`, `history_max_lines`). `link.configure` is answered by the connection loop
+itself, in arrival order, because it changes the connection and not the desktop. After `deflate`,
+a reply of 2 KiB or more is sent as `0x01 || u32 length || raw deflate` (level 6, `flate2`'s Rust
+backend) when that is smaller, with the closing `server_ms` field deflated after the body so the
+number includes the compression; bodies over 128 KiB are deflated on a blocking thread. The CLI
+may then write up to 2 MiB to the pipe and `Rpc::handle_shared_up_to` checks the response against
+the session's limit; a reply that does not fit one frame even deflated is replaced by
+`response_too_large`. `shell.history` pages of up to 5000 lines are accepted; the first time the installed CLI refuses a page for being too long (`--lines needs an integer from 1 to N`, as builds from before 2026-10-01 do at 1000) the connector remembers N, refuses longer pages itself and announces N in later `ready` frames. `tests/link.rs` runs a real relay and the real connector binary against a
+stand-in CLI; `fixtures/link.json` (see `fixtures/generate_link.py`) is shared with the iOS tests.
 
 `appearance.get` returns the colors the desktop published, so the phone can match its
 theme (the contract is in [remote-protocol.md](../docs/remote-protocol.md)). It runs
@@ -248,5 +261,7 @@ uv run --with cryptography python remote/fixtures/generate.py
 - Relay provisioning is operator-managed and takes effect at relay restart.
   There is no public registration/admin API, cloud account service or automatic
   connector startup installation.
-- Lists/output are bounded to 128 KiB of JSON. Large responses fail clearly;
-  lower output line counts where relevant. Polling is request/response, not streaming.
+- Lists/output are bounded to 128 KiB of JSON, or, for a phone that asked for compression
+  (`link.configure`), to what fits 128 KiB once deflated (at most 2 MiB of JSON). Large
+  responses fail clearly; lower output line counts where relevant. Polling is
+  request/response, not streaming.

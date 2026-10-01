@@ -184,14 +184,15 @@ final class HistoryPrefetchTests: XCTestCase {
         let good = meter(pages: [(60_000, 1000, 0.1 + 0.2)])
         let slow = meter(pages: [(30_000, 500, 0.1 + 0.4)])
         XCTAssertEqual(fast.tier, .fast); XCTAssertEqual(good.tier, .good); XCTAssertEqual(slow.tier, .slow)
+        // The gap is a share of what the link spent on the page: its time less the fixed cost of the request.
         XCTAssertEqual(HistoryPrefetch.gapAfterPage(meter: fast, liveBusy: false), 0.03, accuracy: 0.0001, "nearly back to back")
-        XCTAssertEqual(HistoryPrefetch.gapAfterPage(meter: good, liveBusy: false), 0.3, accuracy: 0.0001, "half the time on the link")
-        XCTAssertEqual(HistoryPrefetch.gapAfterPage(meter: slow, liveBusy: false), 1.5, accuracy: 0.0001, "a quarter")
-        XCTAssertEqual(HistoryPrefetch.gapAfterPage(meter: good, liveBusy: true), 0.6, accuracy: 0.0001)
+        XCTAssertEqual(HistoryPrefetch.gapAfterPage(meter: good, liveBusy: false), 0.2, accuracy: 0.0001, "as long as the page took on the link")
+        XCTAssertEqual(HistoryPrefetch.gapAfterPage(meter: slow, liveBusy: false), 1.2, accuracy: 0.0001, "three times")
+        XCTAssertEqual(HistoryPrefetch.gapAfterPage(meter: good, liveBusy: true), 0.4, accuracy: 0.0001)
         XCTAssertEqual(HistoryPrefetch.gapAfterPage(meter: LinkMeter(), liveBusy: false), 0.1, accuracy: 0.0001)
         // The decision waits out the rest of the gap.
         guard case .wait(let seconds) = HistoryPrefetch.decide(input { $0.meter = good; $0.sinceLastPage = 0.1 }) else { return XCTFail() }
-        XCTAssertEqual(seconds, 0.2, accuracy: 0.001)
+        XCTAssertEqual(seconds, 0.1, accuracy: 0.001)
         guard case .fetch = HistoryPrefetch.decide(input { $0.meter = good; $0.sinceLastPage = 0.31 }) else { return XCTFail("the gap is over") }
     }
     func testTheHistoryIsLeftAloneWhileItIsBeingDrawnAgain() {
@@ -263,5 +264,182 @@ final class HistoryPrefetchTests: XCTestCase {
         m.record(wireBytes: 180_000, lines: 600, seconds: 0.08)
         XCTAssertEqual(m.tier, .fast)
         XCTAssertLessThanOrEqual(Double(HistoryPrefetch.pageLines(meter: m)) * 300, HistoryPrefetch.maximumPageWireBytes + 300)
+    }
+
+    // MARK: the setting
+
+    func testTheModeDecidesWhatTheLinkAndTheRestrictionsMayNot() {
+        let calm = LinkConditions(), metered = LinkConditions(expensive: true), lowData = LinkConditions(constrained: true), lowPower = LinkConditions(lowPower: true)
+        func appetite(_ mode: HistoryMode, _ tier: LinkTier, _ conditions: LinkConditions, remaining: Double? = nil) -> HistoryAppetite {
+            HistoryAppetite.appetite(mode: mode, tier: tier, conditions: conditions, remainingWireBytes: remaining)
+        }
+        // Always everything: nothing holds it back.
+        for conditions in [calm, metered, lowData, lowPower] { XCTAssertEqual(appetite(.everything, .slow, conditions), .everything) }
+        // Ahead only: a few screens, whatever the link says; Low Data Mode is still asked for less.
+        XCTAssertEqual(appetite(.ahead, .fast, calm), .screens(10))
+        XCTAssertEqual(appetite(.ahead, .fast, metered), .screens(10))
+        XCTAssertEqual(appetite(.ahead, .fast, lowData), .screens(5))
+        // Off: only when the reader is near the top (1.5 screens, and it fills to 3).
+        XCTAssertEqual(appetite(.off, .fast, calm), .screens(3))
+        XCTAssertEqual(appetite(.off, .slow, lowData), .screens(3))
+        // Automatic is the old policy where there is nothing to say it is cheap.
+        XCTAssertEqual(appetite(.automatic, .fast, calm), .everything)
+        XCTAssertEqual(appetite(.automatic, .slow, calm), .screens(10))
+        XCTAssertEqual(appetite(.automatic, .fast, metered), .screens(10))
+        XCTAssertEqual(appetite(.automatic, .fast, lowPower), .screens(10))
+        XCTAssertEqual(appetite(.automatic, .fast, lowData), .screens(5))
+        XCTAssertEqual(appetite(.automatic, .unknown, calm), .everything, "measuring: the first pages do not wait for a verdict")
+    }
+    func testWhatIsLeftIsFetchedWholeWhereItIsCheapEvenOnAPoorOrMeteredLink() {
+        let kb = 1024.0
+        // Compressed, the rest of a typical session weighs a few hundred KB on the wire.
+        XCTAssertEqual(HistoryAppetite.appetite(tier: .slow, conditions: LinkConditions(), remainingWireBytes: 200 * kb), .everything)
+        XCTAssertEqual(HistoryAppetite.appetite(tier: .slow, conditions: LinkConditions(), remainingWireBytes: 300 * kb), .screens(10))
+        XCTAssertEqual(HistoryAppetite.appetite(tier: .fast, conditions: LinkConditions(expensive: true), remainingWireBytes: 500 * kb), .everything)
+        XCTAssertEqual(HistoryAppetite.appetite(tier: .fast, conditions: LinkConditions(expensive: true), remainingWireBytes: 600 * kb), .screens(10))
+        XCTAssertEqual(HistoryAppetite.appetite(tier: .fast, conditions: LinkConditions(constrained: true), remainingWireBytes: 100 * kb), .everything)
+        XCTAssertEqual(HistoryAppetite.appetite(tier: .fast, conditions: LinkConditions(constrained: true), remainingWireBytes: 200 * kb), .screens(5), "Low Data Mode asks for the least")
+        XCTAssertEqual(HistoryAppetite.appetite(tier: .fast, conditions: LinkConditions(lowPower: true), remainingWireBytes: 100 * kb), .everything)
+        XCTAssertEqual(HistoryAppetite.appetite(tier: .slow, conditions: LinkConditions(), remainingWireBytes: nil), .screens(10), "not known: not assumed cheap")
+        // The chosen modes do not look.
+        XCTAssertEqual(HistoryAppetite.appetite(mode: .ahead, tier: .fast, conditions: LinkConditions(), remainingWireBytes: 1), .screens(10))
+    }
+    func testTheReasonIsWhatTheSettingsScreenSays() {
+        func reason(_ tier: LinkTier, _ conditions: LinkConditions = LinkConditions(), mode: HistoryMode = .automatic, remaining: Double? = nil) -> HistoryAppetite.Reason {
+            HistoryAppetite.policy(mode: mode, tier: tier, conditions: conditions, remainingWireBytes: remaining).reason
+        }
+        XCTAssertEqual(reason(.slow, mode: .everything), .chosenEverything)
+        XCTAssertEqual(reason(.fast, mode: .ahead), .chosenAhead)
+        XCTAssertEqual(reason(.fast, mode: .off), .chosenOff)
+        XCTAssertEqual(reason(.fast), .goodLink)
+        XCTAssertEqual(reason(.unknown), .measuring)
+        XCTAssertEqual(reason(.slow), .slowLink)
+        XCTAssertEqual(reason(.fast, LinkConditions(expensive: true)), .metered)
+        XCTAssertEqual(reason(.fast, LinkConditions(constrained: true)), .lowData)
+        XCTAssertEqual(reason(.fast, LinkConditions(lowPower: true)), .lowPower)
+        XCTAssertEqual(reason(.slow, remaining: 1000), .cheap)
+    }
+    func testWithTheDownloadOffAPageComesOnlyWhenTheReaderIsNearTheTop() {
+        let rows = 48
+        func decide(above: Int, running: Bool = false, demand: Bool = false) -> HistoryPrefetch.Decision {
+            HistoryPrefetch.decide(input { $0.mode = .off; $0.aboveReader = above; $0.viewRows = rows; $0.running = running; $0.demand = demand })
+        }
+        XCTAssertEqual(decide(above: 20_000), .idle)
+        XCTAssertEqual(decide(above: 3 * rows), .idle, "three screens loaded above him")
+        XCTAssertEqual(decide(above: Int(1.5 * Double(rows)) + 1), .idle)
+        guard case .fetch(_, let urgent) = decide(above: Int(1.5 * Double(rows)) - 1) else { return XCTFail("a screen and a half from the top") }
+        XCTAssertTrue(urgent, "the reader is waiting: no pause between pages")
+        guard case .fetch = decide(above: 2 * rows, running: true) else { return XCTFail("filling up to three screens") }
+        XCTAssertEqual(decide(above: 3 * rows, running: true), .idle)
+        guard case .fetch = decide(above: 20_000, demand: true) else { return XCTFail("the retry row was tapped") }
+    }
+    func testAChosenEverythingFetchesOnAMeteredLowDataSlowLinkToo() {
+        let hostile = LinkConditions(constrained: true, expensive: true, lowPower: true)
+        guard case .fetch = HistoryPrefetch.decide(input { $0.mode = .everything; $0.conditions = hostile; $0.meter = meter(pages: [(30_000, 500, 0.1 + 1.0)]); $0.aboveReader = 50_000 }) else { return XCTFail() }
+        XCTAssertEqual(HistoryPrefetch.decide(input { $0.mode = .automatic; $0.conditions = hostile; $0.aboveReader = 50_000 }), .idle)
+        XCTAssertEqual(HistoryPrefetch.decide(input { $0.mode = .ahead; $0.aboveReader = 50_000 }), .idle)
+    }
+    func testAMeterThatSawASmallReplyDoesNotNeedAProbe() {
+        var m = LinkMeter()
+        m.observe(ReplyTiming(elapsed: 0.09, serverSeconds: 0.01, wireBytes: 400), at: 1)
+        XCTAssertEqual(HistoryPrefetch.decide(input { $0.meter = m }), .fetch(lines: HistoryLimits.pageLines, urgent: false), "a real page at once")
+        XCTAssertEqual(HistoryPrefetch.decide(input { $0.meter = LinkMeter() }), .fetch(lines: HistoryPrefetch.probeLines, urgent: false), "an older desktop gets the probe")
+    }
+    func testAPageNeverAsksForMoreLinesThanTheDesktopTakes() {
+        var m = LinkMeter()
+        m.observe(ReplyTiming(elapsed: 0.05, serverSeconds: 0.01, wireBytes: 400), at: 0)
+        for _ in 0..<4 { m.record(LinkSample(wireBytes: 40_000, jsonBytes: 300_000, sealedBytes: 30_000, lines: 4000, elapsed: 0.17, serverSeconds: 0.1, compressed: true), at: Double(m.pages)) }
+        XCTAssertEqual(m.tier, .fast)
+        XCTAssertGreaterThan(HistoryPrefetch.pageLines(meter: m, maximumLines: 5000), 1000)
+        XCTAssertLessThanOrEqual(HistoryPrefetch.pageLines(meter: m, maximumLines: 1000), 1000)
+        guard case .fetch(let lines, _) = HistoryPrefetch.decide(input { $0.meter = m; $0.maximumLines = 1000 }) else { return XCTFail() }
+        XCTAssertLessThanOrEqual(lines, 1000)
+        guard case .fetch(let more, _) = HistoryPrefetch.decide(input { $0.meter = m; $0.maximumLines = 5000 }) else { return XCTFail() }
+        XCTAssertGreaterThan(more, 1000)
+    }
+
+    // MARK: flags that flap
+
+    func testARestrictionAppliesAtOnceAndIsLiftedOnlyAfterTheCalm() {
+        var hold = ConditionHold(calm: 10)
+        let free = LinkConditions(), metered = LinkConditions(expensive: true)
+        XCTAssertEqual(hold.apply(free, at: 0), free)
+        XCTAssertEqual(hold.apply(metered, at: 1), metered, "at once")
+        XCTAssertEqual(hold.apply(free, at: 2), metered, "gone from the path, still held")
+        XCTAssertEqual(hold.effective(free, at: 11.9), metered)
+        XCTAssertEqual(hold.effective(free, at: 12.1), free, "ten seconds after the path stopped saying so")
+        // A flag that flaps: on, off, on, off within seconds never lets the fetch through.
+        for second in 20..<40 { _ = hold.apply(second % 2 == 0 ? metered : free, at: Double(second)) }
+        XCTAssertEqual(hold.effective(free, at: 40), metered)
+        XCTAssertEqual(hold.effective(free, at: 48.9), metered, "ten seconds after the last time it went off")
+        XCTAssertEqual(hold.effective(free, at: 49.1), free)
+    }
+    func testEachFlagIsHeldOnItsOwnAndLowPowerIsNotHeldAtAll() {
+        var hold = ConditionHold(calm: 10)
+        _ = hold.apply(LinkConditions(constrained: true, lowPower: true), at: 0)
+        let after = hold.effective(LinkConditions(), at: 1)
+        XCTAssertTrue(after.constrained)
+        XCTAssertFalse(after.expensive)
+        XCTAssertFalse(after.lowPower, "the person turned it off: it is off")
+        XCTAssertEqual(hold.lapse(after: 1, raw: LinkConditions()) ?? 0, 9, accuracy: 0.001, "the fetch is looked at again when the hold lapses")
+        XCTAssertNil(hold.lapse(after: 1, raw: LinkConditions(constrained: true)), "still restricted: nothing is waiting to lapse")
+        XCTAssertNil(hold.lapse(after: 11, raw: LinkConditions()))
+    }
+    func testAnInterfaceChangeIsPassedOnOnlyOnceItHasLasted() {
+        var path = InterfaceDebounce()
+        XCTAssertTrue(path.report("wifi", at: 0), "the first path is where the phone is: nothing to wait for")
+        XCTAssertEqual(path.interface, "wifi")
+        XCTAssertNil(path.settleDelay(at: 0))
+        // Tailscale reconnecting: the path flaps through the tunnel and back within the settle time.
+        XCTAssertFalse(path.report("other", at: 10))
+        XCTAssertEqual(path.interface, "wifi", "not yet")
+        XCTAssertEqual(path.settleDelay(at: 10) ?? -1, 2, accuracy: 0.001)
+        XCTAssertFalse(path.settle(at: 11))
+        XCTAssertFalse(path.report("none", at: 11.2), "a dropout on the way")
+        XCTAssertFalse(path.report("wifi", at: 11.6), "and back to where it was")
+        XCTAssertNil(path.settleDelay(at: 11.6))
+        XCTAssertFalse(path.settle(at: 30), "nothing is pending")
+        XCTAssertEqual(path.interface, "wifi")
+        // A real change: the phone left the Wi-Fi. Reports that repeat it do not restart the clock.
+        XCTAssertFalse(path.report("cellular", at: 20))
+        XCTAssertFalse(path.report("cellular", at: 21))
+        XCTAssertEqual(path.settleDelay(at: 21.5) ?? -1, 0.5, accuracy: 0.001)
+        XCTAssertFalse(path.settle(at: 21.5))
+        XCTAssertTrue(path.settle(at: 22))
+        XCTAssertEqual(path.interface, "cellular")
+        XCTAssertNil(path.settleDelay(at: 22))
+        // Pending changes replace each other: the one that lasts wins, with a clock of its own.
+        XCTAssertFalse(path.report("other", at: 40))
+        XCTAssertFalse(path.report("wired", at: 41.5))
+        XCTAssertFalse(path.settle(at: 42.1), "'other' was there for 1.5 s, but it is 'wired' that is pending and it has been 0.6 s")
+        XCTAssertTrue(path.settle(at: 43.5))
+        XCTAssertEqual(path.interface, "wired")
+    }
+    func testTheFirstReportCanBeTheOnlyOneAndTheInitialInterfaceIsOther() {
+        var path = InterfaceDebounce()
+        XCTAssertEqual(path.interface, "other")
+        XCTAssertFalse(path.report("other", at: 0), "no change from the initial guess")
+        var other = InterfaceDebounce()
+        XCTAssertTrue(other.report("cellular", at: 0))
+        XCTAssertEqual(other.interface, "cellular")
+    }
+    func testARestrictionThatWasOnForAWhileIsStillHeldWhenItGoesOff() {
+        // The hold runs from when the flag was last seen on, which for a flag that has been on for minutes is the moment it went off.
+        var hold = ConditionHold(calm: 10)
+        let free = LinkConditions(), metered = LinkConditions(expensive: true, lowPower: false)
+        hold.apply(metered, at: 0)
+        XCTAssertEqual(hold.apply(free, at: 300), LinkConditions(expensive: true), "just went off after five minutes on: held")
+        XCTAssertTrue(hold.effective(free, at: 309.9).expensive)
+        XCTAssertFalse(hold.effective(free, at: 310.1).expensive)
+        // A flag that was never on is not held, and a repeated report of 'off' does not start a hold.
+        var clean = ConditionHold(calm: 10)
+        XCTAssertEqual(clean.apply(free, at: 0), free)
+        XCTAssertEqual(clean.apply(free, at: 5), free)
+        // Off and on again within the calm time extends it from the last 'off'.
+        hold.apply(free, at: 400)
+        hold.apply(metered, at: 402)
+        XCTAssertEqual(hold.apply(free, at: 403), LinkConditions(expensive: true))
+        XCTAssertTrue(hold.effective(free, at: 412.9).expensive)
+        XCTAssertFalse(hold.effective(free, at: 413.1).expensive)
     }
 }

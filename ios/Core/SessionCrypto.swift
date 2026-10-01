@@ -74,7 +74,17 @@ public struct SessionCipher: Sendable {
         sendCounter += 1
         return envelope
     }
-    public mutating func open(_ frame: JSONValue) throws -> JSONValue {
+    public mutating func open(_ frame: JSONValue) throws -> JSONValue { try openFrame(frame).payload }
+    /// What a received frame held: the payload, and how big it was in its forms.
+    public struct OpenedFrame: Sendable {
+        public let payload: JSONValue
+        /// The encrypted payload with its tag.
+        public let sealedBytes: Int
+        /// The JSON text, whether or not it was compressed.
+        public let jsonBytes: Int
+        public let compressed: Bool
+    }
+    public mutating func openFrame(_ frame: JSONValue) throws -> OpenedFrame {
         guard receiveCounter < UInt64.max, frame["v"] == .number(Double(version)), frame["type"].string == "encrypted", frame["session_id"].string == Base64URL.encode(sessionID), frame["direction"].string == "d2c", frame["counter"].string == String(receiveCounter), let encoded = frame["ciphertext"].string else { throw RemoteError.protocolViolation("Stale, replayed or out-of-order frame.") }
         let bytes = try Base64URL.decode(encoded)
         guard bytes.count >= 16, bytes.count <= 131088 else { throw RemoteError.protocolViolation("Invalid frame size.") }
@@ -83,10 +93,12 @@ public struct SessionCipher: Sendable {
         let plaintext: Data
         do { plaintext = try ChaChaPoly.open(box, using: d2c, authenticating: aad(direction: "d2c", counter: receiveCounter)) }
         catch { throw RemoteError.protocolViolation("Encrypted frame authentication failed.") }
-        let payload = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+        // A plain JSON text, or the desktop's deflated form of one (`LinkFrame`).
+        let (json, compressed) = try LinkFrame.decode(plaintext)
+        let payload = try JSONDecoder().decode(JSONValue.self, from: json)
         guard payload["v"] == .number(1) else { throw RemoteError.protocolViolation("Unsupported payload version.") }
         receiveCounter += 1
-        return payload
+        return OpenedFrame(payload: payload, sealedBytes: bytes.count, jsonBytes: json.count, compressed: compressed)
     }
 }
 

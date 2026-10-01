@@ -1,11 +1,12 @@
 use crate::{
-    HANDSHAKE_SECONDS, MAX_FRAME,
+    HANDSHAKE_SECONDS, MAX_FRAME, MAX_PLAINTEXT,
     config::{Device, Storage},
     crypto::{
         ClientFinish, ClientHello, ClientHelloV2, Envelope, PairFinish, PairHello, Pending,
         Session, accept_client_hello_v2, accept_hello, decode, random32,
     },
     lanes::{Lane, Lanes, MAX_QUEUED, classify},
+    link::{self, EncodeError},
     log_safe,
     rpc::Rpc,
     viewport::Viewport,
@@ -280,6 +281,10 @@ struct Queued {
     epoch: u64,
     viewport: SharedViewport,
     request: Value,
+    /// When it was decrypted: the start of the reply's `server_ms`.
+    received: std::time::Instant,
+    /// The most JSON its response may hold (see `link`).
+    reply_limit: usize,
 }
 
 /// How a request ended. `outcome` is `None` when it was cut short because its
@@ -287,6 +292,7 @@ struct Queued {
 struct Done {
     lane: Lane,
     epoch: u64,
+    received: std::time::Instant,
     outcome: Option<Result<Value>>,
 }
 
@@ -309,8 +315,10 @@ fn start_ready(
                 epoch,
                 viewport,
                 request,
+                received,
+                reply_limit,
             } = queued;
-            let run = rpc.handle_shared(&device, request, &viewport);
+            let run = rpc.handle_shared_up_to(&device, request, &viewport, reply_limit);
             let outcome = if lane.cancellable() {
                 tokio::select! {
                     result = run => Some(result),
@@ -322,6 +330,7 @@ fn start_ready(
             Done {
                 lane,
                 epoch,
+                received,
                 outcome,
             }
         });
@@ -341,6 +350,44 @@ fn record_authentication(storage: Storage, id: String, name: String) {
             ),
         }
     });
+}
+/// Seals a response: `server_ms` added, compressed if the phone asked for that and
+/// it pays, and, if it cannot fit one frame either way, replaced by a
+/// `response_too_large` error for the same request (the phone asks for less).
+async fn seal_reply(
+    session: &mut Session,
+    response: Value,
+    received: std::time::Instant,
+    compress: bool,
+) -> Result<crate::crypto::Envelope> {
+    let body = serde_json::to_vec(&response)?;
+    // A big body is deflated on a blocking thread so the connection loop (the
+    // heartbeat, the socket, the other requests) is not held for the duration.
+    let encoded = if compress && body.len() >= link::OFFLOAD_BYTES {
+        tokio::task::spawn_blocking(move || {
+            link::encode_body(body, received, compress, MAX_PLAINTEXT)
+        })
+        .await?
+    } else {
+        link::encode_body(body, received, compress, MAX_PLAINTEXT)
+    };
+    let plaintext = match encoded {
+        Ok(encoded) => encoded.plaintext,
+        Err(EncodeError::TooLarge) => {
+            // Same request, small answer; a request without a usable id gets `null` as ever.
+            let id = response.get("id").cloned().unwrap_or(Value::Null);
+            let error = crate::rpc::error_for(
+                id,
+                "response_too_large",
+                "result exceeds encrypted response limit; reduce output lines",
+            );
+            link::encode_reply(&error, received, false, MAX_PLAINTEXT)
+                .map_err(anyhow::Error::from)?
+                .plaintext
+        }
+        Err(EncodeError::Other(e)) => return Err(e),
+    };
+    session.seal("d2c", &plaintext)
 }
 async fn run_device(device: &Device, rpc: &Arc<Rpc>) -> Result<()> {
     run_device_with(device, rpc, Timing::default()).await
@@ -377,6 +424,9 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
     let mut pending: Option<Pending> = None;
     let mut pair_state: Option<(Vec<u8>, [u8; 32])> = None;
     let mut session: Option<Session> = None;
+    // Whether this session's replies may be compressed: the phone asked with
+    // `link.configure` (see `link`). Every new session starts without.
+    let mut compress = false;
     let mut viewport: Option<SharedViewport> = None;
     // Request tasks; dropped (so aborted) with this function, however it ends.
     let mut tasks: JoinSet<Done> = JoinSet::new();
@@ -431,7 +481,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                         "device revoked during RPC"
                     );
                     let s=session.as_mut().context("response without a session")?;
-                    let reply=s.seal("d2c",&serde_json::to_vec(&response)?)?;
+                    let reply=seal_reply(s,response,done.received,compress).await?;
                     send_json(&mut ws,&reply).await?;
                 }
                 continue;
@@ -464,6 +514,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     }
                 }
                 session = None;
+                compress = false;
                 pending = None;
                 pair_state = None;
                 deadline = online.then(|| Instant::now() + Duration::from_secs(HANDSHAKE_SECONDS));
@@ -531,11 +582,12 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
             Some("client_finish") => {
                 let f: ClientFinish = serde_json::from_value(value)?;
                 let mut s = pending.take().context("unexpected finish")?.finish(&f)?;
-                let ready =
-                    json!({"v":1,"type":"ready","desktop_id":p.desktop_id,"device_id":p.device_id});
+                // `features` is additive: an older phone reads only the three fields it knows.
+                let ready = json!({"v":1,"type":"ready","desktop_id":p.desktop_id,"device_id":p.device_id,"features":link::features(rpc.history_max_lines())});
                 let e = s.seal("d2c", &serde_json::to_vec(&ready)?)?;
                 send_json(&mut ws, &e).await?;
                 session = Some(s);
+                compress = false;
                 viewport = Some(Arc::new(tokio::sync::Mutex::new(Some(Viewport::new(
                     rpc.cli.clone(),
                     p.device_id.clone(),
@@ -554,9 +606,24 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     .context("RPC before authenticated handshake")?;
                 let envelope: Envelope = serde_json::from_value(value)?;
                 let plaintext = s.open("c2d", &envelope)?;
+                let received = std::time::Instant::now();
                 last_mobile = Instant::now();
                 // Unparseable plaintext is answered as an invalid request, not a dropped session.
                 let request: Value = serde_json::from_slice(&plaintext).unwrap_or(Value::Null);
+                if request.get("method").and_then(Value::as_str) == Some("link.configure") {
+                    // About this connection, not the desktop: answered here, in order.
+                    ensure!(
+                        rpc.storage.authorized(&p.device_id)?,
+                        "device revoked during RPC"
+                    );
+                    let (answer, change) = link::configure(&request, compress);
+                    if let Some(on) = change {
+                        compress = on;
+                    }
+                    let reply = seal_reply(s, answer, received, compress).await?;
+                    send_json(&mut ws, &reply).await?;
+                    continue;
+                }
                 lanes.push(
                     classify(&request),
                     Queued {
@@ -565,6 +632,12 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                             .clone()
                             .context("RPC before authenticated handshake")?,
                         request,
+                        received,
+                        reply_limit: if compress {
+                            link::MAX_INFLATED
+                        } else {
+                            MAX_PLAINTEXT
+                        },
                     },
                 );
                 start_ready(&mut lanes, &mut tasks, rpc, &p.device_id, &session_ended);

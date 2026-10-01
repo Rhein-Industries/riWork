@@ -122,6 +122,9 @@ struct LatencyOverlay: View {
     @Environment(\.desktopStyle) private var style
     let latency: LatencyBook
     let mode: SyncMode
+    /// The lines about the link (round trip, rate, tier, the desktop's time, compression, what the history download is doing), read
+    /// again on every tick: the meter is not observable.
+    var link: () -> [String] = { [] }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { _ in
             let age = latency.age(at: ProcessInfo.processInfo.systemUptime)
@@ -131,6 +134,7 @@ struct LatencyOverlay: View {
                 Text("out  \(LatencyBook.format(latency.output))")
                 Text("echo \(LatencyBook.format(latency.echo))")
                 Text("age  \(LatencyBook.format(age: age))")
+                ForEach(Array(link().enumerated()), id: \.offset) { _, line in Text(line) }
             }
             .font(style.mono(9, relativeTo: .caption2)).monospacedDigit()
             .foregroundStyle(style.text)

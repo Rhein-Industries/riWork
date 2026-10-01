@@ -10,6 +10,7 @@ public enum RequestValidation {
         let optional: Set<String>
         switch method {
         case "projects.list", "orchestrators.list", "appearance.get": required = []; optional = []
+        case "link.configure": required = []; optional = ["compression"]
         case "worktrees.list", "shells.list": required = ["project_id"]; optional = []
         case "tasks.list": required = ["project_id"]; optional = ["worktree_id"]
         case "shell.output": required = ["shell_id"]; optional = ["lines", "styled", "if_changed", "wait_ms"]
@@ -32,13 +33,17 @@ public enum RequestValidation {
             if let changed = params["if_changed"] { guard case .string(let hash) = changed, LiveSync.isUsableHash(hash) else { throw RemoteError.protocolViolation("Output if_changed must be a short printable string.") } }
             if let wait = params["wait_ms"] { guard case .number(let value) = wait, value >= 0, value <= Double(LiveSync.maximumWaitMilliseconds), value.rounded() == value else { throw RemoteError.protocolViolation("Output wait_ms must be 0–10000.") } }
         }
+        if method == "link.configure", let mode = params["compression"] {
+            guard case .string(let value) = mode, value == "deflate" || value == "none" else { throw RemoteError.protocolViolation("Link compression must be deflate or none.") }
+        }
         if method == "shell.history" {
             guard case .number(let end)? = params["end"], end >= 0, end <= 4_294_967_295, end.rounded() == end else { throw RemoteError.protocolViolation("History end must be 0–4294967295.") }
-            guard case .number(let lines)? = params["lines"], lines >= 1, lines <= Double(HistoryLimits.maximumPageLines), lines.rounded() == lines else { throw RemoteError.protocolViolation("History lines must be 1–1000.") }
+            guard case .number(let lines)? = params["lines"], lines >= 1, lines <= Double(HistoryLimits.maximumPageLines), lines.rounded() == lines else { throw RemoteError.protocolViolation("History lines must be 1–5000.") }
             if let styled = params["styled"], case .bool = styled {} else if params["styled"] != nil { throw RemoteError.protocolViolation("History styled must be a boolean.") }
         }
         if method == "shell.input" { guard let line = params["line"]?.string else { throw RemoteError.protocolViolation("Missing input.") }; try InputValidation.validate(line) }
-        if let lines = params["lines"] { guard case .number(let value) = lines, value >= 1, value <= 2000, value.rounded() == value else { throw RemoteError.protocolViolation("Output lines must be 1–2000.") } }
+        // `shell.history` has its own range (checked above); this one is the live read's.
+        if let lines = params["lines"], method == "shell.output" { guard case .number(let value) = lines, value >= 1, value <= 2000, value.rounded() == value else { throw RemoteError.protocolViolation("Output lines must be 1–2000.") } }
         if method == "shell.resize" {
             for (key, range) in [("columns", 20.0...300.0), ("rows", 8.0...160.0)] {
                 guard case .number(let value) = params[key], range.contains(value), value.rounded() == value else { throw RemoteError.protocolViolation("Invalid terminal cell dimensions.") }
@@ -65,11 +70,20 @@ public actor RelayClient: RemoteTransport {
     private var keepAlive: Task<Void, Never>?
     private var sendTail: Task<Void, Never>?
     private struct Pending {
-        let continuation: CheckedContinuation<JSONValue, any Error>
+        let continuation: CheckedContinuation<TimedReply, any Error>
         let isInput: Bool
         let timeout: Task<Void, Never>
+        /// When the frame went to the socket (the start of the reply's timing); nil until it does.
+        var sentAt: ContinuousClock.Instant?
     }
     private var pending: [String: Pending] = [:]
+    /// Replies that arrived lately: when and how big. A reply that shared the socket with others took their share of the time.
+    private var arrivals: [(at: ContinuousClock.Instant, bytes: Int)] = []
+    private static let arrivalMemory: Duration = .seconds(60)
+    /// What the desktop announced in `ready`, and whether it has agreed to compress (it does once it answers `link.configure`).
+    private var features = DesktopFeatures()
+    private var compressing = false
+    private var wantsCompression = true
     /// Requests whose caller was cancelled after the frame was sealed; their response is read and dropped.
     private var abandoned: Set<String> = []
     private let requestTimeout: Duration
@@ -120,8 +134,11 @@ public actor RelayClient: RemoteTransport {
             let ready = try sessionCipher.open(try await Self.receive(on: ws, deadline: deadline))
             guard generation == token, ready["type"].string == "ready", ready["desktop_id"].string == pairing.desktop_id, ready["device_id"].string == pairing.device_id else { throw RemoteError.protocolViolation("Desktop did not authenticate readiness.") }
             cipher = sessionCipher
+            features = DesktopFeatures(ready: ready)
+            compressing = false
             reader = Task { await self.readLoop(ws: ws, token: token) }
             keepAlive = Task { await self.keepAliveLoop(ws: ws, token: token) }
+            if wantsCompression, features.deflate { askForCompression(true) }
             return started.0
         } catch {
             let failure = await Self.explain(error, on: ws, current: generation == token)
@@ -176,6 +193,9 @@ public actor RelayClient: RemoteTransport {
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         cipher = nil
         abandoned.removeAll()
+        arrivals.removeAll()
+        compressing = false
+        features = DesktopFeatures()
         let outstanding = pending
         pending.removeAll()
         for item in outstanding.values {
@@ -184,6 +204,36 @@ public actor RelayClient: RemoteTransport {
         }
     }
     public func request(method: String, params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
+        try await timedRequest(method: method, params: params, id: id).value
+    }
+    // `async` although nothing here suspends: on the concrete type a sync actor method loses to the protocol's async default.
+    public func desktopFeatures() async -> DesktopFeatures { features }
+    public func compressionActive() async -> Bool { compressing }
+    /// Whether to ask the desktop for compressed replies. Frames that arrive compressed are always understood; this decides only
+    /// whether the desktop is asked to send them (on a desktop that offers it, from the start of the next session, or now).
+    public func setCompression(_ enabled: Bool) async {
+        guard wantsCompression != enabled else { return }
+        wantsCompression = enabled
+        guard cipher != nil, features.deflate else { return }
+        // Unlike the ask at connect, this waits for the answer, so `compressionActive()` is true to the desktop's word when it returns.
+        let token = generation
+        let reply = try? await timedRequest(method: "link.configure", params: ["compression": .string(enabled ? "deflate" : "none")], id: UUID().uuidString.lowercased())
+        compressionAnswered(reply?.value, token: token)
+    }
+    /// Sends `link.configure` and notes the answer. Nobody waits for it: an older desktop does not offer the feature and is not asked, and
+    /// whatever the answer, replies are understood in both forms.
+    private func askForCompression(_ enabled: Bool) {
+        let token = generation
+        Task {
+            let reply = try? await self.timedRequest(method: "link.configure", params: ["compression": .string(enabled ? "deflate" : "none")], id: UUID().uuidString.lowercased())
+            self.compressionAnswered(reply?.value, token: token)
+        }
+    }
+    private func compressionAnswered(_ result: JSONValue?, token: UUID) {
+        guard generation == token else { return }
+        compressing = result?["compression"].string == "deflate"
+    }
+    public func timedRequest(method: String, params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> TimedReply {
         try RequestValidation.validate(method: method, params: params, id: id)
         // Before sealing: a cancelled caller must not consume a send counter.
         try Task.checkCancellation()
@@ -206,12 +256,15 @@ public actor RelayClient: RemoteTransport {
                 sendTail = Task {
                     await previous?.value
                     guard self.generation == token, !Task.isCancelled else { return }
+                    self.sending(id: id)
                     do { try await Self.send(envelope, on: ws) }
                     catch { self.failIfCurrent(token: token, error: await Self.explain(error, on: ws, current: self.generation == token)) }
                 }
             }
         } onCancel: { Task { await self.abandon(id: id, token: token) } }
     }
+    /// The request's frame is about to go to the socket: its timing starts here, not when the caller asked (it may queue behind others).
+    private func sending(id: String) { pending[id]?.sentAt = .now }
     /// Detaches one waiter. The socket, keys and every other request stay intact.
     private func abandon(id: String, token: UUID) {
         guard generation == token, let item = pending.removeValue(forKey: id) else { return }
@@ -225,25 +278,43 @@ public actor RelayClient: RemoteTransport {
     private func readLoop(ws: any WebSocketConnection, token: UUID) async {
         do {
             while !Task.isCancelled {
-                let frame = try await Self.receive(on: ws)
+                let received = try await Self.receiveFrame(on: ws)
+                let frame = received.value
                 guard generation == token, var activeCipher = cipher else { return }
                 // Relay peer controls can invalidate connectivity, never authenticate a payload.
                 if frame["type"].string == "peer", frame["v"] == .number(1), frame["online"] == .bool(false) { throw RemoteError.disconnected }
-                let response = try activeCipher.open(frame)
+                let opened = try activeCipher.openFrame(frame)
                 cipher = activeCipher
+                let response = opened.payload
                 guard response["type"].string == "response", let id = response["id"].string, case .bool(let ok) = response["ok"] else { throw RemoteError.protocolViolation("Unexpected response.") }
+                let timing = timing(of: opened, received: received, response: response, sentAt: pending[id]?.sentAt)
                 guard let item = pending.removeValue(forKey: id) else {
                     if abandoned.remove(id) != nil { continue }
                     throw RemoteError.protocolViolation("Unexpected response.")
                 }
                 item.timeout.cancel()
-                if ok { item.continuation.resume(returning: response["result"]) }
+                if ok { item.continuation.resume(returning: TimedReply(value: response["result"], timing: timing)) }
                 else {
                     let detail = response["error"]
                     item.continuation.resume(throwing: RemoteError.rpc(code: detail["code"].string ?? "invalid_response", message: detail["message"].string ?? "Desktop rejected the request."))
                 }
             }
         } catch { failIfCurrent(token: token, error: await Self.explain(error, on: ws, current: generation == token)) }
+    }
+    /// How a reply travelled. Every reply is noted for the ones that overlap it, whoever asked for it.
+    private func timing(of opened: SessionCipher.OpenedFrame, received: Received, response: JSONValue, sentAt: ContinuousClock.Instant?) -> ReplyTiming? {
+        defer {
+            arrivals.append((received.at, received.bytes))
+            let horizon = received.at - Self.arrivalMemory
+            arrivals.removeAll { $0.at < horizon }
+        }
+        guard let sentAt else { return nil }
+        var concurrent = 0, replies = 0
+        for earlier in arrivals where earlier.at > sentAt && earlier.at <= received.at { concurrent += earlier.bytes; replies += 1 }
+        var server: Double?
+        if case .number(let ms) = response["server_ms"], ms.isFinite, ms >= 0, ms <= 3_600_000 { server = ms / 1000 }
+        return ReplyTiming(elapsed: max(0, (received.at - sentAt).seconds), serverSeconds: server, wireBytes: received.bytes, sealedBytes: opened.sealedBytes,
+                           jsonBytes: opened.jsonBytes, compressed: opened.compressed, concurrentBytes: concurrent, concurrentReplies: replies)
     }
     /// The relay never pings a mobile socket, and URLSession treats silence as idle, so the phone pings.
     private func keepAliveLoop(ws: any WebSocketConnection, token: UUID) async {
@@ -301,15 +372,21 @@ public actor RelayClient: RemoteTransport {
         try await within(timeout.seconds, on: ws) { try await ws.ping() }
     }
     private static func receive(on ws: any WebSocketConnection, deadline: Date? = nil) async throws -> JSONValue {
+        try await receiveFrame(on: ws, deadline: deadline).value
+    }
+    /// A frame, the size it had on the socket, and the moment it arrived whole (taken here, before anything else can delay it).
+    private struct Received: Sendable { let value: JSONValue; let bytes: Int; let at: ContinuousClock.Instant }
+    private static func receiveFrame(on ws: any WebSocketConnection, deadline: Date? = nil) async throws -> Received {
         let message: SocketMessage
         if let deadline {
             let remaining = deadline.timeIntervalSinceNow
             guard remaining > 0 else { throw RemoteError.timeout }
             message = try await within(remaining, on: ws) { try await ws.receive() }
         } else { message = try await ws.receive() }
+        let arrived = ContinuousClock.now
         guard case .text(let text) = message, text.utf8.count <= 262144 else { throw RemoteError.protocolViolation("Expected bounded text frame.") }
         let result = try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
         guard result["v"] == .number(1) || result["v"] == .number(2) else { throw RemoteError.protocolViolation("Unsupported relay version.") }
-        return result
+        return Received(value: result, bytes: text.utf8.count, at: arrived)
     }
 }

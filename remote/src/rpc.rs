@@ -13,7 +13,10 @@ use std::{
     collections::BTreeMap,
     path::PathBuf,
     process::Stdio,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 use tokio::{
     io::AsyncReadExt,
@@ -74,7 +77,7 @@ pub fn error(id: &str, code: &str, message: impl AsRef<str>) -> Value {
     error_for(json!(id), code, message)
 }
 // `id` is null only when the request carried no usable ID to correlate with.
-fn error_for(id: Value, code: &str, message: impl AsRef<str>) -> Value {
+pub(crate) fn error_for(id: Value, code: &str, message: impl AsRef<str>) -> Value {
     json!({"v":1,"type":"response","id":id,"ok":false,"error":{"code":code,"message":message.as_ref()}})
 }
 fn success(id: &str, result: Value) -> Value {
@@ -145,9 +148,16 @@ fn id(s: &str) -> std::result::Result<(), Fault> {
 }
 /// The longest a `shell.output` may wait for a change.
 pub const MAX_WAIT_MS: i64 = 10_000;
-/// The most lines one `shell.history` page may hold (`src/sessions.rs` limits
-/// the CLI to the same number).
-pub const HISTORY_PAGE_MAX: u32 = 1000;
+/// The most lines one `shell.history` page may hold, as far as the connector goes. The installed
+/// CLI limits itself (`src/sessions.rs`) and may be an older build; the first time it refuses a page
+/// for being too long, `Rpc` remembers its limit (`Rpc::history_max_lines`) and says so in `ready`.
+pub const HISTORY_PAGE_MAX: u32 = crate::link::HISTORY_MAX_LINES;
+/// The limit the CLI names in `--lines needs an integer from 1 to N`, if that is what `message` says.
+fn cli_lines_limit(message: &str) -> Option<u32> {
+    let rest = message.split_once("--lines needs an integer from 1 to ")?.1;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok().filter(|n| *n >= 1)
+}
 /// A CLI call that is not a wait. Above the tmux timeout of a single capture.
 const CLI_TIMEOUT: Duration = Duration::from_secs(15);
 /// What a waiting CLI call may take beyond its wait: the captures around it.
@@ -513,6 +523,8 @@ pub struct Rpc {
     pub cli: PathBuf,
     pub storage: Storage,
     input_locks: Mutex<BTreeMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    /// The longest `shell.history` page accepted: `HISTORY_PAGE_MAX`, or what the installed CLI has been seen to take.
+    history_cap: AtomicU32,
 }
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
@@ -520,7 +532,12 @@ impl Rpc {
             cli,
             storage,
             input_locks: Mutex::new(BTreeMap::new()),
+            history_cap: AtomicU32::new(HISTORY_PAGE_MAX),
         }
+    }
+    /// The most lines a `shell.history` page may have right now (announced in `ready`).
+    pub fn history_max_lines(&self) -> u32 {
+        self.history_cap.load(Ordering::Relaxed)
     }
     fn input_lock(&self, shell: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut locks = self.input_locks.lock().expect("input lock registry");
@@ -536,6 +553,12 @@ impl Rpc {
         self.raw_within(args, CLI_TIMEOUT).await
     }
     async fn raw_within(&self, args: Vec<String>, limit: Duration) -> Result<Vec<u8>> {
+        self.raw_capped(args, limit, MAX_PLAINTEXT).await
+    }
+    /// `cap`: the most the CLI may write to stdout before it is cut off. Replies
+    /// that may be compressed (`handle_shared_up_to`) let the CLI write more than
+    /// one encrypted frame holds; the reply itself is checked after.
+    async fn raw_capped(&self, args: Vec<String>, limit: Duration, cap: usize) -> Result<Vec<u8>> {
         let mut child = Command::new(&self.cli)
             .args(args)
             .stdin(Stdio::null())
@@ -549,11 +572,8 @@ impl Rpc {
         let run = async {
             let out = async {
                 let mut b = vec![];
-                stdout
-                    .take((MAX_PLAINTEXT + 1) as u64)
-                    .read_to_end(&mut b)
-                    .await?;
-                ensure!(b.len() <= MAX_PLAINTEXT, OutputTooLarge);
+                stdout.take((cap + 1) as u64).read_to_end(&mut b).await?;
+                ensure!(b.len() <= cap, OutputTooLarge);
                 Ok::<_, anyhow::Error>(b)
             };
             let err = async {
@@ -580,11 +600,19 @@ impl Rpc {
     }
     async fn read_within(
         &self,
-        mut a: Vec<String>,
+        a: Vec<String>,
         limit: Duration,
     ) -> std::result::Result<Value, Fault> {
+        self.read_capped(a, limit, MAX_PLAINTEXT).await
+    }
+    async fn read_capped(
+        &self,
+        mut a: Vec<String>,
+        limit: Duration,
+        cap: usize,
+    ) -> std::result::Result<Value, Fault> {
         a.push("--json".into());
-        let data = self.raw_within(a, limit).await.map_err(|e| {
+        let data = self.raw_capped(a, limit, cap).await.map_err(|e| {
             if e.is::<OutputTooLarge>() {
                 Fault::new(
                     "response_too_large",
@@ -637,14 +665,43 @@ impl Rpc {
         value: Value,
         viewport: &tokio::sync::Mutex<Option<Viewport>>,
     ) -> Result<Value> {
-        self.handle_with(device, value, ViewportAccess::Shared(viewport))
+        self.handle_shared_up_to(device, value, viewport, MAX_PLAINTEXT)
             .await
+    }
+    /// Like `handle_shared`, for a connection whose replies may be compressed: a
+    /// response may be up to `reply_limit` bytes of JSON (`link::MAX_INFLATED` at
+    /// most) instead of one frame's worth. Whether it then fits a frame is up to
+    /// the caller, which has the compressed size.
+    pub async fn handle_shared_up_to(
+        &self,
+        device: &str,
+        value: Value,
+        viewport: &tokio::sync::Mutex<Option<Viewport>>,
+        reply_limit: usize,
+    ) -> Result<Value> {
+        self.handle_limited(
+            device,
+            value,
+            ViewportAccess::Shared(viewport),
+            reply_limit.clamp(MAX_PLAINTEXT, crate::link::MAX_INFLATED),
+        )
+        .await
     }
     async fn handle_with(
         &self,
         device: &str,
         value: Value,
         viewport: ViewportAccess<'_>,
+    ) -> Result<Value> {
+        self.handle_limited(device, value, viewport, MAX_PLAINTEXT)
+            .await
+    }
+    async fn handle_limited(
+        &self,
+        device: &str,
+        value: Value,
+        viewport: ViewportAccess<'_>,
+        reply_limit: usize,
     ) -> Result<Value> {
         // Malformed requests get an error response, not a dropped session. Only
         // an ID that is a bounded string can be echoed for correlation.
@@ -680,13 +737,13 @@ impl Rpc {
                     ));
                 }
             }
-            self.dispatch(device, &request, viewport).await
+            self.dispatch(device, &request, viewport, reply_limit).await
         };
         let response = match result {
             Ok(v) => success(&request_id, v),
             Err(f) => error(&request_id, f.code, f.message),
         };
-        if serde_json::to_vec(&response)?.len() > MAX_PLAINTEXT {
+        if serde_json::to_vec(&response)?.len() > reply_limit {
             return Ok(error(
                 &request_id,
                 "response_too_large",
@@ -700,6 +757,7 @@ impl Rpc {
         device: &str,
         r: &Request,
         viewport: ViewportAccess<'_>,
+        reply_limit: usize,
     ) -> std::result::Result<Value, Fault> {
         match r.method.as_str() {
             "projects.list" => {
@@ -813,7 +871,7 @@ impl Rpc {
                     args.push(wait_ms.to_string());
                     limit = cli_limit(wait_ms);
                 }
-                let v = self.read_within(args, limit).await.map_err(|fault| {
+                let v = self.read_capped(args, limit, reply_limit).await.map_err(|fault| {
                     // A CLI from before styled output and waiting refuses the flags.
                     if fault.code == "cli_error"
                         && fault.message.contains("Usage: riwork shell output")
@@ -880,8 +938,9 @@ impl Rpc {
             }
             "shell.history" => {
                 let p: History = params(r)?;
-                if !(1..=HISTORY_PAGE_MAX).contains(&p.lines) {
-                    return Err(invalid(format!("lines must be 1..={HISTORY_PAGE_MAX}")));
+                let cap = self.history_max_lines();
+                if !(1..=cap).contains(&p.lines) {
+                    return Err(invalid(format!("lines must be 1..={cap}")));
                 }
                 let styled = p.styled.unwrap_or(false);
                 self.selected(&p.shell_id).await?;
@@ -901,10 +960,19 @@ impl Rpc {
                     args.push("--styled".into());
                 }
                 // Never a wait, so the same limit as any other call.
-                let v = self
-                    .read_within(args, CLI_TIMEOUT)
-                    .await
-                    .map_err(history_fault)?;
+                let v = match self.read_capped(args, CLI_TIMEOUT, reply_limit).await {
+                    Ok(v) => v,
+                    Err(fault) => {
+                        let fault = history_fault(fault);
+                        // An older CLI: remember what it takes, so the next page is not sent to it in vain.
+                        if fault.code == "cli_error"
+                            && let Some(limit) = cli_lines_limit(&fault.message)
+                        {
+                            self.history_cap.fetch_min(limit, Ordering::Relaxed);
+                        }
+                        return Err(fault);
+                    }
+                };
                 history_result(&p.shell_id, &v, p.lines, styled).ok_or_else(|| {
                     cli_fault("CLI returned a history page that does not fit the request")
                 })

@@ -143,10 +143,10 @@ async fn parameters_are_validated_before_any_cli_runs() {
     let f = Fixture::without_cli();
     let shell = f.shell.clone();
     let bad = [
-        // lines: required, 1..=1000, an integer.
+        // lines: required, 1..=5000 (1..=1000 until 2026-10-01), an integer.
         json!({"end":0}),
         json!({"end":0,"lines":0}),
-        json!({"end":0,"lines":1001}),
+        json!({"end":0,"lines":5001}),
         json!({"end":0,"lines":4294967295u64}),
         json!({"end":0,"lines":4294967296u64}),
         json!({"end":0,"lines":-1}),
@@ -216,6 +216,7 @@ async fn the_bounds_are_inclusive_and_null_means_absent_for_styled() {
     for params in [
         json!({"end":0,"lines":1}),
         json!({"end":0,"lines":1000}),
+        json!({"end":0,"lines":5000}),
         json!({"end":4294967295u64,"lines":1}),
         json!({"end":4294967295u64,"lines":1000,"styled":true}),
         json!({"end":7,"lines":10,"styled":false}),

@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-01: Additive link extension: `server_ms` on every response (the desktop's own time, so the phone can tell the network's share of a round trip), `features` in the first encrypted frame (`ready`), the `link.configure` request, optionally deflated reply frames for a session that opted in (a marker byte inside the ciphertext; the envelope, AAD and fixtures are unchanged), larger limits that go with them (a reply may be up to 2 MiB of JSON if it fits one frame deflated; `shell.history` `lines` up to 5000), and `link.json` vectors; see "Link extension" below. Applies to v1 and v2 sessions. An older phone or desktop sees no difference: nothing is compressed until the phone asks, and only a desktop that announced the feature is asked.
 - 2026-09-30: Additive deep scrollback: `shell.history` (pages of scrollback above the screen, plain or styled) and the `history_size` and `alternate` fields on the `shell.output` result, also in its `unchanged` form and in its `hash`; see "Deep scrollback extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive live terminal sync: optional `styled`, `if_changed` and `wait_ms` on `shell.output`, a `hash` on its result and an `unchanged` result, and requests of one device are now carried out concurrently (responses may arrive out of order, matched by `id`); see "Live terminal extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive `appearance.get`, so the phone can show the desktop's colors; see "Theme sync extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -120,7 +121,7 @@ counter exhaustion close the endpoint session. Fresh reconnect derives new keys;
 never reuse old keys/counters or replay old encrypted envelopes. RPC retry uses a
 new envelope/counter and the original request UUID.
 
-Limits: text WS message <=262144 bytes, decrypted JSON <=131072 bytes, shell line
+Limits: text WS message <=262144 bytes, decrypted plaintext <=131072 bytes (the JSON text of a reply is also at most that, unless the phone has opted into compression, see "Link extension"), shell line
 <=8192 UTF-8 bytes, output lines 1..2000 (default 200), handshake <=10 seconds.
 Relay defaults: <=256 authenticated sockets, <=128 configured routes, outgoing queue
 <=16 messages/socket, no payload logging. Sockets that have not yet registered have
@@ -149,9 +150,10 @@ unsolicited response except handshake `ready`.
 | `shells.list` | `{"project_id":"UUID"}` | `{"shells":[Session]}` (existing project shells) |
 | `orchestrators.list` | `{}` | `{"orchestrators":[Session]}` (global + project) |
 | `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200`, and additively `"styled":true`, `"if_changed":"HASH"`, `"wait_ms":5000` (see Live terminal) | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) and `"hash":"0123456789abcdef"`, `"history_size":4991,"alternate":false` (see Deep scrollback); or `{"shell_id":"UUID","unchanged":true,"hash":"0123456789abcdef","history_size":4991,"alternate":false}` (see Live terminal) |
-| `shell.history` | `{"shell_id":"UUID","end":0,"lines":200}` optionally `"styled":true` (see Deep scrollback) | `{"shell_id":"UUID","output":"older lines","line_count":200,"history_size":4991,"complete":false}` |
+| `shell.history` | `{"shell_id":"UUID","end":0,"lines":200}` (`lines` 1 to 5000 since 2026-10-01, 1000 before) optionally `"styled":true` (see Deep scrollback, Link extension) | `{"shell_id":"UUID","output":"older lines","line_count":200,"history_size":4991,"complete":false}` |
 | `shell.input` | `{"shell_id":"UUID","line":"one physical line"}` | `{"shell_id":"UUID","status":"sent"}` |
 | `shell.keys` | `{"shell_id":"UUID","batch":"UUID","items":[{"text":"ls"},{"key":"Enter"}]}` (Direct typing) | `{"shell_id":"UUID","batch":"UUID","status":"sent\|duplicate\|uncertain"}` |
+| `link.configure` | `{"compression":"deflate"}` or `"none"`, or `{}` (Link extension) | `{"compression":"deflate\|none","min_bytes":2048,"max_inflated":2097152}` |
 | `appearance.get` | `{}` (Theme sync) | the appearance object below: `{"v":1,"updated_at":1790000000,"dark":true,"palette":{...},"terminal":{...}}` |
 | `shell.resize` | `{"shell_id":"UUID","columns":43,"rows":17}` | `{"shell_id":"UUID","columns":43,"rows":17}` |
 | `shell.resize.clear` | `{"shell_id":"UUID"}` | `{"shell_id":"UUID","status":"cleared"}` |
@@ -596,6 +598,8 @@ that is printing heavily as a snapshot of the moment they were read. `shell.hist
 never waits and changes nothing; the only way to learn of new history is
 `history_size` in `shell.output`.
 
+*Page length since 2026-10-01.* `lines` is `1..=5000` on a connector that has the link extension, which announces it as `history_max_lines` in `ready`; a phone never asks for more than the desktop announced, and treats 1000 as the limit of a desktop that announces nothing. The installed `riwork` CLI has a limit of its own (1000 in builds from before 2026-10-01) and may be an older build than the connector. The first page it refuses for being too long is `cli_error` (`--lines needs an integer from 1 to 1000`); the connector remembers that limit, answers longer pages itself from then on (`invalid_request`, `lines must be 1..=1000`, without running anything) and announces it as `history_max_lines` in the `ready` of later sessions. The phone reads the number from either message and carries on with pages of that size.
+
 *Errors.* `invalid_request` for any parameter above or a UUID that is not one;
 `not_found` for an unknown shell or one that is not alive (the same rules and
 message as `shell.output`); `response_too_large` when the page does not fit one
@@ -613,6 +617,52 @@ resizing, and never one of the two wait slots, so a page in flight cannot delay
 leave only the ordered slot free, and further reads queue. A page is one bounded
 tmux call, and the connector gives the CLI the usual 15 seconds before it fails the
 call with `cli_error`.
+
+### Link extension (v1 and v2, 2026-10-01)
+
+Additive and compatible, like the extensions before it: one field on every response, one on `ready`, one new request, and a second form of the sealed reply. No change to the handshake, the envelope, the AAD, the counters or any other method; it applies to protocol v1 and v2 sessions alike. A phone that ignores all of it, and an older desktop, behave exactly as before: nothing is compressed unless the phone asks, and the phone asks only a desktop that said it can. The iOS side is built against this text.
+
+Why. A page of history costs the phone `round trip + what the desktop does (the CLI starting, tmux capturing, the filter) + transfer`, and only the last term says how fast the link is. The desktop's term is 50 to 300 ms and grows with the page and the load of the machine, so a fast link looked slow. And terminal text with SGR escapes is highly repetitive: it deflates 3 to 15 times, which turns a 3 MB history into a few hundred KB.
+
+**`server_ms`.** Every response, error responses included, carries `"server_ms": N` (a non-negative integer, milliseconds) as a top-level field next to `ok` and `id`, never inside `result`. It is the time the connector had the request: from the moment its frame was decrypted until the reply was ready to be sealed. That includes waiting for a slot (see Concurrency), the CLI and tmux, a long poll's wait (so an `unchanged` answer to `wait_ms: 8000` carries about 8000) and the time spent deflating the body; it does not include sealing or writing the socket, a few hundred microseconds. The phone takes it out of the time it measured between sending a request and receiving the whole reply: what is left is the network's, and for a small reply that is the round trip, which makes every key acknowledgement and every `unchanged` answer a clean sample of it. Clients that do not know the field ignore it. The connector writes it last, so a deflated reply can pay for its own compression: the body is deflated and flushed to a byte boundary, the clock is read, and the closing field is deflated onto the same stream.
+
+**`ready` announces what this desktop does.** The first encrypted frame gains `features`, an object an older phone does not read (it checks `type`, `desktop_id` and `device_id` only):
+
+```json
+{"v":1,"type":"ready","desktop_id":"UUID","device_id":"UUID","features":{"deflate":{"min_bytes":2048,"max_inflated":2097152},"history_max_lines":5000}}
+```
+
+- `deflate` is present when the desktop can deflate replies. `min_bytes`: replies whose JSON is shorter are never compressed. `max_inflated`: the most a compressed reply may inflate to.
+- `history_max_lines`: the most `shell.history` takes in one page (see above): 5000, or less once the installed CLI has been seen to refuse longer pages. Absent: 1000.
+- A phone treats a missing `features`, a missing key, or one it cannot read as "not offered". `ready` is authenticated and encrypted, so a relay can neither add nor strip it.
+
+**`link.configure`** opts this session in or out of compression:
+
+```json
+{"v":1,"type":"request","id":"UUID","method":"link.configure","params":{"compression":"deflate"}}
+```
+
+- `compression` is `"deflate"` or `"none"`; `params` may be `{}` (nothing changes, the answer says what is). Anything else, and any other field, is `invalid_request` as for every method.
+- Result: `{"compression":"deflate","min_bytes":2048,"max_inflated":2097152}` (`"none"` when off).
+- The setting belongs to the connection's session and is off at the start of every session (a new handshake, or any peer change). The desktop answers at once, in arrival order, outside the lanes; every response it seals after the answer may be compressed. The answer itself is plain. The form of a reply is chosen when it is sealed, so a request that was already running when the setting changed is answered in the new form. The size limit it was allowed (below) is the one in force when it was received: a request received before the opt-in keeps the old limit, and a large reply to one received before an opt-out becomes `response_too_large`.
+- A phone sends it once, right after `ready`, only to a desktop whose `ready` has `features.deflate`, and again when the person changes the setting. A desktop from before the extension answers `invalid_request` "unsupported RPC method", which is why it is not sent blindly. The phone does not wait for the answer; whichever form arrives, it reads.
+
+**The two forms of a sealed reply.** The plaintext that is sealed (what the envelope's ciphertext holds) is
+
+- the JSON text, starting with `{`, as it always was; or
+- `0x01 || inflated_length || deflate`: the byte `0x01`, the length of the JSON text as an unsigned 32-bit big-endian number, and the JSON text compressed as raw deflate (RFC 1951: no zlib header, no checksum). That is what zlib reads with `windowBits = -15`, what Rust's `flate2::DeflateEncoder` writes and what Apple's `COMPRESSION_ZLIB` decodes.
+
+A receiver tells them apart by the first byte (JSON never starts with `0x01`), refuses any other first byte except white space, refuses a length above `max_inflated` (2 MiB) before it allocates anything, and refuses a stream that does not inflate to exactly the length it declares. The marker is inside the authenticated ciphertext, so nobody on the path can set or clear it. Everything else about the frame is unchanged: the sealed plaintext is still at most 131072 bytes, the counters and AAD are the v1 or v2 rules, and a text WebSocket message is still at most 262144 bytes (a full compressed frame is about 175 KB in base64url).
+
+The desktop compresses a reply only if the session opted in, the reply's JSON is at least `min_bytes` (2048) long, and the compressed frame is smaller than the plain one. Only the desktop's replies are ever compressed; requests, which carry what the person types, never are.
+
+**Larger limits that go with it.** Until now a reply was at most 131072 bytes of JSON because that was what one frame held. For a session that has opted in, the JSON text of a reply may be up to `max_inflated` (2 MiB); what decides is whether the frame fits 131072 bytes once deflated, and if it does not the reply is replaced by `response_too_large` for the same request id (the phone asks for fewer lines), exactly as an oversized plain reply always was. A session that has not opted in keeps the old limit. For `shell.output` and `shell.history` the connector lets the CLI write up to 2 MiB to its pipe before it cuts it off (128 KiB for every other method, as before), and checks the reply against the session's limit afterwards. `shell.history` `lines` is 1 to 5000 (above): measured on Claude Code's scrollback (about 200 to 270 bytes a line as JSON, 22 deflated) a 50,000-line history is 11.8 MB as JSON and about 1.1 MB deflated, which the phone fetches in about a dozen requests of at most 112 KiB on the wire instead of fifty of 80 KiB.
+
+**Measured** on 2026-10-01 on real styled output (`riwork shell output --styled`, `riwork shell history --styled`; raw deflate at level 6, ratio = JSON bytes / deflated bytes): a 1000-line page of Claude Code scrollback 10.4 times (200 KB to 19 KB), a 2000-line history 11.1 times, a 500-line screen of the same shell 8.7 times, a plain zsh screen 7.4 times; the worst content, short dense Codex screens, 3.0 to 3.6 times; a 200-line page 7.6 times and a 25-line page 6.1 times (the ratio rises with the page and levels off above about 500 lines). Level 1 gives 8.6 times and level 9 12.0 times on the largest page; level 6 costs about half a millisecond per 100 KB. The connector uses level 6, and its own encoder (flate2, sync flush and closing field included) gives the same within a few percent on the same shells: 10.1 times on a 140 KB page of that scrollback (18.6 KB on the wire instead of 187 KB, 0.9 ms), 11.8 times on a 252 KB page (1.5 ms), 7.1 times on a 200-line page, 5.5 to 8.9 times on Claude Code screens and 2.8 to 3.3 times on Codex screens. Compression stops paying below about 100 bytes of JSON, so the 2 KiB minimum is a policy, not a limit.
+
+**Security.** Compressing text that an attacker can influence together with text the attacker wants to learn, and letting the attacker see the length of the result, is the CRIME/BREACH oracle. A reply here is terminal text; an attacker who can get chosen text onto a terminal (a file or page the person prints, the output of a hostile repository) and who can see the size of the frames (the relay operator, or anyone who can read the sizes of TLS records between the endpoints and the relay) and where a secret is on the same screen, could in principle guess it a byte at a time by watching how the compressed size moves. The relay is blind and normally self-hosted, and it already sees sizes and timing, so in the intended deployment the party who could do this is the one that runs the relay; but with compression the size of a frame now depends on what is on the screen, which it did not before, and that is a real, if narrow, new channel. The extension limits the exposure: only the desktop's replies are compressed; a reply is compressed on its own, never together with another or with anything from the request, and only if it is at least 2 KiB; nothing secret is added to a reply by the protocol. And it is optional on both sides: the phone's Settings has a switch ("Compress traffic", `link.configure` with `"none"`), and a phone that does not ask never gets a compressed frame. Deployments that treat the relay or the path as hostile should turn it off. Frames are not padded.
+
+**Compatibility.** An older phone: sends no `link.configure`, so receives plain JSON that gains a `server_ms` field and a `features` field in `ready`, none of which it reads. An older desktop: its `ready` has no `features`, so the phone sends nothing new and reads plain frames; its `shell.history` takes 1000 lines. A phone that asks a desktop for something it announced and is refused anyway (an older CLI behind a newer connector) learns from the error and adapts. The vectors in `remote/fixtures/link.json` (made by Python's zlib and by the connector itself, with frames that must be refused) are read by the Rust tests and by the iOS tests; `remote/fixtures/generate_link.py` writes them.
 
 ### Theme sync extension (v1 and v2, 2026-09-30)
 
@@ -746,6 +796,16 @@ ready response. Values are test-only and must never provision production devices
   screen), both covered by the `hash`, so the hashes handed out before the desktop
   is updated stop matching (the client is sent the full answer once). Needs the iOS
   worker's agreement; the iOS side implements the same text.
+
+- 2026-10-01: additive and backward compatible. Link extension: `server_ms` on every response
+  (the connector's time from decrypting a request to having its reply ready); `features`
+  (`deflate`, `history_max_lines`) in `ready`; `link.configure` (`compression` `deflate` or
+  `none`) answered by the connection itself; replies of 2 KiB and more may be sent as
+  `0x01 || u32 inflated length || raw deflate` of their JSON inside the ciphertext once the
+  session opted in; such a session may have replies of up to 2 MiB of JSON that fit one frame
+  deflated; `shell.history` `lines` up to 5000. An older phone is not affected: it neither
+  asks nor reads the new fields. Needs the iOS worker's agreement; the iOS side implements the
+  same text. Security note (CRIME/BREACH) in the section.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

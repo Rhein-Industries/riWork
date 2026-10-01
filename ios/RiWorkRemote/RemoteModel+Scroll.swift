@@ -198,7 +198,7 @@ extension RemoteModel: TerminalLineSource {
     /// output while the phone is watching can leave tens of thousands of lines missing.
     private var wantsHoles: Bool {
         guard prefetchEnabled, !historyDemand else { return true }
-        guard case .screens(let screens) = HistoryAppetite.appetite(tier: linkMeter.tier, conditions: linkConditions) else { return true }
+        guard case .screens(let screens) = HistoryAppetite.appetite(mode: historyMode, tier: linkMeter.tier, conditions: linkConditions, remainingWireBytes: remainingHistoryWireBytes) else { return true }
         return terminal.holeNear(top: readerTop ?? terminal.screenTop, rows: readerRows, screens: screens)
     }
 
@@ -213,6 +213,9 @@ extension RemoteModel: TerminalLineSource {
         // With the background fetch off, a page asked for is the default size: the link is not adapted to.
         input.meter = prefetchEnabled ? linkMeter : LinkMeter()
         input.conditions = linkConditions
+        input.mode = historyMode
+        input.remainingLines = remainingHistoryLines
+        input.maximumLines = historyLineLimit
         input.typing = typingActive
         input.liveBusy = (latency.age(at: ProcessInfo.processInfo.systemUptime) ?? .infinity) < 0.5
         input.waitsHeld = (outputFlightIsLongPoll ? 1 : 0) + waitSlots.stillWaiting(at: ProcessInfo.processInfo.systemUptime)
@@ -235,14 +238,6 @@ extension RemoteModel: TerminalLineSource {
         let wasFetching = historyTask != nil
         cancelHistory()
         if wasFetching { kickPrefetch() }
-    }
-
-    /// The network path changed. A change of the kind of link makes what was measured of the old one worthless.
-    func linkChanged() {
-        guard let watcher = linkWatcher else { return }
-        linkConditions = watcher.conditions
-        if watcher.interface != linkInterface { linkInterface = watcher.interface; linkMeter.reset() }
-        kickPrefetch()
     }
 
     // MARK: The loop
@@ -274,6 +269,7 @@ extension RemoteModel: TerminalLineSource {
                 case .landed:
                     retries = 0; historyMisses = 0
                     historyDemand = false
+                    liftPageCap(id: id)
                 case .again:
                     // The page did not take (the screen moved past it, or it did not line up): ask again from where things are now,
                     // a few times, and then leave it for a while. Nothing is shown: this is the history being redrawn, not an error.
@@ -292,6 +288,17 @@ extension RemoteModel: TerminalLineSource {
     /// `styled`); plan again without counting a miss. `stop`: this run is over.
     private enum PageOutcome { case landed, again, adjusted, stop }
 
+    /// A cap that `response_too_large` set is raised by half after six pages in a row that landed under it, and dropped once it no longer
+    /// binds: how well the text compresses changes, and one page that came out big must not keep a session at small pages.
+    func liftPageCap(id: String) {
+        guard let cap = historyPageLines[id] else { return }
+        let streak = (historyCapStreak[id] ?? 0) + 1
+        guard streak >= 6 else { historyCapStreak[id] = streak; return }
+        historyCapStreak[id] = 0
+        let raised = cap + cap / 2
+        historyPageLines[id] = raised >= historyLineLimit ? nil : raised
+    }
+
     /// Silent backoff for pages that keep missing: 2 s, 4 s, … up to a minute.
     private func missHistory() {
         historyMisses += 1
@@ -301,19 +308,27 @@ extension RemoteModel: TerminalLineSource {
 
     private func fetchPage(id: String, lines pageLines: Int, urgent: Bool, token: UUID, run: UUID) async -> PageOutcome {
         func current() -> Bool { generation == token && historyRun == run && sessionID == id && state == .connected && !alternateScreen && !Task.isCancelled }
-        guard let fetch = terminal.nextFetch(pageLines: pageLines, fillHoles: wantsHoles) else { return .stop }
+        guard let fetch = terminal.nextFetch(pageLines: pageLines, fillHoles: wantsHoles, maximumLines: historyLineLimit) else { return .stop }
         let request = HistoryRequest(shellID: id, end: fetch.end, lines: fetch.lines, styled: historyStyled)
         let raw: JSONValue
+        let timing: ReplyTiming?
         let started = ContinuousClock.now
         do {
-            raw = try await client.request(method: "shell.history", params: request.params, id: UUID().uuidString.lowercased())
+            let reply = try await client.timedRequest(method: "shell.history", params: request.params, id: UUID().uuidString.lowercased())
+            raw = reply.value; timing = reply.timing
         } catch {
             guard current() else { return .stop }
             if RemoteError.isUnsupportedMethod(error) { historySupport = .unsupported; return .stop }
             if case RemoteError.rpc(let code, let message) = error {
+                // A desktop that announced pages of up to 5,000 lines but whose CLI takes fewer: ask for what it takes from now on.
+                if let limit = Self.rejectedPageLines(code: code, message: message, asked: request.lines) {
+                    historyLineLimit = limit
+                    return .adjusted
+                }
                 if code == "response_too_large", (historyPageLines[id] ?? pageLines) > HistoryLimits.minimumPageLines {
                     // Half as many lines, and the same for the next pages of this session.
                     historyPageLines[id] = max(HistoryLimits.minimumPageLines, min(historyPageLines[id] ?? pageLines, pageLines) / 2)
+                    historyCapStreak[id] = 0
                     return .adjusted
                 }
                 if code == "not_found" {
@@ -340,7 +355,7 @@ extension RemoteModel: TerminalLineSource {
         guard current() else { return .stop }
         // A page that does not hold the lines the desktop counted cannot be placed by its end.
         if let count = reply.lineCount, count != page.count { failHistory(); return .stop }
-        linkMeter.record(wireBytes: reply.wireBytes, lines: max(1, page.count), seconds: elapsed)
+        noteHistoryPage(reply: reply, timing: timing, lines: max(1, page.count), elapsed: elapsed)
         lastHistoryAnswerAt = .now
         let outcome = terminal.merge(page: page, historySize: reply.historySize, complete: reply.complete, for: fetch)
         surface?.refresh()

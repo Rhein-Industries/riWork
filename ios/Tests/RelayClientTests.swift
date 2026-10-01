@@ -101,6 +101,11 @@ private final class ScriptedDesktop: @unchecked Sendable {
     /// What the desktop answers for a method instead of echoing it, and the errors it answers with.
     var results: [String: JSONValue] = [:]
     var failures: [String: (code: String, message: String)] = [:]
+    /// The `features` of `ready` (nil: a desktop from before the link extension), the `server_ms` of every response, and whether
+    /// `link.configure` turns compression on, as the connector does for replies of 2 KiB and more.
+    var readyFeatures: JSONValue?
+    var serverMs: Double?
+    private var compressing = false
 
     init(socket: ScriptedSocket, pairing: Pairing) {
         self.socket = socket; self.pairing = pairing
@@ -133,12 +138,18 @@ private final class ScriptedDesktop: @unchecked Sendable {
         lock.withLock { cipher = SessionCipher(psk: psk, transcript: transcript) }
         socket.push(.object(["v": .number(1), "type": .string("server_hello"), "desktop_nonce": .string(Base64URL.encode(desktopNonce)), "mac": .string(corruptServerProof ? Base64URL.encode(Data(repeating: 7, count: 32)) : proof)]))
     }
-    private func sealReady() -> JSONValue { seal(.object(["v": .number(1), "type": .string("ready"), "desktop_id": .string(pairing.desktop_id), "device_id": .string(pairing.device_id)])) }
+    private func sealReady() -> JSONValue {
+        var ready: [String: JSONValue] = ["v": .number(1), "type": .string("ready"), "desktop_id": .string(pairing.desktop_id), "device_id": .string(pairing.device_id)]
+        if let readyFeatures { ready["features"] = readyFeatures }
+        return seal(.object(ready))
+    }
     private func seal(_ payload: JSONValue) -> JSONValue {
         lock.withLock {
             let cipher = self.cipher!, counter = d2cNext; d2cNext += 1
             let nonce = try! ChaChaPoly.Nonce(data: Data(repeating: 0, count: 4) + SessionCipher.counterBytes(counter))
-            let box = try! ChaChaPoly.seal(try! JSONEncoder().encode(payload), using: cipher.d2c, nonce: nonce, authenticating: cipher.aad(direction: "d2c", counter: counter))
+            var plaintext = try! JSONEncoder().encode(payload)
+            if compressing, plaintext.count >= 2048, let frame = LinkFrame.compressedFrame(for: plaintext) { plaintext = frame }
+            let box = try! ChaChaPoly.seal(plaintext, using: cipher.d2c, nonce: nonce, authenticating: cipher.aad(direction: "d2c", counter: counter))
             return .object(["v": .number(1), "type": .string("encrypted"), "session_id": .string(Base64URL.encode(cipher.sessionID)), "direction": .string("d2c"), "counter": .string(String(counter)), "ciphertext": .string(Base64URL.encode(box.ciphertext + box.tag))])
         }
     }
@@ -160,9 +171,15 @@ private final class ScriptedDesktop: @unchecked Sendable {
             ? .object(["shell_id": request["params"]["shell_id"], "batch": request["params"]["batch"], "status": .string("sent")])
             : .object(["method": request["method"]])
         var response = JSONValue.object(["v": .number(1), "type": .string("response"), "id": .string(id), "ok": .bool(true), "result": results[request["method"].string ?? ""] ?? result])
+        if request["method"].string == "link.configure" {
+            let on = request["params"]["compression"].string == "deflate"
+            lock.withLock { compressing = on }
+            response = .object(["v": .number(1), "type": .string("response"), "id": .string(id), "ok": .bool(true), "result": .object(["compression": .string(on ? "deflate" : "none"), "min_bytes": .number(2048)])])
+        }
         if let failure = failures[request["method"].string ?? ""] {
             response = .object(["v": .number(1), "type": .string("response"), "id": .string(id), "ok": .bool(false), "error": .object(["code": .string(failure.code), "message": .string(failure.message)])])
         }
+        if let serverMs, case .object(var fields) = response { fields["server_ms"] = .number(serverMs); response = .object(fields) }
         switch policy(request["method"].string ?? "") {
         case .respond: socket.push(seal(response))
         case .hold: lock.withLock { held[id] = response }
@@ -740,5 +757,111 @@ private final class Order: @unchecked Sendable {
         socket.pingBehavior = .hang
         await eventually("a missing pong ends the connection") { await !client.isConnected() }
         XCTAssertTrue(socket.cancelled)
+    }
+
+    // MARK: The link extension: compression and timing
+
+    private let deflateFeatures = JSONValue.object(["deflate": .object(["min_bytes": .number(2048), "max_inflated": .number(2_097_152)]), "history_max_lines": .number(5000)])
+    private func bigResult(lines: Int = 300) -> JSONValue {
+        let line = #"\u{1B}[38;5;71mcargo test --lib case ... \u{1B}[32mok\u{1B}[0m"#
+        return .object(["shell_id": .string(shell), "output": .string((0..<lines).map { "\(line) \($0)" }.joined(separator: "\n")), "line_count": .number(Double(lines)), "history_size": .number(9000), "complete": .bool(false)])
+    }
+    private func historyParams() -> [String: JSONValue] { ["shell_id": .string(shell), "end": .number(0), "lines": .number(300), "styled": .bool(true)] }
+
+    func testAnnouncedCompressionIsAskedForOnceAndLargeRepliesComeBackCompressed() async throws {
+        let big = bigResult()
+        let (client, _, desktop) = try await connected { $0.readyFeatures = self.deflateFeatures; $0.serverMs = 123; $0.results["shell.history"] = big }
+        await eventually("the phone asked for deflate") { desktop.methods() == ["link.configure"] }
+        XCTAssertEqual(desktop.params(), [.object(["compression": .string("deflate")])])
+        await eventually("and the desktop agreed") { await client.compressionActive() }
+        let features = await client.desktopFeatures()
+        XCTAssertTrue(features.deflate)
+        XCTAssertEqual(features.historyMaximumLines, 5000)
+        let reply = try await client.timedRequest(method: "shell.history", params: historyParams(), id: UUID().uuidString.lowercased())
+        XCTAssertEqual(reply.value, big, "the same value either way")
+        let timing = try XCTUnwrap(reply.timing)
+        XCTAssertTrue(timing.compressed)
+        XCTAssertEqual(timing.serverSeconds ?? 0, 0.123, accuracy: 0.0001)
+        XCTAssertGreaterThan(timing.jsonBytes, 10_000)
+        XCTAssertLessThan(timing.sealedBytes * 5, timing.jsonBytes, "\(timing.sealedBytes) of \(timing.jsonBytes)")
+        XCTAssertGreaterThan(timing.wireBytes, timing.sealedBytes, "the envelope and base64 come on top")
+        XCTAssertGreaterThan(timing.elapsed, 0)
+        XCTAssertEqual(timing.concurrentBytes, 0)
+        // A small reply is not compressed.
+        let small = try await client.timedRequest(method: "projects.list", params: [:], id: UUID().uuidString.lowercased())
+        XCTAssertEqual(small.timing?.compressed, false)
+        XCTAssertEqual(small.timing?.sealedBytes, (small.timing?.jsonBytes ?? 0) + 16)
+        XCTAssertEqual(desktop.violations, 0)
+        XCTAssertEqual(desktop.methods().filter { $0 == "link.configure" }.count, 1, "asked once")
+    }
+    func testNothingIsAskedOfADesktopThatAnnouncesNothing() async throws {
+        let (client, _, desktop) = try await connected { $0.results["shell.history"] = self.bigResult() }
+        _ = try await client.request(method: "projects.list")
+        XCTAssertEqual(desktop.methods(), ["projects.list"])
+        let compressing = await client.compressionActive()
+        XCTAssertFalse(compressing)
+        let features = await client.desktopFeatures()
+        XCTAssertEqual(features, DesktopFeatures())
+        let reply = try await client.timedRequest(method: "shell.history", params: historyParams(), id: UUID().uuidString.lowercased())
+        XCTAssertNil(reply.timing?.serverSeconds, "an older desktop does not say how long it took")
+        XCTAssertEqual(reply.timing?.compressed, false)
+        XCTAssertGreaterThan(reply.timing?.jsonBytes ?? 0, 10_000)
+    }
+    func testCompressionTurnedOffIsNeverAskedForAndTurningItOffLaterTellsTheDesktop() async throws {
+        let (client, _, desktop) = try rig { $0.readyFeatures = self.deflateFeatures }
+        await client.setCompression(false)
+        try await client.connect(pairing: pairing())
+        _ = try await client.request(method: "projects.list")
+        XCTAssertEqual(desktop.methods(), ["projects.list"], "the person turned it off")
+        await client.setCompression(true)
+        let on = await client.compressionActive()
+        XCTAssertTrue(on, "the call returns when the desktop has answered")
+        XCTAssertEqual(desktop.params().last, .object(["compression": .string("deflate")]))
+        await client.setCompression(false)
+        let off = await client.compressionActive()
+        XCTAssertFalse(off)
+        XCTAssertEqual(desktop.params().last, .object(["compression": .string("none")]))
+        XCTAssertEqual(desktop.violations, 0)
+    }
+    func testAnEndedSessionCompressesNothingAndForgetsWhatTheDesktopOffered() async throws {
+        let (client, _, _) = try await connected { $0.readyFeatures = self.deflateFeatures }
+        await eventually("agreed") { await client.compressionActive() }
+        await client.disconnect()
+        let dropped = await client.compressionActive()
+        XCTAssertFalse(dropped, "a session of its own: nothing carries over")
+        let features = await client.desktopFeatures()
+        XCTAssertEqual(features, DesktopFeatures())
+    }
+    func testARepliesNeighboursThatArrivedWhileItWasOutAreReported() async throws {
+        let big = bigResult(lines: 40)
+        let (client, _, desktop) = try await connected { $0.policy = { $0 == "shell.output" ? .hold : .respond }; $0.results["shell.history"] = big }
+        let slow = Task { try await client.timedRequest(method: "shell.output", params: self.outputParams(), id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa") }
+        await eventually("the slow request is out") { desktop.requestCount == 1 }
+        let page = try await client.timedRequest(method: "shell.history", params: historyParams(), id: UUID().uuidString.lowercased())
+        XCTAssertEqual(page.timing?.concurrentBytes, 0, "nothing arrived while the page was out")
+        desktop.release(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        let late = try await slow.value
+        let timing = try XCTUnwrap(late.timing)
+        XCTAssertEqual(timing.concurrentReplies, 1, "the page arrived meanwhile and shared the socket")
+        XCTAssertEqual(timing.concurrentBytes, page.timing?.wireBytes)
+        XCTAssertGreaterThan(timing.elapsed, page.timing?.elapsed ?? .infinity)
+    }
+    func testAnAbandonedRequestsLateReplyStillCountsAsTrafficForTheOthers() async throws {
+        let big = bigResult(lines: 40)
+        let (client, _, desktop) = try await connected { $0.policy = { $0 == "shell.output" || $0 == "shell.history" ? .hold : .respond }; $0.results["shell.output"] = big }
+        let abandoned = Task { try await client.request(method: "shell.output", params: self.outputParams(), id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb") }
+        let page = Task { try await client.timedRequest(method: "shell.history", params: self.historyParams(), id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc") }
+        await eventually("both are out") { desktop.requestCount == 2 }
+        abandoned.cancel()
+        _ = try? await abandoned.value
+        // The abandoned request's reply arrives while the page is still out: nobody wants it, but it took the socket's time.
+        desktop.release(id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        try await Task.sleep(for: .milliseconds(50))
+        desktop.release(id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+        let pageReply = try await page.value
+        let timing = try XCTUnwrap(pageReply.timing)
+        XCTAssertEqual(timing.concurrentReplies, 1)
+        XCTAssertGreaterThan(timing.concurrentBytes, 1000, "the size of the abandoned reply")
+        XCTAssertEqual(desktop.violations, 0)
     }
 }
