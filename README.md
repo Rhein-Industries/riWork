@@ -37,8 +37,11 @@ Run `riwork help` for the full command list and `riwork --version` for the insta
 
 The standalone `riwork-remote` relay and outbound desktop connector let paired
 mobile devices inspect existing projects/tasks/worktrees, read persistent shell
-and orchestrator output, and submit a line to an explicitly selected existing
-session. Each device has independent endpoint secrets and revocable access; the
+and orchestrator output, submit a line to an explicitly selected existing
+session, and start or close a terminal (a shell, Codex, Claude or Grok) in a
+project or worktree. A running RiWork window adds a tab for a terminal started
+this way (or by `riwork shell create`) behind its current one, without taking
+focus. Each device has independent endpoint secrets and revocable access; the
 relay routes encrypted frames without session content or pairing secrets.
 
 ```sh

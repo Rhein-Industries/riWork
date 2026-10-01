@@ -151,7 +151,10 @@ applies to v2 sessions exactly as to v1. So does the 2026-09-30 theme sync exten
 extension (`styled`, `if_changed`, `wait_ms` and `hash` on `shell.output`, and the
 concurrent handling of a device's requests, in the same document), and the
 2026-09-30 deep scrollback extension (`shell.history`, and `history_size` and
-`alternate` on `shell.output`, in the same document).
+`alternate` on `shell.output`, in the same document), and the 2026-10-01 terminal
+creation extension (`shell.create` and `shell.close`, in the same document). A
+paired device could already start any command by typing it into a shell; creation
+adds no authority, but it is still pairing's "full terminal control".
 
 ## Vectors and tests
 

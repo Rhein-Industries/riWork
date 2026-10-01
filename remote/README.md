@@ -135,7 +135,7 @@ earlier result and `wait_ms` (0 to 10000) makes the desktop capture again about 
 and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time. That
 call may take ten seconds, so the connector no longer handles a device's requests one
 at a time: `lanes.rs` lets one ordered request (`shell.keys`, `shell.input`,
-`shell.resize`, `shell.resize.clear`, in arrival order) and three others run at once,
+`shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, in arrival order) and three others run at once,
 at most two of them waits, queues the rest in arrival order, and the connection loop
 alone seals and sends the responses (out of order by request, in order by counter). A
 wait ends, and its CLI process is killed, when the connection closes, the phone goes
@@ -162,6 +162,20 @@ theme (the contract is in [remote-protocol.md](../docs/remote-protocol.md)). It 
 and answers `not_found` "appearance not published" when the desktop app has not
 published a usable `appearance.json` yet. Its tests use a stub CLI and compile the
 desktop's `src/appearance_file.rs` to keep the two validators identical.
+
+`shell.create` starts a terminal in a project or worktree of the desktop (a plain shell,
+Codex, Claude or Grok, optionally with the agent's `unrestricted` flag or a command for
+a plain shell) and `shell.close` ends one (the contract is in
+[remote-protocol.md](../docs/remote-protocol.md)). The connector validates every field
+before anything runs, builds the argument vector of `riwork shell create ... --json`
+itself (one argument per value, nothing through a shell string), maps the CLI's
+"No project matches", "No worktree matches" and "... is not installed or is not on PATH"
+sentences to `not_found` and `harness_unavailable`, and refuses a session that is not
+the one asked for. Both run in the ordered lane, which is never cut short, so a phone
+that drops mid-call cannot leave a half-registered session; they are not idempotent and
+not deduplicated. Their tests use a stub CLI (`tests/shell_create.rs`); the root crate's
+`tests/shell_create_cli.rs` pins the CLI sentences and output the connector relies on,
+and an ignored test drives the real CLI with `RIWORK_TEST_CLI`.
 
 Revocation stops live endpoint access within one second and removes its local
 PSK/tokens. Remove that route from the relay manifest and restart the relay to

@@ -117,6 +117,9 @@ worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
 first, so a branch name shared by several projects is not ambiguous.
+shell create --json prints the new session as `shell list --json` shows it (id,
+project_id, worktree_id, kind, cwd, harness, alive, ...). A running RiWork
+window adds a tab for it behind the current one without taking focus.
 shell keys takes 1 to 64 items after `--`: t:TEXT (literal, 1 to 4096 bytes, no
 control characters) or k:KEY, one of Enter Tab BTab Escape Backspace Delete Up
 Down Left Right Home End PageUp PageDown or C-a to C-z. At most 4096 text bytes
