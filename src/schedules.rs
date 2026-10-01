@@ -184,14 +184,14 @@ pub enum Outcome {
     Failed,
     Uncertain,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
     pub due_at: u64,
     pub observed_at: u64,
     pub outcome: Outcome,
     pub message: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Schedule {
     pub id: String,
     pub revision: u64,

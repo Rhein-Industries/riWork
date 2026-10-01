@@ -2951,7 +2951,18 @@ impl Workspace {
             self.set_window_title(&name, window);
         }
         self.announce_to_dock(window, cx);
-        if let Some(panel) = &self.project_settings_panel {
+        // A panel that is open in a tab but not on screen is drawn by nobody, so
+        // it is brought up to date when its tab comes forward.
+        let panel_on_screen = |kind: PanelKind| {
+            self.panes.values().any(|pane| {
+                pane.tabs.get(pane.active).is_some_and(
+                    |tab| matches!(tab.content, TabContent::Panel(panel) if panel == kind),
+                )
+            })
+        };
+        let files_visible = panel_on_screen(PanelKind::Files);
+        let project_settings_visible = panel_on_screen(PanelKind::ProjectSettings);
+        if project_settings_visible && let Some(panel) = &self.project_settings_panel {
             panel.update(cx, |panel, cx| panel.refresh_folders(cx));
         }
         if !self.layout_ready {
@@ -2961,11 +2972,6 @@ impl Workspace {
         self.refresh_sessions(cx);
         request_codex_usage(false, cx);
         changed |= self.remember_active_worktree(cx);
-        let files_visible = self.panes.values().any(|pane| {
-            pane.tabs
-                .get(pane.active)
-                .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)))
-        });
         if files_visible {
             if let Some(panel) = &self.file_explorer {
                 panel.update(cx, |panel, cx| panel.refresh(cx));
@@ -2977,7 +2983,7 @@ impl Workspace {
         // has a few ages ("3m ago") that move with the clock, so it is drawn every
         // few ticks even when nothing else changed.
         let heartbeat = self.refresh_count.is_multiple_of(IDLE_REDRAW_TICKS);
-        let panels_open = self.project_settings_panel.is_some() || files_visible;
+        let panels_open = project_settings_visible || files_visible;
         if changed || heartbeat || panels_open {
             cx.notify();
         }
