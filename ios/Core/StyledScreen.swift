@@ -165,6 +165,9 @@ extension TerminalText {
     /// Reads the desktop's text into styled rows. SGR sequences set the running style; every other escape sequence and control
     /// character is dropped; CR overprints keep only what was written last; glyphs the font cannot show become one blank cell
     /// with `keepCells` (columns still line up) and vanish otherwise.
+    ///
+    /// `LineScanner.scan` follows the same rules for one line at a time (for `StyledLineCache`): a change of rules here is a change there,
+    /// and `StyledLineCacheTests` fails until both agree.
     static func scanStyled(_ input: String, keepCells: Bool, textPresentation forceText: Bool) -> ScannedScreen {
         let scalars = Array(input.unicodeScalars)
         var styles: [CellStyle] = [.plain]
@@ -240,36 +243,50 @@ extension TerminalText {
         return ScannedScreen(rows: rows, styles: styles)
     }
 
-    /// The lines, text and runs of rows. A line whose runs cannot describe its text exactly (which takes grapheme rules that merge
-    /// characters across cells) is drawn unstyled rather than misaligned.
+    /// One row as a line: its text, its styles as runs and its width. A line whose runs cannot describe its text exactly (which takes
+    /// grapheme rules that merge characters across cells) is drawn unstyled rather than misaligned.
+    static func makeLine(_ row: [StyledCell], styles: [CellStyle]) -> StyledLine {
+        var text = ""
+        text.reserveCapacity(row.count)
+        var runs: [StyleRun] = []
+        var runStyle: UInt32 = 0
+        var runLength = 0
+        var width = 0
+        for cell in row {
+            text.append(cell.character)
+            width += cellWidth(cell.character)
+            if runLength > 0, cell.style == runStyle { runLength += 1; continue }
+            if runLength > 0 { runs.append(StyleRun(length: runLength, style: styles[Int(runStyle)])) }
+            runStyle = cell.style; runLength = 1
+        }
+        if runLength > 0 { runs.append(StyleRun(length: runLength, style: styles[Int(runStyle)])) }
+        let actual = text.count
+        if actual != row.count { runs = actual > 0 ? [StyleRun(length: actual, style: .plain)] : [] }
+        return StyledLine(text: text, runs: runs, columns: width)
+    }
+
+    /// The lines, text and runs of rows.
     private static func build(_ screen: ScannedScreen, rows: [[StyledCell]], cursor: (row: Int, index: Int)?, historyLines: Int = 0) -> StyledScreen {
+        flatten(buildLines(screen, rows: rows), cursor: cursor, historyLines: historyLines)
+    }
+
+    private static func buildLines(_ screen: ScannedScreen, rows: [[StyledCell]]) -> [StyledLine] {
         var lines: [StyledLine] = []
         lines.reserveCapacity(rows.count)
-        var columns = 0
-        for row in rows {
-            var text = ""
-            text.reserveCapacity(row.count)
-            var runs: [StyleRun] = []
-            var runStyle: UInt32 = 0
-            var runLength = 0
-            var width = 0
-            for cell in row {
-                text.append(cell.character)
-                width += cellWidth(cell.character)
-                if runLength > 0, cell.style == runStyle { runLength += 1; continue }
-                if runLength > 0 { runs.append(StyleRun(length: runLength, style: screen.styles[Int(runStyle)])) }
-                runStyle = cell.style; runLength = 1
-            }
-            if runLength > 0 { runs.append(StyleRun(length: runLength, style: screen.styles[Int(runStyle)])) }
-            let actual = text.count
-            if actual != row.count { runs = actual > 0 ? [StyleRun(length: actual, style: .plain)] : [] }
-            lines.append(StyledLine(text: text, runs: runs, columns: width))
-            columns = max(columns, width)
-        }
-        // The flat form: the lines joined by plain line breaks.
+        for row in rows { lines.append(makeLine(row, styles: screen.styles)) }
+        return lines
+    }
+
+    /// The flat form of lines: the lines joined by plain line breaks, with the cursor cell as an offset into that text.
+    ///
+    /// The length of a line in characters is the sum of its runs (they cover the whole text), so no line's text is counted again.
+    static func flatten(_ lines: [StyledLine], cursor: (row: Int, index: Int)?, historyLines: Int) -> StyledScreen {
+        var columns = 0, bytes = 0, runCount = lines.count
+        for line in lines { columns = max(columns, line.columns); bytes += line.text.utf8.count + 1; runCount += line.runs.count }
         var text = ""
-        text.reserveCapacity(lines.reduce(0) { $0 + $1.text.utf8.count + 1 })
+        text.reserveCapacity(bytes)
         var runs: [StyleRun] = []
+        runs.reserveCapacity(runCount)
         func add(_ run: StyleRun) {
             if let last = runs.last, last.style == run.style { runs[runs.count - 1] = StyleRun(length: last.length + run.length, style: run.style) }
             else { runs.append(run) }
@@ -278,15 +295,32 @@ extension TerminalText {
         var cursorOffset: Int?, cursorColumn: Int?, cursorLine: Int?
         for (index, line) in lines.enumerated() {
             if index > 0 { text.append("\n"); add(StyleRun(length: 1, style: .plain)); offset += 1 }
-            if let cursor, cursor.row == index, !line.text.isEmpty {
-                let column = min(cursor.index, line.text.count - 1)
+            var characters = 0
+            for run in line.runs { characters += run.length }
+            if let cursor, cursor.row == index, characters > 0 {
+                let column = min(cursor.index, characters - 1)
                 cursorOffset = offset + column; cursorColumn = column; cursorLine = index
             }
             text.append(line.text)
             for run in line.runs { add(run) }
-            offset += line.text.count
+            offset += characters
         }
         return StyledScreen(text: text, runs: runs, cursorOffset: cursorOffset, lines: lines, cursorLine: cursorLine, cursorColumn: cursorColumn, columns: columns, historyLines: historyLines)
+    }
+
+    /// The index of the cell that holds terminal column `x` of a row. Past the end of the row the row is padded with plain blanks up to
+    /// the column, and the cursor sits on one more blank. On the second cell of a wide character the cursor stays on that character.
+    static func placeCursor(in cells: inout [StyledCell], x: Int) -> Int {
+        var columns = 0
+        var index = 0
+        while index < cells.count, columns + cellWidth(cells[index].character) <= x { columns += cellWidth(cells[index].character); index += 1 }
+        if index >= cells.count {
+            let blank = StyledCell(character: " ", style: 0)
+            if columns < x { cells.append(contentsOf: Array(repeating: blank, count: x - columns)) }
+            index = cells.count
+            cells.append(blank)
+        }
+        return index
     }
 
     /// The styled counterpart of `screen(_:cursor:rows:)`: the same rows, trimming and cursor cell, with the SGR styles kept and
@@ -294,7 +328,11 @@ extension TerminalText {
     ///
     /// The cursor cell is `(x, y)` counted in terminal cells from the first line of the visible screen, which is the last `rows`
     /// lines of `input`. Styles never change what a cell is: the cursor lands on the same character as it does in the plain screen.
-    public static func styledScreen(_ input: String, cursor: (x: Int, y: Int)?, rows screenRows: Int?, textPresentation forceText: Bool = true) -> StyledScreen {
+    ///
+    /// With a `cache`, lines that were parsed before (the same text, read under the same running style) are not parsed again and come back
+    /// as the very same `StyledLine` values; the result is identical to the one without a cache. The cursor line is always parsed afresh.
+    public static func styledScreen(_ input: String, cursor: (x: Int, y: Int)?, rows screenRows: Int?, textPresentation forceText: Bool = true, cache: StyledLineCache? = nil) -> StyledScreen {
+        if let cache { return cache.parse(input, cursor: cursor, rows: screenRows, textPresentation: forceText) }
         guard let cursor, let screenRows, screenRows > 0, cursor.x >= 0, cursor.y >= 0, cursor.y < screenRows else {
             var scanned = scanStyled(input, keepCells: false, textPresentation: forceText)
             while let last = scanned.rows.last, scanned.isBlank(last) { scanned.rows.removeLast() }
@@ -310,16 +348,7 @@ extension TerminalText {
         while rows.count <= row { rows.append([]) }
         while rows.count - 1 > row, let last = rows.last, scanned.isBlank(last) { rows.removeLast() }
         var cells = rows[row]
-        var columns = 0
-        var index = 0
-        while index < cells.count, columns + cellWidth(cells[index].character) <= cursor.x { columns += cellWidth(cells[index].character); index += 1 }
-        // Past the end of the line: pad up to the column. On the second cell of a wide character, stay on that character.
-        if index >= cells.count {
-            let blank = StyledCell(character: " ", style: 0)
-            if columns < cursor.x { cells.append(contentsOf: Array(repeating: blank, count: cursor.x - columns)) }
-            index = cells.count
-            cells.append(blank)
-        }
+        let index = placeCursor(in: &cells, x: cursor.x)
         rows[row] = cells
         scanned.rows = rows
         return build(scanned, rows: rows, cursor: (row, index), historyLines: historyLines)
@@ -343,6 +372,399 @@ extension TerminalText {
         } else if input.utf8.last == 0x0A, rows.last?.isEmpty == true {
             rows.removeLast()
         }
-        return build(scanned, rows: rows, cursor: nil).lines
+        return buildLines(scanned, rows: rows)
+    }
+}
+
+// MARK: - Line cache
+
+extension TerminalText {
+    /// Reads one line (the bytes between two line feeds) under a given running style, with the rules of `scanStyled`: it is that
+    /// function's loop for a single line, which can start in any style and says in which style it ends. Kept apart so a line can be
+    /// read on its own, and so its scratch space is reused from line to line.
+    ///
+    /// A line never contains a line feed, so a CR in it is always a bare one (the CR of a CRLF is taken off by the caller).
+    struct LineScanner {
+        /// The cells of the last line scanned. Their style numbers index `styles`, where 0 is always the plain style.
+        private(set) var cells: [TerminalText.StyledCell] = []
+        private(set) var styles: [CellStyle] = [.plain]
+        /// The running style after the last line scanned.
+        private(set) var end = CellStyle.plain
+
+        private var known: [CellStyle: UInt32] = [.plain: 0]
+        private var marks: [(at: Int, style: UInt32)] = []
+        private var scalars: [Unicode.Scalar] = []
+        private var line = String.UnicodeScalarView()
+        private var lineScalars = 0
+        private var current = CellStyle.plain
+        private var currentID: UInt32 = 0
+
+        mutating func scan(_ bytes: UnsafeBufferPointer<UInt8>, start: CellStyle, keepCells: Bool, textPresentation forceText: Bool) {
+            decode(bytes)
+            styles.removeAll(keepingCapacity: true); styles.append(.plain)
+            known.removeAll(keepingCapacity: true); known[.plain] = 0
+            cells.removeAll(keepingCapacity: true)
+            line.removeAll(keepingCapacity: true)
+            lineScalars = 0
+            current = start
+            currentID = 0
+            if start != .plain { styles.append(start); known[start] = 1; currentID = 1 }
+            marks.removeAll(keepingCapacity: true)
+            marks.append((0, currentID))
+
+            var i = 0
+            let count = scalars.count
+            while i < count {
+                let scalar = scalars[i]
+                switch scalar.value {
+                case 0x1B:
+                    let (next, sgr) = TerminalText.escape(in: scalars, at: i)
+                    if let sgr { var style = current; SGR.apply(sgr, to: &style); setStyle(style) }
+                    i = next
+                case 0x0D:
+                    // A bare CR returns to the start of the line: what follows overwrites it.
+                    line.removeAll(keepingCapacity: true)
+                    lineScalars = 0
+                    marks.removeAll(keepingCapacity: true); marks.append((0, currentID))
+                    i += 1
+                case 0x09:
+                    line.append(scalar); lineScalars += 1
+                    i += 1
+                case 0x00...0x1F, 0x7F...0x9F:
+                    i += 1
+                default:
+                    if scalar.value >= 0xE000, scalar.properties.generalCategory == .privateUse {
+                        if keepCells { line.append(" "); lineScalars += 1 }
+                    } else {
+                        line.append(scalar); lineScalars += 1
+                    }
+                    i += 1
+                }
+            }
+            var mark = 0, position = 0
+            cells.reserveCapacity(lineScalars)
+            for character in String(line) {
+                while mark + 1 < marks.count, marks[mark + 1].at <= position { mark += 1 }
+                cells.append(StyledCell(character: forceText ? TerminalText.textPresentation(character) : character, style: marks[mark].style))
+                position += character.isASCII ? 1 : character.unicodeScalars.count
+            }
+            end = current
+        }
+
+        /// Whether every cell of the last line is a blank that paints nothing.
+        var isBlank: Bool {
+            cells.allSatisfy { $0.character.isWhitespace && !styles[Int($0.style)].paintsBlank }
+        }
+
+        private mutating func setStyle(_ style: CellStyle) {
+            current = style
+            let id: UInt32
+            if let existing = known[style] { id = existing }
+            else if styles.count < Int(UInt32.max) { id = UInt32(styles.count); styles.append(style); known[style] = id }
+            else { id = 0 }
+            guard id != currentID else { return }
+            currentID = id
+            if marks.last?.at == lineScalars { marks.removeLast() }
+            marks.append((lineScalars, id))
+        }
+
+        private mutating func decode(_ bytes: UnsafeBufferPointer<UInt8>) {
+            scalars.removeAll(keepingCapacity: true)
+            var ascii = true
+            for byte in bytes where byte >= 0x80 { ascii = false; break }
+            if ascii {
+                scalars.reserveCapacity(bytes.count)
+                for byte in bytes { scalars.append(Unicode.Scalar(byte)) }
+            } else {
+                // Always valid UTF-8: it comes from a `String`, cut at line feeds and carriage returns, which are single bytes.
+                scalars.append(contentsOf: String(decoding: bytes, as: UTF8.self).unicodeScalars)
+            }
+        }
+    }
+}
+
+/// Remembers parsed lines by their content, so a live screen that differs from the last one in a line or two is not parsed again from
+/// its first byte. Pass one to `TerminalText.styledScreen(_:cursor:rows:textPresentation:cache:)`; the result is the same as without.
+///
+/// A line is found by its raw text (escape sequences included) and by the style that is running when it starts, since SGR state
+/// carries over from one line to the next. A found line is the very `StyledLine` that was built before: same text and run storage,
+/// no copy. The cursor line is never taken from here.
+///
+/// The cache holds the lines of the last parse and of the one before it, plus a little slack; older lines are dropped, and there is a
+/// hard limit on lines and bytes. It is safe to use from several threads (parses take turns).
+public final class StyledLineCache: @unchecked Sendable {
+    /// What the cache did since it was made or last reset, counted in lines.
+    public struct Counters: Sendable, Equatable {
+        /// Lines taken from the cache.
+        public var hits = 0
+        /// Lines parsed because the cache did not have them.
+        public var misses = 0
+        /// Lines parsed without asking the cache: the cursor line, and lines too long to keep.
+        public var bypassed = 0
+        public init(hits: Int = 0, misses: Int = 0, bypassed: Int = 0) { self.hits = hits; self.misses = misses; self.bypassed = bypassed }
+    }
+
+    /// The most lines held, and the most memory (roughly, in bytes) they may take. Past either, new lines are parsed but not kept.
+    public let maximumLines: Int
+    public let maximumBytes: Int
+    private let lock = NSLock()
+    private var store: Store
+
+    public init(maximumLines: Int = 4096, maximumBytes: Int = 4 << 20) {
+        self.maximumLines = max(1, maximumLines)
+        self.maximumBytes = max(1, maximumBytes)
+        store = Store(maximumLines: max(1, maximumLines), maximumBytes: max(1, maximumBytes))
+    }
+
+    public var counters: Counters { lock.withLock { store.counters } }
+    public func resetCounters() { lock.withLock { store.counters = Counters() } }
+    /// How many lines are held.
+    public var count: Int { lock.withLock { store.count } }
+    /// Roughly how many bytes the held lines take.
+    public var bytes: Int { lock.withLock { store.bytes } }
+    /// Drops every line (for a memory warning, or a new session).
+    public func removeAll() { lock.withLock { store.removeAll() } }
+
+    func parse(_ input: String, cursor: (x: Int, y: Int)?, rows: Int?, textPresentation forceText: Bool) -> StyledScreen {
+        var input = input
+        return lock.withLock {
+            input.withUTF8 { store.parse($0, cursor: cursor, rows: rows, textPresentation: forceText) }
+        }
+    }
+
+    // MARK: Storage
+
+    /// A parsed line with what is needed to take it from the cache: the raw text and style it was parsed under (the key), and what
+    /// the next line needs to know about it.
+    final class Entry {
+        let hash: UInt64
+        let flags: UInt8
+        let start: CellStyle
+        let raw: ContiguousArray<UInt8>
+        let line: StyledLine
+        /// The running style after the line.
+        let end: CellStyle
+        /// All cells are blanks that paint nothing (the screen drops such lines at its end).
+        let blank: Bool
+        /// The last parse that used this entry.
+        var stamp: Int
+
+        init(hash: UInt64, flags: UInt8, start: CellStyle, raw: ContiguousArray<UInt8>, line: StyledLine, end: CellStyle, blank: Bool, stamp: Int) {
+            self.hash = hash; self.flags = flags; self.start = start; self.raw = raw
+            self.line = line; self.end = end; self.blank = blank; self.stamp = stamp
+        }
+        var weight: Int { raw.count + line.text.utf8.count + 24 * line.runs.count + 160 }
+        func matches(_ bytes: UnsafeBufferPointer<UInt8>) -> Bool {
+            guard raw.count == bytes.count else { return false }
+            if bytes.isEmpty { return true }
+            return raw.withUnsafeBufferPointer { memcmp($0.baseAddress!, bytes.baseAddress!, bytes.count) == 0 }
+        }
+    }
+
+    /// Lines longer than this are parsed every time.
+    static let longestLine = 4096
+    /// `flags` of an entry: what changes a line besides its text and start style.
+    private static let keepCells: UInt8 = 1, textPresentation: UInt8 = 2
+
+    struct Store {
+        let maximumLines: Int
+        let maximumBytes: Int
+        /// Open addressing, linear probing, a power of two long, never more than half full. Entries leave only in a sweep, which
+        /// builds a new table, so there are no tombstones.
+        private var table: [Entry?] = Array(repeating: nil, count: 256)
+        private(set) var count = 0
+        private(set) var bytes = 0
+        var counters = Counters()
+        private var serial = 0
+        private var used = 0, previousUsed = 0
+        private var scanner = TerminalText.LineScanner()
+        private var breaks: [Int] = []
+
+        init(maximumLines: Int, maximumBytes: Int) { self.maximumLines = maximumLines; self.maximumBytes = maximumBytes }
+
+        mutating func removeAll() {
+            table = Array(repeating: nil, count: 256)
+            count = 0; bytes = 0; used = 0; previousUsed = 0
+        }
+
+        // MARK: Parse
+
+        mutating func parse(_ input: UnsafeBufferPointer<UInt8>, cursor: (x: Int, y: Int)?, rows screenRows: Int?, textPresentation forceText: Bool) -> StyledScreen {
+            serial += 1
+            defer { finish() }
+
+            // Every line feed ends a row (no escape sequence takes one in), so the rows are what lies between the line feeds.
+            breaks.removeAll(keepingCapacity: true)
+            if let base = input.baseAddress {
+                var offset = 0
+                while offset < input.count, let found = memchr(base + offset, 0x0A, input.count - offset) {
+                    let at = UnsafeRawPointer(base).distance(to: UnsafeRawPointer(found))
+                    breaks.append(at)
+                    offset = at + 1
+                }
+            }
+            let rowCount = breaks.count + 1
+            var style = CellStyle.plain   // SGR state runs on from one line to the next
+
+            guard let cursor, let screenRows, screenRows > 0, cursor.x >= 0, cursor.y >= 0, cursor.y < screenRows else {
+                let flags = forceText ? StyledLineCache.textPresentation : 0
+                var lines: [StyledLine] = []
+                lines.reserveCapacity(rowCount)
+                var keep = 0   // rows up to the last one that shows something: trailing blank rows are dropped
+                for k in 0..<rowCount {
+                    let entry = line(slice(k, input), flags: flags, start: style, textPresentation: forceText)
+                    lines.append(entry.line)
+                    style = entry.end
+                    if !entry.blank { keep = k + 1 }
+                }
+                lines.removeLast(lines.count - keep)
+                return TerminalText.flatten(lines, cursor: nil, historyLines: 0)
+            }
+
+            // A trailing line feed terminates the last line; it does not start another one. Whether the last row is empty does not
+            // depend on the style it starts in, and only a last row with input has to be read to tell.
+            var count = rowCount
+            if rowCount > 1 {
+                let tail = slice(rowCount - 1, input)
+                var empty = tail.isEmpty
+                if !empty {
+                    scanner.scan(tail, start: .plain, keepCells: true, textPresentation: forceText)
+                    empty = scanner.cells.isEmpty
+                }
+                if empty { count -= 1 }
+            }
+            // The lines above the screen are scrollback; the screen starts `historyLines` lines in.
+            let historyLines = max(0, count - screenRows)
+            let row = historyLines + cursor.y
+            let flags = StyledLineCache.keepCells | (forceText ? StyledLineCache.textPresentation : 0)
+            var lines: [StyledLine] = []
+            lines.reserveCapacity(max(count, row + 1))
+            var keep = row + 1   // blank rows after the cursor row are dropped
+            var index = 0
+            for k in 0..<count {
+                if k == row {
+                    scanner.scan(slice(k, input), start: style, keepCells: true, textPresentation: forceText)
+                    var cells = scanner.cells
+                    index = TerminalText.placeCursor(in: &cells, x: cursor.x)
+                    lines.append(TerminalText.makeLine(cells, styles: scanner.styles))
+                    style = scanner.end
+                    counters.bypassed += 1
+                } else {
+                    let entry = line(slice(k, input), flags: flags, start: style, textPresentation: forceText)
+                    lines.append(entry.line)
+                    style = entry.end
+                    if k > row, !entry.blank { keep = k + 1 }
+                }
+            }
+            if row >= count {
+                // The cursor is below the text: empty rows down to it, and a blank to stand on.
+                var cells: [TerminalText.StyledCell] = []
+                index = TerminalText.placeCursor(in: &cells, x: cursor.x)
+                while lines.count < row { lines.append(TerminalText.makeLine([], styles: [.plain])) }
+                lines.append(TerminalText.makeLine(cells, styles: [.plain]))
+            }
+            lines.removeLast(lines.count - keep)
+            return TerminalText.flatten(lines, cursor: (row, index), historyLines: historyLines)
+        }
+
+        /// Row `k` as the bytes the scanner reads. The CR of a CRLF does nothing, so it is not part of the row; a CR at the very end
+        /// (no line feed after it) returns to the start of the line, and stays.
+        private func slice(_ k: Int, _ input: UnsafeBufferPointer<UInt8>) -> UnsafeBufferPointer<UInt8> {
+            let from = k == 0 ? 0 : breaks[k - 1] + 1
+            var to = k < breaks.count ? breaks[k] : input.count
+            if k < breaks.count, to > from, input[to - 1] == 0x0D { to -= 1 }
+            return UnsafeBufferPointer(rebasing: input[from..<to])
+        }
+
+        // MARK: Lookup
+
+        /// The entry for a row: the cached one, or a freshly parsed one that is kept if there is room.
+        private mutating func line(_ row: UnsafeBufferPointer<UInt8>, flags: UInt8, start: CellStyle, textPresentation forceText: Bool) -> Entry {
+            let keepCells = flags & StyledLineCache.keepCells != 0
+            guard row.count <= StyledLineCache.longestLine else {
+                counters.bypassed += 1
+                return parsed(row, hash: 0, flags: flags, start: start, keepCells: keepCells, textPresentation: forceText)
+            }
+            let hash = StyledLineCache.hash(row)
+            let mask = table.count - 1
+            var slot = Int(truncatingIfNeeded: hash) & mask
+            while let entry = table[slot] {
+                if entry.hash == hash, entry.flags == flags, entry.start == start, entry.matches(row) {
+                    entry.stamp = serial
+                    counters.hits += 1; used += 1
+                    return entry
+                }
+                slot = (slot + 1) & mask
+            }
+            counters.misses += 1; used += 1
+            let entry = parsed(row, hash: hash, flags: flags, start: start, keepCells: keepCells, textPresentation: forceText)
+            if count < maximumLines, bytes + entry.weight <= maximumBytes {
+                table[slot] = entry
+                count += 1; bytes += entry.weight
+                if count * 2 > table.count { rehash(into: table.count * 2, keeping: 0) }
+            }
+            return entry
+        }
+
+        private mutating func parsed(_ row: UnsafeBufferPointer<UInt8>, hash: UInt64, flags: UInt8, start: CellStyle, keepCells: Bool, textPresentation forceText: Bool) -> Entry {
+            scanner.scan(row, start: start, keepCells: keepCells, textPresentation: forceText)
+            return Entry(hash: hash, flags: flags, start: start, raw: ContiguousArray(row), line: TerminalText.makeLine(scanner.cells, styles: scanner.styles),
+                         end: scanner.end, blank: scanner.isBlank, stamp: serial)
+        }
+
+        // MARK: Bounds
+
+        /// After a parse: keep what the last two parses used. Dropping is done in one sweep when the cache has grown to more than twice
+        /// the lines a parse touches (or is full), which costs one pass over the table and happens every few dozen answers.
+        private mutating func finish() {
+            if count > 2 * max(used, previousUsed) + 64 || count >= maximumLines { rehash(into: 0, keeping: serial - 1) }
+            previousUsed = used
+            used = 0
+        }
+
+        /// A new table with `size` slots (or just enough) holding the entries last used in parse `stamp` or later.
+        private mutating func rehash(into size: Int, keeping stamp: Int) {
+            var kept: [Entry] = []
+            kept.reserveCapacity(count)
+            for case let entry? in table where entry.stamp >= stamp { kept.append(entry) }
+            var slots = max(256, size)
+            while slots < kept.count * 2 + 2 { slots *= 2 }
+            var fresh: [Entry?] = Array(repeating: nil, count: slots)
+            let mask = slots - 1
+            var weight = 0
+            for entry in kept {
+                var slot = Int(truncatingIfNeeded: entry.hash) & mask
+                while fresh[slot] != nil { slot = (slot + 1) & mask }
+                fresh[slot] = entry
+                weight += entry.weight
+            }
+            table = fresh
+            count = kept.count
+            bytes = weight
+        }
+    }
+
+    /// A 64-bit hash of a row's bytes: a word at a time, then mixed. Collisions only cost a comparison.
+    static func hash(_ row: UnsafeBufferPointer<UInt8>) -> UInt64 {
+        let length = row.count
+        var h = 0x9E37_79B9_7F4A_7C15 ^ UInt64(truncatingIfNeeded: length)
+        if let base = row.baseAddress {
+            let raw = UnsafeRawPointer(base)
+            var i = 0
+            while i + 8 <= length {
+                h = (h ^ raw.loadUnaligned(fromByteOffset: i, as: UInt64.self)) &* 0xFF51_AFD7_ED55_8CCD
+                h ^= h >> 32
+                i += 8
+            }
+            if i < length {
+                var tail: UInt64 = 0
+                var shift: UInt64 = 0
+                while i < length { tail |= UInt64(base[i]) << shift; shift += 8; i += 1 }
+                h = (h ^ tail) &* 0xFF51_AFD7_ED55_8CCD
+                h ^= h >> 32
+            }
+        }
+        h = (h ^ (h >> 33)) &* 0xC4CE_B9FE_1A85_EC53
+        return h ^ (h >> 29)
     }
 }

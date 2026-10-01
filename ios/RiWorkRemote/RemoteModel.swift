@@ -138,6 +138,8 @@ enum ConnectionState: Equatable {
     // A not_found UUID is excluded until an explicit refresh or fresh connection.
     var missingSessionIDs: Set<String> = []
     @ObservationIgnored private var lastScreen: ShellOutput?
+    /// The lines of the last screens, parsed. The next answer differs from the last in a line or two, and only those are parsed again.
+    @ObservationIgnored private let lineCache = StyledLineCache()
     @ObservationIgnored private var drainingForBackground = false
     @ObservationIgnored private var resumeAfterDrain = false
     /// Counts times the selected terminal was replaced without a tap (it closed); the view drops the keyboard so
@@ -480,6 +482,7 @@ enum ConnectionState: Equatable {
     }
     private func resetOutput() {
         stashTerminal()
+        lineCache.removeAll()
         lastScreen = nil; output = ""; styledOutput = .empty; outputVersion &+= 1; outputHash = nil
         outputCursorOffset = nil; outputInMode = false; outputSessionID = nil; lastOutputAt = nil
         resetTerminal()
@@ -643,7 +646,8 @@ enum ConnectionState: Equatable {
                 // An unchanged screen is not re-parsed or re-rendered: reads are frequent while typing and most see the same thing.
                 if screen != lastScreen || outputSessionID != id {
                     // Colors, symbols and cursor are worked out off the main actor; a full 500-line screen must not stall touches.
-                    let styled = await Task.detached(priority: .userInitiated) { screen.styledScreen }.value
+                    let cache = lineCache
+                    let styled = await Task.detached(priority: .userInitiated) { Perf.interval("ParseAnswer") { screen.styledScreen(cache: cache) } }.value
                     guard generation == token, sessionID == id else { return .skipped }
                     output = styled.text; styledOutput = styled; outputVersion &+= 1
                     outputCursorOffset = styled.cursorOffset; outputInMode = screen.inMode

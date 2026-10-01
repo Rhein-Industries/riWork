@@ -49,6 +49,55 @@ final class PerformanceTests: XCTestCase {
         print("PERF bytes per answer: 120+40 lines \(short.utf8.count), 500+40 lines \(long.utf8.count)")
     }
 
+    /// The same parse with the line cache, next to the parse without it, for the three things that happen to a live screen: nothing (the
+    /// poll finds the screen as it was), typing (the last line grows) and output (two lines scroll in at the bottom). The answers are made
+    /// beforehand, one per call, so the timings are of the parse alone and every call sees what the app would see after the one before.
+    func testParseOfALiveAnswerWithTheLineCache() {
+        let cursor = (x: 3, y: rows - 1)
+        let calls = 3 + 9 * 20 + 20
+        let same = answerText(scrollback: 120)
+        let typed = (0..<calls).map { answerText(scrollback: 120, edit: 1 + $0 % 40) }
+        let scrolled = (0..<calls).map { answerText(scrollback: 120, first: 100_000 + 2 * $0) }
+        var parsed = StyledScreen.empty
+        var step = 0
+
+        bench("parse 120+40 lines, uncached, unchanged") { parsed = TerminalText.styledScreen(same, cursor: cursor, rows: rows) }
+        let unchangedCache = StyledLineCache()
+        bench("parse 120+40 lines, cached, unchanged") { parsed = TerminalText.styledScreen(same, cursor: cursor, rows: rows, cache: unchangedCache) }
+        XCTAssertEqual(parsed, TerminalText.styledScreen(same, cursor: cursor, rows: rows))
+        unchangedCache.resetCounters()
+        parsed = TerminalText.styledScreen(same, cursor: cursor, rows: rows, cache: unchangedCache)
+        XCTAssertEqual(unchangedCache.counters, StyledLineCache.Counters(hits: 159, misses: 0, bypassed: 1), "an unchanged screen scans nothing but its cursor line")
+
+        step = 0
+        bench("parse 120+40 lines, uncached, last line edited") { parsed = TerminalText.styledScreen(typed[step], cursor: cursor, rows: rows); step += 1 }
+        step = 0
+        let typingCache = StyledLineCache()
+        bench("parse 120+40 lines, cached, last line edited") { parsed = TerminalText.styledScreen(typed[step], cursor: cursor, rows: rows, cache: typingCache); step += 1 }
+        XCTAssertEqual(parsed, TerminalText.styledScreen(typed[step - 1], cursor: cursor, rows: rows))
+
+        step = 0
+        bench("parse 120+40 lines, uncached, +2 lines scrolled in") { parsed = TerminalText.styledScreen(scrolled[step], cursor: cursor, rows: rows); step += 1 }
+        step = 0
+        let outputCache = StyledLineCache()
+        bench("parse 120+40 lines, cached, +2 lines scrolled in") { parsed = TerminalText.styledScreen(scrolled[step], cursor: cursor, rows: rows, cache: outputCache); step += 1 }
+        XCTAssertEqual(parsed, TerminalText.styledScreen(scrolled[step - 1], cursor: cursor, rows: rows))
+        XCTAssertLessThanOrEqual(outputCache.count, 2 * 160 + 64 + 160)
+
+        bench("parse 120+40 lines, cached, first parse (empty cache)") { parsed = TerminalText.styledScreen(same, cursor: cursor, rows: rows, cache: StyledLineCache()) }
+        XCTAssertEqual(parsed.lines.count, 160)
+
+        // The long answer (500 lines of scrollback), as after a scroll back or on the first answer.
+        let longScrolled = (0..<80).map { answerText(scrollback: 500, first: 100_000 + 2 * $0) }
+        step = 0
+        bench("parse 500+40 lines, uncached, +2 lines scrolled in", inner: 5) { parsed = TerminalText.styledScreen(longScrolled[step], cursor: cursor, rows: rows); step += 1 }
+        step = 0
+        let longCache = StyledLineCache()
+        bench("parse 500+40 lines, cached, +2 lines scrolled in", inner: 5) { parsed = TerminalText.styledScreen(longScrolled[step], cursor: cursor, rows: rows, cache: longCache); step += 1 }
+        XCTAssertEqual(parsed.lines.count, 540)
+        print("PERF cache after the runs: \(unchangedCache.count) / \(typingCache.count) / \(outputCache.count) / \(longCache.count) lines held, \(outputCache.bytes / 1024) KB for the 160-line run")
+    }
+
     /// Where the parse spends its time: scanning the characters, or building lines and the flat form.
     func testWhereTheParseSpendsItsTime() {
         let text = answerText(scrollback: 120)
@@ -59,6 +108,11 @@ final class PerformanceTests: XCTestCase {
         var scalars: [Unicode.Scalar] = []
         bench("  Array(unicodeScalars) alone") { scalars = Array(text.unicodeScalars) }
         XCTAssertGreaterThan(scalars.count, 1000)
+        // The flat form (text, runs) made from lines that are ready, which is all that is left to do for lines found in the cache.
+        let lines = TerminalText.styledScreen(text, cursor: (3, rows - 1), rows: rows).lines
+        var flat = StyledScreen.empty
+        bench("  flat form alone (160 lines)") { flat = TerminalText.flatten(lines, cursor: (159, 3), historyLines: 120) }
+        XCTAssertEqual(flat.lines.count, 160)
     }
 
     func testParseOfAHistoryPage() {
@@ -216,6 +270,19 @@ final class PerformanceTests: XCTestCase {
             size += 2
             let raw = SyntheticTranscript.lines(size - 120, 120 + rows).joined(separator: "\n") + "\n"
             let screen = TerminalText.styledScreen(raw, cursor: (0, rows - 1), rows: rows)
+            buffer.applyLive(LiveTail(screen: screen, historySize: size))
+        }
+    }
+
+    /// The same, with the line cache the app would keep between answers.
+    func testOneAnswerEndToEndWithTheLineCache() throws {
+        var buffer = filledBuffer(history: 50_000)
+        var size = 50_000
+        let cache = StyledLineCache()
+        bench("answer pipeline: decode+parse+apply, cached", inner: 20) {
+            size += 2
+            let raw = SyntheticTranscript.lines(size - 120, 120 + rows).joined(separator: "\n") + "\n"
+            let screen = TerminalText.styledScreen(raw, cursor: (0, rows - 1), rows: rows, cache: cache)
             buffer.applyLive(LiveTail(screen: screen, historySize: size))
         }
     }
