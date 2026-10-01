@@ -133,12 +133,13 @@ the alternate screen), and a `hash` of everything the answer says. --styled
 keeps colors and text attributes as SGR sequences
 (ESC [ ... m) and removes every other escape and control sequence. With
 --if-changed HASH (a `hash` from an earlier answer to the same question) the
-shell is captured again about every 80 ms for up to --wait-ms (0 to 10000,
-default 0) while the hash stays the same; if it does, the answer is
+shell is captured again whenever tmux reports a change to it (about every 80 ms
+where tmux cannot report changes) for up to --wait-ms (0 to 10000, default 0)
+while the hash stays the same; if it does, the answer is
 {id, unchanged: true, hash, history_size, alternate} and carries no output.
 shell history ID --end N --lines M reads scrollback without the screen: skip the N
 lines directly above it (0 starts at the line just above the screen), then take
-the M (1 to 1000) above those, clamped at the top of the history. --json gives
+the M (1 to 5000) above those, clamped at the top of the history. --json gives
 {id, output, line_count, history_size, complete}: output is the lines top to
 bottom joined by newlines, unaltered and with no newline after the last one;
 complete is true when the page reaches the first line, and N at or beyond
@@ -2585,16 +2586,16 @@ mod tests {
         );
         // Any order, before or after the ID, styled or not.
         let all = parse_history_arguments(words(&format!(
-            "--styled --lines 1000 {SHELL} --end 4294967295"
+            "--styled --lines 5000 {SHELL} --end 4294967295"
         )))
         .unwrap();
-        assert_eq!((all.end, all.lines, all.styled), (u32::MAX, 1000, true));
+        assert_eq!((all.end, all.lines, all.styled), (u32::MAX, 5000, true));
         for bad in [
             "",
             "--end 0",
             "--lines 10",
             "--end 0 --lines 0",
-            "--end 0 --lines 1001",
+            "--end 0 --lines 5001",
             "--end 0 --lines -1",
             "--end 0 --lines 1.5",
             "--end 0 --lines ten",

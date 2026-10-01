@@ -2442,12 +2442,12 @@ fn a_history_page_needs_a_live_shell_and_one_to_a_thousand_lines() {
     };
     let id = fixture.deep_pane(30, 4, "seq 1 20; exec sleep 60");
     fixture.wait_for_screen(&id, |screen| screen.contains("20"));
-    for lines in [0, 1001, u32::MAX] {
+    for lines in [0, 5001, u32::MAX] {
         let error = page(&fixture, &id, 0, lines, false).unwrap_err();
         assert!(error.contains("--lines"), "{error}");
     }
     assert!(page(&fixture, &id, 0, 1, false).is_ok());
-    assert!(page(&fixture, &id, 0, 1000, false).is_ok());
+    assert!(page(&fixture, &id, 0, 5000, false).is_ok());
     let unknown = Uuid::new_v4().to_string();
     let error = page(&fixture, &unknown, 0, 5, false).unwrap_err();
     assert!(error.starts_with("unknown shell"), "{error}");

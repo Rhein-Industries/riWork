@@ -4116,8 +4116,9 @@ pub struct Capture {
     pub screen: Option<Screen>,
 }
 
-/// The most lines one `read_history` page may hold.
-pub const HISTORY_PAGE_MAX: u32 = 1000;
+/// The most lines one `read_history` page may hold. The phone asks for up to
+/// this many once replies are compressed (`remote/src/link.rs`).
+pub const HISTORY_PAGE_MAX: u32 = 5000;
 /// The largest line number handed to tmux, which silently misreads larger ones.
 const TMUX_LINE_LIMIT: u64 = 1_000_000_000;
 
