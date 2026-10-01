@@ -155,6 +155,7 @@ struct HistoryHeader: Equatable {
     /// they were following it), and brings the rows that show up to date.
     func refresh(force: Bool = false) {
         guard let source, bounds.height > 0 else { return }
+        Perf.count("surface.refresh")
         let buffer = source.terminalBuffer
         let hasHeader = header != nil && !buffer.isEmpty
         let height = TerminalFont.cell(size: look.fontSize).height
@@ -400,6 +401,7 @@ struct TerminalSurface: UIViewRepresentable {
         return view
     }
     func updateUIView(_ view: TerminalSurfaceView, context: Context) {
+        Perf.count("update.TerminalSurface")
         view.source = model
         view.header = header
         view.configure(look)

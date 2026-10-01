@@ -233,6 +233,7 @@ struct TerminalTabsView: View {
     private var openSessions: [RemoteSession] { model.openSessions }
     private var focused: Bool { model.focusMode && model.sessionID != nil }
     var body: some View {
+        let _ = Perf.count("body.TerminalTabsView")
         VStack(spacing: 0) {
             // Focus mode drops all of this: only the shell (and its keyboard) stays.
             if !focused {
@@ -390,6 +391,7 @@ struct SessionConsole: View {
     private var fontSize: Double { pinchScale.map { TerminalFontSize.pinched(from: model.terminalFontSize, scale: $0) } ?? model.terminalFontSize }
     private var focused: Bool { model.focusMode }
     var body: some View {
+        let _ = Perf.count("body.SessionConsole")
         Group {
             if model.sessionID != nil {
                 VStack(spacing: 0) {

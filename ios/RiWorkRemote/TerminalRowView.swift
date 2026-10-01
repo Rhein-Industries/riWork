@@ -124,6 +124,7 @@ import RiWorkCore
 
     override func draw(_ rect: CGRect) {
         guard let line, let settings, let context = UIGraphicsGetCurrentContext() else { return }
+        Perf.count("rowPaint")
         let scale = Double(window?.screen.scale ?? traitCollection.displayScale)
         TerminalRowPainter.draw(line, cursorColumn: cursorColumn, settings: settings, fontSize: fontSize, in: context, scale: scale > 0 ? scale : TerminalFont.pixelsPerPoint)
     }

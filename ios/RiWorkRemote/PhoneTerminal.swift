@@ -37,6 +37,7 @@ struct PhoneTerminal: View {
     }
 
     var body: some View {
+        let _ = Perf.count("body.PhoneTerminal")
         if model.output.isEmpty {
             ScrollView { TerminalPlaceholder(model: model).frame(maxWidth: .infinity, alignment: .leading) }
         } else if model.alternateScreen {

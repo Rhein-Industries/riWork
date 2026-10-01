@@ -17,6 +17,10 @@ struct ScriptedScrollback: Sendable {
     var label = "L"
     /// Lines (by serial) that are blank.
     var blanks: Set<Int> = []
+    /// What a line says, when it should be something richer than `L<serial>` (the performance tests use styled, mixed content).
+    var content: (@Sendable (Int) -> String)?
+    /// Typed at the end of the last line: a shell that echoes keys changes only that line between two answers.
+    var echo = ""
     private var next: Int
     init(history: Int, rows: Int = 12, cap: Int? = nil, weight: Int = 0) {
         self.rows = rows; self.cap = cap; self.weight = weight
@@ -26,6 +30,7 @@ struct ScriptedScrollback: Sendable {
     var historySize: Int { max(0, serials.count - rows) }
     static func text(_ serial: Int) -> String { "L\(serial)" }
     private func text(of serial: Int) -> String {
+        if let content { return content(serial) + (serial == serials.last ? echo : "") + String(repeating: "\u{1B}[0m", count: weight) }
         let base = blanks.contains(serial) ? "" : (serial == longLine ? "\(label)\(serial) " + String(repeating: "x", count: 400) : "\(label)\(serial)")
         return base + String(repeating: "\u{1B}[0m", count: weight)
     }
