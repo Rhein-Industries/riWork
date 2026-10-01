@@ -174,29 +174,14 @@ import RiWorkCore
         layout(bar)
         XCTAssertEqual(try frame(.key(.escape), in: bar).minX, 0, accuracy: 0.5)
     }
-    func testInFocusModeAloneAtTheBottomTheBarIsACenteredPillOtherwiseAStrip() throws {
+    func testAloneAtTheBottomInFocusModeTheBarIsTheSameStrip() throws {
         let bar = makeBar()
-        bar.presentation = .pill
-        bar.applyPlacement(safeArea: phone, position: .aboveKeyboard)
-        layout(bar)
-        XCTAssertFalse(bar.isPill, "above the keyboard it stays a strip that meets the keyboard")
-        XCTAssertNotEqual(bar.backgroundColor, .clear)
         bar.applyPlacement(safeArea: phone, position: .screenBottom)
         layout(bar)
-        XCTAssertTrue(bar.isPill)
-        XCTAssertEqual(bar.backgroundColor, .clear, "nothing behind the pill but the terminal")
+        XCTAssertNotEqual(bar.backgroundColor, .clear, "the strip has its own background, as above the keyboard")
+        XCTAssertNil(bar.subviews.first { $0.layer.cornerRadius > 0 }, "no rounded pill")
         let clearance = KeyBarGeometry.cornerClearance(safeArea: phone)
-        let pill = bar.subviews.first { $0.layer.cornerRadius > 0 }
-        let row = try XCTUnwrap(pill)
-        XCTAssertEqual(row.layer.cornerRadius, 20)
-        XCTAssertEqual(row.frame.minX, CGFloat(clearance), accuracy: 0.5, "margins keep the pill off the display corners")
-        XCTAssertEqual(402 - row.frame.maxX, CGFloat(clearance), accuracy: 0.5)
-        XCTAssertEqual(row.frame.height, 40)
-        XCTAssertEqual(row.frame.midX, 201, accuracy: 0.5, "centered")
-        XCTAssertNotNil(row.backgroundColor)
-        bar.presentation = .strip
-        layout(bar)
-        XCTAssertFalse(bar.isPill)
+        XCTAssertGreaterThanOrEqual(try frame(.key(.escape), in: bar).minX, CGFloat(clearance) - 0.5, "the keys are padded clear of the display corners")
     }
     func testTheBarWearsTheStyleItIsGiven() {
         let bar = makeBar()
@@ -209,7 +194,8 @@ import RiWorkCore
         XCTAssertEqual(bar.buttons[.editHotkeys]?.configuration?.baseForegroundColor, light.mutedUI)
         bar.setArmed(control: true, alt: false)
         XCTAssertEqual(bar.buttons[.control]?.configuration?.baseForegroundColor, light.accentUI)
-        bar.presentation = .pill
+        bar.style = .builtIn
+        bar.style = light
         XCTAssertEqual(bar.buttons[.control]?.configuration?.baseForegroundColor, light.accentUI, "a restyle keeps armed keys armed")
     }
 

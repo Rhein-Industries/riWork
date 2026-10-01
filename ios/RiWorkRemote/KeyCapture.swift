@@ -482,7 +482,6 @@ struct KeyCapture: UIViewRepresentable {
     var isEnabled: Bool
     var label: String
     /// Focus mode draws the bar as a pill when it is alone at the bottom edge (hardware keyboard).
-    var presentation = KeyBarView.Presentation.strip
     var hotkeys: [Hotkey] = []
     var shortcuts = ShortcutSettings()
     var palette: PaletteController?
@@ -508,7 +507,6 @@ struct KeyCapture: UIViewRepresentable {
         view.bar.style = context.environment.desktopStyle
         // A bar that is on screen tells iOS its new height; the keyboard is asked to lay it out again.
         if view.bar.style.scale != previousScale, view.isFirstResponder { view.reloadInputViews() }
-        view.bar.presentation = presentation
         if let palette, view.palette !== palette { view.palette = palette }
         view.hotkeys = hotkeys
         view.shortcutSettings = shortcuts

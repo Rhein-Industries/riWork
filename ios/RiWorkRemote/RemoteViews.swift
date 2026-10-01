@@ -474,7 +474,7 @@ struct SessionConsole: View {
                     if model.directTyping {
                         KeyCapture(focus: keyFocus, isEnabled: model.session?.alive == true,
                                    label: "Terminal input for \(model.session?.title ?? "session") \(model.session?.shortID ?? "")",
-                                   presentation: focused ? .pill : .strip, hotkeys: model.hotkeys.custom,
+                                   hotkeys: model.hotkeys.custom,
                                    shortcuts: model.hotkeys.shortcuts, palette: palette,
                                    onEditHotkeys: { openEditor(.list) }, onNewHotkey: { openEditor(.new) }, onEditHotkey: { openEditor(.edit($0)) },
                                    onKeyEvent: { model.keyboard.events.record($0) },

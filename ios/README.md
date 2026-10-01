@@ -177,8 +177,8 @@ Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held) and
 want a button), then the
 symbols that are awkward on the iOS keyboard (`` | / \ ~ - _ ` * & $ > < { } [ ] ; : ' " ``), then a "+" that opens the
 hotkey editor. Hide keyboard stays at the right end. The ends of the row are padded so the first and last key clear
-the display's rounded corners (about 20-28 pt derived from the safe area, not from a device model); in focus mode with
-a hardware keyboard the bar is a centered pill. The iPhone is portrait only.
+the display's rounded corners (about 20-28 pt derived from the safe area, not from a device model). Focus mode uses
+the same strip. The iPhone is portrait only.
 
 **Hotkeys** send a fixed sequence of text and special keys, validated against the `shell.keys` contract (text without
 control characters, whitelisted key names only, at most 64 steps). Built in: Ctrl+C, D, Z, L, R, A, E, U, W and Esc Esc.

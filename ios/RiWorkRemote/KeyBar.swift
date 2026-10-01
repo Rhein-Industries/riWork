@@ -18,8 +18,6 @@ private final class KeyScrollView: UIScrollView {
     enum Action: Hashable {
         case key(TerminalKey), control, alt, text(String), paste, hide, hotkey(String), editHotkeys, palette
     }
-    /// How the bar is drawn when it is alone at the bottom edge. Above the keyboard it is always a strip.
-    enum Presentation: Equatable { case strip, pill }
     private enum Role { case plain, hotkey, muted }
 
     /// The strip at the standard interface size: a 1 pt rule and the keys.
@@ -42,7 +40,6 @@ private final class KeyScrollView: UIScrollView {
     private(set) var buttons: [Action: UIButton] = [:]
     /// The hotkeys the person added. They follow the built-in ones.
     var hotkeys: [Hotkey] = [] { didSet { if hotkeys != oldValue { rebuild() } } }
-    var presentation = Presentation.strip { didSet { if presentation != oldValue { restyle() } } }
     var style = DesktopStyle.builtIn {
         didSet {
             guard style != oldValue else { return }
@@ -53,8 +50,6 @@ private final class KeyScrollView: UIScrollView {
     /// Where the bar is and the padding at the ends of the row that follows from it.
     private(set) var position = KeyBarPosition.aboveKeyboard
     private(set) var padding = KeyBarPadding.zero
-    /// The pill is used only when the bar is alone at the bottom edge and the caller asked for it.
-    var isPill: Bool { presentation == .pill && position == .screenBottom }
     /// The scrolling row, for tests.
     var scrollView: UIScrollView { scroll }
 
@@ -65,7 +60,6 @@ private final class KeyScrollView: UIScrollView {
     private let hideDivider = UIView()
     private var dividers: [UIView] = []
     private var roles: [Action: Role] = [:]
-    private var rowLeading: NSLayoutConstraint!, rowTrailing: NSLayoutConstraint!, rowTop: NSLayoutConstraint!, rowBottom: NSLayoutConstraint!
     private var stackLeading: NSLayoutConstraint!, hideTrailing: NSLayoutConstraint!
     private var hideWidth: NSLayoutConstraint!, hideMinWidth: NSLayoutConstraint?, dividerInsets: [NSLayoutConstraint] = [], stackTrailing: NSLayoutConstraint!
     private var controlArmed = false, altArmed = false
@@ -99,10 +93,6 @@ private final class KeyScrollView: UIScrollView {
         stack.distribution = .fill
         stack.spacing = 0
 
-        rowLeading = row.leadingAnchor.constraint(equalTo: leadingAnchor)
-        rowTrailing = trailingAnchor.constraint(equalTo: row.trailingAnchor)
-        rowTop = row.topAnchor.constraint(equalTo: topAnchor, constant: 1)
-        rowBottom = bottomAnchor.constraint(equalTo: row.bottomAnchor)
         stackLeading = stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor)
         stackTrailing = stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -4)
         let hideDividerTop = hideDivider.topAnchor.constraint(equalTo: row.topAnchor, constant: 10)
@@ -111,7 +101,8 @@ private final class KeyScrollView: UIScrollView {
         NSLayoutConstraint.activate([
             rule.topAnchor.constraint(equalTo: topAnchor), rule.leadingAnchor.constraint(equalTo: leadingAnchor),
             rule.trailingAnchor.constraint(equalTo: trailingAnchor), rule.heightAnchor.constraint(equalToConstant: 1),
-            rowLeading, rowTrailing, rowTop, rowBottom,
+            row.leadingAnchor.constraint(equalTo: leadingAnchor), trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 1), bottomAnchor.constraint(equalTo: row.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: row.leadingAnchor), scroll.topAnchor.constraint(equalTo: row.topAnchor), scroll.bottomAnchor.constraint(equalTo: row.bottomAnchor),
             hideDividerTop, hideDividerBottom,
             hideDivider.widthAnchor.constraint(equalToConstant: 1), scroll.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor),
@@ -259,25 +250,13 @@ private final class KeyScrollView: UIScrollView {
     // MARK: Look
 
     private func restyle() {
-        let pill = isPill
-        backgroundColor = pill ? .clear : style.panelUI
+        backgroundColor = style.panelUI
         rule.backgroundColor = style.dividerUI
-        rule.isHidden = pill
         hideDivider.backgroundColor = style.dividerUI
         for line in dividers { line.backgroundColor = style.dividerUI }
-        row.backgroundColor = pill ? style.panelUI : .clear
-        row.layer.cornerRadius = pill ? (barHeight - 4) / 2 : 0
-        row.layer.cornerCurve = .continuous
-        row.layer.borderWidth = pill ? 1 : 0
-        row.layer.borderColor = style.dividerUI.resolvedColor(with: traitCollection).cgColor
-        row.clipsToBounds = pill
-        // Strip: the row spans the bar and its ends are padded. Pill: the pill itself is inset by the padding, so the keys need little.
-        rowLeading.constant = pill ? CGFloat(padding.left) : 0
-        rowTrailing.constant = pill ? CGFloat(padding.right) : 0
-        rowTop.constant = pill ? 2 : 1
-        rowBottom.constant = pill ? 2 : 0
-        stackLeading.constant = pill ? 10 : CGFloat(padding.left)
-        hideTrailing.constant = pill ? 4 : CGFloat(padding.right)
+        // The row spans the bar, in focus mode too, and its ends are padded clear of the display corners.
+        stackLeading.constant = CGFloat(padding.left)
+        hideTrailing.constant = CGFloat(padding.right)
         for (action, button) in buttons {
             switch roles[action] ?? .plain {
             case .plain: button.configuration?.baseForegroundColor = style.textUI
