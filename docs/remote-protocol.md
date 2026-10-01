@@ -508,6 +508,13 @@ returns the newest `lines` (at most 2000) of them together with the screen;
   no scrollback of its own; the `history_size` lines above it are the normal
   screen's, are still there, and `shell.history` still reads them. The visible
   screen, `output`'s last `rows` lines, is the program's.
+- RiWork runs Codex, Grok and Claude Code on the main screen by default (the
+  desktop setting `agent_inline_mode`), so for them `alternate` is false and the
+  whole conversation is in `history_size`. Codex and Grok clear their scrollback
+  and draw the transcript again at the new width on every resize, including
+  `shell.resize` and `shell.resize.clear`, and settle within about half a second.
+  After a resize, `history_size` and the line offsets of earlier pages no longer
+  name the same lines: a client discards the pages it holds and reads them again.
 - Both are part of the `hash`: the same screen with a longer history, or with the
   program entering or leaving the alternate screen, has another hash. So a client
   that polls with `if_changed` learns of output that scrolled lines away without

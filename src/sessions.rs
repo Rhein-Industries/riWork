@@ -341,6 +341,7 @@ impl SessionManager {
                 project_root.as_deref(),
                 &id,
                 binding.as_ref().map(|binding| binding.home.as_path()),
+                crate::settings::agent_inline_mode(&self.home),
             );
             (context, command)
         } else {
@@ -762,8 +763,9 @@ impl SessionManager {
 
     fn configure_scrolling(&self, id: &str) -> Result<(), String> {
         self.tmux_checked(&["set-option", "-t", id, "mouse", "on"])?;
-        // RiWork owns this isolated tmux server. Alternate-screen applications
-        // without mouse support (including Codex) still need tmux scrollback.
+        // RiWork owns this isolated tmux server. A pane on the main screen
+        // (a shell, or an agent run inline) and an alternate-screen application
+        // without mouse support both scroll through tmux's history.
         // Applications that request mouse events keep receiving their wheel input.
         self.tmux_checked(&[
             "bind-key",
@@ -1606,6 +1608,9 @@ impl SessionManager {
         } else {
             Vec::new()
         };
+        // Read at launch, so a change in Settings reaches the next session and
+        // leaves the running ones as they are.
+        let inline = harness.is_some() && crate::settings::agent_inline_mode(&self.home);
         let mut command = match harness {
             Some(harness) => {
                 let program = find_harness_program(harness, &shim_directory).ok_or_else(|| {
@@ -1621,7 +1626,10 @@ impl SessionManager {
                 }
                 Some(harness_command(
                     harness,
-                    unrestricted,
+                    HarnessOptions {
+                        unrestricted,
+                        inline,
+                    },
                     &program,
                     &executable,
                     &self.home,
@@ -1713,6 +1721,11 @@ impl SessionManager {
         for (name, value) in &grok_timeouts {
             args.push("-e".to_owned());
             args.push(format!("{name}={value}"));
+        }
+        // Claude Code takes its screen from the environment, not from a flag.
+        if inline && harness == Some(HarnessKind::Claude) {
+            args.push("-e".to_owned());
+            args.push(format!("{}={}", CLAUDE_MAIN_SCREEN.0, CLAUDE_MAIN_SCREEN.1));
         }
         if let Some(command) = &command {
             if command.trim().is_empty() {
@@ -2332,15 +2345,28 @@ fn respawn_arguments(
         .collect()
 }
 
+/// What a harness launch asks for beyond the program and the profile.
+#[derive(Clone, Copy)]
+struct HarnessOptions {
+    /// Skip the CLI's permission prompts, as the caller asked.
+    unrestricted: bool,
+    /// Keep the agent on the main screen (see `inline_arguments`).
+    inline: bool,
+}
+
 fn harness_command(
     harness: HarnessKind,
-    unrestricted: bool,
+    options: HarnessOptions,
     program: &Path,
     executable: &Path,
     state_home: &Path,
     shell_id: &str,
     codex_home: Option<&Path>,
 ) -> Result<String, String> {
+    let HarnessOptions {
+        unrestricted,
+        inline,
+    } = options;
     let mut arguments = vec![program.to_string_lossy().into_owned()];
     arguments.extend(cua_harness_arguments(harness, executable, state_home));
     match harness {
@@ -2361,6 +2387,9 @@ fn harness_command(
             }
             if unrestricted {
                 arguments.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+            }
+            if inline {
+                arguments.extend(inline_arguments(harness));
             }
             arguments.push(cua_startup_prompt());
         }
@@ -2400,6 +2429,9 @@ fn harness_command(
             if unrestricted {
                 arguments.push("--always-approve".to_owned());
             }
+            if inline {
+                arguments.extend(inline_arguments(harness));
+            }
         }
     }
     let command = format!(
@@ -2414,6 +2446,97 @@ fn harness_command(
         Some(home) => with_codex_home(&command, home),
         None => command,
     })
+}
+
+/// Claude Code reads this ahead of its own `tui` setting, so a user who has
+/// chosen the fullscreen renderer still gets the main screen when RiWork asks
+/// for inline agents.
+const CLAUDE_MAIN_SCREEN: (&str, &str) = ("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
+
+/// The flags that keep an agent off the terminal's alternate screen. On the
+/// main screen its transcript scrolls into tmux's history, which RiWork can
+/// capture and a remote viewer can page through; on the alternate screen tmux
+/// keeps no history at all. Claude Code has no such flag: see `CLAUDE_MAIN_SCREEN`.
+///
+/// Grok's `--no-alt-screen` is not enough: it still redraws a fixed full-height
+/// canvas and reports the mouse, so tmux collects no history of the transcript
+/// and stacks old frames on each resize. `--minimal` prints finished blocks
+/// into the terminal's own scrollback.
+fn inline_arguments(harness: HarnessKind) -> Vec<String> {
+    match harness {
+        HarnessKind::Codex => vec!["--no-alt-screen".to_owned()],
+        HarnessKind::Grok => vec!["--minimal".to_owned()],
+        HarnessKind::Claude => Vec::new(),
+    }
+}
+
+/// Flags with which the caller has already chosen how the agent draws; adding
+/// ours would repeat a switch (clap rejects that) or override the choice.
+fn screen_choice_arguments(harness: HarnessKind) -> &'static [&'static str] {
+    match harness {
+        HarnessKind::Codex => &["--no-alt-screen"],
+        HarnessKind::Grok => &["--minimal", "--fullscreen", "--no-alt-screen"],
+        HarnessKind::Claude => &[],
+    }
+}
+
+/// Whether a wrapper's invocation starts the agent's interactive screen, the
+/// only one a screen flag may be added to: `codex exec` or `grok -p` would
+/// reject or ignore it. A single word after the options may be a subcommand
+/// this build does not know, so only a prompt with spaces counts as one.
+fn starts_interactive_screen(harness: HarnessKind, arguments: &[String]) -> bool {
+    if harness_utility_invocation(harness, arguments) {
+        return false;
+    }
+    match harness {
+        HarnessKind::Codex => match codex_first_command(arguments) {
+            None | Some(("resume" | "fork", _)) => true,
+            Some((word, _)) => word.contains(char::is_whitespace),
+        },
+        HarnessKind::Grok => !arguments
+            .iter()
+            .take_while(|argument| argument.as_str() != "--")
+            .any(|argument| {
+                let name = argument.split('=').next().unwrap_or(argument);
+                matches!(name, "-p" | "--single" | "--prompt-file" | "--prompt-json")
+            }),
+        HarnessKind::Claude => false,
+    }
+}
+
+/// The wrapper's final arguments, with the inline flags where the agent's own
+/// options end. An invocation that already names its screen is left alone.
+fn with_inline_arguments(
+    harness: HarnessKind,
+    original: &[String],
+    mut proxied: Vec<String>,
+) -> Vec<String> {
+    if !starts_interactive_screen(harness, original) {
+        return proxied;
+    }
+    let end = proxied
+        .iter()
+        .position(|argument| argument == "--")
+        .unwrap_or(proxied.len());
+    let chosen = screen_choice_arguments(harness);
+    if proxied[..end]
+        .iter()
+        .any(|argument| chosen.contains(&argument.as_str()))
+    {
+        return proxied;
+    }
+    proxied.splice(end..end, inline_arguments(harness));
+    proxied
+}
+
+/// The environment variable that puts Claude Code on the main screen, for a
+/// launch the wrapper is about to make.
+fn inline_environment(
+    harness: HarnessKind,
+    arguments: &[String],
+) -> Option<(&'static str, &'static str)> {
+    (harness == HarnessKind::Claude && !harness_utility_invocation(harness, arguments))
+        .then_some(CLAUDE_MAIN_SCREEN)
 }
 
 fn cua_startup_prompt() -> String {
@@ -3002,6 +3125,7 @@ fn orchestrator_command(
     project_root: Option<&Path>,
     shell_id: &str,
     codex_home: Option<&Path>,
+    inline: bool,
 ) -> String {
     let mut arguments = vec![
         program.to_string_lossy().into_owned(),
@@ -3029,6 +3153,9 @@ fn orchestrator_command(
     ));
     if let Some(home) = codex_home {
         arguments.extend(codex_account_environment_arguments(home));
+    }
+    if inline {
+        arguments.extend(inline_arguments(HarnessKind::Codex));
     }
     arguments.push(orchestrator_prompt(
         skill_path,
@@ -3779,16 +3906,21 @@ pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(),
         } else {
             None
         };
-    command
-        .args(cua_proxy_arguments(
-            harness,
-            arguments,
-            &executable,
-            &home,
-            shell_id.as_deref(),
-            account.as_ref().map(|binding| binding.home.as_path()),
-        ))
-        .env("RIWORK_HOME", &home);
+    let mut proxied = cua_proxy_arguments(
+        harness,
+        arguments,
+        &executable,
+        &home,
+        shell_id.as_deref(),
+        account.as_ref().map(|binding| binding.home.as_path()),
+    );
+    if crate::settings::agent_inline_mode(&home) {
+        proxied = with_inline_arguments(harness, arguments, proxied);
+        if let Some((name, value)) = inline_environment(harness, arguments) {
+            command.env(name, value);
+        }
+    }
+    command.args(proxied).env("RIWORK_HOME", &home);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -5332,7 +5464,10 @@ mod tests {
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         let command = harness_command(
             HarnessKind::Codex,
-            false,
+            HarnessOptions {
+                unrestricted: false,
+                inline: false,
+            },
             &program,
             Path::new("/fake/riwork"),
             &state,
@@ -5565,7 +5700,10 @@ mod tests {
         for unrestricted in [false, true] {
             let command = harness_command(
                 HarnessKind::Codex,
-                unrestricted,
+                HarnessOptions {
+                    unrestricted,
+                    inline: false,
+                },
                 program,
                 executable,
                 home,
@@ -5595,6 +5733,234 @@ mod tests {
     }
 
     #[test]
+    fn inline_agents_get_the_screen_flag_before_their_startup_prompt() {
+        let executable = Path::new("/Applications/RiWork's App/riwork");
+        let home = Path::new("/Users/test/RiWork's State");
+        for harness in [HarnessKind::Codex, HarnessKind::Grok, HarnessKind::Claude] {
+            let launch = |inline| {
+                shell_arguments(
+                    &harness_command(
+                        harness,
+                        HarnessOptions {
+                            unrestricted: false,
+                            inline,
+                        },
+                        Path::new("/opt/bin/cli"),
+                        executable,
+                        home,
+                        "uuid",
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let (full_screen, inline) = (launch(false), launch(true));
+            let flag = match harness {
+                HarnessKind::Codex => "--no-alt-screen",
+                HarnessKind::Grok => "--minimal",
+                HarnessKind::Claude => {
+                    // Claude Code takes its screen from the environment.
+                    assert_eq!(full_screen, inline);
+                    continue;
+                }
+            };
+            assert!(!full_screen.iter().any(|a| a == flag));
+            // The flag is the only difference. Codex keeps its prompt last.
+            let position = inline.iter().position(|a| a == flag).unwrap();
+            let mut without = inline.clone();
+            without.remove(position);
+            assert_eq!(without, full_screen, "{harness:?}");
+            assert_eq!(inline.iter().filter(|a| *a == flag).count(), 1);
+            if harness == HarnessKind::Codex {
+                assert_eq!(position, inline.len() - 2);
+                assert!(inline.last().unwrap().contains(CUA_GUIDANCE));
+            }
+        }
+    }
+
+    #[test]
+    fn inline_orchestrators_get_the_screen_flag_before_their_prompt() {
+        let launch = |inline| {
+            shell_arguments(&orchestrator_command(
+                Path::new("/opt/bin/codex"),
+                Path::new("/Users/test/context"),
+                Path::new("/Users/test/state"),
+                Path::new("/Users/test/skill/SKILL.md"),
+                Path::new("/Applications/RiWork App/riwork"),
+                None,
+                None,
+                "global-orchestrator-pane",
+                None,
+                inline,
+            ))
+        };
+        let (full_screen, inline) = (launch(false), launch(true));
+        assert!(!full_screen.iter().any(|a| a == "--no-alt-screen"));
+        assert_eq!(inline.len(), full_screen.len() + 1);
+        assert_eq!(inline[inline.len() - 2], "--no-alt-screen");
+        assert_eq!(inline.last(), full_screen.last());
+    }
+
+    #[test]
+    fn wrappers_add_the_screen_flag_only_to_interactive_sessions() {
+        let args = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+        let proxied = |harness, original: &[&str]| {
+            let original = args(original);
+            let launched = original.clone();
+            with_inline_arguments(harness, &original, launched)
+        };
+        // Codex: the interactive screen is the bare command, `resume`, `fork`
+        // or a prompt; the flag lands after the options and before any `--`.
+        for original in [
+            &[][..],
+            &["resume", "--last"],
+            &["resume", "0199-session"],
+            &["fork", "--last"],
+            &["--model", "o3", "fix the failing test"],
+            &["-c", "a=b", "resume"],
+            &["--", "--literal prompt"],
+        ] {
+            let result = proxied(HarnessKind::Codex, original);
+            let end = original
+                .iter()
+                .position(|a| *a == "--")
+                .unwrap_or(original.len());
+            let mut expected = args(&original[..end]);
+            expected.push("--no-alt-screen".to_owned());
+            expected.extend(args(&original[end..]));
+            assert_eq!(result, expected, "{original:?}");
+        }
+        // Everything else, including a bare word that could be a subcommand
+        // this build does not know, is left as typed.
+        for original in [
+            &["exec", "list the files"][..],
+            &["e", "-c", "a=b", "do it"],
+            &["exec", "resume", "--last"],
+            &["review"],
+            &["mcp", "list"],
+            &["login", "status"],
+            &["app-server"],
+            &["cloud"],
+            &["hello"],
+            &["--help"],
+            &["resume", "--help"],
+            &["--version"],
+        ] {
+            assert_eq!(
+                proxied(HarnessKind::Codex, original),
+                args(original),
+                "{original:?}"
+            );
+        }
+        // The user's own flag is not repeated; clap rejects a doubled switch.
+        assert_eq!(
+            proxied(HarnessKind::Codex, &["resume", "--no-alt-screen"]),
+            args(&["resume", "--no-alt-screen"])
+        );
+
+        // Grok: every screen but the single-turn modes and the utilities.
+        for original in [
+            &[][..],
+            &["fix the bug"],
+            &["--resume"],
+            &["-r", "title"],
+            &["--model", "grok-4", "--cwd", "/tmp/project"],
+            &["--worktree=feat", "create this feature"],
+        ] {
+            let mut expected = args(original);
+            expected.push("--minimal".to_owned());
+            assert_eq!(
+                proxied(HarnessKind::Grok, original),
+                expected,
+                "{original:?}"
+            );
+        }
+        for original in [
+            &["-p", "say hi"][..],
+            &["--single=say hi"],
+            &["--prompt-file", "/tmp/prompt.txt"],
+            &["--prompt-json", "[]"],
+            &["--output-format", "json", "--single", "x"],
+            &["models"],
+            &["doctor"],
+            &["--version"],
+            &["--help"],
+            // The caller already chose a screen.
+            &["--minimal"],
+            &["--fullscreen"],
+            &["--no-alt-screen"],
+            &["--resume", "--fullscreen"],
+        ] {
+            assert_eq!(
+                proxied(HarnessKind::Grok, original),
+                args(original),
+                "{original:?}"
+            );
+        }
+
+        // Claude Code has no such flag; it is steered by the environment.
+        assert_eq!(proxied(HarnessKind::Claude, &[]), Vec::<String>::new());
+        assert_eq!(
+            proxied(HarnessKind::Claude, &["--resume"]),
+            args(&["--resume"])
+        );
+    }
+
+    #[test]
+    fn wrappers_flag_the_arguments_they_finally_pass_on() {
+        // The flag goes into the list the wrapper builds, so it follows the
+        // wrapper's own options and the startup prompt it supplies.
+        let executable = Path::new("/Applications/RiWork/riwork");
+        let home = Path::new("/Users/test/RiWork State");
+        let original = vec!["resume".to_owned(), "--last".to_owned()];
+        let proxied = with_inline_arguments(
+            HarnessKind::Codex,
+            &original,
+            cua_proxy_arguments(HarnessKind::Codex, &original, executable, home, None, None),
+        );
+        assert_eq!(&proxied[..2], &original[..]);
+        assert_eq!(proxied.last().unwrap(), "--no-alt-screen");
+        assert_eq!(
+            proxied.iter().filter(|a| *a == "--no-alt-screen").count(),
+            1
+        );
+        assert_codex_cua_arguments(&proxied, executable, home);
+
+        let bare = with_inline_arguments(
+            HarnessKind::Codex,
+            &[],
+            cua_proxy_arguments(HarnessKind::Codex, &[], executable, home, None, None),
+        );
+        assert_eq!(bare.last().unwrap(), "--no-alt-screen");
+        assert!(
+            bare[bare.len() - 2].contains("wait for the user's objective"),
+            "the startup prompt stays the positional argument"
+        );
+    }
+
+    #[test]
+    fn only_claude_is_steered_by_the_environment() {
+        let args = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            inline_environment(HarnessKind::Claude, &[]),
+            Some(("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1"))
+        );
+        assert_eq!(
+            inline_environment(HarnessKind::Claude, &args(&["--resume"])),
+            Some(CLAUDE_MAIN_SCREEN)
+        );
+        for utility in [&["--version"][..], &["mcp", "list"], &["doctor"]] {
+            assert_eq!(
+                inline_environment(HarnessKind::Claude, &args(utility)),
+                None,
+                "{utility:?}"
+            );
+        }
+        assert_eq!(inline_environment(HarnessKind::Codex, &[]), None);
+        assert_eq!(inline_environment(HarnessKind::Grok, &[]), None);
+    }
+
+    #[test]
     fn claude_settings_keep_telemetry_bound_to_the_shell() {
         let program = Path::new("/Users/test/Claude CLI/claude");
         let telemetry = Path::new("/Users/test/RiWork's App/riwork");
@@ -5602,7 +5968,10 @@ mod tests {
         for unrestricted in [false, true] {
             let command = harness_command(
                 HarnessKind::Claude,
-                unrestricted,
+                HarnessOptions {
+                    unrestricted,
+                    inline: false,
+                },
                 program,
                 telemetry,
                 Path::new("/Users/test/RiWork's State"),
@@ -5745,7 +6114,10 @@ mod tests {
         for harness in [HarnessKind::Codex, HarnessKind::Claude] {
             let command = harness_command(
                 harness,
-                false,
+                HarnessOptions {
+                    unrestricted: false,
+                    inline: false,
+                },
                 Path::new("/opt/bin/cli"),
                 executable,
                 home,
@@ -5869,7 +6241,10 @@ mod tests {
         for unrestricted in [false, true] {
             let command = harness_command(
                 HarnessKind::Grok,
-                unrestricted,
+                HarnessOptions {
+                    unrestricted,
+                    inline: false,
+                },
                 Path::new("/Users/test/.grok/bin/grok"),
                 executable,
                 home,
@@ -6589,6 +6964,7 @@ else:
             None,
             "global-orchestrator-pane",
             None,
+            false,
         );
         // tmux refuses a command line of about 16 KB. The skill used to be inlined,
         // which left little room to grow; the launch must not depend on its size.
@@ -6707,6 +7083,7 @@ else:
             Some(project_root),
             "project-orchestrator-pane",
             None,
+            false,
         );
         let arguments = shell_arguments(&command);
         assert_eq!(arguments[0], "/opt/bin/codex");
@@ -7287,6 +7664,88 @@ else:
             &arguments,
             &[";", "set-environment", "-gu", "CLAUDE_CONFIG_DIR"]
         ));
+    }
+
+    /// Which screen an agent starts on is decided when it launches, from the
+    /// saved setting: a session that is already running is never touched.
+    #[test]
+    #[cfg(unix)]
+    fn new_agent_sessions_follow_the_inline_setting_at_launch() {
+        use crate::store::Store;
+        const NAME: &str = "new_agent_sessions_follow_the_inline_setting_at_launch";
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child(NAME) {
+            return;
+        }
+        let state = fixture.selected("account-a");
+        let (manager, capture) = recording_launcher(&fixture, &state);
+        executable_script(&fixture.0.join("bin/claude"), "exit 0");
+        let claude_screen = format!("{}={}", CLAUDE_MAIN_SCREEN.0, CLAUDE_MAIN_SCREEN.1);
+        let flagged = |arguments: &[String]| arguments.iter().any(|a| a == "--no-alt-screen");
+
+        for inline in [true, false] {
+            // Each project has its own orchestrator, which is launched once.
+            let root = fixture.0.join(format!("work-{inline}"));
+            fs::create_dir(&root).unwrap();
+            let project = Store::open(&state)
+                .unwrap()
+                .add_project(&root, Some("Inline"))
+                .unwrap();
+            crate::settings::SettingsStore::open(&state)
+                .unwrap()
+                .update(|settings| settings.agent_inline_mode = inline)
+                .unwrap();
+            let codex = manager
+                .create_harness(
+                    project.id.clone(),
+                    None,
+                    root.clone(),
+                    HarnessKind::Codex,
+                    false,
+                )
+                .unwrap();
+            assert_eq!(flagged(&shell_arguments(&codex.command.unwrap())), inline);
+            assert!(!contains_sequence(
+                &take_recorded(&capture),
+                &["-e", &claude_screen]
+            ));
+
+            let claude = manager
+                .create_harness(
+                    project.id.clone(),
+                    None,
+                    root.clone(),
+                    HarnessKind::Claude,
+                    false,
+                )
+                .unwrap();
+            assert!(!flagged(&shell_arguments(&claude.command.unwrap())));
+            assert_eq!(
+                contains_sequence(&take_recorded(&capture), &["-e", &claude_screen]),
+                inline
+            );
+
+            // The orchestrator is Codex under another name.
+            let orchestrator = manager
+                .orchestrator_create_for_project(project.id.clone(), root.clone(), None)
+                .unwrap();
+            assert_eq!(
+                flagged(&shell_arguments(&orchestrator.command.unwrap())),
+                inline
+            );
+            take_recorded(&capture);
+
+            // A plain shell and a custom command are never steered.
+            for command in [None, Some("sleep 60".to_owned())] {
+                manager
+                    .create(project.id.clone(), None, root.clone(), command)
+                    .unwrap();
+                assert!(!contains_sequence(
+                    &take_recorded(&capture),
+                    &["-e", &claude_screen]
+                ));
+            }
+        }
     }
 
     #[test]
