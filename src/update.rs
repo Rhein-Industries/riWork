@@ -36,11 +36,21 @@ pub struct UpdateBuild {
     pub log_path: PathBuf,
 }
 
-/// Where an update finds its tools, and whether the bundle's signature is
-/// checked (fixture bundles in tests are not signed).
+/// Where an update finds its tools, whether the bundle's signature is checked
+/// (fixture bundles in tests are not signed), and the identity it is signed
+/// with (`None`: the bundler's ad-hoc default).
 struct UpdateEnvironment {
     tool_path: std::ffi::OsString,
     verify_signature: bool,
+    codesign_identity: Option<SigningIdentity>,
+}
+
+/// A code signing identity for the bundle: what `codesign --sign` is given,
+/// and the name it is reported by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SigningIdentity {
+    sign_with: String,
+    name: String,
 }
 
 pub fn resolve_source(explicit: Option<&Path>) -> Result<PathBuf, String> {
@@ -134,6 +144,7 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
         &UpdateEnvironment {
             tool_path: update_tool_path()?,
             verify_signature: cfg!(target_os = "macos"),
+            codesign_identity: update_signing_identity(),
         },
     )
 }
@@ -240,6 +251,10 @@ fn build_update_with(
         .arg(&profile)
         .current_dir(&staging.path)
         .env("PATH", tool_path);
+    if let Some(identity) = &environment.codesign_identity {
+        bundle_command.env("CODESIGN_IDENTITY", &identity.sign_with);
+        eprintln!("Signing with {}.", identity.name);
+    }
     eprintln!("Packaging RiWork.app.");
     run_stage(
         &mut bundle_command,
@@ -406,6 +421,66 @@ fn update_lock(target: &Path) -> Result<File, String> {
             Err(error) => return Err(format!("Cannot lock RiWork update: {error}")),
         }
     }
+}
+
+/// The identity an update signs the bundle with. An ad-hoc signature names one
+/// build's code hash, so macOS takes every update for a new app: it asks again
+/// for the folders a terminal starts in (Documents, Desktop, Downloads), and the
+/// replacement's terminal waits on that question until the reload gives up. A
+/// certificate keeps one designated requirement across builds, so an answer
+/// given once holds. `CODESIGN_IDENTITY` decides when set (`-` is ad hoc);
+/// otherwise a Developer ID or Apple Development identity in the keychain is
+/// used, and without one the bundle stays ad hoc.
+fn update_signing_identity() -> Option<SigningIdentity> {
+    if let Some(chosen) = env::var("CODESIGN_IDENTITY")
+        .ok()
+        .filter(|chosen| !chosen.trim().is_empty())
+    {
+        return (chosen != "-").then(|| SigningIdentity {
+            sign_with: chosen.clone(),
+            name: chosen,
+        });
+    }
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let output = Command::new("/usr/bin/security")
+        .args(["find-identity", "-v", "-p", "codesigning"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    pick_signing_identity(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The identity to sign with from `security find-identity -v -p codesigning`:
+/// a Developer ID Application identity before an Apple Development one, the
+/// first listed of each. It is named by its SHA-1 hash, which stays unambiguous
+/// when a renewed certificate shares the old one's name.
+fn pick_signing_identity(listing: &str) -> Option<SigningIdentity> {
+    let identities: Vec<SigningIdentity> = listing
+        .lines()
+        .filter_map(|line| {
+            let (_, rest) = line.trim().split_once(") ")?;
+            let (hash, quoted) = rest.split_once(' ')?;
+            let name = quoted.trim().strip_prefix('"')?.strip_suffix('"')?;
+            (hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| {
+                SigningIdentity {
+                    sign_with: hash.to_owned(),
+                    name: name.to_owned(),
+                }
+            })
+        })
+        .collect();
+    ["Developer ID Application: ", "Apple Development: "]
+        .iter()
+        .find_map(|prefix| {
+            identities
+                .iter()
+                .find(|identity| identity.name.starts_with(prefix))
+                .cloned()
+        })
 }
 
 fn update_tool_path() -> Result<std::ffi::OsString, String> {
@@ -928,6 +1003,46 @@ fn retain_previous(
 mod tests {
     use super::*;
     use std::time::SystemTime;
+
+    #[test]
+    fn a_certificate_is_preferred_to_an_ad_hoc_signature() {
+        let development = "A".repeat(40);
+        let developer_id = "B".repeat(40);
+        let listing = format!(
+            "  1) {development} \"Apple Development: Someone (K94D56Z2AA)\"\n  2) {developer_id} \"Developer ID Application: Someone (ZR7A22CNVY)\"\n     2 valid identities found\n"
+        );
+        assert_eq!(
+            pick_signing_identity(&listing),
+            Some(SigningIdentity {
+                sign_with: developer_id,
+                name: "Developer ID Application: Someone (ZR7A22CNVY)".to_owned(),
+            }),
+            "Developer ID first"
+        );
+        let only_development = format!(
+            "  1) {development} \"Apple Development: Someone (K94D56Z2AA)\"\n     1 valid identities found\n"
+        );
+        assert_eq!(
+            pick_signing_identity(&only_development).map(|identity| identity.sign_with),
+            Some(development),
+            "named by its hash, which a renewed certificate with the same name does not share"
+        );
+    }
+
+    #[test]
+    fn without_a_usable_certificate_the_bundle_stays_ad_hoc() {
+        for listing in [
+            "     0 valid identities found\n",
+            "",
+            &format!(
+                "  1) {} \"Apple Distribution: Someone (ZR7A22CNVY)\"\n",
+                "C".repeat(40)
+            ),
+            "  1) not-a-hash \"Apple Development: Someone (K94D56Z2AA)\"\n",
+        ] {
+            assert_eq!(pick_signing_identity(listing), None, "{listing:?}");
+        }
+    }
 
     fn fixture(parent: &Path, name: &str) -> PathBuf {
         let source = parent.join(name);
@@ -1538,6 +1653,7 @@ mod tests {
             UpdateEnvironment {
                 tool_path,
                 verify_signature: false,
+                codesign_identity: None,
             },
         )
     }
