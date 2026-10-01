@@ -17,15 +17,44 @@
 //! unchanged one is reused: a scan then only stats the listed files, which is
 //! what sees an edit to a tracked file, because that changes the file and
 //! nothing the fingerprint holds.
+//!
+//! Statting every listed file of every root each period is still what an idle
+//! machine spends its time on, so the process asks macOS to say what changes
+//! instead (see [`changes`] and [`fsevents`]). One FSEvents stream covers all the
+//! roots, and the Git directories of linked worktrees that lie outside them. An
+//! edit to a file that counts raises the root's date to the file's date, with
+//! one `lstat` of that file, and a root nothing happened to is not touched at
+//! all. A window that asks finds nothing due and reads the cache.
+//!
+//! A root is scanned in full only
+//!
+//! - the first time it is asked about, and again after it fails, after a
+//!   period, then after longer ones;
+//! - when something happened that its date cannot absorb: the file holding the
+//!   newest date is gone, replaced or dated earlier, a file appeared that the
+//!   file list lacks, or an ignore rule, the index or `HEAD` changed;
+//! - when the stream lost events (dropped, merged below a directory, wrapped)
+//!   or the root itself moved;
+//! - as a safety net, [`SAFETY_NET`] after its last scan, at a time of its own;
+//! - always, as before, when no stream could be made or the root is on a
+//!   volume that does not report changes.
+//!
+//! What the stream does not see is a change to a file that Git reads from
+//! outside the roots and their Git directories: a global ignore file or Git
+//! configuration, or an ignore file above a root. The safety net picks those up.
+
+mod changes;
+mod fsevents;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     ffi::OsStr,
     fs,
+    hash::{Hash, Hasher},
     io::Read,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc},
+    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc},
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
@@ -52,6 +81,21 @@ const SHARE_GAP: Duration = Duration::from_secs(ASK_EVERY.as_secs() - 5);
 const LISTING_AGE: Duration = Duration::from_secs(30 * 60);
 /// A root that no window has asked about for this long is forgotten.
 const FORGET_AFTER: Duration = Duration::from_secs(30 * 60);
+/// How long after its last scan a root is scanned again although nothing was
+/// heard of it: for what the stream cannot see (see the module documentation)
+/// and for events that never came. A root adds up to `SAFETY_SPREAD` of its own
+/// to this, so the roots one start scanned together do not all come due
+/// together again.
+const SAFETY_NET: Duration = Duration::from_secs(20 * 60);
+const SAFETY_SPREAD: Duration = Duration::from_secs(10 * 60);
+/// A root whose scan failed is tried again after one period however quiet the
+/// stream is, then after two, four and so on, up to this. Without a stream every
+/// scan tries it again.
+const RETRY_FAILED_AT_MOST: Duration = Duration::from_secs(10 * 60);
+/// A stream that could not be made is left alone this long before the next try.
+const RETRY_STREAM: Duration = Duration::from_secs(5 * 60);
+/// FSEvents folds the changes of a burst into one call after this long.
+const LATENCY: Duration = Duration::from_millis(1500);
 const MAX_ENTRIES: usize = 50_000;
 const MAX_DEPTH: usize = 40;
 const MAX_GIT_OUTPUT: usize = 8 * 1024 * 1024;
@@ -78,6 +122,9 @@ thread_local! {
     /// Directories read on this thread by plain walks, so a test can prove a
     /// tree inside two roots is walked once.
     static WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Roots scanned in full on this thread, so a test can prove an edit was
+    /// learned from the change stream and not by looking again.
+    static SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Return observed UNIX-second mtimes for projects with at least one completed
@@ -87,7 +134,7 @@ pub fn scan(state: &State) -> BTreeMap<String, u64> {
     SHARED.scan(state, LIMITS)
 }
 
-static SHARED: Shared = Shared::new();
+static SHARED: Shared = Shared::watching(LATENCY);
 
 /// The registered roots of each project that exist, as directories.
 type Wanted = Vec<(String, BTreeSet<PathBuf>)>;
@@ -124,7 +171,8 @@ fn wanted_roots(state: &State) -> Wanted {
 /// What the scans of this process remember. Entries are shared, so a copy is cheap.
 #[derive(Clone)]
 struct Cache {
-    /// How the latest scan that finished ended, for each root.
+    /// How the latest scan that finished ended, for each root, with what has
+    /// been heard of it since.
     roots: BTreeMap<PathBuf, Arc<Outcome>>,
     /// The files Git listed for a directory, for as long as its fingerprint holds.
     listings: BTreeMap<PathBuf, Arc<Listing>>,
@@ -139,9 +187,105 @@ impl Cache {
     }
 }
 
+/// The newest edit among the files of a root, and the file that has it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Newest {
+    time: u64,
+    /// The one edit that can lower the date is to this file: deleting it, or
+    /// dating it earlier. Edits to any other file can only raise it.
+    path: PathBuf,
+}
+
+/// The newer of two, the first when they are alike.
+fn later(a: Option<Newest>, b: Option<Newest>) -> Option<Newest> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if b.time > a.time { b } else { a }),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
+/// Offer a file to `newest`, building its path only if it is newer.
+fn offer(newest: &mut Option<Newest>, time: u64, path: impl FnOnce() -> PathBuf) {
+    if newest.as_ref().is_none_or(|newest| time > newest.time) {
+        *newest = Some(Newest { time, path: path() });
+    }
+}
+
+#[derive(Clone)]
 struct Outcome {
-    result: Result<Option<u64>, ()>,
+    /// The newest edit as the last scan found it, raised by every edit heard of
+    /// since. Err when that scan did not complete.
+    result: Result<Option<Newest>, ()>,
+    /// When that scan finished.
     at: Instant,
+    /// The change stream reports edits below this root, so it is scanned again
+    /// when something calls for it and not otherwise.
+    watched: bool,
+    /// Something happened that `result` cannot absorb: scan the root again.
+    dirty: bool,
+    /// How many scans in a row did not complete.
+    failures: u32,
+}
+
+impl Outcome {
+    /// Whether the root should be scanned again now.
+    fn due(&self, root: &Path) -> bool {
+        if !self.watched || self.dirty {
+            return true;
+        }
+        match self.result {
+            Err(()) => self.at.elapsed() >= retry_after(self.failures),
+            Ok(_) => self.at.elapsed() >= safety_net(root),
+        }
+    }
+
+    /// Something happened that the date cannot absorb. A root whose scan failed
+    /// is not scanned sooner for it: that is its own schedule.
+    fn changed(&mut self) {
+        self.dirty |= self.result.is_ok();
+    }
+
+    /// Whether `path` is the file that has the newest date.
+    fn holder(&self, path: &Path) -> bool {
+        matches!(&self.result, Ok(Some(newest)) if newest.path == path)
+    }
+
+    /// Whether the file that has the newest date is `directory` or below it.
+    fn holder_below(&self, directory: &Path) -> bool {
+        matches!(&self.result, Ok(Some(newest)) if newest.path.starts_with(directory))
+    }
+
+    /// A file that counts now has this date. Only a file with a later date
+    /// changes the root's, apart from the one that has it, which may have gone
+    /// back and leaves the root's date to be read again.
+    fn edited(&mut self, time: u64, path: PathBuf) {
+        let Ok(newest) = &mut self.result else {
+            return;
+        };
+        match newest {
+            Some(held) if time < held.time => {
+                if held.path == path {
+                    self.dirty = true;
+                }
+            }
+            Some(held) if time == held.time => {}
+            _ => *newest = Some(Newest { time, path }),
+        }
+    }
+}
+
+/// How long a root whose scan failed `failures` times in a row waits.
+fn retry_after(failures: u32) -> Duration {
+    (ASK_EVERY * 2u32.saturating_pow(failures.saturating_sub(1))).min(RETRY_FAILED_AT_MOST)
+}
+
+/// When a root is scanned again with nothing heard of it. Every root has its
+/// own, spread over `SAFETY_SPREAD`, from its path.
+fn safety_net(root: &Path) -> Duration {
+    let mut hasher = std::hash::DefaultHasher::new();
+    root.hash(&mut hasher);
+    SAFETY_NET + Duration::from_secs(hasher.finish() % SAFETY_SPREAD.as_secs())
 }
 
 struct Listing {
@@ -155,6 +299,91 @@ struct Files {
     paths: Vec<u8>,
     /// Everything Git listed. Each entry counts against the root's budget.
     entries: usize,
+    /// Where each path in `paths` starts and how long it is, in the order of
+    /// the paths. Made when the first change below the root is checked against
+    /// the list, which is never for a root nothing happens to.
+    sorted: OnceLock<Vec<(u32, u32)>>,
+}
+
+impl Files {
+    /// Whether `listed`, a path relative to the listed directory, is on the list.
+    fn contains(&self, listed: &[u8]) -> bool {
+        let sorted = self.sorted.get_or_init(|| {
+            let mut sorted = Vec::new();
+            let mut start = 0;
+            for path in self.paths.split(|byte| *byte == 0) {
+                if !path.is_empty() {
+                    sorted.push((start as u32, path.len() as u32));
+                }
+                start += path.len() + 1;
+            }
+            sorted.sort_unstable_by_key(|&(start, length)| {
+                &self.paths[start as usize..(start + length) as usize]
+            });
+            sorted
+        });
+        sorted
+            .binary_search_by(|&(start, length)| {
+                self.paths[start as usize..(start + length) as usize].cmp(listed)
+            })
+            .is_ok()
+    }
+}
+
+/// How the process learns of edits.
+#[derive(Clone, Copy)]
+enum Source {
+    /// It does not: every period scans every root. What a stream that cannot be
+    /// made falls back to, and what the tests compare the stream with.
+    #[cfg(test)]
+    Polling,
+    /// From an FSEvents stream, which folds a burst of changes into one call
+    /// every `Duration`.
+    Stream(Duration),
+    /// A stream that cannot be made.
+    #[cfg(test)]
+    Unavailable,
+}
+
+impl Source {
+    /// How long the stream holds changes back, if there is one.
+    fn latency(self) -> Option<Duration> {
+        match self {
+            #[cfg(test)]
+            Source::Polling | Source::Unavailable => None,
+            Source::Stream(latency) => Some(latency),
+        }
+    }
+}
+
+struct Watching {
+    sink: Arc<changes::Sink>,
+    stream: fsevents::Stream,
+}
+
+/// Where a root is, as far as watching it goes. Found out with calls that can
+/// wait as long as a hung network volume likes, so never with the lock held.
+struct Placement {
+    /// On a volume that reports its changes.
+    watchable: bool,
+    /// The Git directories that matter to it and lie outside it.
+    git_dirs: Vec<PathBuf>,
+}
+
+impl Placement {
+    fn probe(root: &Path) -> Self {
+        // A volume that does not report its changes is polled, as are paths
+        // that cannot be handed to the system as text.
+        let watchable = root.to_str().is_some() && local_volume(root);
+        Self {
+            watchable,
+            git_dirs: if watchable {
+                git_dirs_outside(root)
+            } else {
+                Vec::new()
+            },
+        }
+    }
 }
 
 struct Shared {
@@ -163,9 +392,22 @@ struct Shared {
 }
 
 struct Inner {
+    source: Source,
     running: bool,
     finished: Option<Instant>,
     cache: Cache,
+    /// When a window last asked about each root.
+    asked: BTreeMap<PathBuf, Instant>,
+    swept: Option<Instant>,
+    /// Where the roots are. Roots are only watched once this knows.
+    placed: BTreeMap<PathBuf, Placement>,
+    /// The stream over the roots, if one could be made.
+    watch: Option<Watching>,
+    /// Streams that were replaced, kept until they have delivered the changes
+    /// they were holding back, which the new stream never sees.
+    retiring: Vec<(Instant, Watching)>,
+    /// When a stream could not be made.
+    stream_failed: Option<Instant>,
 }
 
 enum Turn {
@@ -177,12 +419,31 @@ enum Turn {
 }
 
 impl Shared {
+    /// A cache that learns of edits by scanning every root every period.
+    #[cfg(test)]
     const fn new() -> Self {
+        Self::with(Source::Polling)
+    }
+
+    /// A cache that learns of edits from a stream, folding the changes of a burst
+    /// into one call every `latency`, and scans a root only when it has to.
+    const fn watching(latency: Duration) -> Self {
+        Self::with(Source::Stream(latency))
+    }
+
+    const fn with(source: Source) -> Self {
         Self {
             inner: Mutex::new(Inner {
+                source,
                 running: false,
                 finished: None,
                 cache: Cache::new(),
+                asked: BTreeMap::new(),
+                swept: None,
+                placed: BTreeMap::new(),
+                watch: None,
+                retiring: Vec::new(),
+                stream_failed: None,
             }),
             done: Condvar::new(),
         }
@@ -196,7 +457,9 @@ impl Shared {
         let wanted = wanted_roots(state);
         let give_up = Instant::now() + limits.scan_timeout + limits.root_timeout;
         let mut inner = self.lock();
+        inner.ask(&wanted);
         loop {
+            inner.absorb();
             match Self::turn(&inner, &wanted, limits) {
                 Turn::Read => break,
                 Turn::Wait => {
@@ -211,13 +474,29 @@ impl Shared {
                 }
                 Turn::Run => {
                     inner.running = true;
-                    let cache = inner.cache.clone();
+                    let unplaced = inner.unplaced(&wanted);
                     drop(inner);
                     let mut publish = Publish {
                         shared: self,
                         cache: None,
                     };
-                    publish.cache = Some(scan_roots(cache, &wanted, limits));
+                    let placements: Vec<_> = unplaced
+                        .into_iter()
+                        .map(|root| {
+                            let placement = Placement::probe(&root);
+                            (root, placement)
+                        })
+                        .collect();
+                    let (cache, sink) = {
+                        let mut inner = self.lock();
+                        inner.placed.extend(placements);
+                        // The stream is listening before the first file is
+                        // looked at, so no edit falls between the two.
+                        inner.listen(&wanted);
+                        (inner.cache.clone(), inner.sink())
+                    };
+                    let watched = sink.as_deref().map(changes::Sink::matcher);
+                    publish.cache = Some(scan_roots(cache, &wanted, limits, watched));
                     drop(publish);
                     inner = self.lock();
                     break;
@@ -238,12 +517,244 @@ impl Shared {
         let fresh = inner
             .finished
             .is_some_and(|finished| finished.elapsed() < limits.share_gap);
-        if covered && fresh {
+        // Without a stream every root is due, so this is a scan per period.
+        if covered && (fresh || !inner.due(wanted)) {
             Turn::Read
         } else {
             Turn::Run
         }
     }
+}
+
+impl Inner {
+    /// Note that a window asked about these roots, and forget those nobody has
+    /// asked about for a long time, which stops watching them too.
+    fn ask(&mut self, wanted: &Wanted) {
+        let now = Instant::now();
+        for root in wanted.iter().flat_map(|(_, roots)| roots) {
+            match self.asked.get_mut(root) {
+                Some(at) => *at = now,
+                None => {
+                    self.asked.insert(root.clone(), now);
+                }
+            }
+        }
+        if !self.running
+            && self
+                .swept
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(60))
+        {
+            self.swept = Some(now);
+            self.forget(wanted);
+        }
+    }
+
+    fn forget(&mut self, wanted: &Wanted) {
+        let asked = &self.asked;
+        let gone: Vec<PathBuf> = self
+            .cache
+            .roots
+            .iter()
+            .filter(|(root, outcome)| {
+                asked.get(*root).map_or(outcome.at, |at| *at).elapsed() >= FORGET_AFTER
+            })
+            .map(|(root, _)| root.clone())
+            .collect();
+        self.asked.retain(|_, at| at.elapsed() < FORGET_AFTER);
+        if gone.is_empty() {
+            return;
+        }
+        for root in &gone {
+            self.cache.roots.remove(root);
+        }
+        let known: Vec<&PathBuf> = self.cache.roots.keys().chain(self.asked.keys()).collect();
+        self.cache
+            .listings
+            .retain(|directory, _| known.iter().any(|root| directory.starts_with(root)));
+        let (roots, asked) = (&self.cache.roots, &self.asked);
+        self.placed
+            .retain(|root, _| roots.contains_key(root) || asked.contains_key(root));
+        self.listen(wanted);
+    }
+
+    /// Whether any root `wanted` names needs a scan.
+    fn due(&self, wanted: &Wanted) -> bool {
+        wanted.iter().flat_map(|(_, roots)| roots).any(|root| {
+            self.cache
+                .roots
+                .get(root)
+                .is_none_or(|outcome| outcome.due(root))
+        })
+    }
+
+    /// The roots whose place is to be found out before the next scan: those it
+    /// does not know yet, and those about to be scanned, since a scan is when
+    /// the Git directory of a root may have moved.
+    fn unplaced(&self, wanted: &Wanted) -> Vec<PathBuf> {
+        #[cfg(test)]
+        if matches!(self.source, Source::Polling) {
+            return Vec::new();
+        }
+        wanted
+            .iter()
+            .flat_map(|(_, roots)| roots)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|root| {
+                !self.placed.contains_key(*root)
+                    || self
+                        .cache
+                        .roots
+                        .get(*root)
+                        .is_none_or(|outcome| outcome.due(root))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// What the change stream heard since the last call, folded into the dates.
+    /// Not while a scan runs on a copy of them: it is done after.
+    fn absorb(&mut self) {
+        if self.running {
+            return;
+        }
+        if let Some(watching) = &self.watch
+            && let Some(pending) = watching.sink.take()
+        {
+            changes::apply(&mut self.cache, watching.sink.matcher(), pending);
+        }
+        // A replaced stream still holds the changes of its last moments, which
+        // it hands over within its latency. Then it is let go.
+        let retire_after = self.source.latency().map_or(Duration::ZERO, |latency| {
+            latency * 2 + Duration::from_millis(100)
+        });
+        for (since, old) in std::mem::take(&mut self.retiring) {
+            let expired = since.elapsed() >= retire_after;
+            if expired {
+                // Stopping it waits for a delivery in progress.
+                drop(old.stream);
+                if let Some(pending) = old.sink.take() {
+                    changes::apply(&mut self.cache, old.sink.matcher(), pending);
+                }
+            } else {
+                if let Some(pending) = old.sink.take() {
+                    changes::apply(&mut self.cache, old.sink.matcher(), pending);
+                }
+                self.retiring.push((since, old));
+            }
+        }
+    }
+
+    fn sink(&self) -> Option<Arc<changes::Sink>> {
+        self.watch.as_ref().map(|watching| watching.sink.clone())
+    }
+
+    /// Make the stream cover the roots we hold dates for and the ones `wanted`
+    /// names, and no others. Needs to run before the first scan of a root and
+    /// after one is forgotten; a stream is only made when the roots, or where
+    /// their Git directories are, differ from those it has. A root whose place
+    /// is not known yet, or that is on a volume that does not report changes,
+    /// is left to be polled.
+    fn listen(&mut self, wanted: &Wanted) {
+        let latency = match self.source {
+            #[cfg(test)]
+            Source::Polling => return,
+            source => source.latency(),
+        };
+        if self
+            .stream_failed
+            .is_some_and(|at| at.elapsed() < RETRY_STREAM)
+        {
+            return;
+        }
+        let desired: BTreeMap<&PathBuf, &Vec<PathBuf>> = self
+            .cache
+            .roots
+            .keys()
+            .chain(wanted.iter().flat_map(|(_, roots)| roots))
+            .filter_map(|root| {
+                let placement = self.placed.get(root)?;
+                placement.watchable.then_some((root, &placement.git_dirs))
+            })
+            .collect();
+        if let Some(watching) = &self.watch
+            && watching
+                .sink
+                .matcher()
+                .is_for(desired.iter().map(|(root, dirs)| (*root, *dirs)))
+        {
+            return;
+        }
+        if desired.is_empty() {
+            self.stop_listening();
+            return;
+        }
+        let sink = Arc::new(changes::Sink::new(changes::Matcher::new(
+            desired
+                .iter()
+                .map(|(root, dirs)| ((*root).clone(), (*dirs).clone())),
+        )));
+        let stream = latency
+            .and_then(|latency| fsevents::Stream::start(&sink.matcher().paths(), latency, &sink));
+        let Some(stream) = stream else {
+            // Roots the old stream, if any, does not cover are polled.
+            self.stream_failed = Some(Instant::now());
+            return;
+        };
+        self.stream_failed = None;
+        // The new stream listens before the old one stops, so nothing falls
+        // between them; the old one is let go once it has delivered what it holds.
+        if let Some(old) = self.watch.replace(Watching { sink, stream }) {
+            self.retiring.push((Instant::now(), old));
+        }
+        self.unwatch_uncovered();
+    }
+
+    /// No root is left to watch.
+    fn stop_listening(&mut self) {
+        for (_, old) in std::mem::take(&mut self.retiring) {
+            drop(old.stream);
+        }
+        if let Some(old) = self.watch.take() {
+            drop(old.stream);
+            if let Some(pending) = old.sink.take() {
+                changes::apply(&mut self.cache, old.sink.matcher(), pending);
+            }
+        }
+        self.unwatch_uncovered();
+    }
+
+    /// Roots the stream does not cover are polled.
+    fn unwatch_uncovered(&mut self) {
+        let sink = self.sink();
+        for (root, outcome) in &mut self.cache.roots {
+            let covered = sink
+                .as_ref()
+                .is_some_and(|sink| sink.matcher().watches(root));
+            if outcome.watched && !covered {
+                Arc::make_mut(outcome).watched = false;
+            }
+        }
+    }
+}
+
+/// Whether the volume `path` is on reports its changes to this machine. Network
+/// and user-space file systems do not, or not reliably.
+fn local_volume(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is NUL-terminated and `stats` is valid for the call to fill.
+    unsafe {
+        let mut stats: libc::statfs = std::mem::zeroed();
+        libc::statfs(path.as_ptr(), &mut stats) == 0 && reports_changes(stats.f_flags)
+    }
+}
+
+/// Whether a volume with these mount flags is local.
+fn reports_changes(mount_flags: u32) -> bool {
+    mount_flags & libc::MNT_LOCAL as u32 != 0
 }
 
 /// Puts a scan's outcome in the cache and wakes the callers waiting for it,
@@ -270,14 +781,13 @@ fn latest_edits(cache: &Cache, wanted: &Wanted) -> BTreeMap<String, u64> {
     wanted
         .iter()
         .filter_map(|(id, roots)| {
-            let latest = roots.iter().filter_map(|root| cache.roots.get(root)).fold(
-                None,
-                |latest, outcome| match outcome.result {
-                    Ok(time) => later(latest, time),
-                    Err(()) => latest,
-                },
-            );
-            latest.map(|latest| (id.clone(), latest))
+            roots
+                .iter()
+                .filter_map(|root| cache.roots.get(root))
+                .filter_map(|outcome| outcome.result.as_ref().ok()?.as_ref())
+                .map(|newest| newest.time)
+                .max()
+                .map(|latest| (id.clone(), latest))
         })
         .collect()
 }
@@ -296,12 +806,26 @@ fn due_first<'a>(wanted: &'a Wanted, cache: &Cache) -> Vec<&'a PathBuf> {
     roots
 }
 
-/// Scan the roots that `wanted` names within the overall deadline. A root the
-/// deadline cuts short keeps what the last scan found, and one it never reaches
-/// too, so a project does not lose its date for lack of time.
-fn scan_roots(mut cache: Cache, wanted: &Wanted, limits: Limits) -> Cache {
+/// Scan the roots that `wanted` names and that are due, within the overall
+/// deadline. A root the deadline cuts short keeps what the last scan found, and
+/// one it never reaches too, so a project does not lose its date for lack of
+/// time. `watched` is what the change stream reports, if there is one.
+fn scan_roots(
+    mut cache: Cache,
+    wanted: &Wanted,
+    limits: Limits,
+    watched: Option<&changes::Matcher>,
+) -> Cache {
     let deadline = Instant::now() + limits.scan_timeout;
-    let roots = due_first(wanted, &cache);
+    let roots: Vec<&PathBuf> = due_first(wanted, &cache)
+        .into_iter()
+        .filter(|root| {
+            cache
+                .roots
+                .get(*root)
+                .is_none_or(|outcome| outcome.due(root))
+        })
+        .collect();
     let mut pass = Pass {
         roots: roots.iter().map(|root| (*root).clone()).collect(),
         ..Pass::default()
@@ -314,28 +838,31 @@ fn scan_roots(mut cache: Cache, wanted: &Wanted, limits: Limits) -> Cache {
             deadline: deadline.min(Instant::now() + limits.root_timeout),
             remaining_entries: limits.root_entries,
         };
+        #[cfg(test)]
+        SCANS.with(|scans| scans.set(scans.get() + 1));
         let result = scan_root(root, &mut budget, &mut cache, &mut pass);
         if result.is_err() && Instant::now() >= deadline {
             break;
         }
         let at = Instant::now();
-        cache
-            .roots
-            .insert((*root).clone(), Arc::new(Outcome { result, at }));
+        // The root's file list is not remembered (it changed while it was read),
+        // so a change heard of could not be checked against it: look again.
+        let dirty = result.is_ok() && pass.uncached.iter().any(|dir| dir.starts_with(root));
+        let failures = match result {
+            Ok(_) => 0,
+            Err(()) => cache.roots.get(*root).map_or(0, |last| last.failures) + 1,
+        };
+        cache.roots.insert(
+            (*root).clone(),
+            Arc::new(Outcome {
+                result,
+                at,
+                watched: watched.is_some_and(|matcher| matcher.watches(root)),
+                dirty,
+                failures,
+            }),
+        );
     }
-    let asked: BTreeSet<&PathBuf> = roots.into_iter().collect();
-    cache
-        .roots
-        .retain(|root, outcome| asked.contains(root) || outcome.at.elapsed() < FORGET_AFTER);
-    let known: Vec<PathBuf> = cache
-        .roots
-        .keys()
-        .cloned()
-        .chain(asked.into_iter().cloned())
-        .collect();
-    cache
-        .listings
-        .retain(|directory, _| known.iter().any(|root| directory.starts_with(root)));
     cache
 }
 
@@ -362,10 +889,6 @@ impl Budget {
         self.remaining_entries = self.remaining_entries.checked_sub(count).ok_or(())?;
         Ok(())
     }
-}
-
-fn later(a: Option<u64>, b: Option<u64>) -> Option<u64> {
-    a.into_iter().chain(b).max()
 }
 
 fn excluded_directory(name: &OsStr) -> bool {
@@ -538,49 +1061,94 @@ fn considered(relative: &Path) -> bool {
     }) && !relative.file_name().is_some_and(ignored_file)
 }
 
+/// Where Git finds the repository of a directory.
+enum Located {
+    /// There is no `.git` in the directory or any parent.
+    Absent,
+    /// There is, but its Git directory cannot be found without running Git.
+    Unreadable,
+    Found {
+        /// The directory that holds the `.git`.
+        top: PathBuf,
+        git_dir: PathBuf,
+    },
+}
+
+/// Git looks in the directory and in each parent for `.git`, and the nearest one
+/// wins. `stamp` sees every candidate looked at, found or not.
+fn locate_git(directory: &Path, mut stamp: impl FnMut(&Path)) -> Located {
+    for ancestor in directory.ancestors() {
+        let dot_git = ancestor.join(".git");
+        stamp(&dot_git);
+        if fs::symlink_metadata(&dot_git).is_err() {
+            continue;
+        }
+        let git_dir = match fs::metadata(&dot_git) {
+            Ok(metadata) if metadata.is_dir() => dot_git,
+            // A linked worktree or submodule: a file naming its Git directory.
+            Ok(metadata) if metadata.is_file() => {
+                let target = fs::read_to_string(&dot_git).ok().and_then(|text| {
+                    let target = text.trim().strip_prefix("gitdir:")?.trim().to_owned();
+                    (!target.is_empty()).then_some(target)
+                });
+                match target {
+                    Some(target) => ancestor.join(target),
+                    None => return Located::Unreadable,
+                }
+            }
+            _ => return Located::Unreadable,
+        };
+        return Located::Found {
+            top: ancestor.to_owned(),
+            git_dir,
+        };
+    }
+    Located::Absent
+}
+
+/// The Git directory that holds what linked worktrees share. `stamp` sees the
+/// file that names it.
+fn common_git_dir(git_dir: &Path, stamp: impl FnOnce(&Path)) -> PathBuf {
+    let pointer = git_dir.join("commondir");
+    stamp(&pointer);
+    match fs::read_to_string(&pointer) {
+        Ok(text) => git_dir.join(text.trim()),
+        Err(_) => git_dir.to_owned(),
+    }
+}
+
+/// The Git directories whose files decide what Git lists for `root` and that lie
+/// outside it: those of a linked worktree, and of a root inside a repository.
+/// The change stream watches them for the root. The root's own first, then the
+/// one it shares with the other worktrees of its repository, if that is another.
+fn git_dirs_outside(root: &Path) -> Vec<PathBuf> {
+    let Located::Found { git_dir, .. } = locate_git(root, |_| {}) else {
+        return Vec::new();
+    };
+    let common = common_git_dir(&git_dir, |_| {});
+    // The system names paths by where they really are.
+    let mut dirs: Vec<PathBuf> = [git_dir, common]
+        .iter()
+        .filter_map(|dir| dir.canonicalize().ok())
+        .filter(|dir| !dir.starts_with(root) && dir.to_str().is_some())
+        .collect();
+    dirs.dedup();
+    dirs
+}
+
 /// What Git reads to list `directory`: whether and where it is in a repository,
 /// the index and `HEAD`, and the ignore rules that are not files of the listing.
 /// The stamps are taken before Git runs, so a change during the run shows up as
 /// a difference. False when the repository cannot be found without running Git,
 /// and nothing listed for it may be remembered.
 fn watch_repository(directory: &Path, fingerprint: &mut Fingerprint) -> bool {
-    // Git looks in the directory and in each parent for `.git`, and the nearest
-    // one wins, so a new one closer to the directory changes the answer.
-    let mut top = None;
-    for ancestor in directory.ancestors() {
-        let dot_git = ancestor.join(".git");
-        fingerprint.marker(&dot_git);
-        if fs::symlink_metadata(&dot_git).is_ok() {
-            top = Some(ancestor);
-            break;
-        }
-    }
-    let Some(top) = top else {
+    let (top, git_dir) = match locate_git(directory, |dot_git| fingerprint.marker(dot_git)) {
         // Not a repository; the stamps above are what would change that.
-        return true;
+        Located::Absent => return true,
+        Located::Unreadable => return false,
+        Located::Found { top, git_dir } => (top, git_dir),
     };
-    let dot_git = top.join(".git");
-    let git_dir = match fs::metadata(&dot_git) {
-        Ok(metadata) if metadata.is_dir() => dot_git,
-        // A linked worktree or submodule: a file naming its Git directory.
-        Ok(metadata) if metadata.is_file() => {
-            let target = fs::read_to_string(&dot_git).ok().and_then(|text| {
-                let target = text.trim().strip_prefix("gitdir:")?.trim().to_owned();
-                (!target.is_empty()).then_some(target)
-            });
-            match target {
-                Some(target) => top.join(target),
-                None => return false,
-            }
-        }
-        _ => return false,
-    };
-    let pointer = git_dir.join("commondir");
-    fingerprint.marker(&pointer);
-    let common = match fs::read_to_string(&pointer) {
-        Ok(text) => git_dir.join(text.trim()),
-        Err(_) => git_dir.clone(),
-    };
+    let common = common_git_dir(&git_dir, |pointer| fingerprint.marker(pointer));
     // The index is the tracked half of the listing. Every command that adds,
     // removes or renames a tracked file, switches branch or commits rewrites it.
     fingerprint.marker(&git_dir.join("index"));
@@ -648,7 +1216,11 @@ impl Listing {
                     fingerprint.entries(&directory.join(relative));
                 }
             }
-            Files { paths, entries }
+            Files {
+                paths,
+                entries,
+                sorted: OnceLock::new(),
+            }
         });
         Self { fingerprint, files }
     }
@@ -660,6 +1232,7 @@ fn repository_files(
     directory: &Path,
     budget: &Budget,
     cache: &mut Cache,
+    pass: &mut Pass,
 ) -> Result<Arc<Listing>, ()> {
     if let Some(listing) = cache.listings.get(directory)
         && listing.fingerprint.is_current()
@@ -681,6 +1254,7 @@ fn repository_files(
         cache.listings.insert(directory.to_owned(), listing.clone());
     } else {
         cache.listings.remove(directory);
+        pass.uncached.push(directory.to_owned());
     }
     Ok(listing)
 }
@@ -690,7 +1264,7 @@ fn repository_files(
 /// Git lists paths sorted, so the files of one directory come together and a
 /// directory is checked once however many files it holds. Nothing here
 /// allocates per file: each path is built in one reused buffer.
-fn stat_files(root: &Path, files: &Files, budget: &mut Budget) -> Result<Option<u64>, ()> {
+fn stat_files(root: &Path, files: &Files, budget: &mut Budget) -> Result<Option<Newest>, ()> {
     budget.consume_many(files.entries)?;
     let mut latest = None;
     // Directories already found to be real directories, not links.
@@ -714,8 +1288,13 @@ fn stat_files(root: &Path, files: &Files, budget: &mut Budget) -> Result<Option<
             }
             current = Some(directory);
         }
-        match fs::symlink_metadata(paths.join(bytes)) {
-            Ok(metadata) => latest = later(latest, regular_file_time(&metadata)?),
+        let path = paths.join(bytes);
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                if let Some(time) = regular_file_time(&metadata)? {
+                    offer(&mut latest, time, || path.to_path_buf());
+                }
+            }
             Err(error) if unobservable(&error) => {}
             Err(_) => return Err(()),
         }
@@ -727,6 +1306,8 @@ fn stat_files(root: &Path, files: &Files, budget: &mut Budget) -> Result<Option<
 struct Joiner {
     #[cfg(not(unix))]
     root: PathBuf,
+    #[cfg(not(unix))]
+    joined: PathBuf,
     #[cfg(unix)]
     buffer: Vec<u8>,
     #[cfg(unix)]
@@ -757,12 +1338,14 @@ impl Joiner {
     fn new(root: &Path) -> Self {
         Self {
             root: root.to_owned(),
+            joined: PathBuf::new(),
         }
     }
 
     #[cfg(not(unix))]
-    fn join(&mut self, listed: &[u8]) -> PathBuf {
-        self.root.join(listed_path(listed))
+    fn join(&mut self, listed: &[u8]) -> &Path {
+        self.joined = self.root.join(listed_path(listed));
+        &self.joined
     }
 }
 
@@ -808,7 +1391,9 @@ struct Pass {
     /// Every root this scan was asked for.
     roots: BTreeSet<PathBuf>,
     /// The roots whose scan completed in this one.
-    done: BTreeMap<PathBuf, Option<u64>>,
+    done: BTreeMap<PathBuf, Option<Newest>>,
+    /// The directories whose file lists this one could not remember.
+    uncached: Vec<PathBuf>,
 }
 
 fn scan_root(
@@ -816,16 +1401,16 @@ fn scan_root(
     budget: &mut Budget,
     cache: &mut Cache,
     pass: &mut Pass,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<Newest>, ()> {
     if let Some(done) = pass.done.get(root) {
-        return Ok(*done);
+        return Ok(done.clone());
     }
-    let listing = repository_files(root, budget, cache)?;
+    let listing = repository_files(root, budget, cache, pass)?;
     let latest = match &listing.files {
         Some(files) => stat_files(root, files, budget)?,
         None => scan_plain(root, budget, cache, pass)?,
     };
-    pass.done.insert(root.to_owned(), latest);
+    pass.done.insert(root.to_owned(), latest.clone());
     Ok(latest)
 }
 
@@ -834,7 +1419,7 @@ fn scan_plain(
     budget: &mut Budget,
     cache: &mut Cache,
     pass: &mut Pass,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<Newest>, ()> {
     let mut latest = None;
     let mut directories = vec![(root.to_owned(), 0)];
     while let Some((directory, depth)) = directories.pop() {
@@ -844,7 +1429,7 @@ fn scan_plain(
             continue;
         }
         if directory != root && fs::symlink_metadata(directory.join(".git")).is_ok() {
-            let listing = repository_files(&directory, budget, cache)?;
+            let listing = repository_files(&directory, budget, cache, pass)?;
             let files = listing.files.as_ref().ok_or(())?;
             latest = later(latest, stat_files(&directory, files, budget)?);
             continue;
@@ -870,8 +1455,13 @@ fn scan_plain(
                 }
                 directories.push((entry.path(), depth + 1));
             } else if file_type.is_file() {
-                match fs::symlink_metadata(entry.path()) {
-                    Ok(metadata) => latest = later(latest, regular_file_time(&metadata)?),
+                let path = entry.path();
+                match fs::symlink_metadata(path.as_path()) {
+                    Ok(metadata) => {
+                        if let Some(time) = regular_file_time(&metadata)? {
+                            offer(&mut latest, time, || path);
+                        }
+                    }
                     Err(error) if unobservable(&error) => {}
                     Err(_) => return Err(()),
                 }
@@ -890,6 +1480,8 @@ mod tests {
         sync::Barrier,
     };
 
+    mod stream;
+
     /// One scan with nothing remembered from an earlier one.
     fn scan(state: &State) -> BTreeMap<String, u64> {
         scan_with(state, LIMITS)
@@ -903,8 +1495,11 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let root =
-                std::env::temp_dir().join(format!("riwork-recency-test-{}", uuid::Uuid::new_v4()));
+            // Where the system reports changes: the real place, not a link to it.
+            let root = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("riwork-recency-test-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&root).unwrap();
             Self(root)
         }
@@ -1812,7 +2407,7 @@ mod tests {
         let scan = measure(&|| {
             let mut cache = cache.clone();
             cache.roots.clear();
-            std::hint::black_box(scan_roots(cache, &wanted, LIMITS));
+            std::hint::black_box(scan_roots(cache, &wanted, LIMITS, None));
         });
         println!("rescan of every root (plain folders included): {scan:?} CPU");
     }

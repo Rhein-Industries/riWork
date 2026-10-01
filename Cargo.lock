@@ -4292,6 +4292,7 @@ name = "riwork"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "core-foundation-sys",
  "fs2",
  "gpui-libghostty",
  "gpui-pre",
