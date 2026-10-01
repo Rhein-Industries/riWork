@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import UIKit
+import Observation
 import RiWorkCore
 @testable import RiWorkRemote
 
@@ -11,7 +12,7 @@ import RiWorkCore
 /// were painted, how many round trips a reconnect takes. Main-thread CPU time (not wall time) is what a frame is made of, and it
 /// does not count the waits of the test itself.
 @MainActor final class PerformanceTests: ScrollTestCase {
-    struct Hosted {
+    @MainActor struct Hosted {
         let model: RemoteModel, transport: FixtureTransport, keychain: KeychainStore, window: UIWindow, host: UIHostingController<AnyView>
         var surface: TerminalSurfaceView? {
             func find(_ view: UIView) -> TerminalSurfaceView? {
@@ -105,6 +106,13 @@ import RiWorkCore
         func per(_ key: String) -> String { String(format: "%.2f", Double(counts[key] ?? 0) / n) }
         print("PERF \(name): per answer: TerminalTabsView body \(per("body.TerminalTabsView")), WorkspaceBar \(per("body.WorkspaceBar")), SessionConsole \(per("body.SessionConsole")), PhoneTerminal \(per("body.PhoneTerminal")), updateUIView \(per("update.TerminalSurface")), surface.refresh \(per("surface.refresh")), rows painted \(per("rowPaint"))")
         XCTAssertGreaterThan(applied, answers * 9 / 10, "the answers arrive")
+        #if DEBUG || PERF_COUNTERS
+        // A live answer changes the terminal and nothing around it: the header, the console and the phone terminal are not rebuilt for it.
+        for key in ["body.TerminalTabsView", "body.WorkspaceBar", "body.SessionConsole", "body.PhoneTerminal"] {
+            XCTAssertEqual(counts[key] ?? 0, 0, "\(name): \(key) was rebuilt by live answers")
+        }
+        XCTAssertLessThanOrEqual(Double(counts["surface.refresh"] ?? 0) / n, 1.2, "\(name): the surface is refreshed once per answer")
+        #endif
     }
 
     // MARK: Typing
@@ -183,6 +191,13 @@ import RiWorkCore
         func per(_ key: String) -> String { String(format: "%.2f", Double(counts[key] ?? 0) / Double(keys)) }
         print("PERF typing: per key: TerminalTabsView body \(per("body.TerminalTabsView")), WorkspaceBar \(per("body.WorkspaceBar")), SessionConsole \(per("body.SessionConsole")), PhoneTerminal \(per("body.PhoneTerminal")), updateUIView \(per("update.TerminalSurface")), surface.refresh \(per("surface.refresh")), rows painted \(per("rowPaint"))")
         print("PERF typing: key batches sent \(arrivals.count) for \(keys) keys")
+        #if DEBUG || PERF_COUNTERS
+        // A key typed rebuilds the part of the screen that shows the keys pending, and nothing else.
+        for key in ["body.TerminalTabsView", "body.WorkspaceBar", "body.SessionConsole", "body.PhoneTerminal"] {
+            XCTAssertEqual(counts[key] ?? 0, 0, "\(key) was rebuilt by typing")
+        }
+        XCTAssertLessThanOrEqual(Double(counts["surface.refresh"] ?? 0) / Double(keys), 1.2, "the surface is refreshed once per answer, not once more per key")
+        #endif
         await model.disconnect()
         window.isHidden = true
     }
@@ -226,7 +241,26 @@ import RiWorkCore
         try await fling("slow scroll (1 row/frame)", screen, step: line)
         try await fling("fling 3000 pt/s at 120 Hz", screen, step: 25)
         try await fling("fast fling 8000 pt/s at 120 Hz", screen, step: 67)
+        try await pinch(screen)
         await finish(screen)
+    }
+
+    /// A pinch: the text size changes with every frame of the gesture, and the whole screen is laid out and painted at the new size.
+    private func pinch(_ screen: Hosted) async throws {
+        let sizes: [Double] = Array(stride(from: 12.0, through: 18.0, by: 1)) + Array(stride(from: 17.0, through: 12.0, by: -1))
+        Perf.reset()
+        var worst = 0.0
+        let start = cpu()
+        for size in sizes {
+            let began = cpu()
+            screen.model.setTerminalFontSize(size)
+            screen.host.view.layoutIfNeeded(); CATransaction.flush()
+            try? await Task.sleep(for: .milliseconds(20))
+            worst = max(worst, cpu() - began)
+        }
+        let idle = 0.0
+        report("pinch (text size step): main-thread CPU", (cpu() - start - idle) * 1000 / Double(sizes.count), per: "step (worst \(String(format: "%.1f", worst * 1000)) ms)")
+        print(String(format: "PERF pinch: rows painted %.1f / step", Double(Perf.counts["rowPaint"] ?? 0) / Double(sizes.count)))
     }
 
     // MARK: For a profiler
@@ -328,6 +362,8 @@ import RiWorkCore
         func methods() -> [String] { requests }
     }
 
+    /// The two ways the phone gets a screen over a link a round trip away: the first connect of a launch, and the return from the
+    /// background (the terminal is on screen and its grid is known, so the resize comes first, then the screen).
     func testTimeFromConnectToTheFirstScreen() async throws {
         let keychain = try makeStore()
         defer { try? keychain.delete() }
@@ -341,15 +377,107 @@ import RiWorkCore
                                 keepAwake: { _ in }, liveWaitMilliseconds: 200, linkWatcher: StaticLinkWatcher(), prefetch: false)
         model.setTerminalVisible(true)
         model.reportTerminalArea(CGSize(width: 390, height: 600))
+        func milliseconds(_ d: Duration) -> Double { Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15 }
         let clock = ContinuousClock()
-        let began = clock.now
+
+        var began = clock.now
         await model.connect()
-        await eventually("the first screen is in", timeout: 10) { model.outputSessionID == self.shell && !model.terminal.isEmpty }
-        let elapsed = clock.now - began
-        let ms = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
-        let sequence = await link.methods()
-        report("reconnect: connect → first screen (round trip \(delay * 2))", ms)
-        print("PERF reconnect: requests in order: \(sequence.prefix(12).joined(separator: " → "))")
+        await eventually("the first screen is in", timeout: 10) { model.outputSessionID == self.shell && !model.terminal.isEmpty && !model.snapshotStale }
+        report("first connect → first screen (round trip \(delay * 2))", milliseconds(clock.now - began))
+        print("PERF first connect: requests in order: \(await link.methods().prefix(12).joined(separator: " → "))")
+
+        await model.disconnect(background: true)
+        XCTAssertTrue(model.snapshotStale)
+        let used = await link.methods().count
+        began = clock.now
+        await model.resume()
+        await eventually("the screen is fresh again", timeout: 10) { !model.snapshotStale && model.viewportReady }
+        report("resume from background → fresh screen (round trip \(delay * 2))", milliseconds(clock.now - began))
+        let sequence = Array(await link.methods().dropFirst(used))
+        print("PERF resume: requests in order: \(sequence.prefix(12).joined(separator: " → "))")
         await model.disconnect()
+    }
+
+    /// Holds the four list requests of a (re)connect until all four are on the wire. A model that asks for them one after the other never
+    /// gets there, and the test says so.
+    actor Barrier: RemoteTransport {
+        let inner: FixtureTransport
+        private let lists: Set<String> = ["projects.list", "orchestrators.list", "worktrees.list", "shells.list"]
+        private(set) var arrived: Set<String> = []
+        private(set) var released = false
+        init(_ inner: FixtureTransport) { self.inner = inner }
+        func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing { try await inner.connect(pairing: pairing, allowLocalDevelopment: allowLocalDevelopment) }
+        func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue {
+            if lists.contains(method), !released {
+                arrived.insert(method)
+                let deadline = ContinuousClock.now + .seconds(2)
+                while arrived.count < lists.count, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(2)) }
+                if arrived.count == lists.count { released = true }
+            }
+            return try await inner.request(method: method, params: params, id: id)
+        }
+        func disconnect() async { await inner.disconnect() }
+        func isConnected() async -> Bool { await inner.isConnected() }
+        func allArrivedTogether() -> Bool { released }
+    }
+
+    func testTheListsOfAConnectGoOutTogether() async throws {
+        let keychain = try makeStore()
+        defer { try? keychain.delete() }
+        let barrier = Barrier(FixtureTransport())
+        let model = RemoteModel(client: barrier, keychain: keychain, pollInterval: .milliseconds(40), keyFlushInterval: .milliseconds(5), previewDelay: .milliseconds(80),
+                                reconnectBackoff: .milliseconds(10), defaults: scratchDefaults(), cellMetrics: { TerminalLayout.approximateCell(fontSize: $0) },
+                                keepAwake: { _ in }, liveWaitMilliseconds: 200, linkWatcher: StaticLinkWatcher(), prefetch: false)
+        await model.connect()
+        let together = await barrier.allArrivedTogether()
+        XCTAssertTrue(together, "projects, orchestrators, worktrees and shells are asked for in one round trip")
+        XCTAssertEqual(model.state, .connected)
+        XCTAssertEqual(model.projects.count, 1)
+        XCTAssertEqual(model.shells.map(\.id), [shell])
+        XCTAssertEqual(model.sessionID, shell)
+        await model.disconnect()
+    }
+
+    // MARK: What views read
+
+    /// Views read `hasOutput` instead of `output`: it changes when the screen is first filled or emptied, not with every answer.
+    func testHasOutputFollowsOutputButOnlyChangesWithEmptiness() throws {
+        let model = RemoteModel(client: FixtureTransport(), keychain: try makeStore(), defaults: scratchDefaults())
+        XCTAssertFalse(model.hasOutput)
+        final class Wakes: @unchecked Sendable { var count = 0 }
+        let wakes = Wakes()
+        func watch() { withObservationTracking { _ = model.hasOutput } onChange: { wakes.count += 1 } }
+        watch()
+        model.output = "first screen"
+        XCTAssertTrue(model.hasOutput)
+        XCTAssertEqual(wakes.count, 1, "the first screen wakes the readers")
+        watch()
+        model.output = "a second, different screen"
+        model.output = "a third"
+        XCTAssertEqual(wakes.count, 1, "new text does not")
+        model.output = ""
+        XCTAssertFalse(model.hasOutput)
+        XCTAssertEqual(wakes.count, 2, "emptying the screen does")
+    }
+
+    // MARK: Launch
+
+    /// What the app does on the main thread before its first frame that is its own: reading the paired desktops from the Keychain, the
+    /// last palette from the defaults, and setting the model up.
+    func testModelSetUpAtLaunch() throws {
+        let keychain = try makeStore()
+        defer { try? keychain.delete() }
+        let defaults = scratchDefaults()
+        let transport = FixtureTransport()
+        var best = Double.infinity
+        let clock = ContinuousClock()
+        for _ in 0..<20 {
+            let began = clock.now
+            let model = RemoteModel(client: transport, keychain: keychain, defaults: defaults)
+            let d = (clock.now - began).components
+            best = min(best, Double(d.seconds) * 1000 + Double(d.attoseconds) / 1e15)
+            XCTAssertEqual(model.desktops.count, 1)
+        }
+        report("launch: RemoteModel.init (Keychain read, defaults, theme)", best)
     }
 }

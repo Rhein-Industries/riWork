@@ -262,6 +262,19 @@ final class PerformanceTests: XCTestCase {
         XCTAssertTrue(same)
     }
 
+    /// What receiving a big reply costs on the relay client's actor (which also sends keys): the base64url decode of a history page.
+    func testDecodeOfAHistoryPageFrame() throws {
+        var bytes = [UInt8](repeating: 0, count: 96 * 1024)
+        for i in bytes.indices { bytes[i] = UInt8(truncatingIfNeeded: i &* 31 &+ (i >> 8)) }
+        let data = Data(bytes)
+        let encoded = Base64URL.encode(data)
+        var decoded = Data()
+        bench("Base64URL.decode, 96 KiB frame (\(encoded.utf8.count) chars)", inner: 5) { decoded = (try? Base64URL.decode(encoded)) ?? Data() }
+        XCTAssertEqual(decoded, data)
+        bench("Base64URL.encode, 96 KiB", inner: 5) { _ = Base64URL.encode(data) }
+        bench("Foundation base64 decode alone, same size", inner: 5) { _ = Data(base64Encoded: encoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")) }
+    }
+
     /// The whole of one answer off the main actor and on it, as the app does it (decode, parse, compare, apply).
     func testOneAnswerEndToEnd() throws {
         var buffer = filledBuffer(history: 50_000)
