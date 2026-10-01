@@ -38,10 +38,12 @@ Run `riwork help` for the full command list and `riwork --version` for the insta
 The standalone `riwork-remote` relay and outbound desktop connector let paired
 mobile devices inspect existing projects/tasks/worktrees, read persistent shell
 and orchestrator output, submit a line to an explicitly selected existing
-session, and start or close a terminal (a shell, Codex, Claude or Grok) in a
-project or worktree. A running RiWork window adds a tab for a terminal started
-this way (or by `riwork shell create`) behind its current one, without taking
-focus. Each device has independent endpoint secrets and revocable access; the
+session, start or close a terminal (a shell, Codex, Claude or Grok) in a
+project or worktree, and create a new project in the default projects folder
+(the phone names it and never chooses a location). A running RiWork window adds
+a tab for a terminal started this way (or by `riwork shell create`) behind its
+current one, without taking focus, and lists a project made this way (or by
+`riwork project create`) in its Projects panel within a couple of seconds. Each device has independent endpoint secrets and revocable access; the
 relay routes encrypted frames without session content or pairing secrets.
 
 ```sh
@@ -187,7 +189,7 @@ riwork project update PROJECT_ID --ungrouped
 
 ## Persistent shells
 
-RiWork creates `~/Documents/riwork` at app startup if needed. Use **+ PROJECT** (a box-with-plus icon when **Icons instead of labels** is on) in Projects or Cmd+N to create a project. Enter a project name to create `~/Documents/riwork/NAME`; the folder field updates automatically. Default names cannot start with a dot. Editing the folder or using Browse selects an explicit location, where the name is optional; a typed folder must be an absolute path (`/…` or `~/…`), and the form shows the resolved folder. If creation fails, folders it made that are still empty are removed. `riwork project create --name NAME` also uses this default parent. Explicit CLI paths retain their usual meaning. Projects support a single Git repository, a folder containing several repositories, and plain folders. Creation offers **Initialize Git** checked by default when no repository is found. Uncheck it to keep a plain folder. Existing repositories are reused; a wrapper folder is never initialized around them. `project add` only registers a folder. For projects with several repositories, worktree creation requires choosing a repository with `--repo`; a new repository needs an initial commit before Git can create worktrees.
+RiWork creates `~/Documents/riwork` at app startup if needed. Use **+ PROJECT** (a box-with-plus icon when **Icons instead of labels** is on) in Projects or Cmd+N to create a project. Enter a project name to create `~/Documents/riwork/NAME`; the folder field updates automatically. Default names cannot start with a dot. Editing the folder or using Browse selects an explicit location, where the name is optional; a typed folder must be an absolute path (`/…` or `~/…`), and the form shows the resolved folder. If creation fails, folders it made that are still empty are removed. `riwork project create --name NAME` also uses this default parent. Explicit CLI paths retain their usual meaning. Plain `project create` registers a folder it finds at that path; `--exclusive` never does: it fails with `already_exists: …` if the folder is there (a file or link counts) or a project has that root or that name (ignoring case), and a failure after it made the folder takes the folder back. The phone's `project.create` always runs it that way. Projects support a single Git repository, a folder containing several repositories, and plain folders. Creation offers **Initialize Git** checked by default when no repository is found. Uncheck it to keep a plain folder. Existing repositories are reused; a wrapper folder is never initialized around them. `project add` only registers a folder. For projects with several repositories, worktree creation requires choosing a repository with `--repo`; a new repository needs an initial commit before Git can create worktrees.
 
 ```sh
 riwork shell create --worktree WORKTREE_ID

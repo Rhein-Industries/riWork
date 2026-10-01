@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-01: Additive project creation: `project.create` (make a new project, named by the phone, in the desktop's default projects folder, as a Git repository unless told otherwise), in the ordered lane and not cut short when the phone's session ends, and the error code `already_exists`; see "Project creation extension" below. The phone never names a path. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method".
 - 2026-10-01: Additive link extension: `server_ms` on every response (the desktop's own time, so the phone can tell the network's share of a round trip), `features` in the first encrypted frame (`ready`), the `link.configure` request, optionally deflated reply frames for a session that opted in (a marker byte inside the ciphertext; the envelope, AAD and fixtures are unchanged), larger limits that go with them (a reply may be up to 2 MiB of JSON if it fits one frame deflated; `shell.history` `lines` up to 5000), and `link.json` vectors; see "Link extension" below. Applies to v1 and v2 sessions. An older phone or desktop sees no difference: nothing is compressed until the phone asks, and only a desktop that announced the feature is asked.
 - 2026-10-01: Additive terminal creation: `shell.create` (start a plain shell, Codex, Claude or Grok in a project or worktree that exists on the desktop) and `shell.close` (end a project terminal), both in the ordered lane and not cut short when the phone's session ends, and the error code `harness_unavailable`; see "Terminal creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method".
 - 2026-10-01: No wire change; how the desktop answers got cheaper. A waiting `shell.output` no longer captures the pane every 80 ms: the CLI is told by tmux when the pane is written to (a control-mode client attached read-only, never sizing a window) and captures then, so a quiet terminal costs no processes and a change reaches the phone within about 10 ms of the CLI instead of up to 80 ms later. The connector asks the CLI whether it checks that a shell exists and is alive itself (`riwork capabilities`), and if so no longer lists sessions first. Results, errors and bytes are the same; see "Waiting" below.
@@ -15,10 +16,11 @@ agreement with the iOS worker.
 - 2026-09-30: Additive `shell.keys` and cursor/size fields on `shell.output`, for typing straight into a shell from the phone; see "Direct typing extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-29: Protocol v2 is specified in [remote-protocol-v2.md](remote-protocol-v2.md). The v1 bytes in this document are unchanged. `pair` still defaults to v1. v2 is opt-in (`--protocol 2`). A v1 device is not rewritten in place; moving a phone to v2 is revoke plus a new pairing.
 
-v1 has no RPC that creates projects, workers, schedules or tasks, and since
-2026-10-01 its only way to change which terminals exist is `shell.create` and
-`shell.close` ("Terminal creation extension" below); everything else works on
-existing sessions. That is an API-level limit only:
+v1 has no RPC that creates workers, schedules or tasks. Since 2026-10-01 it can
+make a project (`project.create`, "Project creation extension" below, only in the
+desktop's default projects folder), and its only way to change which terminals exist
+is `shell.create` and `shell.close` ("Terminal creation extension" below); everything
+else works on existing sessions. That is an API-level limit only:
 `shell.input` reaches every live project shell and orchestrator, including
 unrestricted harness sessions and editor (Vim) tabs, so a paired device can run
 arbitrary commands as the desktop user and can have a harness create anything it
@@ -132,7 +134,7 @@ Relay defaults: <=256 authenticated sockets, <=128 configured routes, outgoing q
 a separate budget of 16; a newcomer beyond it drops the oldest, so idle unauthenticated
 sockets cannot lock out a real registration. Requests of a device are carried out
 concurrently, at most 4 at a time, with typing, resizing, creating and closing in arrival order (see
-"Live terminal extension" and "Terminal creation extension"); terminal input is additionally serialized per selected
+"Live terminal extension", "Terminal creation extension" and "Project creation extension"); terminal input is additionally serialized per selected
 shell across devices and local CLI callers.
 
 ## Encrypted RPC JSON
@@ -163,6 +165,7 @@ unsolicited response except handshake `ready`.
 | `shell.resize.clear` | `{"shell_id":"UUID"}` | `{"shell_id":"UUID","status":"cleared"}` |
 | `shell.create` | `{"worktree_id":"UUID"}` or `{"project_id":"UUID"}`, plus `"kind":"shell\|codex\|claude\|grok"` and optionally `"unrestricted":false`, `"command":"..."` (Terminal creation) | `{"shell_id":"UUID","shell":Session}` |
 | `shell.close` | `{"shell_id":"UUID"}` (Terminal creation) | `{"shell_id":"UUID","status":"closed"}` |
+| `project.create` | `{"name":"My App"}` optionally `"git":false` (Project creation) | `{"project_id":"UUID","project":Project}` |
 
 Project fields: `id,name,root` strings; `created_at` Unix seconds number.
 Worktree: `id,project_id,branch,path` strings; `is_primary` boolean; `created_at`.
@@ -174,7 +177,7 @@ Clients tolerate additive result/entity fields but must reject unknown protocol
 versions. Lists expose existing CLI entities; output/input resolve a full shell
 UUID against existing project shells **and** orchestrators. Dead/missing sessions
 fail clearly. No project default, tmux attachment or free-form CLI RPC, and no
-creation or close except `shell.create` and `shell.close`. `shell.input` intentionally
+creation or close except `shell.create`, `shell.close` and `project.create`. `shell.input` intentionally
 submits terminal input followed by Return and can run commands in the selected
 shell (an unrestricted harness, a Vim tab, a plain shell prompt); clients must show
 the selected shell before sending. CR, LF, NUL and other
@@ -467,8 +470,8 @@ never delays anything else from the same device, above all `shell.keys` and
 - Responses may arrive in any order. Each carries the `id` of its request; match
   them by `id`. A client that has one request outstanding at a time sees no
   difference.
-- `shell.keys`, `shell.input`, `shell.resize`, `shell.resize.clear`, `shell.create`
-  and `shell.close` run one at a time, in the order they arrived. Batch ledgers, the input outcome ledger and the
+- `shell.keys`, `shell.input`, `shell.resize`, `shell.resize.clear`, `shell.create`,
+  `shell.close` and `project.create` run one at a time, in the order they arrived. Batch ledgers, the input outcome ledger and the
   viewport keep their meaning: a `shell.keys` batch is still delivered once per
   device and batch UUID, and resizing is still consistent per connection.
 - At most 4 requests run at once per device: one of those four, and three others
@@ -877,6 +880,117 @@ connector paired with an older `riwork` CLI still works: `shell create --json`,
 `--harness`, `--unrestricted` and `shell close` predate this extension. Only the
 desktop window's live tab for a new terminal needs the new app.
 
+### Project creation extension (v1 and v2, 2026-10-01)
+
+Additive and compatible, like the extensions before it: one new method and one new
+error code. No change to the handshake, envelopes, fixtures or any existing method; it
+applies to protocol v1 and v2 sessions alike. A client that never calls the method is
+unaffected. The iOS side is built against this text.
+
+**`project.create`** makes a new project on the desktop, as `riwork project create
+--name NAME` does, and returns it. Params (an object; unknown fields, nulls and wrong
+types fail `invalid_request` before anything runs):
+
+```json
+{"name":"My App"}
+{"name":"Scratch","git":false}
+```
+
+- `name` (required string) is the project's name **and** the name of its folder. The
+  phone never sends a path: the project is always made in the desktop's default projects
+  folder (`~/Documents/riwork/NAME`), so a paired device cannot choose where on the
+  desktop anything is written. A name is valid when
+  - it is not empty and has no whitespace at either end (the CLI trims, so a name that
+    differs from its trimmed form would not be the folder that was validated; the
+    phone trims what the person typed before it sends);
+  - it is at most 100 characters (Unicode scalar values, not grapheme clusters) and at
+    most 255 UTF-8 bytes (a folder name on the desktop);
+  - it contains no `char::is_control` character (NUL, tab, CR, LF, Escape, DEL, C1
+    controls) and no U+2028 / U+2029;
+  - it contains no `/` and no `\`, and does not start with `.` (so not `.` or `..`, and no
+    hidden name such as `.git`, which the desktop reserves for tools);
+  - it does not start with `-`, so that the CLI cannot read it as an option of its own.
+
+  Everything else is legal as far as validation goes, including spaces, quotes, `;`,
+  `$`, `~` and emoji. The name is text for a folder name and a project label: never
+  interpreted, never part of a shell string.
+- `git` (optional boolean, default `true`): make the new folder a Git repository
+  (`git init`, no commit, Git's own default branch). `false` makes a plain folder. The
+  phone sends `false` only when the person turned it off.
+
+Result: `project_id` is the new project's UUID and `project` is its entry as
+`projects.list` shows it (`id`, `name`, `root`, `created_at`; the same projection, so
+nothing private about the project leaves the desktop):
+
+```json
+{"project_id":"UUID","project":{"id":"UUID","name":"My App","root":"/Users/me/Documents/riwork/My App","created_at":1790000000}}
+```
+
+The connector checks that the CLI made the project that was asked for (a canonical id,
+the name that was sent, an absolute root whose folder has that name) and answers
+`cli_error` if not.
+
+Errors (`error.code`): `invalid_request` for any validation failure above (and
+`unsupported RPC method` from a desktop that predates the method); `already_exists`
+(new) when a project with that name exists (compared ignoring case, wherever that
+project lives) or something is already at the folder's place (a folder, a file, a link,
+or the folder of a registered project). The message is the connector's own and names no
+path: `A project named "X" already exists on the desktop` or `A folder named "X" already
+exists in the desktop's projects folder`. Nothing that was there is read, changed or made
+a project, and no `git init` is run in it (plain `riwork project create`, which people
+type, adopts a folder it finds; the phone's request never does). `not_found` for
+"device revoked"; `cli_error` for everything else (the disk, Git, a permission, a
+start that took longer than 60 seconds), with the CLI's first line as the message, and
+for an installed `riwork` too old to create exclusively (`the installed riwork CLI cannot
+create projects from the phone; update RiWork`).
+
+Security and validation. Creation here is a smaller authority than a paired device has
+already (`shell.input` runs any command as the desktop user), and it is still validated as
+strictly as the other methods:
+
+- Everything is checked before a CLI runs: object shape, unknown fields, types and the
+  name rules above. The failures are `invalid_request`.
+- The CLI is run with its argument vector built from validated values, one argument per
+  value (`project create --name NAME [--no-git] --exclusive --json`). Nothing is
+  concatenated into a shell string; the name is one argument after `--name`, and the
+  rule against a leading `-` keeps it from being read as an option. `--json` is last.
+- `--exclusive` makes the CLI refuse anything that exists instead of registering it. It is
+  sent only to a CLI that says it knows the flag (`riwork capabilities --json` has
+  `"project_create_exclusive":true`; asked before each creation), because an older CLI would read
+  the flag as a PATH and create a folder of that name next to the connector.
+- The folder itself is made with a plain `mkdir` (only its parent, the projects folder,
+  is made as needed), so of two requests for one name exactly one wins; a creation
+  that fails after the folder was made removes the folder (and the `.git` it just made)
+  again, so a retry is not met by what it left behind.
+- The device's authorization is checked when the request starts and again just before
+  the CLI runs, so a device revoked while queued creates nothing.
+
+Scheduling and retries. `project.create` runs in the ordered lane with `shell.keys`,
+`shell.input`, `shell.resize`, `shell.resize.clear`, `shell.create` and `shell.close`: one
+at a time per device, in arrival order, and not dropped half done when the phone's session
+ends. The CLI makes the folder and only then writes the project down, so the connector runs it
+in a task that outlives the request; when the connector ends the connection for any other
+reason (revocation, a relay error) the CLI is not killed, only the answer is lost. (A start
+that takes longer than 60 seconds is stopped, which needs a hung disk or Git.) Typing from the
+same device waits behind it (well under a second for a normal folder). A client's timeout for
+`project.create` should allow about 90 seconds.
+
+Creation is **not idempotent**, but it is safe to ask again: a repeat finds the first and
+answers `already_exists`. A client that loses the answer (a timeout, a lost connection)
+cannot tell whether the project exists, and must not retry by itself; it refreshes
+`projects.list` and lets the person decide (an `already_exists` after an unknown outcome
+usually means the first request worked).
+
+On the desktop. The project is written to the desktop's shared store, as by the CLI or the
+app's own "New project". A running RiWork window re-reads the store every two seconds and lists
+the new project in its Projects panel (when that is showing) on its next refresh, without
+taking focus or switching that window's project. (Under the default "Last edited" sort a project that has no source file
+yet follows those that have a date, as an empty project from the app does.)
+
+An older connector answers `invalid_request` "unsupported RPC method"; a client then hides
+project creation for that connection. A connector paired with an older `riwork` CLI answers
+`cli_error` with the "update RiWork" sentence above, and creates nothing.
+
 ## Fixtures and change log
 
 `remote/fixtures/v1.json` supplies deterministic PSK, UUIDs, nonces, proof MACs,
@@ -970,6 +1084,21 @@ ready response. Values are test-only and must never provision production devices
   desktop app adds a tab for any terminal created while it is open, without taking
   focus. A client that never calls the methods is unaffected, and an older desktop
   answers `invalid_request` "unsupported RPC method". Needs the iOS worker's
+  agreement; the iOS side implements the same text.
+
+- 2026-10-01: additive and backward compatible. Project creation. `project.create`
+  (`name`, optional `git`, default `true`) makes a new project in the desktop's default
+  projects folder and returns its id and `projects.list` entry; the phone never sends a
+  path. The name is one folder name (at most 100 characters and 255 bytes, no control
+  characters, no `/` or `\`, not starting with `.` or `-`, no whitespace at either end).
+  It runs in the ordered lane and is not cut short when the phone's session ends (its CLI also
+  survives the connection being torn down), and creation is not idempotent: a repeat, or a
+  name or folder that already exists, answers the new error code `already_exists`
+  without touching what is there. Parameters are validated before any CLI runs and the CLI is
+  run with an argument vector, never a shell string, and only with the `--exclusive` flag it
+  announces in `riwork capabilities`. A running desktop window lists the project within its
+  two-second refresh. A client that never calls the method is unaffected, and an older
+  desktop answers `invalid_request` "unsupported RPC method". Needs the iOS worker's
   agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),

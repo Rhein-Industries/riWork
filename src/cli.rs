@@ -61,7 +61,7 @@ riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
 riwork cua harness codex|claude|grok -- ARG...   Start a harness with shared Cua
 riwork import orca [--preview]          Import local Orca projects and worktrees once
 riwork project add PATH [--name NAME]   Register a project and its root worktree
-riwork project create [PATH] [--name NAME] [--no-git]   Create a project (Git by default)
+riwork project create [PATH] [--name NAME] [--no-git] [--exclusive]   Create a project (Git by default)
 riwork project inspect PATH            Inspect contained repositories
 riwork project list|show|use [ID]       List, inspect, or switch projects
 riwork project update ID [--name NAME] [--folder ID | --ungrouped]   Edit project display metadata
@@ -149,6 +149,10 @@ scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
 Without PATH, project create requires --name and uses ~/Documents/riwork/NAME.
 Explicit project paths remain relative to the current directory when needed.
+project create --exclusive only ever makes something new: it fails with
+\"already_exists: ...\" if the folder is there already or a project has that root or
+that name (ignoring case), where plain project create registers the folder it finds.
+The remote connector creates the phone's projects this way.
 ";
 
 const SCHEDULE_HELP: &str = "\
@@ -729,12 +733,19 @@ fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
 /// that the shell is a registered, live session before they do anything, and
 /// say `unknown shell ID` or `shell ID has exited` if it is not (`shell keys`
 /// with a `not_found: ` token), so the caller need not list sessions first.
+///
+/// `project_create_exclusive`: `project create` takes `--exclusive` (see `Store::create_new_project`).
+/// A CLI without it would read the flag as a PATH and make a folder of that name in its working
+/// directory, so a caller must see this say yes before it sends the flag.
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
-        return print_json(&json!({"v": 1, "verifies_shell": true}));
+        return print_json(
+            &json!({"v": 1, "verifies_shell": true, "project_create_exclusive": true}),
+        );
     }
     println!("verifies_shell yes");
+    println!("project_create_exclusive yes");
     Ok(())
 }
 
@@ -1035,13 +1046,16 @@ fn project_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         "add" | "create" => {
             let name = take_option(&mut args, "--name")?;
             let no_git = operation == "create" && take_flag(&mut args, "--no-git");
+            let exclusive = operation == "create" && take_flag(&mut args, "--exclusive");
             let path = if operation == "create" && args.is_empty() {
-                let name = name.as_deref().ok_or("Usage: riwork project create PATH [--name NAME] [--no-git], or riwork project create --name NAME [--no-git]")?;
+                let name = name.as_deref().ok_or("Usage: riwork project create PATH [--name NAME] [--no-git] [--exclusive], or riwork project create --name NAME [--no-git] [--exclusive]")?;
                 crate::paths::default_new_project_path(name)?
             } else {
                 PathBuf::from(take_single(args, &format!("project {operation} PATH"))?)
             };
-            let project = if operation == "create" {
+            let project = if exclusive {
+                store.create_new_project(path, name.as_deref(), !no_git)?
+            } else if operation == "create" {
                 store.create_project(path, name.as_deref(), !no_git)?
             } else {
                 store.add_project(path, name.as_deref())?

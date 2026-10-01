@@ -158,7 +158,12 @@ the v2 envelope, its AAD and the fixtures are untouched; the compression note in
 threat discussion of that section applies to v2 as it does to v1. It also includes
 the 2026-10-01 terminal creation extension (`shell.create` and `shell.close`, in the same document). A
 paired device could already start any command by typing it into a shell; creation
-adds no authority, but it is still pairing's "full terminal control".
+adds no authority, but it is still pairing's "full terminal control". The same day's project
+creation extension (`project.create` and the error code `already_exists`, in the same
+document) is included too: it is independent of the crypto version and applies to v2
+sessions exactly as to v1. It makes a folder named by the phone, always in the desktop's default
+projects folder (the phone never sends a path), and never touches a folder or project that
+exists; like terminal creation it adds no authority a paired device lacks.
 
 ## Vectors and tests
 

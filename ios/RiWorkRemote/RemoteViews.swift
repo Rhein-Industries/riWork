@@ -22,8 +22,23 @@ struct RemoteRootView: View {
     @State private var showingDisplay = false
     @State private var renaming: SavedDesktop?
     @State private var removing: SavedDesktop?
+    @State private var newProject: NewProjectSheetModel?
     // A double Back tap during the pop animation would otherwise pop an empty stack and trap.
     private func pop() { if !path.isEmpty { path.removeLast() } }
+    /// The "New project" sheet. A project it creates is selected: its terminal screen opens, and with it the "New terminal" sheet, as
+    /// the list's "New terminal" action does. The person still has to press Create there; Escape leaves the new project empty.
+    private func openNewProject() {
+        guard newProject == nil, model.canOpenNewProject else { return }
+        let sheet = NewProjectSheetModel(model: model)
+        let sheetBinding = $newProject, pathBinding = $path
+        let model = model
+        sheet.dismiss = { sheetBinding.wrappedValue = nil }
+        sheet.onCreated = { project in
+            model.newTerminalRequestedProject = project.id
+            pathBinding.wrappedValue.append(.terminals(project))
+        }
+        newProject = sheet
+    }
     var body: some View {
         NavigationStack(path: $path) {
             VStack(spacing: 0) {
@@ -85,9 +100,18 @@ struct RemoteRootView: View {
                 switch route {
                 case .projects(let desktopID):
                     VStack(spacing: 0) {
-                        WorkspaceBar(title: "PROJECTS", back: pop) { EmptyView() }
+                        WorkspaceBar(title: "PROJECTS", back: pop) {
+                            // A desktop found too old hides it for the connection; none connected dims it.
+                            if model.offersNewProject {
+                                Button("New project", systemImage: "plus") { openNewProject() }.labelStyle(.iconOnly)
+                                    .disabled(!model.canOpenNewProject || newProject != nil)
+                                    .accessibilityHint("Creates a project on your Mac")
+                            }
+                        }
                         ProjectSelectionView(model: model, onSelect: { path.append(.terminals($0)) },
-                                             onNewTerminal: { project in model.newTerminalRequestedProject = project.id; path.append(.terminals(project)) })
+                                             onNewTerminal: { project in model.newTerminalRequestedProject = project.id; path.append(.terminals(project)) },
+                                             onNewProject: model.offersNewProject ? { openNewProject() } : nil,
+                                             shortcutsActive: path.last == .projects(desktopID) && newProject == nil)
                     }.background(style.background).id(desktopID).toolbar(.hidden, for: .navigationBar)
                 case .terminals(let project):
                     TerminalTabsView(model: model, project: project, onBack: pop)
@@ -103,6 +127,7 @@ struct RemoteRootView: View {
             }).desktopThemed(model.theme.style)
         }
         .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
+        .sheet(item: $newProject) { NewProjectSheet(sheet: $0).desktopThemed(model.theme.style) }
         // Renaming belongs to that one desktop, so it wears that desktop's colors even while another one is shown.
         .sheet(item: $renaming) { RenameDesktopSheet(model: model, desktop: $0).desktopThemed(model.theme.style(for: $0.id)) }
         .alert("Remove pairing?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { desktop in
@@ -184,6 +209,10 @@ struct ProjectSelectionView: View {
     var onSelect: (RemoteProject) -> Void
     /// Opens a terminal in that project: its screen comes up with the "New terminal" sheet.
     var onNewTerminal: ((RemoteProject) -> Void)?
+    /// Opens the "New project" sheet; nil when the desktop cannot create projects.
+    var onNewProject: (() -> Void)?
+    /// This list is the screen on top and no sheet is over it: only then is ⌘⇧N live.
+    var shortcutsActive = true
     @State private var search = ""
     var body: some View {
         VStack(spacing: 0) {
@@ -222,12 +251,28 @@ struct ProjectSelectionView: View {
                         }
                 }
                 if model.projects.isEmpty {
-                    Text(model.loading ? "Loading projects…" : "No projects. Open a project on your desktop and refresh.")
+                    Text(model.loading ? "Loading projects…" : "No projects. Open a project on your desktop and refresh\(onNewProject == nil ? "." : ", or create one.")")
                         .foregroundStyle(style.muted).listRowBackground(style.background)
+                    if let onNewProject, !model.loading {
+                        Button("New project", systemImage: "plus", action: onNewProject).buttonStyle(DesktopButtonStyle(prominent: true))
+                            .disabled(!model.canOpenNewProject).listRowBackground(style.background)
+                    }
                 }
             }.listStyle(.plain).scrollContentBackground(.hidden).environment(\.defaultMinListRowHeight, style.pt(44))
                 .refreshable { await model.refresh() }
         }.background(style.background)
+            // ⌘⇧N. ⌘N is "New terminal" on the terminal screen, so this is the same thing for a project. It is registered only while
+            // this list is the screen on top, and nothing on screen here claims it: the terminal's key view (KeyCapture) holds ⌘K and
+            // ⌘, and, while the hotkey menu is open, ⌘N and ⌘. ; a person's hotkey shortcuts and the Clicks template (⌘ and ⌘⇧ with
+            // E T W A S D B F C Z R L, never N) are matched there too, and that view is on the terminal screen, not here.
+            .background {
+                if let onNewProject {
+                    Button("New project", action: onNewProject)
+                        .keyboardShortcut("n", modifiers: [.command, .shift])
+                        .disabled(!shortcutsActive || !model.canOpenNewProject)
+                        .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+                }
+            }
     }
 }
 

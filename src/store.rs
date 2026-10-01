@@ -797,19 +797,98 @@ impl Store {
                         .unwrap_or("repository discovery is incomplete")
                 ));
             }
-            let output = git_command(&inspection.root)
-                .arg("init")
-                .output()
-                .map_err(|error| format!("Cannot launch git: {error}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "git init failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
+            git_init(&inspection.root)?;
             inspection = Self::inspect_project(&inspection.root)?;
         }
         self.register_project(inspection, name)
+    }
+
+    /// Like [`Store::create_project`], but only for a project that does not exist yet.
+    ///
+    /// `create_project` is made for a person at a keyboard: pointed at a folder that is
+    /// already there it registers that folder (and `git init`s it unless it is inside a
+    /// repository), and pointed at a registered root it renames the project. A caller that
+    /// must never touch what is already on disk (the phone's `project.create`, through
+    /// `riwork project create --exclusive`) gets this instead:
+    ///
+    /// - the folder is made with `create_dir`, so of two callers racing for one name exactly
+    ///   one wins, and whatever is at the path (folder, file, symlink) is never entered;
+    /// - no project may have that root, or that name (compared ignoring case, as the project
+    ///   list sorts them), whether the other project lives there or elsewhere;
+    /// - a failure after the folder was made takes the folder away again, so a retry is not
+    ///   met by what this call left behind. Only what this call made goes: `.git` if it ran
+    ///   `git init`, then the folder if it is empty.
+    ///
+    /// Both refusals begin with [`ALREADY_EXISTS`], which the connector reads as a token.
+    pub fn create_new_project(
+        &self,
+        root: impl AsRef<Path>,
+        name: Option<&str>,
+        init_git: bool,
+    ) -> Result<Project, String> {
+        // A project of the name is the more useful thing to say, so it is looked for first.
+        refuse_taken_name(&self.snapshot()?, &project_label(root.as_ref(), name))?;
+        // Whatever is at the path, even a file or a link that leads nowhere, is taken.
+        match fs::symlink_metadata(root.as_ref()) {
+            Ok(_) => {
+                return Err(format!(
+                    "{ALREADY_EXISTS}folder {} already exists",
+                    root.as_ref().display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Cannot inspect {}: {error}",
+                    root.as_ref().display()
+                ));
+            }
+        }
+        let before = Self::inspect_project(root.as_ref())?;
+        refuse_taken_root(&self.snapshot()?, &before.root)?;
+        if let Some(parent) = before.root.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
+        }
+        match fs::create_dir(&before.root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "{ALREADY_EXISTS}folder {} already exists",
+                    before.root.display()
+                ));
+            }
+            Err(error) => {
+                return Err(format!("Cannot create {}: {error}", before.root.display()));
+            }
+        }
+        let mut ran_git_init = false;
+        let created = (|| {
+            let mut inspection = Self::inspect_project(&before.root)?;
+            if init_git && inspection.repository_count == 0 {
+                if !inspection.can_init_git {
+                    return Err(format!(
+                        "Cannot safely initialize Git: {}. Use --no-git to register a plain folder.",
+                        inspection
+                            .warning
+                            .as_deref()
+                            .unwrap_or("repository discovery is incomplete")
+                    ));
+                }
+                ran_git_init = true;
+                git_init(&inspection.root)?;
+                inspection = Self::inspect_project(&inspection.root)?;
+            }
+            self.register_new_project(inspection, name)
+        })();
+        if created.is_err() {
+            // The folder was made a moment ago by this call and holds only what Git put there.
+            if ran_git_init {
+                let _ = fs::remove_dir_all(before.root.join(".git"));
+            }
+            let _ = fs::remove_dir(&before.root);
+        }
+        created
     }
 
     /// Passive registration; unlike create_project, this never initializes Git.
@@ -830,8 +909,27 @@ impl Store {
 
     fn register_project(
         &self,
+        inspection: ProjectInspection,
+        name: Option<&str>,
+    ) -> Result<Project, String> {
+        self.register(inspection, name, false)
+    }
+
+    /// Registers a root that was just made: if a project took its root or name in the
+    /// meantime, that is an error and not a rename.
+    fn register_new_project(
+        &self,
+        inspection: ProjectInspection,
+        name: Option<&str>,
+    ) -> Result<Project, String> {
+        self.register(inspection, name, true)
+    }
+
+    fn register(
+        &self,
         mut inspection: ProjectInspection,
         name: Option<&str>,
+        new_only: bool,
     ) -> Result<Project, String> {
         if !inspection.discovery_complete {
             if let Some(previous) = self
@@ -856,16 +954,14 @@ impl Store {
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .map(str::to_owned);
-        let name = explicit_name
-            .clone()
-            .or_else(|| {
-                root.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
-            .unwrap_or_else(|| "project".to_owned());
+        let name = project_label(&root, name);
         let discovered =
             project_worktrees(&root, &inspection.repository_roots, &mut Scan::fresh())?;
         let project = self.transaction(|state| {
+            if new_only {
+                refuse_taken_name(state, &name)?;
+                refuse_taken_root(state, &root)?;
+            }
             let project = if let Some(project) = state
                 .projects
                 .iter_mut()
@@ -1496,6 +1592,66 @@ fn slug(value: &str) -> String {
 thread_local! {
     /// Git commands built on this thread, so a test can prove a refresh ran none.
     static GIT_COMMANDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The first words of the error that says a new project's root, name or folder is taken. The
+/// remote connector reads them as a token (`already_exists: project …` or `already_exists: folder …`)
+/// and writes its own sentence for the phone.
+pub const ALREADY_EXISTS: &str = "already_exists: ";
+
+/// What a project is called: the name it was given, else its folder's name.
+fn project_label(root: &Path, name: Option<&str>) -> String {
+    name.map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            root.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "project".to_owned())
+}
+
+/// A new project may not take the name of a project (ignoring case)...
+fn refuse_taken_name(state: &State, label: &str) -> Result<(), String> {
+    let lowered = label.to_lowercase();
+    if let Some(project) = state
+        .projects
+        .iter()
+        .find(|project| project.name.to_lowercase() == lowered)
+    {
+        return Err(format!(
+            "{ALREADY_EXISTS}project {} already exists ({})",
+            project.name,
+            project.root.display()
+        ));
+    }
+    Ok(())
+}
+
+/// ...or the root of one, whatever it is called.
+fn refuse_taken_root(state: &State, root: &Path) -> Result<(), String> {
+    if state.projects.iter().any(|project| project.root == root) {
+        return Err(format!(
+            "{ALREADY_EXISTS}folder {} is already a project",
+            root.display()
+        ));
+    }
+    Ok(())
+}
+
+fn git_init(root: &Path) -> Result<(), String> {
+    let output = git_command(root)
+        .arg("init")
+        .output()
+        .map_err(|error| format!("Cannot launch git: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
 }
 
 fn git_command(root: &Path) -> Command {

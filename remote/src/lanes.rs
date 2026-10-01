@@ -6,14 +6,15 @@
 //! shell and its geometry, and they must reach it in the order they were sent.
 //!
 //! - `Ordered`: `shell.keys`, `shell.input`, `shell.resize`,
-//!   `shell.resize.clear`, `shell.create` and `shell.close`. One at a time, in
-//!   arrival order. This is what keeps the batch ledger, the viewport and the
-//!   order of typed text intact. Creating and closing a terminal change what
-//!   exists, and a request that ends half way (a session started but not yet
-//!   written down, or one killed but still listed) is worse than a slow one,
-//!   so a session ending does not cut them short either; typing waits behind
-//!   them. (A creation also keeps its CLI alive when the connection itself is
-//!   torn down: see `Rpc::create`.)
+//!   `shell.resize.clear`, `shell.create`, `shell.close` and `project.create`.
+//!   One at a time, in arrival order. This is what keeps the batch ledger, the
+//!   viewport and the order of typed text intact. Creating and closing a
+//!   terminal, and creating a project, change what exists, and a request that
+//!   ends half way (a session started but not yet written down, one killed but
+//!   still listed, or a project folder made but not registered) is worse than a
+//!   slow one, so a session ending does not cut them short either; typing waits
+//!   behind them. (A creation also keeps its CLI alive when the connection
+//!   itself is torn down: see `Rpc::create` and `Rpc::create_project`.)
 //! - `LongPoll`: a `shell.output` that waits for a change. At most two.
 //! - `Read`: everything else, including a `shell.output` that does not wait and
 //!   `shell.history`, a page of scrollback that never waits. It changes
@@ -64,7 +65,7 @@ pub fn classify(request: &Value) -> Lane {
     match request.get("method").and_then(Value::as_str) {
         Some(
             "shell.keys" | "shell.input" | "shell.resize" | "shell.resize.clear" | "shell.create"
-            | "shell.close",
+            | "shell.close" | "project.create",
         ) => Lane::Ordered,
         Some("shell.output")
             if params
@@ -193,6 +194,51 @@ mod tests {
     }
 
     #[test]
+    fn creating_a_project_is_ordered_and_never_cut_short() {
+        // Whatever the params look like, even none: validation answers it.
+        for params in [
+            json!({"name":"Fresh"}),
+            json!({"name":"Fresh","git":false}),
+            json!({"if_changed":"h","wait_ms":5000}),
+            json!(null),
+        ] {
+            let lane = classify(&request("project.create", params));
+            assert_eq!(lane, Lane::Ordered);
+            assert!(!lane.cancellable());
+        }
+        // Only the exact name: look-alikes are plain reads.
+        for method in [
+            "project.creates",
+            "project",
+            "project.create.",
+            "Project.create",
+            "projects.create",
+            "project.add",
+        ] {
+            assert_eq!(
+                classify(&request(method, json!({}))),
+                Lane::Read,
+                "{method}"
+            );
+        }
+        // Queued behind typing and terminal creation, as one at a time.
+        let mut lanes = Lanes::default();
+        lanes.push(Lane::Ordered, "shell.keys");
+        lanes.push(Lane::Ordered, "project.create");
+        lanes.push(Lane::Ordered, "shell.create");
+        assert_eq!(lanes.next_ready().map(|(_, m)| m), Some("shell.keys"));
+        assert!(
+            lanes.next_ready().is_none(),
+            "one ordered request at a time"
+        );
+        lanes.finished(Lane::Ordered);
+        assert_eq!(lanes.next_ready().map(|(_, m)| m), Some("project.create"));
+        // A phone that goes away does not drop it from the queue.
+        lanes.drop_queued_cancellable();
+        assert_eq!(lanes.queued(), 1);
+    }
+
+    #[test]
     fn requests_are_classified_by_what_they_change_and_how_long_they_last() {
         let ordered = [
             "shell.keys",
@@ -201,6 +247,7 @@ mod tests {
             "shell.resize.clear",
             "shell.create",
             "shell.close",
+            "project.create",
         ];
         for method in ordered {
             assert_eq!(

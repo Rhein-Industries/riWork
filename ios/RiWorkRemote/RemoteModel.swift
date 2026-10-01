@@ -66,6 +66,11 @@ enum ConnectionState: Equatable {
     var closingTerminalID: String?
     /// The project list asks that project's terminal screen to open the "New terminal" sheet once it is up and loaded.
     var newTerminalRequestedProject: String?
+    // MARK: Creating projects (pipeline in RemoteModel+NewProject.swift)
+    /// Whether the desktop understands `project.create`. Learned from the first call, reset by every new connection.
+    var projectCreation: ProjectCreationSupport = .unknown
+    /// A `project.create` is on its way: a second one is refused until it answers.
+    var creatingProject = false
     var terminalFontSize = TerminalFontSize.standard
     // MARK: Scrolling (history paging and the alternate screen: RemoteModel+Scroll.swift)
     /// The lines shown for the selected shell: scrollback and screen, each under an index that does not change while lines are
@@ -442,6 +447,8 @@ enum ConnectionState: Equatable {
         keysSupport = .unknown
         // And for opening terminals.
         terminalControl = .unknown
+        // And for creating projects.
+        projectCreation = .unknown
         // And for waiting on changes: the first screen tells whether this desktop sends a `hash`.
         syncMode = .unknown; outputHash = nil; liveBackoff = LongPollBackoff(); waitSlots.reset(); outputExtensions = true; latency.reset()
         // And for paging history: the first page tells whether this desktop has `shell.history`.
