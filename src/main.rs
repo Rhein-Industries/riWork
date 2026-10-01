@@ -64,9 +64,9 @@ use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
 use icons::Icon;
 use layouts::{
-    Axis, DIVIDER_THICKNESS, Extent, Layout, LayoutStore, MIN_PANE_EXTENT, PaneId, PanelKind,
-    PreviewPlacement, PreviewReveal, PreviewTab, ProjectLayout, SavedPane, SavedTab, TabEdge,
-    WindowSize,
+    Axis, DIVIDER_THICKNESS, Extent, Layout, LayoutStore, MIN_PANE_EXTENT, PaneFacts, PaneId,
+    PanelKind, PreviewPlacement, PreviewReveal, PreviewTab, ProjectLayout, SavedPane, SavedTab,
+    TabEdge, WindowSize,
 };
 use panels::{PanelAction, PanelData};
 use project_creator::{ProjectCreationEvent, ProjectCreator};
@@ -1294,6 +1294,18 @@ impl Workspace {
     }
 
     fn attach_panel(&mut self, pane_id: PaneId, panel: PanelKind, cx: &mut Context<Self>) {
+        self.attach_panel_as(pane_id, panel, true, cx);
+    }
+
+    /// Add a tab for `panel` to the pane. With `select` it becomes the pane's selected tab;
+    /// without, the tab waits in the strip and what the pane shows is left as it is.
+    fn attach_panel_as(
+        &mut self,
+        pane_id: PaneId,
+        panel: PanelKind,
+        select: bool,
+        cx: &mut Context<Self>,
+    ) {
         if panel == PanelKind::Schedules && self.schedule_panel.is_none() {
             let store = self.store.clone();
             let sessions = self.sessions.clone();
@@ -1310,8 +1322,10 @@ impl Workspace {
             self.ensure_file_explorer(cx);
         }
         if let Some(pane) = self.panes.get_mut(&pane_id) {
-            for tab in &pane.tabs {
-                tab.set_visible(false, cx);
+            if select {
+                for tab in &pane.tabs {
+                    tab.set_visible(false, cx);
+                }
             }
             let id = self.next_tab_id;
             self.next_tab_id += 1;
@@ -1321,7 +1335,9 @@ impl Workspace {
                 content: TabContent::Panel(panel),
                 hidden_since: None,
             });
-            pane.active = pane.tabs.len() - 1;
+            if select {
+                pane.active = pane.tabs.len() - 1;
+            }
         }
     }
 
@@ -4013,14 +4029,22 @@ impl Workspace {
             && !self.focus_mode
             && let Some(explorer) = self.explorer_pane()
         {
-            let placement = self
-                .layout
-                .preview_placement(self.pane_area, explorer, &|id| self.pane_is_locked(id));
+            let locked = |id: PaneId| self.pane_is_locked(id);
+            let shows_shell = |id: PaneId| self.pane_shows_shell(id);
+            let placement = self.layout.preview_placement(
+                self.pane_area,
+                explorer,
+                &PaneFacts {
+                    locked: &locked,
+                    shows_shell: &shows_shell,
+                },
+            );
             if let Some(placed) = placement.and_then(|placement| self.place_preview(placement, cx))
             {
                 pane_id = placed;
             }
         }
+        // Asked for by name, it comes forward and takes the keys wherever it was put.
         self.open_panel(PanelKind::Preview, pane_id, window, cx);
     }
 
@@ -4037,13 +4061,22 @@ impl Workspace {
         }
         let existing = self
             .panel_tab(PanelKind::Preview)
-            .map(|(pane, _, shown)| PreviewTab { pane, shown });
+            .map(|(pane, _, shown)| PreviewTab {
+                pane,
+                shown,
+                behind_shell: self.pane_shows_shell(pane),
+            });
+        let locked = |id: PaneId| self.pane_is_locked(id);
+        let shows_shell = |id: PaneId| self.pane_shows_shell(id);
         let reveal = self.layout.plan_preview_reveal(
             cx.global::<Settings>().open_preview_on_select,
             existing,
             self.pane_area,
             explorer,
-            &|id| self.pane_is_locked(id),
+            &PaneFacts {
+                locked: &locked,
+                shows_shell: &shows_shell,
+            },
         );
         match reveal {
             PreviewReveal::Leave => {}
@@ -4054,15 +4087,29 @@ impl Workspace {
         }
     }
 
-    /// Add the Preview tab as `placement` says. It becomes its pane's selected tab, and
-    /// nothing else changes: the active pane and the keys stay put.
+    /// Whether the pane's selected tab is a terminal: a shell, an agent or an editor.
+    fn pane_shows_shell(&self, pane_id: PaneId) -> bool {
+        self.panes
+            .get(&pane_id)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .is_some_and(|tab| tab.shell_id().is_some())
+    }
+
+    /// Add the Preview tab as `placement` says. In a new pane or where the placement says to
+    /// select it, it becomes its pane's selected tab; otherwise it waits in the tab strip and
+    /// the pane keeps showing what it showed. Nothing else changes: the active pane and the
+    /// keys stay put.
     fn place_preview(
         &mut self,
         placement: PreviewPlacement,
         cx: &mut Context<Self>,
     ) -> Option<PaneId> {
+        let mut select = true;
         let pane_id = match placement {
-            PreviewPlacement::Tab(pane_id) => pane_id,
+            PreviewPlacement::Tab { pane, activate } => {
+                select = activate;
+                pane
+            }
             PreviewPlacement::Split {
                 target,
                 axis,
@@ -4089,7 +4136,7 @@ impl Workspace {
         if !self.panes.contains_key(&pane_id) {
             return None;
         }
-        self.attach_panel(pane_id, PanelKind::Preview, cx);
+        self.attach_panel_as(pane_id, PanelKind::Preview, select, cx);
         self.save_layout();
         cx.notify();
         Some(pane_id)

@@ -473,19 +473,24 @@ pub const PREVIEW_SIDE_BY_SIDE_RATIO: f32 = 0.36;
 /// split keeps a list of six or seven rows and a readable preview.
 pub const PREVIEW_STACKED_MIN_HEIGHT: f32 = 700.0;
 pub const PREVIEW_STACKED_RATIO: f32 = 0.5;
+/// A pane that is split to make room for the preview, rather than the explorer's own, keeps
+/// this share of it: the work in it stays the larger half, and the preview still gets 40%,
+/// at least 245 px of the narrowest side-by-side split and 275 px of the shortest stacked one.
+pub const PREVIEW_BESIDE_OTHER_RATIO: f32 = 0.6;
 
 /// Where a Preview tab goes when the window has none.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PreviewPlacement {
-    /// A new pane split off `target`, holding the Preview tab. The explorer's pane keeps the
-    /// first child's `ratio` of the split.
+    /// A new pane split off `target`, holding the Preview tab. `target` keeps the first
+    /// child's `ratio` of the split and its selected tab stays on screen.
     Split {
         target: PaneId,
         axis: Axis,
         ratio: f32,
     },
-    /// A tab in an existing pane that no one has locked.
-    Tab(PaneId),
+    /// A tab in an existing pane. It is made the pane's selected tab only when that hides
+    /// no terminal and no locked pane's selection; otherwise it waits in the tab strip.
+    Tab { pane: PaneId, activate: bool },
 }
 
 /// The window's Preview tab, if it has one.
@@ -494,6 +499,15 @@ pub struct PreviewTab {
     pub pane: PaneId,
     /// Whether it is the selected tab of its pane, so it is on screen.
     pub shown: bool,
+    /// Whether the selected tab of its pane is a terminal, which the user is looking at.
+    pub behind_shell: bool,
+}
+
+/// What the placement rules need to know about the panes besides their size.
+pub struct PaneFacts<'a> {
+    pub locked: &'a dyn Fn(PaneId) -> bool,
+    /// Whether the pane's selected tab is a terminal (a shell, an agent or an editor).
+    pub shows_shell: &'a dyn Fn(PaneId) -> bool,
 }
 
 /// What selecting a file does to the layout.
@@ -503,6 +517,18 @@ pub enum PreviewReveal {
     /// Bring the Preview tab of this pane forward.
     Activate(PaneId),
     Open(PreviewPlacement),
+}
+
+/// How a pane of `extent` can be split for the preview: side by side when it is wide enough,
+/// otherwise top and bottom when it is tall enough.
+fn preview_axis(extent: Extent) -> Option<Axis> {
+    if extent.width >= PREVIEW_SIDE_BY_SIDE_MIN_WIDTH {
+        Some(Axis::SideBySide)
+    } else if extent.height >= PREVIEW_STACKED_MIN_HEIGHT {
+        Some(Axis::Stacked)
+    } else {
+        None
+    }
 }
 
 impl Layout {
@@ -537,75 +563,138 @@ impl Layout {
     }
 
     /// Where a new Preview tab goes for the explorer in pane `explorer`, in `area` pixels.
+    /// The preview gets a pane of its own whenever one can be made without resizing a locked
+    /// pane or hiding what the user is looking at:
     ///
-    /// Beside the explorer if its pane is wide enough, below it if that is tall enough, so
-    /// both halves keep a usable size. Splitting shrinks the pane being split, so a locked
-    /// explorer pane is never split, and neither is one that is too small for either axis.
-    /// The preview then becomes a tab of the roomiest other pane that is not locked. With no
-    /// such pane there is nowhere to put it without resizing a locked pane, and `None` leaves
-    /// the layout as it is.
+    /// 1. Beside the explorer, if its pane is not locked and is wide enough, or below it if
+    ///    that is tall enough. The explorer keeps the smaller share.
+    /// 2. Otherwise beside or below the roomiest other pane that is not locked and can be
+    ///    split the same way. That pane keeps the larger share and its selected tab, so a
+    ///    terminal in it stays on screen.
+    ///
+    /// Splitting shrinks the pane being split, so a locked pane is never split. When no pane
+    /// can be, the preview is added as a tab, which resizes nothing. Its best home is the
+    /// roomiest unlocked pane that is not showing a terminal, where it is shown. Failing
+    /// that it waits, unselected, in an unlocked pane showing a terminal, then in a locked
+    /// pane, then in the explorer's own pane, which keeps the tree on screen. Bringing it
+    /// forward is then the user's choice.
     pub fn preview_placement(
         &self,
         area: Option<Extent>,
         explorer: PaneId,
-        locked: &dyn Fn(PaneId) -> bool,
+        facts: &PaneFacts,
     ) -> Option<PreviewPlacement> {
         let extents = area.map(|area| self.pane_extents(area));
-        if !locked(explorer)
-            && let Some(extent) = extents.as_ref().and_then(|extents| extents.get(&explorer))
-        {
-            if extent.width >= PREVIEW_SIDE_BY_SIDE_MIN_WIDTH {
-                return Some(PreviewPlacement::Split {
-                    target: explorer,
-                    axis: Axis::SideBySide,
-                    ratio: PREVIEW_SIDE_BY_SIDE_RATIO,
-                });
-            }
-            if extent.height >= PREVIEW_STACKED_MIN_HEIGHT {
-                return Some(PreviewPlacement::Split {
-                    target: explorer,
-                    axis: Axis::Stacked,
-                    ratio: PREVIEW_STACKED_RATIO,
-                });
-            }
-        }
-        // Without sizes every pane counts the same, so the first one in layout order wins.
-        let room = |id: PaneId| {
+        let extent_of = |id: PaneId| {
             extents
                 .as_ref()
                 .and_then(|extents| extents.get(&id))
-                .map_or(0.0, |extent| extent.width * extent.height)
+                .copied()
         };
-        let mut roomiest: Option<(PaneId, f32)> = None;
-        for id in self.pane_ids() {
-            if id != explorer && !locked(id) && roomiest.is_none_or(|(_, best)| room(id) > best) {
-                roomiest = Some((id, room(id)));
+        // Without sizes every pane counts the same, so the first one in layout order wins.
+        let room = |id: PaneId| extent_of(id).map_or(0.0, |extent| extent.width * extent.height);
+        let roomiest = |ids: &[PaneId]| {
+            let mut best: Option<(PaneId, f32)> = None;
+            for id in ids {
+                if best.is_none_or(|(_, most)| room(*id) > most) {
+                    best = Some((*id, room(*id)));
+                }
             }
+            best.map(|(id, _)| id)
+        };
+
+        if !(facts.locked)(explorer)
+            && let Some(axis) = extent_of(explorer).and_then(preview_axis)
+        {
+            let ratio = match axis {
+                Axis::SideBySide => PREVIEW_SIDE_BY_SIDE_RATIO,
+                Axis::Stacked => PREVIEW_STACKED_RATIO,
+            };
+            return Some(PreviewPlacement::Split {
+                target: explorer,
+                axis,
+                ratio,
+            });
         }
-        roomiest.map(|(id, _)| PreviewPlacement::Tab(id))
+
+        let others: Vec<PaneId> = self
+            .pane_ids()
+            .into_iter()
+            .filter(|id| *id != explorer)
+            .collect();
+        let splittable: Vec<PaneId> = others
+            .iter()
+            .copied()
+            .filter(|id| !(facts.locked)(*id) && extent_of(*id).and_then(preview_axis).is_some())
+            .collect();
+        if let Some(target) = roomiest(&splittable)
+            && let Some(axis) = extent_of(target).and_then(preview_axis)
+        {
+            return Some(PreviewPlacement::Split {
+                target,
+                axis,
+                ratio: PREVIEW_BESIDE_OTHER_RATIO,
+            });
+        }
+
+        let unlocked: Vec<PaneId> = others
+            .iter()
+            .copied()
+            .filter(|id| !(facts.locked)(*id))
+            .collect();
+        let clear: Vec<PaneId> = unlocked
+            .iter()
+            .copied()
+            .filter(|id| !(facts.shows_shell)(*id))
+            .collect();
+        if let Some(pane) = roomiest(&clear) {
+            return Some(PreviewPlacement::Tab {
+                pane,
+                activate: true,
+            });
+        }
+        let waiting = if unlocked.is_empty() {
+            let locked: Vec<PaneId> = others
+                .iter()
+                .copied()
+                .filter(|id| (facts.locked)(*id))
+                .collect();
+            roomiest(&locked)
+        } else {
+            roomiest(&unlocked)
+        };
+        waiting
+            .or_else(|| self.pane_ids().contains(&explorer).then_some(explorer))
+            .map(|pane| PreviewPlacement::Tab {
+                pane,
+                activate: false,
+            })
     }
 
     /// What selecting a file in the explorer in pane `explorer` does about the preview.
     ///
     /// With the preference off nothing happens, so a closed preview stays closed. An
-    /// existing Preview tab is only brought forward, and never over the explorer's own
-    /// tab: that would hide the tree being navigated.
+    /// existing Preview tab is only brought forward, and never over the explorer's own tab,
+    /// which would hide the tree being navigated, or over a terminal, which the user chose
+    /// to look at there. The explicit Cmd+Shift+P is how it comes forward in those cases.
     pub fn plan_preview_reveal(
         &self,
         enabled: bool,
         existing: Option<PreviewTab>,
         area: Option<Extent>,
         explorer: PaneId,
-        locked: &dyn Fn(PaneId) -> bool,
+        facts: &PaneFacts,
     ) -> PreviewReveal {
         if !enabled {
             return PreviewReveal::Leave;
         }
         match existing {
-            Some(tab) if tab.shown || tab.pane == explorer => PreviewReveal::Leave,
+            Some(tab) if tab.shown || tab.behind_shell || tab.pane == explorer => {
+                PreviewReveal::Leave
+            }
             Some(tab) => PreviewReveal::Activate(tab.pane),
             None => self
-                .preview_placement(area, explorer, locked)
+                .preview_placement(area, explorer, facts)
                 .map_or(PreviewReveal::Leave, PreviewReveal::Open),
         }
     }
@@ -3115,8 +3204,67 @@ mod preview_placement_tests {
         Extent { width, height }
     }
 
-    fn nothing_locked(_: PaneId) -> bool {
-        false
+    /// What the placement rules are told about a window's panes.
+    struct Panes {
+        locked: Vec<PaneId>,
+        shells: Vec<PaneId>,
+    }
+
+    impl Panes {
+        fn new(locked: &[PaneId], shells: &[PaneId]) -> Self {
+            Self {
+                locked: locked.to_vec(),
+                shells: shells.to_vec(),
+            }
+        }
+
+        fn place(
+            &self,
+            layout: &Layout,
+            area: Option<Extent>,
+            explorer: PaneId,
+        ) -> Option<PreviewPlacement> {
+            let locked = |id: PaneId| self.locked.contains(&id);
+            let shows_shell = |id: PaneId| self.shells.contains(&id);
+            layout.preview_placement(
+                area,
+                explorer,
+                &PaneFacts {
+                    locked: &locked,
+                    shows_shell: &shows_shell,
+                },
+            )
+        }
+
+        fn reveal(
+            &self,
+            layout: &Layout,
+            enabled: bool,
+            existing: Option<PreviewTab>,
+            area: Option<Extent>,
+            explorer: PaneId,
+        ) -> PreviewReveal {
+            let locked = |id: PaneId| self.locked.contains(&id);
+            let shows_shell = |id: PaneId| self.shells.contains(&id);
+            layout.plan_preview_reveal(
+                enabled,
+                existing,
+                area,
+                explorer,
+                &PaneFacts {
+                    locked: &locked,
+                    shows_shell: &shows_shell,
+                },
+            )
+        }
+    }
+
+    fn open_tab() -> PreviewTab {
+        PreviewTab {
+            pane: 2,
+            shown: false,
+            behind_shell: false,
+        }
     }
 
     /// A left navigation pane (1) and the pane to its right (2), as a fresh window has them.
@@ -3137,31 +3285,45 @@ mod preview_placement_tests {
         }
     }
 
+    fn tab(pane: PaneId, activate: bool) -> Option<PreviewPlacement> {
+        Some(PreviewPlacement::Tab { pane, activate })
+    }
+
+    /// Apply a split the way the workspace does and return the pane sizes before and after.
+    fn applied(
+        layout: &Layout,
+        size: Extent,
+        placement: Option<PreviewPlacement>,
+    ) -> (BTreeMap<PaneId, Extent>, BTreeMap<PaneId, Extent>) {
+        let (target, axis, ratio) = split_for(placement);
+        let mut after = layout.clone();
+        assert!(after.split_with_ratio(target, axis, 99, false, ratio));
+        (layout.pane_extents(size), after.pane_extents(size))
+    }
+
     #[test]
     fn a_wide_unlocked_explorer_gets_the_preview_beside_it() {
         // Only the right pane is unlocked, and it is 1,000 px wide.
         let layout = navigation_and_main();
         let size = area(1005.0 + 5.0 + 380.0, 900.0);
-        let locked = |id: PaneId| id == 1;
-        let (target, axis, ratio) = split_for(layout.preview_placement(Some(size), 2, &locked));
+        let panes = Panes::new(&[1], &[2]);
+        let placement = panes.place(&layout, Some(size), 2);
+        let (target, axis, ratio) = split_for(placement);
         assert_eq!((target, axis), (2, Axis::SideBySide));
         assert_eq!(ratio, PREVIEW_SIDE_BY_SIDE_RATIO);
 
         // Applying it with the existing split logic leaves every other pane's size alone and
         // gives both halves of the explorer's old pane room.
-        let before = layout.pane_extents(size);
-        let mut after = layout.clone();
-        assert!(after.split_with_ratio(target, axis, 3, false, ratio));
-        let extents = after.pane_extents(size);
-        assert_eq!(extents[&1], before[&1]);
-        assert_eq!(extents[&2].height, before[&2].height);
+        let (before, after) = applied(&layout, size, placement);
+        assert_eq!(after[&1], before[&1]);
+        assert_eq!(after[&2].height, before[&2].height);
         assert!(
-            (extents[&2].width + extents[&3].width + DIVIDER_THICKNESS - before[&2].width).abs()
+            (after[&2].width + after[&99].width + DIVIDER_THICKNESS - before[&2].width).abs()
                 < 0.01
         );
-        assert!(extents[&2].width >= MIN_PANE_EXTENT && extents[&3].width >= MIN_PANE_EXTENT);
+        assert!(after[&2].width >= MIN_PANE_EXTENT && after[&99].width >= MIN_PANE_EXTENT);
         assert!(
-            extents[&3].width > extents[&2].width,
+            after[&99].width > after[&2].width,
             "the preview gets the larger share"
         );
     }
@@ -3169,29 +3331,33 @@ mod preview_placement_tests {
     #[test]
     fn the_width_threshold_is_where_the_old_in_panel_split_went_side_by_side() {
         let layout = Layout::Pane(1);
-        let beside = |width| layout.preview_placement(Some(area(width, 400.0)), 1, &nothing_locked);
+        let panes = Panes::new(&[], &[]);
+        let beside = |width| panes.place(&layout, Some(area(width, 400.0)), 1);
         assert_eq!(
             split_for(beside(PREVIEW_SIDE_BY_SIDE_MIN_WIDTH)).1,
             Axis::SideBySide
         );
-        // 400 px tall is too short to stack, so one pixel narrower has nowhere to go.
-        assert_eq!(beside(PREVIEW_SIDE_BY_SIDE_MIN_WIDTH - 1.0), None);
+        // 400 px tall is too short to stack, so one pixel narrower has nowhere to go but a
+        // tab waiting in the explorer's own pane.
+        assert_eq!(beside(PREVIEW_SIDE_BY_SIDE_MIN_WIDTH - 1.0), tab(1, false));
         // Each half of the narrowest split is still comfortably above the drag limit.
         let narrowest = PREVIEW_SIDE_BY_SIDE_MIN_WIDTH - DIVIDER_THICKNESS;
         assert!(narrowest * PREVIEW_SIDE_BY_SIDE_RATIO >= MIN_PANE_EXTENT);
         assert!(narrowest * (1.0 - PREVIEW_SIDE_BY_SIDE_RATIO) >= MIN_PANE_EXTENT);
+        assert!(narrowest * (1.0 - PREVIEW_BESIDE_OTHER_RATIO) >= MIN_PANE_EXTENT);
     }
 
     #[test]
     fn a_narrow_but_tall_explorer_gets_the_preview_below_it() {
         let layout = Layout::Pane(1);
-        let (target, axis, ratio) = split_for(layout.preview_placement(
+        let panes = Panes::new(&[], &[]);
+        let (target, axis, ratio) = split_for(panes.place(
+            &layout,
             Some(area(
                 PREVIEW_SIDE_BY_SIDE_MIN_WIDTH - 1.0,
                 PREVIEW_STACKED_MIN_HEIGHT,
             )),
             1,
-            &nothing_locked,
         ));
         assert_eq!(
             (target, axis, ratio),
@@ -3201,52 +3367,86 @@ mod preview_placement_tests {
             PREVIEW_SIDE_BY_SIDE_MIN_WIDTH - 1.0,
             PREVIEW_STACKED_MIN_HEIGHT - 1.0,
         );
-        assert_eq!(
-            layout.preview_placement(Some(narrow_short), 1, &nothing_locked),
-            None
-        );
+        assert_eq!(panes.place(&layout, Some(narrow_short), 1), tab(1, false));
 
         // The new pane is the second child, so it lands under the explorer.
-        let mut after = layout.clone();
-        assert!(after.split_with_ratio(1, Axis::Stacked, 2, false, ratio));
-        let extents = after.pane_extents(area(500.0, PREVIEW_STACKED_MIN_HEIGHT));
-        assert_eq!(extents[&1].width, 500.0);
-        assert_eq!(extents[&2].width, 500.0);
+        let size = area(500.0, PREVIEW_STACKED_MIN_HEIGHT);
+        let (_, after) = applied(
+            &layout,
+            size,
+            panes.place(&layout, Some(area(500.0, PREVIEW_STACKED_MIN_HEIGHT)), 1),
+        );
+        assert_eq!(after[&1].width, 500.0);
+        assert_eq!(after[&99].width, 500.0);
         // Room for the explorer's own chrome and a list of rows above the preview.
-        assert!(extents[&1].height >= 330.0 && extents[&2].height >= 330.0);
+        assert!(after[&1].height >= 330.0 && after[&99].height >= 330.0);
     }
 
     #[test]
     fn side_by_side_wins_when_both_would_fit() {
         let layout = Layout::Pane(1);
-        let placement = layout.preview_placement(Some(area(1400.0, 900.0)), 1, &nothing_locked);
+        let panes = Panes::new(&[], &[]);
+        let placement = panes.place(&layout, Some(area(1400.0, 900.0)), 1);
         assert_eq!(split_for(placement).1, Axis::SideBySide);
     }
 
     #[test]
-    fn a_locked_explorer_pane_is_never_split_so_the_preview_joins_an_unlocked_pane() {
-        // The default window: Files in the locked navigation pane, shells to its right.
+    fn a_locked_nav_pane_next_to_a_wide_shell_pane_splits_the_shell_pane_to_the_right() {
+        // The default window: Files in the locked navigation pane, a shell to its right.
         let layout = navigation_and_main();
         let size = area(1600.0, 900.0);
-        let locked = |id: PaneId| id == 1;
-        assert_eq!(
-            layout.preview_placement(Some(size), 1, &locked),
-            Some(PreviewPlacement::Tab(2))
-        );
-        // The same without sizes, as before the first frame.
-        assert_eq!(
-            layout.preview_placement(None, 1, &locked),
-            Some(PreviewPlacement::Tab(2))
-        );
-        // Unlocked, the explorer's pane is split instead, here below it because it is narrow.
-        assert_eq!(
-            split_for(layout.preview_placement(Some(size), 1, &nothing_locked)).0,
-            1
+        let panes = Panes::new(&[1], &[2]);
+        let placement = panes.place(&layout, Some(size), 1);
+        let (target, axis, ratio) = split_for(placement);
+        assert_eq!((target, axis), (2, Axis::SideBySide));
+        assert_eq!(ratio, PREVIEW_BESIDE_OTHER_RATIO);
+        assert!(ratio > 0.5, "the shell keeps the larger share");
+
+        // The locked pane keeps its exact size, the shell pane stays the larger half and
+        // keeps its tab on screen (a split never touches a pane's tabs), and the preview
+        // pane is usable.
+        let (before, after) = applied(&layout, size, placement);
+        assert_eq!(after[&1], before[&1]);
+        assert!(after[&2].width > after[&99].width);
+        assert!(after[&99].width >= 245.0 && after[&2].width >= MIN_PANE_EXTENT);
+        assert_eq!(after[&2].height, before[&2].height);
+        assert!(
+            (after[&2].width + after[&99].width + DIVIDER_THICKNESS - before[&2].width).abs()
+                < 0.01
         );
     }
 
     #[test]
-    fn the_roomiest_unlocked_pane_receives_the_tab_and_the_explorers_own_pane_never_does() {
+    fn a_tall_narrow_shell_pane_is_split_below() {
+        // 800 px wide: the shell pane is about 580 px, too narrow to split side by side.
+        let layout = navigation_and_main();
+        let size = area(800.0, 900.0);
+        assert!(layout.pane_extents(size)[&2].width < PREVIEW_SIDE_BY_SIDE_MIN_WIDTH);
+        let panes = Panes::new(&[1], &[2]);
+        let placement = panes.place(&layout, Some(size), 1);
+        let (target, axis, ratio) = split_for(placement);
+        assert_eq!(
+            (target, axis, ratio),
+            (2, Axis::Stacked, PREVIEW_BESIDE_OTHER_RATIO)
+        );
+
+        let (before, after) = applied(&layout, size, placement);
+        assert_eq!(after[&1], before[&1]);
+        assert_eq!(after[&2].width, before[&2].width);
+        assert_eq!(after[&99].width, before[&2].width);
+        assert!(after[&2].height > after[&99].height);
+        assert!(after[&99].height >= 275.0);
+
+        // One pixel too short for that, and the shell pane is not split.
+        let short = area(800.0, PREVIEW_STACKED_MIN_HEIGHT - 1.0);
+        assert!(!matches!(
+            panes.place(&layout, Some(short), 1),
+            Some(PreviewPlacement::Split { .. })
+        ));
+    }
+
+    #[test]
+    fn the_roomiest_pane_that_can_be_split_is_the_one_split_and_locked_ones_never_are() {
         // Navigation (1, locked) | a small column (2) over a large pane (3) | explorer pane (4, locked)
         let mut layout = Layout::Pane(1);
         assert!(layout.split_with_ratio(1, Axis::SideBySide, 4, false, 0.2));
@@ -3255,71 +3455,135 @@ mod preview_placement_tests {
         let size = area(2000.0, 1000.0);
         let extents = layout.pane_extents(size);
         assert!(extents[&3].width * extents[&3].height > extents[&2].width * extents[&2].height);
-        let locked = |id: PaneId| id == 1 || id == 4;
-        assert_eq!(
-            layout.preview_placement(Some(size), 4, &locked),
-            Some(PreviewPlacement::Tab(3))
-        );
-        // An explorer pane that is too small to split falls back to a tab elsewhere, and it
-        // is not a candidate itself: that would hide the tree being navigated.
-        let unlocked_explorer = |id: PaneId| id == 1;
+        let panes = Panes::new(&[1, 4], &[2, 3]);
+        assert_eq!(split_for(panes.place(&layout, Some(size), 4)).0, 3);
+        // A larger pane that is locked is passed over.
+        let panes = Panes::new(&[1, 3, 4], &[2, 3]);
+        assert_eq!(split_for(panes.place(&layout, Some(size), 4)).0, 2);
+        // An explorer pane that is unlocked but too small to split yields to another pane,
+        // and is not a candidate itself.
         let small = area(1000.0, 400.0);
         let extents = layout.pane_extents(small);
         assert!(extents[&2].width < PREVIEW_SIDE_BY_SIDE_MIN_WIDTH);
-        let placement = layout.preview_placement(Some(small), 2, &unlocked_explorer);
-        assert_ne!(placement, Some(PreviewPlacement::Tab(2)));
-        assert!(matches!(placement, Some(PreviewPlacement::Tab(_))));
+        let panes = Panes::new(&[1], &[3, 4]);
+        let placement = panes.place(&layout, Some(small), 2);
+        assert!(!matches!(
+            placement,
+            Some(PreviewPlacement::Split { target: 2, .. })
+        ));
     }
 
     #[test]
-    fn with_no_unlocked_room_the_layout_is_left_alone() {
+    fn when_nothing_can_be_split_the_preview_is_a_tab_that_never_hides_a_terminal() {
         let layout = navigation_and_main();
-        let size = area(1600.0, 900.0);
-        // Both panes locked.
-        assert_eq!(layout.preview_placement(Some(size), 1, &|_| true), None);
-        // The explorer is the only pane and cannot be split.
-        let alone = Layout::Pane(1);
+        let small = Some(area(700.0, 500.0));
+        // The shell pane is too small to split: the tab waits, unselected, so the terminal
+        // stays on screen.
+        let panes = Panes::new(&[1], &[2]);
+        assert_eq!(panes.place(&layout, small, 1), tab(2, false));
+        // The same without sizes, as before the first frame.
+        assert_eq!(panes.place(&layout, None, 1), tab(2, false));
+        // If that pane is showing something other than a terminal, the tab is shown there.
+        let panes = Panes::new(&[1], &[]);
+        assert_eq!(panes.place(&layout, small, 1), tab(2, true));
+
+        // Everything locked: still a tab, never selected, and never in front of a terminal
+        // or over the tree.
+        let panes = Panes::new(&[1, 2], &[2]);
         assert_eq!(
-            alone.preview_placement(Some(area(500.0, 300.0)), 1, &nothing_locked),
-            None
+            panes.place(&layout, Some(area(1600.0, 900.0)), 1),
+            tab(2, false)
         );
+        let panes = Panes::new(&[1, 2], &[]);
         assert_eq!(
-            alone.preview_placement(Some(area(1600.0, 900.0)), 1, &|_| true),
-            None
+            panes.place(&layout, Some(area(1600.0, 900.0)), 1),
+            tab(2, false)
         );
     }
 
     #[test]
-    fn selecting_a_file_reuses_the_preview_tab_and_brings_it_forward_without_hiding_the_tree() {
+    fn the_tab_prefers_an_unlocked_pane_without_a_terminal_and_then_the_roomier_one() {
+        // Three unlocked panes in a row after the locked navigation pane: 2, 3 and 4.
+        let mut layout = navigation_and_main();
+        assert!(layout.split_with_ratio(2, Axis::SideBySide, 3, false, 0.5));
+        assert!(layout.split_with_ratio(3, Axis::SideBySide, 4, false, 0.5));
+        let small_area = area(1200.0, 400.0);
+        let small = Some(small_area);
+        let extents = layout.pane_extents(small_area);
+        assert!(
+            extents
+                .values()
+                .all(|extent| extent.width < PREVIEW_SIDE_BY_SIDE_MIN_WIDTH)
+        );
+        // Terminals in 2 and 3; 4 shows a panel and is the only one the tab can be selected in.
+        let panes = Panes::new(&[1], &[2, 3]);
+        assert_eq!(panes.place(&layout, small, 1), tab(4, true));
+        // With terminals in all three, it waits in the roomiest of them.
+        let panes = Panes::new(&[1], &[2, 3, 4]);
+        let roomiest = [2, 3, 4]
+            .into_iter()
+            .max_by(|a, b| {
+                let room = |id: &PaneId| extents[id].width * extents[id].height;
+                room(a).partial_cmp(&room(b)).unwrap().then(b.cmp(a))
+            })
+            .unwrap();
+        assert_eq!(panes.place(&layout, small, 1), tab(roomiest, false));
+        // A locked pane only takes it when no unlocked pane could.
+        let panes = Panes::new(&[1, 2, 3], &[2, 3, 4]);
+        assert_eq!(panes.place(&layout, small, 1), tab(4, false));
+    }
+
+    #[test]
+    fn a_lone_explorer_pane_that_cannot_be_split_keeps_the_tab_waiting_beside_the_tree() {
+        let alone = Layout::Pane(1);
+        let panes = Panes::new(&[], &[]);
+        assert_eq!(
+            panes.place(&alone, Some(area(500.0, 300.0)), 1),
+            tab(1, false)
+        );
+        let locked = Panes::new(&[1], &[]);
+        assert_eq!(
+            locked.place(&alone, Some(area(1600.0, 900.0)), 1),
+            tab(1, false)
+        );
+    }
+
+    #[test]
+    fn selecting_a_file_reuses_the_preview_tab_and_brings_it_forward_without_hiding_what_matters() {
         let layout = navigation_and_main();
         let size = Some(area(1600.0, 900.0));
-        let locked = |id: PaneId| id == 1;
-        let reveal =
-            |enabled, existing| layout.plan_preview_reveal(enabled, existing, size, 1, &locked);
+        let panes = Panes::new(&[1], &[2]);
+        let reveal = |enabled, existing| panes.reveal(&layout, enabled, existing, size, 1);
 
         // No tab yet: open one where the placement rules say.
         assert_eq!(
             reveal(true, None),
-            PreviewReveal::Open(PreviewPlacement::Tab(2))
+            PreviewReveal::Open(PreviewPlacement::Split {
+                target: 2,
+                axis: Axis::SideBySide,
+                ratio: PREVIEW_BESIDE_OTHER_RATIO,
+            })
         );
-        // A tab hidden behind another becomes that pane's selected tab; nothing else opens.
-        assert_eq!(
-            reveal(
-                true,
-                Some(PreviewTab {
-                    pane: 2,
-                    shown: false
-                })
-            ),
-            PreviewReveal::Activate(2)
-        );
+        // A tab hidden behind another non-terminal tab becomes that pane's selected tab.
+        assert_eq!(reveal(true, Some(open_tab())), PreviewReveal::Activate(2));
         // One that is already showing is left alone.
         assert_eq!(
             reveal(
                 true,
                 Some(PreviewTab {
-                    pane: 2,
-                    shown: true
+                    shown: true,
+                    ..open_tab()
+                })
+            ),
+            PreviewReveal::Leave
+        );
+        // One hidden behind a terminal stays hidden: the user chose to look at the shell.
+        assert_eq!(
+            reveal(
+                true,
+                Some(PreviewTab {
+                    behind_shell: true,
+                    ..open_tab()
                 })
             ),
             PreviewReveal::Leave
@@ -3331,24 +3595,15 @@ mod preview_placement_tests {
                 true,
                 Some(PreviewTab {
                     pane: 1,
-                    shown: false
+                    ..open_tab()
                 })
             ),
             PreviewReveal::Leave
         );
         // A Preview tab in a locked pane can still be selected, which is not a resize.
-        let other_locked = |id: PaneId| id == 2;
+        let locked_preview = Panes::new(&[1, 2], &[]);
         assert_eq!(
-            layout.plan_preview_reveal(
-                true,
-                Some(PreviewTab {
-                    pane: 2,
-                    shown: false
-                }),
-                size,
-                1,
-                &other_locked
-            ),
+            locked_preview.reveal(&layout, true, Some(open_tab()), size, 1),
             PreviewReveal::Activate(2)
         );
     }
@@ -3357,20 +3612,17 @@ mod preview_placement_tests {
     fn with_the_preference_off_selecting_a_file_changes_nothing() {
         let layout = navigation_and_main();
         let size = Some(area(1600.0, 900.0));
-        let locked = |id: PaneId| id == 1;
+        let panes = Panes::new(&[1], &[]);
         for existing in [
             None,
+            Some(open_tab()),
             Some(PreviewTab {
-                pane: 2,
-                shown: false,
-            }),
-            Some(PreviewTab {
-                pane: 2,
                 shown: true,
+                ..open_tab()
             }),
         ] {
             assert_eq!(
-                layout.plan_preview_reveal(false, existing, size, 1, &locked),
+                panes.reveal(&layout, false, existing, size, 1),
                 PreviewReveal::Leave
             );
         }

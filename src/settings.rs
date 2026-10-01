@@ -1830,7 +1830,7 @@ impl SettingsPanel {
             Section::Files => self.toggle_row(
                 Toggle::PreviewOnSelect,
                 "Open the preview when a file is selected",
-                "Selecting a file in Files opens the Preview pane beside it, or brings it forward if it is behind another tab. Off keeps a closed preview closed; open it from a pane's menu.",
+                "Selecting a file in Files opens the Preview in a pane of its own, or brings it forward if it is behind another tab. Off keeps a closed preview closed; open it from a pane's menu or with Cmd+Shift+P.",
                 settings.open_preview_on_select,
                 cx,
             ),
