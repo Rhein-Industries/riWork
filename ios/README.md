@@ -1,8 +1,10 @@
 # RiWork for iPhone and iPad
 
 Choose a paired RiWork desktop and project, then switch between tabs for its
-existing open terminals. One terminal fills the screen at a time. The app never
-creates, splits, closes or replaces a desktop session.
+open terminals, or open a new shell or agent on the desktop with ＋. One terminal
+fills the screen at a time. The app never splits or replaces a desktop session; it
+creates one only when asked (＋ or ⌘N, then Create), and closes one only after a
+confirmation. Reconnecting and switching tabs never create or close anything.
 
 The interface follows RiWork’s compact desktop layout: flat rows and tab strips,
 thin dividers, Menlo text and a small workspace bar. Light appearance uses the
@@ -121,6 +123,42 @@ its request UUID
 and line before sending. An uncertain result blocks further submission and
 survives reconnect/app restart. Review the indicated session before acknowledging
 the warning. Acknowledgement does not submit or retry anything.
+
+### New terminal and close
+
+**＋ opens a terminal on the desktop** (`shell.create`, then `shell.close` for closing; see the "Terminal creation extension" in
+`docs/remote-protocol.md`). It is in the terminal screen's header and on the "no open terminals" page, in a project's swipe
+and long-press actions on the project list (that opens the project, then the sheet), and on **⌘N** from a hardware keyboard,
+also in focus mode. The sheet is a medium-height sheet with big rows and Create at the bottom, for one thumb:
+
+- **Where.** The project on screen and, if it has worktrees, a menu of them (the main one first). Preselected: the worktree of the
+  terminal you are looking at, else the main worktree, else the project itself. Another project is chosen on the project list.
+- **What.** Shell, Codex, Claude or Grok, as radio rows. The last kind that was created is remembered (UserDefaults,
+  `riwork.newTerminal.kind`; a plain shell the first time). There is no "installed agents" information from the desktop, so all four
+  are always offered and a missing agent is reported after Create.
+- **Unrestricted.** For agents only, a toggle "Unrestricted: no approval prompts" that is **off every time** the sheet opens and is
+  never remembered. The desktop's own menu offers "Codex · unrestricted" etc. as separate items, and its plain Codex, Claude and Grok
+  items are restricted; the phone sends `unrestricted` only when the toggle is on.
+- **Create** sends one `shell.create`, shows progress, and on success the sheet goes away and the new terminal is selected and opened
+  like any tab. The app never sends it twice: a second tap or a held Return while it is on its way is
+  ignored, and a lost answer (timeout, dropped link) is **not retried**: the sheet stays and says "the terminal may or may not have
+  been created. Check the terminal list before trying again", the button then reads "Try again". Request timeout: 90 s (an agent can
+  take 20 to 30 s to start).
+- **Errors are inline and the sheet stays open:** an older desktop ("Update RiWork on your Mac to open terminals from the phone."; found
+  from the first answer `invalid_request` "unsupported RPC method", kept for the connection, and reset by every new connection, so ＋
+  is dimmed and Create is off, and ⌘N does nothing), a project or worktree that no longer exists, an agent that is not installed
+  ("Codex isn’t installed on the Mac (or isn’t on its PATH)."), a terminal that exited right away, or the desktop's own message.
+
+**Keyboard** (a Clicks or any hardware keyboard; nothing needs a tap first, the sheet takes the keyboard when it appears):
+↑ ↓ choose the kind (or the worktree when that row has the focus ring), ⇥ / ⇧⇥ / ← → move the focus ring between Where, What,
+Unrestricted (when shown) and Create, Space flips the toggle (and presses Create when it has the ring), ↩ creates, ⎋ cancels. The focus ring
+appears with the first key. ⌘N opens the sheet; it is a SwiftUI keyboard shortcut, which SwiftUI registers as a key command on the
+hosting controller, and the terminal's key view claims no ⌘ combination, so it works while the terminal has the keyboard.
+
+**Close.** A terminal tab's long-press menu (and "Close this terminal…" in the header menu) closes it after a confirmation, "Close
+<terminal>? This ends its running process on the Mac." The phone first moves to the neighbouring tab, then `shell.close` ends the
+process and removes it from the Mac's list (a tab the Mac's window still has for it is left to the window, as with the CLI). Not offered for orchestrators. A
+failed close puts you back where you were; "already gone" counts as closed; a lost answer says the outcome is unknown and is not retried.
 
 ### Direct typing, focus mode and text size
 
