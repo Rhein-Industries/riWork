@@ -507,20 +507,11 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
     let mut rows = Vec::new();
     let mut total = 0;
     let mut matched_project_count = 0;
-    let name = match kind {
-        PanelKind::Projects => "projects",
-        PanelKind::Worktrees => "worktrees",
-        PanelKind::Files => "files",
-        PanelKind::Tasks => "tasks",
-        PanelKind::Shells => "shells",
-        PanelKind::Usage => "usage",
-        PanelKind::Settings => "settings",
-        PanelKind::ProjectSettings => "project_settings",
-        PanelKind::Schedules => "schedules",
-    };
+    let name = kind.name();
 
     match kind {
         PanelKind::Files
+        | PanelKind::Preview
         | PanelKind::Usage
         | PanelKind::Settings
         | PanelKind::ProjectSettings

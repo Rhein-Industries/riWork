@@ -186,6 +186,32 @@ fn panel_glyph(path: &mut PathBuilder, panel: PanelKind) {
             line(path, (5.0, 7.3), (9.0, 7.3));
             line(path, (5.0, 9.6), (9.0, 9.6));
         }
+        PanelKind::Preview => {
+            // An eye: the lids meet at the corners, and the pupil sits between them.
+            path.move_to(point(px(1.2), px(7.0)));
+            path.cubic_bezier_to(
+                point(px(7.0), px(3.0)),
+                point(px(3.0), px(4.6)),
+                point(px(4.8), px(3.0)),
+            );
+            path.cubic_bezier_to(
+                point(px(12.8), px(7.0)),
+                point(px(9.2), px(3.0)),
+                point(px(11.0), px(4.6)),
+            );
+            path.cubic_bezier_to(
+                point(px(7.0), px(11.0)),
+                point(px(11.0), px(9.4)),
+                point(px(9.2), px(11.0)),
+            );
+            path.cubic_bezier_to(
+                point(px(1.2), px(7.0)),
+                point(px(4.8), px(11.0)),
+                point(px(3.0), px(9.4)),
+            );
+            path.close();
+            circle(path, 7.0, 7.0, 1.7);
+        }
         PanelKind::Tasks => {
             rectangle(path, 2.0, 2.0, 12.0, 12.0);
             path.move_to(point(px(4.6), px(7.2)));
@@ -414,10 +440,11 @@ fn circle(path: &mut PathBuilder, x: f32, y: f32, radius: f32) {
 mod tests {
     use super::*;
 
-    const PANELS: [PanelKind; 9] = [
+    const PANELS: [PanelKind; 10] = [
         PanelKind::Projects,
         PanelKind::Worktrees,
         PanelKind::Files,
+        PanelKind::Preview,
         PanelKind::Tasks,
         PanelKind::Shells,
         PanelKind::Usage,
