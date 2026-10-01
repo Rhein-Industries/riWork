@@ -155,7 +155,10 @@ concurrent handling of a device's requests, in the same document), and the
 (`server_ms` on every response, `features` on `ready`, `link.configure`, and deflated
 reply frames, in the same document). The deflate marker sits inside the ciphertext, so
 the v2 envelope, its AAD and the fixtures are untouched; the compression note in the
-threat discussion of that section applies to v2 as it does to v1.
+threat discussion of that section applies to v2 as it does to v1. It also includes
+the 2026-10-01 terminal creation extension (`shell.create` and `shell.close`, in the same document). A
+paired device could already start any command by typing it into a shell; creation
+adds no authority, but it is still pairing's "full terminal control".
 
 ## Vectors and tests
 

@@ -140,6 +140,11 @@ struct Resize {
 struct Clear {
     shell_id: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Close {
+    shell_id: String,
+}
 fn params<T: serde::de::DeserializeOwned>(r: &Request) -> std::result::Result<T, Fault> {
     serde_json::from_value(r.params.clone()).map_err(invalid)
 }
@@ -162,6 +167,12 @@ fn cli_lines_limit(message: &str) -> Option<u32> {
 const CLI_TIMEOUT: Duration = Duration::from_secs(15);
 /// What a waiting CLI call may take beyond its wait: the captures around it.
 const CLI_WAIT_MARGIN: Duration = Duration::from_secs(8);
+/// Starting a terminal. An agent's start-up (Grok waits for the computer-use
+/// driver for up to 20 seconds first) is far above any other call, and the CLI
+/// must not be cut off between creating the tmux session and writing it down.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(60);
+/// The longest `command` a `shell.create` may carry.
+pub const CREATE_COMMAND_MAX: usize = 4096;
 
 /// How long the CLI may take for a `shell.output` that waits up to `wait_ms`:
 /// the wait plus the captures around it, and never less than any other call.
@@ -239,6 +250,228 @@ struct Record {
 #[serde(deny_unknown_fields)]
 struct Ledger {
     entries: BTreeMap<String, Record>,
+}
+
+/// What `shell.create` may start: a plain shell or one of the agent CLIs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CreateKind {
+    Shell,
+    Codex,
+    Claude,
+    Grok,
+}
+impl CreateKind {
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "shell" => Self::Shell,
+            "codex" => Self::Codex,
+            "claude" => Self::Claude,
+            "grok" => Self::Grok,
+            _ => return None,
+        })
+    }
+    /// The `--harness` value, `None` for a plain shell.
+    fn harness(self) -> Option<&'static str> {
+        match self {
+            Self::Shell => None,
+            Self::Codex => Some("codex"),
+            Self::Claude => Some("claude"),
+            Self::Grok => Some("grok"),
+        }
+    }
+}
+/// Exactly one of the two, never a name or a path: the CLI would resolve those.
+#[derive(Debug, PartialEq, Eq)]
+enum CreateTarget {
+    Project(String),
+    Worktree(String),
+}
+/// A validated `shell.create`.
+#[derive(Debug, PartialEq, Eq)]
+struct CreateSpec {
+    target: CreateTarget,
+    kind: CreateKind,
+    unrestricted: bool,
+    command: Option<String>,
+}
+const CREATE_FIELDS: [&str; 5] = [
+    "project_id",
+    "worktree_id",
+    "kind",
+    "unrestricted",
+    "command",
+];
+
+/// The params of `shell.create`, strictly: an object with only the five fields
+/// below, none of them null, before any CLI runs.
+fn create_spec(params: &Value) -> std::result::Result<CreateSpec, Fault> {
+    let object = params
+        .as_object()
+        .ok_or_else(|| invalid("params must be an object"))?;
+    if let Some(unknown) = object.keys().find(|k| !CREATE_FIELDS.contains(&k.as_str())) {
+        return Err(invalid(format!("unknown field {unknown}")));
+    }
+    let text = |name: &str| -> std::result::Result<Option<&str>, Fault> {
+        match object.get(name) {
+            None => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text)),
+            Some(_) => Err(invalid(format!("{name} must be a string"))),
+        }
+    };
+    let target = match (text("project_id")?, text("worktree_id")?) {
+        (Some(project), None) => {
+            id(project)?;
+            CreateTarget::Project(project.to_owned())
+        }
+        (None, Some(worktree)) => {
+            id(worktree)?;
+            CreateTarget::Worktree(worktree.to_owned())
+        }
+        _ => return Err(invalid("give exactly one of project_id and worktree_id")),
+    };
+    let kind =
+        text("kind")?.ok_or_else(|| invalid("kind is required: shell, codex, claude or grok"))?;
+    let kind = CreateKind::parse(kind)
+        .ok_or_else(|| invalid("kind must be shell, codex, claude or grok"))?;
+    let unrestricted = match object.get("unrestricted") {
+        None => false,
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => return Err(invalid("unrestricted must be a boolean")),
+    };
+    if unrestricted && kind.harness().is_none() {
+        return Err(invalid(
+            "unrestricted only applies to codex, claude and grok",
+        ));
+    }
+    let command = match text("command")? {
+        None => None,
+        Some(command) => {
+            if kind != CreateKind::Shell {
+                return Err(invalid("command only applies to kind shell"));
+            }
+            create_command(command)?;
+            Some(command.to_owned())
+        }
+    };
+    Ok(CreateSpec {
+        target,
+        kind,
+        unrestricted,
+        command,
+    })
+}
+/// A command for a plain shell: one physical line of at most 4096 bytes that
+/// is not blank. It may not begin with `-`: the CLI reads such a value as the
+/// next option, and no command starts that way.
+fn create_command(command: &str) -> std::result::Result<(), Fault> {
+    if command.trim().is_empty() || command.len() > CREATE_COMMAND_MAX {
+        return Err(invalid(format!(
+            "command must be 1..={CREATE_COMMAND_MAX} bytes and not blank"
+        )));
+    }
+    if command
+        .chars()
+        .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+    {
+        return Err(invalid(
+            "command must be one line without control characters",
+        ));
+    }
+    if command.starts_with('-') {
+        return Err(invalid("command must not begin with -"));
+    }
+    Ok(())
+}
+/// The CLI's argv for a validated request. `--json` is added by `read`. Every
+/// value is its own argument; nothing here passes through a shell.
+fn create_args(spec: &CreateSpec) -> Vec<String> {
+    let mut args: Vec<String> = vec!["shell".into(), "create".into()];
+    match &spec.target {
+        CreateTarget::Project(project) => args.extend(["--project".into(), project.clone()]),
+        CreateTarget::Worktree(worktree) => args.extend(["--worktree".into(), worktree.clone()]),
+    }
+    if let Some(harness) = spec.kind.harness() {
+        args.extend(["--harness".into(), harness.into()]);
+        if spec.unrestricted {
+            args.push("--unrestricted".into());
+        }
+    }
+    if let Some(command) = &spec.command {
+        args.extend(["--command".into(), command.clone()]);
+    }
+    args
+}
+/// What a failed `riwork shell create` says, by the first line of its error
+/// (`riwork: ` already stripped). The wording belongs to the CLI and was
+/// there before this method; the codes are the connector's.
+fn create_fault(fault: Fault) -> Fault {
+    if fault.code != "cli_error" {
+        return fault;
+    }
+    if fault.message == "RiWork CLI timeout" {
+        return Fault::new(
+            "cli_error",
+            "starting the terminal took too long and was stopped; check the terminal list before trying again",
+        );
+    }
+    let Some(detail) = fault.message.strip_prefix("RiWork CLI failed: riwork: ") else {
+        return fault;
+    };
+    let line = detail.lines().next().unwrap_or_default();
+    let installed = |program: &str| line == format!("{program} is not installed or is not on PATH");
+    if line.starts_with("No project matches '") {
+        Fault::new("not_found", "project not found on the desktop")
+    } else if line.starts_with("No worktree matches '") {
+        Fault::new("not_found", "worktree not found on the desktop")
+    } else if ["codex", "claude", "grok"].into_iter().any(installed)
+        || line.starts_with("Cua Driver is not installed")
+    {
+        Fault::new("harness_unavailable", line)
+    } else if line.starts_with("resolve ")
+        && !line.starts_with("resolve RiWork executable")
+        && line.ends_with("No such file or directory (os error 2)")
+    {
+        Fault::new(
+            "not_found",
+            "the folder of this project or worktree no longer exists on the desktop",
+        )
+    } else {
+        Fault::new("cli_error", line)
+    }
+}
+/// The `shell.create` result for the session the CLI printed, or `None` if it
+/// is not the session that was asked for: a project shell with a canonical id,
+/// in the requested project or worktree, running the requested agent.
+fn create_result(spec: &CreateSpec, cli: &Value) -> Option<Value> {
+    let shell = cli.get("id")?.as_str()?;
+    id(shell).ok()?;
+    let text = |name: &str| cli.get(name).and_then(Value::as_str);
+    let in_target = match &spec.target {
+        CreateTarget::Project(project) => text("project_id") == Some(project),
+        CreateTarget::Worktree(worktree) => text("worktree_id") == Some(worktree),
+    };
+    if text("kind") != Some("project")
+        || !in_target
+        || text("harness") != spec.kind.harness()
+        || text("cwd").is_none()
+        || cli.get("alive")?.as_bool().is_none()
+        || cli.get("created_at_unix")?.as_u64().is_none()
+    {
+        return None;
+    }
+    Some(json!({"shell_id": shell, "shell": project(cli.clone(), SESSION_FIELDS)}))
+}
+/// What a failed `riwork shell close` says.
+fn close_fault(fault: Fault) -> Fault {
+    let unknown = fault
+        .message
+        .strip_prefix("RiWork CLI failed: riwork: ")
+        .is_some_and(|detail| detail.starts_with("unknown shell "));
+    if unknown {
+        Fault::new("not_found", "existing shell ID not found")
+    } else {
+        fault
+    }
 }
 
 /// Direct-typing limits. `src/session_keys.rs` enforces the same ones in the
@@ -1057,8 +1290,127 @@ impl Rpc {
                 let items = key_items(&p.items)?;
                 self.keys(device, p, items).await
             }
+            "shell.create" => {
+                let spec = create_spec(&r.params)?;
+                self.create(device, spec).await
+            }
+            "shell.close" => {
+                let p: Close = params(r)?;
+                id(&p.shell_id)?;
+                self.close(device, &p.shell_id, viewport).await
+            }
             _ => Err(invalid("unsupported RPC method")),
         }
+    }
+    /// Start a terminal in a project or worktree that exists on the desktop,
+    /// exactly as `riwork shell create` does: the CLI writes the session down
+    /// and starts it, and the open desktop app picks it up as a tab. Runs in
+    /// the ordered lane, which a phone that drops does not cut short, and the
+    /// CLI itself runs in a task of its own (see below). Not idempotent: a
+    /// repeat starts another terminal.
+    async fn create(&self, device: &str, spec: CreateSpec) -> std::result::Result<Value, Fault> {
+        // Authorization was checked when the request started; this acts.
+        if !self.storage.authorized(device).map_err(cli_fault)? {
+            return Err(Fault::new("not_found", "device revoked"));
+        }
+        self.target_exists(&spec.target).await?;
+        // The CLI starts the tmux session and only then writes it into the
+        // registry; a CLI killed in between leaves a session nobody can see or
+        // close. The connection's tasks are dropped (and their CLI processes
+        // killed) when it ends for any reason, revocation and relay errors
+        // included, so the CLI runs in a task that outlives the request: if the
+        // request is dropped, only the answer is lost.
+        let runner = self.detached();
+        let args = create_args(&spec);
+        let created = tokio::spawn(async move { runner.read_within(args, CREATE_TIMEOUT).await })
+            .await
+            .map_err(|e| cli_fault(format!("creating the terminal was interrupted: {e}")))?
+            .map_err(create_fault)?;
+        create_result(&spec, &created).ok_or_else(|| {
+            // Not what was asked for. It was just made, so end it rather than
+            // leave a terminal the phone knows nothing about.
+            if let Some(stray) = created.get("id").and_then(Value::as_str)
+                && id(stray).is_ok()
+                && created.get("kind").and_then(Value::as_str) == Some("project")
+            {
+                let (runner, stray) = (self.detached(), stray.to_owned());
+                tokio::spawn(async move {
+                    let _ = runner
+                        .raw(vec!["shell".into(), "close".into(), stray])
+                        .await;
+                });
+            }
+            cli_fault("CLI returned a session that does not match the request")
+        })
+    }
+    /// An `Rpc` for the same CLI and home, to run a call in a task that is not
+    /// tied to the request that started it.
+    fn detached(&self) -> Rpc {
+        Rpc::new(self.cli.clone(), self.storage.clone())
+    }
+    /// The project or worktree must exist under exactly this id. The CLI also
+    /// matches names, branches, paths and id prefixes, so an id that is nobody's
+    /// could otherwise start a terminal somewhere else.
+    async fn target_exists(&self, target: &CreateTarget) -> std::result::Result<(), Fault> {
+        let (kind, target) = match target {
+            CreateTarget::Project(project) => ("project", project),
+            CreateTarget::Worktree(worktree) => ("worktree", worktree),
+        };
+        let shown = self
+            .read(&[kind, "show", target])
+            .await
+            .map_err(create_fault)?;
+        if shown.get("id").and_then(Value::as_str) == Some(target) {
+            Ok(())
+        } else {
+            Err(Fault::new(
+                "not_found",
+                format!("{kind} not found on the desktop"),
+            ))
+        }
+    }
+    /// End a project terminal and its process. Orchestrators are not closed
+    /// from the phone. A terminal that already exited can be closed too, which
+    /// takes it off the desktop's list.
+    async fn close(
+        &self,
+        device: &str,
+        shell: &str,
+        viewport: ViewportAccess<'_>,
+    ) -> std::result::Result<Value, Fault> {
+        // Typing into this shell, from any device, finishes first.
+        let lock = self.input_lock(shell);
+        let _guard = lock.lock().await;
+        let sessions = self.sessions().await?;
+        let Some(found) = sessions
+            .iter()
+            .find(|s| s.get("id").and_then(Value::as_str) == Some(shell))
+        else {
+            return Err(Fault::new("not_found", "existing shell ID not found"));
+        };
+        if found.get("kind").and_then(Value::as_str) != Some("project") {
+            return Err(invalid("only a project terminal can be closed"));
+        }
+        if !self.storage.authorized(device).map_err(cli_fault)? {
+            return Err(Fault::new("not_found", "device revoked"));
+        }
+        {
+            // This connection's own resize override ends with the shell.
+            let mut held = viewport.hold().await;
+            if let Some(v) = held.get()
+                && v.selected.as_ref().is_some_and(|(s, _, _)| s == shell)
+            {
+                let _ = self.clear_viewport(v).await;
+                // The shell is about to go. A lease that could not be released
+                // lapses by itself; keeping it would only fail to renew and
+                // end the connection.
+                v.selected = None;
+            }
+        }
+        self.raw(vec!["shell".into(), "close".into(), shell.into()])
+            .await
+            .map_err(|e| close_fault(cli_fault(e)))?;
+        Ok(json!({"shell_id":shell,"status":"closed"}))
     }
     /// The colors the desktop published for the phone: read-only, no shell.
     async fn appearance(&self) -> std::result::Result<Value, Fault> {

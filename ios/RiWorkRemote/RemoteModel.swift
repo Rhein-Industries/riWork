@@ -54,6 +54,15 @@ enum ConnectionState: Equatable {
     /// Counts accepted keystroke groups; the view keeps the screen scrolled to the bottom while it changes.
     var typedCount = 0
     var preferLineComposer = false
+    // MARK: Opening and closing terminals (pipeline in RemoteModel+NewTerminal.swift)
+    /// Whether the desktop understands `shell.create` / `shell.close`. Learned from the first call, reset by every new connection.
+    var terminalControl: TerminalControlSupport = .unknown
+    /// A `shell.create` is on its way: a second one is refused until it answers.
+    var creatingTerminal = false
+    /// The terminal a `shell.close` is on its way for.
+    var closingTerminalID: String?
+    /// The project list asks that project's terminal screen to open the "New terminal" sheet once it is up and loaded.
+    var newTerminalRequestedProject: String?
     var terminalFontSize = TerminalFontSize.standard
     // MARK: Scrolling (history paging and the alternate screen: RemoteModel+Scroll.swift)
     /// The lines shown for the selected shell: scrollback and screen, each under an index that does not change while lines are
@@ -330,7 +339,7 @@ enum ConnectionState: Equatable {
         else { viewportWaiters.removeFirst().resume() }
     }
     /// Serializes state operations so late tab changes cannot leave the wrong shell pinned.
-    private func synchronizeViewport(token: UUID, forceRelease: Bool = false) async throws {
+    func synchronizeViewport(token: UUID, forceRelease: Bool = false) async throws {
         await acquireViewport()
         defer { releaseViewportLock() }
         guard generation == token, await client.isConnected() else { return }
@@ -369,7 +378,7 @@ enum ConnectionState: Equatable {
         guard !loadFailed else { throw RemoteError.remote("Saved pairings could not be loaded, so nothing was saved. Retry loading them first.") }
         try keychain.write(Library(desktops: desktops, selectedDesktopID: selectedDesktopID))
     }
-    private func updateDesktop(_ update: (inout SavedDesktop) -> Void) throws {
+    func updateDesktop(_ update: (inout SavedDesktop) -> Void) throws {
         guard let i = desktops.firstIndex(where: { $0.id == selectedDesktopID }) else { return }
         let previous = desktops[i]
         update(&desktops[i])
@@ -422,6 +431,8 @@ enum ConnectionState: Equatable {
         missingSessionIDs = []; loadedProjectID = nil; outputLines = [:]
         // A fresh connection may reach an upgraded desktop: detect direct typing again. Buffers survive.
         keysSupport = .unknown
+        // And for opening terminals.
+        terminalControl = .unknown
         // And for waiting on changes: the first screen tells whether this desktop sends a `hash`.
         syncMode = .unknown; outputHash = nil; liveBackoff = LongPollBackoff(); waitSlots.reset(); outputExtensions = true; latency.reset()
         // And for paging history: the first page tells whether this desktop has `shell.history`.
@@ -500,7 +511,7 @@ enum ConnectionState: Equatable {
         // Another desktop: nothing kept for the last one is of any use.
         terminalCache.removeAll()
     }
-    private func resetOutput() {
+    func resetOutput() {
         stashTerminal()
         lastScreen = nil; output = ""; styledOutput = .empty; outputVersion &+= 1; outputHash = nil
         outputCursorOffset = nil; outputInMode = false; outputSessionID = nil; lastOutputAt = nil
@@ -511,7 +522,7 @@ enum ConnectionState: Equatable {
         failedViewport = nil; viewportError = nil; missingSessionIDs = []; outputLines = [:]; historyPageLines = [:]; historyRetryAfter = nil; historyMisses = 0
         do { try await refresh(token: generation) } catch { handle(error) }
     }
-    private func rpc(_ method: String, _ params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
+    func rpc(_ method: String, _ params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
         // The lists asked for when a connection opens are small replies: the first samples of the round trip, before any history page.
         let reply = try await client.timedRequest(method: method, params: params, id: id)
         noteReply(reply.timing)
@@ -561,7 +572,7 @@ enum ConnectionState: Equatable {
         if sessionID == nil { try await synchronizeViewport(token: token) }
     }
     /// Metadata refresh selects only an existing live tab. Never submits or retries input.
-    private func reconcileSelectedSession() throws {
+    func reconcileSelectedSession() throws {
         let selected = sessionID
         if let selected, openSessions.contains(where: { $0.id == selected }) { return }
         let replacement = openSessions.first?.id

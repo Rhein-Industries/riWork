@@ -1591,9 +1591,8 @@ impl SessionManager {
         let inline = harness.is_some() && crate::settings::agent_inline_mode(&self.home);
         let mut command = match harness {
             Some(harness) => {
-                let program = find_harness_program(harness, &shim_directory).ok_or_else(|| {
-                    format!("{} is not installed or is not on PATH", harness.program())
-                })?;
+                let program = find_harness_program(harness, &shim_directory)
+                    .ok_or_else(|| harness_missing(harness))?;
                 if harness == HarnessKind::Grok {
                     // The driver's start can outlast Grok's 30-second MCP limit,
                     // so it finishes before Grok is created.
@@ -3536,6 +3535,13 @@ fi
     Ok(directory)
 }
 
+/// What a launch says when its agent CLI cannot be found. The remote connector
+/// recognizes this sentence to tell the phone the agent is not installed
+/// (`remote/src/rpc.rs`, `create_fault`), so it changes there too or not at all.
+fn harness_missing(harness: HarnessKind) -> String {
+    format!("{} is not installed or is not on PATH", harness.program())
+}
+
 /// The CLI a launch should run. This process's own PATH and the usual install
 /// directories come first; the login shell is asked only when they find nothing.
 fn find_harness_program(harness: HarnessKind, shim_directory: &Path) -> Option<PathBuf> {
@@ -4755,6 +4761,25 @@ mod tmux_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_agent_is_reported_in_the_words_the_remote_connector_recognizes() {
+        // `remote/src/rpc.rs` matches these sentences exactly to answer the
+        // phone with `harness_unavailable`.
+        for (harness, sentence) in [
+            (
+                HarnessKind::Codex,
+                "codex is not installed or is not on PATH",
+            ),
+            (
+                HarnessKind::Claude,
+                "claude is not installed or is not on PATH",
+            ),
+            (HarnessKind::Grok, "grok is not installed or is not on PATH"),
+        ] {
+            assert_eq!(harness_missing(harness), sentence);
+        }
+    }
 
     #[cfg(unix)]
     #[test]

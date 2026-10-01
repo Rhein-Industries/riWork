@@ -47,7 +47,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -1043,6 +1043,7 @@ impl Workspace {
     }
 
     fn shell_tab(&mut self, shell: ShellSession, terminal: Option<Entity<Terminal>>) -> Tab {
+        claim_shell(&shell.id);
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
         let worktree_name = shell
@@ -2330,6 +2331,8 @@ impl Workspace {
 
     fn load_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.session_refresh_generation = self.session_refresh_generation.wrapping_add(1);
+        // The tabs below are rebuilt from the layout, which claims what is kept again.
+        self.release_tab_claims();
         self.project_sort_menu_open = false;
         if self.focus_mode {
             self.set_focus_mode(false, window, cx);
@@ -3051,6 +3054,7 @@ impl Workspace {
                     workspace.shell_cwds = cwds;
                 }
                 workspace.claude_usage = claude_usage;
+                workspace.adopt_new_shells(cx);
                 for home in workspace
                     .shells
                     .iter()
@@ -3070,6 +3074,70 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// Terminals started outside this window while it is open (`riwork shell
+    /// create`, the phone companion, an agent) get a tab in the active pane, as
+    /// they would when the project is next loaded. The tab is added behind the
+    /// current one: nothing changes focus, the selected tab or the active pane,
+    /// and the terminal view attaches when the tab is first shown. (A pane the
+    /// user emptied has no current tab, so the new one is shown there, still
+    /// without focus.)
+    fn adopt_new_shells(&mut self, cx: &mut Context<Self>) {
+        // A terminal is claimed only once there is a pane to put it in, and not
+        // while a tab is being dragged; the next refresh looks again.
+        if self.tab_dragging {
+            return;
+        }
+        let Some(pane_id) = self.adoption_pane().filter(|_| self.layout_ready) else {
+            return;
+        };
+        let shown = self
+            .panes
+            .values()
+            .flat_map(|pane| pane.tabs.iter().filter_map(Tab::shell_id))
+            .collect::<HashSet<_>>();
+        let new = shells_to_adopt(
+            &self.shells,
+            &self.project_id,
+            &shown,
+            &self.detached_shell_ids,
+        )
+        .into_iter()
+        .filter(|shell| claim_shell(&shell.id))
+        .cloned()
+        .collect::<Vec<_>>();
+        if new.is_empty() {
+            return;
+        }
+        for shell in new {
+            let tab = self.shell_tab(shell, None);
+            if let Some(pane) = self.panes.get_mut(&pane_id) {
+                pane.tabs.push(tab);
+            }
+        }
+        self.save_layout();
+        cx.notify();
+    }
+
+    /// Lets go of the terminals this window has tabs for, so a window that
+    /// still shows the project can pick up the ones this one no longer holds.
+    fn release_tab_claims(&self) {
+        for shell_id in self
+            .panes
+            .values()
+            .flat_map(|pane| pane.tabs.iter().filter_map(Tab::shell_id))
+        {
+            release_shell(shell_id);
+        }
+    }
+
+    /// The pane a terminal that appeared by itself joins: the active one, as
+    /// when a project is loaded, unless it is locked.
+    fn adoption_pane(&self) -> Option<PaneId> {
+        std::iter::once(self.active_pane)
+            .chain(self.layout.pane_ids())
+            .find(|id| self.panes.contains_key(id) && !self.pane_is_locked(*id))
     }
 
     /// The bottom bar's usage item is drawn.
@@ -6109,9 +6177,60 @@ fn start_window_drag(event: &gpui::MouseDownEvent, window: &mut Window, cx: &mut
     }
 }
 
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        self.release_tab_claims();
+    }
+}
+
 fn session_belongs_to_workspace(shell: &ShellSession, project_id: &str) -> bool {
     shell.project_id.as_deref() == Some(project_id)
         || (shell.kind == ShellKind::Orchestrator && shell.project_id.is_none())
+}
+
+/// Shells that have a tab in some window of this process (a window gives its
+/// claims up when it loads another project or closes). A window never adds a
+/// tab for a terminal another window already has, so one started in a window is
+/// not also added to the others that show the same project; of several windows
+/// that show the project, the first to notice a new terminal takes it.
+fn shell_claims() -> &'static Mutex<HashSet<String>> {
+    static CLAIMS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    CLAIMS.get_or_init(Default::default)
+}
+
+/// Records that a window has a tab for `shell_id`. True the first time, false
+/// if a window had one already.
+fn claim_shell(shell_id: &str) -> bool {
+    shell_claims()
+        .lock()
+        .is_ok_and(|mut claims| claims.insert(shell_id.to_owned()))
+}
+
+/// Gives up the claim on `shell_id`: no window holds a tab for it any more.
+fn release_shell(shell_id: &str) {
+    if let Ok(mut claims) = shell_claims().lock() {
+        claims.remove(shell_id);
+    }
+}
+
+/// The live terminals of `project_id` that nothing in this window accounts
+/// for: no tab, and not one the user closed (those are `detached`).
+fn shells_to_adopt<'a>(
+    shells: &'a [ShellSession],
+    project_id: &str,
+    shown: &HashSet<&str>,
+    detached: &HashSet<String>,
+) -> Vec<&'a ShellSession> {
+    shells
+        .iter()
+        .filter(|shell| {
+            shell.kind == ShellKind::Project
+                && shell.alive
+                && shell.project_id.as_deref() == Some(project_id)
+                && !shown.contains(shell.id.as_str())
+                && !detached.contains(&shell.id)
+        })
+        .collect()
 }
 
 fn orchestrator_tab_title(shell: &ShellSession) -> String {
@@ -7366,6 +7485,69 @@ mod workspace_tab_tests {
             created_at_unix: 0,
             alive: true,
         }
+    }
+
+    fn project_shell(id: &str, project: &str) -> ShellSession {
+        let mut shell = session(ShellKind::Project, Some(project));
+        shell.id = id.to_owned();
+        shell
+    }
+
+    #[test]
+    fn a_terminal_started_outside_the_window_is_adopted_unless_it_was_closed_or_is_not_live() {
+        let mut exited = project_shell("exited", "alpha");
+        exited.alive = false;
+        let shells = vec![
+            project_shell("open", "alpha"),
+            project_shell("new", "alpha"),
+            project_shell("closed-by-user", "alpha"),
+            exited,
+            project_shell("other-project", "beta"),
+            session(ShellKind::Orchestrator, Some("alpha")),
+            session(ShellKind::Orchestrator, None),
+        ];
+        let shown = HashSet::from(["open"]);
+        let detached = HashSet::from(["closed-by-user".to_owned()]);
+        let ids = |found: Vec<&ShellSession>| {
+            found
+                .iter()
+                .map(|shell| shell.id.clone())
+                .collect::<Vec<_>>()
+        };
+        // Only the live project terminal nothing accounts for. Orchestrators
+        // open through their own commands and never as a side effect.
+        assert_eq!(
+            ids(shells_to_adopt(&shells, "alpha", &shown, &detached)),
+            ["new"]
+        );
+        // Once it has a tab it is not adopted again.
+        let shown = HashSet::from(["open", "new"]);
+        assert!(shells_to_adopt(&shells, "alpha", &shown, &detached).is_empty());
+        // The other project's window adopts the other project's terminal.
+        assert_eq!(
+            ids(shells_to_adopt(&shells, "beta", &HashSet::new(), &detached)),
+            ["other-project"]
+        );
+    }
+
+    #[test]
+    fn a_terminal_that_some_window_already_has_is_claimed_once() {
+        let id = "claim-test-4f6c1d2e-0001";
+        assert!(claim_shell(id));
+        assert!(!claim_shell(id));
+        assert!(!claim_shell(id));
+        assert!(claim_shell("claim-test-4f6c1d2e-0002"));
+    }
+
+    #[test]
+    fn a_terminal_a_window_let_go_of_can_be_taken_by_another() {
+        let id = "claim-test-4f6c1d2e-0003";
+        assert!(claim_shell(id));
+        release_shell(id);
+        assert!(claim_shell(id));
+        // Letting go of what was never claimed is harmless.
+        release_shell("claim-test-4f6c1d2e-never");
+        assert!(claim_shell("claim-test-4f6c1d2e-never"));
     }
 
     #[test]

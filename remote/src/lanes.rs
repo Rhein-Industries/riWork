@@ -5,9 +5,15 @@
 //! of them can run side by side either: typing batches and resizes change the
 //! shell and its geometry, and they must reach it in the order they were sent.
 //!
-//! - `Ordered`: `shell.keys`, `shell.input`, `shell.resize` and
-//!   `shell.resize.clear`. One at a time, in arrival order. This is what
-//!   keeps the batch ledger, the viewport and the order of typed text intact.
+//! - `Ordered`: `shell.keys`, `shell.input`, `shell.resize`,
+//!   `shell.resize.clear`, `shell.create` and `shell.close`. One at a time, in
+//!   arrival order. This is what keeps the batch ledger, the viewport and the
+//!   order of typed text intact. Creating and closing a terminal change what
+//!   exists, and a request that ends half way (a session started but not yet
+//!   written down, or one killed but still listed) is worse than a slow one,
+//!   so a session ending does not cut them short either; typing waits behind
+//!   them. (A creation also keeps its CLI alive when the connection itself is
+//!   torn down: see `Rpc::create`.)
 //! - `LongPoll`: a `shell.output` that waits for a change. At most two.
 //! - `Read`: everything else, including a `shell.output` that does not wait and
 //!   `shell.history`, a page of scrollback that never waits. It changes
@@ -56,7 +62,10 @@ impl Lane {
 pub fn classify(request: &Value) -> Lane {
     let params = request.get("params");
     match request.get("method").and_then(Value::as_str) {
-        Some("shell.keys" | "shell.input" | "shell.resize" | "shell.resize.clear") => Lane::Ordered,
+        Some(
+            "shell.keys" | "shell.input" | "shell.resize" | "shell.resize.clear" | "shell.create"
+            | "shell.close",
+        ) => Lane::Ordered,
         Some("shell.output")
             if params
                 .and_then(|p| p.get("if_changed"))
@@ -160,12 +169,38 @@ mod tests {
     }
 
     #[test]
+    fn creating_and_closing_a_terminal_are_ordered_and_never_cut_short() {
+        for method in ["shell.create", "shell.close"] {
+            // Whatever the params look like, even none: validation answers it.
+            for params in [
+                json!({"project_id":"p","kind":"shell"}),
+                json!({"if_changed":"h","wait_ms":5000}),
+                json!(null),
+            ] {
+                let lane = classify(&request(method, params));
+                assert_eq!(lane, Lane::Ordered, "{method}");
+                assert!(!lane.cancellable(), "{method}");
+            }
+        }
+        // Only the exact names: look-alikes are plain reads.
+        for method in ["shell.creates", "shell", "shell.create.", "Shell.create"] {
+            assert_eq!(
+                classify(&request(method, json!({}))),
+                Lane::Read,
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
     fn requests_are_classified_by_what_they_change_and_how_long_they_last() {
         let ordered = [
             "shell.keys",
             "shell.input",
             "shell.resize",
             "shell.resize.clear",
+            "shell.create",
+            "shell.close",
         ];
         for method in ordered {
             assert_eq!(

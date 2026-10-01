@@ -19,6 +19,8 @@ public enum RequestValidation {
         case "shell.keys": required = ["shell_id", "batch", "items"]; optional = []
         case "shell.resize": required = ["shell_id", "columns", "rows"]; optional = []
         case "shell.resize.clear": required = ["shell_id"]; optional = []
+        case "shell.create": required = ["kind"]; optional = ["project_id", "worktree_id", "unrestricted", "command"]
+        case "shell.close": required = ["shell_id"]; optional = []
         default: throw RemoteError.protocolViolation("Unsupported operation.")
         }
         let keys = Set(params.keys)
@@ -40,6 +42,9 @@ public enum RequestValidation {
             guard case .number(let end)? = params["end"], end >= 0, end <= 4_294_967_295, end.rounded() == end else { throw RemoteError.protocolViolation("History end must be 0–4294967295.") }
             guard case .number(let lines)? = params["lines"], lines >= 1, lines <= Double(HistoryLimits.maximumPageLines), lines.rounded() == lines else { throw RemoteError.protocolViolation("History lines must be 1–5000.") }
             if let styled = params["styled"], case .bool = styled {} else if params["styled"] != nil { throw RemoteError.protocolViolation("History styled must be a boolean.") }
+        }
+        if method == "shell.create" {
+            do { _ = try NewTerminalRequest(params: params) } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
         }
         if method == "shell.input" { guard let line = params["line"]?.string else { throw RemoteError.protocolViolation("Missing input.") }; try InputValidation.validate(line) }
         // `shell.history` has its own range (checked above); this one is the live read's.
@@ -101,6 +106,9 @@ public actor RelayClient: RemoteTransport {
     static func timeout(for method: String, params: [String: JSONValue] = [:], default base: Duration) -> Duration {
         switch method {
         case "shell.keys": return max(base, .seconds(10))
+        // Starting an agent can take 20 to 30 s on the desktop (it prepares its tools first); closing waits for tmux.
+        case "shell.create": return max(base, .seconds(90))
+        case "shell.close": return max(base, .seconds(30))
         case "shell.output":
             if case .number(let wait)? = params["wait_ms"], wait.isFinite, wait > 0 { return max(base, LiveSync.timeout(waitMilliseconds: Int(min(wait, Double(LiveSync.maximumWaitMilliseconds))))) }
             return base

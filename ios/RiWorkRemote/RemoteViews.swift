@@ -86,7 +86,8 @@ struct RemoteRootView: View {
                 case .projects(let desktopID):
                     VStack(spacing: 0) {
                         WorkspaceBar(title: "PROJECTS", back: pop) { EmptyView() }
-                        ProjectSelectionView(model: model, onSelect: { path.append(.terminals($0)) })
+                        ProjectSelectionView(model: model, onSelect: { path.append(.terminals($0)) },
+                                             onNewTerminal: { project in model.newTerminalRequestedProject = project.id; path.append(.terminals(project)) })
                     }.background(style.background).id(desktopID).toolbar(.hidden, for: .navigationBar)
                 case .terminals(let project):
                     TerminalTabsView(model: model, project: project, onBack: pop)
@@ -181,6 +182,8 @@ struct ProjectSelectionView: View {
     @Environment(\.desktopStyle) private var style
     @Bindable var model: RemoteModel
     var onSelect: (RemoteProject) -> Void
+    /// Opens a terminal in that project: its screen comes up with the "New terminal" sheet.
+    var onNewTerminal: ((RemoteProject) -> Void)?
     @State private var search = ""
     var body: some View {
         VStack(spacing: 0) {
@@ -211,6 +214,12 @@ struct ProjectSelectionView: View {
                     }.buttonStyle(.plain).accessibilityHint("Open tabs for this project’s existing terminals")
                         .listRowBackground(style.background).listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
                         .listRowSeparatorTint(style.divider)
+                        .swipeActions(edge: .leading) {
+                            if let onNewTerminal { Button("New terminal", systemImage: "plus") { onNewTerminal(project) }.tint(style.accent) }
+                        }
+                        .contextMenu {
+                            if let onNewTerminal { Button("New terminal", systemImage: "plus") { onNewTerminal(project) } }
+                        }
                 }
                 if model.projects.isEmpty {
                     Text(model.loading ? "Loading projects…" : "No projects. Open a project on your desktop and refresh.")
@@ -230,6 +239,8 @@ struct TerminalTabsView: View {
     @State private var sessionInfo: SessionInfo?
     @State private var showingDisplay = false
     @State private var followOutput = true
+    @State private var newTerminal: NewTerminalSheetModel?
+    @State private var closing: RemoteSession?
     private var openSessions: [RemoteSession] { model.openSessions }
     private var focused: Bool { model.focusMode && model.sessionID != nil }
     var body: some View {
@@ -237,6 +248,11 @@ struct TerminalTabsView: View {
             // Focus mode drops all of this: only the shell (and its keyboard) stays.
             if !focused {
                 WorkspaceBar(title: project.name, back: onBack, compact: true, onDoubleTap: { if model.sessionID != nil { model.setFocusMode(true) } }) {
+                    Button("New terminal", systemImage: "plus") { openNewTerminal() }
+                        .labelStyle(.iconOnly).disabled(model.state != .connected || model.projectID != project.id)
+                        // A desktop that is too old still answers a tap, with the reason.
+                        .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
+                        .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
                     Button("Focus mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.setFocusMode(true) }
                         .labelStyle(.iconOnly).disabled(model.sessionID == nil)
                     Button("Session info", systemImage: "info.circle") {
@@ -258,6 +274,9 @@ struct TerminalTabsView: View {
                         Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.screenTextForCopy }.disabled(model.output.isEmpty)
                         Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                         Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                        if let session = model.session, model.canClose(session) {
+                            Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
+                        }
                         Divider()
                         if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
                         else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
@@ -269,7 +288,9 @@ struct TerminalTabsView: View {
                 VStack {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("NO OPEN TERMINALS", systemImage: "terminal").font(style.mono(14, bold: true, relativeTo: .headline))
-                        Text("Open a terminal in this project on your desktop, then refresh.").foregroundStyle(style.muted)
+                        Text("Open one here, or on your desktop and then refresh.").foregroundStyle(style.muted)
+                        Button("New terminal", systemImage: "plus") { openNewTerminal() }.buttonStyle(DesktopButtonStyle(prominent: true))
+                            .disabled(model.state != .connected || model.projectID != project.id)
                     }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                     PendingInputNotice(model: model)
                     ConnectionPanel(model: model).padding()
@@ -282,9 +303,40 @@ struct TerminalTabsView: View {
         .onChange(of: model.focusMode) { _, _ in model.updateKeepAwake() }
         .sheet(item: $sessionInfo) { SessionInfoSheet(info: $0).desktopThemed(model.theme.style) }
         .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
+        .sheet(item: $newTerminal) { NewTerminalSheet(sheet: $0).desktopThemed(model.theme.style) }
+        .alert("Close terminal?", isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } }), presenting: closing) { session in
+            Button("Close terminal", role: .destructive) { close(session) }
+            Button("Cancel", role: .cancel) {}
+        } message: { session in Text("Close \(session.title) · \(session.shortID)? This ends its running process on the Mac.") }
+        // ⌘N, wherever the keyboard is (also in focus mode, where the header is gone). SwiftUI turns it into a UIKeyCommand on the
+        // hosting controller, which the terminal's key view passes on: it claims no ⌘ combination.
+        .background {
+            Button("New terminal") { openNewTerminal() }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(!model.canOpenNewTerminal || model.projectID != project.id || newTerminal != nil)
+                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+        }
         .task(id: project.id) { await model.chooseProject(project.id) }
-        .onAppear { model.setTerminalVisible(true) }
-        .onDisappear { model.setTerminalVisible(false) }
+        .onAppear { model.setTerminalVisible(true); openRequestedNewTerminal() }
+        .onDisappear { model.setTerminalVisible(false); if model.newTerminalRequestedProject == project.id { model.newTerminalRequestedProject = nil } }
+        .onChange(of: model.newTerminalRequestedProject) { _, _ in openRequestedNewTerminal() }
+        .onChange(of: model.projectID) { _, _ in openRequestedNewTerminal() }
+        .onChange(of: model.state) { _, _ in openRequestedNewTerminal() }
+    }
+    private func openNewTerminal() {
+        guard newTerminal == nil, model.state == .connected, model.projectID == project.id, let sheet = NewTerminalSheetModel(model: model) else { return }
+        let binding = $newTerminal
+        sheet.dismiss = { binding.wrappedValue = nil }
+        newTerminal = sheet
+    }
+    /// The project list's "New terminal": once this project is the loaded one and the link is up, the sheet opens.
+    private func openRequestedNewTerminal() {
+        guard model.newTerminalRequestedProject == project.id, model.projectID == project.id, model.state == .connected else { return }
+        model.newTerminalRequestedProject = nil
+        openNewTerminal()
+    }
+    private func close(_ session: RemoteSession) {
+        Task { if let failure = await model.closeTerminal(session) { model.error = failure.message } }
     }
     private var tabStrip: some View {
         ScrollViewReader { proxy in
@@ -308,6 +360,11 @@ struct TerminalTabsView: View {
                         .buttonStyle(.plain).id(session.id)
                         .accessibilityLabel("\(session.title), \(session.shortID)")
                         .accessibilityAddTraits(model.sessionID == session.id ? .isSelected : [])
+                        .contextMenu {
+                            Button("New terminal", systemImage: "plus") { openNewTerminal() }
+                            if model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
+                        }
+                        .accessibilityAction(named: "Close terminal") { if model.canClose(session) { closing = session } }
                     }
                 }
             }.scrollIndicators(.hidden)
