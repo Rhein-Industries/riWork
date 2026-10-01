@@ -42,6 +42,10 @@ final class TerminalBufferTests: XCTestCase {
     /// Every line held is the line the numbering says: `offset` is serial minus absolute index, the same for all of them.
     private func assertConsistent(_ buffer: TerminalBuffer, offset: Int, file: StaticString = #filePath, line: UInt = #line) {
         for index in buffer.indices {
+            // A hole's lines are blank placeholders, and only inside a hole.
+            let inHole = buffer.holes.contains { $0.contains(index) }
+            XCTAssertEqual(buffer[index]?.isMissing, inHole, "absolute index \(index): placeholders are exactly the holes", file: file, line: line)
+            if inHole { continue }
             XCTAssertEqual(buffer[index]?.text, "L\(index + offset)", "absolute index \(index)", file: file, line: line)
             if buffer[index]?.text != "L\(index + offset)" { return }
         }
@@ -179,8 +183,9 @@ final class TerminalBufferTests: XCTestCase {
         var buffer = TerminalBuffer()
         buffer.applyLive(desktop.live())
         let fetch = try! XCTUnwrap(buffer.nextFetch())
-        // The desktop says nothing exists above 700 lines, when 400 of them are above the lines held here.
-        XCTAssertEqual(buffer.merge(page: [], historySize: 600, complete: true, for: fetch), .inconsistent)
+        // The history grew by 100 lines meanwhile, and the desktop says nothing exists above the 600 lines it would have ended at,
+        // when 100 of them are above the lines held here.
+        XCTAssertEqual(buffer.merge(page: [], historySize: 1000, complete: true, for: fetch), .inconsistent)
         XCTAssertFalse(buffer.atTop)
     }
     func testAnEmptyCompletePageJustMarksTheTop() {
@@ -228,9 +233,12 @@ final class TerminalBufferTests: XCTestCase {
         XCTAssertEqual(buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch), .retry, "the page lies entirely inside lines already held")
         XCTAssertEqual(buffer.heldHistory, 100)
         buffer.applyLive(desktop.live(lines: 100))
+        // The 400 lines that scrolled by are a hole between the 100 held and the new answer; nothing is thrown away.
+        XCTAssertEqual(buffer.holes, [2000..<2300])
+        XCTAssertEqual(buffer.start, 1900)
         assertConsistent(buffer, offset: 0)
     }
-    func testGrowthAlsoShiftsTheWindowWhenTheGapToTheLiveAnswerWouldOtherwiseLeaveHoles() {
+    func testMoreOutputThanAnAnswerReachesBackLeavesAHoleAndKeepsTheOlderLines() throws {
         // 2000 lines of history, 100 in the answer. Output writes 350 lines between two answers: more than the answer reaches back.
         var desktop = FakeScrollback(history: 2000)
         var buffer = TerminalBuffer()
@@ -238,11 +246,169 @@ final class TerminalBufferTests: XCTestCase {
         desktop.write(350)
         let change = buffer.applyLive(desktop.live(lines: 100))
         XCTAssertEqual(change.shift, 350)
-        XCTAssertTrue(change.droppedOlder, "lines 1900 … 2249 are missing, so older lines cannot be kept next to the answer")
-        XCTAssertFalse(change.rebased, "the numbering still holds: the lines of the answer keep the index they would have had")
-        XCTAssertEqual(buffer.start, 2250)
+        XCTAssertFalse(change.droppedOlder, "the history_size announced the shift, so what is held is still where it was")
+        XCTAssertFalse(change.rebased)
+        XCTAssertEqual(change.holeLines, 250, "lines 2000 … 2249 scrolled by unseen")
+        XCTAssertEqual(buffer.holes, [2000..<2250])
+        XCTAssertEqual(buffer.missingLines, 250)
+        XCTAssertEqual(buffer.start, 1900, "the 100 lines held before stay put")
+        XCTAssertEqual(buffer.liveStart, 2250)
+        XCTAssertTrue(buffer[2100]?.isMissing == true)
         assertConsistent(buffer, offset: 0)
-        XCTAssertEqual(buffer.nextFetch()?.end, 100)
+        // The hole is asked for first, with a few held lines on both sides so the seams are checked.
+        let fetch = try XCTUnwrap(buffer.nextFetch())
+        XCTAssertTrue(fetch.fillsHole)
+        XCTAssertEqual(fetch.overlap, HistoryLimits.verifyLines)
+        XCTAssertEqual(fetch.end, 92)
+        XCTAssertEqual(fetch.lines, 266, "250 missing, 8 held above and 8 below")
+        let reply = page(desktop, fetch)
+        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch), .merged(added: 250))
+        XCTAssertTrue(buffer.holes.isEmpty)
+        XCTAssertEqual(buffer.start, 1900)
+        assertConsistent(buffer, offset: 0)
+        XCTAssertFalse(try XCTUnwrap(buffer.nextFetch()).fillsHole, "back to the lines above the oldest held")
+    }
+    func testAHoleBiggerThanAPageIsFilledNewestFirstAndOutputMeanwhileShiftsThePages() throws {
+        var desktop = FakeScrollback(history: 3000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(900)
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertEqual(buffer.holes, [3000..<3800])
+        var rounds = 0
+        while !buffer.holes.isEmpty {
+            let fetch = try XCTUnwrap(buffer.nextFetch(pageLines: 300))
+            XCTAssertTrue(fetch.fillsHole)
+            // Output keeps coming: the page is taken from a screen further down than the one the fetch was worked out for.
+            if rounds == 1 { desktop.write(7) }
+            let reply = page(desktop, fetch)
+            let before = buffer.holes.last!
+            let result = buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch)
+            if case .merged = result { XCTAssertLessThan(buffer.holes.last?.upperBound ?? 0, before.upperBound + 1) } else { XCTAssertEqual(result, .retry) }
+            XCTAssertNotEqual(result, .inconsistent)
+            assertConsistent(buffer, offset: 0)
+            rounds += 1
+            if rounds == 1 { buffer.applyLive(desktop.live(lines: 100)) }
+            XCTAssertLessThan(rounds, 12)
+        }
+        XCTAssertGreaterThanOrEqual(rounds, 3, "800 lines at 300 a page")
+        buffer.applyLive(desktop.live(lines: 100))
+        assertConsistent(buffer, offset: 0)
+        XCTAssertTrue(buffer.holes.isEmpty)
+    }
+    func testASecondGapWhileAHoleIsOpenMakesASecondHole() {
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(300)
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertEqual(buffer.holes, [2000..<2200])
+        desktop.write(40)
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertEqual(buffer.holes, [2000..<2200], "within reach of the answer: nothing new is missing")
+        desktop.write(500)
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertEqual(buffer.holes.count, 2)
+        XCTAssertEqual(buffer.holes.first, 2000..<2200)
+        XCTAssertEqual(buffer.holes.last, 2340..<2740, "the lines of the earlier answers stay, with the second hole after them")
+        assertConsistent(buffer, offset: 0)
+    }
+    func testAnAnswerThatReachesBackIntoAHoleReplacesItsUpperPart() {
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(300)
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertEqual(buffer.holes, [2000..<2200])
+        // A bigger answer now reaches back 250 lines: the lines it carries are real, so the hole shrinks.
+        buffer.applyLive(desktop.live(lines: 250))
+        XCTAssertEqual(buffer.holes, [2000..<2050])
+        assertConsistent(buffer, offset: 0)
+        buffer.applyLive(desktop.live(lines: 500))
+        XCTAssertTrue(buffer.holes.isEmpty)
+        assertConsistent(buffer, offset: 0)
+    }
+    func testWithoutAnnouncedHistoryTheGapStillStartsOver() {
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100, reportsHistory: false))
+        desktop.write(350)
+        let change = buffer.applyLive(desktop.live(lines: 100, reportsHistory: false))
+        // Nothing announces the shift; the lines of the two answers share nothing to match: the numbering starts over.
+        XCTAssertTrue(change.rebased || change.droppedOlder)
+        XCTAssertTrue(buffer.holes.isEmpty)
+    }
+    func testAGapBiggerThanThePhoneKeepsIsNotHeldAsAHole() {
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(HistoryLimits.heldLines + 500)
+        let change = buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertTrue(change.droppedOlder)
+        XCTAssertTrue(buffer.holes.isEmpty)
+        XCTAssertEqual(buffer.heldHistory, 100)
+        XCTAssertEqual(buffer.start, buffer.screenTop - 100)
+    }
+    func testHolesWithoutOlderLinesHeldAreNotMade() {
+        var desktop = FakeScrollback(history: 40, rows: 10)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 0))
+        XCTAssertEqual(buffer.heldHistory, 0)
+        desktop.write(300)
+        let change = buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertEqual(change.holeLines, 0, "nothing is held that a hole would keep company")
+        XCTAssertTrue(buffer.holes.isEmpty)
+    }
+    func testAHolePageThatDoesNotMatchTheLinesAroundItDropsEverythingOlder() throws {
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(350)
+        buffer.applyLive(desktop.live(lines: 100))
+        let fetch = try XCTUnwrap(buffer.nextFetch())
+        // The desktop's numbering moved under the request (its history was cleared and refilled): the seam lines differ.
+        let reply = page(desktop, fetch)
+        let changed = reply.lines.map { StyledLine(text: "x" + $0.text, runs: [], columns: $0.columns + 1) }
+        XCTAssertEqual(buffer.merge(page: changed, historySize: reply.historySize, complete: reply.complete, for: fetch), .inconsistent)
+        XCTAssertTrue(buffer.holes.isEmpty)
+        XCTAssertEqual(buffer.start, buffer.liveStart, "only the live answer's scrollback is left")
+        assertConsistent(buffer, offset: 0)
+    }
+    func testAnEmptyPageWhereLinesAreMissingIsNotBelieved() throws {
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(350)
+        buffer.applyLive(desktop.live(lines: 100))
+        let fetch = try XCTUnwrap(buffer.nextFetch())
+        XCTAssertEqual(buffer.merge(page: [], historySize: 2350, complete: false, for: fetch), .inconsistent)
+        XCTAssertTrue(buffer.holes.isEmpty)
+    }
+    func testTrimmingTheOldestLinesTakesTheHolesBelowTheNewStartWithThem() {
+        var desktop = FakeScrollback(history: 3000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(200)
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertEqual(buffer.holes, [3000..<3100])
+        // Pretend the cap is reached by a lot of new output that the answers keep up with, and the hole is trimmed from the bottom.
+        var lines = buffer.lines
+        _ = lines.popLast()
+        XCTAssertFalse(lines.isEmpty)
+        desktop.write(HistoryLimits.heldLines)
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertTrue(buffer.holes.allSatisfy { $0.lowerBound >= buffer.start }, "a hole never reaches below the first line held")
+    }
+    func testAFullHistoryDiscoveredWhileAHoleIsOpenDropsTheOlderLines() {
+        var desktop = FakeScrollback(history: 1000, cap: 1000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertFalse(buffer.drifting)
+        // A burst that history_size cannot announce (it is full) is a drift, not a hole.
+        desktop.write(300)
+        let change = buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertTrue(buffer.holes.isEmpty)
+        XCTAssertTrue(change.rebased || change.droppedOlder || buffer.drifting)
     }
     func testAPageForAnotherNumberingIsThrownAway() {
         let desktop = FakeScrollback(history: 2000)
@@ -263,10 +429,11 @@ final class TerminalBufferTests: XCTestCase {
         var reply = page(desktop, fetch)
         buffer.merge(page: reply.lines, historySize: reply.historySize, complete: false, for: fetch)
         XCTAssertEqual(buffer.heldHistory, 800)
-        // Another page, whose lines cannot be ours: the desktop's numbering moved under it (history_size shrank by 50).
+        // Another page, whose lines cannot be ours: it claims the history grew by 50 lines, which puts it 50 lines further down than
+        // the lines it carries really are, so it disagrees with what is held where they meet.
         fetch = try! XCTUnwrap(buffer.nextFetch())
         reply = page(desktop, fetch)
-        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: 1950, complete: false, for: fetch), .inconsistent)
+        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: 2050, complete: false, for: fetch), .inconsistent)
         XCTAssertEqual(buffer.heldHistory, 500, "only the live answer's scrollback is left")
         XCTAssertEqual(buffer.start, 1500)
         assertConsistent(buffer, offset: 0)
@@ -290,10 +457,64 @@ final class TerminalBufferTests: XCTestCase {
         XCTAssertEqual(buffer.nextFetch(pageLines: 75)?.end, 575)
     }
 
+    // MARK: a history that is drawn again
+
+    func testAPageTakenBeforeTheHistoryWasWipedIsNeverStitchedOn() throws {
+        // An inline agent clears its scrollback and draws it again when the pane changes width (history_size 85 -> 0 -> 108).
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 120))
+        let fetch = try XCTUnwrap(buffer.nextFetch())
+        let era = buffer.era
+        let reply = page(desktop, fetch)      // taken from the old history
+        // The answers that follow show the history cleared and growing again.
+        desktop = FakeScrollback(history: 0)
+        buffer.applyLive(desktop.live(lines: 120))
+        XCTAssertGreaterThan(buffer.era, era, "a shrinking history is a new history")
+        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch), .stale)
+        XCTAssertEqual(buffer.heldHistory, 0, "nothing of the old history was stitched on")
+        XCTAssertEqual(buffer.screenTop, 0)
+    }
+    func testAPageWhoseHistoryIsShorterThanTheLastAnswerIsStaleNotPlaced() throws {
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 120))
+        let fetch = try XCTUnwrap(buffer.nextFetch())
+        // The page is taken after the history shrank, before the phone has an answer that shows it.
+        desktop = FakeScrollback(history: 1200)
+        let reply = page(desktop, fetch)
+        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch), .stale)
+        XCTAssertEqual(buffer.heldHistory, 120, "untouched: the next answer sorts it out")
+    }
+    func testARebuildChangesTheEraAndTheEpoch() throws {
+        let desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 120))
+        let (epoch, era) = (buffer.epoch, buffer.era)
+        buffer.reset()
+        XCTAssertNotEqual(buffer.epoch, epoch); XCTAssertNotEqual(buffer.era, era)
+        buffer.applyLive(desktop.live(lines: 120))
+        XCTAssertGreaterThan(buffer.era, era)
+        // A history that only grows keeps its era, however fast.
+        let steady = buffer.era
+        var more = desktop
+        more.write(40)
+        buffer.applyLive(more.live(lines: 120))
+        XCTAssertEqual(buffer.era, steady)
+    }
+    func testThePlainTextOfTheScreenAndItsLatestScrollback() {
+        var buffer = TerminalBuffer()
+        buffer.applyLive(FakeScrollback(history: 50, rows: 5).live(lines: 40))
+        let text = buffer.plainText(scrollbackLines: 3)
+        XCTAssertEqual(text, ["L47", "L48", "L49", "L50", "L51", "L52", "L53", "L54"].joined(separator: "\n"))
+        XCTAssertEqual(buffer.plainText(scrollbackLines: 1_000_000).split(separator: "\n").count, 45)
+        XCTAssertEqual(TerminalBuffer().plainText(scrollbackLines: 10), "")
+    }
+
     // MARK: cap
 
     func testPagingStopsAtTheCapAndTheLastPageIsShortened() {
-        let desktop = FakeScrollback(history: 30_000)
+        let desktop = FakeScrollback(history: 80_000)
         var buffer = TerminalBuffer()
         buffer.applyLive(desktop.live())
         var pages = 0
@@ -302,16 +523,16 @@ final class TerminalBufferTests: XCTestCase {
             buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch)
             pages += 1
             XCTAssertLessThanOrEqual(buffer.heldHistory, HistoryLimits.heldLines)
-            XCTAssertLessThan(pages, 100)
+            XCTAssertLessThan(pages, 200)
         }
         XCTAssertEqual(buffer.heldHistory, HistoryLimits.heldLines)
         XCTAssertTrue(buffer.limitReached)
         XCTAssertFalse(buffer.atTop, "older lines exist, they are just not loaded")
-        XCTAssertEqual(buffer.start, 10_000)
+        XCTAssertEqual(buffer.start, 30_000)
         assertConsistent(buffer, offset: 0)
     }
     func testNewOutputAtTheCapDropsTheOldestLines() {
-        var desktop = FakeScrollback(history: 30_000)
+        var desktop = FakeScrollback(history: 80_000)
         var buffer = TerminalBuffer()
         buffer.applyLive(desktop.live())
         while let fetch = buffer.nextFetch() {
@@ -321,13 +542,13 @@ final class TerminalBufferTests: XCTestCase {
         desktop.write(40)
         buffer.applyLive(desktop.live())
         XCTAssertEqual(buffer.heldHistory, HistoryLimits.heldLines, "the cap holds")
-        XCTAssertEqual(buffer.start, 10_040, "the oldest 40 lines went")
+        XCTAssertEqual(buffer.start, 30_040, "the oldest 40 lines went")
         XCTAssertFalse(buffer.atTop)
         assertConsistent(buffer, offset: 0)
         // While the view is being scrolled the oldest lines stay, so nothing above the reader moves.
         desktop.write(10)
         buffer.applyLive(desktop.live(), allowTrim: false)
-        XCTAssertEqual(buffer.start, 10_040)
+        XCTAssertEqual(buffer.start, 30_040)
         XCTAssertEqual(buffer.heldHistory, HistoryLimits.heldLines + 10)
         desktop.write(1)
         buffer.applyLive(desktop.live())
@@ -369,12 +590,15 @@ final class TerminalBufferTests: XCTestCase {
         XCTAssertEqual(buffer.heldHistory, 505, "the 5 lines that scrolled in are kept next to the 500")
         XCTAssertEqual(fetch.end, 505 - HistoryLimits.verifyLines)
         XCTAssertEqual(fetch.lines, 300 + HistoryLimits.verifyLines)
-        // Two more lines arrive before the page is taken: history_size cannot say so, the overlap does not match any more.
+        // Two more lines arrive before the page is taken: history_size cannot say so, but the overlap fits two lines lower, and the page
+        // is placed there instead of being thrown away with everything prefetched.
         desktop.write(2)
         let reply = page(desktop, fetch)
-        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch), .inconsistent)
-        XCTAssertEqual(buffer.heldHistory, 500, "nothing was stitched on wrongly: only the live answer's scrollback is left")
-        // After the next live answer the same fetch works.
+        guard case .merged(let added) = buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch) else { return XCTFail("placed where the overlap fits") }
+        XCTAssertEqual(added, 300 - 2, "the page sits two lines lower than worked out, so two fewer of its lines are new")
+        assertConsistent(buffer, offset: 0)
+        XCTAssertGreaterThan(buffer.heldHistory, 505)
+        // After the next live answer the same kind of fetch works too.
         buffer.applyLive(desktop.live())
         assertConsistent(buffer, offset: 0)
         let again = try! XCTUnwrap(buffer.nextFetch())
@@ -382,6 +606,96 @@ final class TerminalBufferTests: XCTestCase {
         XCTAssertEqual(buffer.merge(page: good.lines, historySize: good.historySize, complete: good.complete, for: again), .merged(added: 300))
         assertConsistent(buffer, offset: 0)
     }
+    func testAPageThatFitsNowhereWithinReachIsRefusedAndTheOlderHistoryDropped() {
+        var desktop = FakeScrollback(history: 3000, cap: 3000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live())
+        desktop.write(5)
+        buffer.applyLive(desktop.live())
+        let fetch = try! XCTUnwrap(buffer.nextFetch())
+        // More than the phone is willing to search for scrolled in meanwhile.
+        desktop.write(HistoryLimits.verifyLines + 100)
+        let reply = page(desktop, fetch)
+        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch), .inconsistent)
+        XCTAssertEqual(buffer.heldHistory, 500)
+    }
+    func testAPageOvertakenByALiveAnswerIsPlacedByTheDifferenceNotThrownAway() throws {
+        // Two requests are in the desktop's shared slots at once, and the answer to the later one gets here first.
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 120))
+        let fetch = try XCTUnwrap(buffer.nextFetch())
+        let reply = page(desktop, fetch)      // taken at history_size 2000
+        desktop.write(30)
+        buffer.applyLive(desktop.live(lines: 120))   // seen first: 2030
+        XCTAssertEqual(buffer.historySize, 2030)
+        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch), .merged(added: 300), "its lines are where they always were")
+        assertConsistent(buffer, offset: 0)
+        XCTAssertEqual(buffer.start, 1880 - 300)
+    }
+    func testAHoleOfSeveralPagesStartsWithALookAtItsSeamWithTheOlderLines() throws {
+        var desktop = FakeScrollback(history: 3000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(900)
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertEqual(buffer.holes, [3000..<3800])
+        // The first request is a few lines either side of the seam, not 300 lines of the hole.
+        let probe = try XCTUnwrap(buffer.nextFetch(pageLines: 300))
+        XCTAssertTrue(probe.fillsHole)
+        XCTAssertEqual(probe.lines, 2 * HistoryLimits.verifyLines)
+        let reply = page(desktop, probe)
+        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: probe), .merged(added: HistoryLimits.verifyLines))
+        XCTAssertEqual(buffer.holes, [3008..<3800], "the seam matched, and the first lines of the hole came with the look")
+        // Once looked at, the next is a page of the hole from its newer end.
+        let next = try XCTUnwrap(buffer.nextFetch(pageLines: 300))
+        XCTAssertEqual(next.lines, 300 + HistoryLimits.verifyLines, "a page and its overlap with the lines held under it")
+        assertConsistent(buffer, offset: 0)
+    }
+    func testAHoleWhoseOlderSideIsNotTheHistoryHeldIsFoundBeforeItIsDownloaded() throws {
+        var desktop = FakeScrollback(history: 3000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        // The desktop's history was wiped and has grown past the old size with other lines; the old ones are still held.
+        desktop = FakeScrollback(history: 3900); desktop.serials = desktop.serials.map { $0 + 50_000 }
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertEqual(buffer.holes, [3000..<3800], "nothing in the answer overlaps the lines held, so the shift is taken as announced")
+        let probe = try XCTUnwrap(buffer.nextFetch(pageLines: 300))
+        XCTAssertEqual(probe.lines, 2 * HistoryLimits.verifyLines)
+        let reply = page(desktop, probe)
+        XCTAssertEqual(buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: probe), .inconsistent, "found with one small request")
+        XCTAssertTrue(buffer.holes.isEmpty)
+        XCTAssertEqual(buffer.heldHistory, 100, "and the old lines are gone")
+    }
+    func testHolesCanBeLeftAloneAndTheLinesAboveAskedForInstead() throws {
+        var desktop = FakeScrollback(history: 3000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(700)
+        buffer.applyLive(desktop.live(lines: 100))
+        XCTAssertTrue(try XCTUnwrap(buffer.nextFetch()).fillsHole)
+        let above = try XCTUnwrap(buffer.nextFetch(fillHoles: false))
+        XCTAssertFalse(above.fillsHole)
+        XCTAssertEqual(above.end, buffer.heldHistory, "just above the oldest line held")
+        // Where the hole is, relative to a view.
+        XCTAssertEqual(buffer.holes, [3000..<3600])
+        XCTAssertTrue(buffer.holeNear(top: 3300, rows: 50, screens: 2), "in it")
+        XCTAssertTrue(buffer.holeNear(top: 3690, rows: 50, screens: 2), "two screens below it")
+        XCTAssertFalse(buffer.holeNear(top: 3710, rows: 50, screens: 2), "further below")
+        XCTAssertTrue(buffer.holeNear(top: 2900, rows: 50, screens: 2), "just above it")
+        XCTAssertFalse(buffer.holeNear(top: 2000, rows: 50, screens: 2), "far above it")
+    }
+    func testTheTextOfAHoleIsNotCopied() {
+        var desktop = FakeScrollback(history: 2000)
+        var buffer = TerminalBuffer()
+        buffer.applyLive(desktop.live(lines: 100))
+        desktop.write(300)
+        buffer.applyLive(desktop.live(lines: 100))
+        let text = buffer.plainText(scrollbackLines: 1000)
+        XCTAssertFalse(text.contains("\n\n"), "no blank lines for lines that were never seen")
+        XCTAssertEqual(text.split(separator: "\n").count, 100 + 100 + 10)
+    }
+
     func testAHistoryAsLargeAsTheDesktopsLimitIsAssumedFullFromTheStart() {
         let desktop = FakeScrollback(history: HistoryLimits.desktopHistoryLines, rows: 10)
         var buffer = TerminalBuffer()
@@ -470,12 +784,14 @@ final class TerminalBufferTests: XCTestCase {
     }
     /// Live answers, page fetches (with and without output arriving while the page is on its way) and trims in any order, against
     /// a desktop with a full history and one without: whatever happens, the lines held are consecutive lines of the desktop's
-    /// output, each under the index it had before.
+    /// output, each under the index it had before, apart from the blank placeholders of holes (which are exactly the holes) -- and
+    /// once the holes are fetched, nothing is missing.
     func testRandomSequencesNeverLeaveGapsDuplicatesOrMovedLines() {
-        var merged = 0, retried = 0, inconsistent = 0, rebased = 0, dropped = 0, drifted = 0
-        defer { print("FUZZ merged \(merged) retry \(retried) inconsistent \(inconsistent) rebased \(rebased) droppedOlder \(dropped) drifted \(drifted)") }
+        var merged = 0, retried = 0, inconsistent = 0, rebased = 0, dropped = 0, drifted = 0, holed = 0, filledHoles = 0
+        defer { print("FUZZ merged \(merged) retry \(retried) inconsistent \(inconsistent) rebased \(rebased) droppedOlder \(dropped) drifted \(drifted) holes \(holed) filled \(filledHoles)") }
         for cap in [nil, 300, 4000] as [Int?] {
-            for seed in 1...25 {
+            // A big history makes each step slower to check; fewer runs of it do as well.
+            for seed in 1...(cap == 4000 ? 8 : 25) {
                 var rng = LCG(state: UInt64(seed) &* 7919 &+ UInt64(cap ?? 1))
                 // A capped desktop starts out full: the moment a history fills up is the one thing a page cannot be checked against.
                 var desktop = FakeScrollback(history: cap ?? Int.random(in: 0...2500, using: &rng), rows: 10, cap: cap)
@@ -487,19 +803,40 @@ final class TerminalBufferTests: XCTestCase {
                 var epoch = buffer.epoch
                 func offset() -> Int { Int(buffer[buffer.start]!.text.dropFirst())! - buffer.start }
                 var known = offset()
+                func check(_ label: String) -> Bool {
+                    // Consecutive, in order, at the numbering they have always had; placeholders exactly in the holes. Every line near
+                    // the ends and around the holes, and every 61st between: a skipped or repeated line shifts all that follow it, so
+                    // it cannot hide.
+                    func good(_ index: Int) -> Bool {
+                        guard let line = buffer[index] else { return true }
+                        let inHole = buffer.holes.contains { $0.contains(index) }
+                        if line.isMissing != inHole { XCTFail("\(label): index \(index) placeholder \(line.isMissing), in a hole \(inHole)"); return false }
+                        if !inHole, line.text != "L\(index + known)" { XCTFail("\(label): index \(index) is \(line.text), expected L\(index + known)"); return false }
+                        return true
+                    }
+                    var probes = Set<Int>()
+                    for index in stride(from: buffer.start, to: buffer.endIndex, by: 61) { probes.insert(index) }
+                    for index in buffer.start..<min(buffer.endIndex, buffer.start + 40) { probes.insert(index) }
+                    for index in max(buffer.start, buffer.endIndex - 160)..<buffer.endIndex { probes.insert(index) }
+                    for hole in buffer.holes { for index in [hole.lowerBound - 1, hole.lowerBound, hole.lowerBound + 1, hole.upperBound - 1, hole.upperBound, hole.upperBound + 1] { probes.insert(index) } }
+                    for index in probes.sorted() where !good(index) { return false }
+                    if !buffer.holes.allSatisfy({ $0.lowerBound >= buffer.start && $0.upperBound <= buffer.liveStart }) { XCTFail("\(label): holes \(buffer.holes) outside \(buffer.start)..<\(buffer.liveStart)"); return false }
+                    return true
+                }
                 for step in 0..<150 {
                     let what = Int.random(in: 0..<5, using: &rng)
                     switch what {
                     case 0:
                         desktop.write(Int.random(in: 0...40, using: &rng))
                         let change = buffer.applyLive(desktop.live(lines: [100, 300, 500].randomElement(using: &rng)!), allowTrim: Bool.random(using: &rng))
-                        if change.rebased { rebased += 1 }; if change.droppedOlder { dropped += 1 }
+                        if change.rebased { rebased += 1 }; if change.droppedOlder { dropped += 1 }; if change.holeLines > 0 { holed += 1 }
                     case 1, 2:
                         guard let fetch = buffer.nextFetch(pageLines: [300, 75, 20].randomElement(using: &rng)!) else { break }
                         if what == 2 { desktop.write(Int.random(in: 0...15, using: &rng)) }
                         let reply = desktop.page(end: fetch.end, lines: fetch.lines)
+                        let hadHoles = !buffer.holes.isEmpty
                         switch buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch) {
-                        case .merged: merged += 1
+                        case .merged: merged += 1; if hadHoles && fetch.fillsHole { filledHoles += 1 }
                         case .retry: retried += 1
                         case .inconsistent: inconsistent += 1
                         case .stale: XCTFail("the numbering never changed")
@@ -510,26 +847,39 @@ final class TerminalBufferTests: XCTestCase {
                     default:
                         desktop.write(Int.random(in: 100...700, using: &rng))   // can be more than an answer reaches back
                         let change = buffer.applyLive(desktop.live(lines: 300))
-                        if change.rebased { rebased += 1 }; if change.droppedOlder { dropped += 1 }
+                        if change.rebased { rebased += 1 }; if change.droppedOlder { dropped += 1 }; if change.holeLines > 0 { holed += 1 }
                     }
                     if buffer.epoch != epoch { epoch = buffer.epoch; known = offset() }
                     if buffer.drifting { drifted += 1 }
                     let label = "cap \(String(describing: cap)) seed \(seed) step \(step) op \(what)"
-                    // consecutive, in order, at the numbering they have always had
-                    var wrong: Int?
-                    for index in buffer.indices where buffer[index]?.text != "L\(index + known)" { wrong = index; break }
-                    XCTAssertNil(wrong, "\(label): index \(wrong ?? -1) is \(String(describing: wrong.flatMap { buffer[$0]?.text })), expected L\((wrong ?? 0) + known)")
-                    if wrong != nil { return }
+                    if !check(label) { return }
                     // after a live answer, the screen is where the desktop's is
                     if what == 0 || what >= 3 { XCTAssertEqual(buffer.screenTop + known, desktop.screenTopSerial, label) }
                 }
+                // The holes go away by fetching them, one page after another, whatever scrolls in meanwhile.
+                var rounds = 0
+                while !buffer.holes.isEmpty, rounds < 50 {
+                    guard let fetch = buffer.nextFetch(pageLines: 300) else { break }
+                    XCTAssertTrue(fetch.fillsHole, "holes come first")
+                    let reply = desktop.page(end: fetch.end, lines: fetch.lines)
+                    // A page that lands inside lines already held means the screen moved on: the next live answer brings it up to date.
+                    if buffer.merge(page: reply.lines, historySize: reply.historySize, complete: reply.complete, for: fetch) == .retry {
+                        buffer.applyLive(desktop.live(lines: 100))
+                    }
+                    if !check("cap \(String(describing: cap)) seed \(seed) filling") { return }
+                    rounds += 1
+                }
+                XCTAssertTrue(buffer.holes.isEmpty, "cap \(String(describing: cap)) seed \(seed): the holes were fetched")
+                XCTAssertEqual(buffer.missingLines, 0)
             }
         }
         XCTAssertGreaterThan(merged, 500)
         XCTAssertGreaterThan(retried, 0)
         XCTAssertGreaterThan(inconsistent, 0, "capped histories with output arriving mid-page are caught by the overlap")
-        XCTAssertGreaterThan(dropped, 0)
+        XCTAssertGreaterThan(rebased, 0)
         XCTAssertGreaterThan(drifted, 0)
+        XCTAssertGreaterThan(holed, 20, "uncapped histories make holes of bursts")
+        XCTAssertGreaterThan(filledHoles, 20)
     }
 
     // MARK: styled pages
@@ -545,6 +895,22 @@ final class TerminalBufferTests: XCTestCase {
         XCTAssertEqual(TerminalText.styledLines(page: ""), [])
         XCTAssertEqual(TerminalText.styledLines(page: "\n").map(\.text), [""])
         XCTAssertEqual(TerminalText.styledLines(page: "\n\n\n").map(\.text), ["", "", ""])
+    }
+    func testAPageIsReadAsTheDesktopWritesItAndCheckedAgainstItsLineCount() {
+        // The wire: lines joined by line breaks, none after the last; `line_count` says how many there are.
+        func read(_ text: String, _ count: Int) -> [String] { TerminalText.styledLines(page: text, expecting: count).map(\.text) }
+        XCTAssertEqual(read("a\nb", 2), ["a", "b"])
+        XCTAssertEqual(read("", 1), [""], "one blank line is an empty string with a count of 1")
+        XCTAssertEqual(read("", 0), [], "and an empty page is one with a count of 0")
+        XCTAssertEqual(read("\n\n", 3), ["", "", ""], "pages end in blank lines as often as anything: three blank lines")
+        XCTAssertEqual(read("a\n", 2), ["a", ""], "a line and a blank one under it")
+        XCTAssertEqual(read("\nz", 2), ["", "z"])
+        // A terminator after every line (an older desktop, the fixture) is read as one.
+        XCTAssertEqual(read("a\nb\n", 2), ["a", "b"])
+        XCTAssertEqual(read("a\n\n", 2), ["a", ""])
+        // A page that is not what it says is not forced into shape: the caller sees the wrong count.
+        XCTAssertNotEqual(read("a\nb", 5).count, 5)
+        XCTAssertEqual(TerminalText.styledLines(page: "a\nb\n\n", expecting: nil).map(\.text), ["a", "b", ""], "without a count the old reading holds")
     }
     func testTheLiveScreenSaysWhereItsScreenStarts() {
         let text = (0..<9).map { "row \($0)" }.joined(separator: "\n") + "\n\n\n\n"

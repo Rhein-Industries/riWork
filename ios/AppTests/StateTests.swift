@@ -53,6 +53,10 @@ actor FixtureTransport: RemoteTransport {
     var historyMode = HistoryMode.ok
     var historyRequestLog: [[String: JSONValue]] = []
     var historyGated = false
+    /// A link the history pages travel over: every page takes `fixed` plus its bytes at `bytesPerSecond`.
+    var historyFixed = Duration.zero
+    var historyBytesPerSecond: Double?
+    var historyTimes: [ContinuousClock.Instant] = []
     private var waiters: [CheckedContinuation<Void, any Error>] = []
     func setSessions(_ sessions: [RemoteSession]) { listedShells = sessions }
     func setMissing(_ id: String) { missingOutputs.insert(id) }
@@ -92,6 +96,8 @@ actor FixtureTransport: RemoteTransport {
     func historyRequests() -> [[String: JSONValue]] { historyRequestLog }
     /// Holds `shell.history` requests back (after they are logged) until released, so output can arrive while a page is on its way.
     func gateHistory(_ on: Bool) { historyGated = on }
+    func setLink(fixed: Duration, bytesPerSecond: Double?) { historyFixed = fixed; historyBytesPerSecond = bytesPerSecond }
+    func historyRequestTimes() -> [ContinuousClock.Instant] { historyTimes }
     func scriptedScrollback() -> ScriptedScrollback? { scrollback }
     func setKeysMode(_ mode: KeysMode) { keysMode = mode }
     func setKeysDelay(_ delay: Duration?) { keysDelay = delay }
@@ -181,6 +187,7 @@ actor FixtureTransport: RemoteTransport {
             return .object(reply)
         case "shell.history":
             historyRequestLog.append(params)
+            historyTimes.append(.now)
             switch historyMode {
             case .ok: break
             case .unsupported: throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method")
@@ -194,6 +201,12 @@ actor FixtureTransport: RemoteTransport {
             guard let scrollback, case .number(let end)? = params["end"], case .number(let count)? = params["lines"] else { throw RemoteError.rpc(code: "invalid_request", message: "no scrollback") }
             var fields = scrollback.historyFields(shellID: params["shell_id"]!, end: Int(end), lines: Int(count))
             if case .wrongCount = historyMode, case .number(let n)? = fields["line_count"] { fields["line_count"] = .number(n + 1) }
+            if historyFixed > .zero || historyBytesPerSecond != nil {
+                // The link: a fixed cost, and the bytes the page weighs at the link's rate.
+                let bytes = HistoryReply.wireBytes(of: fields["output"]?.string ?? "")
+                let transfer = historyBytesPerSecond.map { Duration.seconds(Double(bytes) / $0) } ?? .zero
+                try await Task.sleep(for: historyFixed + transfer)
+            }
             return .object(fields)
         case "shell.input":
             inputs.append(id)

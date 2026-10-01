@@ -18,6 +18,9 @@ public struct StyledLine: Sendable, Equatable {
 }
 
 extension StyledLine {
+    /// Stands for a line that scrolled by unseen (see `TerminalBuffer.holes`): blank, and told apart from a real empty line by its width.
+    public static let missing = StyledLine(text: "", runs: [], columns: -1)
+    public var isMissing: Bool { columns < 0 }
     /// The same line of text, allowing for trailing spaces that one capture kept and another trimmed.
     public func sameText(as other: StyledLine) -> Bool {
         if text == other.text { return true }
@@ -322,14 +325,24 @@ extension TerminalText {
         return build(scanned, rows: rows, cursor: (row, index), historyLines: historyLines)
     }
 
-    /// The lines of a `shell.history` page: scrollback lines, top to bottom, each ending with a line break, with the same styles and
-    /// text presentation as the live screen. The line break after the last line ends it; it does not start another (a blank last line
-    /// is "\n\n"). The caller checks the number of lines against the `line_count` the desktop reported.
-    public static func styledLines(page input: String, textPresentation forceText: Bool = true) -> [StyledLine] {
-        if input.isEmpty { return [] }
+    /// The lines of a `shell.history` page: scrollback lines, top to bottom, with the same styles and text presentation as the live
+    /// screen.
+    ///
+    /// The desktop joins the lines with line breaks and puts none after the last (`"a\nb"`, one blank line is `""`, three blank lines are
+    /// `"\n\n"`), and says how many lines there are (`line_count`), which is what tells an empty page from one blank line and a page that
+    /// ends in blank lines from one that ends in a line break. With `expecting` the page is read that way and checked against the count;
+    /// a page that is one break longer (a terminator after every line) is read that way. Without it a trailing break is a terminator:
+    /// `"a\n\n"` is `a` and a blank line. The caller checks the number of lines against the `line_count` the desktop reported.
+    public static func styledLines(page input: String, expecting count: Int? = nil, textPresentation forceText: Bool = true) -> [StyledLine] {
+        if count == 0 || (count == nil && input.isEmpty) { return [] }
         let scanned = scanStyled(input, keepCells: true, textPresentation: forceText)
         var rows = scanned.rows
-        if input.utf8.last == 0x0A, rows.last?.isEmpty == true { rows.removeLast() }
+        // `scanStyled` ends a row at every break and once more at the end: n breaks make n + 1 rows, exactly the lines of the protocol.
+        if let count {
+            if rows.count == count + 1, rows.last?.isEmpty == true, input.utf8.last == 0x0A { rows.removeLast() }
+        } else if input.utf8.last == 0x0A, rows.last?.isEmpty == true {
+            rows.removeLast()
+        }
         return build(scanned, rows: rows, cursor: nil).lines
     }
 }

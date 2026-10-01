@@ -213,8 +213,8 @@ private struct ThemedTerminal: View {
         model.setAppActive(false)
         await model.disconnect(background: true)
         XCTAssertEqual(model.state, .suspended)
-        let inFlight = await transport.inFlightCount("shell.output")
-        XCTAssertEqual(inFlight, 0)
+        // The cancelled request unwinds on the fake desktop a moment after the model stops waiting for it.
+        await eventually("the wait is over") { await transport.inFlightCount("shell.output") == 0 }
         await model.appDidBecomeActive()
         XCTAssertEqual(model.state, .connected)
         await eventually("live again on the new connection") { model.syncMode == .live }

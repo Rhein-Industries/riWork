@@ -93,7 +93,7 @@ clears if none remain. Old draft/output state clears on fallback. Pending input
 stays attached to its original shell and is never resent or moved to the new tab.
 If output returns `not_found`, the app refreshes project sessions once, reconciles,
 and stops polling that UUID. Explicit refresh or reconnect can check it again.
-Refresh or follow output from the toolbar. Output is requested with `lines: 500`; if
+Refresh or follow output from the toolbar. Output is requested with `lines: 500` (120 on an iPhone once older lines come from `shell.history`, see Scrolling); if
 the desktop answers `response_too_large` or `cli_error` (its reply cap is 128 KiB, which
 wide grids with multibyte scrollback can exceed) the app halves `lines` down to 20,
 remembers the size that fits for that session, and resets it on reconnect or refresh.
@@ -179,36 +179,91 @@ palette (or a built-in set that suits the desktop's light or dark side), xterm-2
 background, like Ghostty's `faint-opacity`), italic, underline, strikethrough, inverse, hidden and every reset. Malformed or
 unknown sequences are dropped whole and never crash. Bold text is not made bright (Ghostty's `bold-is-bright` is off; the
 `riwork.boldIsBright` default turns it on). Parsing (`Core/StyledScreen.swift`) happens off the main actor and yields the screen
-line by line; the terminal draws only the lines on screen in a lazy stack and redraws only lines that changed, so a
-500 × 300 screen stays smooth (a single large `Text` took seconds). Every line is exactly one grid row and each glyph that
-borrows a font is kerned back to the cells the terminal counts for it, so attributes and fallback fonts never move a column.
+line by line; the iPhone terminal paints only the rows in view, each with Core Text on a whole device pixel (`TerminalRowView.swift`),
+and repaints only rows whose line changed, so a 50,000-line history costs no more than a screen. Every line is exactly one grid row
+(its height is the font's line height rounded to a device pixel, which is also what the desktop grid is worked out from) and each glyph
+that borrows a font is kerned back to the cells the terminal counts for it, so attributes and fallback fonts never move a column or a
+baseline. Backgrounds, underlines and the cursor are painted on the grid, cell by cell.
 Symbols that can also be emoji but are text by default (⏺ ⏸ ⚠ ✔ ▶ ℹ …) get U+FE0E, so they draw as monochrome text glyphs in the
-foreground color as on the Mac; genuine emoji (✅ 🚀, FE0F, keycaps, ZWJ, flags, skin tones) are left alone. Drag-selecting
-works within a line; **Copy screen text** in the menu copies the latest answer: the screen and the last 500 lines of scrollback
-that came with it, not the older pages loaded by scrolling.
+foreground color as on the Mac; genuine emoji (✅ 🚀, FE0F, keycaps, ZWJ, flags, skin tones) are left alone. A long press on a line
+copies it (or the lines in view); **Copy screen text** in the menu copies the screen and the last 500 lines above it that are loaded.
 
-**Scrolling** (iPhone; the iPad keeps its two-axis scroll view and follow toggle). The terminal scrolls vertically only: the
-desktop pane has the phone's width, and a rare longer line is clipped at the edge. Every line held has an absolute index that
-never changes while lines are added above or below it (`Core/TerminalBuffer.swift`: the first answer numbers the screen's top
-row `history_size`, scrolled-in lines keep counting), and the lazy rows are keyed by it with `scrollPosition(id:)`, so neither
-live output at the bottom nor an older page at the top moves the line being read. The view follows new output only while it is at
-the bottom or within a line of it. Scrolled up, it stays put, and a pill "↓ Live · N new" (just "↓ Live" when far away and nothing
-new) takes the reader back and resumes following; typing, key-bar keys, sending a line and the menu's "Jump to latest output" do
-the same. A shell is opened, and switched to, at its bottom. A page of older lines put in under a moving finger or momentum would
-move what is under it, so it waits until the view is at rest. Near the top, within a screen of the first loaded line, the phone
-asks `shell.history` for the next older page (`end` = the lines already held above the screen, `lines` 300, `styled`), one request at
-a time, while the long poll and typing carry on: "Loading…" shows in a row at the top and "Beginning of history" once `complete`.
-`response_too_large` halves `lines` (kept per session); a desktop without the method (`unsupported RPC method`) or that rejects
-`styled` (retried once without it) falls back to today's behaviour: the screen and the latest 500 lines, no paging. The page is
-placed by the `history_size` it carries, so lines that scrolled in meanwhile are found as a shared overlap, compared and left out;
-a page that does not line up is dropped with everything older than the live answer and fetched again. A desktop whose history is
-full (it drops its oldest lines, `history_size` stops growing) is followed by matching the lines of consecutive answers, and its
-pages overlap the lines held by 8 so the seam is checked. A pane re-wrapped by a resize cannot be matched and renumbers the
-lines. At most 20,000 lines of scrollback are held; past that no older page is asked for and live output pushes out the oldest.
+**Scrolling** (iPhone; the iPad keeps its two-axis scroll view, the latest answer alone and its follow toggle). The terminal scrolls
+vertically only: the desktop pane has the phone's width, and a rare longer line is clipped at the edge.
+
+*The surface.* `TerminalSurfaceView` (UIKit, `TerminalSurface.swift`) replaced the SwiftUI `ScrollView` + `LazyVStack` +
+`scrollPosition(id:)`, which could not keep the reader in place when lines were added above the view (it found its anchor after the
+layout, never under a finger or in a fling, and diffed every identity on each update). Every line has an absolute index that never
+changes while lines are added above or below it (`Core/TerminalBuffer.swift`: the first answer numbers the screen's top row
+`history_size`, scrolled-in lines keep counting), and line `i` sits at `i × lineHeight` in the scroll view's content
+(`Core/TerminalScrollGeometry.swift`). So a page of older lines, or output at the bottom, moves no line at all: the page is put in the
+moment it arrives, under a moving finger or a fling, and only how far up the reader may scroll changes (the content inset). The scroll
+view is only the physics and the gestures; the rows are drawn into a plain view next to it, relative to the view, one recycled view per
+row in view. A live answer reconfigures the visible rows and repaints those whose line differs (usually the last one or two).
+The view follows new output only while it is at the bottom or within a line of it. Scrolled up, it stays put, and a pill
+"↓ Live · N new" (just "↓ Live" when far away and nothing new) takes the reader back and resumes following; typing, key-bar keys,
+sending a line and the menu's "Jump to latest output" do the same. A shell is opened, and switched to, at its bottom. At the top
+of the loaded lines is a header row: "Loading…", "Beginning of history", "Showing the last 50,000 lines", or "Couldn't load older
+lines · tap to retry".
+
+*History is a second step.* The live screen comes first. Once its first answer is in, the phone fetches older scrollback in the
+background (`shell.history`, `styled`), one request at a time, so that scrolling is local with no round trip per scroll. Before every
+page `HistoryPrefetch.decide` (`Core/HistoryPrefetch.swift`, pure and tested) chooses whether to fetch, how many lines, or to wait.
+- *Bandwidth.* Each page is timed (`LinkMeter`): its bytes as they travelled (JSON-escaped, `HistoryReply.wireBytes`) and its duration.
+  The first background request is a ten-line probe that learns the fixed cost of a request (round trip plus the desktop starting its CLI); that is
+  taken out of bigger pages, so a long round trip on a fast link is not mistaken for a slow link. The rate is smoothed, and forgotten
+  when the kind of link changes (Wi-Fi to cellular). **fast ≥ 1 MB/s** (a 128 KiB page in ~130 ms, the whole 50,000 lines in ~3 s),
+  **good 250 KB/s to 1 MB/s**, **slow < 250 KB/s** (below it a worthwhile page blocks the socket for too long).
+- *How much.* Fast or good on an unrestricted path: everything, up to the 50,000 lines held. Slow, metered (`NWPath.isExpensive`),
+  Low Power Mode: 10 screens above the reader (a fetch starts when fewer than 5 are loaded, so well before the top). Low Data Mode
+  (`isConstrained`): 5 screens (starts below 2.5). A reader within 1.5 screens of the top is waiting: no pauses between pages.
+- *How big, how often.* A page is what the link carries in about 0.3 s (fast), 0.2 s (good) or 0.12 s (slow), at most 80 KiB on the
+  wire and 1000 lines, growing by at most double per page (`response_too_large` still halves it, kept per session). After a page the
+  link is left alone for 0.15× (fast), 1× (good) or 3× (slow) its duration, twice that while the screen is changing. The rate kept is
+  the best of the last three pages: delays only ever add to a page's time, so one page is more likely too slow than too fast.
+- *Never in the way of typing or the live screen.* No page starts while keys are queued, in flight or were typed in the last 0.8 s
+  (a page in flight cannot be taken back, but it is sized to hold up an echo for a fraction of a second). The desktop runs the ordered
+  lane (`shell.keys`, `shell.input`, `shell.resize`) in a slot of its own, history is a plain read in one of the three shared slots
+  (`remote/src/lanes.rs`), and at most two of those hold waiting `shell.output` calls, so a page can neither delay a key batch nor take a
+  poll's slot. A background page does not start while two waits hold slots (the live one and a cancelled one still running on the
+  desktop), so the third slot stays free for the screen read after Return; a reader at the top, or a tap on the retry row, does not
+  wait for that or for the pauses. Nothing is fetched while the terminal is off screen or the app is inactive.
+- *Output that outruns an answer.* Once older lines come as history, a live answer asks for 120 lines of scrollback instead of 500
+  (about a quarter of the bytes, parse and compare work for every keystroke's echo). More lines than that scrolling by between two
+  answers are not thrown away with the history: the gap is kept as blank placeholder lines under their own indexes (a hole,
+  `TerminalBuffer.holes`) and fetched first, with a few held lines on both sides so the seams are checked; a hole of several pages
+  begins with a 16-line look at its seam with the older lines, so history that is not the history held is found before the hole is
+  downloaded. On a slow or restricted link a hole is fetched only where the reader is, and the rest waits for him. A desktop whose
+  history is full (it drops its oldest lines, `history_size` stops growing) is followed by matching lines, asks for 500 again, and its
+  pages overlap the lines held by 8; output that scrolled in between the last answer and a page (it cannot be announced) is found by
+  sliding the overlap up to 24 lines before the page is given up on. A page that was overtaken by a later live answer is placed by the
+  difference in `history_size`. Pages are read as the protocol writes them (lines joined by line breaks, none after the last, checked
+  against `line_count`), so pages that end in blank lines are pages like any other.
+- *History drawn again.* The inline agents (Codex, Grok, Claude Code without the alternate screen) wipe their scrollback and draw the
+  transcript again at the new width whenever the pane width changes, which the phone's own `shell.resize` does. A page taken before
+  is of a history that is gone. The buffer has an `era` that every rebuild and every answer that shows the history shrinking bumps;
+  a page for another era, or one whose `history_size` is below the last answer's, is dropped (`stale`), never stitched on. Nothing is
+  fetched for 0.8 s after a resize is acknowledged, or 0.6 s after a shrink, and the fetch then starts again from the live screen.
+  A page that does not line up with the lines it meets drops everything older than the live answer and the fetch starts over. None
+  of this shows: repeated misses back off 2, 4, … 60 s silently; only a request that really failed puts up "tap to retry".
+- *Coming back.* Leaving a shell keeps its lines (up to 4 shells, 120,000 lines, least recently used first, nothing wrapped at another
+  width). The first live answer on return lines them up with the desktop's by `history_size` and by comparing text, and starts over
+  if they do not fit (a shell cleared or drawn again while away keeps none of its old lines), so a shell that was only looked away from
+  costs no history requests. A reconnect keeps the buffer and carries on above what is held.
+
+*Memory.* A held line costs about 285 bytes (measured: 50,000 styled lines of build and test output, 13.6 MB, of which 32 bytes per
+line is the array slot), so one shell at the cap of 50,000 lines is about 14 MB (28 MB at the desktop's own limit of 100,000) and about
+3 MB on the wire. The row views, a few dozen, are nothing next to it.
+
+A desktop without the method (`unsupported RPC method`) or that rejects `styled` (retried once without it) keeps the earlier
+behaviour: the screen and the latest 500 lines, no paging. The page is placed by the `history_size` it carries, so lines that
+scrolled in meanwhile are found as a shared overlap, compared and left out. A pane re-wrapped by a resize cannot be matched and
+renumbers the lines (the reader keeps the same distance from the bottom). At most 50,000 lines of scrollback are held; past that no
+older page is asked for and live output pushes out the oldest (not while the reader is reading them, up to 12,500 lines past the cap).
 On the alternate screen (`alternate`: vim, less, htop) there is no scrollback: the normal lines wait unchanged, the program's
 screen is shown without scrolling, and a vertical swipe sends Page Up (content dragged down) or Page Down through `shell.keys`,
-one per 80 % of the view's height (a quick flick that would carry that far sends one too), at most one every 120 ms; a chip "Scrolling the app" is clear for the first three programs
-and faint after.
+one per 80 % of the view's height (a quick flick that would carry that far sends one too), at most one every 120 ms; a chip
+"Scrolling the app" is clear for the first three programs and faint after.
 
 **Display settings** (terminal menu → Display…, or the slider button in the desktop list): interface size 80–130 % in 5 % steps
 (a scale factor on fonts and touch targets of the header, lists, key bar and buttons, in `DesktopStyle`; Dynamic Type still

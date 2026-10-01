@@ -24,10 +24,58 @@ enum TerminalRenderer {
         Color(.sRGB, red: Double(rgb.red) / 255, green: Double(rgb.green) / 255, blue: Double(rgb.blue) / 255, opacity: 1)
     }
 
-    /// One line as attributed text, with the cursor cell (a character index) inverted. Pure and thread-safe.
-    static func attributed(text: String, runs: [StyleRun], cursorColumn: Int?, settings: Settings) -> AttributedString {
+    /// A piece of a line that is drawn alike: one style, and for a glyph the font borrows from another font, the kern that brings its
+    /// advance back to the cells the terminal counts for it.
+    struct Segment: Equatable {
+        var text: String
+        var style: CellStyle
+        /// The cursor cell: drawn inverted.
+        var cursor = false
+        var kern = 0.0
+    }
+
+    /// One line cut into the pieces it is drawn in, with the cursor cell (a character index) apart. Pure and thread-safe.
+    static func segments(text: String, runs: [StyleRun], cursorColumn: Int?, settings: Settings) -> [Segment] {
         let characters = Array(text)
         let cell = TerminalFont.cell(size: settings.fontSize).width
+        var result: [Segment] = []
+        /// One piece per run of ASCII (whose advance is Menlo's) and one per other character, each with the kern its glyph needs.
+        func append(_ slice: ArraySlice<Character>, _ style: CellStyle, cursor: Bool) {
+            guard !slice.isEmpty else { return }
+            var pending = ""
+            func flush() {
+                guard !pending.isEmpty else { return }
+                result.append(Segment(text: pending, style: style, cursor: cursor))
+                pending = ""
+            }
+            for character in slice {
+                if character.isASCII { pending.append(character); continue }
+                let width = Double(TerminalText.cellWidth(character)) * cell
+                let kern = width - advance(of: character, size: settings.fontSize)
+                guard abs(kern) > 0.05 else { pending.append(character); continue }
+                flush()
+                result.append(Segment(text: String(character), style: style, cursor: cursor, kern: kern))
+            }
+            flush()
+        }
+        var offset = 0
+        for run in runs {
+            let end = min(characters.count, offset + max(0, run.length))
+            guard offset < end else { continue }
+            if let cursor = cursorColumn, cursor >= offset, cursor < end {
+                append(characters[offset..<cursor], run.style, cursor: false)
+                append(characters[cursor...cursor], run.style, cursor: true)
+                append(characters[(cursor + 1)..<end], run.style, cursor: false)
+            } else {
+                append(characters[offset..<end], run.style, cursor: false)
+            }
+            offset = end
+        }
+        return result
+    }
+
+    /// One line as SwiftUI attributed text, with the cursor cell (a character index) inverted. Pure and thread-safe.
+    static func attributed(text: String, runs: [StyleRun], cursorColumn: Int?, settings: Settings) -> AttributedString {
         var result = AttributedString()
         var containers: [CellStyle: AttributeContainer] = [:]
         func container(_ style: CellStyle) -> AttributeContainer {
@@ -45,19 +93,11 @@ enum TerminalRenderer {
             else if style.attributes.contains(.italic) { made.inlinePresentationIntent = .emphasized }
             return made
         }
-        var offset = 0
-        for run in runs {
-            let end = min(characters.count, offset + max(0, run.length))
-            guard offset < end else { continue }
-            let attributes = container(run.style)
-            if let cursor = cursorColumn, cursor >= offset, cursor < end {
-                append(characters[offset..<cursor], attributes, cell: cell, size: settings.fontSize, to: &result)
-                append(characters[cursor...cursor], cursorAttributes(run.style), cell: cell, size: settings.fontSize, to: &result)
-                append(characters[(cursor + 1)..<end], attributes, cell: cell, size: settings.fontSize, to: &result)
-            } else {
-                append(characters[offset..<end], attributes, cell: cell, size: settings.fontSize, to: &result)
-            }
-            offset = end
+        for segment in segments(text: text, runs: runs, cursorColumn: cursorColumn, settings: settings) {
+            var piece = AttributedString(segment.text)
+            piece.mergeAttributes(segment.cursor ? cursorAttributes(segment.style) : container(segment.style))
+            if segment.kern != 0 { piece.kern = segment.kern }
+            result.append(piece)
         }
         return result
     }
@@ -74,32 +114,6 @@ enum TerminalRenderer {
         if style.attributes.contains(.underline) { made.underlineStyle = .single }
         if style.attributes.contains(.strikethrough) { made.strikethroughStyle = .single }
         return made
-    }
-
-    /// Appends the characters as one piece per run of ASCII (whose advance is Menlo's) and one per other character, each with
-    /// the kern its glyph needs.
-    private static func append(_ slice: ArraySlice<Character>, _ attributes: AttributeContainer, cell: Double, size: Double, to result: inout AttributedString) {
-        guard !slice.isEmpty else { return }
-        var pending = ""
-        func flush() {
-            guard !pending.isEmpty else { return }
-            var piece = AttributedString(pending)
-            piece.mergeAttributes(attributes)
-            result.append(piece)
-            pending = ""
-        }
-        for character in slice {
-            if character.isASCII { pending.append(character); continue }
-            let width = Double(TerminalText.cellWidth(character)) * cell
-            let kern = width - advance(of: character, size: size)
-            guard abs(kern) > 0.05 else { pending.append(character); continue }
-            flush()
-            var piece = AttributedString(String(character))
-            piece.mergeAttributes(attributes)
-            piece.kern = kern
-            result.append(piece)
-        }
-        flush()
     }
 
     // MARK: Glyph advances

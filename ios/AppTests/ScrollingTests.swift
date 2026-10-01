@@ -256,20 +256,18 @@ import RiWorkCore
         XCTAssertFalse(model.historyFailed, "no retry row for a session that is gone")
         await model.disconnect()
     }
-    func testNoWordOfAFingerSurvivesTheScrollViewThatHadIt() async throws {
-        let defaults = scratchDefaults()
-        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 2000), alternate: false, defaults: defaults); defer { try? keychain.delete() }
-        model.setScrollBusy(true)
+    func testAFullScreenProgramEndsTheFetchInFlightAndNothingIsFetchedMeanwhile() async throws {
+        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 2000), alternate: false); defer { try? keychain.delete() }
+        await transport.gateHistory(true)
+        model.loadOlderHistory()
+        await eventually("request out") { await transport.historyRequests().count == 1 }
         await transport.setAlternate(true)
         await eventually("the program's screen") { model.alternateScreen }
-        XCTAssertFalse(model.scrollBusy, "the scroll view is gone, and nothing will say its finger lifted")
-        await transport.setAlternate(false)
-        await eventually("back") { !model.alternateScreen }
-        model.setScrollBusy(true)
-        await transport.setSessions([try session(shell), try session(other)])
-        await model.refresh()
-        await model.chooseSession(try session(other))
-        XCTAssertFalse(model.scrollBusy)
+        XCTAssertNil(model.historyTask, "a page for the normal screen is of no use while a program has the other one")
+        XCTAssertFalse(model.historyLoading)
+        await transport.gateHistory(false)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.terminal.heldHistory, 500, "and the page that came back anyway was not put in")
         await model.disconnect()
     }
     func testAnOtherErrorIsAQuietFailureWithARetryRow() async throws {
@@ -281,10 +279,10 @@ import RiWorkCore
         XCTAssertEqual(model.terminal.heldHistory, 500)
         await model.disconnect()
     }
-    func testHistoryStopsAtTheCapOfTwentyThousandLines() async throws {
-        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 30_000)); defer { try? keychain.delete() }
+    func testHistoryStopsAtTheCapOfFiftyThousandLines() async throws {
+        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 80_000)); defer { try? keychain.delete() }
         var guardCount = 0
-        while !model.terminal.limitReached, guardCount < 100 { await loadPage(model); guardCount += 1 }
+        while !model.terminal.limitReached, guardCount < 400 { await loadPage(model); guardCount += 1 }
         XCTAssertEqual(model.terminal.heldHistory, HistoryLimits.heldLines)
         XCTAssertFalse(model.terminal.atTop)
         let asked = await transport.historyRequests().count
@@ -292,12 +290,12 @@ import RiWorkCore
         try? await Task.sleep(for: .milliseconds(80))
         let askedAfter = await transport.historyRequests().count
         XCTAssertEqual(askedAfter, asked, "no more pages past the cap")
-        XCTAssertEqual(model.terminal.start, 10_000)
+        XCTAssertEqual(model.terminal.start, 30_000)
         assertConsistent(model)
         // new output pushes the oldest lines out
         await transport.write(50)
-        await eventually("held at the cap") { model.terminal.screenTop == 30_050 && model.terminal.heldHistory == HistoryLimits.heldLines }
-        XCTAssertEqual(model.terminal.start, 10_050)
+        await eventually("held at the cap") { model.terminal.screenTop == 80_050 && model.terminal.heldHistory == HistoryLimits.heldLines }
+        XCTAssertEqual(model.terminal.start, 30_050)
         assertConsistent(model)
         await model.disconnect()
     }
@@ -332,16 +330,14 @@ import RiWorkCore
         assertConsistent(model)
         await model.disconnect()
     }
-    func testAPageThatWaitsForAMovingFingerIsPutInWhenTheScrollStops() async throws {
+    func testAPageIsPutInTheMomentItArrivesAndNeverWaitsForAFinger() async throws {
         let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 2000)); defer { try? keychain.delete() }
-        model.setScrollBusy(true)
+        // The reader is scrolling (the view reports a drag in progress) while the page arrives.
+        _ = model.scrollMetricsChanged(from: nil, to: ScrollMetrics(offset: 3000, contentHeight: 12_000, viewportHeight: 600, topInset: -2000), lineHeight: 14, userDriven: true)
         model.loadOlderHistory()
-        await eventually("the page has arrived") { await transport.historyRequests().count == 1 }
-        try? await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(model.terminal.heldHistory, 500, "nothing moves under the finger")
-        XCTAssertTrue(model.historyLoading)
-        model.setScrollBusy(false)
-        await eventually("now it is in") { model.terminal.heldHistory == 800 && !model.historyLoading }
+        await eventually("the page is in") { model.terminal.heldHistory == 800 && !model.historyLoading }
+        let asked = await transport.historyRequests().count
+        XCTAssertEqual(asked, 1)
         assertConsistent(model)
         await model.disconnect()
     }
@@ -360,6 +356,103 @@ import RiWorkCore
         await eventually("the other shell's own screen") { model.outputSessionID == self.other && !model.terminal.isEmpty }
         XCTAssertEqual(model.terminal.heldHistory, 500, "nothing of the old page is in it")
         assertConsistent(model)
+        await model.disconnect()
+    }
+
+    // MARK: the header row and copying
+
+    func testTheHeaderRowSaysLoadingFailedBeginningOrTheCap() async throws {
+        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 700)); defer { try? keychain.delete() }
+        XCTAssertEqual(model.historyHeader, HistoryHeader(text: " ", failed: false), "a row is there to take the place of what is not loaded yet")
+        await transport.gateHistory(true)
+        model.loadOlderHistory()
+        await eventually("out") { await transport.historyRequests().count == 1 }
+        XCTAssertEqual(model.historyHeader?.text, "Loading…")
+        await transport.gateHistory(false)
+        await eventually("in") { model.terminal.atTop }
+        XCTAssertEqual(model.historyHeader, HistoryHeader(text: "Beginning of history", failed: false))
+        await transport.setHistoryMode(.failing(code: "cli_error"))
+        await model.disconnect()
+        let (other, otherTransport, otherKeychain) = try await rig(ScriptedScrollback(history: 2000), mode: .failing(code: "cli_error")); defer { try? otherKeychain.delete() }
+        other.loadOlderHistory()
+        await eventually("failed") { other.historyFailed }
+        XCTAssertEqual(other.historyHeader, HistoryHeader(text: "Couldn't load older lines · tap to retry", failed: true))
+        _ = otherTransport
+        await other.disconnect()
+        // No paging, no row.
+        let (plain, _, plainKeychain) = try await rig(ScriptedScrollback(history: 2000), reportsHistorySize: false); defer { try? plainKeychain.delete() }
+        XCTAssertNil(plain.historyHeader)
+        await plain.disconnect()
+    }
+
+    func testCopyScreenTextIsTheScreenAndTheLastFiveHundredLinesNotEverythingLoaded() async throws {
+        let (model, _, keychain) = try await rig(ScriptedScrollback(history: 3000)); defer { try? keychain.delete() }
+        await loadPage(model)
+        await loadPage(model)
+        XCTAssertEqual(model.terminal.heldHistory, 1100)
+        let lines = model.screenTextForCopy.split(separator: "\n", omittingEmptySubsequences: false)
+        XCTAssertEqual(lines.count, 500 + 12)
+        XCTAssertEqual(lines.first, "L2500")
+        XCTAssertEqual(lines.last, "L3011")
+        await model.disconnect()
+    }
+
+    func testAHistoryFullOnTheDesktopGoesBackToAskingForTheWholeFiveHundredLines() async throws {
+        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 1500, cap: 1500)); defer { try? keychain.delete() }
+        await loadPage(model)
+        XCTAssertEqual(model.historySupport, .supported)
+        await transport.write(4)
+        await eventually("moved") { model.terminal.screenTop == 1504 }
+        XCTAssertTrue(model.terminal.drifting)
+        await transport.write(2)
+        await eventually("moved again") { model.terminal.screenTop == 1506 }
+        let lines = await transport.lineRequests()
+        XCTAssertEqual(lines.last, 500, "a history that drops lines cannot be followed by a short answer: it is matched by its lines")
+        assertConsistent(model)
+        await model.disconnect()
+    }
+
+    func testPagesThatDoNotLineUpAreAQuietRestartNeverARetryRow() async throws {
+        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 3000)); defer { try? keychain.delete() }
+        await loadPage(model)
+        // The long poll that was waiting asked for 500 lines; one more answer, and the next asks for 120.
+        await transport.write(1)
+        await eventually("the next poll asks for fewer") { await transport.lineRequests().last == HistoryLimits.liveScrollbackLines }
+        // A burst the answer cannot bridge: a hole, held under the lines that are there.
+        await transport.write(400)
+        await eventually("hole") { !model.terminal.holes.isEmpty }
+        // The desktop's lines are not the ones held (it drew its history again): the seams do not match.
+        var drawn = await transport.scriptedScrollback() ?? ScriptedScrollback(history: 3400)
+        drawn.label = "W"
+        await transport.setScrollback(drawn)
+        await eventually("the live answer shows the new lines") { model.terminal[model.terminal.screenTop - 1]?.text.hasPrefix("W") == true }
+        model.loadOlderHistory()
+        await eventually("settled") { model.historyTask == nil }
+        XCTAssertFalse(model.historyFailed, "nothing shows")
+        XCTAssertNil(model.error)
+        await model.disconnect()
+    }
+
+    func testAnAskThatCannotStartIsNotKeptForLater() async throws {
+        let (model, _, keychain) = try await rig(ScriptedScrollback(history: 2000)); defer { try? keychain.delete() }
+        model.setTerminalVisible(false)
+        model.loadOlderHistory()
+        XCTAssertNil(model.historyTask)
+        XCTAssertFalse(model.historyDemand, "it would otherwise skip every pause when the terminal comes back")
+        await model.disconnect()
+    }
+    func testAnotherShellStartsWithoutTheLastOnesPauseAndRetryRow() async throws {
+        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 2000), mode: .failing(code: "cli_error")); defer { try? keychain.delete() }
+        model.loadOlderHistory()
+        await eventually("failed") { model.historyFailed }
+        XCTAssertNotNil(model.historyRetryAfter)
+        await transport.setSessions([try session(shell), try session(other)])
+        await model.refresh()
+        await model.chooseSession(try session(other))
+        XCTAssertNil(model.historyRetryAfter, "a pause that another shell earned is not this shell's")
+        XCTAssertFalse(model.historyFailed)
+        await model.connect()
+        XCTAssertFalse(model.historyFailed, "nor does a retry row outlive the connection")
         await model.disconnect()
     }
 
