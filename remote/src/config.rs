@@ -225,6 +225,16 @@ pub fn private_read<T: DeserializeOwned>(path: &Path, max: u64) -> Result<T> {
     Ok(serde_json::from_slice(&data)?)
 }
 pub fn private_write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    write_private(path, value, true)
+}
+/// Like `private_write`, for a record whose loss is harmless: the file is
+/// written, synced and renamed into place as whole, but the directory is not
+/// synced. A crash can then bring back the previous version of the file, never
+/// a broken one. The caller must be able to live with the previous version.
+pub fn private_write_relaxed<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    write_private(path, value, false)
+}
+fn write_private<T: Serialize>(path: &Path, value: &T, sync_directory: bool) -> Result<()> {
     let parent = path.parent().context("file parent missing")?;
     // A bare relative name has the empty path as parent, which cannot be opened.
     let parent = if parent.as_os_str().is_empty() {
@@ -242,7 +252,9 @@ pub fn private_write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         f.write_all(&data)?;
         f.sync_all()?;
         fs::rename(&tmp, path)?;
-        File::open(parent)?.sync_all()?;
+        if sync_directory {
+            File::open(parent)?.sync_all()?;
+        }
         Ok(())
     })();
     if result.is_err() {

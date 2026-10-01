@@ -55,7 +55,8 @@ impl Script {
         let pauses = &mut self.pauses;
         poll_output(
             query,
-            |pause| {
+            |remaining| {
+                let pause = OUTPUT_POLL.min(remaining);
                 pauses.push(pause);
                 std::thread::sleep(pause);
             },
@@ -248,14 +249,18 @@ fn the_wait_never_exceeds_the_cap() {
 fn a_capture_error_ends_the_wait_with_that_error() {
     let mut calls = 0;
     let hash = output_hash(200, false, &capture("hi\n\n"));
-    let result = poll_output(&query(Some(&hash), 8_000), std::thread::sleep, || {
-        calls += 1;
-        if calls < 3 {
-            Ok(capture("hi\n\n"))
-        } else {
-            Err("shell 1 has exited".to_owned())
-        }
-    });
+    let result = poll_output(
+        &query(Some(&hash), 8_000),
+        |_| (),
+        || {
+            calls += 1;
+            if calls < 3 {
+                Ok(capture("hi\n\n"))
+            } else {
+                Err("shell 1 has exited".to_owned())
+            }
+        },
+    );
     assert_eq!(result.unwrap_err(), "shell 1 has exited");
     assert_eq!(calls, 3);
 }
@@ -269,7 +274,7 @@ fn the_lines_in_the_hash_are_the_clamped_ones() {
             lines,
             ..query(None, 0)
         };
-        poll_output(&query, std::thread::sleep, || Ok(same.clone())).unwrap()
+        poll_output(&query, |_| (), || Ok(same.clone())).unwrap()
     };
     assert_eq!(ask(0), ask(1));
     assert_eq!(ask(HISTORY_LINES), ask(HISTORY_LINES + 5));

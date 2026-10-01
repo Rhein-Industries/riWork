@@ -90,7 +90,9 @@ pub async fn connect_registered(
         .max_frame_size(Some(MAX_FRAME));
     let (mut ws, _) = timeout(
         Duration::from_secs(10),
-        connect_async_tls_with_config(relay, Some(config), false, wss_connector(relay)),
+        // `true` turns Nagle's algorithm off: each frame is a small write that a
+        // phone is waiting for, and it must not wait for an ACK of the last one.
+        connect_async_tls_with_config(relay, Some(config), true, wss_connector(relay)),
     )
     .await??;
     if relay.starts_with("ws://") {

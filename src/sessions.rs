@@ -20,6 +20,7 @@ use crate::session_keys::tmux_argument;
 
 mod sample;
 pub use sample::SessionSample;
+mod watch;
 
 const HISTORY_LINES: usize = 100_000;
 const ORCHESTRATOR_SKILL: &str = include_str!("../skills/riwork-orchestrator/SKILL.md");
@@ -909,16 +910,30 @@ impl SessionManager {
 
     /// What `shell output --json` answers. Without `if_changed` this is one
     /// capture with its hash. With it, a capture whose hash is still
-    /// `if_changed` is not returned: the shell is captured again about every
-    /// `OUTPUT_POLL`, inside this call, until the hash differs or `wait` has
-    /// passed, and only then is `Unchanged` the answer. One bounded tmux call
-    /// per poll; `wait` is capped at `MAX_OUTPUT_WAIT`.
+    /// `if_changed` is not returned: the shell is captured again, inside this
+    /// call, whenever tmux reports that its pane changed (and in any case every
+    /// `watch::SAFETY_POLL`; every `OUTPUT_POLL` where tmux cannot report), until
+    /// the hash differs or `wait` has passed, and only then is `Unchanged` the
+    /// answer. Each capture is one bounded tmux call; `wait` is capped at
+    /// `MAX_OUTPUT_WAIT`.
     pub fn read_output(&self, id: &str, query: &OutputQuery<'_>) -> Result<OutputRead, String> {
-        self.require_live(id)?;
+        // Only the registry is read here. tmux is asked by the capture, and a
+        // capture that fails asks again for the reason (`capture_live_screen`):
+        // one tmux process fewer for every call, with the same errors.
+        self.registered_session(id)?;
         let lines = query.lines.clamp(1, HISTORY_LINES);
-        poll_output(query, std::thread::sleep, || {
-            self.capture_live_screen(id, lines, query.styled)
-        })
+        let mut waiter = Waiter::new(self, id);
+        poll_output(
+            query,
+            |remaining| waiter.pause(remaining),
+            || self.capture_live_screen(id, lines, query.styled),
+        )
+    }
+
+    /// What `error`, a failure of a call on a shell that was not checked for
+    /// life first, really was: the shell having exited, or `error` itself.
+    fn failure_reason(&self, id: &str, error: String) -> String {
+        self.require_live(id).err().unwrap_or(error)
     }
 
     /// One page of a shell's scrollback, see `HistoryPage`. `end` scrollback
@@ -943,18 +958,24 @@ impl SessionManager {
         if !(1..=HISTORY_PAGE_MAX).contains(&lines) {
             return Err(format!("--lines must be from 1 to {HISTORY_PAGE_MAX}"));
         }
-        self.require_live(id)?;
+        // The registry, not tmux, says whether this is a shell; tmux's own
+        // answer to the capture says whether it is alive, and a failed capture
+        // asks for the reason, so errors stay the same with one tmux process
+        // fewer.
+        self.registered_session(id)?;
         // tmux misreads line numbers that do not fit its 32 bits; nothing is
         // that deep, and a page that far up is empty either way.
         let line = |n: u64| format!("-{}", n.min(TMUX_LINE_LIMIT));
         let start = line(u64::from(end) + u64::from(lines));
         let stop = line(u64::from(end) + 1);
-        let (page, report) = self.capture_with_report(
-            &pane_target(id),
-            styled,
-            &["-S", &start, "-E", &stop],
-            "#{history_size}",
-        )?;
+        let (page, report) = self
+            .capture_with_report(
+                &pane_target(id),
+                styled,
+                &["-S", &start, "-E", &stop],
+                "#{history_size}",
+            )
+            .map_err(|error| self.failure_reason(id, error))?;
         let history_size: u32 = report
             .trim()
             .parse()
@@ -967,7 +988,7 @@ impl SessionManager {
     /// with a `session_keys` token happened before any key was sent.
     pub fn send_keys(&self, id: &str, items: &[crate::session_keys::Item]) -> Result<(), String> {
         use crate::session_keys::{INVALID_REQUEST, NOT_FOUND, NOT_SENT};
-        self.require_live(id).map_err(|error| {
+        let token = |error: String| {
             if error.starts_with("invalid UUID") {
                 format!("{INVALID_REQUEST}{error}")
             } else if error.starts_with("unknown shell") || error.ends_with("has exited") {
@@ -975,8 +996,18 @@ impl SessionManager {
             } else {
                 format!("{NOT_SENT}{error}")
             }
-        })?;
-        crate::session_keys::send(&self.home, id, items, &|args| self.tmux_text(args))
+        };
+        // The registry says whether this is a shell. Whether tmux still has it
+        // is learned from the first tmux call of the batch; if that fails
+        // before anything was typed, the reason is looked up then. One tmux
+        // process fewer on every batch, the same errors.
+        self.registered_session(id).map_err(token)?;
+        crate::session_keys::send(&self.home, id, items, &|args| self.tmux_text(args)).map_err(
+            |error| match error.strip_prefix(NOT_SENT) {
+                Some(cause) => token(self.failure_reason(id, cause.to_owned())),
+                None => error,
+            },
+        )
     }
 
     /// A pane identity changes on respawn, even when its RiWork UUID is retained.
@@ -1870,13 +1901,22 @@ impl SessionManager {
         input: Option<&[u8]>,
         removed: &[&str],
     ) -> Result<Output, String> {
+        let mut command = self.tmux_client();
+        command.args(args);
+        for variable in removed {
+            command.env_remove(variable);
+        }
+        run_bounded(command, input, TMUX_TIMEOUT, &tmux_label(args))
+    }
+
+    /// A tmux client for this manager's server, before any command.
+    fn tmux_client(&self) -> Command {
         let mut command = Command::new(&self.tmux);
         command
             .arg("-L")
             .arg(&self.socket_name)
             .arg("-f")
             .arg("/dev/null")
-            .args(args)
             .env_remove("TMUX")
             // The socket directory must not depend on who launched this
             // process, or a terminal and the app would run separate servers.
@@ -1884,10 +1924,7 @@ impl SessionManager {
             .env_remove("TMUX_TMPDIR")
             .env_remove("RIWORK_RESTORE_TICKET")
             .env("PATH", effective_path());
-        for variable in removed {
-            command.env_remove(variable);
-        }
-        run_bounded(command, input, TMUX_TIMEOUT, &tmux_label(args))
+        command
     }
 
     fn tmux_checked(&self, args: &[&str]) -> Result<Output, String> {
@@ -4098,7 +4135,8 @@ pub struct HistoryPage {
     pub complete: bool,
 }
 
-/// How long a `read_output` with `if_changed` sleeps between two captures.
+/// How long a `read_output` with `if_changed` sleeps between two captures when
+/// nothing tells it sooner (see `watch`).
 pub const OUTPUT_POLL: Duration = Duration::from_millis(80);
 /// The longest `OutputQuery::wait`; longer ones are shortened to it.
 pub const MAX_OUTPUT_WAIT: Duration = Duration::from_secs(10);
@@ -4132,9 +4170,11 @@ pub enum OutputRead {
 }
 
 /// Capture until `query.if_changed` no longer matches or `query.wait` is
-/// over. `pause` sleeps between two captures; the deadline is real time, so
-/// the time a capture takes counts against the wait and the whole call stays
-/// within `wait` plus one capture (each bounded by the tmux timeout).
+/// over. `pause` is called between two captures with the time left and waits
+/// for the screen to have a reason to be captured again, but never longer than
+/// that; the deadline is real time, so the time a capture takes counts against
+/// the wait and the whole call stays within `wait` plus one capture (each
+/// bounded by the tmux timeout).
 fn poll_output(
     query: &OutputQuery<'_>,
     mut pause: impl FnMut(Duration),
@@ -4158,7 +4198,72 @@ fn poll_output(
                 screen: current.screen,
             });
         }
-        pause(OUTPUT_POLL.min(deadline - now));
+        pause(deadline - now);
+    }
+}
+
+/// How a waiting `read_output` passes the time between captures: it watches
+/// the pane through a control-mode client (`watch`) and captures when told
+/// something happened, or polls every `OUTPUT_POLL` when it cannot watch.
+struct Waiter<'a> {
+    manager: &'a SessionManager,
+    id: &'a str,
+    state: WaiterState,
+}
+
+enum WaiterState {
+    /// No client yet: the first wait starts one.
+    Fresh,
+    Watching(watch::PaneWatch),
+    Polling,
+}
+
+impl<'a> Waiter<'a> {
+    fn new(manager: &'a SessionManager, id: &'a str) -> Self {
+        Self {
+            manager,
+            id,
+            state: WaiterState::Fresh,
+        }
+    }
+
+    /// Wait for a reason to capture again, for at most `remaining`.
+    fn pause(&mut self, remaining: Duration) {
+        loop {
+            match &mut self.state {
+                WaiterState::Fresh => {
+                    self.state = match remaining >= watch::MIN_WATCHED_WAIT {
+                        true => self.manager.watch(self.id),
+                        false => None,
+                    }
+                    .map_or(WaiterState::Polling, WaiterState::Watching);
+                    if matches!(self.state, WaiterState::Watching(_)) {
+                        // The client is attached, so nothing from now on can be
+                        // missed; what happened before it was is in the next
+                        // capture, which must follow at once.
+                        return;
+                    }
+                }
+                WaiterState::Watching(watch) => {
+                    if watch.wait(remaining.min(watch::SAFETY_POLL)) == watch::Woke::Lost {
+                        self.state = WaiterState::Polling;
+                        continue;
+                    }
+                    return;
+                }
+                WaiterState::Polling => {
+                    std::thread::sleep(OUTPUT_POLL.min(remaining));
+                    return;
+                }
+            }
+        }
+    }
+}
+
+impl SessionManager {
+    /// A control-mode client watching the pane of `id`, if one can be attached.
+    fn watch(&self, id: &str) -> Option<watch::PaneWatch> {
+        watch::PaneWatch::start(self.tmux_client(), id)
     }
 }
 
@@ -4355,13 +4460,7 @@ fn run_bounded(
     timeout: std::time::Duration,
     label: &str,
 ) -> Result<Output, String> {
-    use std::{
-        io::Read,
-        process::Stdio,
-        sync::mpsc,
-        thread,
-        time::{Duration, Instant},
-    };
+    use std::{io::Read, process::Stdio, sync::mpsc, thread, time::Duration};
     fn drain(mut reader: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
@@ -4392,28 +4491,29 @@ fn run_bounded(
     }
     let stdout = drain(child.stdout.take().ok_or("capture stdout")?);
     let stderr = drain(child.stderr.take().ok_or("capture stderr")?);
-    let deadline = Instant::now() + timeout;
-    let mut pause = Duration::from_millis(1);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => {}
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
-                    "{label} did not finish within {}s and was stopped; the server may be unresponsive",
-                    timeout.as_secs_f32()
-                ));
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("wait for {label}: {error}"));
-            }
+    // The exit is waited for on a thread of its own and the deadline is a timed
+    // receive, so the answer comes the moment the child ends. (A loop that
+    // slept between `try_wait`s noticed a 3 ms tmux call only after 7 ms or
+    // more, on every call.) The waiter owns the child until it is reaped, so
+    // the pid below cannot have been reused when it is signalled.
+    let pid = child.id();
+    let (exited, status) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = exited.send(child.wait());
+    });
+    let status = match status.recv_timeout(timeout) {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => return Err(format!("wait for {label}: {error}")),
+        Err(_) => {
+            // SAFETY: the waiter thread has not reaped the child, so `pid`
+            // still names it.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            let _ = status.recv();
+            return Err(format!(
+                "{label} did not finish within {}s and was stopped; the server may be unresponsive",
+                timeout.as_secs_f32()
+            ));
         }
-        thread::sleep(pause);
-        pause = (pause * 2).min(Duration::from_millis(25));
     };
     // The child is gone; a stream that stays open belongs to a leaked descendant.
     let collect = |receiver: mpsc::Receiver<Vec<u8>>| {

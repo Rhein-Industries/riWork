@@ -2739,3 +2739,355 @@ fn a_history_page_is_what_the_capture_holds_and_never_more_than_the_history() {
     assert!(page("1\n2\n3\n4\n", 10, 0, 3).is_err());
     assert!(page("1\n2\n", 10, 9, 5).is_err());
 }
+
+// Waiting without polling, and the tmux processes a call costs.
+
+impl Fixture {
+    /// A fixture whose tmux is a wrapper around the real one that records the
+    /// arguments of every call (one line each) in `calls`, and fails every
+    /// control-mode client when `refuse_control` is set.
+    fn counting(refuse_control: bool) -> Option<Self> {
+        let real = find_tmux()?;
+        Some(Self::new(|root| {
+            let tmux = root.join("counting-tmux");
+            let refuse = if refuse_control {
+                "case \"$*\" in *' -C '*) exit 1;; esac;"
+            } else {
+                ""
+            };
+            Self::script(
+                &tmux,
+                &format!(
+                    "printf '%s\\n' \"$*\" >> {calls}; {refuse} exec {real} \"$@\"",
+                    calls = quote_arg(&root.join("calls").to_string_lossy()),
+                    real = quote_arg(&real.to_string_lossy()),
+                ),
+            );
+            tmux
+        }))
+    }
+
+    /// The tmux calls made since the last `forget_calls`, one per element.
+    fn calls(&self) -> Vec<String> {
+        fs::read_to_string(self.root.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn forget_calls(&self) {
+        let _ = fs::remove_file(self.root.join("calls"));
+    }
+
+    /// How many recorded calls mention `word`.
+    fn calls_with(&self, word: &str) -> usize {
+        self.calls().iter().filter(|c| c.contains(word)).count()
+    }
+}
+
+fn watched_query<'a>(hash: &'a str, wait_ms: u64) -> OutputQuery<'a> {
+    OutputQuery {
+        lines: 100,
+        styled: false,
+        if_changed: Some(hash),
+        wait: Duration::from_millis(wait_ms),
+    }
+}
+
+fn first_hash(fixture: &Fixture, id: &str) -> String {
+    match fixture
+        .manager
+        .read_output(
+            id,
+            &OutputQuery {
+                lines: 100,
+                styled: false,
+                if_changed: None,
+                wait: Duration::ZERO,
+            },
+        )
+        .unwrap()
+    {
+        OutputRead::Changed { hash, .. } => hash,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_call_costs_the_tmux_processes_it_needs_and_no_more() {
+    let Some(fixture) = Fixture::counting(false) else {
+        return;
+    };
+    let id = fixture.pane(30, 4, "printf hello; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("hello"));
+    // The registry says whether this is a shell; tmux answers once, in the one
+    // command list that captures the screen and reports on the pane.
+    fixture.forget_calls();
+    first_hash(&fixture, &id);
+    assert_eq!(fixture.calls().len(), 1, "{:?}", fixture.calls());
+    assert_eq!(fixture.calls_with("list-sessions"), 0);
+    fixture.forget_calls();
+    fixture.manager.read_history(&id, 0, 5, false).unwrap();
+    assert_eq!(fixture.calls().len(), 1, "{:?}", fixture.calls());
+    // A batch asks for the state of the pane, then types.
+    let recording = fixture.recording_pane();
+    fixture.forget_calls();
+    fixture
+        .manager
+        .send_keys(&recording, &[typed("a")])
+        .unwrap();
+    assert_eq!(fixture.calls().len(), 2, "{:?}", fixture.calls());
+    assert_eq!(fixture.calls_with("list-sessions"), 0);
+}
+
+#[test]
+fn a_shell_that_is_gone_is_still_told_apart_from_a_tmux_error() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.pane(30, 4, "printf up; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("up"));
+    let query = OutputQuery {
+        lines: 10,
+        styled: false,
+        if_changed: None,
+        wait: Duration::ZERO,
+    };
+    fixture.manager.kill_tmux_session(&id).unwrap();
+    // Registered but gone: the reason is looked up when the capture fails.
+    let output = fixture.manager.read_output(&id, &query).unwrap_err();
+    assert_eq!(output, format!("shell {id} has exited"));
+    let history = fixture.manager.read_history(&id, 0, 5, false).unwrap_err();
+    assert_eq!(history, format!("shell {id} has exited"));
+    let keys = fixture.manager.send_keys(&id, &[typed("a")]).unwrap_err();
+    assert_eq!(keys, format!("not_found: shell {id} has exited"));
+    // Not registered at all, or not an id.
+    let unknown = Uuid::new_v4().to_string();
+    assert_eq!(
+        fixture.manager.read_output(&unknown, &query).unwrap_err(),
+        format!("unknown shell {unknown}")
+    );
+    assert_eq!(
+        fixture.manager.read_output("nope", &query).unwrap_err(),
+        "invalid UUID: nope"
+    );
+}
+
+#[test]
+fn a_waiting_read_watches_the_pane_instead_of_capturing_it_every_80_ms() {
+    let Some(fixture) = Fixture::counting(false) else {
+        return;
+    };
+    let id = fixture.pane(
+        30,
+        4,
+        "printf first; while [ ! -f go ]; do sleep 0.05; done; printf second; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("first"));
+    let hash = first_hash(&fixture, &id);
+    let size = fixture.pane_format(&id, "#{pane_width}x#{pane_height}");
+    fixture.forget_calls();
+    let (read, elapsed, during) = std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            let started = Instant::now();
+            let read = fixture
+                .manager
+                .read_output(&id, &watched_query(&hash, 10_000));
+            (read, started.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(1200));
+        // While it waits: one control client, and it neither resizes nor types.
+        let clients = fixture
+            .manager
+            .tmux_text(&[
+                "list-clients",
+                "-F",
+                "#{client_control_mode}|#{client_flags}",
+            ])
+            .unwrap();
+        let during = (
+            clients,
+            fixture.pane_format(&id, "#{pane_width}x#{pane_height}"),
+            fixture.calls_with("capture-pane"),
+            fixture.calls_with(" -C "),
+        );
+        fs::write(fixture.root.join("work").join("go"), "").unwrap();
+        let (read, elapsed) = waiter.join().unwrap();
+        (read, elapsed, during)
+    });
+    // The change ends the wait about when it happens (touched at 1.2 s).
+    let OutputRead::Changed { capture, .. } = read.unwrap() else {
+        panic!("expected the change");
+    };
+    assert!(capture.output.starts_with("firstsecond"), "{capture:?}");
+    assert!(elapsed >= Duration::from_millis(1100), "{elapsed:?}");
+    assert!(
+        elapsed < Duration::from_millis(2600),
+        "returned at {elapsed:?}, long after the change"
+    );
+    // A second of silence cost three tmux calls, not one per 80 ms.
+    // The capture that found nothing, one client, and the capture right after
+    // it attached: no matter how long the pane stays quiet.
+    let (clients, size_during, captures_during, clients_started) = during;
+    assert_eq!(captures_during, 2, "{:?}", fixture.calls());
+    assert_eq!(clients_started, 1, "{:?}", fixture.calls());
+    let control: Vec<&str> = clients.lines().filter(|c| c.starts_with("1|")).collect();
+    assert_eq!(control.len(), 1, "{clients}");
+    assert!(control[0].contains("read-only"), "{clients}");
+    assert!(control[0].contains("ignore-size"), "{clients}");
+    assert_eq!(size_during, size);
+    // And nothing stays attached afterwards.
+    let clients = fixture
+        .manager
+        .tmux_text(&["list-clients", "-F", "#{client_control_mode}"])
+        .unwrap();
+    assert!(!clients.lines().any(|c| c == "1"), "{clients}");
+}
+
+#[test]
+fn a_quiet_pane_is_not_captured_while_watched_and_a_wait_times_out_on_time() {
+    let Some(fixture) = Fixture::counting(false) else {
+        return;
+    };
+    let id = fixture.pane(30, 4, "printf still; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("still"));
+    let hash = first_hash(&fixture, &id);
+    fixture.forget_calls();
+    let started = Instant::now();
+    let read = fixture
+        .manager
+        .read_output(&id, &watched_query(&hash, 1_500))
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(matches!(read, OutputRead::Unchanged { .. }), "{read:?}");
+    assert!(elapsed >= Duration::from_millis(1500), "{elapsed:?}");
+    assert!(elapsed < Duration::from_millis(5000), "{elapsed:?}");
+    // The first capture, the client, the capture right after it attached.
+    assert!(
+        fixture.calls_with("capture-pane") <= 3,
+        "{:?}",
+        fixture.calls()
+    );
+    assert_eq!(fixture.calls_with(" -C "), 1);
+}
+
+#[test]
+fn a_pane_that_cannot_be_watched_is_polled_as_before() {
+    let Some(fixture) = Fixture::counting(true) else {
+        return;
+    };
+    let id = fixture.pane(
+        30,
+        4,
+        "printf first; while [ ! -f go ]; do sleep 0.05; done; printf second; exec sleep 60",
+    );
+    fixture.wait_for_screen(&id, |screen| screen.contains("first"));
+    let hash = first_hash(&fixture, &id);
+    fixture.forget_calls();
+    let (read, elapsed) = std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            let started = Instant::now();
+            let read = fixture
+                .manager
+                .read_output(&id, &watched_query(&hash, 10_000));
+            (read, started.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(600));
+        fs::write(fixture.root.join("work").join("go"), "").unwrap();
+        waiter.join().unwrap()
+    });
+    let OutputRead::Changed { capture, .. } = read.unwrap() else {
+        panic!("expected the change");
+    };
+    assert!(capture.output.starts_with("firstsecond"), "{capture:?}");
+    assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+    // It tried to watch once, then captured about every 80 ms.
+    assert_eq!(fixture.calls_with(" -C "), 1, "{:?}", fixture.calls());
+    assert!(
+        fixture.calls_with("capture-pane") >= 4,
+        "{:?}",
+        fixture.calls()
+    );
+}
+
+#[test]
+fn a_watched_wait_notices_a_pane_that_ends() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.pane(30, 4, "printf alive; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("alive"));
+    let hash = first_hash(&fixture, &id);
+    let (result, elapsed) = std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            let started = Instant::now();
+            let result = fixture
+                .manager
+                .read_output(&id, &watched_query(&hash, 10_000));
+            (result, started.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(700));
+        fixture.manager.kill_tmux_session(&id).unwrap();
+        waiter.join().unwrap()
+    });
+    let error = result.unwrap_err();
+    assert!(error.contains("exited"), "{error}");
+    // The client leaving is the wake-up: not the four seconds of a safety poll.
+    assert!(elapsed < Duration::from_millis(3500), "{elapsed:?}");
+}
+
+#[test]
+fn a_watched_wait_sees_scrollback_cleared_without_any_output_within_the_safety_poll() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let id = fixture.deep_pane(30, 4, "seq 1 30; exec sleep 60");
+    fixture.wait_for_screen(&id, |screen| screen.contains("30"));
+    let hash = first_hash(&fixture, &id);
+    let (read, elapsed) = std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            let started = Instant::now();
+            let read = fixture
+                .manager
+                .read_output(&id, &watched_query(&hash, 10_000));
+            (read, started.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        // tmux announces nothing to a control client for this.
+        fixture
+            .manager
+            .tmux_checked(&["clear-history", "-t", &pane_target(&id)])
+            .unwrap();
+        waiter.join().unwrap()
+    });
+    let OutputRead::Changed { capture, .. } = read.unwrap() else {
+        panic!("expected the change");
+    };
+    assert_eq!(capture.screen.unwrap().history_size, 0);
+    assert!(
+        elapsed < watch::SAFETY_POLL + Duration::from_secs(3),
+        "{elapsed:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_runner_returns_the_exit_status_and_both_streams_when_the_child_ends() {
+    let mut command = Command::new("sh");
+    command.args(["-c", "printf out; printf err >&2; exit 3"]);
+    let output = run_bounded(command, None, Duration::from_secs(10), "sh").unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(
+        (output.stdout, output.stderr),
+        (b"out".to_vec(), b"err".to_vec())
+    );
+    // A child that is slow but within its time is waited for.
+    let mut command = Command::new("sh");
+    command.args(["-c", "sleep 0.3; printf late"]);
+    let started = Instant::now();
+    let output = run_bounded(command, None, Duration::from_secs(10), "sh").unwrap();
+    assert_eq!(output.stdout, b"late");
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert!(started.elapsed() < Duration::from_secs(5));
+}

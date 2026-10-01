@@ -229,6 +229,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "search"
             | "usage"
             | "appearance"
+            | "capabilities"
             | "telemetry"
             | "agent-notify"
             | "agent-hook"
@@ -290,6 +291,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         }
         "usage" => usage_command(args, json)?,
         "appearance" => appearance_command(args, json)?,
+        "capabilities" => capabilities_command(args, json)?,
         "setup" => {
             ensure_empty(&args)?;
             print_cua_status(&CuaManager::open_default()?.setup()?, json)?;
@@ -718,6 +720,23 @@ fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
 }
 
 /// The file the running app publishes; this never starts the app or writes.
+/// What a program that drives this CLI by argv may rely on. Not part of the
+/// help text: the remote connector asks, and a CLI without the command (or a
+/// stand-in that prints nothing) is simply treated as having none of it.
+///
+/// `verifies_shell`: `shell output`, `shell history` and `shell keys` check
+/// that the shell is a registered, live session before they do anything, and
+/// say `unknown shell ID` or `shell ID has exited` if it is not (`shell keys`
+/// with a `not_found: ` token), so the caller need not list sessions first.
+fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
+    ensure_empty(&args)?;
+    if json {
+        return print_json(&json!({"v": 1, "verifies_shell": true}));
+    }
+    println!("verifies_shell yes");
+    Ok(())
+}
+
 fn appearance_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     let home = crate::paths::riwork_home()?;
@@ -1526,13 +1545,17 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             if all && project.is_some() {
                 return Err("Use either --all or --project".to_owned());
             }
-            let state = Store::open_default()?.snapshot()?;
+            // `--all` needs nothing from the project store, and the remote
+            // connector asks for exactly that before it touches a shell.
             let filter = if all {
                 None
-            } else if let Some(selector) = project {
-                Some(state.project(&selector)?.id.clone())
             } else {
-                state.active_project_id.clone()
+                let state = Store::open_default()?.snapshot()?;
+                if let Some(selector) = project {
+                    Some(state.project(&selector)?.id.clone())
+                } else {
+                    state.active_project_id.clone()
+                }
             };
             let shells: Vec<_> = manager
                 .list()?

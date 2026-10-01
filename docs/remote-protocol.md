@@ -8,6 +8,7 @@ agreement with the iOS worker.
 
 - 2026-10-01: Additive link extension: `server_ms` on every response (the desktop's own time, so the phone can tell the network's share of a round trip), `features` in the first encrypted frame (`ready`), the `link.configure` request, optionally deflated reply frames for a session that opted in (a marker byte inside the ciphertext; the envelope, AAD and fixtures are unchanged), larger limits that go with them (a reply may be up to 2 MiB of JSON if it fits one frame deflated; `shell.history` `lines` up to 5000), and `link.json` vectors; see "Link extension" below. Applies to v1 and v2 sessions. An older phone or desktop sees no difference: nothing is compressed until the phone asks, and only a desktop that announced the feature is asked.
 - 2026-10-01: Additive terminal creation: `shell.create` (start a plain shell, Codex, Claude or Grok in a project or worktree that exists on the desktop) and `shell.close` (end a project terminal), both in the ordered lane and not cut short when the phone's session ends, and the error code `harness_unavailable`; see "Terminal creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method".
+- 2026-10-01: No wire change; how the desktop answers got cheaper. A waiting `shell.output` no longer captures the pane every 80 ms: the CLI is told by tmux when the pane is written to (a control-mode client attached read-only, never sizing a window) and captures then, so a quiet terminal costs no processes and a change reaches the phone within about 10 ms of the CLI instead of up to 80 ms later. The connector asks the CLI whether it checks that a shell exists and is alive itself (`riwork capabilities`), and if so no longer lists sessions first. Results, errors and bytes are the same; see "Waiting" below.
 - 2026-09-30: Additive deep scrollback: `shell.history` (pages of scrollback above the screen, plain or styled) and the `history_size` and `alternate` fields on the `shell.output` result, also in its `unchanged` form and in its `hash`; see "Deep scrollback extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive live terminal sync: optional `styled`, `if_changed` and `wait_ms` on `shell.output`, a `hash` on its result and an `unchanged` result, and requests of one device are now carried out concurrently (responses may arrive out of order, matched by `id`); see "Live terminal extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive `appearance.get`, so the phone can show the desktop's colors; see "Theme sync extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -400,9 +401,12 @@ a secret and not a proof of anything.
 - If the hash differs, the result is the usual full one (with its new `hash`), at
   once.
 - If it is equal and `wait_ms` is `0`, the result is `unchanged`, at once.
-- If it is equal and `wait_ms` is positive, the desktop captures again about every
-  80 ms, inside one process (`riwork shell output ID --lines N --json [--styled]
-  --if-changed=HASH --wait-ms N`, not one process per check). It returns the full
+- If it is equal and `wait_ms` is positive, the desktop waits inside one process
+  (`riwork shell output ID --lines N --json [--styled] --if-changed=HASH --wait-ms N`,
+  not one process per check) and captures again whenever tmux says the pane was
+  written to, resized or put in a mode (after a few milliseconds, so that a screen
+  drawn by several writes is read whole), and in any case every 4 seconds. Where
+  tmux cannot say so, it captures about every 80 ms instead. It returns the full
   result as soon as the hash differs. If nothing changed within `wait_ms`, it
   returns
 

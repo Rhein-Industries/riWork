@@ -154,6 +154,17 @@ enum Admit {
     Duplicate,
     Full,
 }
+/// Accepts connections with Nagle's algorithm off. Every frame is one small
+/// write that someone is waiting for; left to Nagle, a frame that follows
+/// another before the peer has acknowledged it is held back for the peer's
+/// delayed ACK, up to tens of milliseconds on a local hop.
+fn nodelay(
+    listener: tokio::net::TcpListener,
+) -> impl axum::serve::Listener<Io = tokio::net::TcpStream, Addr = SocketAddr> {
+    axum::serve::ListenerExt::tap_io(listener, |tcp| {
+        let _ = tcp.set_nodelay(true);
+    })
+}
 #[derive(Clone)]
 pub struct Relay {
     state: Arc<Shared>,
@@ -203,7 +214,7 @@ impl Relay {
             "plaintext relay must bind loopback; use a TLS reverse proxy for deployment"
         );
         let listener = tokio::net::TcpListener::bind(bind).await?;
-        axum::serve(listener, self.router()).await?;
+        axum::serve(nodelay(listener), self.router()).await?;
         Ok(())
     }
     /// Why a registration is not authorized. Never includes anything the sender chose.
@@ -479,6 +490,43 @@ mod tests {
         crypto::{b64, random32},
     };
     use tokio_tungstenite::tungstenite::Message as ClientMessage;
+    #[tokio::test]
+    async fn sockets_the_relay_accepts_and_the_connector_opens_have_nagle_off() {
+        use axum::serve::Listener;
+        // The relay's side: what `serve` accepts.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut listener = nodelay(listener);
+        let client = tokio::spawn(async move { tokio::net::TcpStream::connect(addr).await });
+        let (accepted, _) = listener.accept().await;
+        assert!(accepted.nodelay().unwrap());
+        client.await.unwrap().unwrap();
+        // The endpoint's side: what `connect_registered` opens.
+        let m = random32();
+        let route = uuid::Uuid::new_v4().to_string();
+        let relay = Relay::new(
+            Routes {
+                v: 1,
+                routes: vec![Route {
+                    route_id: route.clone(),
+                    desktop_token_sha256: hex::encode(Sha256::digest(random32())),
+                    mobile_token_sha256: hex::encode(Sha256::digest(m)),
+                }],
+            },
+            8,
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/ws", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, relay.router()).await.unwrap();
+        });
+        let (socket, _) = connect_registered(&url, &route, "mobile", &b64(&m))
+            .await
+            .unwrap();
+        assert!(socket.get_ref().get_ref().nodelay().unwrap());
+        task.abort();
+    }
     #[tokio::test]
     async fn full_peer_queue_closes_sender_without_unbounded_buffering() {
         let d = random32();

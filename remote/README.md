@@ -130,9 +130,9 @@ is arbitrary command execution as the desktop user.
 [remote-protocol.md](../docs/remote-protocol.md)). `styled` keeps the colors and
 attributes as SGR sequences and removes every other escape (the CLI filters, and the
 connector refuses to pass on anything else). `if_changed` with a `hash` from an
-earlier result and `wait_ms` (0 to 10000) makes the desktop capture again about every
-80 ms inside the one `riwork shell output ... --if-changed=HASH --wait-ms N` process
-and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time. That
+earlier result and `wait_ms` (0 to 10000) makes the one `riwork shell output ...
+--if-changed=HASH --wait-ms N` process capture again when tmux says the pane changed
+(about every 80 ms where it cannot say) and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time. That
 call may take ten seconds, so the connector no longer handles a device's requests one
 at a time: `lanes.rs` lets one ordered request (`shell.keys`, `shell.input`,
 `shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, in arrival order) and three others run at once,
