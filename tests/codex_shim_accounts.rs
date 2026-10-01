@@ -137,3 +137,111 @@ fn reads_and_the_users_own_profile_still_pass_through() {
         [format!("CODEX_HOME={}", own.display()), "logout".into()]
     );
 }
+
+/// Launches through the managed wrappers with RiWork's agent-screen setting
+/// either left at its default or written to `settings.json`.
+impl Fixture {
+    fn driver(&self) -> PathBuf {
+        let driver = self.root.join("bin/fake-cua-driver");
+        fs::write(&driver, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&driver, fs::Permissions::from_mode(0o700)).unwrap();
+        driver
+    }
+
+    fn install_claude(&self) {
+        let fake = self.root.join("bin/claude");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"SCREEN=${{CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN-unset}}\" \"$@\" > '{}'\n",
+                self.root.join("ran").display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    fn set_inline(&self, inline: bool) {
+        fs::create_dir_all(self.root.join("state")).unwrap();
+        fs::write(
+            self.root.join("state/settings.json"),
+            format!("{{\"schema_version\":1,\"agent_inline_mode\":{inline}}}"),
+        )
+        .unwrap();
+    }
+
+    fn launch(&self, harness: &str, arguments: &[&str]) -> Vec<String> {
+        let own = self.root.join("home/.codex");
+        fs::create_dir_all(&own).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_riwork"))
+            .args(["cua", "harness", harness, "--"])
+            .args(arguments)
+            .current_dir(&self.root)
+            .env_clear()
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", self.root.join("bin").display()),
+            )
+            .env("HOME", self.root.join("home"))
+            .env("RIWORK_HOME", self.root.join("state"))
+            .env("RIWORK_CUA_DRIVER", self.driver())
+            .env("CODEX_HOME", &own)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{harness} {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        self.ran()
+            .unwrap_or_else(|| panic!("{harness} {arguments:?} did not run"))
+    }
+}
+
+#[test]
+fn interactive_codex_launches_run_inline_unless_the_setting_is_off() {
+    let fixture = Fixture::new();
+    let count = |ran: &[String]| ran.iter().filter(|a| *a == "--no-alt-screen").count();
+
+    // Nothing saved yet: the default is inline, on the bare command, a resume
+    // and a prompt alike.
+    for arguments in [
+        &[][..],
+        &["resume", "--last"],
+        &["--model", "m", "fix the bug"],
+    ] {
+        let ran = fixture.launch("codex", arguments);
+        assert_eq!(count(&ran), 1, "{arguments:?}: {ran:?}");
+    }
+    // Commands that never open the interactive screen would reject the flag.
+    for arguments in [&["exec", "say hi"][..], &["review"], &["mcp", "list"]] {
+        let ran = fixture.launch("codex", arguments);
+        assert_eq!(count(&ran), 0, "{arguments:?}: {ran:?}");
+    }
+    // The user's own flag is not doubled.
+    let ran = fixture.launch("codex", &["--no-alt-screen"]);
+    assert_eq!(count(&ran), 1, "{ran:?}");
+
+    fixture.set_inline(false);
+    for arguments in [&[][..], &["resume", "--last"]] {
+        let ran = fixture.launch("codex", arguments);
+        assert_eq!(count(&ran), 0, "{arguments:?}: {ran:?}");
+    }
+    fixture.set_inline(true);
+    assert_eq!(count(&fixture.launch("codex", &["resume"])), 1);
+}
+
+#[test]
+fn interactive_claude_launches_leave_the_alternate_screen_unless_the_setting_is_off() {
+    let fixture = Fixture::new();
+    fixture.install_claude();
+    for arguments in [&[][..], &["--resume"]] {
+        let ran = fixture.launch("claude", arguments);
+        assert_eq!(ran[0], "SCREEN=1", "{arguments:?}: {ran:?}");
+        assert!(!ran.iter().any(|a| a == "--no-alt-screen"), "{ran:?}");
+    }
+    // A utility command is not an interactive screen.
+    assert_eq!(fixture.launch("claude", &["--version"])[0], "SCREEN=unset");
+    fixture.set_inline(false);
+    assert_eq!(fixture.launch("claude", &[])[0], "SCREEN=unset");
+}

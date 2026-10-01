@@ -6,7 +6,7 @@ use std::{
     fs,
     fs::{File, OpenOptions},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
 };
 
@@ -135,6 +135,12 @@ pub struct Settings {
     pub project_order: ProjectOrder,
     pub selected_codex_account: Option<String>,
     pub status_bar: StatusBarSettings,
+    /// New agent sessions (Codex, Grok, Claude Code) run inline on the
+    /// terminal's main screen instead of its alternate screen, so the
+    /// conversation becomes tmux scrollback that a remote viewer can fetch and
+    /// scroll locally. Off leaves every agent on its own default screen. A
+    /// session that is already running keeps the mode it started in.
+    pub agent_inline_mode: bool,
 }
 
 impl Default for Settings {
@@ -148,6 +154,7 @@ impl Default for Settings {
             project_order: ProjectOrder::default(),
             selected_codex_account: None,
             status_bar: StatusBarSettings::default(),
+            agent_inline_mode: true,
         }
     }
 }
@@ -182,6 +189,11 @@ impl<'de> Deserialize<'de> for Settings {
                 defaults.selected_codex_account,
             )?,
             status_bar: lenient_field(&object, "status_bar", defaults.status_bar),
+            agent_inline_mode: lenient_field(
+                &object,
+                "agent_inline_mode",
+                defaults.agent_inline_mode,
+            ),
         })
     }
 }
@@ -205,6 +217,19 @@ fn strict_field<T: DeserializeOwned, E: serde::de::Error>(
 }
 
 impl Global for Settings {}
+
+/// Whether an agent launched from the state directory `home` should run inline.
+/// Launch code (including the `codex` and `grok` wrappers, which run as their
+/// own processes) reads the file each time instead of a copy that a running
+/// window holds. A missing or unreadable file means the default, so a damaged
+/// settings file never decides how an agent draws.
+pub fn agent_inline_mode(home: &Path) -> bool {
+    SettingsStore::open(home)
+        .and_then(|store| store.load())
+        .map_or(Settings::default().agent_inline_mode, |settings| {
+            settings.agent_inline_mode
+        })
+}
 
 #[derive(Clone)]
 pub struct SettingsStore {
@@ -336,6 +361,7 @@ pub enum SettingsEvent {
 enum Toggle {
     TerminalColors,
     PanelTabIcons,
+    AgentInline,
     WindowSize,
 }
 
@@ -344,6 +370,7 @@ impl Toggle {
         match self {
             Self::TerminalColors => "terminal-colors",
             Self::PanelTabIcons => "panel-tab-icons",
+            Self::AgentInline => "agent-inline-mode",
             Self::WindowSize => "remember-window-size",
         }
     }
@@ -352,6 +379,7 @@ impl Toggle {
         let value = match self {
             Self::TerminalColors => &mut settings.use_riwork_colors,
             Self::PanelTabIcons => &mut settings.panel_tab_icons,
+            Self::AgentInline => &mut settings.agent_inline_mode,
             Self::WindowSize => &mut settings.remember_window_size,
         };
         *value = !*value;
@@ -367,6 +395,7 @@ pub struct SettingsPanel {
     theme_focus: Vec<FocusHandle>,
     terminal_focus: FocusHandle,
     tab_icons_focus: FocusHandle,
+    inline_focus: FocusHandle,
     size_focus: FocusHandle,
     orca_preview_focus: FocusHandle,
     orca_import_focus: FocusHandle,
@@ -457,16 +486,18 @@ enum Section {
     Cua,
     Codex,
     Appearance,
+    Agents,
     Windows,
     StatusBar,
     Orca,
 }
 
 impl Section {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Cua,
         Self::Codex,
         Self::Appearance,
+        Self::Agents,
         Self::Windows,
         Self::StatusBar,
         Self::Orca,
@@ -477,9 +508,10 @@ impl Section {
             Self::Cua => "01",
             Self::Codex => "02",
             Self::Appearance => "03",
-            Self::Windows => "04",
-            Self::StatusBar => "05",
-            Self::Orca => "06",
+            Self::Agents => "04",
+            Self::Windows => "05",
+            Self::StatusBar => "06",
+            Self::Orca => "07",
         }
     }
 
@@ -488,6 +520,7 @@ impl Section {
             Self::Cua => "COMPUTER USE",
             Self::Codex => "CODEX ACCOUNTS",
             Self::Appearance => "APPEARANCE",
+            Self::Agents => "AGENT SESSIONS",
             Self::Windows => "WINDOWS",
             Self::StatusBar => "STATUS BAR",
             Self::Orca => "IMPORT FROM ORCA",
@@ -499,6 +532,7 @@ impl Section {
             Self::Cua => "Let RiWork agents operate desktop apps through Cua.ai.",
             Self::Codex => "The account new Codex sessions start with.",
             Self::Appearance => "Choose a theme, or sync with Ghostty.",
+            Self::Agents => "How new Codex, Grok, and Claude sessions use the terminal screen.",
             Self::Windows => "How project windows open.",
             Self::StatusBar => "Choose what appears, which side it sits on, and its order.",
             Self::Orca => "Bring projects and worktrees over from Orca once.",
@@ -509,7 +543,7 @@ impl Section {
 /// The sections of each column, top to bottom. The wide layout splits the
 /// numbered order in half, so Tab still reads down the left column and then
 /// the right, and the two stacks end up about as tall (Computer Use, Codex
-/// Accounts, Appearance against Windows, Status bar, Import).
+/// Accounts, Appearance against Agent sessions, Windows, Status bar, Import).
 fn section_columns(layout: SettingsLayout) -> Vec<Vec<Section>> {
     match layout {
         SettingsLayout::Wide => {
@@ -728,6 +762,7 @@ impl SettingsPanel {
             theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
             tab_icons_focus: cx.focus_handle(),
+            inline_focus: cx.focus_handle(),
             size_focus: cx.focus_handle(),
             orca_preview_focus: cx.focus_handle(),
             orca_import_focus: cx.focus_handle(),
@@ -783,6 +818,7 @@ impl SettingsPanel {
             handles.push(self.terminal_focus.clone());
         }
         handles.push(self.tab_icons_focus.clone());
+        handles.push(self.inline_focus.clone());
         handles.push(self.size_focus.clone());
         if self.orca_pending.is_none() {
             handles.push(self.orca_preview_focus.clone());
@@ -1068,6 +1104,8 @@ impl SettingsPanel {
                     self.change(|settings| Toggle::TerminalColors.flip(settings), cx);
                 } else if self.tab_icons_focus.is_focused(window) {
                     self.change(|settings| Toggle::PanelTabIcons.flip(settings), cx);
+                } else if self.inline_focus.is_focused(window) {
+                    self.change(|settings| Toggle::AgentInline.flip(settings), cx);
                 } else if self.size_focus.is_focused(window) {
                     self.change(|settings| Toggle::WindowSize.flip(settings), cx);
                 } else if self.orca_preview_focus.is_focused(window) {
@@ -1651,6 +1689,7 @@ impl SettingsPanel {
         let focus = match toggle {
             Toggle::TerminalColors => &self.terminal_focus,
             Toggle::PanelTabIcons => &self.tab_icons_focus,
+            Toggle::AgentInline => &self.inline_focus,
             Toggle::WindowSize => &self.size_focus,
         };
         div()
@@ -1707,6 +1746,7 @@ impl SettingsPanel {
                     match toggle {
                         Toggle::TerminalColors => &view.terminal_focus,
                         Toggle::PanelTabIcons => &view.tab_icons_focus,
+                        Toggle::AgentInline => &view.inline_focus,
                         Toggle::WindowSize => &view.size_focus,
                     }
                     .focus(window, cx);
@@ -1761,6 +1801,13 @@ impl SettingsPanel {
             Section::Cua => self.cua_section(layout, cx),
             Section::Codex => self.codex_accounts_section(layout, cx),
             Section::Appearance => self.appearance_section(theme_columns, settings, cx),
+            Section::Agents => self.toggle_row(
+                Toggle::AgentInline,
+                "Keep agent transcripts in scrollback (inline mode)",
+                "New Codex, Grok, and Claude sessions draw on the terminal's main screen, so the whole conversation stays in the terminal's scrollback. You can scroll it locally, and the iOS app can download and scroll it without sending keys to the agent. Off runs them full screen. A session that is already running keeps its mode until it restarts.",
+                settings.agent_inline_mode,
+                cx,
+            ),
             Section::Windows => self.toggle_row(
                 Toggle::WindowSize,
                 "Remember project window size",
@@ -2042,11 +2089,71 @@ mod tests {
     }
 
     #[test]
+    fn agent_inline_mode_defaults_on_and_survives_older_odd_and_unreadable_files() {
+        let dir = env::temp_dir().join(format!("riwork-settings-inline-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let document = |dir: &std::path::Path| -> Value {
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
+        };
+        assert!(Settings::default().agent_inline_mode);
+        // No file yet: the default applies to a launch, and nothing is written.
+        assert!(agent_inline_mode(&dir));
+        assert!(!dir.join("settings.json").exists());
+
+        // A file from a build without the setting reads as on and is not rewritten.
+        let older = r#"{"schema_version":1,"theme":"tokyo_night","future_setting":{"a":1}}"#;
+        fs::write(dir.join("settings.json"), older).unwrap();
+        assert!(store.load().unwrap().agent_inline_mode);
+        assert!(agent_inline_mode(&dir));
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.json")).unwrap(),
+            older
+        );
+
+        // Turning it off writes only that key, and launches see it at once.
+        let saved = store
+            .update(|settings| Toggle::AgentInline.flip(settings))
+            .unwrap();
+        assert!(!saved.agent_inline_mode);
+        let file = document(&dir);
+        assert_eq!(file["agent_inline_mode"], false);
+        assert_eq!(file["theme"], "tokyo_night");
+        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        assert!(!agent_inline_mode(&dir));
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert_eq!(document(&dir)["agent_inline_mode"], false);
+        store
+            .update(|settings| Toggle::AgentInline.flip(settings))
+            .unwrap();
+        assert!(agent_inline_mode(&dir));
+
+        // A value in a shape this build lacks reads as on and stays until changed.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"agent_inline_mode":"minimal"}"#,
+        )
+        .unwrap();
+        assert!(store.load().unwrap().agent_inline_mode);
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert_eq!(document(&dir)["agent_inline_mode"], "minimal");
+
+        // A damaged file does not decide how an agent draws.
+        fs::write(dir.join("settings.json"), "{ not json").unwrap();
+        assert!(agent_inline_mode(&dir));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn each_toggle_changes_only_its_own_setting() {
         let base = Settings::default();
         for (toggle, expected) in [
             (Toggle::TerminalColors, "use_riwork_colors"),
             (Toggle::PanelTabIcons, "panel_tab_icons"),
+            (Toggle::AgentInline, "agent_inline_mode"),
             (Toggle::WindowSize, "remember_window_size"),
         ] {
             let mut flipped = base.clone();
@@ -2069,12 +2176,13 @@ mod tests {
         let ids = [
             Toggle::TerminalColors,
             Toggle::PanelTabIcons,
+            Toggle::AgentInline,
             Toggle::WindowSize,
         ]
         .map(Toggle::id)
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
-        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.len(), 4);
     }
 
     #[test]
@@ -2355,7 +2463,12 @@ mod tests {
             wide,
             vec![
                 vec![Section::Cua, Section::Codex, Section::Appearance],
-                vec![Section::Windows, Section::StatusBar, Section::Orca],
+                vec![
+                    Section::Agents,
+                    Section::Windows,
+                    Section::StatusBar,
+                    Section::Orca
+                ],
             ]
         );
     }
