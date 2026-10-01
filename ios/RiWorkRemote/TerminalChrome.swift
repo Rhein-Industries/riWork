@@ -30,6 +30,41 @@ struct KeyPreviewChip: View {
     }
 }
 
+extension RemoteModel {
+    /// The short note shown above the keyboard with direct typing (a delivery problem, a fallback); none with the line composer.
+    var floatingNotice: String? { directTyping ? deliveryNotice : nil }
+    /// Room kept under the last line for what floats over the pane: the pending-input chip and the short note. They float instead of
+    /// taking room from the pane, so that they coming and going never changes the terminal's size (and never resizes the desktop).
+    func floatingInset(style: DesktopStyle) -> Double {
+        guard directTyping else { return 0 }
+        return (keyPreview != nil ? Double(style.pt(FloatingStatus.chipHeight)) : 0) + (floatingNotice != nil ? Double(style.pt(FloatingStatus.noticeHeight)) : 0)
+    }
+}
+
+/// Pending-input chip and short notices (also in focus mode), floating at the bottom of the terminal.
+///
+/// A view of its own: it reads the key buffers, which change with every key typed, and nothing else on the screen should be rebuilt
+/// for that.
+struct FloatingStatus: View {
+    static let chipHeight: CGFloat = 28, noticeHeight: CGFloat = 24
+    @Environment(\.desktopStyle) private var style
+    let model: RemoteModel
+    var body: some View {
+        if model.directTyping {
+            VStack(spacing: 0) {
+                if let notice = model.floatingNotice {
+                    Text(notice).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                        .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: Double(style.pt(Self.noticeHeight)), alignment: .leading)
+                        .background(style.panel).overlay(alignment: .top) { DesktopRule() }
+                }
+                if let preview = model.keyPreview {
+                    KeyPreviewChip(preview: preview, discard: model.discardPendingKeys).frame(height: Double(style.pt(Self.chipHeight)))
+                }
+            }
+        }
+    }
+}
+
 /// Translucent corner controls in focus mode. Fully visible after a tap, then fades to a faint ghost.
 struct FocusControls: View {
     @Environment(\.desktopStyle) private var style
@@ -120,13 +155,11 @@ struct TerminalRow: View, Equatable {
 /// The debug latency overlay: a small translucent block in the corner of the terminal. Touches go through it.
 struct LatencyOverlay: View {
     @Environment(\.desktopStyle) private var style
-    let latency: LatencyBook
-    let mode: SyncMode
-    /// The lines about the link (round trip, rate, tier, the desktop's time, compression, what the history download is doing), read
-    /// again on every tick: the meter is not observable.
-    var link: () -> [String] = { [] }
+    /// The numbers change with every answer; reading them here keeps the rest of the screen out of it.
+    let model: RemoteModel
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            let latency = model.latency, mode = model.syncMode
             let age = latency.age(at: ProcessInfo.processInfo.systemUptime)
             VStack(alignment: .leading, spacing: 1) {
                 Text("\(mode.label) · \(LatencyBook.format(bytes: latency.payloadBytes))")
@@ -134,7 +167,7 @@ struct LatencyOverlay: View {
                 Text("out  \(LatencyBook.format(latency.output))")
                 Text("echo \(LatencyBook.format(latency.echo))")
                 Text("age  \(LatencyBook.format(age: age))")
-                ForEach(Array(link().enumerated()), id: \.offset) { _, line in Text(line) }
+                ForEach(Array(model.linkLines.enumerated()), id: \.offset) { _, line in Text(line) }
             }
             .font(style.mono(9, relativeTo: .caption2)).monospacedDigit()
             .foregroundStyle(style.text)

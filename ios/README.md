@@ -276,8 +276,9 @@ palette (or a built-in set that suits the desktop's light or dark side), xterm-2
 background, like Ghostty's `faint-opacity`), italic, underline, strikethrough, inverse, hidden and every reset. Malformed or
 unknown sequences are dropped whole and never crash. Bold text is not made bright (Ghostty's `bold-is-bright` is off; the
 `riwork.boldIsBright` default turns it on). Parsing (`Core/StyledScreen.swift`) happens off the main actor and yields the screen
-line by line; the iPhone terminal paints only the rows in view, each with Core Text on a whole device pixel (`TerminalRowView.swift`),
-and repaints only rows whose line changed, so a 50,000-line history costs no more than a screen. Every line is exactly one grid row
+line by line; a line that an earlier answer already held (the same bytes, read under the same running SGR style) is found again in
+`StyledLineCache` instead of parsed, so an answer costs what changed in it, not its 160 or 540 lines; the iPhone terminal paints only
+the rows in view, each with Core Text on a whole device pixel (`TerminalRowView.swift`), and repaints only rows whose line changed, so a 50,000-line history costs no more than a screen. Every line is exactly one grid row
 (its height is the font's line height rounded to a device pixel, which is also what the desktop grid is worked out from) and each glyph
 that borrows a font is kerned back to the cells the terminal counts for it, so attributes and fallback fonts never move a column or a
 baseline. Backgrounds, underlines and the cursor are painted on the grid, cell by cell.
@@ -466,6 +467,36 @@ swift run --package-path ios riwork-ios-smoke /secure/fixture.pairing.json \
 
 `--send` executes input in the explicitly selected shell. The duplicate UUID
 operation is an explicit acceptance test; the app never performs it automatically.
+
+## Performance
+
+What a live answer, a typed key and a scroll frame cost is measured, not guessed. The numbers print as `PERF …` lines:
+
+```sh
+# Core: parse, buffer, memory per line, the wire (optimized, as the app ships)
+swift test -c release -Xswiftc -enable-testing --package-path ios --filter PerformanceTests
+# App: main-thread CPU per answer / key / scroll frame with 50,000 styled lines held, row painting, reconnect over a slow link.
+# The counters (view bodies built, rows painted, surface refreshes) are compiled into debug builds and, here, into a release build.
+xcodebuild -project RiWorkRemote.xcodeproj -scheme RiWorkRemote -configuration Release ENABLE_TESTABILITY=YES \
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS=PERF_COUNTERS CODE_SIGN_IDENTITY=- -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  test -only-testing:RiWorkAppTests/PerformanceTests
+```
+
+The tests assert the work done (no header, console or phone-terminal body is rebuilt by a live answer or a typed key; the surface is
+refreshed once per answer; a connect asks for the four lists in one round trip), not times, which depend on the machine. For a profile,
+run one scenario for 40 s with `TEST_RUNNER_PERF_PROFILE=echo|output|type|scroll` and `-only-testing:RiWorkAppTests/PerformanceTests/testForAProfiler`,
+attach `xcrun xctrace record --template 'Time Profiler' --device <udid> --attach <pid>`, and look at the main thread. On a device, the
+signposts `ParseAnswer`, `ApplyAnswer`, `SurfaceRefresh` and `RowPaint` (subsystem `com.riwork.remote`, category `Performance`) show up
+in Instruments' os_signpost track.
+
+Rules the code follows, each found by a measurement:
+- A view reads what changes rarely. `output` is a new string with every answer, so views read `hasOutput`; what follows the buffer or the
+  keys (the history header, the pill, the chip above the keyboard, the status line) is a view of its own, so a key or an answer rebuilds
+  those and not the header, the console and the terminal around them. `@Observable` wakes readers for an equal value only when it is
+  mutated in place (`_modify`), so assign whole values and let the macro compare.
+- The model refreshes the scroll surface when the buffer changes; its layout pass does not (UIKit on iOS 26 lays a view out again when state
+  it read in `layoutSubviews` changes, which doubled every answer).
+- Independent requests go out together (the four project lists of a connect), replies being matched by id.
 
 ## Current limits
 

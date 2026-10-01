@@ -148,6 +148,7 @@ struct WorkspaceBar<Actions: View>: View {
     var onDoubleTap: (() -> Void)?
     @ViewBuilder var actions: () -> Actions
     var body: some View {
+        let _ = Perf.count("body.WorkspaceBar")
         VStack(spacing: 0) {
             HStack(spacing: compact ? 2 : 4) {
                 if let back { Button("Back", systemImage: "chevron.left", action: back).labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: compact)) }

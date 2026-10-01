@@ -27,8 +27,6 @@ struct PhoneTerminal: View {
     let committedSize: Double
     let showCursor: Bool
     let padding: Double
-    /// Room kept under the last line for the pending-input chip and notices that float over the pane.
-    let floatingInset: Double
     @State private var scroll = PhoneScrollState()
 
     private var cell: (width: Double, height: Double) { TerminalFont.cell(size: fontSize) }
@@ -37,41 +35,14 @@ struct PhoneTerminal: View {
     }
 
     var body: some View {
-        if model.output.isEmpty {
+        let _ = Perf.count("body.PhoneTerminal")
+        if !model.hasOutput {
             ScrollView { TerminalPlaceholder(model: model).frame(maxWidth: .infinity, alignment: .leading) }
         } else if model.alternateScreen {
             alternateScreen
         } else {
-            scrollback
+            ScrollbackSurface(model: model, settings: settings, fontSize: fontSize, padding: padding)
         }
-    }
-
-    // MARK: Scrollback
-
-    private var scrollback: some View {
-        TerminalSurface(model: model, look: look, header: model.historyHeader, jumpToken: model.typedCount &+ model.jumpRequests)
-            .overlay(alignment: .bottomTrailing) {
-                if let pill = model.scrollFollow.pill { pillButton(pill) }
-            }
-            .animation(.easeInOut(duration: 0.15), value: model.scrollFollow.pill)
-    }
-
-    private var look: TerminalSurfaceView.Look {
-        TerminalSurfaceView.Look(settings: settings, fontSize: fontSize, padding: padding, floatingInset: floatingInset, headerSize: 10 * style.scale)
-    }
-
-    private func pillButton(_ pill: StickyBottom.Pill) -> some View {
-        Button { model.jumpToLatest() } label: {
-            Text(pill.label).font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
-                .padding(.horizontal, 12).frame(minHeight: style.pt(30))
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().stroke(style.divider, lineWidth: 1))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .padding(.trailing, 10).padding(.bottom, 8 + floatingInset)
-        .transition(.opacity)
-        .accessibilityLabel(pill.accessibilityLabel)
     }
 
     // MARK: Alternate screen
@@ -120,6 +91,54 @@ struct PhoneTerminal: View {
             }
     }
     private var swipeHeight: Double { Double(model.terminalArea?.height ?? 600) }
+}
+
+/// The scrollback surface of the shell on screen. This is the part of the screen that follows the buffer, so it is a view of its own:
+/// it reads the buffer (the header row at the top of the loaded lines, which changes with every live answer) and the keys typed (the
+/// room kept for the chip above the keyboard, the request to go to the bottom), and nothing else is rebuilt for those.
+private struct ScrollbackSurface: View {
+    @Environment(\.desktopStyle) private var style
+    let model: RemoteModel
+    let settings: TerminalRenderer.Settings
+    let fontSize: Double
+    let padding: Double
+
+    var body: some View {
+        let _ = Perf.count("body.ScrollbackSurface")
+        let floatingInset = model.floatingInset(style: style)
+        let look = TerminalSurfaceView.Look(settings: settings, fontSize: fontSize, padding: padding, floatingInset: floatingInset, headerSize: 10 * style.scale)
+        TerminalSurface(model: model, look: look, header: model.historyHeader, jumpToken: model.typedCount &+ model.jumpRequests)
+            .overlay(alignment: .bottomTrailing) { LivePill(model: model, floatingInset: floatingInset) }
+    }
+}
+
+/// "↓ Live · N new": takes the reader back to the latest output. Its own view, since the count moves with the output.
+private struct LivePill: View {
+    @Environment(\.desktopStyle) private var style
+    let model: RemoteModel
+    let floatingInset: Double
+
+    var body: some View {
+        let pill = model.scrollFollow.pill
+        Group {
+            if let pill { button(pill) }
+        }
+        .animation(.easeInOut(duration: 0.15), value: pill)
+    }
+
+    private func button(_ pill: StickyBottom.Pill) -> some View {
+        Button { model.jumpToLatest() } label: {
+            Text(pill.label).font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                .padding(.horizontal, 12).frame(minHeight: style.pt(30))
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().stroke(style.divider, lineWidth: 1))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 10).padding(.bottom, 8 + floatingInset)
+        .transition(.opacity)
+        .accessibilityLabel(pill.accessibilityLabel)
+    }
 }
 
 /// What the terminal shows before there is anything to show.

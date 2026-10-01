@@ -76,7 +76,10 @@ targets:
   RiWorkAppTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [AppTests]
+    # SyntheticTranscript is shared with the core tests: the benchmarks of the parse and of the painting use the same content.
+    sources:
+      - AppTests
+      - Tests/SyntheticTranscript.swift
     dependencies:
       - target: RiWorkRemote
       - target: RiWorkCore

@@ -113,7 +113,13 @@ public struct TerminalBuffer: Sendable, Equatable {
     /// Index ranges of lines that scrolled by unseen and are held as `StyledLine.missing` until `merge(page:)` fills them. Sorted,
     /// apart from each other, all below `liveStart`. Only ever made when the desktop announced the shift, so the indexes are sound.
     public private(set) var holes: [Range<Int>] = [] {
-        didSet { if !unverifiedSeams.isEmpty { unverifiedSeams = unverifiedSeams.filter { seam in holes.contains { $0.lowerBound == seam } } } }
+        // Every assignment (a live answer makes two to four) drops the seams of holes that are gone. Against a set of the holes' lower
+        // edges, so that it costs the holes and the seams, not their product (output that outruns the answers can leave hundreds of both).
+        didSet {
+            guard !unverifiedSeams.isEmpty else { return }
+            let edges = Set(holes.lazy.map(\.lowerBound))
+            unverifiedSeams = unverifiedSeams.filter(edges.contains)
+        }
     }
     /// Lower edges of holes whose seam with the older lines has not been compared with the desktop's yet. A burst that fits no answer
     /// is taken to be where the announced `history_size` says it is, with nothing to check that against; the seam is what does.

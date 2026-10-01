@@ -23,7 +23,10 @@ enum ConnectionState: Equatable {
     var worktrees: [RemoteWorktree] = []
     var shells: [RemoteSession] = []
     var orchestrators: [RemoteSession] = []
-    var output = ""
+    var output = "" { didSet { hasOutput = !output.isEmpty } }
+    /// Whether `output` holds anything. Views read this rather than `output`, which is a new string with every live answer and would
+    /// rebuild whatever reads it each time.
+    var hasOutput = false
     /// `output` with its colors and attributes, parsed off the main actor. `outputVersion` changes whenever it does.
     var styledOutput = StyledScreen.empty
     var outputVersion = 0
@@ -163,6 +166,8 @@ enum ConnectionState: Equatable {
     // A not_found UUID is excluded until an explicit refresh or fresh connection.
     var missingSessionIDs: Set<String> = []
     @ObservationIgnored private var lastScreen: ShellOutput?
+    /// The lines of the last screens, parsed. The next answer differs from the last in a line or two, and only those are parsed again.
+    @ObservationIgnored private let lineCache = StyledLineCache()
     @ObservationIgnored private var drainingForBackground = false
     @ObservationIgnored private var resumeAfterDrain = false
     /// Counts times the selected terminal was replaced without a tap (it closed); the view drops the keyboard so
@@ -517,6 +522,7 @@ enum ConnectionState: Equatable {
     }
     func resetOutput() {
         stashTerminal()
+        lineCache.removeAll()
         lastScreen = nil; output = ""; styledOutput = .empty; outputVersion &+= 1; outputHash = nil
         outputCursorOffset = nil; outputInMode = false; outputSessionID = nil; lastOutputAt = nil
         resetTerminal()
@@ -535,12 +541,22 @@ enum ConnectionState: Equatable {
     private func refresh(token: UUID) async throws {
         loading = true
         defer { if generation == token { loading = false } }
-        let listed = try await rpc("projects.list")["projects"].decode([RemoteProject].self)
-        let managers = try await rpc("orchestrators.list")["orchestrators"].decode([RemoteSession].self)
+        // One round trip for all of it, not four one after the other: the lists do not depend on each other, and the project whose tabs
+        // are wanted is the one already chosen (the replies come back matched to their requests, so they may overlap on the wire).
+        let chosen = projectID
+        async let projectsReply = rpc("projects.list")
+        async let orchestratorsReply = rpc("orchestrators.list")
+        async let chosenListing = fetchProject(ifChosen: chosen)
+        let listed = try await projectsReply["projects"].decode([RemoteProject].self)
+        let managers = try await orchestratorsReply["orchestrators"].decode([RemoteSession].self)
+        let early = try await chosenListing
         guard generation == token else { return }
         projects = listed; orchestrators = managers
         if projectID == nil, let first = listed.first { try updateDesktop { $0.selectedProjectID = first.id } }
-        if let project = projectID { try await loadProject(project, token: token) }
+        if let project = projectID {
+            if project == chosen, let early { try await install(early, project: project, token: token) }
+            else { try await loadProject(project, token: token) }
+        }
         else { snapshotStale = false }
         if sessionID != nil { await readOutput() }
     }
@@ -567,11 +583,23 @@ enum ConnectionState: Equatable {
         } catch { handle(error) }
     }
     private func loadProject(_ id: String, token: UUID) async throws {
+        try await install(try await fetchProject(id), project: id, token: token)
+    }
+    private typealias ProjectListing = (worktrees: [RemoteWorktree], shells: [RemoteSession])
+    private func fetchProject(ifChosen id: String?) async throws -> ProjectListing? {
+        guard let id else { return nil }
+        return try await fetchProject(id)
+    }
+    /// A project's worktrees and shells, asked for together.
+    private func fetchProject(_ id: String) async throws -> ProjectListing {
         let params: [String: JSONValue] = ["project_id": .string(id)]
-        let trees = try await rpc("worktrees.list", params)["worktrees"].decode([RemoteWorktree].self)
-        let workers = try await rpc("shells.list", params)["shells"].decode([RemoteSession].self)
+        async let trees = rpc("worktrees.list", params)
+        async let workers = rpc("shells.list", params)
+        return (try await trees["worktrees"].decode([RemoteWorktree].self), try await workers["shells"].decode([RemoteSession].self))
+    }
+    private func install(_ listing: ProjectListing, project id: String, token: UUID) async throws {
         guard generation == token, projectID == id else { return }
-        worktrees = trees; shells = workers; loadedProjectID = id
+        worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
         try reconcileSelectedSession()
         if sessionID == nil { try await synchronizeViewport(token: token) }
     }
@@ -683,7 +711,8 @@ enum ConnectionState: Equatable {
                 // An unchanged screen is not re-parsed or re-rendered: reads are frequent while typing and most see the same thing.
                 if screen != lastScreen || outputSessionID != id {
                     // Colors, symbols and cursor are worked out off the main actor; a full 500-line screen must not stall touches.
-                    let styled = await Task.detached(priority: .userInitiated) { screen.styledScreen }.value
+                    let cache = lineCache
+                    let styled = await Task.detached(priority: .userInitiated) { Perf.interval("ParseAnswer") { screen.styledScreen(cache: cache) } }.value
                     guard generation == token, sessionID == id else { return .skipped }
                     if let timing = lastOutputTiming { linkMeter.noteLines(wireBytes: timing.wireBytes, jsonBytes: timing.jsonBytes, lines: styled.lines.count) }
                     output = styled.text; styledOutput = styled; outputVersion &+= 1

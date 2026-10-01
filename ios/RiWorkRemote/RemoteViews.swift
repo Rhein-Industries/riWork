@@ -244,6 +244,7 @@ struct TerminalTabsView: View {
     private var openSessions: [RemoteSession] { model.openSessions }
     private var focused: Bool { model.focusMode && model.sessionID != nil }
     var body: some View {
+        let _ = Perf.count("body.TerminalTabsView")
         VStack(spacing: 0) {
             // Focus mode drops all of this: only the shell (and its keyboard) stays.
             if !focused {
@@ -271,7 +272,7 @@ struct TerminalTabsView: View {
                             Toggle("Line composer instead of direct typing", isOn: Binding(get: { model.preferLineComposer }, set: { model.setPreferLineComposer($0) }))
                         }
                         // The screen and the last 500 lines of scrollback above it, not everything loaded.
-                        Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.screenTextForCopy }.disabled(model.output.isEmpty)
+                        Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.screenTextForCopy }.disabled(!model.hasOutput)
                         Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                         Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                         if let session = model.session, model.canClose(session) {
@@ -450,11 +451,12 @@ struct SessionConsole: View {
     private var fontSize: Double { pinchScale.map { TerminalFontSize.pinched(from: model.terminalFontSize, scale: $0) } ?? model.terminalFontSize }
     private var focused: Bool { model.focusMode }
     var body: some View {
+        let _ = Perf.count("body.SessionConsole")
         Group {
             if model.sessionID != nil {
                 VStack(spacing: 0) {
                     if !focused {
-                        statusStrip
+                        StatusStrip(model: model)
                         if let error = model.error {
                             HStack(alignment: .top) {
                                 Image(systemName: "exclamationmark.circle")
@@ -512,20 +514,6 @@ struct SessionConsole: View {
         keyFocus.suspendForModal()
         editor = start
     }
-    private var statusStrip: some View {
-        HStack(spacing: 6) {
-            Image(systemName: outputStale ? "clock.badge.exclamationmark" : "checkmark.circle")
-            Text(outputStale ? "Stale · \(model.state.label.lowercased())" : (model.syncMode == .live ? "Live" : "Latest snapshot"))
-            if model.syncMode != .live || outputStale, let date = model.lastOutputAt { Text(date, style: .time) }
-            if model.outputInMode { CopyModeBadge() }
-            Spacer(minLength: 4)
-            if let viewport = model.appliedViewport, model.viewportSessionID == model.sessionID {
-                Text("\(viewport.columns)×\(viewport.rows)").monospacedDigit()
-                    .accessibilityLabel("Terminal size \(viewport.columns) columns, \(viewport.rows) rows")
-            }
-        }.font(style.mono(10, relativeTo: .caption2)).foregroundStyle(outputStale ? style.warning : style.muted)
-            .padding(.horizontal, 8).padding(.vertical, 2).background(style.panel)
-    }
     /// The iPad keeps the terminal it has always had (two axes, a follow toggle); the iPhone has `PhoneTerminal`.
     private var usesPhoneTerminal: Bool { UIDevice.current.userInterfaceIdiom != .pad }
     private var terminal: some View {
@@ -542,13 +530,13 @@ struct SessionConsole: View {
         }
         // The chip and notices float over the pane instead of taking room from it, so they appearing or vanishing never
         // changes the terminal's size (and so never resizes the desktop). Content gets a matching bottom margin.
-        .overlay(alignment: .bottom) { floatingStatus }
+        .overlay(alignment: .bottom) { FloatingStatus(model: model) }
         .onChange(of: model.sessionAutoSwitches) { _, _ in configureFocus(); keyFocus.shellReplacedWithoutTap() }
         .simultaneousGesture(TapGesture().onEnded { terminalTapped() })
         .simultaneousGesture(magnify)
         // Top right, where lines end; top left in focus mode, where the text controls are.
         .overlay(alignment: focused ? .topLeading : .topTrailing) {
-            if model.showLatency { LatencyOverlay(latency: model.latency, mode: model.syncMode, link: { model.linkLines }) }
+            if model.showLatency { LatencyOverlay(model: model) }
         }
         // The key readout (Display settings): what the last key sent. Bottom left, clear of the hotkey menu at the top and of the
         // pending-input chip.
@@ -578,7 +566,7 @@ struct SessionConsole: View {
     /// opening or switching to a shell starts at its bottom.
     private var phoneTerminal: some View {
         PhoneTerminal(model: model, fontSize: fontSize, committedSize: model.terminalFontSize, showCursor: cursorVisible,
-                      padding: model.terminalLayout.padding, floatingInset: floatingInset)
+                      padding: model.terminalLayout.padding)
             .id(model.sessionID)
     }
     private var legacyTerminal: some View {
@@ -624,26 +612,9 @@ struct SessionConsole: View {
             composer
         }
     }
-    private var chipHeight: Double { Double(style.pt(28)) }
-    private var noticeHeight: Double { Double(style.pt(24)) }
-    private var directNotice: String? { model.directTyping ? model.deliveryNotice : nil }
-    private var floatingInset: Double {
-        guard model.directTyping else { return 0 }
-        return (model.keyPreview != nil ? chipHeight : 0) + (directNotice != nil ? noticeHeight : 0)
-    }
-    /// Pending-input chip and short notices (also in focus mode), floating at the bottom of the terminal.
-    @ViewBuilder private var floatingStatus: some View {
-        if model.directTyping {
-            VStack(spacing: 0) {
-                if let notice = directNotice {
-                    Text(notice).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
-                        .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: noticeHeight, alignment: .leading)
-                        .background(style.panel).overlay(alignment: .top) { DesktopRule() }
-                }
-                if let preview = model.keyPreview { KeyPreviewChip(preview: preview, discard: model.discardPendingKeys).frame(height: chipHeight) }
-            }
-        }
-    }
+    /// Room kept under the last line for the chip and notices that float over the pane (the iPad's scroll view; on the iPhone the terminal
+    /// reads this itself, so that a key typed does not rebuild this whole screen).
+    private var floatingInset: Double { model.floatingInset(style: style) }
     /// Shown while the keyboard is down or something needs saying. Names the shell that keystrokes go to.
     private var directBar: some View {
         HStack(spacing: 8) {
@@ -688,5 +659,26 @@ struct SessionConsole: View {
     }
     /// The cursor is drawn only for a live, current screen of this session (not while a resize is settling).
     private var cursorVisible: Bool { model.state == .connected && !model.snapshotStale && model.outputSessionID == model.sessionID && model.session?.alive == true }
+}
+
+/// The line above the terminal: how fresh the screen is, the link, the terminal size. A view of its own because what it reads
+/// (the time of the last answer on an older desktop, the connection) changes on its own schedule and should rebuild only this line.
+struct StatusStrip: View {
+    @Environment(\.desktopStyle) private var style
+    let model: RemoteModel
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: outputStale ? "clock.badge.exclamationmark" : "checkmark.circle")
+            Text(outputStale ? "Stale · \(model.state.label.lowercased())" : (model.syncMode == .live ? "Live" : "Latest snapshot"))
+            if model.syncMode != .live || outputStale, let date = model.lastOutputAt { Text(date, style: .time) }
+            if model.outputInMode { CopyModeBadge() }
+            Spacer(minLength: 4)
+            if let viewport = model.appliedViewport, model.viewportSessionID == model.sessionID {
+                Text("\(viewport.columns)×\(viewport.rows)").monospacedDigit()
+                    .accessibilityLabel("Terminal size \(viewport.columns) columns, \(viewport.rows) rows")
+            }
+        }.font(style.mono(10, relativeTo: .caption2)).foregroundStyle(outputStale ? style.warning : style.muted)
+            .padding(.horizontal, 8).padding(.vertical, 2).background(style.panel)
+    }
     private var outputStale: Bool { model.state != .connected || model.snapshotStale || model.outputSessionID != model.sessionID || model.session?.alive != true || !model.viewportReady }
 }

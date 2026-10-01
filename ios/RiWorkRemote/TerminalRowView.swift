@@ -20,8 +20,30 @@ import RiWorkCore
         fonts[key] = made
         return made
     }
+    private static var colors: [RGB: CGColor] = [:]
+    /// The color for `rgb`. Made once: creating a CGColor goes through the color space machinery and a screenful of rows asks for the
+    /// same handful of colors over and over.
     private static func cgColor(_ rgb: RGB) -> CGColor {
-        CGColor(srgbRed: CGFloat(rgb.red) / 255, green: CGFloat(rgb.green) / 255, blue: CGFloat(rgb.blue) / 255, alpha: 1)
+        if let known = colors[rgb] { return known }
+        if colors.count > 512 { colors.removeAll() }
+        let made = CGColor(srgbRed: CGFloat(rgb.red) / 255, green: CGFloat(rgb.green) / 255, blue: CGFloat(rgb.blue) / 255, alpha: 1)
+        colors[rgb] = made
+        return made
+    }
+
+    private struct AttributeKey: Hashable { let size: Double, bold: Bool, italic: Bool, color: RGB, kern: Double }
+    private static var attributeSets: [AttributeKey: CFDictionary] = [:]
+    /// The Core Text attributes of a piece of a line (its font, its color, its kern), shared by every piece that looks alike, so that
+    /// a piece costs one call on the attributed string instead of three.
+    private static func attributes(size: Double, bold: Bool, italic: Bool, rgb: RGB, kern: Double) -> CFDictionary {
+        let key = AttributeKey(size: size, bold: bold, italic: italic, color: rgb, kern: kern)
+        if let known = attributeSets[key] { return known }
+        if attributeSets.count > 1024 { attributeSets.removeAll() }
+        let made: [CFString: Any] = [kCTFontAttributeName: font(size: size, bold: bold, italic: italic), kCTForegroundColorAttributeName: cgColor(rgb),
+                                     kCTKernAttributeName: kern as CFNumber]
+        let dictionary = made as CFDictionary
+        attributeSets[key] = dictionary
+        return dictionary
     }
 
     /// The distance from the top of a row to the baseline: Menlo's ascent, on a whole pixel.
@@ -51,10 +73,9 @@ import RiWorkCore
             let start = CFAttributedStringGetLength(attributed)
             CFAttributedStringReplaceString(attributed, CFRange(location: start, length: 0), segment.text as CFString)
             let range = CFRange(location: start, length: CFAttributedStringGetLength(attributed) - start)
-            CFAttributedStringSetAttribute(attributed, range, kCTFontAttributeName, font(size: fontSize, bold: bold, italic: italic))
-            CFAttributedStringSetAttribute(attributed, range, kCTForegroundColorAttributeName, fg)
-            // Always set: text added to an attributed string takes on the attributes before it, so a kern would run on into the next piece.
-            CFAttributedStringSetAttribute(attributed, range, kCTKernAttributeName, segment.kern as CFNumber)
+            // Font, color and kern are always all set: text added to an attributed string takes on the attributes before it, so a kern
+            // would run on into the next piece.
+            CFAttributedStringSetAttributes(attributed, range, attributes(size: fontSize, bold: bold, italic: italic, rgb: foreground, kern: segment.kern), true)
             let cells = segment.text.reduce(0) { $0 + TerminalText.cellWidth($1) }
             painted.append((column, cells, segment, fg, background.map(cgColor)))
             column += cells
@@ -115,15 +136,18 @@ import RiWorkCore
         self.settings = settings; self.fontSize = fontSize
         setNeedsDisplay()
     }
-    /// Forgets the line (the row goes back to the pool).
+    /// Forgets the line (the row goes back to the pool). The surface hides the row; its old pixels stay where they are until the row is
+    /// given another line, which always paints (`look` is -1), so painting nothing here would only be work.
     func clear() {
         guard line != nil else { return }
         line = nil; cursorColumn = nil; look = -1
-        setNeedsDisplay()
     }
 
     override func draw(_ rect: CGRect) {
         guard let line, let settings, let context = UIGraphicsGetCurrentContext() else { return }
+        Perf.count("rowPaint")
+        let signpost = Perf.signposter.beginInterval("RowPaint")
+        defer { Perf.signposter.endInterval("RowPaint", signpost) }
         let scale = Double(window?.screen.scale ?? traitCollection.displayScale)
         TerminalRowPainter.draw(line, cursorColumn: cursorColumn, settings: settings, fontSize: fontSize, in: context, scale: scale > 0 ? scale : TerminalFont.pixelsPerPoint)
     }

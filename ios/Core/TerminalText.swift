@@ -121,6 +121,8 @@ public struct ShellOutput: Sendable, Equatable {
     public var screen: TerminalScreen { TerminalText.screen(text, cursor: cursor.map { ($0.x, $0.y) }, rows: rows) }
     /// The screen with its colors and attributes and text presentation forced on symbols. Pure and slow enough to keep off the main actor.
     public var styledScreen: StyledScreen { TerminalText.styledScreen(text, cursor: cursor.map { ($0.x, $0.y) }, rows: rows) }
+    /// `styledScreen`, reusing the lines that `cache` already holds. The same screen, found with less work.
+    public func styledScreen(cache: StyledLineCache?) -> StyledScreen { TerminalText.styledScreen(text, cursor: cursor.map { ($0.x, $0.y) }, rows: rows, cache: cache) }
 }
 
 /// How often to read the screen: fast right after keys were typed or sent, then slower, then the resting interval.
