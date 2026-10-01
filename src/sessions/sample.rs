@@ -2,7 +2,9 @@
 //! tmux. Each window used to ask for the session list, the pane directories
 //! and the process table itself, so N windows meant N sets of tmux and `ps`
 //! processes every tick. Now the first window to ask in a tick does the work
-//! and the rest read its answer.
+//! and the rest read its answer. That work is one `tmux list-panes -a` (the
+//! sessions that exist, the pane directories, the pane processes and what each
+//! pane runs all come out of it) and, when a window shows them, one `ps`.
 //!
 //! Only the GUI's refresh asks for a sample. The CLI and MCP servers are other
 //! processes that call `list` and friends directly, so they always see tmux as
@@ -19,32 +21,48 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{SessionMetrics, ShellSession};
+use super::{PaneTable, SessionMetrics, ShellSession};
 
 /// A little under the 2 s refresh period, so each tick of a window reads a
 /// fresh sample while windows that tick together share one.
 pub(super) const SAMPLE_TTL: Duration = Duration::from_millis(1500);
+
+/// How long the server's default shell is trusted. It is a server option that
+/// changes about never; the cost of asking is a tmux client per sample.
+const SHELL_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug)]
 pub struct SessionSample {
     pub shells: Vec<ShellSession>,
     /// `None` when not asked for, or when tmux or `ps` failed.
     pub metrics: Option<BTreeMap<String, SessionMetrics>>,
-    /// `None` when tmux failed.
+    /// The window 0 pane directory of each live shell. Always present in a
+    /// sample that succeeded: it comes from the same tmux answer as the shells.
     pub directories: Option<BTreeMap<String, PathBuf>>,
 }
 
-/// Where a sample comes from: tmux and `ps` in the app, counters in tests.
+/// Where a sample comes from: the registry, tmux and `ps` in the app, counters
+/// in tests. `panes` is the one tmux query; the rest read its answer.
 pub(super) trait SampleSource {
-    fn shells(&self) -> Result<Vec<ShellSession>, String>;
-    fn directories(&self, shells: &[ShellSession]) -> Result<BTreeMap<String, PathBuf>, String>;
-    fn metrics(&self, shells: &[ShellSession]) -> Result<BTreeMap<String, SessionMetrics>, String>;
+    /// The registry rows, read before tmux is asked.
+    fn saved(&self) -> Result<Vec<ShellSession>, String>;
+    fn panes(&self) -> Result<PaneTable, String>;
+    fn shells(&self, saved: Vec<ShellSession>, panes: &PaneTable) -> Vec<ShellSession>;
+    fn directories(&self, shells: &[ShellSession], panes: &PaneTable) -> BTreeMap<String, PathBuf>;
+    fn metrics(
+        &self,
+        shells: &[ShellSession],
+        panes: &PaneTable,
+    ) -> Result<BTreeMap<String, SessionMetrics>, String>;
 }
 
 struct Entry {
     generation: u64,
     taken: Instant,
     sample: Result<SessionSample, String>,
+    /// What tmux showed, kept for a window that asks for metrics later in the
+    /// same tick.
+    panes: Option<PaneTable>,
     metrics_taken: bool,
 }
 
@@ -56,6 +74,8 @@ pub(super) struct SampleCache {
     /// Held while a sample is taken, so callers arriving meanwhile wait for it
     /// instead of taking their own.
     entry: Mutex<Option<Entry>>,
+    /// The server's default shell, and when it was asked for.
+    shell: Mutex<Option<(Instant, PathBuf)>>,
 }
 
 impl SampleCache {
@@ -64,11 +84,28 @@ impl SampleCache {
             ttl,
             generation: AtomicU64::new(0),
             entry: Mutex::new(None),
+            shell: Mutex::new(None),
         }
     }
 
     pub(super) fn invalidate(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
+        *self.shell.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// The default shell of this tmux server. `ask` runs when nothing is
+    /// remembered or the answer is older than `SHELL_TTL`; a change this process
+    /// makes to sessions forgets it.
+    pub(super) fn default_shell(&self, ask: impl FnOnce() -> PathBuf) -> PathBuf {
+        let mut slot = self.shell.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((asked, shell)) = slot.as_ref()
+            && asked.elapsed() < SHELL_TTL
+        {
+            return shell.clone();
+        }
+        let shell = ask();
+        *slot = Some((Instant::now(), shell.clone()));
+        shell
     }
 
     /// The current sample, taken now if the last one is older than the TTL or
@@ -87,23 +124,33 @@ impl SampleCache {
         {
             if want_metrics
                 && !entry.metrics_taken
-                && let Ok(sample) = &mut entry.sample
+                && let (Ok(sample), Some(panes)) = (&mut entry.sample, &entry.panes)
             {
-                sample.metrics = source.metrics(&sample.shells).ok();
+                sample.metrics = source.metrics(&sample.shells, panes).ok();
                 entry.metrics_taken = true;
             }
             return entry.sample.clone();
         }
         let taken = Instant::now();
-        let sample = source.shells().map(|shells| SessionSample {
-            directories: source.directories(&shells).ok(),
-            metrics: want_metrics.then(|| source.metrics(&shells).ok()).flatten(),
-            shells,
+        let mut kept = None;
+        let sample = source.saved().and_then(|saved| {
+            let panes = source.panes()?;
+            let shells = source.shells(saved, &panes);
+            let sample = SessionSample {
+                directories: Some(source.directories(&shells, &panes)),
+                metrics: want_metrics
+                    .then(|| source.metrics(&shells, &panes).ok())
+                    .flatten(),
+                shells,
+            };
+            kept = Some(panes);
+            Ok(sample)
         });
         *slot = Some(Entry {
             generation,
             taken,
             sample: sample.clone(),
+            panes: kept,
             metrics_taken: want_metrics,
         });
         sample
@@ -129,7 +176,8 @@ mod tests {
 
     #[derive(Default)]
     struct Counting {
-        shells: AtomicU64,
+        /// tmux queries: the one thing a sample must not repeat.
+        panes: AtomicU64,
         directories: AtomicU64,
         metrics: AtomicU64,
         failing: AtomicBool,
@@ -138,7 +186,7 @@ mod tests {
     impl Counting {
         fn calls(&self) -> (u64, u64, u64) {
             (
-                self.shells.load(Ordering::SeqCst),
+                self.panes.load(Ordering::SeqCst),
                 self.directories.load(Ordering::SeqCst),
                 self.metrics.load(Ordering::SeqCst),
             )
@@ -146,11 +194,7 @@ mod tests {
     }
 
     impl SampleSource for Counting {
-        fn shells(&self) -> Result<Vec<ShellSession>, String> {
-            self.shells.fetch_add(1, Ordering::SeqCst);
-            if self.failing.load(Ordering::SeqCst) {
-                return Err("tmux timed out".to_owned());
-            }
+        fn saved(&self) -> Result<Vec<ShellSession>, String> {
             Ok(vec![
                 serde_json::from_value(serde_json::json!({
                     "id": "00000000-0000-4000-8000-000000000001",
@@ -165,20 +209,30 @@ mod tests {
             ])
         }
 
-        fn directories(
-            &self,
-            shells: &[ShellSession],
-        ) -> Result<BTreeMap<String, PathBuf>, String> {
+        fn panes(&self) -> Result<PaneTable, String> {
+            self.panes.fetch_add(1, Ordering::SeqCst);
+            if self.failing.load(Ordering::SeqCst) {
+                return Err("tmux timed out".to_owned());
+            }
+            Ok(PaneTable::default())
+        }
+
+        fn shells(&self, saved: Vec<ShellSession>, _: &PaneTable) -> Vec<ShellSession> {
+            saved
+        }
+
+        fn directories(&self, shells: &[ShellSession], _: &PaneTable) -> BTreeMap<String, PathBuf> {
             self.directories.fetch_add(1, Ordering::SeqCst);
-            Ok(shells
+            shells
                 .iter()
                 .map(|shell| (shell.id.clone(), PathBuf::from("/work")))
-                .collect())
+                .collect()
         }
 
         fn metrics(
             &self,
             shells: &[ShellSession],
+            _: &PaneTable,
         ) -> Result<BTreeMap<String, SessionMetrics>, String> {
             self.metrics.fetch_add(1, Ordering::SeqCst);
             Ok(shells
@@ -226,6 +280,23 @@ mod tests {
     }
 
     #[test]
+    fn the_default_shell_is_asked_once_until_a_session_change() {
+        let cache = SampleCache::new(Duration::from_secs(60));
+        let asked = AtomicU64::new(0);
+        let ask = || {
+            asked.fetch_add(1, Ordering::SeqCst);
+            PathBuf::from("/bin/zsh")
+        };
+        for _ in 0..5 {
+            assert_eq!(cache.default_shell(ask), PathBuf::from("/bin/zsh"));
+        }
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        cache.invalidate();
+        cache.default_shell(ask);
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn the_shipped_ttl_is_about_one_tick() {
         assert_eq!(SAMPLE_TTL, Duration::from_millis(1500));
     }
@@ -249,23 +320,31 @@ mod tests {
             inner: Counting,
         }
         impl SampleSource for Slow<'_> {
-            fn shells(&self) -> Result<Vec<ShellSession>, String> {
+            fn saved(&self) -> Result<Vec<ShellSession>, String> {
+                self.inner.saved()
+            }
+            fn panes(&self) -> Result<PaneTable, String> {
                 // The session change lands while tmux is being read.
-                let shells = self.inner.shells();
+                let panes = self.inner.panes();
                 self.cache.invalidate();
-                shells
+                panes
+            }
+            fn shells(&self, saved: Vec<ShellSession>, panes: &PaneTable) -> Vec<ShellSession> {
+                self.inner.shells(saved, panes)
             }
             fn directories(
                 &self,
                 shells: &[ShellSession],
-            ) -> Result<BTreeMap<String, PathBuf>, String> {
-                self.inner.directories(shells)
+                panes: &PaneTable,
+            ) -> BTreeMap<String, PathBuf> {
+                self.inner.directories(shells, panes)
             }
             fn metrics(
                 &self,
                 shells: &[ShellSession],
+                panes: &PaneTable,
             ) -> Result<BTreeMap<String, SessionMetrics>, String> {
-                self.inner.metrics(shells)
+                self.inner.metrics(shells, panes)
             }
         }
         let cache = SampleCache::new(Duration::from_secs(60));

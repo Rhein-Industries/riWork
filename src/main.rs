@@ -11,6 +11,7 @@ mod file_preview;
 mod icons;
 mod layouts;
 mod mcp;
+mod metal_layer;
 mod notifications;
 mod orca_import;
 mod panels;
@@ -354,6 +355,14 @@ struct Workspace {
     cwd: PathBuf,
     shell_name: String,
     notice: Option<String>,
+    /// The title last given to the window. Setting a title makes AppKit update
+    /// the window menu and lay out the title bar again, so an unchanged one is
+    /// not set on every refresh.
+    window_title: String,
+    /// Whether the platform is presenting this window's frames. A window that is
+    /// covered, minimized, on another Space or on a sleeping display shows
+    /// nothing, so work that only feeds the screen waits for it.
+    window_visible: bool,
     focus: FocusHandle,
 }
 
@@ -476,6 +485,23 @@ fn release_render_images(images: Vec<Arc<gpui::RenderImage>>, cx: &mut App) {
             cx.drop_image(image, None);
         }
     });
+}
+
+/// Refresh ticks (2 s each) between redraws of a window that is otherwise
+/// unchanged. Ages in the window ("just now", "3m ago") move by the minute.
+const IDLE_REDRAW_TICKS: u64 = 5;
+
+/// Give `tab` a new title. Returns whether it differs from the one it had.
+fn retitle(tab: &mut Tab, title: String) -> bool {
+    if tab.title == title {
+        return false;
+    }
+    tab.title = title;
+    true
+}
+
+fn window_title_for(project_name: &str) -> String {
+    format!("RiWork · {project_name}")
 }
 
 fn project_recency_sources(state: &State) -> BTreeMap<String, Vec<PathBuf>> {
@@ -712,7 +738,8 @@ impl Workspace {
         })
         .detach();
         let activity_tracker = ActivityTracker::at(sessions.state_home().to_path_buf());
-        window.set_window_title(&format!("RiWork · {}", project.name));
+        let window_title = window_title_for(&project.name);
+        window.set_window_title(&window_title);
         let selected_worktree_id = state
             .worktrees_for(&project.id)
             .into_iter()
@@ -807,6 +834,8 @@ impl Workspace {
             cwd: project.root,
             shell_name,
             notice: None,
+            window_title,
+            window_visible: window.is_visible(),
             focus: cx.focus_handle(),
         };
         workspace.load_project(window, cx);
@@ -943,8 +972,10 @@ impl Workspace {
                 let (tracker, activity) = work.await;
                 let _ = this.update(cx, |workspace, cx| {
                     workspace.activity_tracker = Some(tracker);
-                    workspace.agent_activity = activity;
-                    cx.notify();
+                    if workspace.agent_activity != activity {
+                        workspace.agent_activity = activity;
+                        cx.notify();
+                    }
                 });
             })
             .detach();
@@ -955,7 +986,7 @@ impl Workspace {
         if self.project_recency_pending
             || self
                 .project_recency_sampled_at
-                .is_some_and(|sampled| sampled.elapsed() < Duration::from_secs(30))
+                .is_some_and(|sampled| sampled.elapsed() < project_recency::ASK_EVERY)
         {
             return;
         }
@@ -1688,7 +1719,8 @@ impl Workspace {
         Ok(new_pane)
     }
 
-    fn remember_active_worktree(&mut self, cx: &mut Context<Self>) {
+    /// Follow the active tab to its worktree. Returns whether the selection moved.
+    fn remember_active_worktree(&mut self, cx: &mut Context<Self>) -> bool {
         let worktree_id = self
             .panes
             .get(&self.active_pane)
@@ -1735,10 +1767,14 @@ impl Workspace {
                 }
                 _ => None,
             });
+        let moved = worktree_id
+            .as_ref()
+            .is_some_and(|id| self.selected_worktree_id.as_ref() != Some(id));
         if let Some(id) = worktree_id {
             self.selected_worktree_id = Some(id);
         }
         self.sync_file_explorer(cx);
+        moved
     }
 
     fn begin_folder_edit(&mut self, id: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
@@ -2597,6 +2633,15 @@ impl Workspace {
         }
     }
 
+    /// Title the window for `project_name`, unless it already has that title.
+    fn set_window_title(&mut self, project_name: &str, window: &mut Window) {
+        let title = window_title_for(project_name);
+        if self.window_title != title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
+    }
+
     /// Tells the Dock menu which project and branch this window shows. Cheap when
     /// nothing changed, so it can follow every refresh.
     fn announce_to_dock(&self, window: &Window, cx: &mut App) {
@@ -2696,7 +2741,7 @@ impl Workspace {
         self.project_settings_panel = None;
         self.schedule_panel = None;
         self.file_explorer = None;
-        window.set_window_title(&format!("RiWork · {}", project.name));
+        self.set_window_title(&project.name, window);
         self.cwd = project.root;
         self.selected_worktree_id = self
             .state
@@ -2836,13 +2881,19 @@ impl Workspace {
     }
 
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.window_visible = window.is_visible();
         if let Ok(settings) = self.settings_store.load() {
             if &settings != cx.global::<Settings>() {
                 cx.set_global(settings);
             }
         }
+        // What this tick changed that the window draws. Most ticks change nothing,
+        // and a window drawn again for nothing costs a frame of GPU work and a
+        // full-size surface for the window server to composite.
+        let mut changed = false;
         if &self.settings != cx.global::<Settings>() {
             self.apply_settings(window, cx);
+            changed = true;
         }
         self.refresh_count += 1;
         if self.refresh_count % 5 == 0 && self.syncing_project_ids.insert(self.project_id.clone()) {
@@ -2859,48 +2910,83 @@ impl Workspace {
                 let _ = this.update(cx, |workspace, cx| {
                     workspace.syncing_project_ids.remove(&project_id);
                     if workspace.project_id == project_id {
+                        let mut changed = false;
                         if let Ok(state) = workspace.store.snapshot() {
+                            changed |= workspace.state != state;
                             workspace.state = state;
                         }
                         if let Err(error) = result {
+                            changed |= workspace.notice.as_ref() != Some(&error);
                             workspace.notice = Some(error);
                         }
-                        cx.notify();
+                        if changed {
+                            cx.notify();
+                        }
                     }
                 });
             })
             .detach();
         }
         match self.store.snapshot() {
-            Ok(state) => self.state = state,
-            Err(error) => self.notice = Some(error),
+            Ok(state) => {
+                if self.state != state {
+                    self.state = state;
+                    changed = true;
+                }
+            }
+            Err(error) => {
+                if self.notice.as_ref() != Some(&error) {
+                    self.notice = Some(error);
+                    changed = true;
+                }
+            }
         }
-        self.refresh_project_recency(cx);
+        // The order of projects is for the eye: a window nobody can see catches up
+        // on the first tick after it shows again.
+        if self.window_visible {
+            self.refresh_project_recency(cx);
+        }
         if let Ok(project) = self.state.project(&self.project_id) {
-            window.set_window_title(&format!("RiWork · {}", project.name));
+            let name = project.name.clone();
+            self.set_window_title(&name, window);
         }
         self.announce_to_dock(window, cx);
-        if let Some(panel) = &self.project_settings_panel {
+        // A panel that is open in a tab but not on screen is drawn by nobody, so
+        // it is brought up to date when its tab comes forward.
+        let panel_on_screen = |kind: PanelKind| {
+            self.panes.values().any(|pane| {
+                pane.tabs.get(pane.active).is_some_and(
+                    |tab| matches!(tab.content, TabContent::Panel(panel) if panel == kind),
+                )
+            })
+        };
+        let files_visible = panel_on_screen(PanelKind::Files);
+        let project_settings_visible = panel_on_screen(PanelKind::ProjectSettings);
+        if project_settings_visible && let Some(panel) = &self.project_settings_panel {
             panel.update(cx, |panel, cx| panel.refresh_folders(cx));
         }
         if !self.layout_ready {
             self.load_project(window, cx);
+            changed = true;
         }
         self.refresh_sessions(cx);
         request_codex_usage(false, cx);
-        self.remember_active_worktree(cx);
-        let files_visible = self.panes.values().any(|pane| {
-            pane.tabs
-                .get(pane.active)
-                .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)))
-        });
+        changed |= self.remember_active_worktree(cx);
         if files_visible {
             if let Some(panel) = &self.file_explorer {
                 panel.update(cx, |panel, cx| panel.refresh(cx));
             }
         }
-        self.refresh_shell_titles();
-        cx.notify();
+        changed |= self.refresh_shell_titles();
+        // The panels draw what they were last told; the open ones are asked again
+        // each tick and redraw themselves when it differs. The rest of the window
+        // has a few ages ("3m ago") that move with the clock, so it is drawn every
+        // few ticks even when nothing else changed.
+        let heartbeat = self.refresh_count.is_multiple_of(IDLE_REDRAW_TICKS);
+        let panels_open = project_settings_visible || files_visible;
+        if changed || heartbeat || panels_open {
+            cx.notify();
+        }
     }
 
     fn refresh_sessions(&mut self, cx: &mut Context<Self>) {
@@ -2912,7 +2998,7 @@ impl Workspace {
         let generation = self.session_refresh_generation;
         let sessions = self.sessions.clone();
         let work_project_id = project_id.clone();
-        let want_metrics = self.metrics_visible();
+        let want_metrics = self.window_visible && self.metrics_visible();
         let work = cx.background_executor().spawn(async move {
             // One tmux and `ps` sample serves every window for about a tick.
             let sample = sessions.sample(want_metrics)?;
@@ -2947,6 +3033,16 @@ impl Workspace {
                 let Ok((shells, metrics, cwds, claude_usage)) = result else {
                     return;
                 };
+                // Most ticks find everything as it was; the window is drawn again
+                // only when something it shows is different.
+                let mut changed = workspace.shells != shells
+                    || workspace.claude_usage != claude_usage
+                    || metrics
+                        .as_ref()
+                        .is_some_and(|metrics| workspace.metrics != *metrics)
+                    || cwds
+                        .as_ref()
+                        .is_some_and(|cwds| workspace.shell_cwds != *cwds);
                 workspace.shells = shells;
                 if let Some(metrics) = metrics {
                     workspace.metrics = metrics;
@@ -2966,9 +3062,11 @@ impl Workspace {
                 }
                 workspace.refresh_grok_usage(false, cx);
                 workspace.refresh_agent_activity(cx);
-                workspace.remember_active_worktree(cx);
-                workspace.refresh_shell_titles();
-                cx.notify();
+                changed |= workspace.remember_active_worktree(cx);
+                changed |= workspace.refresh_shell_titles();
+                if changed {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -3100,7 +3198,9 @@ impl Workspace {
             })
     }
 
-    fn refresh_shell_titles(&mut self) {
+    /// Retitle the shell tabs from their sessions. Returns whether any title changed.
+    fn refresh_shell_titles(&mut self) -> bool {
+        let mut changed = false;
         for pane in self.panes.values_mut() {
             for tab in &mut pane.tabs {
                 if let Some(path) = tab
@@ -3108,11 +3208,14 @@ impl Workspace {
                     .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
                     .and_then(|shell| shell.editor_path.as_ref())
                 {
-                    tab.title = format!(
-                        "VIM · {}",
-                        path.file_name()
-                            .map(|name| name.to_string_lossy())
-                            .unwrap_or_default()
+                    changed |= retitle(
+                        tab,
+                        format!(
+                            "VIM · {}",
+                            path.file_name()
+                                .map(|name| name.to_string_lossy())
+                                .unwrap_or_default()
+                        ),
                     );
                     continue;
                 }
@@ -3121,11 +3224,14 @@ impl Workspace {
                     .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
                     .filter(|shell| shell.kind == ShellKind::Orchestrator)
                 {
-                    tab.title = contextual_shell_title(
-                        orchestrator_tab_title(shell),
-                        shell,
-                        &self.project_id,
-                        &self.state,
+                    changed |= retitle(
+                        tab,
+                        contextual_shell_title(
+                            orchestrator_tab_title(shell),
+                            shell,
+                            &self.project_id,
+                            &self.state,
+                        ),
                     );
                     continue;
                 }
@@ -3155,7 +3261,7 @@ impl Workspace {
                         .map(harness_name)
                         .unwrap_or(&self.shell_name);
                     let title = format!("{} {:02} · {}", program, tab.id, label);
-                    tab.title = shell
+                    let title = shell
                         .map(|shell| {
                             contextual_shell_title(
                                 title.clone(),
@@ -3165,9 +3271,11 @@ impl Workspace {
                             )
                         })
                         .unwrap_or(title);
+                    changed |= retitle(tab, title);
                 }
             }
         }
+        changed
     }
 
     fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6889,7 +6997,10 @@ fn open_workspace_window(
             window_min_size: Some(size(px(640.0), px(400.0))),
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| Workspace::new(startup, restore, window, cx)),
+        |window, cx| {
+            metal_layer::limit_drawables(window);
+            cx.new(|cx| Workspace::new(startup, restore, window, cx))
+        },
     )
     .map_err(|error| error.to_string())
 }

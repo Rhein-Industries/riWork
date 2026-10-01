@@ -33,7 +33,7 @@ const REFRESH_MESSAGE: &str =
     "Orca or RiWork changed since this preview. Refresh the preview before importing.";
 const NOTHING_TO_IMPORT_MESSAGE: &str = "Orca has no projects or worktrees to import yet. Nothing was recorded, so you can import again once Orca has loaded them.";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ImportReceipt {
     pub source: PathBuf,
     pub project_count: usize,

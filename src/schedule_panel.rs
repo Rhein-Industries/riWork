@@ -139,24 +139,41 @@ impl SchedulePanel {
         let sessions = self.sessions.clone();
         let schedules = self.schedules.clone();
         let work = cx.background_executor().spawn(async move {
-            Ok::<_, String>((store.snapshot()?, sessions.list()?, schedules.list()?))
+            // The shells come from the sample every window's refresh shares (at
+            // most a tick old), not from tmux again: this runs every second.
+            Ok::<_, String>((
+                store.snapshot()?,
+                sessions.sample(false)?.shells,
+                schedules.list()?,
+            ))
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |panel, cx| {
                 panel.refreshing = false;
-                match result {
+                // Nearly every second finds everything as it was.
+                let changed = match result {
                     Ok((state, targets, rows)) => {
-                        panel.state = state;
-                        panel.targets = targets;
-                        panel.rows = rows
+                        let rows: Vec<_> = rows
                             .into_iter()
                             .filter(|s| s.target.scope.visible(&panel.project_id))
                             .collect();
+                        let changed =
+                            panel.state != state || panel.targets != targets || panel.rows != rows;
+                        panel.state = state;
+                        panel.targets = targets;
+                        panel.rows = rows;
+                        changed
                     }
-                    Err(e) => panel.error = Some(e),
+                    Err(e) => {
+                        let changed = panel.error.as_ref() != Some(&e);
+                        panel.error = Some(e);
+                        changed
+                    }
                 };
-                cx.notify();
+                if changed {
+                    cx.notify();
+                }
             });
         })
         .detach();

@@ -91,6 +91,8 @@ pub(crate) struct Fingerprint {
     stamps: BTreeMap<(PathBuf, Kind), Stamp>,
     racy: bool,
     since: Instant,
+    /// How long the fingerprint may be trusted however it looks.
+    max_age: Duration,
     /// When the read this fingerprint guards began. A file changed after that,
     /// or too close to it, may or may not have been seen by the read.
     read_from: Option<SystemTime>,
@@ -102,6 +104,7 @@ impl Default for Fingerprint {
             stamps: BTreeMap::new(),
             racy: false,
             since: Instant::now(),
+            max_age: MAX_AGE,
             read_from: None,
         }
     }
@@ -114,6 +117,13 @@ impl Fingerprint {
 
     pub(crate) fn marker(&mut self, path: &Path) {
         self.record(path, Kind::Marker);
+    }
+
+    /// Trust this fingerprint for `age` instead of `MAX_AGE`. For a result that
+    /// is expensive to recompute and that a missed change only makes a little
+    /// stale.
+    pub(crate) fn lasts(&mut self, age: Duration) {
+        self.max_age = age;
     }
 
     /// For a fingerprint whose stamps are taken around a read that takes a
@@ -157,12 +167,13 @@ impl Fingerprint {
         }
         self.racy |= other.racy;
         self.since = self.since.min(other.since);
+        self.max_age = self.max_age.min(other.max_age);
     }
 
     /// True when a fresh stat of every path gives what was recorded.
     pub(crate) fn is_current(&self) -> bool {
         !self.racy
-            && self.since.elapsed() < MAX_AGE
+            && self.since.elapsed() < self.max_age
             && self
                 .stamps
                 .iter()
@@ -170,13 +181,13 @@ impl Fingerprint {
     }
 
     #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.stamps.len()
     }
 
     /// Pretend the stamps were read `by` ago.
     #[cfg(test)]
-    pub(super) fn backdate(&mut self, by: Duration) {
+    pub(crate) fn backdate(&mut self, by: Duration) {
         self.since = self
             .since
             .checked_sub(by)

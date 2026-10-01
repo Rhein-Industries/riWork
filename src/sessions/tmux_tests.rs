@@ -874,8 +874,7 @@ fn windows_share_one_tmux_sample_until_this_process_changes_a_session() {
                 "printf '%s\\n' \"$*\" >> {calls}\n\
                  case \"$*\" in\n\
                  *list-sessions*) printf '{id}\\n' ;;\n\
-                 *pane_pid*) printf '{id}\\t1\\n' ;;\n\
-                 *pane_current_path*) printf '{id}\\t0\\t0\\t/work\\n' ;;\n\
+                 *pane_pid*) printf '{id}\\t0\\t0\\t1\\tzsh\\t/work\\n' ;;\n\
                  esac",
                 calls = quote_arg(&calls.to_string_lossy()),
             ),
@@ -901,16 +900,18 @@ fn windows_share_one_tmux_sample_until_this_process_changes_a_session() {
         );
         assert!(sample.metrics.is_some());
     }
-    // list-sessions, then the pane directories and the pane pids.
-    assert_eq!(tmux_calls() - baseline, 3);
+    // One `list-panes -a` answers the sessions, directories and pane processes.
+    let log = fs::read_to_string(&calls).unwrap();
+    assert_eq!(tmux_calls() - baseline, 1, "{log}");
+    assert!(log.contains("list-panes -a"), "{log}");
 
     // Creating, closing and attaching all go through these.
     fixture.registry(vec![shell(id, None, None)]);
     fixture.manager.sample(true).unwrap();
-    assert_eq!(tmux_calls() - baseline, 6);
+    assert_eq!(tmux_calls() - baseline, 2);
     fixture.manager.kill_tmux_session(id).unwrap();
     fixture.manager.sample(true).unwrap();
-    assert_eq!(tmux_calls() - baseline, 10);
+    assert_eq!(tmux_calls() - baseline, 4);
     fixture.manager.attach_command(id).unwrap();
     fixture.manager.sample(true).unwrap();
     let after_attach = tmux_calls();
@@ -923,13 +924,151 @@ fn windows_share_one_tmux_sample_until_this_process_changes_a_session() {
     fixture.manager.list().unwrap();
     assert_eq!(tmux_calls() - before, 2);
 
-    // What each window used to run every tick, for comparison: four tmux
-    // clients (and a `ps`) per window, where the process now runs three in all.
+    // What each window used to run every tick, for comparison: the session
+    // list, the pane processes and the pane directories were three tmux clients
+    // (and a `ps`), four with a Codex-labelled shell, and the process ran them
+    // once per tick however many windows asked. The sample is one now.
     let before = tmux_calls();
     let shells = fixture.manager.list().unwrap();
     fixture.manager.metrics_snapshot().unwrap();
-    fixture.manager.current_directories(&shells).unwrap();
-    assert_eq!(tmux_calls() - before, 4);
+    assert_eq!(tmux_calls() - before, 3, "{shells:?}");
+}
+
+/// A shell labelled as Codex whose pane is back at the prompt loses the label
+/// in a sample, from the same single tmux query.
+#[cfg(unix)]
+#[test]
+fn a_sample_hides_an_exited_codex_label_without_more_tmux_clients() {
+    let id = "00000000-0000-4000-8000-0000000000e2";
+    let busy = "00000000-0000-4000-8000-0000000000e3";
+    let mut calls = PathBuf::new();
+    let fixture = Fixture::new(|root| {
+        calls = root.join("calls");
+        let tmux = root.join("fake-tmux");
+        Fixture::script(
+            &tmux,
+            &format!(
+                "printf '%s\\n' \"$*\" >> {calls}\n\
+                 case \"$*\" in\n\
+                 *default-shell*) printf '/bin/zsh\\n' ;;\n\
+                 *pane_pid*) printf '{id}\\t0\\t0\\t1\\t-zsh\\t/work\\n{busy}\\t0\\t0\\t2\\tcodex\\t/busy\\n' ;;\n\
+                 esac",
+                calls = quote_arg(&calls.to_string_lossy()),
+            ),
+        );
+        tmux
+    });
+    fixture.registry(vec![
+        shell(id, Some("codex"), None),
+        shell(busy, Some("codex"), None),
+    ]);
+    let tmux_calls = || {
+        fs::read_to_string(&calls)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let baseline = tmux_calls();
+    let sample = fixture.manager.sample(false).unwrap();
+    let harness = |id: &str| {
+        sample
+            .shells
+            .iter()
+            .find(|shell| shell.id == id)
+            .and_then(|shell| shell.harness)
+    };
+    assert_eq!(harness(id), None, "at its prompt the label is hidden");
+    assert!(harness(busy).is_some(), "a running Codex keeps it");
+    // The pane table, and the default shell the first time it is needed.
+    assert_eq!(tmux_calls() - baseline, 2);
+}
+
+/// The pane table must say what the separate queries it replaced said: which
+/// sessions exist, the process of each pane and the directory of the owned one.
+#[cfg(unix)]
+#[test]
+fn the_pane_table_agrees_with_the_queries_it_replaced() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let ids = [Uuid::new_v4().to_string(), Uuid::new_v4().to_string()];
+    let directories = ["first dir", "second dir", "extra"].map(|name| {
+        let directory = fixture.root.join(name);
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    });
+    for (id, directory) in ids.iter().zip(&directories) {
+        fixture
+            .manager
+            .tmux_checked(&[
+                "new-session",
+                "-d",
+                "-s",
+                id,
+                "-c",
+                &directory.to_string_lossy(),
+                "sleep 600",
+            ])
+            .unwrap();
+    }
+    // A second window and a split in the first session: only window 0, pane 0
+    // is the shell's, but every pane has a process.
+    fixture
+        .manager
+        .tmux_checked(&[
+            "new-window",
+            "-t",
+            &format!("={}:", ids[0]),
+            "-c",
+            &directories[2].to_string_lossy(),
+            "sleep 600",
+        ])
+        .unwrap();
+    fixture
+        .manager
+        .tmux_checked(&[
+            "split-window",
+            "-t",
+            &format!("={}:1", ids[0]),
+            "-c",
+            &directories[2].to_string_lossy(),
+            "sleep 600",
+        ])
+        .unwrap();
+
+    let table = fixture.manager.pane_table().unwrap();
+    let live = fixture.manager.live_session_names().unwrap();
+    assert_eq!(
+        table.sessions(),
+        live.iter().map(String::as_str).collect::<HashSet<_>>()
+    );
+    let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    assert_eq!(
+        table.roots(&wanted),
+        fixture.manager.pane_roots(&wanted).unwrap()
+    );
+    let directories = table.directories(&wanted);
+    assert_eq!(directories.len(), 2);
+    for id in &ids {
+        let asked = fixture
+            .manager
+            .tmux_text(&[
+                "display-message",
+                "-p",
+                "-t",
+                &pane_target(id),
+                "#{pane_current_path}",
+            ])
+            .unwrap();
+        assert_eq!(
+            directories.get(id),
+            Some(&PathBuf::from(asked.trim())),
+            "{id}"
+        );
+    }
+    // No server: no panes, and not an error.
+    let _ = fixture.manager.tmux_command(&["kill-server"]);
+    assert!(fixture.manager.pane_table().unwrap().sessions().is_empty());
 }
 
 // Direct typing: `send_keys` and the screen geometry of `capture_screen`.
