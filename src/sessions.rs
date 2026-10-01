@@ -67,7 +67,7 @@ impl HarnessKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShellSession {
     pub id: String,
     pub project_id: Option<String>,
@@ -104,7 +104,7 @@ pub struct ShellSession {
     pub alive: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetrics {
     pub cpu_percent: f32,
     pub ram_bytes: u64,
@@ -498,10 +498,20 @@ impl SessionManager {
     }
 
     fn list_saved(&self) -> Result<Vec<ShellSession>, String> {
-        let mut sessions = self.read_registry()?.sessions;
+        let sessions = self.read_registry()?.sessions;
         let live = self.live_session_names()?;
+        Ok(self.with_liveness(sessions, |id| live.contains(id)))
+    }
+
+    /// `sessions` marked alive when `is_live` says so. A Vim session that tmux
+    /// no longer has is pruned from the registry and from the answer.
+    fn with_liveness(
+        &self,
+        mut sessions: Vec<ShellSession>,
+        is_live: impl Fn(&str) -> bool,
+    ) -> Vec<ShellSession> {
         for session in &mut sessions {
-            session.alive = live.contains(&session.id);
+            session.alive = is_live(&session.id);
         }
         if sessions
             .iter()
@@ -510,7 +520,7 @@ impl SessionManager {
             let pruned = self.prune_exited_editors();
             sessions.retain(|session| !pruned.contains(&session.id));
         }
-        Ok(sessions)
+        sessions
     }
 
     /// `record_codex_launch` labels a plain shell as Codex when its user types
@@ -521,11 +531,7 @@ impl SessionManager {
     /// The saved row is untouched: `codex resume` in the pane still finds its
     /// account, and an unreadable tmux leaves the label as it was.
     fn hide_exited_plain_codex(&self, sessions: &mut [ShellSession]) {
-        let candidates: HashSet<String> = sessions
-            .iter()
-            .filter(|session| session.alive && plain_shell_with_codex_label(session))
-            .map(|session| session.id.clone())
-            .collect();
+        let candidates = plain_codex_candidates(sessions);
         if candidates.is_empty() {
             return;
         }
@@ -543,14 +549,24 @@ impl SessionManager {
         };
         let at_prompt =
             panes_at_shell_prompt(&String::from_utf8_lossy(&output.stdout), &candidates, shell);
-        for session in sessions.iter_mut().filter(|s| at_prompt.contains(&s.id)) {
-            session.harness = None;
-            session.unrestricted = false;
-            session.codex_account_id = None;
-            session.codex_account_label = None;
-            session.codex_account_email = None;
-            session.codex_home = None;
+        forget_codex_labels(sessions, &at_prompt);
+    }
+
+    /// `hide_exited_plain_codex` for a sample, which already holds what the
+    /// panes run. The server's default shell changes about never, so it is asked
+    /// for once in a while, not every tick.
+    fn hide_exited_plain_codex_in(&self, sessions: &mut [ShellSession], panes: &PaneTable) {
+        let candidates = plain_codex_candidates(sessions);
+        if candidates.is_empty() {
+            return;
         }
+        let shell =
+            sample::cache_for(&self.socket_name).default_shell(|| self.default_command_shell());
+        let Some(shell) = shell.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let at_prompt = panes.at_shell_prompt(&candidates, shell);
+        forget_codex_labels(sessions, &at_prompt);
     }
 
     /// A Vim session has no `remain-on-exit`: `:q` destroys its tmux session,
@@ -1349,33 +1365,6 @@ impl SessionManager {
         Ok(PathBuf::from(path))
     }
 
-    /// Collect the owned 0.0 pane's directory for every live shell in one query.
-    /// Periodic UI sampling already has a live shell snapshot; rechecking every
-    /// shell separately would reread the registry and spawn two tmux clients.
-    pub fn current_directories(
-        &self,
-        shells: &[ShellSession],
-    ) -> Result<BTreeMap<String, PathBuf>, String> {
-        let live: HashSet<&str> = shells
-            .iter()
-            .filter(|shell| shell.alive)
-            .map(|shell| shell.id.as_str())
-            .collect();
-        if live.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let output = self.tmux_checked(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_current_path}",
-        ])?;
-        Ok(pane_directories(
-            &String::from_utf8_lossy(&output.stdout),
-            &live,
-        ))
-    }
-
     pub fn metrics(&self, id: &str) -> Result<SessionMetrics, String> {
         self.require_live(id)?;
         self.metrics_snapshot()?
@@ -1405,32 +1394,7 @@ impl SessionManager {
             return Ok(BTreeMap::new());
         }
         let roots = self.pane_roots(&live)?;
-        let processes = read_processes()?;
-        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (&pid, process) in &processes {
-            children.entry(process.parent).or_default().push(pid);
-        }
-        let mut result = BTreeMap::new();
-        for (id, root) in roots {
-            let mut metrics = SessionMetrics::default();
-            let mut pending = vec![root];
-            let mut visited = HashSet::new();
-            while let Some(pid) = pending.pop() {
-                if !visited.insert(pid) {
-                    continue;
-                }
-                if let Some(process) = processes.get(&pid) {
-                    metrics.cpu_percent += process.cpu_percent;
-                    metrics.ram_bytes += process.rss_kb.saturating_mul(1024);
-                    metrics.process_count += 1;
-                }
-                if let Some(descendants) = children.get(&pid) {
-                    pending.extend(descendants);
-                }
-            }
-            result.insert(id, metrics);
-        }
-        Ok(result)
+        metrics_under(roots)
     }
 
     /// The process each named live shell's pane runs, from one tmux query.
@@ -1457,6 +1421,20 @@ impl SessionManager {
             }
         }
         Ok(roots)
+    }
+
+    /// Every pane of the server in one query: which sessions exist, the
+    /// directory, process and foreground command of each pane. A server that is
+    /// not running has no panes.
+    fn pane_table(&self) -> Result<PaneTable, String> {
+        let output = self.tmux_command(&["list-panes", "-a", "-F", PANE_TABLE_FORMAT])?;
+        if !output.status.success() {
+            if no_tmux_server(&output) {
+                return Ok(PaneTable::default());
+            }
+            return Err(tmux_error(&output));
+        }
+        Ok(PaneTable::parse(&String::from_utf8_lossy(&output.stdout)))
     }
 
     /// What a window's periodic refresh shows: every shell with its liveness,
@@ -2004,17 +1982,45 @@ impl SessionManager {
 }
 
 impl sample::SampleSource for SessionManager {
-    fn shells(&self) -> Result<Vec<ShellSession>, String> {
-        self.list()
+    fn saved(&self) -> Result<Vec<ShellSession>, String> {
+        Ok(self.read_registry()?.sessions)
     }
 
-    fn directories(&self, shells: &[ShellSession]) -> Result<BTreeMap<String, PathBuf>, String> {
-        self.current_directories(shells)
+    fn panes(&self) -> Result<PaneTable, String> {
+        self.pane_table()
     }
 
-    fn metrics(&self, shells: &[ShellSession]) -> Result<BTreeMap<String, SessionMetrics>, String> {
-        self.metrics_for(shells)
+    fn shells(&self, saved: Vec<ShellSession>, panes: &PaneTable) -> Vec<ShellSession> {
+        let live = panes.sessions();
+        let mut sessions = self.with_liveness(saved, |id| live.contains(id));
+        self.hide_exited_plain_codex_in(&mut sessions, panes);
+        sessions
     }
+
+    fn directories(&self, shells: &[ShellSession], panes: &PaneTable) -> BTreeMap<String, PathBuf> {
+        panes.directories(&live_shells(shells))
+    }
+
+    fn metrics(
+        &self,
+        shells: &[ShellSession],
+        panes: &PaneTable,
+    ) -> Result<BTreeMap<String, SessionMetrics>, String> {
+        let live = live_shells(shells);
+        if live.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        metrics_under(panes.roots(&live))
+    }
+}
+
+/// The ids of the shells that are alive.
+fn live_shells(shells: &[ShellSession]) -> HashSet<&str> {
+    shells
+        .iter()
+        .filter(|shell| shell.alive)
+        .map(|shell| shell.id.as_str())
+        .collect()
 }
 
 /// Parse per entry: one session this build cannot represent must not hide the
@@ -2964,21 +2970,91 @@ fn codex_activity_arguments_at(
     ]
 }
 
-fn pane_directories(output: &str, live: &HashSet<&str>) -> BTreeMap<String, PathBuf> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.splitn(4, '\t');
-            let (id, window, pane, path) = (
-                fields.next()?,
-                fields.next()?,
-                fields.next()?,
-                fields.next()?,
-            );
-            (live.contains(id) && window == "0" && pane == "0" && !path.is_empty())
-                .then(|| (id.to_owned(), PathBuf::from(path)))
-        })
-        .collect()
+/// The columns of `PaneTable`. The directory comes last because it may hold a
+/// tab.
+const PANE_TABLE_FORMAT: &str = "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}";
+
+/// What one `tmux list-panes -a` shows, one row per pane. A periodic sample
+/// reads the live sessions, the directories, the pane processes and the
+/// foreground commands from this instead of asking tmux for each.
+#[derive(Clone, Debug, Default)]
+struct PaneTable {
+    rows: Vec<PaneRow>,
+}
+
+#[derive(Clone, Debug)]
+struct PaneRow {
+    session: String,
+    window: String,
+    pane: String,
+    pid: Option<u32>,
+    command: String,
+    path: String,
+}
+
+impl PaneTable {
+    fn parse(output: &str) -> Self {
+        let rows = output
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.splitn(6, '\t');
+                Some(PaneRow {
+                    session: fields.next()?.to_owned(),
+                    window: fields.next()?.to_owned(),
+                    pane: fields.next()?.to_owned(),
+                    pid: fields.next()?.parse().ok(),
+                    command: fields.next()?.to_owned(),
+                    path: fields.next()?.to_owned(),
+                })
+            })
+            .collect();
+        Self { rows }
+    }
+
+    /// The sessions that have a pane, which is every session tmux has.
+    fn sessions(&self) -> HashSet<&str> {
+        self.rows.iter().map(|row| row.session.as_str()).collect()
+    }
+
+    /// The directory of each live shell's owned pane (window 0, pane 0).
+    fn directories(&self, live: &HashSet<&str>) -> BTreeMap<String, PathBuf> {
+        self.rows
+            .iter()
+            .filter(|row| {
+                live.contains(row.session.as_str())
+                    && row.window == "0"
+                    && row.pane == "0"
+                    && !row.path.is_empty()
+            })
+            .map(|row| (row.session.clone(), PathBuf::from(&row.path)))
+            .collect()
+    }
+
+    /// The process each live shell's pane runs. A session with several panes
+    /// reports the last one listed.
+    fn roots(&self, live: &HashSet<&str>) -> BTreeMap<String, u32> {
+        self.rows
+            .iter()
+            .filter(|row| live.contains(row.session.as_str()))
+            .filter_map(|row| Some((row.session.clone(), row.pid?)))
+            .collect()
+    }
+
+    /// Sessions among `candidates` whose window 0 pane is at the shell's own
+    /// prompt, that is, nothing else is in its foreground.
+    fn at_shell_prompt(&self, candidates: &HashSet<String>, shell: &str) -> HashSet<String> {
+        self.rows
+            .iter()
+            .filter(|row| {
+                candidates.contains(&row.session)
+                    && row.window == "0"
+                    && row.pane == "0"
+                    // A login shell can be reported with its leading dash.
+                    && row.command.trim_start_matches('-') == shell
+            })
+            .map(|row| row.session.clone())
+            .collect()
+    }
 }
 
 /// A shell the user started by hand (no command), which typing `codex` in it
@@ -2988,6 +3064,27 @@ fn plain_shell_with_codex_label(session: &ShellSession) -> bool {
         && session.command.is_none()
         && session.editor_path.is_none()
         && session.harness == Some(HarnessKind::Codex)
+}
+
+/// The live plain shells that are labelled as Codex sessions.
+fn plain_codex_candidates(sessions: &[ShellSession]) -> HashSet<String> {
+    sessions
+        .iter()
+        .filter(|session| session.alive && plain_shell_with_codex_label(session))
+        .map(|session| session.id.clone())
+        .collect()
+}
+
+/// Take the Codex label back from the sessions in `at_prompt`.
+fn forget_codex_labels(sessions: &mut [ShellSession], at_prompt: &HashSet<String>) {
+    for session in sessions.iter_mut().filter(|s| at_prompt.contains(&s.id)) {
+        session.harness = None;
+        session.unrestricted = false;
+        session.codex_account_id = None;
+        session.codex_account_label = None;
+        session.codex_account_email = None;
+        session.codex_home = None;
+    }
 }
 
 /// Sessions among `candidates` whose window 0 pane is at the shell's own
@@ -4361,6 +4458,36 @@ struct ProcessInfo {
     rss_kb: u64,
 }
 
+/// The CPU, memory and process count under each shell's pane process.
+fn metrics_under(roots: BTreeMap<String, u32>) -> Result<BTreeMap<String, SessionMetrics>, String> {
+    let processes = read_processes()?;
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&pid, process) in &processes {
+        children.entry(process.parent).or_default().push(pid);
+    }
+    let mut result = BTreeMap::new();
+    for (id, root) in roots {
+        let mut metrics = SessionMetrics::default();
+        let mut pending = vec![root];
+        let mut visited = HashSet::new();
+        while let Some(pid) = pending.pop() {
+            if !visited.insert(pid) {
+                continue;
+            }
+            if let Some(process) = processes.get(&pid) {
+                metrics.cpu_percent += process.cpu_percent;
+                metrics.ram_bytes += process.rss_kb.saturating_mul(1024);
+                metrics.process_count += 1;
+            }
+            if let Some(descendants) = children.get(&pid) {
+                pending.extend(descendants);
+            }
+        }
+        result.insert(id, metrics);
+    }
+    Ok(result)
+}
+
 fn read_processes() -> Result<HashMap<u32, ProcessInfo>, String> {
     let output = Command::new("ps")
         .args(["-axo", "pid=,ppid=,%cpu=,rss="])
@@ -4658,60 +4785,46 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn directory_sampling_batches_live_shells_and_uses_the_owned_pane() {
-        use std::os::unix::fs::PermissionsExt;
-        let fixture = AccountFixture::new();
+    fn one_pane_table_gives_directories_processes_and_prompts() {
         let alpha = "00000000-0000-4000-8000-000000000010";
         let beta = "00000000-0000-4000-8000-000000000011";
         let dead = "00000000-0000-4000-8000-000000000012";
-        let panes = fixture.0.join("panes");
-        let calls = fixture.0.join("calls");
-        let tmux = fixture.0.join("fake-tmux");
-        fs::write(
-            &panes,
-            format!(
-                "{alpha}\t0\t0\t/project with spaces\n\
-                 {alpha}\t0\t1\t/other-pane\n\
-                 {beta}\t0\t0\t/project\twith-tab\n\
-                 {beta}\t1\t0\t/other-window\n\
-                 {dead}\t0\t0\t/dead-shell\n\
-                 unregistered\t0\t0\t/unregistered-shell\n\
-                 incomplete\n"
-            ),
-        )
-        .unwrap();
-        fs::write(
-            &tmux,
-            format!(
-                "#!/bin/sh\nprintf 'called\\n' >> {}\ncat {}\n",
-                quote_arg(&calls.to_string_lossy()),
-                quote_arg(&panes.to_string_lossy())
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
-        let manager = SessionManager {
-            home: fixture.0.clone(),
-            tmux,
-            socket_name: "isolated-fake".into(),
-        };
-        let shells = [(alpha, true), (beta, true), (dead, false)].map(|(id, alive)| {
-            let mut shell = scope_session(ShellKind::Project, None);
-            shell.id = id.into();
-            shell.alive = alive;
-            shell
-        });
+        let table = PaneTable::parse(&format!(
+            "{alpha}\t0\t0\t100\t-zsh\t/project with spaces\n\
+             {alpha}\t0\t1\t101\tvim\t/other-pane\n\
+             {beta}\t0\t0\t200\tcodex\t/project\twith-tab\n\
+             {beta}\t1\t0\t201\tzsh\t/other-window\n\
+             {dead}\t0\t0\t300\tzsh\t/dead-shell\n\
+             unregistered\t0\t0\t400\tzsh\t/unregistered-shell\n\
+             nopid\t0\t0\t-\tzsh\t/no-pid\n\
+             incomplete\n"
+        ));
         assert_eq!(
-            manager.current_directories(&shells).unwrap(),
+            table.sessions(),
+            HashSet::from([alpha, beta, dead, "unregistered", "nopid"])
+        );
+        let live = HashSet::from([alpha, beta, "nopid"]);
+        // The owned pane only (window 0, pane 0), and a tab survives in a path.
+        assert_eq!(
+            table.directories(&live),
             BTreeMap::from([
                 (alpha.into(), PathBuf::from("/project with spaces")),
                 (beta.into(), PathBuf::from("/project\twith-tab")),
+                ("nopid".into(), PathBuf::from("/no-pid")),
             ])
         );
-        assert_eq!(fs::read_to_string(&calls).unwrap(), "called\n");
-        assert!(manager.current_directories(&[]).unwrap().is_empty());
-        assert_eq!(fs::read_to_string(&calls).unwrap(), "called\n");
+        // Every pane counts for its process; the last one listed wins.
+        assert_eq!(
+            table.roots(&live),
+            BTreeMap::from([(alpha.into(), 101), (beta.into(), 201)])
+        );
+        // Prompts: a login shell's leading dash is ignored, other panes are not asked.
+        let candidates = HashSet::from([alpha.to_owned(), beta.to_owned()]);
+        assert_eq!(
+            table.at_shell_prompt(&candidates, "zsh"),
+            HashSet::from([alpha.to_owned()])
+        );
+        assert!(PaneTable::parse("").sessions().is_empty());
     }
 
     struct AccountFixture(PathBuf);

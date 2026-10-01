@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
     pub name: String,
@@ -43,7 +43,7 @@ pub enum ProjectCodexAccount {
 }
 
 /// An organizational group in RiWork, independent of directories on disk.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFolder {
     pub id: String,
     pub name: String,
@@ -52,7 +52,7 @@ pub struct ProjectFolder {
     pub created_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Worktree {
     pub id: String,
     pub project_id: String,
@@ -136,7 +136,7 @@ impl TaskStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub project_id: String,
@@ -151,7 +151,7 @@ pub struct Task {
     pub updated_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
     pub schema_version: u32,

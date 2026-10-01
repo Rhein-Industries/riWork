@@ -47,7 +47,7 @@ const GROK_RETRY_AFTER_FAILURE: Duration = Duration::from_secs(10);
 const GROK_PARALLEL_READS: usize = 6;
 const GROK_CACHE_LIMIT: usize = 256;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProviderUsage {
     pub provider: String,
     pub windows: Vec<UsageWindow>,
@@ -100,7 +100,7 @@ pub struct SessionUsage {
     pub models: Vec<ModelUsage>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UsageWindow {
     pub label: String,
     pub used_percent: f64,

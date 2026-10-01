@@ -19,7 +19,7 @@
 //! nothing the fingerprint holds.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     ffi::OsStr,
     fs,
     io::Read,
@@ -35,10 +35,21 @@ use crate::store::{State, scan::Fingerprint};
 const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
 const ROOT_TIMEOUT: Duration = Duration::from_secs(5);
 const GIT_TIMEOUT: Duration = Duration::from_millis(1500);
-/// Windows ask every 30 s each, so with several of them the process would scan
-/// several times per period. A scan this recent answers all of them. Well below
-/// the period, so a window is never turned away by its own last scan.
-const SHARE_GAP: Duration = Duration::from_secs(15);
+/// How often each window asks for the dates (on a 2 s tick, so 30 s to 32 s).
+pub const ASK_EVERY: Duration = Duration::from_secs(30);
+/// With several windows the process would scan several times per period. A scan
+/// this recent answers all of them. Below the period, so a window is never
+/// turned away by its own last scan, and close enough to it that the process
+/// scans about once per period however many windows are open. A smaller gap
+/// lets windows with different phases scan one after the other, up to twice
+/// per period.
+const SHARE_GAP: Duration = Duration::from_secs(ASK_EVERY.as_secs() - 5);
+/// How long the file list of an unchanged repository is trusted. Git is asked
+/// again after this even when the fingerprint of everything it reads still
+/// matches, which only matters for what the fingerprint cannot see, such as the
+/// contents of an ignore file that a Git setting names. Every root lists at the
+/// same time, so a short age made a burst of one Git process per root.
+const LISTING_AGE: Duration = Duration::from_secs(30 * 60);
 /// A root that no window has asked about for this long is forgotten.
 const FORGET_AFTER: Duration = Duration::from_secs(30 * 60);
 const MAX_ENTRIES: usize = 50_000;
@@ -64,6 +75,9 @@ const LIMITS: Limits = Limits {
 thread_local! {
     /// Git commands started on this thread, so a test can prove a scan ran none.
     static GIT_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Directories read on this thread by plain walks, so a test can prove a
+    /// tree inside two roots is walked once.
+    static WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Return observed UNIX-second mtimes for projects with at least one completed
@@ -288,6 +302,10 @@ fn due_first<'a>(wanted: &'a Wanted, cache: &Cache) -> Vec<&'a PathBuf> {
 fn scan_roots(mut cache: Cache, wanted: &Wanted, limits: Limits) -> Cache {
     let deadline = Instant::now() + limits.scan_timeout;
     let roots = due_first(wanted, &cache);
+    let mut pass = Pass {
+        roots: roots.iter().map(|root| (*root).clone()).collect(),
+        ..Pass::default()
+    };
     for root in &roots {
         if Instant::now() >= deadline {
             break;
@@ -296,7 +314,7 @@ fn scan_roots(mut cache: Cache, wanted: &Wanted, limits: Limits) -> Cache {
             deadline: deadline.min(Instant::now() + limits.root_timeout),
             remaining_entries: limits.root_entries,
         };
-        let result = scan_root(root, &mut budget, &mut cache);
+        let result = scan_root(root, &mut budget, &mut cache, &mut pass);
         if result.is_err() && Instant::now() >= deadline {
             break;
         }
@@ -649,6 +667,7 @@ fn repository_files(
         return Ok(listing.clone());
     }
     let mut fingerprint = Fingerprint::default();
+    fingerprint.lasts(LISTING_AGE);
     fingerprint.begin_read();
     let watched = watch_repository(directory, &mut fingerprint);
     let output = git_files(directory, budget)?;
@@ -667,46 +686,35 @@ fn repository_files(
 }
 
 /// The newest edit among the listed files, from the file system alone.
+///
+/// Git lists paths sorted, so the files of one directory come together and a
+/// directory is checked once however many files it holds. Nothing here
+/// allocates per file: each path is built in one reused buffer.
 fn stat_files(root: &Path, files: &Files, budget: &mut Budget) -> Result<Option<u64>, ()> {
     budget.consume_many(files.entries)?;
     let mut latest = None;
-    let mut checked_directories = BTreeSet::new();
+    // Directories already found to be real directories, not links.
+    let mut checked_directories = HashSet::new();
+    // The directory (as listed) of the file before, when it passed the check.
+    let mut current: Option<&[u8]> = None;
+    let mut paths = Joiner::new(root);
     for bytes in files
         .paths
         .split(|byte| *byte == 0)
         .filter(|bytes| !bytes.is_empty())
     {
         budget.check()?;
-        let relative = listed_path(bytes);
-        // Git does not traverse directory symlinks. Also check parents so a
-        // changed path cannot make us inspect files outside the registered root.
-        let mut parent = root.to_owned();
-        let mut safe = true;
-        let components: Vec<_> = relative.components().collect();
-        for component in components.iter().take(components.len().saturating_sub(1)) {
-            parent.push(component.as_os_str());
-            if checked_directories.contains(&parent) {
+        let directory = listed_directory(bytes);
+        if current != Some(directory) {
+            current = None;
+            // Git does not traverse directory symlinks. Also check parents so a
+            // changed path cannot make us inspect files outside the registered root.
+            if !directory_is_inside(root, directory, &mut checked_directories)? {
                 continue;
             }
-            match fs::symlink_metadata(&parent) {
-                Ok(metadata) if metadata.file_type().is_dir() => {
-                    checked_directories.insert(parent.clone());
-                }
-                Ok(_) => {
-                    safe = false;
-                    break;
-                }
-                Err(error) if unobservable(&error) => {
-                    safe = false;
-                    break;
-                }
-                Err(_) => return Err(()),
-            }
+            current = Some(directory);
         }
-        if !safe {
-            continue;
-        }
-        match fs::symlink_metadata(root.join(relative)) {
+        match fs::symlink_metadata(paths.join(bytes)) {
             Ok(metadata) => latest = later(latest, regular_file_time(&metadata)?),
             Err(error) if unobservable(&error) => {}
             Err(_) => return Err(()),
@@ -715,25 +723,134 @@ fn stat_files(root: &Path, files: &Files, budget: &mut Budget) -> Result<Option<
     Ok(latest)
 }
 
-fn scan_root(root: &Path, budget: &mut Budget, cache: &mut Cache) -> Result<Option<u64>, ()> {
-    let listing = repository_files(root, budget, cache)?;
-    match &listing.files {
-        Some(files) => stat_files(root, files, budget),
-        None => scan_plain(root, budget, cache),
+/// Builds `root/listed` for one listed path after another in a single buffer.
+struct Joiner {
+    #[cfg(not(unix))]
+    root: PathBuf,
+    #[cfg(unix)]
+    buffer: Vec<u8>,
+    #[cfg(unix)]
+    root_length: usize,
+}
+
+impl Joiner {
+    #[cfg(unix)]
+    fn new(root: &Path) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        let buffer = root.as_os_str().as_bytes().to_vec();
+        Self {
+            root_length: buffer.len(),
+            buffer,
+        }
+    }
+
+    #[cfg(unix)]
+    fn join(&mut self, listed: &[u8]) -> &Path {
+        use std::os::unix::ffi::OsStrExt;
+        self.buffer.truncate(self.root_length);
+        self.buffer.push(b'/');
+        self.buffer.extend_from_slice(listed);
+        Path::new(OsStr::from_bytes(&self.buffer))
+    }
+
+    #[cfg(not(unix))]
+    fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_owned(),
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn join(&mut self, listed: &[u8]) -> PathBuf {
+        self.root.join(listed_path(listed))
     }
 }
 
-fn scan_plain(root: &Path, budget: &mut Budget, cache: &mut Cache) -> Result<Option<u64>, ()> {
+/// The directory part of a listed path, empty for a file at the root.
+fn listed_directory(listed: &[u8]) -> &[u8] {
+    listed
+        .iter()
+        .rposition(|byte| *byte == b'/')
+        .map_or(&listed[..0], |slash| &listed[..slash])
+}
+
+/// Whether every directory on the way from `root` to `directory` (relative to
+/// it) is a real directory. One that is a link, or vanished, or cannot be read
+/// leaves the files below it out; any other failure fails the scan.
+fn directory_is_inside(
+    root: &Path,
+    directory: &[u8],
+    checked: &mut HashSet<PathBuf>,
+) -> Result<bool, ()> {
+    let mut parent = root.to_owned();
+    for component in listed_path(directory).components() {
+        parent.push(component.as_os_str());
+        if checked.contains(&parent) {
+            continue;
+        }
+        match fs::symlink_metadata(&parent) {
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                checked.insert(parent.clone());
+            }
+            Ok(_) => return Ok(false),
+            Err(error) if unobservable(&error) => return Ok(false),
+            Err(_) => return Err(()),
+        }
+    }
+    Ok(true)
+}
+
+/// What the roots of one scan share. A root inside another one (a folder of
+/// projects that holds a project, a repository with a checkout in a subfolder)
+/// is walked once, whichever is scanned first, instead of once for each.
+#[derive(Default)]
+struct Pass {
+    /// Every root this scan was asked for.
+    roots: BTreeSet<PathBuf>,
+    /// The roots whose scan completed in this one.
+    done: BTreeMap<PathBuf, Option<u64>>,
+}
+
+fn scan_root(
+    root: &Path,
+    budget: &mut Budget,
+    cache: &mut Cache,
+    pass: &mut Pass,
+) -> Result<Option<u64>, ()> {
+    if let Some(done) = pass.done.get(root) {
+        return Ok(*done);
+    }
+    let listing = repository_files(root, budget, cache)?;
+    let latest = match &listing.files {
+        Some(files) => stat_files(root, files, budget)?,
+        None => scan_plain(root, budget, cache, pass)?,
+    };
+    pass.done.insert(root.to_owned(), latest);
+    Ok(latest)
+}
+
+fn scan_plain(
+    root: &Path,
+    budget: &mut Budget,
+    cache: &mut Cache,
+    pass: &mut Pass,
+) -> Result<Option<u64>, ()> {
     let mut latest = None;
     let mut directories = vec![(root.to_owned(), 0)];
     while let Some((directory, depth)) = directories.pop() {
         budget.check()?;
+        if directory != root && pass.roots.contains(&directory) {
+            latest = later(latest, scan_root(&directory, budget, cache, pass)?);
+            continue;
+        }
         if directory != root && fs::symlink_metadata(directory.join(".git")).is_ok() {
             let listing = repository_files(&directory, budget, cache)?;
             let files = listing.files.as_ref().ok_or(())?;
             latest = later(latest, stat_files(&directory, files, budget)?);
             continue;
         }
+        #[cfg(test)]
+        WALKS.with(|walks| walks.set(walks.get() + 1));
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
             Err(error) if unobservable(&error) => continue,
@@ -1119,7 +1236,12 @@ mod tests {
             remaining_entries: 1,
         };
         assert_eq!(
-            scan_plain(&fixture.0, &mut budget, &mut Cache::new()),
+            scan_plain(
+                &fixture.0,
+                &mut budget,
+                &mut Cache::new(),
+                &mut Pass::default()
+            ),
             Err(())
         );
     }
@@ -1192,6 +1314,77 @@ mod tests {
         State {
             projects,
             ..State::default()
+        }
+    }
+
+    fn walks() -> usize {
+        WALKS.with(std::cell::Cell::get)
+    }
+
+    /// Pretend every remembered file list was made `by` ago.
+    fn age_listings(shared: &Shared, by: Duration) {
+        let mut inner = shared.lock();
+        for listing in inner.cache.listings.values_mut() {
+            Arc::get_mut(listing)
+                .expect("the cache holds the only copy")
+                .fingerprint
+                .backdate(by);
+        }
+    }
+
+    #[test]
+    fn a_file_list_is_trusted_for_half_an_hour_not_five_minutes() {
+        let repo = repository();
+        repo.file("a.rs", 100);
+        repo.file("b.rs", 200);
+        let state = state_of(vec![project("project", &[&repo])]);
+        settle();
+        let shared = Shared::new();
+        let (first, runs) = spawned(|| shared.scan(&state, ALWAYS));
+        assert_eq!(first.get("project"), Some(&200));
+        assert_eq!(runs, 1);
+
+        // Ten minutes on, with nothing changed: no Git, however many scans.
+        age_listings(&shared, Duration::from_secs(10 * 60));
+        let (second, runs) = spawned(|| shared.scan(&state, ALWAYS));
+        assert_eq!(second, first);
+        assert_eq!(runs, 0);
+
+        // Past the age it is asked again.
+        age_listings(&shared, Duration::from_secs(25 * 60));
+        let (third, runs) = spawned(|| shared.scan(&state, ALWAYS));
+        assert_eq!(third, first);
+        assert_eq!(runs, 1);
+    }
+
+    #[test]
+    fn the_share_gap_covers_the_windows_but_not_a_whole_period() {
+        assert!(SHARE_GAP < ASK_EVERY);
+        assert!(SHARE_GAP + Duration::from_secs(5) >= ASK_EVERY);
+    }
+
+    #[test]
+    fn a_folder_inside_another_root_is_walked_once() {
+        let outer = Fixture::new();
+        outer.file("a.txt", 100);
+        outer.file("inner/b.txt", 300);
+        outer.file("inner/deep/c.txt", 200);
+        let inner = Fixture(outer.0.join("inner"));
+        let outer_first = state_of(vec![
+            project("wide", &[&outer]),
+            project("narrow", &[&inner]),
+        ]);
+        let inner_first = state_of(vec![
+            project("narrow", &[&inner]),
+            project("wide", &[&outer]),
+        ]);
+        for state in [outer_first, inner_first] {
+            let before = walks();
+            let edits = scan(&state);
+            assert_eq!(edits.get("wide"), Some(&300));
+            assert_eq!(edits.get("narrow"), Some(&300));
+            // outer, inner and inner/deep, whichever root is scanned first.
+            assert_eq!(walks() - before, 3);
         }
     }
 
@@ -1553,5 +1746,74 @@ mod tests {
         let (second, runs) = spawned(|| super::scan(&state));
         assert_eq!(second, first);
         assert_eq!(runs, 0);
+    }
+
+    /// CPU time this thread has used.
+    fn thread_cpu() -> Duration {
+        let mut now = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `now` is a valid timespec for the call to fill in.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut now) };
+        Duration::new(now.tv_sec as u64, now.tv_nsec as u32)
+    }
+
+    /// A measurement, not a test: what one scan of a real registry costs once the
+    /// file lists are remembered, which is what every scan but the first costs.
+    ///
+    ///   RIWORK_BENCH_STATE=~/.local/share/riwork/state.json \
+    ///     cargo test --release --bin riwork scan_cost -- --ignored --nocapture
+    ///
+    /// Reads the registry and stats the files; changes nothing.
+    #[test]
+    #[ignore]
+    fn scan_cost_of_a_real_registry() {
+        let path = std::env::var("RIWORK_BENCH_STATE").expect("RIWORK_BENCH_STATE");
+        let state: State = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let wanted = wanted_roots(&state);
+        let roots: usize = wanted.iter().map(|(_, roots)| roots.len()).sum();
+        let shared = Shared::new();
+        let started = Instant::now();
+        let projects = shared.scan(&state, ALWAYS).len();
+        println!(
+            "first scan: {:?} for {roots} roots, {projects} projects (runs Git for each)",
+            started.elapsed()
+        );
+        let cache = shared.lock().cache.clone();
+        let files: usize = cache
+            .listings
+            .values()
+            .filter_map(|listing| listing.files.as_ref())
+            .map(|files| files.entries)
+            .sum();
+        let measure = |work: &dyn Fn()| {
+            (0..5)
+                .map(|_| {
+                    let before = thread_cpu();
+                    work();
+                    thread_cpu() - before
+                })
+                .min()
+                .unwrap()
+        };
+        let stat = measure(&|| {
+            let mut budget = Budget {
+                deadline: Instant::now() + Duration::from_secs(60),
+                remaining_entries: usize::MAX,
+            };
+            for (root, listing) in &cache.listings {
+                if let Some(files) = &listing.files {
+                    let _ = stat_files(root, files, &mut budget);
+                }
+            }
+        });
+        println!("stat the {files} listed files: {stat:?} CPU");
+        let scan = measure(&|| {
+            let mut cache = cache.clone();
+            cache.roots.clear();
+            std::hint::black_box(scan_roots(cache, &wanted, LIMITS));
+        });
+        println!("rescan of every root (plain folders included): {scan:?} CPU");
     }
 }
