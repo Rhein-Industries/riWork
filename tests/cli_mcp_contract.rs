@@ -863,7 +863,7 @@ fn shell_history_pages_the_scrollback_and_output_json_tells_how_long_it_is() {
         vec!["shell", "history", &id, "--end", "0"],
         vec!["shell", "history", &id, "--lines", "5"],
         vec!["shell", "history", &id, "--end", "0", "--lines", "0"],
-        vec!["shell", "history", &id, "--end", "0", "--lines", "1001"],
+        vec!["shell", "history", &id, "--end", "0", "--lines", "5001"],
         vec!["shell", "history", &id, "--end", "-1", "--lines", "5"],
         vec!["shell", "history", &id, "--end", "x", "--lines", "5"],
         vec![
