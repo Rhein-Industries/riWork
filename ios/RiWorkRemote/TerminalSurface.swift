@@ -50,10 +50,10 @@ struct HistoryHeader: Equatable {
     }
 
     // MARK: Wiring
-    weak var source: (any TerminalLineSource)?
+    weak var source: (any TerminalLineSource)? { didSet { if source !== oldValue { needsRefresh = true; setNeedsLayout() } } }
     /// Changes made from SwiftUI's update pass (`header`, `configure`, `jumpToken`) are applied in the next layout pass: the follow logic
     /// writes model state, which must not happen while SwiftUI is still evaluating views.
-    var header: HistoryHeader? { didSet { if header != oldValue { setNeedsLayout() } } }
+    var header: HistoryHeader? { didSet { if header != oldValue { needsRefresh = true; setNeedsLayout() } } }
     /// The follow logic: `(old, new, line height, userDriven)` → what to do.
     var onMetrics: ((ScrollMetrics?, ScrollMetrics, Double, Bool) -> StickyBottom.Response)?
     /// The reader moved: the index of the first line in view, and how many rows the view shows.
@@ -133,6 +133,7 @@ struct HistoryHeader: Equatable {
         look = next
         if paints { lookID += 1 }
         pendingForce = pendingForce || sizeChanged
+        needsRefresh = true
         setNeedsLayout()
     }
 
@@ -145,9 +146,18 @@ struct HistoryHeader: Equatable {
         if canvas.frame != bounds { canvas.frame = bounds }
         let force = pendingForce
         pendingForce = false
-        refresh(force: force)
+        // The model refreshes the surface itself whenever the buffer changes, so a layout pass has something to do only when the view or
+        // what it was told changed. Doing it anyway reads the model's observable state in here, and UIKit (iOS 26) then lays the view out
+        // again after every live answer, to do all of it a second time.
+        if needsRefresh || force || bounds != laidOutBounds {
+            laidOutBounds = bounds
+            refresh(force: force)
+        }
         if pendingJump { pendingJump = false; jumpToBottom() }
     }
+    /// What a layout pass refreshes for: something the surface was told changed (its source, its header, its look), or its bounds did.
+    private var needsRefresh = true
+    private var laidOutBounds = CGRect.zero
 
     // MARK: Following the buffer
 
@@ -156,6 +166,9 @@ struct HistoryHeader: Equatable {
     func refresh(force: Bool = false) {
         guard let source, bounds.height > 0 else { return }
         Perf.count("surface.refresh")
+        let signpost = Perf.signposter.beginInterval("SurfaceRefresh")
+        defer { Perf.signposter.endInterval("SurfaceRefresh", signpost) }
+        needsRefresh = false
         let buffer = source.terminalBuffer
         let hasHeader = header != nil && !buffer.isEmpty
         let height = TerminalFont.cell(size: look.fontSize).height
@@ -177,12 +190,18 @@ struct HistoryHeader: Equatable {
         firstLine = buffer.start
         headerRow = hasHeader ? buffer.start - 1 : nil
         lastEpoch = buffer.epoch
+        // The scroll view tells its delegate about the size and offset changes made here, which would lay the rows out and report the
+        // metrics before this method does both, once, below.
+        refreshing = true
         apply(next)
         if abs(target - offset) > 0.001 { scroll.setContentOffset(CGPoint(x: 0, y: target), animated: false) }
+        refreshing = false
         if force || old.lineHeight != next.lineHeight { anchorRow = Int.min }
         layoutRows(buffer: buffer, repaint: true)
         emitMetrics()
     }
+    /// `refresh` is moving the scroll view itself; it lays the rows out and reports the metrics when it is done.
+    private var refreshing = false
 
     /// Hands the scroll view its content size and insets. Nothing else: the reader's offset is kept as it was when UIKit moves it
     /// along with an inset.
@@ -224,10 +243,13 @@ struct HistoryHeader: Equatable {
             reposition = true
         }
         // The canvas shows the rows relative to the view; its origin is the only thing that moves while scrolling.
-        canvas.bounds.origin = CGPoint(x: 0, y: offset - Double(anchorRow) * g.lineHeight)
+        let origin = CGPoint(x: 0, y: offset - Double(anchorRow) * g.lineHeight)
+        if canvas.bounds.origin != origin { canvas.bounds.origin = origin }
 
+        // Hiding and showing go to the layer: UIView's own `isHidden` also tells the focus system, which costs more than the rest of
+        // putting a row in or out of use.
         for (index, view) in rows where !visible.contains(index) || index == headerRow {
-            view.clear(); view.isHidden = true
+            view.clear(); view.layer.isHidden = true
             spare.append(view); rows[index] = nil
         }
         if spare.count > 24 { for view in spare.suffix(spare.count - 24) { view.removeFromSuperview() }; spare.removeLast(spare.count - 24) }
@@ -242,10 +264,11 @@ struct HistoryHeader: Equatable {
                 if !reposition && !repaint { continue }
             } else {
                 view = spare.popLast() ?? { let made = TerminalRowView(frame: .zero); canvas.insertSubview(made, belowSubview: highlight); return made }()
-                view.isHidden = false
+                view.layer.isHidden = false
                 rows[index] = view
             }
-            view.frame = CGRect(x: look.padding, y: Double(index - anchorRow) * g.lineHeight, width: width, height: g.lineHeight)
+            let frame = CGRect(x: look.padding, y: Double(index - anchorRow) * g.lineHeight, width: width, height: g.lineHeight)
+            if view.frame != frame { view.frame = frame }
             guard let held else { continue }
             let line = held[index] ?? .missing
             let cursor = look.settings.showCursor && held.cursorIndex == index ? held.cursorColumn : nil
@@ -253,11 +276,12 @@ struct HistoryHeader: Equatable {
         }
 
         if let headerRow, visible.contains(headerRow) {
-            headerView.isHidden = false
-            headerView.frame = CGRect(x: look.padding, y: Double(headerRow - anchorRow) * g.lineHeight, width: width, height: g.lineHeight)
+            if headerView.layer.isHidden { headerView.layer.isHidden = false }
+            let frame = CGRect(x: look.padding, y: Double(headerRow - anchorRow) * g.lineHeight, width: width, height: g.lineHeight)
+            if headerView.frame != frame { headerView.frame = frame }
             headerView.configure(text: header?.text ?? "", font: headerFont, color: headerColor)
-        } else {
-            headerView.isHidden = true
+        } else if !headerView.layer.isHidden {
+            headerView.layer.isHidden = true
         }
         if let pressed = pressedRow {
             highlight.frame = CGRect(x: 0, y: Double(pressed - anchorRow) * g.lineHeight, width: bounds.width, height: g.lineHeight)
@@ -269,6 +293,7 @@ struct HistoryHeader: Equatable {
     // MARK: UIScrollViewDelegate
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard !refreshing else { return }
         layoutRows(buffer: nil, repaint: false)
         emitMetrics()
     }

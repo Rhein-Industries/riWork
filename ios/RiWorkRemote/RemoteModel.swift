@@ -23,7 +23,10 @@ enum ConnectionState: Equatable {
     var worktrees: [RemoteWorktree] = []
     var shells: [RemoteSession] = []
     var orchestrators: [RemoteSession] = []
-    var output = ""
+    var output = "" { didSet { hasOutput = !output.isEmpty } }
+    /// Whether `output` holds anything. Views read this rather than `output`, which is a new string with every live answer and would
+    /// rebuild whatever reads it each time.
+    var hasOutput = false
     /// `output` with its colors and attributes, parsed off the main actor. `outputVersion` changes whenever it does.
     var styledOutput = StyledScreen.empty
     var outputVersion = 0

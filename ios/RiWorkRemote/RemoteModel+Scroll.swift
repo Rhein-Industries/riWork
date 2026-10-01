@@ -28,6 +28,8 @@ extension RemoteModel: TerminalLineSource {
     /// A live answer arrived: it goes into the list of lines, unless a full-screen program is showing (that screen has no
     /// scrollback, and the list of the normal screen stays as it was for when the program ends).
     func takeIn(screen: ShellOutput, styled: StyledScreen) {
+        let signpost = Perf.signposter.beginInterval("ApplyAnswer")
+        defer { Perf.signposter.endInterval("ApplyAnswer", signpost) }
         setAlternateScreen(screen.alternate ?? false)
         guard !alternateScreen else { return }
         if terminal.isEmpty { restoreTerminal() }
@@ -132,12 +134,13 @@ extension RemoteModel: TerminalLineSource {
     /// Whether the header of the list has anything to say: paging is possible on this desktop.
     var historyPaging: Bool { terminal.canPage && historySupport != .unsupported }
 
+    private static let limitReachedText = "Showing the last \(HistoryLimits.heldLines.formatted()) lines"
     /// What the header row at the top of the loaded lines says, or nil when there is no such row.
     var historyHeader: HistoryHeader? {
         guard historyPaging, terminal.heldHistory > 0 else { return nil }
         if historyFailed { return HistoryHeader(text: "Couldn't load older lines · tap to retry", failed: true) }
         if terminal.atTop { return HistoryHeader(text: "Beginning of history", failed: false) }
-        if terminal.limitReached { return HistoryHeader(text: "Showing the last \(HistoryLimits.heldLines.formatted()) lines", failed: false) }
+        if terminal.limitReached { return HistoryHeader(text: Self.limitReachedText, failed: false) }
         return HistoryHeader(text: historyLoading ? "Loading…" : " ", failed: false)
     }
 
