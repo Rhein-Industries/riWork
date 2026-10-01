@@ -1208,9 +1208,10 @@ async fn live_output_styled_waiting_and_typing_through_the_real_relay_connector_
         json!({"shell_id":id,"styled":true,"lines":50,"if_changed":hash,"wait_ms":500}),
     )
     .await?;
+    // An unchanged answer also tells how far the scrollback has grown.
     assert_eq!(
         same["result"],
-        json!({"shell_id":id,"unchanged":true,"hash":hash}),
+        json!({"shell_id":id,"unchanged":true,"hash":hash,"history_size":0,"alternate":false}),
         "{same}"
     );
     assert!(started.elapsed() >= Duration::from_millis(500));

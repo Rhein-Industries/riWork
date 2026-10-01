@@ -1,7 +1,7 @@
 //! Narrow CLI allowlist plus a durable write-ahead input outcome ledger.
 use crate::{
     MAX_PLAINTEXT, appearance,
-    config::{Storage, private_read, private_write},
+    config::{Storage, private_read, private_write, private_write_relaxed},
     crypto::uuid,
     viewport::Viewport,
 };
@@ -509,10 +509,46 @@ impl HeldViewport<'_> {
     }
 }
 
+/// Who made sure a shell is an existing, live session.
+#[derive(Clone, Copy)]
+enum Checked {
+    /// This connector, by listing sessions.
+    Here,
+    /// The CLI, as part of the call it was then asked to make.
+    ByCli,
+}
+impl Checked {
+    /// A refusal of the CLI that says the shell is unknown or has exited, as
+    /// the lookup would have said it. Any other failure is returned as it is,
+    /// and so is every failure of a lookup made here. The CLI's wording is
+    /// matched whole, so nothing else can pass for it.
+    fn explain(self, fault: Fault, shell: &str) -> Fault {
+        if matches!(self, Self::Here) || !matches!(fault.code, "cli_error" | "not_found") {
+            return fault;
+        }
+        // From `shell output` and `shell history` a failure arrives as the
+        // CLI's stderr, from `shell keys` as what follows its `not_found: `.
+        let said = fault
+            .message
+            .strip_prefix("RiWork CLI failed: riwork: ")
+            .unwrap_or(&fault.message);
+        if said == format!("unknown shell {shell}") {
+            Fault::new("not_found", "existing shell ID not found")
+        } else if said == format!("shell {shell} has exited") {
+            Fault::new("not_found", "selected shell is not alive")
+        } else {
+            fault
+        }
+    }
+}
+
 pub struct Rpc {
     pub cli: PathBuf,
     pub storage: Storage,
     input_locks: Mutex<BTreeMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    /// Whether the CLI itself refuses a shell that is not registered and alive
+    /// (see `shell_checked_by_cli`), learned once from the CLI.
+    cli_checks_shells: tokio::sync::OnceCell<bool>,
 }
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
@@ -520,6 +556,7 @@ impl Rpc {
             cli,
             storage,
             input_locks: Mutex::new(BTreeMap::new()),
+            cli_checks_shells: tokio::sync::OnceCell::new(),
         }
     }
     fn input_lock(&self, shell: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -596,24 +633,69 @@ impl Rpc {
         })?;
         serde_json::from_slice(&data).map_err(cli_fault)
     }
-    async fn sessions(&self) -> std::result::Result<Vec<Value>, Fault> {
-        let mut v = array(self.read(&["shell", "list", "--all"]).await?)?;
-        v.extend(array(self.read(&["orchestrator", "list"]).await?)?);
-        Ok(v)
+    /// The session `shell` among the project shells, and if it is not one of
+    /// them, among the orchestrators. Ids are unique across both, so asking the
+    /// second list only when the first does not hold it finds exactly what
+    /// asking both would, with one CLI process fewer for every project shell.
+    async fn session(&self, shell: &str) -> std::result::Result<Option<Value>, Fault> {
+        for list in [
+            &["shell", "list", "--all"][..],
+            &["orchestrator", "list"][..],
+        ] {
+            let found = array(self.read(list).await?)?
+                .into_iter()
+                .find(|s| s.get("id").and_then(Value::as_str) == Some(shell));
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
     }
     async fn selected(&self, shell: &str) -> std::result::Result<(), Fault> {
         id(shell)?;
-        let list = self.sessions().await?;
-        let Some(s) = list
-            .iter()
-            .find(|s| s.get("id").and_then(Value::as_str) == Some(shell))
-        else {
+        let Some(s) = self.session(shell).await? else {
             return Err(Fault::new("not_found", "existing shell ID not found"));
         };
         if s.get("alive").and_then(Value::as_bool) != Some(true) {
             return Err(Fault::new("not_found", "selected shell is not alive"));
         }
         Ok(())
+    }
+    /// Whether this CLI checks, before it reads from or types into a shell,
+    /// that the shell is a registered, live session, and says so in its own
+    /// words (`riwork capabilities`). A CLI that predates the question, or a
+    /// stand-in that does not answer it, is taken not to, and that is
+    /// remembered like a yes. A CLI that could not be run at all is not
+    /// remembered as anything: the next request asks again.
+    async fn shell_checked_by_cli(&self) -> bool {
+        self.cli_checks_shells
+            .get_or_try_init(|| async {
+                match self.raw(vec!["capabilities".into(), "--json".into()]).await {
+                    Ok(data) => Ok(serde_json::from_slice::<Value>(&data).is_ok_and(|reply| {
+                        reply.get("v") == Some(&json!(1))
+                            && reply.get("verifies_shell") == Some(&Value::Bool(true))
+                    })),
+                    // It ran and refused the question.
+                    Err(e) if e.to_string().starts_with("RiWork CLI failed") => Ok(false),
+                    Err(_) => Err(()),
+                }
+            })
+            .await
+            .copied()
+            .unwrap_or(false)
+    }
+    /// Makes sure `shell` is an existing, live session before the CLI is asked
+    /// about it. Looking it up costs two CLI processes' worth of time; a CLI
+    /// that checks for itself, in the very process that then reads or types
+    /// (so just before, never earlier), makes that unnecessary, and
+    /// `Checked::explain` puts its refusal in the words this lookup uses.
+    async fn ensure_selected(&self, shell: &str) -> std::result::Result<Checked, Fault> {
+        id(shell)?;
+        if self.shell_checked_by_cli().await {
+            return Ok(Checked::ByCli);
+        }
+        self.selected(shell).await?;
+        Ok(Checked::Here)
     }
     pub async fn handle(&self, device: &str, value: Value) -> Result<Value> {
         self.handle_with(device, value, ViewportAccess::Absent)
@@ -790,7 +872,7 @@ impl Rpc {
                     ));
                 }
                 let styled = p.styled.unwrap_or(false);
-                self.selected(&p.shell_id).await?;
+                let checked = self.ensure_selected(&p.shell_id).await?;
                 let mut args: Vec<String> = [
                     "shell",
                     "output",
@@ -814,6 +896,7 @@ impl Rpc {
                     limit = cli_limit(wait_ms);
                 }
                 let v = self.read_within(args, limit).await.map_err(|fault| {
+                    let fault = checked.explain(fault, &p.shell_id);
                     // A CLI from before styled output and waiting refuses the flags.
                     if fault.code == "cli_error"
                         && fault.message.contains("Usage: riwork shell output")
@@ -884,7 +967,7 @@ impl Rpc {
                     return Err(invalid(format!("lines must be 1..={HISTORY_PAGE_MAX}")));
                 }
                 let styled = p.styled.unwrap_or(false);
-                self.selected(&p.shell_id).await?;
+                let checked = self.ensure_selected(&p.shell_id).await?;
                 let mut args: Vec<String> = [
                     "shell",
                     "history",
@@ -904,7 +987,7 @@ impl Rpc {
                 let v = self
                     .read_within(args, CLI_TIMEOUT)
                     .await
-                    .map_err(history_fault)?;
+                    .map_err(|fault| history_fault(checked.explain(fault, &p.shell_id)))?;
                 history_result(&p.shell_id, &v, p.lines, styled).ok_or_else(|| {
                     cli_fault("CLI returned a history page that does not fit the request")
                 })
@@ -1154,7 +1237,7 @@ impl Rpc {
         }
         let shell_lock = self.input_lock(&p.shell_id);
         let _shell_guard = shell_lock.lock().await;
-        self.selected(&p.shell_id).await?;
+        let checked = self.ensure_selected(&p.shell_id).await?;
         if !self.storage.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
@@ -1177,11 +1260,16 @@ impl Rpc {
                 }
                 // The keys are typed either way; if this write fails the batch
                 // stays pending and a repeat reports uncertain, never a resend.
-                let _ = private_write(&path, &ledger);
+                // It is not worth a second directory sync (about half of what
+                // the write costs, and the phone waits for this answer before
+                // it sends the next keys): a crash that loses the rename leaves
+                // the pending record, which says exactly that.
+                let _ = private_write_relaxed(&path, &ledger);
                 reply("sent")
             }
             Err(error) => {
                 let (fault, not_sent) = keys_fault(&error);
+                let fault = checked.explain(fault, &p.shell_id);
                 if not_sent {
                     // Nothing was typed: forget the batch so a retry can send it.
                     ledger.batches.pop();

@@ -374,7 +374,7 @@ pub fn resize(
         return Err("viewport_unsupported: terminal pane changed".into());
     }
     // Pin the sizing policy even when the first requested cells already match.
-    if fresh || current.columns != columns || current.rows != rows {
+    let size = if fresh || current.columns != columns || current.rows != rows {
         let w = format!("{id}:0");
         t(&[
             "resize-window",
@@ -385,8 +385,13 @@ pub fn resize(
             "-y",
             &rows.to_string(),
         ])?;
-    }
-    let (size, _) = geometry(id, t)?;
+        geometry(id, t)?.0
+    } else {
+        // A renewal of a lease whose cells are still in place (every few
+        // seconds, for as long as a phone is attached) has nothing to verify
+        // that the call above did not just read.
+        current
+    };
     if size.columns != columns || size.rows != rows {
         return Err("viewport_unsupported: tmux did not apply requested cells".into());
     }
