@@ -200,7 +200,8 @@ extension RemoteModel {
                 // Echo latency starts when the batch leaves; the pending long poll returns on the echo by itself.
                 let sentAt = ProcessInfo.processInfo.systemUptime
                 latency.keysSent(at: sentAt)
-                let status = try await client.keys(shellID: key.shellID, batch: batch.id, items: batch.items)
+                let (status, timing) = try await client.timedKeys(shellID: key.shellID, batch: batch.id, items: batch.items)
+                noteReply(timing)
                 latency.keysAnswered(seconds: ProcessInfo.processInfo.systemUptime - sentAt)
                 keysSupport = .supported
                 failures = 0

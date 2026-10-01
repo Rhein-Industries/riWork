@@ -32,6 +32,8 @@ hex = "0.4"
 subtle = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = "1"
+# Optional reply compression (raw deflate), pure Rust backend.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 # tokio-rustls defaults include aws-lc-rs. Leave them off so the ring provider stays unambiguous.

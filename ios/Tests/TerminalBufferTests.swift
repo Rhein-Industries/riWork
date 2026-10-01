@@ -952,15 +952,15 @@ final class TerminalBufferTests: XCTestCase {
         let request = HistoryRequest(shellID: shell, end: 500, lines: 300)
         XCTAssertEqual(request.params, ["shell_id": .string(shell), "end": .number(500), "lines": .number(300), "styled": .bool(true)])
         XCTAssertEqual(request.plain.params["styled"], nil, "plain text asks without the field")
-        XCTAssertEqual(HistoryRequest(shellID: shell, end: -4, lines: 5000).params["end"], .number(0))
-        XCTAssertEqual(HistoryRequest(shellID: shell, end: 0, lines: 5000).params["lines"], .number(1000))
+        XCTAssertEqual(HistoryRequest(shellID: shell, end: -4, lines: 50).params["end"], .number(0))
+        XCTAssertEqual(HistoryRequest(shellID: shell, end: 0, lines: 9000).params["lines"], .number(5000), "the most the protocol allows since 2026-10-01 (1000 before)")
         try RequestValidation.validate(method: "shell.history", params: request.params, id: UUID().uuidString.lowercased())
         try RequestValidation.validate(method: "shell.history", params: request.plain.params, id: UUID().uuidString.lowercased())
         for bad: [String: JSONValue] in [
             ["shell_id": .string(shell), "end": .number(0)],
             ["shell_id": .string(shell), "end": .number(-1), "lines": .number(10)],
             ["shell_id": .string(shell), "end": .number(0), "lines": .number(0)],
-            ["shell_id": .string(shell), "end": .number(0), "lines": .number(1001)],
+            ["shell_id": .string(shell), "end": .number(0), "lines": .number(5001)],
             ["shell_id": .string(shell), "end": .number(1.5), "lines": .number(10)],
             ["shell_id": .string(shell), "end": .number(0), "lines": .number(10), "styled": .string("yes")],
             ["shell_id": .string(shell), "end": .number(0), "lines": .number(10), "extra": .bool(true)]

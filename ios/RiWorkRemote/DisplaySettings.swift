@@ -1,8 +1,9 @@
 import SwiftUI
 import RiWorkCore
 
-/// The Display section of the app's settings: how large the app's chrome is, how large the terminal text is, and the latency
-/// overlay. Reachable from the terminal menu and from the desktop list. Every change applies at once and is remembered.
+/// The Display section of the app's settings: how large the app's chrome is, how large the terminal text is, how history is
+/// downloaded (and what the measured link says about that), and the latency overlay. Reachable from the terminal menu and from the
+/// desktop list. Every change applies at once and is remembered.
 struct DisplaySettingsSheet: View {
     @Environment(\.desktopStyle) private var style
     @Environment(\.dismiss) private var dismiss
@@ -49,10 +50,46 @@ struct DisplaySettingsSheet: View {
                 .listRowBackground(style.background).listRowSeparatorTint(style.divider)
 
                 Section {
+                    ForEach(HistoryMode.allCases, id: \.self) { mode in
+                        modeRow(mode)
+                    }
+                    Toggle("Compress traffic", isOn: Binding(get: { model.compressTraffic }, set: { model.setCompressTraffic($0) }))
+                        .frame(minHeight: style.pt(44))
+                } header: { Text("HISTORY DOWNLOAD").font(style.system(.caption)) } footer: {
+                    Text("Older lines are fetched after the live screen, a page at a time, so scrolling needs no round trip. Compression makes pages several times smaller; turn it off only if you must not compress what the desktop sends.")
+                        .font(style.system(.caption))
+                }
+                .listRowBackground(style.background).listRowSeparatorTint(style.divider)
+
+                Section {
+                    // The meter is not observable; look again every second while the sheet is open.
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        let readout = model.linkReadout
+                        let policy = model.historyPolicy
+                        VStack(alignment: .leading, spacing: 4) {
+                            linkRow("Path", "\(readout.path) · \(readout.tier)")
+                            linkRow("Round trip", readout.roundTrip)
+                            linkRow("Transfer", readout.rate)
+                            linkRow("Desktop time", readout.desktop == "–" ? "–" : "\(readout.desktop) a page")
+                            linkRow("Compression", readout.ratio)
+                            linkRow("Restrictions", readout.restrictions)
+                            linkRow("Fetching", policy.appetite.summary)
+                            Text(policy.reason.sentence).foregroundStyle(style.muted).font(style.system(.caption))
+                            linkRow("Loaded", "\(model.terminal.heldHistory.formatted()) of \((model.terminal.historySize ?? 0).formatted()) lines")
+                        }
+                        .padding(.vertical, 4).accessibilityElement(children: .combine)
+                    }
+                } header: { Text("LINK").font(style.system(.caption)) } footer: {
+                    Text("How the phone decides. The round trip and the desktop's own time are taken out of a page's time before its speed is judged. Transfer is the best of the last three pages.")
+                        .font(style.system(.caption))
+                }
+                .listRowBackground(style.background).listRowSeparatorTint(style.divider)
+
+                Section {
                     Toggle("Show latency", isOn: Binding(get: { model.showLatency }, set: { model.setShowLatency($0) }))
                         .frame(minHeight: style.pt(44))
                 } header: { Text("DEBUG").font(style.system(.caption)) } footer: {
-                    Text("A small overlay in the terminal: round trips of keys and screen reads, echo latency, the age of the last change, live or poll, and the last payload size.")
+                    Text("A small overlay in the terminal: round trips of keys and screen reads, echo latency, the age of the last change, live or poll, the last payload size, and the link: round trip, transfer rate and tier, the desktop's own time, compression, and what the history download is doing.")
                         .font(style.system(.caption))
                 }
                 .listRowBackground(style.background).listRowSeparatorTint(style.divider)
@@ -67,6 +104,29 @@ struct DisplaySettingsSheet: View {
         .onChange(of: model.interfaceScale) { _, value in draftScale = value }
     }
 
+    private func modeRow(_ mode: HistoryMode) -> some View {
+        let selected = model.historyMode == mode
+        return Button { model.setHistoryMode(mode) } label: {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(mode.title)
+                    Text(mode.detail).font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "checkmark").opacity(selected ? 1 : 0).foregroundStyle(style.accent).accessibilityHidden(true)
+            }
+            .frame(maxWidth: .infinity, minHeight: style.pt(44), alignment: .leading).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+    private func linkRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).foregroundStyle(style.muted)
+            Spacer(minLength: 8)
+            Text(value).monospacedDigit().multilineTextAlignment(.trailing)
+        }
+    }
     private func commit(_ value: Double) {
         draftScale = InterfaceScale.clamped(value)
         model.setInterfaceScale(value)

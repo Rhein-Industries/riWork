@@ -3,98 +3,23 @@ import Foundation
 // Fetching older scrollback in the background, as a second step after the live screen.
 //
 // What this file decides, all of it pure so it can be tested without a network:
-// - how good the link is, from the pages already fetched (`LinkMeter`) and from what the network path says (`LinkConditions`);
-// - how much history to fetch ahead of the reader (`HistoryAppetite`): everything the phone keeps on a good link, a few screens
-//   ahead on a poor, metered or restricted one;
+// - how much history to fetch ahead of the reader (`HistoryAppetite`), under the person's setting (`HistoryMode`), what the link
+//   measures (`LinkMeter`, in LinkMeter.swift) and what the network path says (`LinkConditions`);
 // - how big the next page is and how long to leave the link alone after it (`HistoryPrefetch.decide`);
 // - when to hold back altogether: while keys are being typed, while two long polls already hold the desktop's shared slots.
 //
 // The model runs the loop (one `shell.history` request in flight, ever) and asks `decide` before every page.
 
-/// What the network path and the device say about spending data and battery. Filled from `NWPath` (`isConstrained` is Low Data Mode,
-/// `isExpensive` cellular or a personal hotspot) and from Low Power Mode.
-public struct LinkConditions: Sendable, Equatable {
-    public var constrained: Bool
-    public var expensive: Bool
-    public var lowPower: Bool
-    public init(constrained: Bool = false, expensive: Bool = false, lowPower: Bool = false) {
-        self.constrained = constrained; self.expensive = expensive; self.lowPower = lowPower
-    }
-    public var isRestricted: Bool { constrained || expensive || lowPower }
-}
-
-/// How fast the link carries a page, from slowest to fastest.
-public enum LinkTier: Int, Sendable, Comparable {
-    /// Not measured yet.
-    case unknown
-    /// Under 250 KB/s (2 Mbit/s).
-    case slow
-    /// 250 KB/s to 1 MB/s.
-    case good
-    /// 1 MB/s (8 Mbit/s) and above.
-    case fast
-    public static func < (lhs: LinkTier, rhs: LinkTier) -> Bool { lhs.rawValue < rhs.rawValue }
-}
-
-/// What pages of history say about the link: how long a request costs before any data moves, how fast data moves, how big a line is.
-///
-/// A page's time is `fixed + bytes / rate`. `fixed` is the round trip plus the desktop starting its CLI and reading tmux (about 50 to
-/// 150 ms by itself); it is learned from the smallest requests (a ten-line probe goes first), and taken out of the bigger pages, so a
-/// fast link with a long round trip is not mistaken for a slow one. Bytes are what went on the wire (`HistoryReply.wireBytes`).
-///
-/// Delays only ever add to a page's time, so a rate worked out from one page is more likely too low than too high, and the more so the
-/// smaller the transfer is next to the jitter of the round trip. The rate kept is therefore the best of the last three pages: the
-/// capacity the link has shown lately. A link that turns slow is noticed after three slow pages.
-public struct LinkMeter: Sendable, Equatable {
-    /// At 1 MB/s a page at the protocol's size limit (128 KiB) takes about 130 ms, and the whole 50,000-line history (about 3 MB) 3 s.
-    /// Home Wi-Fi and a direct Tailscale path are well above this; a relayed one over LTE usually is not.
-    public static let fastBytesPerSecond = 1_000_000.0
-    /// At 250 KB/s a 20 KB page (about 350 lines) still takes under 100 ms of transfer, and the whole history 12 s of a link that
-    /// is also carrying the keystrokes' echo. Below it, a page that is worth fetching blocks the socket for too long: look ahead only.
-    public static let goodBytesPerSecond = 250_000.0
-    /// Pages under this are too short for a rate: their time is mostly the fixed cost.
-    public static let measurableBytes = 8 * 1024
-    /// Requests under this tell the fixed cost.
-    public static let smallBytes = 4 * 1024
-    static let smoothing = 0.4
-    static let recentPages = 3
-
-    /// The fastest small request seen: round trip plus the desktop's own work.
-    public private(set) var fixedSeconds: Double?
-    /// Bytes per second on pages big enough to tell: the best of the last three.
-    public var bytesPerSecond: Double? { recentRates.max() }
-    private var recentRates: [Double] = []
-    /// Bytes per line, smoothed.
-    public private(set) var bytesPerLine: Double?
-    public private(set) var lastSeconds: Double?
-    public private(set) var lastLines: Int?
-    public private(set) var pages = 0
-    public init() {}
-
-    public var tier: LinkTier {
-        guard let rate = bytesPerSecond else { return .unknown }
-        return rate >= Self.fastBytesPerSecond ? .fast : (rate >= Self.goodBytesPerSecond ? .good : .slow)
-    }
-
-    private func smoothed(_ old: Double?, _ new: Double) -> Double { old.map { $0 + (new - $0) * Self.smoothing } ?? new }
-
-    /// A page of `lines` lines weighing `wireBytes` took `seconds` from request to answer.
-    public mutating func record(wireBytes: Int, lines: Int, seconds: Double) {
-        guard seconds.isFinite, seconds > 0, wireBytes >= 0, lines > 0 else { return }
-        pages += 1
-        lastSeconds = seconds; lastLines = lines
-        bytesPerLine = smoothed(bytesPerLine, Double(wireBytes) / Double(lines))
-        if wireBytes < Self.smallBytes { fixedSeconds = min(fixedSeconds ?? .infinity, seconds) }
-        // Without the fixed cost a rate would only say how long the round trip is.
-        guard wireBytes >= Self.measurableBytes, let fixed = fixedSeconds else { return }
-        // A fixed cost that was an unlucky high must not turn the rest of the time into nothing: at most ten times the naive rate.
-        let transfer = max(seconds - fixed, seconds * 0.1)
-        recentRates.append(min(200_000_000, max(5_000, Double(wireBytes) / transfer)))
-        if recentRates.count > Self.recentPages { recentRates.removeFirst() }
-    }
-
-    /// The path changed (Wi-Fi to cellular, another relay): what was learned about the old one is of no use.
-    public mutating func reset() { self = LinkMeter() }
+/// What the person chose for the history download (Settings -> History download).
+public enum HistoryMode: String, Sendable, CaseIterable, Equatable {
+    /// The default: everything on a link that has the bandwidth for it and is not metered; a few screens ahead otherwise.
+    case automatic
+    /// The whole history, whatever the link says (the person has decided it is worth it).
+    case everything
+    /// A few screens above the reader, whatever the link says.
+    case ahead
+    /// Nothing in the background: a page when the reader scrolls close to the top of what is loaded, or taps to load.
+    case off
 }
 
 /// How much history to fetch ahead of the reader.
@@ -104,19 +29,53 @@ public enum HistoryAppetite: Sendable, Equatable {
     /// Keep this many screens loaded above the top of the view; fetch again when fewer than half are left.
     case screens(Int)
 
-    /// A good link on an unrestricted path wants it all; a slow one, a metered one, Low Power Mode or Low Data Mode look ahead only.
-    /// Low Data Mode is the person asking for less traffic, so it gets the shortest lookahead.
-    public static func appetite(tier: LinkTier, conditions: LinkConditions) -> HistoryAppetite {
-        if conditions.constrained { return .screens(5) }
-        if conditions.expensive || conditions.lowPower || tier == .slow { return .screens(10) }
-        return .everything
+    /// Screens kept above the reader when looking ahead only: on a poor or metered link, Low Power Mode, or when the person asked for
+    /// it. Low Data Mode is the person asking for less traffic, so it gets the shortest lookahead.
+    public static let lookaheadScreens = 10
+    public static let lowDataScreens = 5
+    /// With the background fetch off: the page comes when the reader is within 1.5 screens of the top (`urgentScreens`), up to three.
+    public static let onDemandScreens = 3
+    /// A history whose remainder weighs no more than this on the wire is fetched whole even where looking ahead would be the rule:
+    /// compressed, the whole of a typical session is a few hundred KB, which is no reason to hold back on a slow or metered link.
+    public static let cheapSlowBytes = 256.0 * 1024
+    public static let cheapMeteredBytes = 512.0 * 1024
+    public static let cheapLowDataBytes = 128.0 * 1024
+
+    /// Why the appetite is what it is, for the settings screen.
+    public enum Reason: String, Sendable, Equatable {
+        case chosenEverything, chosenAhead, chosenOff
+        case lowData, metered, lowPower, slowLink
+        /// Looking ahead would be the rule, but what is left is small enough to fetch whole.
+        case cheap
+        case goodLink, measuring
+    }
+
+    public static func policy(mode: HistoryMode = .automatic, tier: LinkTier, conditions: LinkConditions, remainingWireBytes: Double? = nil) -> (appetite: HistoryAppetite, reason: Reason) {
+        switch mode {
+        case .everything: return (.everything, .chosenEverything)
+        case .ahead: return (.screens(conditions.constrained ? lowDataScreens : lookaheadScreens), .chosenAhead)
+        case .off: return (.screens(onDemandScreens), .chosenOff)
+        case .automatic: break
+        }
+        func cheap(_ limit: Double) -> Bool { remainingWireBytes.map { $0 <= limit } ?? false }
+        if conditions.constrained { return cheap(cheapLowDataBytes) ? (.everything, .cheap) : (.screens(lowDataScreens), .lowData) }
+        if conditions.expensive { return cheap(cheapMeteredBytes) ? (.everything, .cheap) : (.screens(lookaheadScreens), .metered) }
+        if conditions.lowPower { return cheap(cheapMeteredBytes) ? (.everything, .cheap) : (.screens(lookaheadScreens), .lowPower) }
+        if tier == .slow { return cheap(cheapSlowBytes) ? (.everything, .cheap) : (.screens(lookaheadScreens), .slowLink) }
+        return (.everything, tier == .unknown ? .measuring : .goodLink)
+    }
+    public static func appetite(mode: HistoryMode = .automatic, tier: LinkTier, conditions: LinkConditions, remainingWireBytes: Double? = nil) -> HistoryAppetite {
+        policy(mode: mode, tier: tier, conditions: conditions, remainingWireBytes: remainingWireBytes).appetite
     }
 }
 
 public enum HistoryPrefetch {
-    /// The most a page may weigh on the wire. The reply cap is 128 KiB of encrypted JSON.
-    public static let maximumPageWireBytes = 80.0 * 1024
-    /// The probe that learns the fixed cost.
+    /// The most a page may weigh on the wire: about 84 KiB of encrypted payload, well inside the reply cap of 128 KiB, which a page
+    /// that came out bigger than the last one predicted must not reach.
+    public static let maximumPageWireBytes = 112.0 * 1024
+    /// The most JSON a page may hold: the phone parses it all, off the main actor, before showing any of it.
+    public static let maximumPageJSONBytes = 768.0 * 1024
+    /// The probe that learns the fixed cost of a request, for a desktop that does not report its own time.
     public static let probeLines = 10
     /// The shortest page planned.
     public static let minimumPlannedLines = 40
@@ -140,8 +99,13 @@ public enum HistoryPrefetch {
         public var viewRows = 40
         /// Lines missing in the middle (output that scrolled by between two live answers), newest first. Always wanted.
         public var missing = 0
+        /// Lines above the oldest one held that the phone would still fetch (the history short of its cap); nil when not known.
+        public var remainingLines: Int?
         public var meter = LinkMeter()
         public var conditions = LinkConditions()
+        public var mode = HistoryMode.automatic
+        /// The most lines the desktop takes in one page (1000 for a desktop that does not say).
+        public var maximumLines = HistoryLimits.legacyMaximumPageLines
         /// Keys are being typed or sent.
         public var typing = false
         /// The live screen changed a moment ago (something is printing).
@@ -159,6 +123,11 @@ public enum HistoryPrefetch {
         /// Seconds left of the quiet time after the pane was resized or its history shrank (see `settleSeconds`).
         public var settleRemaining = 0.0
         public init() {}
+        /// What the remaining history weighs on the wire, as far as the lines seen so far say.
+        public var remainingWireBytes: Double? {
+            guard let remainingLines, let perLine = meter.bytesPerLine else { return nil }
+            return perLine * Double(remainingLines)
+        }
     }
 
     public enum Decision: Sendable, Equatable {
@@ -170,13 +139,17 @@ public enum HistoryPrefetch {
         case fetch(lines: Int, urgent: Bool)
     }
 
+    public static func policy(_ input: Input) -> (appetite: HistoryAppetite, reason: HistoryAppetite.Reason) {
+        HistoryAppetite.policy(mode: input.mode, tier: input.meter.tier, conditions: input.conditions, remainingWireBytes: input.remainingWireBytes)
+    }
+
     public static func decide(_ input: Input) -> Decision {
         guard input.canFetch else { return .idle }
         // Whatever the reader wants, nothing is asked while the history is being drawn again.
         if input.settleRemaining > 0 { return .wait(max(0.05, input.settleRemaining)) }
         let rows = max(8, input.viewRows)
         let urgent = input.demand || Double(input.aboveReader) < urgentScreens * Double(rows)
-        let appetite = HistoryAppetite.appetite(tier: input.meter.tier, conditions: input.conditions)
+        let appetite = policy(input).appetite
         if !input.demand, input.missing == 0, case .screens(let n) = appetite {
             let want = n * rows
             let trigger = want / 2
@@ -191,16 +164,18 @@ public enum HistoryPrefetch {
                 let gap = gapAfterPage(meter: input.meter, liveBusy: input.liveBusy)
                 if since < gap { return .wait(max(0.05, gap - since)) }
             }
-            // The first request of the session is a few lines: it costs one round trip and tells how much of the next one is transfer.
-            if input.meter.fixedSeconds == nil, input.missing == 0 { return .fetch(lines: probeLines, urgent: false) }
+            // A desktop that does not report its own time: the first request of the session is a few lines, which costs one round
+            // trip and tells how much of the next one is transfer. One that does has already shown its round trip in every reply.
+            if !input.meter.knowsRequestCost, input.missing == 0 { return .fetch(lines: probeLines, urgent: false) }
         }
-        return .fetch(lines: pageLines(meter: input.meter, cap: input.pageCap), urgent: urgent)
+        return .fetch(lines: pageLines(meter: input.meter, cap: input.pageCap, maximumLines: input.maximumLines), urgent: urgent)
     }
 
     /// How long the link is left alone after a page, so the echo of a keystroke or a live answer fits between two pages.
-    /// A fast link is used almost back to back; a slow one at a quarter of its time.
+    /// A fast link is used almost back to back; a slow one at a quarter of its time. The time is what the link spent on the page,
+    /// without the desktop's own: the desktop is not in the way of an echo.
     public static func gapAfterPage(meter: LinkMeter, liveBusy: Bool) -> Double {
-        let last = meter.lastSeconds ?? 0.2
+        let last = meter.lastTransferSeconds ?? meter.lastSeconds ?? 0.2
         var gap: Double
         switch meter.tier {
         case .fast: gap = max(0.03, 0.15 * last)
@@ -212,22 +187,23 @@ public enum HistoryPrefetch {
         return gap
     }
 
-    /// Lines for the next page: as many as take about 0.3 s (fast), 0.2 s (good) or 0.12 s (slow) to transfer, at most 80 KiB on the
-    /// wire and 1000 lines, growing by at most double from one page to the next.
+    /// Lines for the next page: as many as take about 0.3 s (fast), 0.2 s (good) or 0.12 s (slow) to transfer, at most 112 KiB on
+    /// the wire, 768 KiB of JSON and the desktop's page limit, growing by at most double from one page to the next.
     ///
     /// That time is how long the page can hold up the answer to a keystroke, which comes down the same socket behind it.
-    public static func pageLines(meter: LinkMeter, cap: Int? = nil) -> Int {
-        let bytesPerLine = max(8, meter.bytesPerLine ?? 60)
+    public static func pageLines(meter: LinkMeter, cap: Int? = nil, maximumLines: Int = HistoryLimits.legacyMaximumPageLines) -> Int {
+        let bytesPerLine = max(2, meter.bytesPerLine ?? 60)
         var lines: Int
         if let rate = meter.bytesPerSecond {
             let budget: Double = switch meter.tier { case .fast: 0.30; case .good: 0.20; default: 0.12 }
             lines = Int(min(maximumPageWireBytes, rate * budget) / bytesPerLine)
+            if let json = meter.jsonBytesPerLine { lines = min(lines, Int(maximumPageJSONBytes / max(8, json))) }
             if let last = meter.lastLines { lines = min(lines, max(last * 2, HistoryLimits.pageLines)) }
         } else {
             // Sparse history: enough lines to weigh something a rate can be read from.
             lines = max(HistoryLimits.pageLines, Int(Double(LinkMeter.measurableBytes) * 1.5 / bytesPerLine))
         }
-        lines = max(minimumPlannedLines, min(HistoryLimits.maximumPageLines, lines))
+        lines = max(minimumPlannedLines, min(min(maximumLines, HistoryLimits.maximumPageLines), lines))
         if let cap { lines = min(lines, max(cap, HistoryLimits.minimumPageLines)) }
         return lines
     }

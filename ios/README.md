@@ -209,18 +209,45 @@ lines · tap to retry".
 *History is a second step.* The live screen comes first. Once its first answer is in, the phone fetches older scrollback in the
 background (`shell.history`, `styled`), one request at a time, so that scrolling is local with no round trip per scroll. Before every
 page `HistoryPrefetch.decide` (`Core/HistoryPrefetch.swift`, pure and tested) chooses whether to fetch, how many lines, or to wait.
-- *Bandwidth.* Each page is timed (`LinkMeter`): its bytes as they travelled (JSON-escaped, `HistoryReply.wireBytes`) and its duration.
-  The first background request is a ten-line probe that learns the fixed cost of a request (round trip plus the desktop starting its CLI); that is
-  taken out of bigger pages, so a long round trip on a fast link is not mistaken for a slow link. The rate is smoothed, and forgotten
-  when the kind of link changes (Wi-Fi to cellular). **fast ≥ 1 MB/s** (a 128 KiB page in ~130 ms, the whole 50,000 lines in ~3 s),
-  **good 250 KB/s to 1 MB/s**, **slow < 250 KB/s** (below it a worthwhile page blocks the socket for too long).
-- *How much.* Fast or good on an unrestricted path: everything, up to the 50,000 lines held. Slow, metered (`NWPath.isExpensive`),
-  Low Power Mode: 10 screens above the reader (a fetch starts when fewer than 5 are loaded, so well before the top). Low Data Mode
-  (`isConstrained`): 5 screens (starts below 2.5). A reader within 1.5 screens of the top is waiting: no pauses between pages.
-- *How big, how often.* A page is what the link carries in about 0.3 s (fast), 0.2 s (good) or 0.12 s (slow), at most 80 KiB on the
-  wire and 1000 lines, growing by at most double per page (`response_too_large` still halves it, kept per session). After a page the
-  link is left alone for 0.15× (fast), 1× (good) or 3× (slow) its duration, twice that while the screen is changing. The rate kept is
-  the best of the last three pages: delays only ever add to a page's time, so one page is more likely too slow than too fast.
+- *Bandwidth.* (`Core/LinkMeter.swift`, pure and tested on traces.) A page's time is the round trip, plus the desktop's own work (its
+  CLI starting, tmux capturing, compressing: 50 to 300 ms, growing with the page and the load of the Mac), plus the transfer, and only
+  the transfer says how fast the link is. The connector reports its share in every reply (`server_ms`), and every small reply (a key
+  acknowledgement, a long poll that found nothing, the lists asked for at connect) is a clean sample of the round trip, so the transfer
+  is `elapsed − server_ms − round trip`, worked out on the bytes that really crossed the socket (`ReplyTiming`, from `RelayClient`,
+  which stamps a reply when its last byte arrives). A page that shared the socket with other replies (a live answer came in while it
+  was out; `RelayClient` notes every arrival) counts only if those were under a fifth of its own size, and then their bytes are added
+  back; otherwise it is left out. A page under 8 KB says nothing about the rate. A desktop that does not report `server_ms` is measured
+  as it always was: a ten-line probe learns the fixed cost of a request, which is taken out of the bigger pages. The rate kept is the
+  best of the last three pages within 45 s. **fast ≥ 1 MB/s, good 250 KB/s to 1 MB/s, slow < 250 KB/s**, with a band so that a link
+  sitting on a threshold does not flap: a tier is left only below 700 KB/s (fast) or 175 KB/s (good). What a line weighs, how well it
+  compresses and what the desktop spends are about the history and the desktop, not the link, and survive a change of link.
+- *The path.* `NWPath.isExpensive` and `isConstrained` are read through Tailscale's tunnel and can switch several times while it
+  connects or roams. A restriction applies at once and is lifted only after the path has been free of it for 10 s (`ConditionHold`). A
+  change of interface (Wi-Fi to cellular) forgets the link's speed and round trip, but only once it has lasted 2 s; a dropout and the
+  return to the same interface change nothing. Both are visible in Settings and in the overlay.
+- *How much* (Settings, History download; `HistoryMode`, `HistoryAppetite.policy`). **Automatic** (the default): everything, up to the
+  50,000 lines held, on a link that is not slow and not restricted; 10 screens above the reader (a fetch starts when fewer than 5 are
+  loaded) on a slow link, a metered one (`isExpensive`) or in Low Power Mode; 5 screens (starts below 2.5) in Low Data Mode
+  (`isConstrained`). Compression changed one thing: what is left is fetched whole anyway when it is small enough, estimated from the
+  bytes per line seen so far, **256 KB on a slow link, 512 KB when metered or in Low Power Mode, 128 KB in Low Data Mode** (the whole
+  of a typical session is a few hundred KB deflated, which is no reason to hold back). **Always everything**: the whole history in
+  the background whatever the link and the path say. **Ahead only**: about 10 screens above the reader (5 in Low Data Mode). **Off**:
+  nothing in the background; a page comes when the reader is within 1.5 screens of the top of what is loaded (it fills to 3), or when
+  the "couldn't load" row is tapped. A reader within 1.5 screens of the top is waiting in every mode: no pauses between pages.
+- *How big, how often.* A page is what the link carries in about 0.3 s (fast), 0.2 s (good) or 0.12 s (slow), at most 112 KiB on the
+  wire (about 84 KiB sealed, inside the reply cap of 128 KiB), at most 768 KiB of JSON (the phone parses it all) and at most the lines
+  the desktop takes (5,000 where it says so in `ready`, else 1,000; `response_too_large` still halves it, kept per session), growing by
+  at most double per page once a rate is known. After a page the link is left alone for 0.15× (fast), 1× (good) or 3× (slow) what
+  the link spent on it (its time less the desktop's), twice that while the screen is changing. With compression a typical page is
+  3,000 to 5,000 lines, so a full 50,000-line history is about a dozen requests instead of fifty. An installed CLI that takes fewer
+  lines than the connector announced (an older build) is learned from its first refusal: the connector remembers the limit and
+  announces it from then on, and the phone reads it from the refusal. A page cap that `response_too_large` set is raised by half
+  after six pages in a row under it, so one heavy page does not keep a session at small pages.
+- *Compression.* The connector announces `deflate` in `ready`; the phone asks for it once with `link.configure` (Settings, Compress
+  traffic, on by default) and reads both forms of a reply whatever it asked: `Core/LinkFrame.swift` inflates with Apple's
+  `Compression` framework (`COMPRESSION_ZLIB`, raw deflate), after the length declared in the frame has been checked against 2 MiB, and
+  refuses a stream that does not inflate to exactly that. Styled history compresses 8 to 11 times, a 500-line screen 6 to 9, a dense
+  Codex screen 3 times. The settings screen and the overlay show the ratio.
 - *Never in the way of typing or the live screen.* No page starts while keys are queued, in flight or were typed in the last 0.8 s
   (a page in flight cannot be taken back, but it is sized to hold up an echo for a fraction of a second). The desktop runs the ordered
   lane (`shell.keys`, `shell.input`, `shell.resize`) in a slot of its own, history is a plain read in one of the three shared slots
@@ -267,11 +294,14 @@ one per 80 % of the view's height (a quick flick that would carry that far sends
 
 **Display settings** (terminal menu → Display…, or the slider button in the desktop list): interface size 80–130 % in 5 % steps
 (a scale factor on fonts and touch targets of the header, lists, key bar and buttons, in `DesktopStyle`; Dynamic Type still
-applies on top), terminal text size 8–24 pt, and **Show latency**. Values are saved and take effect at once; a size that changes
+applies on top), terminal text size 8–24 pt, **History download** (Automatic, Always everything, Ahead only, Off, with **Compress
+traffic** under it), a **Link** readout (path and tier, round trip, transfer rate, the desktop's time per page, the compression ratio,
+what restricts the path, what the history download is doing and why, and how many lines are loaded) and **Show latency**. Values are saved and take effect at once; a size that changes
 the terminal pane recomputes the grid and resizes the desktop pane (debounced) as before. The latency overlay (top right of the
 terminal, top left in focus mode; touches pass through) shows the mode (live/poll), the last payload, the last and average (20
 samples) round trip of `shell.keys` and `shell.output`, the echo latency (keys sent → first changed screen) and the age of the
-last change. Long polls have no round trip of their own: a read that did not wait counts, and so does an `unchanged` answer
+last change, then three lines about the link: `link` (round trip, rate, tier), `desk` (the desktop's time per page, `z` the
+compression ratio) and `hist` (what the download is fetching, lines loaded of lines on the desktop, ⚑ when the path is restricted). Long polls have no round trip of their own: a read that did not wait counts, and so does an `unchanged` answer
 that ran out its wait (its time past the wait).
 
 **Focus mode** (header button, or double-tap the header) hides the header, tabs, status rows and badges and gives the shell

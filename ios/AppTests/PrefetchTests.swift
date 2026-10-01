@@ -69,7 +69,7 @@ import RiWorkCore
 
     func testASlowLinkLooksAheadOfTheReaderAndNoFurther() async throws {
         // 100 KB/s and 30 ms per request: about 1 MB/s is fast, a quarter of that good; this is slow.
-        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 6000, weight: 6), prefetch: true, link: (fixed: .milliseconds(30), bytesPerSecond: 100_000)); defer { try? keychain.delete() }
+        let (model, transport, keychain) = try await rig(ScriptedScrollback(history: 12_000, weight: 6), prefetch: true, link: (fixed: .milliseconds(30), bytesPerSecond: 100_000)); defer { try? keychain.delete() }
         // The reader sees 120 rows: ten screens are 1,200 lines.
         model.noteReader(top: model.terminal.screenTop - 120, rows: 120)
         await eventually("the lookahead is loaded", timeout: 20) { model.terminal.heldHistory >= 1200 && model.historyTask == nil }
@@ -106,13 +106,16 @@ import RiWorkCore
 
     func testLowDataModeLooksLessFarAheadAndIsLiftedWhenTheModeIs() async throws {
         let watcher = StaticLinkWatcher(conditions: LinkConditions(constrained: true))
-        let (model, _, keychain) = try await rig(ScriptedScrollback(history: 4000, weight: 4), prefetch: true, watcher: watcher); defer { try? keychain.delete() }
+        let (model, _, keychain) = try await rig(ScriptedScrollback(history: 4000, weight: 12), prefetch: true, watcher: watcher); defer { try? keychain.delete() }
         model.noteReader(top: model.terminal.screenTop - 100, rows: 100)
         await eventually("five screens are loaded", timeout: 10) { model.terminal.heldHistory >= 500 && model.historyTask == nil }
         try? await Task.sleep(for: .milliseconds(400))
         XCTAssertLessThan(model.terminal.heldHistory, 1200, "Low Data Mode wants five screens, not the whole history")
         XCTAssertFalse(model.terminal.atTop)
+        // The restriction is held for a while after the path stops saying so (ten seconds in life); a test does not wait that long.
+        model.conditionHold.calm = 0.3
         watcher.conditions = LinkConditions()
+        XCTAssertTrue(model.linkConditions.constrained, "held for a moment")
         await eventually("and with the mode off everything comes", timeout: 10) { model.terminal.atTop }
         assertConsistent(model)
         await model.disconnect()
@@ -148,7 +151,8 @@ import RiWorkCore
     func testAMeteredLinkAndLowPowerModeAlsoLookAhead() async throws {
         for conditions in [LinkConditions(expensive: true), LinkConditions(lowPower: true)] {
             let watcher = StaticLinkWatcher(conditions: conditions)
-            let (model, _, keychain) = try await rig(ScriptedScrollback(history: 4000, weight: 4), prefetch: true, watcher: watcher); defer { try? keychain.delete() }
+            // Weighty lines: what is left must weigh more than the 512 KB below which a metered link fetches the rest whole.
+            let (model, _, keychain) = try await rig(ScriptedScrollback(history: 4000, weight: 24), prefetch: true, watcher: watcher); defer { try? keychain.delete() }
             model.noteReader(top: model.terminal.screenTop - 100, rows: 100)
             await eventually("ten screens", timeout: 10) { model.terminal.heldHistory >= 1000 && model.historyTask == nil }
             try? await Task.sleep(for: .milliseconds(300))

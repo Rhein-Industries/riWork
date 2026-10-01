@@ -151,7 +151,11 @@ applies to v2 sessions exactly as to v1. So does the 2026-09-30 theme sync exten
 extension (`styled`, `if_changed`, `wait_ms` and `hash` on `shell.output`, and the
 concurrent handling of a device's requests, in the same document), and the
 2026-09-30 deep scrollback extension (`shell.history`, and `history_size` and
-`alternate` on `shell.output`, in the same document).
+`alternate` on `shell.output`, in the same document), and the 2026-10-01 link extension
+(`server_ms` on every response, `features` on `ready`, `link.configure`, and deflated
+reply frames, in the same document). The deflate marker sits inside the ciphertext, so
+the v2 envelope, its AAD and the fixtures are untouched; the compression note in the
+threat discussion of that section applies to v2 as it does to v1.
 
 ## Vectors and tests
 

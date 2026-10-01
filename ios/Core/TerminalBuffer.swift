@@ -322,9 +322,11 @@ public struct TerminalBuffer: Sendable, Equatable {
     /// Holes come first, newest first: they are close to the live end, where the reader goes after the bottom.
     ///
     /// `fillHoles` false leaves them (the bandwidth policy does not want them now) and asks for the lines above the oldest held.
-    public func nextFetch(pageLines: Int = HistoryLimits.pageLines, fillHoles: Bool = true) -> HistoryFetch? {
+    /// `maximumLines` is the most the desktop takes in a page (1000 for a desktop that does not say otherwise).
+    public func nextFetch(pageLines: Int = HistoryLimits.pageLines, fillHoles: Bool = true, maximumLines: Int = HistoryLimits.maximumPageLines) -> HistoryFetch? {
         guard canPage else { return nil }
-        if fillHoles, let hole = holes.last { return holeFetch(hole, pageLines: pageLines) }
+        let maximumLines = max(1, min(maximumLines, HistoryLimits.maximumPageLines))
+        if fillHoles, let hole = holes.last { return holeFetch(hole, pageLines: pageLines, maximumLines: maximumLines) }
         guard !atTop else { return nil }
         let held = heldHistory
         let room = HistoryLimits.heldLines - held
@@ -334,11 +336,11 @@ public struct TerminalBuffer: Sendable, Equatable {
         // screen has moved, so pages overlap what is held and the seam is checked by comparing lines.
         let full = drifting || (historySize ?? 0) >= HistoryLimits.desktopHistoryLines
         let overlap = full ? min(HistoryLimits.verifyLines, held) : 0
-        return HistoryFetch(end: held - overlap, lines: min(HistoryLimits.maximumPageLines, fresh + overlap), overlap: overlap, epoch: epoch, era: era, historySize: historySize)
+        return HistoryFetch(end: held - overlap, lines: min(maximumLines, fresh + overlap), overlap: overlap, epoch: epoch, era: era, historySize: historySize)
     }
 
     /// The part of a hole just above the live lines, with a few held lines on each side of what is missing so both seams are checked.
-    private func holeFetch(_ hole: Range<Int>, pageLines: Int) -> HistoryFetch {
+    private func holeFetch(_ hole: Range<Int>, pageLines: Int, maximumLines: Int) -> HistoryFetch {
         // A hole of several pages starts with a look at its seam with the older lines, a few lines either side: if the history is not
         // the one held (wiped and drawn again, a shell cleared while it was away) that is found before the hole is downloaded.
         if hole.count > pageLines, unverifiedSeams.contains(hole.lowerBound) {
@@ -351,7 +353,7 @@ public struct TerminalBuffer: Sendable, Equatable {
         var top = hole.upperBound - min(max(1, pageLines), hole.count)
         // The last page of a hole also covers the held lines right above it.
         if top <= hole.lowerBound { top = max(start, hole.lowerBound - HistoryLimits.verifyLines) }
-        let lines = min(HistoryLimits.maximumPageLines, bottom - top)
+        let lines = min(maximumLines, bottom - top)
         return HistoryFetch(end: screenTop - bottom, lines: lines, overlap: below, epoch: epoch, era: era, fillsHole: true, historySize: historySize)
     }
 

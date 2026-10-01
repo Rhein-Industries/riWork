@@ -47,4 +47,12 @@ public protocol RemoteTransport: Sendable {
     func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue
     func disconnect() async
     func isConnected() async -> Bool
+    /// `request`, together with how the reply travelled (see `ReplyTiming`). The default has no timing.
+    func timedRequest(method: String, params: [String: JSONValue], id: String) async throws -> TimedReply
+    /// What the desktop announced when this session began (`DesktopFeatures`). The default is nothing, as for an older desktop.
+    func desktopFeatures() async -> DesktopFeatures
+    /// Whether to ask the desktop for compressed replies (on by default). Takes effect now if connected, and for later sessions.
+    func setCompression(_ enabled: Bool) async
+    /// Whether the desktop has agreed to compress this session's replies.
+    func compressionActive() async -> Bool
 }

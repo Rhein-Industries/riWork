@@ -3,6 +3,7 @@ pub mod config;
 pub mod connector;
 pub mod crypto;
 pub mod lanes;
+pub mod link;
 pub mod relay;
 pub mod rpc;
 pub mod viewport;

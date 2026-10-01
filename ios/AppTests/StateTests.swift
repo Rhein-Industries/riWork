@@ -57,6 +57,16 @@ actor FixtureTransport: RemoteTransport {
     var historyFixed = Duration.zero
     var historyBytesPerSecond: Double?
     var historyTimes: [ContinuousClock.Instant] = []
+    /// The desktop's own time per line of a page, on top of `historyFixed` (a loaded machine capturing a long page).
+    var historyPerLine = Duration.zero
+    // The link extension, like a desktop that has it: what `ready` announced, whether replies are timed (`server_ms`), whether the
+    // phone asked for compression, and the most lines its CLI takes in a page.
+    var announced = DesktopFeatures()
+    var reportsTiming = false
+    var compressionRequests: [Bool] = []
+    var compressionAgreed = false
+    var cliLineLimit: Int?
+    var timedMethods: [String] = []
     private var waiters: [CheckedContinuation<Void, any Error>] = []
     func setSessions(_ sessions: [RemoteSession]) { listedShells = sessions }
     func setMissing(_ id: String) { missingOutputs.insert(id) }
@@ -96,7 +106,34 @@ actor FixtureTransport: RemoteTransport {
     func historyRequests() -> [[String: JSONValue]] { historyRequestLog }
     /// Holds `shell.history` requests back (after they are logged) until released, so output can arrive while a page is on its way.
     func gateHistory(_ on: Bool) { historyGated = on }
-    func setLink(fixed: Duration, bytesPerSecond: Double?) { historyFixed = fixed; historyBytesPerSecond = bytesPerSecond }
+    func setLink(fixed: Duration, bytesPerSecond: Double?, perLine: Duration = .zero) { historyFixed = fixed; historyBytesPerSecond = bytesPerSecond; historyPerLine = perLine }
+    func announce(_ features: DesktopFeatures, timing: Bool = true) { announced = features; reportsTiming = timing }
+    func setCliLineLimit(_ limit: Int?) { cliLineLimit = limit }
+    func compressionAsked() -> [Bool] { compressionRequests }
+    func desktopFeatures() async -> DesktopFeatures { announced }
+    func setCompression(_ enabled: Bool) async {
+        compressionRequests.append(enabled)
+        compressionAgreed = enabled && announced.deflate
+    }
+    func compressionActive() async -> Bool { compressionAgreed }
+    /// The reply with the timing a connector that reports `server_ms` would have produced: the desktop's time is `historyFixed` and a
+    /// share per line, the rest is the link's.
+    func timedRequest(method: String, params: [String: JSONValue], id: String) async throws -> TimedReply {
+        let started = ContinuousClock.now
+        let value = try await request(method: method, params: params, id: id)
+        timedMethods.append(method)
+        guard reportsTiming else { return TimedReply(value: value) }
+        let elapsed = (ContinuousClock.now - started).timeInterval
+        var server = 0.0
+        if method == "shell.history", case .number(let lines)? = params["lines"] {
+            server = (historyFixed + historyPerLine * Int(lines)).timeInterval
+        } else if method == "shell.output" {
+            // A long poll is held back on purpose, and the desktop's own time includes the wait.
+            server = elapsed
+        }
+        let json = (try? JSONEncoder().encode(value).count) ?? 0
+        return TimedReply(value: value, timing: ReplyTiming(elapsed: elapsed, serverSeconds: min(server, elapsed), wireBytes: json * 4 / 3, sealedBytes: json, jsonBytes: json))
+    }
     func historyRequestTimes() -> [ContinuousClock.Instant] { historyTimes }
     func scriptedScrollback() -> ScriptedScrollback? { scrollback }
     func setKeysMode(_ mode: KeysMode) { keysMode = mode }
@@ -189,7 +226,9 @@ actor FixtureTransport: RemoteTransport {
             historyRequestLog.append(params)
             historyTimes.append(.now)
             switch historyMode {
-            case .ok: break
+            case .ok:
+                // The installed CLI takes fewer lines than the connector announced.
+                if case .number(let n)? = params["lines"], let limit = cliLineLimit, Int(n) > limit { throw RemoteError.rpc(code: "cli_error", message: "RiWork CLI failed: riwork: --lines needs an integer from 1 to \(limit)") }
             case .unsupported: throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method")
             case .rejectsStyled: if params["styled"] != nil { throw RemoteError.rpc(code: "invalid_request", message: "unknown field `styled`") }
             case .tooLarge(let above): if case .number(let n)? = params["lines"], Int(n) > above { throw RemoteError.rpc(code: "response_too_large", message: "reply too large") }
@@ -201,11 +240,11 @@ actor FixtureTransport: RemoteTransport {
             guard let scrollback, case .number(let end)? = params["end"], case .number(let count)? = params["lines"] else { throw RemoteError.rpc(code: "invalid_request", message: "no scrollback") }
             var fields = scrollback.historyFields(shellID: params["shell_id"]!, end: Int(end), lines: Int(count))
             if case .wrongCount = historyMode, case .number(let n)? = fields["line_count"] { fields["line_count"] = .number(n + 1) }
-            if historyFixed > .zero || historyBytesPerSecond != nil {
-                // The link: a fixed cost, and the bytes the page weighs at the link's rate.
+            if historyFixed > .zero || historyBytesPerSecond != nil || historyPerLine > .zero {
+                // The link: a fixed cost (the desktop's, and a share per line), and the bytes the page weighs at the link's rate.
                 let bytes = HistoryReply.wireBytes(of: fields["output"]?.string ?? "")
                 let transfer = historyBytesPerSecond.map { Duration.seconds(Double(bytes) / $0) } ?? .zero
-                try await Task.sleep(for: historyFixed + transfer)
+                try await Task.sleep(for: historyFixed + historyPerLine * Int(count) + transfer)
             }
             return .object(fields)
         case "shell.input":
