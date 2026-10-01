@@ -1,7 +1,13 @@
-//! A lazy filesystem browser scoped to the workspace's selected worktree.
+//! A lazy filesystem browser scoped to the workspace's selected worktree, and the preview of
+//! the file selected in it.
+//!
+//! The browser (`FileExplorer`) owns every piece of state, the selection and the preview of
+//! it included. It draws only the tree. The Preview panel is a second view of the same
+//! entity (`FilePreview`) that draws the preview and its actions in a pane of its own, so
+//! there is one selection per window and the two panes cannot disagree.
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     cmp::Ordering,
     collections::{BTreeMap, HashSet},
     ffi::OsStr,
@@ -15,10 +21,10 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, MouseButton,
-    MouseMoveEvent, Pixels, Point, Render, RenderImage, ScrollStrategy, SharedString, StyledText,
-    Task, UTF16Selection, UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb,
+    AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
+    EntityInputHandler, EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent,
+    Pixels, Point, Render, RenderImage, ScrollStrategy, SharedString, StyledText, Task,
+    UTF16Selection, UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb,
     uniform_list,
 };
 
@@ -48,6 +54,9 @@ pub enum FileExplorerEvent {
     Reveal(PathBuf),
     /// The path is relative to the current worktree root.
     CopyRelativePath(PathBuf),
+    /// The user chose a file or link: with a click or the keyboard, not by the tree
+    /// picking its first row. The window shows the preview if it is set to.
+    Selected,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -655,19 +664,41 @@ fn icon_tooltip(name: &str, detail: Option<&str>) -> String {
     }
 }
 
-const FOCUS_ORDER: [Mode; 11] = [
+/// What Tab visits in the Files pane, in order. The preview has its own pane and its own
+/// focus, so Tab stays within the pane it was pressed in.
+const TREE_FOCUS_ORDER: [Mode; 5] = [
     Mode::Search,
     Mode::Tree,
-    Mode::Preview,
     Mode::Refresh,
     Mode::Hidden,
     Mode::RevealRoot,
+];
+
+/// What Tab visits in the Preview pane, in order.
+const PREVIEW_FOCUS_ORDER: [Mode; 6] = [
+    Mode::Preview,
     Mode::Copy,
     Mode::CopyContents,
     Mode::Reveal,
     Mode::Edit,
     Mode::Open,
 ];
+
+impl Mode {
+    /// Whether the control is in the Preview pane rather than the Files pane.
+    fn in_preview_pane(self) -> bool {
+        PREVIEW_FOCUS_ORDER.contains(&self)
+    }
+
+    /// The controls Tab cycles through in the pane that holds this one.
+    fn focus_order(self) -> &'static [Mode] {
+        if self.in_preview_pane() {
+            &PREVIEW_FOCUS_ORDER
+        } else {
+            &TREE_FOCUS_ORDER
+        }
+    }
+}
 
 #[derive(Default)]
 struct FilterInput {
@@ -696,6 +727,9 @@ impl FilterInput {
 /// stepping through a folder does not decode every file it passes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Intent {
+    /// The tree picked a row itself, such as the first one after a load or a filter. It
+    /// previews like `Passive`, but nobody chose it, so it never opens the Preview pane.
+    Auto,
     Passive,
     Explicit,
 }
@@ -705,10 +739,40 @@ const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(150);
 impl Intent {
     fn delay(self) -> Duration {
         match self {
-            Self::Passive => PREVIEW_DEBOUNCE,
+            Self::Auto | Self::Passive => PREVIEW_DEBOUNCE,
             Self::Explicit => Duration::ZERO,
         }
     }
+}
+
+/// Whether choosing this row asks the window to show the preview: a file or link that a
+/// person selected, not a folder and not a row the tree picked by itself.
+fn reveals_preview(intent: Intent, kind: Option<RowKind>) -> bool {
+    intent != Intent::Auto
+        && matches!(
+            kind,
+            Some(RowKind::Entry(EntryKind::File | EntryKind::Symlink))
+        )
+}
+
+/// What the tree knows about the entry at `path`: the kind and identity its preview is
+/// planned from. A row that is gone or filtered out has none, and the preview empties.
+fn entry_of(rows: &[TreeRow], path: &Path) -> Option<(EntryKind, Option<FileIdentity>)> {
+    rows.iter().find_map(|row| match row.kind {
+        RowKind::Entry(kind) if row.path == path => Some((kind, row.identity)),
+        _ => None,
+    })
+}
+
+/// The name above the preview. It follows the content on screen, which trails the
+/// selection while a replacement loads, and falls back to the selection and then to
+/// "PREVIEW".
+fn preview_title(shown: Option<&Path>, selected: Option<&Path>) -> String {
+    shown
+        .or(selected)
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "PREVIEW".into())
 }
 
 /// The PDF the user has asked to render after this selection, if any.
@@ -902,9 +966,9 @@ pub struct FileExplorer {
     notice: Option<Notice>,
     /// The Copy Contents read in flight. Starting another drops it.
     copy_task: Option<Task<()>>,
-    split_ratio: f32,
-    bounds: Rc<Cell<Bounds<Pixels>>>,
-    resizing: bool,
+    /// Keys for the Preview pane. `focus` belongs to the Files pane, and `mode` says which
+    /// control of the focused one is current.
+    preview_focus: FocusHandle,
     generation: u64,
     next_request: u64,
 }
@@ -962,9 +1026,7 @@ impl FileExplorer {
             explicit_pdf: None,
             notice: None,
             copy_task: None,
-            split_ratio: 0.36,
-            bounds: Rc::new(Cell::new(Bounds::default())),
-            resizing: false,
+            preview_focus: cx.focus_handle(),
             generation: 0,
             next_request: 0,
         }
@@ -1014,6 +1076,27 @@ impl FileExplorer {
         self.mode = Mode::Tree;
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// Give the keys to the Preview pane.
+    pub fn focus_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.mode = Mode::Preview;
+        self.preview_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// The focus handle of the pane that holds the control `mode` stands for.
+    fn focus_of(&self, mode: Mode) -> &FocusHandle {
+        if mode.in_preview_pane() {
+            &self.preview_focus
+        } else {
+            &self.focus
+        }
+    }
+
+    /// Whether `mode` is the current control of the pane that has the keys.
+    fn is_current(&self, mode: Mode, window: &Window) -> bool {
+        self.mode == mode && self.focus_of(mode).is_focused(window)
     }
 
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1089,16 +1172,21 @@ impl FileExplorer {
             let selected = rows
                 .iter()
                 .find(|row| matches!(row.kind, RowKind::Entry(_)));
-            self.select_row(selected, Intent::Passive, cx);
+            self.select_row(selected, Intent::Auto, cx);
         }
     }
 
     fn select_row(&mut self, row: Option<&TreeRow>, intent: Intent, cx: &mut Context<Self>) {
         let path = row.map(|row| row.path.clone());
+        let reveals = reveals_preview(intent, row.map(|row| row.kind));
         if self.selected == path {
             // Clicking the selected PDF is how its placeholder is dismissed.
             if intent == Intent::Explicit {
                 self.open_pdf_preview(cx);
+                // Choosing the same file again also brings back a preview that was closed.
+                if reveals {
+                    cx.emit(FileExplorerEvent::Selected);
+                }
             }
             return;
         }
@@ -1106,6 +1194,9 @@ impl FileExplorer {
         self.explicit_pdf = explicit_pdf_after(path.as_deref(), intent);
         self.selected = path;
         self.reload_preview(intent.delay(), cx);
+        if reveals {
+            cx.emit(FileExplorerEvent::Selected);
+        }
     }
 
     /// Refresh the preview when the selected entry's listing no longer matches
@@ -1117,10 +1208,8 @@ impl FileExplorer {
         if selected.parent() != Some(listed) {
             return;
         }
-        let current = self.rows().iter().find_map(|row| match row.kind {
-            RowKind::Entry(kind) if &row.path == selected => Some((row.identity, Some(kind))),
-            _ => None,
-        });
+        let current =
+            entry_of(&self.rows(), selected).map(|(kind, identity)| (identity, Some(kind)));
         if current != Some((self.preview_identity, self.preview_kind)) {
             self.reload_preview(Duration::ZERO, cx);
         }
@@ -1134,12 +1223,10 @@ impl FileExplorer {
         let request = self.preview_request;
         self.preview_identity = None;
         self.preview_kind = None;
-        let entry = self.selected.as_ref().and_then(|selected| {
-            self.rows().iter().find_map(|row| match row.kind {
-                RowKind::Entry(kind) if &row.path == selected => Some((kind, row.identity)),
-                _ => None,
-            })
-        });
+        let entry = self
+            .selected
+            .as_ref()
+            .and_then(|selected| entry_of(&self.rows(), selected));
         let root_path = self.root.as_ref().map(|root| root.path.clone());
         let (Some(root_path), Some(path), Some((kind, identity))) =
             (root_path, self.selected.clone(), entry)
@@ -1287,10 +1374,7 @@ impl FileExplorer {
         let Some(selected) = &self.selected else {
             return Some("Select a file to copy its contents");
         };
-        let Some((kind, identity)) = self.rows().iter().find_map(|row| match row.kind {
-            RowKind::Entry(kind) if &row.path == selected => Some((kind, row.identity)),
-            _ => None,
-        }) else {
+        let Some((kind, identity)) = entry_of(&self.rows(), selected) else {
             return Some("Select a file to copy its contents");
         };
         // A preview still loading for another file says nothing about this one.
@@ -1418,10 +1502,39 @@ impl FileExplorer {
         cx.notify();
     }
 
+    /// Keys pressed in the Files pane.
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.handle_key(event, false, window, cx);
+    }
+
+    /// Keys pressed in the Preview pane.
+    fn preview_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_key(event, true, window, cx);
+    }
+
+    fn handle_key(
+        &mut self,
+        event: &KeyDownEvent,
+        in_preview: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A click on empty space gives a pane the keys without choosing one of its controls.
+        if self.mode.in_preview_pane() != in_preview {
+            self.mode = if in_preview {
+                Mode::Preview
+            } else {
+                Mode::Tree
+            };
+        }
         let key = event.keystroke.key.as_str();
         let platform = event.keystroke.modifiers.platform;
-        if platform && key == "f" {
+        if platform && key == "f" && !in_preview {
             self.focus_search(window, cx);
         } else if platform && key == "r" {
             self.refresh(cx);
@@ -1432,16 +1545,17 @@ impl FileExplorer {
         } else if platform && key == "e" && self.mode != Mode::Search {
             self.action(Mode::Edit, cx);
         } else if key == "tab" {
-            let index = FOCUS_ORDER
+            let order = self.mode.focus_order();
+            let index = order
                 .iter()
                 .position(|mode| *mode == self.mode)
                 .unwrap_or(0);
             let step = if event.keystroke.modifiers.shift {
-                FOCUS_ORDER.len() - 1
+                order.len() - 1
             } else {
                 1
             };
-            self.mode = FOCUS_ORDER[(index + step) % FOCUS_ORDER.len()];
+            self.mode = order[(index + step) % order.len()];
         } else if key == "escape" && self.mode == Mode::Search {
             self.filter = FilterInput::default();
             self.mode = Mode::Tree;
@@ -1638,7 +1752,7 @@ impl FileExplorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
-        let active = self.focus.is_focused(window) && self.mode == mode;
+        let active = self.is_current(mode, window);
         let available = match mode {
             Mode::Edit => self.selected_editable().is_some(),
             Mode::CopyContents => self.copy_contents_refusal().is_none(),
@@ -1689,7 +1803,8 @@ impl FileExplorer {
                 // owns its own focus state.
                 cx.stop_propagation();
                 view.mode = mode;
-                view.focus.focus(window, cx);
+                let focus = view.focus_of(mode).clone();
+                focus.focus(window, cx);
                 // A disabled Copy Contents says why on click, as it does on
                 // Enter, since a tooltip needs a hover.
                 if available || mode == Mode::CopyContents {
@@ -1722,7 +1837,7 @@ impl FileExplorer {
 
     fn search(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
-        let active = self.focus.is_focused(window) && self.mode == Mode::Search;
+        let active = self.is_current(Mode::Search, window);
         let mut text = if self.filter.text.is_empty() {
             "Filter loaded files…".to_owned()
         } else {
@@ -1871,7 +1986,13 @@ impl FileExplorer {
                 if matches!(clicked_row.kind, RowKind::Entry(_)) {
                     view.select_row(Some(&clicked_row), Intent::Explicit, cx);
                 }
-                view.activate(&clicked_row, cx);
+                // Choosing a file is all `activate` would do for one, a second time.
+                if !matches!(
+                    clicked_row.kind,
+                    RowKind::Entry(EntryKind::File | EntryKind::Symlink | EntryKind::Other)
+                ) {
+                    view.activate(&clicked_row, cx);
+                }
                 if matches!(event, gpui::ClickEvent::Mouse(mouse) if mouse.up.click_count == 2)
                     && clicked_row.kind == RowKind::Entry(EntryKind::File)
                 {
@@ -1882,17 +2003,11 @@ impl FileExplorer {
             .into_any_element()
     }
 
+    /// The Preview pane: the selected file's name and actions above its contents. It is
+    /// drawn by `FilePreview`, but its clicks and keys act on this entity.
     fn preview_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
-        // The title follows the content on screen, which trails the selection
-        // while a replacement loads.
-        let title = self
-            .preview_path
-            .as_ref()
-            .or(self.selected.as_ref())
-            .and_then(|path| path.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "PREVIEW".into());
+        let title = preview_title(self.preview_path.as_deref(), self.selected.as_deref());
         let content: AnyElement = match &self.preview {
             PreviewState::Empty => div()
                 .p(px(18.0))
@@ -1926,7 +2041,7 @@ impl FileExplorer {
                         .child("PREVIEW PDF")
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.mode = Mode::Preview;
-                            view.focus.focus(window, cx);
+                            view.preview_focus.focus(window, cx);
                             view.open_pdf_preview(cx);
                         }))
                 }))
@@ -2069,7 +2184,7 @@ impl FileExplorer {
                                     .child("‹ PREV")
                                     .on_click(cx.listener(move |view, _, window, cx| {
                                         view.mode = Mode::Preview;
-                                        view.focus.focus(window, cx);
+                                        view.preview_focus.focus(window, cx);
                                         if can_previous {
                                             view.pdf_page(previous, cx);
                                         }
@@ -2092,7 +2207,7 @@ impl FileExplorer {
                                     .child("NEXT ›")
                                     .on_click(cx.listener(move |view, _, window, cx| {
                                         view.mode = Mode::Preview;
-                                        view.focus.focus(window, cx);
+                                        view.preview_focus.focus(window, cx);
                                         if can_next {
                                             view.pdf_page(next, cx);
                                         }
@@ -2112,20 +2227,24 @@ impl FileExplorer {
         };
         div()
             .id("file-preview-panel")
+            .track_focus(&self.preview_focus)
+            .key_context("FilePreview")
+            .on_key_down(cx.listener(Self::preview_key_down))
             .size_full()
             .flex()
             .flex_col()
             .min_w_0()
             .min_h_0()
             .bg(rgb(colors.bg))
+            .text_color(rgb(colors.text))
+            .font_family("SF Mono")
+            .text_size(px(11.0))
             .border_1()
-            .border_color(rgb(
-                if self.mode == Mode::Preview && self.focus.is_focused(window) {
-                    colors.gold
-                } else {
-                    colors.divider
-                },
-            ))
+            .border_color(rgb(if self.is_current(Mode::Preview, window) {
+                colors.gold
+            } else {
+                colors.divider
+            }))
             .child(
                 // The name gives way first: it truncates down to a stub before
                 // the toolbar drops to a line of its own.
@@ -2196,7 +2315,7 @@ impl FileExplorer {
             .child(content)
             .on_click(cx.listener(|view, _, window, cx| {
                 view.mode = Mode::Preview;
-                view.focus.focus(window, cx);
+                view.preview_focus.focus(window, cx);
                 cx.notify();
             }))
             .into_any_element()
@@ -2376,106 +2495,38 @@ impl Render for FileExplorer {
                             .child(relative),
                     ),
             );
-        let bounds = self.bounds.clone();
-        let measured_view = cx.entity();
-        let horizontal = self.bounds.get().size.width.as_f32() >= 620.0;
-        let divider = div()
-            .id("file-preview-divider")
-            .flex_none()
-            .bg(rgb(colors.divider))
-            .hover(|style| style.bg(rgb(colors.cyan)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|view, _, _, cx| {
-                    view.resizing = true;
-                    cx.stop_propagation();
-                }),
-            );
-        let divider = if horizontal {
-            divider.w(px(5.0)).h_full().cursor_col_resize()
-        } else {
-            divider.h(px(5.0)).w_full().cursor_row_resize()
-        };
-        let container = div()
-            .id("file-explorer-split")
-            .relative()
-            .size_full()
-            .min_w_0()
-            .min_h_0()
-            .flex()
+        browser
             .track_focus(&self.focus)
             .key_context("FileExplorer")
             .on_key_down(cx.listener(Self::key_down))
-            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
-                if !view.resizing {
-                    return;
-                }
-                let bounds = view.bounds.get();
-                let ratio = if bounds.size.width.as_f32() >= 620.0 {
-                    (event.position.x - bounds.origin.x).as_f32()
-                        / bounds.size.width.as_f32().max(1.0)
-                } else {
-                    (event.position.y - bounds.origin.y).as_f32()
-                        / bounds.size.height.as_f32().max(1.0)
-                };
-                view.split_ratio = ratio.clamp(0.24, 0.68);
-                cx.notify();
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|view, _, _, _| view.resizing = false),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|view, _, _, _| view.resizing = false),
-            )
-            .bg(rgb(colors.panel))
-            .text_color(rgb(colors.text))
-            .font_family("SF Mono")
-            .text_size(px(11.0))
-            .child(
-                canvas(
-                    move |measured, _, cx| {
-                        let previous = bounds.replace(measured);
-                        if (previous.size.width.as_f32() >= 620.0)
-                            != (measured.size.width.as_f32() >= 620.0)
-                        {
-                            let view = measured_view.clone();
-                            cx.defer(move |cx| {
-                                let _ = view.update(cx, |_, cx| cx.notify());
-                            });
-                        }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            );
-        let container = if horizontal {
-            container.flex_row()
-        } else {
-            container.flex_col()
-        };
-        container
-            .child(
-                div()
-                    .flex()
-                    .flex_basis(px(0.0))
-                    .flex_grow(self.split_ratio)
-                    .min_w_0()
-                    .min_h_0()
-                    .child(browser),
-            )
-            .child(divider)
-            .child(
-                div()
-                    .flex()
-                    .flex_basis(px(0.0))
-                    .flex_grow(1.0 - self.split_ratio)
-                    .min_w_0()
-                    .min_h_0()
-                    .child(self.preview_panel(window, cx)),
-            )
+    }
+}
+
+/// The Preview panel: a second view of the window's `FileExplorer`, drawn in a pane of its
+/// own. It holds nothing but the explorer it follows, so what it shows is always the
+/// explorer's selection, and its buttons and keys act on the explorer.
+pub struct FilePreview {
+    explorer: Entity<FileExplorer>,
+}
+
+impl FilePreview {
+    pub fn new(explorer: Entity<FileExplorer>, cx: &mut Context<Self>) -> Self {
+        // Whatever redraws the explorer (a new selection, a finished load, a setting)
+        // redraws the preview too.
+        cx.observe(&explorer, |_, _, cx| cx.notify()).detach();
+        Self { explorer }
+    }
+
+    pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.explorer
+            .update(cx, |explorer, cx| explorer.focus_preview(window, cx));
+    }
+}
+
+impl Render for FilePreview {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.explorer
+            .update(cx, |explorer, cx| explorer.preview_panel(window, cx))
     }
 }
 
@@ -3128,7 +3179,96 @@ mod tests {
     #[test]
     fn keyboard_selection_is_debounced_and_clicks_are_not() {
         assert!(Intent::Passive.delay() >= Duration::from_millis(100));
+        assert!(Intent::Auto.delay() >= Duration::from_millis(100));
         assert_eq!(Intent::Explicit.delay(), Duration::ZERO);
+        // The tree picking a row never opts a PDF in.
+        let pdf = Path::new("/w/Paper.PDF");
+        assert_eq!(explicit_pdf_after(Some(pdf), Intent::Auto), None);
+    }
+
+    #[test]
+    fn only_a_person_choosing_a_file_asks_for_the_preview_pane() {
+        let row = |kind| Some(RowKind::Entry(kind));
+        for intent in [Intent::Passive, Intent::Explicit] {
+            assert!(reveals_preview(intent, row(EntryKind::File)));
+            assert!(reveals_preview(intent, row(EntryKind::Symlink)));
+            // A folder has nothing to preview, and neither do special files.
+            assert!(!reveals_preview(intent, row(EntryKind::Directory)));
+            assert!(!reveals_preview(intent, row(EntryKind::Other)));
+            assert!(!reveals_preview(intent, Some(RowKind::Status)));
+            assert!(!reveals_preview(intent, Some(RowKind::Error)));
+            assert!(!reveals_preview(intent, None));
+        }
+        // The first row picked after a load or a filter is not a choice.
+        assert!(!reveals_preview(Intent::Auto, row(EntryKind::File)));
+    }
+
+    #[test]
+    fn the_preview_follows_whatever_the_tree_selects() {
+        let id = Some(FileIdentity::of(&fs::metadata(".").unwrap()));
+        let root = Path::new("/w");
+        let mut tree = TreeModel::default();
+        let file = |name: &str| Entry {
+            identity: id,
+            ..entry(root, name, EntryKind::File)
+        };
+        let entries = vec![
+            entry(root, "src", EntryKind::Directory),
+            file("main.rs"),
+            file("Paper.pdf"),
+            entry(root, "link", EntryKind::Symlink),
+        ];
+        load_listing(&mut tree, root, 1, entries);
+        let rows = tree.rows(root, false, "");
+
+        // What the preview pane would plan for each selection, from the same rows the tree
+        // shows: there is no copy of the selection in the preview to fall out of step.
+        let plan = |name: &str, explicit_pdf: Option<&Path>| {
+            let path = root.join(name);
+            let (kind, identity) = entry_of(&rows, &path)?;
+            Some(plan_preview(kind, identity, &path, explicit_pdf))
+        };
+        let message = |plan: Option<PreviewPlan>| match plan {
+            Some(PreviewPlan::Show(PreviewState::Ready(PreviewContent::Message(text)))) => {
+                Some(text.to_string())
+            }
+            _ => None,
+        };
+        assert!(
+            message(plan("src", None))
+                .unwrap()
+                .contains("Expand this folder")
+        );
+        assert!(matches!(plan("main.rs", None), Some(PreviewPlan::Load)));
+        assert!(matches!(
+            plan("Paper.pdf", None),
+            Some(PreviewPlan::Show(PreviewState::PdfPending))
+        ));
+        assert!(matches!(
+            plan("Paper.pdf", Some(&root.join("Paper.pdf"))),
+            Some(PreviewPlan::Load)
+        ));
+        assert!(
+            message(plan("link", None))
+                .unwrap()
+                .contains("Symbolic links")
+        );
+        // A selection that is no longer listed (deleted, filtered out) empties the preview.
+        assert!(plan("gone.txt", None).is_none());
+        let filtered = tree.rows(root, false, "main");
+        assert!(entry_of(&filtered, &root.join("Paper.pdf")).is_none());
+        assert!(entry_of(&filtered, &root.join("main.rs")).is_some());
+    }
+
+    #[test]
+    fn the_preview_title_trails_the_selection_while_a_replacement_loads() {
+        let old = Path::new("/w/old.txt");
+        let new = Path::new("/w/new.txt");
+        assert_eq!(preview_title(None, None), "PREVIEW");
+        assert_eq!(preview_title(Some(old), Some(new)), "old.txt");
+        assert_eq!(preview_title(Some(new), Some(new)), "new.txt");
+        // Nothing on screen yet: the selection names the pane, so it is never anonymous.
+        assert_eq!(preview_title(None, Some(new)), "new.txt");
     }
 
     #[test]
@@ -3219,6 +3359,51 @@ mod tests {
     }
 
     #[test]
+    fn tab_cycles_within_the_pane_it_is_pressed_in() {
+        let every_mode = [
+            Mode::Search,
+            Mode::Tree,
+            Mode::Preview,
+            Mode::Refresh,
+            Mode::Hidden,
+            Mode::RevealRoot,
+            Mode::Copy,
+            Mode::CopyContents,
+            Mode::Reveal,
+            Mode::Edit,
+            Mode::Open,
+        ];
+        // Each control is in exactly one pane's cycle, so none is unreachable or doubled.
+        for mode in every_mode {
+            let in_tree = TREE_FOCUS_ORDER.contains(&mode);
+            let in_preview = PREVIEW_FOCUS_ORDER.contains(&mode);
+            assert!(in_tree != in_preview, "{mode:?}");
+            assert_eq!(mode.in_preview_pane(), in_preview);
+            assert_eq!(
+                mode.focus_order(),
+                if in_preview {
+                    &PREVIEW_FOCUS_ORDER[..]
+                } else {
+                    &TREE_FOCUS_ORDER[..]
+                }
+            );
+        }
+        assert_eq!(
+            TREE_FOCUS_ORDER.len() + PREVIEW_FOCUS_ORDER.len(),
+            every_mode.len()
+        );
+        // The pane that receives the keys when it is focused starts on its main control.
+        assert_eq!(Mode::Tree.focus_order()[1], Mode::Tree);
+        assert_eq!(PREVIEW_FOCUS_ORDER[0], Mode::Preview);
+        // Stepping forward from the last control wraps to the first, in both panes.
+        for order in [&TREE_FOCUS_ORDER[..], &PREVIEW_FOCUS_ORDER[..]] {
+            let last = *order.last().unwrap();
+            assert_eq!(order[(order.len() - 1 + 1) % order.len()], order[0]);
+            assert_eq!(last.focus_order(), order);
+        }
+    }
+
+    #[test]
     fn toolbar_keeps_its_words_and_stays_reachable_with_tab() {
         let labels: Vec<_> = TOOLBAR.iter().map(|action| action.label).collect();
         assert_eq!(
@@ -3232,8 +3417,9 @@ mod tests {
             ]
         );
         for (index, action) in TOOLBAR.iter().enumerate() {
+            // The toolbar is in the Preview pane, so Tab there reaches it.
             assert!(
-                FOCUS_ORDER.contains(&action.mode),
+                PREVIEW_FOCUS_ORDER.contains(&action.mode),
                 "{} cannot be reached with Tab",
                 action.name
             );
@@ -3244,8 +3430,10 @@ mod tests {
                 assert_ne!(action.name, other.name);
             }
         }
-        for (index, mode) in FOCUS_ORDER.iter().enumerate() {
-            assert!(!FOCUS_ORDER[index + 1..].contains(mode), "{mode:?} twice");
+        for order in [&TREE_FOCUS_ORDER[..], &PREVIEW_FOCUS_ORDER[..]] {
+            for (index, mode) in order.iter().enumerate() {
+                assert!(!order[index + 1..].contains(mode), "{mode:?} twice");
+            }
         }
     }
 

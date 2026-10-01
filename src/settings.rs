@@ -132,6 +132,10 @@ pub struct Settings {
     /// Built-in panel tabs and toolbar buttons show an icon instead of their text label.
     /// The key predates the toolbar buttons and stays as it is in `settings.json`.
     pub panel_tab_icons: bool,
+    /// Selecting a file in Files opens the Preview panel, or brings it forward if it is
+    /// hidden behind another tab. Off leaves the panes as the user arranged them, so a
+    /// Preview tab that was closed stays closed.
+    pub open_preview_on_select: bool,
     pub project_order: ProjectOrder,
     pub selected_codex_account: Option<String>,
     pub status_bar: StatusBarSettings,
@@ -151,6 +155,7 @@ impl Default for Settings {
             use_riwork_colors: false,
             remember_window_size: true,
             panel_tab_icons: false,
+            open_preview_on_select: true,
             project_order: ProjectOrder::default(),
             selected_codex_account: None,
             status_bar: StatusBarSettings::default(),
@@ -182,6 +187,11 @@ impl<'de> Deserialize<'de> for Settings {
                 defaults.remember_window_size,
             ),
             panel_tab_icons: lenient_field(&object, "panel_tab_icons", defaults.panel_tab_icons),
+            open_preview_on_select: lenient_field(
+                &object,
+                "open_preview_on_select",
+                defaults.open_preview_on_select,
+            ),
             project_order: lenient_field(&object, "project_order", defaults.project_order),
             selected_codex_account: strict_field(
                 &object,
@@ -361,6 +371,7 @@ pub enum SettingsEvent {
 enum Toggle {
     TerminalColors,
     PanelTabIcons,
+    PreviewOnSelect,
     AgentInline,
     WindowSize,
 }
@@ -370,6 +381,7 @@ impl Toggle {
         match self {
             Self::TerminalColors => "terminal-colors",
             Self::PanelTabIcons => "panel-tab-icons",
+            Self::PreviewOnSelect => "open-preview-on-select",
             Self::AgentInline => "agent-inline-mode",
             Self::WindowSize => "remember-window-size",
         }
@@ -379,6 +391,7 @@ impl Toggle {
         let value = match self {
             Self::TerminalColors => &mut settings.use_riwork_colors,
             Self::PanelTabIcons => &mut settings.panel_tab_icons,
+            Self::PreviewOnSelect => &mut settings.open_preview_on_select,
             Self::AgentInline => &mut settings.agent_inline_mode,
             Self::WindowSize => &mut settings.remember_window_size,
         };
@@ -395,6 +408,7 @@ pub struct SettingsPanel {
     theme_focus: Vec<FocusHandle>,
     terminal_focus: FocusHandle,
     tab_icons_focus: FocusHandle,
+    preview_focus: FocusHandle,
     inline_focus: FocusHandle,
     size_focus: FocusHandle,
     orca_preview_focus: FocusHandle,
@@ -486,6 +500,7 @@ enum Section {
     Cua,
     Codex,
     Appearance,
+    Files,
     Agents,
     Windows,
     StatusBar,
@@ -493,10 +508,11 @@ enum Section {
 }
 
 impl Section {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Cua,
         Self::Codex,
         Self::Appearance,
+        Self::Files,
         Self::Agents,
         Self::Windows,
         Self::StatusBar,
@@ -508,10 +524,11 @@ impl Section {
             Self::Cua => "01",
             Self::Codex => "02",
             Self::Appearance => "03",
-            Self::Agents => "04",
-            Self::Windows => "05",
-            Self::StatusBar => "06",
-            Self::Orca => "07",
+            Self::Files => "04",
+            Self::Agents => "05",
+            Self::Windows => "06",
+            Self::StatusBar => "07",
+            Self::Orca => "08",
         }
     }
 
@@ -520,6 +537,7 @@ impl Section {
             Self::Cua => "COMPUTER USE",
             Self::Codex => "CODEX ACCOUNTS",
             Self::Appearance => "APPEARANCE",
+            Self::Files => "FILES",
             Self::Agents => "AGENT SESSIONS",
             Self::Windows => "WINDOWS",
             Self::StatusBar => "STATUS BAR",
@@ -532,6 +550,7 @@ impl Section {
             Self::Cua => "Let RiWork agents operate desktop apps through Cua.ai.",
             Self::Codex => "The account new Codex sessions start with.",
             Self::Appearance => "Choose a theme, or sync with Ghostty.",
+            Self::Files => "How the Files tree and its Preview pane open together.",
             Self::Agents => "How new Codex, Grok, and Claude sessions use the terminal screen.",
             Self::Windows => "How project windows open.",
             Self::StatusBar => "Choose what appears, which side it sits on, and its order.",
@@ -543,7 +562,8 @@ impl Section {
 /// The sections of each column, top to bottom. The wide layout splits the
 /// numbered order in half, so Tab still reads down the left column and then
 /// the right, and the two stacks end up about as tall (Computer Use, Codex
-/// Accounts, Appearance against Agent sessions, Windows, Status bar, Import).
+/// Accounts, Appearance, Files against Agent sessions, Windows, Status bar,
+/// Import).
 fn section_columns(layout: SettingsLayout) -> Vec<Vec<Section>> {
     match layout {
         SettingsLayout::Wide => {
@@ -762,6 +782,7 @@ impl SettingsPanel {
             theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
             tab_icons_focus: cx.focus_handle(),
+            preview_focus: cx.focus_handle(),
             inline_focus: cx.focus_handle(),
             size_focus: cx.focus_handle(),
             orca_preview_focus: cx.focus_handle(),
@@ -818,6 +839,7 @@ impl SettingsPanel {
             handles.push(self.terminal_focus.clone());
         }
         handles.push(self.tab_icons_focus.clone());
+        handles.push(self.preview_focus.clone());
         handles.push(self.inline_focus.clone());
         handles.push(self.size_focus.clone());
         if self.orca_pending.is_none() {
@@ -1104,6 +1126,8 @@ impl SettingsPanel {
                     self.change(|settings| Toggle::TerminalColors.flip(settings), cx);
                 } else if self.tab_icons_focus.is_focused(window) {
                     self.change(|settings| Toggle::PanelTabIcons.flip(settings), cx);
+                } else if self.preview_focus.is_focused(window) {
+                    self.change(|settings| Toggle::PreviewOnSelect.flip(settings), cx);
                 } else if self.inline_focus.is_focused(window) {
                     self.change(|settings| Toggle::AgentInline.flip(settings), cx);
                 } else if self.size_focus.is_focused(window) {
@@ -1689,6 +1713,7 @@ impl SettingsPanel {
         let focus = match toggle {
             Toggle::TerminalColors => &self.terminal_focus,
             Toggle::PanelTabIcons => &self.tab_icons_focus,
+            Toggle::PreviewOnSelect => &self.preview_focus,
             Toggle::AgentInline => &self.inline_focus,
             Toggle::WindowSize => &self.size_focus,
         };
@@ -1746,6 +1771,7 @@ impl SettingsPanel {
                     match toggle {
                         Toggle::TerminalColors => &view.terminal_focus,
                         Toggle::PanelTabIcons => &view.tab_icons_focus,
+                        Toggle::PreviewOnSelect => &view.preview_focus,
                         Toggle::AgentInline => &view.inline_focus,
                         Toggle::WindowSize => &view.size_focus,
                     }
@@ -1801,6 +1827,13 @@ impl SettingsPanel {
             Section::Cua => self.cua_section(layout, cx),
             Section::Codex => self.codex_accounts_section(layout, cx),
             Section::Appearance => self.appearance_section(theme_columns, settings, cx),
+            Section::Files => self.toggle_row(
+                Toggle::PreviewOnSelect,
+                "Open the preview when a file is selected",
+                "Selecting a file in Files opens the Preview pane beside it, or brings it forward if it is behind another tab. Off keeps a closed preview closed; open it from a pane's menu.",
+                settings.open_preview_on_select,
+                cx,
+            ),
             Section::Agents => self.toggle_row(
                 Toggle::AgentInline,
                 "Keep agent transcripts in scrollback (inline mode)",
@@ -2089,6 +2122,54 @@ mod tests {
     }
 
     #[test]
+    fn open_preview_on_select_defaults_on_and_a_closed_preview_stays_closed_when_off() {
+        let dir = env::temp_dir().join(format!("riwork-settings-preview-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let document = |dir: &std::path::Path| -> Value {
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
+        };
+        assert!(Settings::default().open_preview_on_select);
+
+        // A file from a build without the setting reads as on and is not rewritten by a load.
+        let older = r#"{"schema_version":1,"theme":"tokyo_night","panel_tab_icons":true,"future_setting":{"a":1}}"#;
+        fs::write(dir.join("settings.json"), older).unwrap();
+        assert!(store.load().unwrap().open_preview_on_select);
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.json")).unwrap(),
+            older
+        );
+
+        // Turning it off writes only that key and leaves its neighbours alone.
+        let saved = store
+            .update(|settings| Toggle::PreviewOnSelect.flip(settings))
+            .unwrap();
+        assert!(!saved.open_preview_on_select);
+        let file = document(&dir);
+        assert_eq!(file["open_preview_on_select"], false);
+        assert_eq!(file["panel_tab_icons"], true);
+        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
+        assert!(!reloaded.open_preview_on_select);
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert_eq!(document(&dir)["open_preview_on_select"], false);
+
+        // A value in a shape this build lacks reads as on and stays until changed.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"open_preview_on_select":"sometimes"}"#,
+        )
+        .unwrap();
+        assert!(store.load().unwrap().open_preview_on_select);
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert_eq!(document(&dir)["open_preview_on_select"], "sometimes");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn agent_inline_mode_defaults_on_and_survives_older_odd_and_unreadable_files() {
         let dir = env::temp_dir().join(format!("riwork-settings-inline-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
@@ -2153,6 +2234,7 @@ mod tests {
         for (toggle, expected) in [
             (Toggle::TerminalColors, "use_riwork_colors"),
             (Toggle::PanelTabIcons, "panel_tab_icons"),
+            (Toggle::PreviewOnSelect, "open_preview_on_select"),
             (Toggle::AgentInline, "agent_inline_mode"),
             (Toggle::WindowSize, "remember_window_size"),
         ] {
@@ -2176,13 +2258,14 @@ mod tests {
         let ids = [
             Toggle::TerminalColors,
             Toggle::PanelTabIcons,
+            Toggle::PreviewOnSelect,
             Toggle::AgentInline,
             Toggle::WindowSize,
         ]
         .map(Toggle::id)
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
-        assert_eq!(ids.len(), 4);
+        assert_eq!(ids.len(), 5);
     }
 
     #[test]
@@ -2462,7 +2545,12 @@ mod tests {
         assert_eq!(
             wide,
             vec![
-                vec![Section::Cua, Section::Codex, Section::Appearance],
+                vec![
+                    Section::Cua,
+                    Section::Codex,
+                    Section::Appearance,
+                    Section::Files
+                ],
                 vec![
                     Section::Agents,
                     Section::Windows,

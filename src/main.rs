@@ -52,7 +52,7 @@ use std::{
 };
 
 use activity::{ActivityTracker, AgentActivity};
-use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent};
+use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, DragMoveEvent, Entity, EntityInputHandler,
     FocusHandle, Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton,
@@ -65,7 +65,8 @@ use gpui_platform::application;
 use icons::Icon;
 use layouts::{
     Axis, DIVIDER_THICKNESS, Extent, Layout, LayoutStore, MIN_PANE_EXTENT, PaneId, PanelKind,
-    ProjectLayout, SavedPane, SavedTab, TabEdge, WindowSize,
+    PreviewPlacement, PreviewReveal, PreviewTab, ProjectLayout, SavedPane, SavedTab, TabEdge,
+    WindowSize,
 };
 use panels::{PanelAction, PanelData};
 use project_creator::{ProjectCreationEvent, ProjectCreator};
@@ -105,6 +106,7 @@ actions!(
         OpenProjectSettings,
         OpenSchedules,
         OpenFiles,
+        OpenPreview,
         Quit
     ]
 );
@@ -281,6 +283,8 @@ struct Workspace {
     project_settings_panel: Option<Entity<ProjectSettingsPanel>>,
     schedule_panel: Option<Entity<schedule_panel::SchedulePanel>>,
     file_explorer: Option<Entity<FileExplorer>>,
+    /// The Preview panel's view of `file_explorer`. Created and dropped with it.
+    file_preview: Option<Entity<FilePreview>>,
     locked_panes: Option<HashSet<PaneId>>,
     carry_layout: Option<ProjectLayout>,
     layout: Layout,
@@ -770,6 +774,7 @@ impl Workspace {
             project_settings_panel: None,
             schedule_panel: None,
             file_explorer: None,
+            file_preview: None,
             locked_panes: None,
             carry_layout: None,
             layout: Layout::Pane(1),
@@ -1278,6 +1283,7 @@ impl Workspace {
             PanelKind::Projects => "PROJECTS",
             PanelKind::Worktrees => "WORKTREES",
             PanelKind::Files => "FILES",
+            PanelKind::Preview => "PREVIEW",
             PanelKind::Tasks => "TASKS",
             PanelKind::Shells => "SHELLS",
             PanelKind::Usage => "USAGE",
@@ -1300,7 +1306,7 @@ impl Workspace {
         if panel == PanelKind::ProjectSettings {
             self.ensure_project_settings(cx);
         }
-        if panel == PanelKind::Files {
+        if matches!(panel, PanelKind::Files | PanelKind::Preview) {
             self.ensure_file_explorer(cx);
         }
         if let Some(pane) = self.panes.get_mut(&pane_id) {
@@ -1595,8 +1601,10 @@ impl Workspace {
                     workspace.notice = Some(format!("Copied {}", path.display()));
                     cx.notify();
                 }
+                FileExplorerEvent::Selected => workspace.reveal_preview(cx),
             })
             .detach();
+            self.file_preview = Some(cx.new(|cx| FilePreview::new(panel.clone(), cx)));
             self.file_explorer = Some(panel);
         }
         self.sync_file_explorer(cx);
@@ -2744,6 +2752,7 @@ impl Workspace {
         self.project_settings_panel = None;
         self.schedule_panel = None;
         self.file_explorer = None;
+        self.file_preview = None;
         self.set_window_title(&project.name, window);
         self.cwd = project.root;
         self.selected_worktree_id = self
@@ -2963,7 +2972,10 @@ impl Workspace {
                 )
             })
         };
-        let files_visible = panel_on_screen(PanelKind::Files);
+        // The preview needs the explorer's listings to notice its file changing, so a
+        // Preview on screen keeps the explorer polling even when the tree is hidden.
+        let files_visible =
+            panel_on_screen(PanelKind::Files) || panel_on_screen(PanelKind::Preview);
         let project_settings_visible = panel_on_screen(PanelKind::ProjectSettings);
         if project_settings_visible && let Some(panel) = &self.project_settings_panel {
             panel.update(cx, |panel, cx| panel.refresh_folders(cx));
@@ -3401,6 +3413,22 @@ impl Workspace {
                     panel.refresh(cx);
                     panel.focus(window, cx);
                 });
+            }
+            return;
+        }
+        let preview_active = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Preview)));
+        if preview_active {
+            self.search_focused = false;
+            self.ensure_file_explorer(cx);
+            if let Some(panel) = &self.file_explorer {
+                panel.update(cx, |panel, cx| panel.refresh(cx));
+            }
+            if let Some(panel) = &self.file_preview {
+                panel.update(cx, |panel, cx| panel.focus(window, cx));
             }
             return;
         }
@@ -3944,6 +3972,152 @@ impl Workspace {
         self.open_panel(PanelKind::Files, pane_id, window, cx);
     }
 
+    fn open_preview_action(
+        &mut self,
+        _: &OpenPreview,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal_open() {
+            return;
+        }
+        self.open_preview(window, cx);
+    }
+
+    /// The pane, tab and visibility of the window's tab for `kind`, if it has one.
+    fn panel_tab(&self, kind: PanelKind) -> Option<(PaneId, TabId, bool)> {
+        self.panes.iter().find_map(|(pane_id, pane)| {
+            pane.tabs
+                .iter()
+                .enumerate()
+                .find(|(_, tab)| tab.panel() == Some(kind))
+                .map(|(index, tab)| (*pane_id, tab.id, index == pane.active))
+        })
+    }
+
+    /// The pane the file explorer's tree is in, which is where its preview goes beside.
+    fn explorer_pane(&self) -> Option<PaneId> {
+        self.panel_tab(PanelKind::Files)
+            .map(|(pane_id, _, _)| pane_id)
+    }
+
+    /// Open the Preview panel and give it the keys. A window with a Files panel and no
+    /// Preview gets one where a file selection would put it. Without Files there is nothing
+    /// to place it beside, so it opens as a tab of the active pane like any other panel.
+    fn open_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ensure_layout(window, cx) {
+            return;
+        }
+        let mut pane_id = self.active_pane;
+        if self.panel_tab(PanelKind::Preview).is_none()
+            && !self.focus_mode
+            && let Some(explorer) = self.explorer_pane()
+        {
+            let placement = self
+                .layout
+                .preview_placement(self.pane_area, explorer, &|id| self.pane_is_locked(id));
+            if let Some(placed) = placement.and_then(|placement| self.place_preview(placement, cx))
+            {
+                pane_id = placed;
+            }
+        }
+        self.open_panel(PanelKind::Preview, pane_id, window, cx);
+    }
+
+    /// A file was selected in the explorer: show its preview, if the user wants that. The
+    /// keys stay where they are, in the tree, so the arrow keys keep moving the selection
+    /// while the preview follows it.
+    fn reveal_preview(&mut self, cx: &mut Context<Self>) {
+        // Focus mode shows one pane; rearranging the others behind it would be unseen.
+        let Some(explorer) = self.explorer_pane() else {
+            return;
+        };
+        if self.focus_mode || !self.layout_ready {
+            return;
+        }
+        let existing = self
+            .panel_tab(PanelKind::Preview)
+            .map(|(pane, _, shown)| PreviewTab { pane, shown });
+        let reveal = self.layout.plan_preview_reveal(
+            cx.global::<Settings>().open_preview_on_select,
+            existing,
+            self.pane_area,
+            explorer,
+            &|id| self.pane_is_locked(id),
+        );
+        match reveal {
+            PreviewReveal::Leave => {}
+            PreviewReveal::Activate(pane_id) => self.show_preview_tab(pane_id, cx),
+            PreviewReveal::Open(placement) => {
+                self.place_preview(placement, cx);
+            }
+        }
+    }
+
+    /// Add the Preview tab as `placement` says. It becomes its pane's selected tab, and
+    /// nothing else changes: the active pane and the keys stay put.
+    fn place_preview(
+        &mut self,
+        placement: PreviewPlacement,
+        cx: &mut Context<Self>,
+    ) -> Option<PaneId> {
+        let pane_id = match placement {
+            PreviewPlacement::Tab(pane_id) => pane_id,
+            PreviewPlacement::Split {
+                target,
+                axis,
+                ratio,
+            } => {
+                let new_pane = self.next_pane_id;
+                if !self
+                    .layout
+                    .split_with_ratio(target, axis, new_pane, false, ratio)
+                {
+                    return None;
+                }
+                self.next_pane_id += 1;
+                self.panes.insert(
+                    new_pane,
+                    Pane {
+                        tabs: Vec::new(),
+                        active: 0,
+                    },
+                );
+                new_pane
+            }
+        };
+        if !self.panes.contains_key(&pane_id) {
+            return None;
+        }
+        self.attach_panel(pane_id, PanelKind::Preview, cx);
+        self.save_layout();
+        cx.notify();
+        Some(pane_id)
+    }
+
+    /// Make the Preview tab of `pane_id` that pane's selected tab without moving the keys.
+    fn show_preview_tab(&mut self, pane_id: PaneId, cx: &mut Context<Self>) {
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
+            return;
+        };
+        let Some(index) = pane
+            .tabs
+            .iter()
+            .position(|tab| tab.panel() == Some(PanelKind::Preview))
+        else {
+            return;
+        };
+        if pane.active == index {
+            return;
+        }
+        pane.active = index;
+        for (tab_index, tab) in pane.tabs.iter().enumerate() {
+            tab.set_visible(tab_index == index, cx);
+        }
+        self.save_layout();
+        cx.notify();
+    }
+
     fn focus_search_action(
         &mut self,
         _: &FocusSearch,
@@ -3962,6 +4136,24 @@ impl Workspace {
             self.ensure_file_explorer(cx);
             if let Some(panel) = &self.file_explorer {
                 panel.update(cx, |panel, cx| panel.focus_search(window, cx));
+            }
+            return;
+        }
+        let preview_active = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Preview)));
+        if preview_active {
+            // The filter belongs to the Files pane: use it if that is on screen, and leave
+            // the preview alone if not. Searching Projects from here would be a surprise.
+            if let Some((pane_id, _, true)) = self.panel_tab(PanelKind::Files) {
+                self.active_pane = pane_id;
+                self.ensure_file_explorer(cx);
+                if let Some(panel) = &self.file_explorer {
+                    panel.update(cx, |panel, cx| panel.focus_search(window, cx));
+                }
+                cx.notify();
             }
             return;
         }
@@ -4691,6 +4883,11 @@ impl Workspace {
                 .as_ref()
                 .map(|panel| panel.clone().into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
+            Some(TabContent::Panel(PanelKind::Preview)) => self
+                .file_preview
+                .as_ref()
+                .map(|panel| panel.clone().into_any_element())
+                .unwrap_or_else(|| div().into_any_element()),
             Some(TabContent::Panel(PanelKind::ProjectSettings)) => self
                 .project_settings_panel
                 .as_ref()
@@ -4947,6 +5144,7 @@ impl Workspace {
                             [
                                 PanelKind::Projects,
                                 PanelKind::Files,
+                                PanelKind::Preview,
                                 PanelKind::Worktrees,
                                 PanelKind::Tasks,
                                 PanelKind::Shells,
@@ -4962,6 +5160,7 @@ impl Workspace {
                                     Self::panel_title(kind),
                                     match kind {
                                         PanelKind::Files => "⌘⇧E",
+                                        PanelKind::Preview => "⌘⇧P",
                                         PanelKind::Settings => "⌘,",
                                         PanelKind::Schedules => "⌘⇧S",
                                         _ => "",
@@ -5963,6 +6162,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_project_settings_action))
             .on_action(cx.listener(Self::open_schedules_action))
             .on_action(cx.listener(Self::open_files_action))
+            .on_action(cx.listener(Self::open_preview_action))
             .on_action(cx.listener(Self::focus_search_action))
             .on_action(cx.listener(Self::toggle_focus_mode_action))
             .on_action(cx.listener(Self::open_orchestrator_action))
@@ -6138,6 +6338,7 @@ fn panel_tooltip(panel: PanelKind) -> &'static str {
         PanelKind::Projects => "Projects · ⌘B",
         PanelKind::Worktrees => "Worktrees",
         PanelKind::Files => "Files · ⌘⇧E",
+        PanelKind::Preview => "Preview · ⌘⇧P",
         PanelKind::Tasks => "Tasks",
         PanelKind::Shells => "Shells",
         PanelKind::Usage => "Usage",
@@ -6805,6 +7006,7 @@ fn main() {
             KeyBinding::new("cmd-alt-a", OpenProjectSettings, None),
             KeyBinding::new("cmd-shift-s", OpenSchedules, None),
             KeyBinding::new("cmd-shift-e", OpenFiles, None),
+            KeyBinding::new("cmd-shift-p", OpenPreview, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-n", CreateProject, None),
             KeyBinding::new("cmd-t", NewTab, None),
@@ -7220,6 +7422,7 @@ mod workspace_tab_tests {
             (PanelKind::Projects, "Projects"),
             (PanelKind::Worktrees, "Worktrees"),
             (PanelKind::Files, "Files"),
+            (PanelKind::Preview, "Preview"),
             (PanelKind::Tasks, "Tasks"),
             (PanelKind::Shells, "Shells"),
             (PanelKind::Usage, "Usage"),
