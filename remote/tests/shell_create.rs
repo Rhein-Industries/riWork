@@ -127,7 +127,10 @@ impl Fixture {
     }
 }
 
-/// Logs each call (arguments separated by U+001F). `shell create` prints
+/// Logs each call (arguments separated by U+001F). `project show` and
+/// `worktree show` print the id they were asked for, or the one in `show.id`,
+/// or fail with the line in `show.error`. `shell create` waits `create.delay`
+/// seconds if that exists, marks `create.ran`, then prints
 /// `create.json`, or fails with the line in `create.error`. `shell list` and
 /// `orchestrator list` print `shells.json` and `orchestrators.json` (default
 /// `[]`). `shell close` fails like a CLI that does not know the shell if
@@ -143,7 +146,12 @@ fn stub_cli(dir: &Path) -> PathBuf {
              for a in \"$@\"; do printf '%s\\037' \"$a\"; done >> \"$d/argv.log\"\n\
              printf '\\n' >> \"$d/argv.log\"\n\
              case \"$1 $2\" in\n\
+             'project show'|'worktree show')\n\
+               if [ -e \"$d/show.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/show.error\")\" >&2; exit 2; fi\n\
+               if [ -e \"$d/show.id\" ]; then printf '{{\"id\":\"%s\"}}' \"$(cat \"$d/show.id\")\"; else printf '{{\"id\":\"%s\"}}' \"$3\"; fi;;\n\
              'shell create')\n\
+               if [ -e \"$d/create.delay\" ]; then sleep \"$(cat \"$d/create.delay\")\"; fi\n\
+               touch \"$d/create.ran\"\n\
                if [ -e \"$d/create.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/create.error\")\" >&2; exit 2; fi\n\
                cat \"$d/create.json\";;\n\
              'shell list') if [ -e \"$d/shells.json\" ]; then cat \"$d/shells.json\"; else echo '[]'; fi;;\n\
@@ -364,8 +372,24 @@ async fn every_value_is_its_own_argument_and_the_cli_gets_json() {
         let response = f.create(params.clone()).await;
         assert_eq!(response["ok"], true, "{params}: {response}");
         let calls = f.calls();
-        assert_eq!(calls.len(), before + 1, "{params}: one CLI call");
+        // The target is looked up by its exact id, then the terminal is made.
+        assert_eq!(calls.len(), before + 2, "{params}: look-up and creation");
         assert_eq!(calls.last().unwrap(), &argv, "{params}");
+        let target = if params.get("project_id").is_some() {
+            ("project", &p)
+        } else {
+            ("worktree", &w)
+        };
+        assert_eq!(
+            calls[calls.len() - 2],
+            vec![
+                target.0.to_owned(),
+                "show".into(),
+                target.1.clone(),
+                "--json".into()
+            ],
+            "{params}"
+        );
     }
     for (kind, unrestricted, flags) in [
         ("codex", None, vec!["--harness", "codex"]),
@@ -405,8 +429,12 @@ async fn every_value_is_its_own_argument_and_the_cli_gets_json() {
         expected.push("--json".into());
         assert_eq!(f.calls().last().unwrap(), &expected, "{params}");
     }
-    // Only creation ran: no listing, no second call.
-    assert!(f.calls().iter().all(|c| c[..2] == ["shell", "create"]));
+    // Only the look-up and the creation ran: no listing, no second call.
+    assert!(
+        f.calls()
+            .iter()
+            .all(|c| c[1] == "show" || c[..2] == ["shell", "create"])
+    );
 }
 
 #[tokio::test]
@@ -514,6 +542,118 @@ async fn a_session_that_is_not_the_one_asked_for_is_refused() {
     f.set("create.json", "created shell 1234");
     let response = f.create(params).await;
     assert_eq!(code(&response), "cli_error", "{response}");
+}
+
+#[tokio::test]
+async fn the_target_must_exist_under_exactly_the_id_given() {
+    let f = Fixture::new();
+    let (p, w) = (f.project.clone(), f.worktree.clone());
+    let other = new_uuid();
+    let creations = |f: &Fixture| f.calls_of("shell", "create").len();
+    for (params, kind) in [
+        (json!({"project_id":p,"kind":"shell"}), "project"),
+        (json!({"worktree_id":w,"kind":"codex"}), "worktree"),
+    ] {
+        // The desktop does not know the id.
+        f.set("show.error", &format!("No {kind} matches '{p}'"));
+        let response = f.create(params.clone()).await;
+        assert_eq!(code(&response), "not_found", "{kind}: {response}");
+        assert_eq!(creations(&f), 0);
+        // It knows something else by that name: a branch, a project name or a
+        // path that spells the id. That is not the id.
+        std::fs::remove_file(f.stub.path().join("show.error")).unwrap();
+        f.set("show.id", &other);
+        let response = f.create(params.clone()).await;
+        assert_eq!(code(&response), "not_found", "{kind}: {response}");
+        assert_eq!(
+            message(&response),
+            format!("{kind} not found on the desktop")
+        );
+        assert_eq!(creations(&f), 0);
+        // Any other failure of the look-up is the CLI's, and still starts nothing.
+        std::fs::remove_file(f.stub.path().join("show.id")).unwrap();
+        f.set(
+            "show.error",
+            "More than one project matches 'x'; use its UUID",
+        );
+        let response = f.create(params).await;
+        assert_eq!(code(&response), "cli_error", "{kind}: {response}");
+        assert_eq!(creations(&f), 0);
+        std::fs::remove_file(f.stub.path().join("show.error")).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_session_that_was_not_asked_for_is_ended_rather_than_left_running() {
+    let f = Fixture::new();
+    let stray = new_uuid();
+    // Made, but in some other worktree.
+    let mut session = f.session(&stray, Value::Null);
+    session["worktree_id"] = json!(new_uuid());
+    f.cli_says(session);
+    let response = f
+        .create(json!({"worktree_id":f.worktree,"kind":"shell"}))
+        .await;
+    assert_eq!(code(&response), "cli_error", "{response}");
+    for _ in 0..100 {
+        if !f.calls_of("shell", "close").is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        f.calls_of("shell", "close"),
+        vec![vec!["shell".to_owned(), "close".into(), stray]]
+    );
+    // Something that is not a session of ours is not closed.
+    let before = f.calls_of("shell", "close").len();
+    let mut orchestrator = f.session(&new_uuid(), Value::Null);
+    orchestrator["kind"] = json!("orchestrator");
+    f.cli_says(orchestrator);
+    let response = f
+        .create(json!({"worktree_id":f.worktree,"kind":"shell"}))
+        .await;
+    assert_eq!(code(&response), "cli_error", "{response}");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(f.calls_of("shell", "close").len(), before);
+}
+
+#[tokio::test]
+async fn a_terminal_being_made_is_finished_when_the_request_is_dropped() {
+    // The connector drops a request's task when its connection ends (relay
+    // error, revocation): the CLI must not be killed between starting tmux and
+    // writing the session down.
+    let f = std::sync::Arc::new(Fixture::new());
+    let shell = new_uuid();
+    f.cli_says(f.session(&shell, Value::Null));
+    f.set("create.delay", "0.6");
+    let task = {
+        let f = f.clone();
+        tokio::spawn(async move {
+            f.create(json!({"worktree_id":f.worktree,"kind":"shell"}))
+                .await
+        })
+    };
+    // Wait until the CLI is running, then drop the request.
+    for _ in 0..100 {
+        if !f.calls_of("shell", "create").is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(f.calls_of("shell", "create").len(), 1);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    for _ in 0..100 {
+        if f.stub.path().join("create.ran").exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        f.stub.path().join("create.ran").exists(),
+        "the CLI was killed before it finished"
+    );
 }
 
 #[tokio::test]

@@ -171,9 +171,11 @@ before anything runs, builds the argument vector of `riwork shell create ... --j
 itself (one argument per value, nothing through a shell string), maps the CLI's
 "No project matches", "No worktree matches" and "... is not installed or is not on PATH"
 sentences to `not_found` and `harness_unavailable`, and refuses a session that is not
-the one asked for. Both run in the ordered lane, which is never cut short, so a phone
-that drops mid-call cannot leave a half-registered session; they are not idempotent and
-not deduplicated. Their tests use a stub CLI (`tests/shell_create.rs`); the root crate's
+the one asked for. Both run in the ordered lane, which a phone that drops does not cut short, and the CLI of a
+creation runs in a task of its own, so no connection ending can kill it between tmux starting
+the session and the CLI registering it. A creation first looks the id up with
+`project show` / `worktree show` and requires that exact id back (the CLI would also resolve names,
+branches and paths). They are not idempotent and not deduplicated. Their tests use a stub CLI (`tests/shell_create.rs`); the root crate's
 `tests/shell_create_cli.rs` pins the CLI sentences and output the connector relies on,
 and an ignored test drives the real CLI with `RIWORK_TEST_CLI`.
 

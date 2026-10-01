@@ -2295,6 +2295,8 @@ impl Workspace {
 
     fn load_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.session_refresh_generation = self.session_refresh_generation.wrapping_add(1);
+        // The tabs below are rebuilt from the layout, which claims what is kept again.
+        self.release_tab_claims();
         self.project_sort_menu_open = false;
         if self.focus_mode {
             self.set_focus_mode(false, window, cx);
@@ -2980,7 +2982,9 @@ impl Workspace {
     /// create`, the phone companion, an agent) get a tab in the active pane, as
     /// they would when the project is next loaded. The tab is added behind the
     /// current one: nothing changes focus, the selected tab or the active pane,
-    /// and the terminal view attaches when the tab is first shown.
+    /// and the terminal view attaches when the tab is first shown. (A pane the
+    /// user emptied has no current tab, so the new one is shown there, still
+    /// without focus.)
     fn adopt_new_shells(&mut self, cx: &mut Context<Self>) {
         // A terminal is claimed only once there is a pane to put it in, and not
         // while a tab is being dragged; the next refresh looks again.
@@ -3016,6 +3020,18 @@ impl Workspace {
         }
         self.save_layout();
         cx.notify();
+    }
+
+    /// Lets go of the terminals this window has tabs for, so a window that
+    /// still shows the project can pick up the ones this one no longer holds.
+    fn release_tab_claims(&self) {
+        for shell_id in self
+            .panes
+            .values()
+            .flat_map(|pane| pane.tabs.iter().filter_map(Tab::shell_id))
+        {
+            release_shell(shell_id);
+        }
     }
 
     /// The pane a terminal that appeared by itself joins: the active one, as
@@ -6053,14 +6069,22 @@ fn start_window_drag(event: &gpui::MouseDownEvent, window: &mut Window, cx: &mut
     }
 }
 
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        self.release_tab_claims();
+    }
+}
+
 fn session_belongs_to_workspace(shell: &ShellSession, project_id: &str) -> bool {
     shell.project_id.as_deref() == Some(project_id)
         || (shell.kind == ShellKind::Orchestrator && shell.project_id.is_none())
 }
 
-/// Shells that have a tab in some window of this process. A window never adds
-/// a tab for a terminal another window already has, so one started in a window
-/// is not also added to the others that show the same project.
+/// Shells that have a tab in some window of this process (a window gives its
+/// claims up when it loads another project or closes). A window never adds a
+/// tab for a terminal another window already has, so one started in a window is
+/// not also added to the others that show the same project; of several windows
+/// that show the project, the first to notice a new terminal takes it.
 fn shell_claims() -> &'static Mutex<HashSet<String>> {
     static CLAIMS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     CLAIMS.get_or_init(Default::default)
@@ -6072,6 +6096,13 @@ fn claim_shell(shell_id: &str) -> bool {
     shell_claims()
         .lock()
         .is_ok_and(|mut claims| claims.insert(shell_id.to_owned()))
+}
+
+/// Gives up the claim on `shell_id`: no window holds a tab for it any more.
+fn release_shell(shell_id: &str) {
+    if let Ok(mut claims) = shell_claims().lock() {
+        claims.remove(shell_id);
+    }
 }
 
 /// The live terminals of `project_id` that nothing in this window accounts
@@ -7395,6 +7426,17 @@ mod workspace_tab_tests {
         assert!(!claim_shell(id));
         assert!(!claim_shell(id));
         assert!(claim_shell("claim-test-4f6c1d2e-0002"));
+    }
+
+    #[test]
+    fn a_terminal_a_window_let_go_of_can_be_taken_by_another() {
+        let id = "claim-test-4f6c1d2e-0003";
+        assert!(claim_shell(id));
+        release_shell(id);
+        assert!(claim_shell(id));
+        // Letting go of what was never claimed is harmless.
+        release_shell("claim-test-4f6c1d2e-never");
+        assert!(claim_shell("claim-test-4f6c1d2e-never"));
     }
 
     #[test]

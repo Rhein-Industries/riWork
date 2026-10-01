@@ -398,10 +398,10 @@ fn create_fault(fault: Fault) -> Fault {
     if fault.code != "cli_error" {
         return fault;
     }
-    if fault.message.contains("RiWork CLI timeout") {
+    if fault.message == "RiWork CLI timeout" {
         return Fault::new(
             "cli_error",
-            "starting the terminal took too long; it may still appear, so check the terminal list before trying again",
+            "starting the terminal took too long and was stopped; check the terminal list before trying again",
         );
     }
     let Some(detail) = fault.message.strip_prefix("RiWork CLI failed: riwork: ") else {
@@ -419,7 +419,7 @@ fn create_fault(fault: Fault) -> Fault {
         Fault::new("harness_unavailable", line)
     } else if line.starts_with("resolve ")
         && !line.starts_with("resolve RiWork executable")
-        && line.contains("No such file or directory")
+        && line.ends_with("No such file or directory (os error 2)")
     {
         Fault::new(
             "not_found",
@@ -1235,22 +1235,71 @@ impl Rpc {
         }
     }
     /// Start a terminal in a project or worktree that exists on the desktop,
-    /// exactly as `riwork shell create` does: the CLI resolves the target,
-    /// writes the session down and starts it, and the open desktop app picks it
-    /// up as a tab. Runs in the ordered lane, which is never cut short, so a
-    /// phone that drops mid-call cannot leave a half-made session behind. Not
-    /// idempotent: a repeat starts another terminal.
+    /// exactly as `riwork shell create` does: the CLI writes the session down
+    /// and starts it, and the open desktop app picks it up as a tab. Runs in
+    /// the ordered lane, which a phone that drops does not cut short, and the
+    /// CLI itself runs in a task of its own (see below). Not idempotent: a
+    /// repeat starts another terminal.
     async fn create(&self, device: &str, spec: CreateSpec) -> std::result::Result<Value, Fault> {
         // Authorization was checked when the request started; this acts.
         if !self.storage.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
-        let created = self
-            .read_within(create_args(&spec), CREATE_TIMEOUT)
+        self.target_exists(&spec.target).await?;
+        // The CLI starts the tmux session and only then writes it into the
+        // registry; a CLI killed in between leaves a session nobody can see or
+        // close. The connection's tasks are dropped (and their CLI processes
+        // killed) when it ends for any reason, revocation and relay errors
+        // included, so the CLI runs in a task that outlives the request: if the
+        // request is dropped, only the answer is lost.
+        let runner = self.detached();
+        let args = create_args(&spec);
+        let created = tokio::spawn(async move { runner.read_within(args, CREATE_TIMEOUT).await })
+            .await
+            .map_err(|e| cli_fault(format!("creating the terminal was interrupted: {e}")))?
+            .map_err(create_fault)?;
+        create_result(&spec, &created).ok_or_else(|| {
+            // Not what was asked for. It was just made, so end it rather than
+            // leave a terminal the phone knows nothing about.
+            if let Some(stray) = created.get("id").and_then(Value::as_str)
+                && id(stray).is_ok()
+                && created.get("kind").and_then(Value::as_str) == Some("project")
+            {
+                let (runner, stray) = (self.detached(), stray.to_owned());
+                tokio::spawn(async move {
+                    let _ = runner
+                        .raw(vec!["shell".into(), "close".into(), stray])
+                        .await;
+                });
+            }
+            cli_fault("CLI returned a session that does not match the request")
+        })
+    }
+    /// An `Rpc` for the same CLI and home, to run a call in a task that is not
+    /// tied to the request that started it.
+    fn detached(&self) -> Rpc {
+        Rpc::new(self.cli.clone(), self.storage.clone())
+    }
+    /// The project or worktree must exist under exactly this id. The CLI also
+    /// matches names, branches, paths and id prefixes, so an id that is nobody's
+    /// could otherwise start a terminal somewhere else.
+    async fn target_exists(&self, target: &CreateTarget) -> std::result::Result<(), Fault> {
+        let (kind, target) = match target {
+            CreateTarget::Project(project) => ("project", project),
+            CreateTarget::Worktree(worktree) => ("worktree", worktree),
+        };
+        let shown = self
+            .read(&[kind, "show", target])
             .await
             .map_err(create_fault)?;
-        create_result(&spec, &created)
-            .ok_or_else(|| cli_fault("CLI returned a session that does not match the request"))
+        if shown.get("id").and_then(Value::as_str) == Some(target) {
+            Ok(())
+        } else {
+            Err(Fault::new(
+                "not_found",
+                format!("{kind} not found on the desktop"),
+            ))
+        }
     }
     /// End a project terminal and its process. Orchestrators are not closed
     /// from the phone. A terminal that already exited can be closed too, which
@@ -1284,6 +1333,10 @@ impl Rpc {
                 && v.selected.as_ref().is_some_and(|(s, _, _)| s == shell)
             {
                 let _ = self.clear_viewport(v).await;
+                // The shell is about to go. A lease that could not be released
+                // lapses by itself; keeping it would only fail to renew and
+                // end the connection.
+                v.selected = None;
             }
         }
         self.raw(vec!["shell".into(), "close".into(), shell.into()])

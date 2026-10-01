@@ -6,7 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
-- 2026-10-01: Additive terminal creation: `shell.create` (start a plain shell, Codex, Claude or Grok in a project or worktree that exists on the desktop) and `shell.close` (end a project terminal), both in the ordered lane and never cut short, and the error code `harness_unavailable`; see "Terminal creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method".
+- 2026-10-01: Additive terminal creation: `shell.create` (start a plain shell, Codex, Claude or Grok in a project or worktree that exists on the desktop) and `shell.close` (end a project terminal), both in the ordered lane and not cut short when the phone's session ends, and the error code `harness_unavailable`; see "Terminal creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method".
 - 2026-09-30: Additive deep scrollback: `shell.history` (pages of scrollback above the screen, plain or styled) and the `history_size` and `alternate` fields on the `shell.output` result, also in its `unchanged` form and in its `hash`; see "Deep scrollback extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive live terminal sync: optional `styled`, `if_changed` and `wait_ms` on `shell.output`, a `hash` on its result and an `unchanged` result, and requests of one device are now carried out concurrently (responses may arrive out of order, matched by `id`); see "Live terminal extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive `appearance.get`, so the phone can show the desktop's colors; see "Theme sync extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -759,19 +759,30 @@ other methods:
   --json`). Nothing is concatenated into a shell string; a `command` is one
   argument. The rule against a leading `-` keeps it from being read as an option of
   its own, and `--json` is always last.
-- The project or worktree is resolved by the desktop's own store from its UUID. An
-  unknown or foreign id is `not_found`; the phone never names a directory, so it
-  cannot start a terminal anywhere that is not a registered project or worktree.
+- The project or worktree is looked up first (`riwork project show ID --json`, or
+  `worktree show`), and its `id` must equal the id sent: the CLI also resolves
+  names, branch names, paths and id prefixes, so an id that is nobody's could
+  otherwise start a terminal in some other worktree. An unknown id is `not_found`
+  and starts nothing. The phone never names a directory, so it cannot start a
+  terminal anywhere that is not a registered project or worktree. If the CLI still
+  reports a session other than the one asked for, the connector answers `cli_error`
+  and ends that session.
 - The device's authorization is checked when the request starts and again just
   before the CLI runs, so a device revoked while queued creates nothing.
-- Both methods are in the ordered lane and are never cut short (see below), and
-  are not recorded in any ledger.
+- Both methods are in the ordered lane and are not cut short when the phone's
+  session ends (see below), and are not recorded in any ledger.
 
 Scheduling and retries. `shell.create` and `shell.close` run in the ordered lane
 with `shell.keys`, `shell.input`, `shell.resize` and `shell.resize.clear`: one at
-a time per device, in arrival order, and, like typing, never dropped half done when
-the session ends. A phone that vanishes while a terminal is being started therefore
-cannot leave a started-but-unregistered session behind; only the answer is lost.
+a time per device, in arrival order, and, like typing, not dropped half done when
+the phone's session ends. A creation goes further: the desktop CLI starts the tmux
+session and only then writes it into its registry, and a CLI killed in between
+leaves a session nobody can see or close, so the connector runs it in a task that
+outlives the request. When the connector ends the connection for any other reason
+(revocation, a relay error) the CLI is not killed; only the answer is lost. (A
+start that takes longer than 60 seconds is stopped, which needs a hung tmux, and
+can leave such a session.) A close that is cut short leaves a listed terminal that
+is gone and can be closed again.
 The cost is that typing from the same device waits behind a start (usually well
 under a second; an agent can take 20 seconds or more, Grok waits for the driver for
 up to 20, and the connector gives the CLI 60 seconds). A client's timeout for
@@ -788,10 +799,12 @@ On the desktop. The terminal is created by the same CLI the desktop app uses
 started in the desktop's tmux. A running RiWork window for that project notices it
 within its two-second refresh and adds a tab for it to its active pane, behind the
 current tab: it takes no focus and does not change the selected tab, and the
-terminal view attaches when the tab is first shown. The same happens for any
-terminal made with `riwork shell create` while a window is open. A terminal the
-user closed in the window is not brought back. If no window shows the project, the
-terminal joins it when the project is next opened.
+terminal view attaches when the tab is first shown (in a pane the user emptied
+there is no current tab, so it is shown there, still without focus). The same
+happens for any terminal made with `riwork shell create` while a window is open. A
+terminal the user closed in the window is not brought back. Of several windows that
+show the same project, the first to notice takes it. If no window shows the
+project, the terminal joins it when the project is next opened.
 
 **`shell.close`** ends a project terminal and its process, as `riwork shell close`
 does. Params `{"shell_id":"UUID"}` (unknown fields fail `invalid_request`). The id
@@ -886,7 +899,7 @@ ready response. Values are test-only and must never provision production devices
   (`project_id` or `worktree_id`, `kind` `shell|codex|claude|grok`, optional
   `unrestricted` for the agents, optional `command` for a plain shell) starts a
   terminal and returns its id and `shells.list` entry; `shell.close` ends a project
-  terminal. Both run in the ordered lane, are never cut short, and creation is not
+  terminal. Both run in the ordered lane and are not cut short when the phone's session ends (a creation's CLI also survives the connection being torn down), and creation is not
   idempotent (a client must not retry it by itself). New error code
   `harness_unavailable`. Parameters are validated before any CLI runs and the CLI is
   run with an argument vector, never a shell string. `unrestricted` defaults to

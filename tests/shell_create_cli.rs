@@ -481,3 +481,44 @@ fn an_agent_is_restricted_unless_unrestricted_is_asked_for() {
         );
     }
 }
+
+#[test]
+fn the_look_ups_the_connector_makes_before_creating_say_which_id_they_found() {
+    let home = Home::new();
+    let (project, worktree, _) = home.project("app");
+    // `project show` and `worktree show` print the entity, whose `id` the
+    // connector compares with the id it was given: the CLI also resolves names,
+    // branches, paths and id prefixes, which must not stand in for an id.
+    assert_eq!(
+        home.ok(&["project", "show", &project, "--json"])["id"],
+        project.as_str()
+    );
+    assert_eq!(
+        home.ok(&["worktree", "show", &worktree, "--json"])["id"],
+        worktree.as_str()
+    );
+    assert_eq!(
+        home.ok(&["project", "show", "app", "--json"])["id"],
+        project.as_str()
+    );
+    assert_eq!(
+        home.ok(&["worktree", "show", "main", "--json"])["id"],
+        worktree.as_str()
+    );
+    let unknown = Uuid::new_v4().to_string();
+    for (args, sentence) in [
+        (
+            ["project", "show", &unknown, "--json"],
+            format!("riwork: No project matches '{unknown}'"),
+        ),
+        (
+            ["worktree", "show", &unknown, "--json"],
+            format!("riwork: No worktree matches '{unknown}'"),
+        ),
+    ] {
+        let output = home.run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), sentence);
+    }
+    assert!(!home.runtime().exists(), "a GUI instance was registered");
+}

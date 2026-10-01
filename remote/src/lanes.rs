@@ -11,7 +11,9 @@
 //!   order of typed text intact. Creating and closing a terminal change what
 //!   exists, and a request that ends half way (a session started but not yet
 //!   written down, or one killed but still listed) is worse than a slow one,
-//!   so they are never cut short either; typing waits behind them.
+//!   so a session ending does not cut them short either; typing waits behind
+//!   them. (A creation also keeps its CLI alive when the connection itself is
+//!   torn down: see `Rpc::create`.)
 //! - `LongPoll`: a `shell.output` that waits for a change. At most two.
 //! - `Read`: everything else, including a `shell.output` that does not wait and
 //!   `shell.history`, a page of scrollback that never waits. It changes
