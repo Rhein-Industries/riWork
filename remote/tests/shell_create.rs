@@ -567,6 +567,12 @@ async fn the_cli_failures_the_phone_acts_on_have_their_own_codes() {
             "cli_error",
             "More than one worktree matches 'main'; use its UUID",
         ),
+        // Not the folder: the CLI could not find itself.
+        (
+            "resolve RiWork executable: No such file or directory (os error 2)",
+            "cli_error",
+            "resolve RiWork executable: No such file or directory (os error 2)",
+        ),
         // A look-alike is not the installation error.
         (
             "node is not installed or is not on PATH",

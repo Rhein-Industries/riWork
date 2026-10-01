@@ -417,7 +417,10 @@ fn create_fault(fault: Fault) -> Fault {
         || line.starts_with("Cua Driver is not installed")
     {
         Fault::new("harness_unavailable", line)
-    } else if line.starts_with("resolve ") && line.contains("No such file or directory") {
+    } else if line.starts_with("resolve ")
+        && !line.starts_with("resolve RiWork executable")
+        && line.contains("No such file or directory")
+    {
         Fault::new(
             "not_found",
             "the folder of this project or worktree no longer exists on the desktop",
