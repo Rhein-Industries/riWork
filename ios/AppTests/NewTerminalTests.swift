@@ -565,8 +565,11 @@ actor SpawnTransport: RemoteTransport {
     func testTheTerminalsKeyViewLeavesCommandNToTheApp() throws {
         let view = KeyCaptureView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         let commands = try XCTUnwrap(view.keyCommands)
-        XCTAssertFalse(commands.contains { $0.modifierFlags.contains(.command) }, "no ⌘ combination is claimed, so ⌘N reaches the hosting controller")
-        XCTAssertFalse(commands.contains { $0.input == "n" && $0.modifierFlags.contains(.command) })
+        XCTAssertFalse(commands.contains { $0.input == "n" && $0.modifierFlags.contains(.command) }, "⌘N is not claimed, so it reaches the hosting controller")
+        view.togglePalette()
+        XCTAssertTrue(try XCTUnwrap(view.keyCommands).contains { $0.input == "n" && $0.modifierFlags == .command }, "only the open hotkey menu takes ⌘N")
+        view.togglePalette()
+        XCTAssertFalse(try XCTUnwrap(view.keyCommands).contains { $0.input == "n" && $0.modifierFlags.contains(.command) })
         XCTAssertFalse(view.canPerformAction(NSSelectorFromString("newTerminal:"), withSender: nil))
     }
     func testCommandNIsAKeyCommandOfTheHostingController() async throws {

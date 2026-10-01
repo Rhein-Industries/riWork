@@ -98,8 +98,8 @@ import RiWorkCore
         view.togglePalette()
         try fire(view, ".", .command)
         XCTAssertFalse(view.palette.isOpen)
-        try fire(view, ".", .command)
-        XCTAssertEqual(got.items, [], "with the menu closed it does nothing to the shell")
+        XCTAssertNil(view.keyCommands?.first { $0.input == "." && $0.modifierFlags == .command }, "with the menu closed it is not claimed")
+        XCTAssertEqual(got.items, [], "and does nothing to the shell")
     }
     func testTheMenuDoesNotOpenOutOfSightUnderASheet() async throws {
         let (view, _) = makeView()
@@ -247,7 +247,7 @@ import RiWorkCore
         let (view, got) = makeView()
         try fire(view, "\r", .shift)
         XCTAssertEqual(got.items, [.key(.enter)], "Shift-Return was Enter before and still is")
-        try fire(view, "n", .command)
+        XCTAssertNil(view.keyCommands?.first { $0.input == "n" && $0.modifierFlags == .command }, "⌘N is the app's (a new terminal) while the menu is closed")
         XCTAssertEqual(got.items, [.key(.enter)])
         XCTAssertEqual(got.edited, [])
     }

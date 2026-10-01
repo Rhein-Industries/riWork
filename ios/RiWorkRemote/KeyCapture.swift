@@ -296,20 +296,24 @@ enum TerminalFont {
         for value in 97...122 { list.append(Self.command(String(UnicodeScalar(UInt8(value))), .control)) }
         list.append(Self.command("k", .command, "Hotkey menu"))
         list.append(Self.command(",", .command, "Hotkey settings"))
-        // Inside the menu: Shift-Return edits the chosen hotkey and Command-N adds one.
+        // Inside the menu: Shift-Return edits the chosen hotkey (outside it, Shift-Return is Enter).
         list.append(Self.command("\r", .shift))
-        list.append(Self.command("n", .command, "New hotkey (in the hotkey menu)"))
-        // The system's Cancel (a keyboard without Esc has no other way to put the menu away).
-        list.append(Self.command(".", .command, "Close the hotkey menu"))
         return list
     }()
+    /// Commands that mean something only while the hotkey menu is open, and are claimed only then: with the menu closed, ⌘N belongs
+    /// to the app (a new terminal) and must reach the hosting controller.
+    private lazy var paletteCommands: [UIKeyCommand] = [
+        Self.command("n", .command, "New hotkey (in the hotkey menu)"),
+        // The system's Cancel (a keyboard without Esc has no other way to put the menu away).
+        Self.command(".", .command, "Close the hotkey menu"),
+    ]
     /// Commands for the shortcuts of hotkeys and the menu: the keys a `UIKeyCommand` can name, with priority over the system.
     private var chordCommands: [UIKeyCommand] = []
-    override var keyCommands: [UIKeyCommand]? { commands + chordCommands }
+    override var keyCommands: [UIKeyCommand]? { commands + (palette.isOpen ? paletteCommands : []) + chordCommands }
 
     private func refreshShortcuts() {
         shortcuts = ShortcutMap(hotkeys: hotkeys, settings: shortcutSettings)
-        var seen = Set(commands.map { "\($0.input ?? "")|\($0.modifierFlags.rawValue)" })
+        var seen = Set((commands + paletteCommands).map { "\($0.input ?? "")|\($0.modifierFlags.rawValue)" })
         chordCommands = shortcuts.chords.compactMap { chord in
             guard !chord.isTap, let input = Self.commandInput(forKeyCode: chord.keyCode) else { return nil }
             let flags = Self.flags(chord.modifiers)
