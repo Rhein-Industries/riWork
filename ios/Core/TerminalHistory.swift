@@ -15,18 +15,38 @@ public struct OutputExtras: Sendable, Equatable {
 }
 
 public enum HistoryLimits {
-    /// Lines asked for per `shell.history` page.
+    /// Lines asked for per `shell.history` page when nothing is known about the link yet (and by the manual fetch the tests use).
     public static let pageLines = 300
     /// The smallest page tried after `response_too_large`.
     public static let minimumPageLines = 10
     /// The most the protocol allows per page.
     public static let maximumPageLines = 1000
     /// Scrollback lines kept on the phone. Older ones are not asked for, and the oldest held go first when live output pushes past it.
-    public static let heldLines = 20_000
+    ///
+    /// A held line costs about 285 bytes on the heap (measured: 50,000 styled lines of ordinary build and test output came to 13.6 MB,
+    /// 32 of those bytes the array slot), so the cap is about 14 MB for one shell and 28 MB at the desktop's own limit of 100,000. It
+    /// travels as roughly 3 MB of text (about 57 bytes a line, styled).
+    public static let heldLines = 50_000
     /// The desktop keeps at most this many lines of history; one that has reached it drops its oldest as new ones arrive.
     public static let desktopHistoryLines = 100_000
     /// Lines of the loaded history that a page overlaps, once the desktop's history has been seen dropping lines it cannot announce.
     public static let verifyLines = 8
+    /// Lines of scrollback every live answer asks for until the phone knows it can page (and always on a desktop that cannot): the
+    /// first answer then fills the screen with recent history at once.
+    public static let fullScrollbackLines = 500
+    /// Lines of scrollback a live answer asks for once older lines come from `shell.history`. They only have to bridge the output
+    /// that arrives between two answers (a burst beyond that is a hole, fetched back as history); the rest of the 500 was sent, parsed
+    /// and compared on every keystroke's echo for nothing.
+    public static let liveScrollbackLines = 120
+    /// The oldest lines are kept past the cap for this long (in lines) while the reader is looking at them, so they do not go from under
+    /// the eyes; past it they go anyway.
+    public static let trimDeferralLines = 12_500
+
+    /// The `lines` of the next live answer. `fullAgain` is set when the history is full on the desktop (its shift cannot be announced,
+    /// so the answer has to reach back far enough to match lines).
+    public static func liveLines(pagingProved: Bool, fullAgain: Bool) -> Int {
+        pagingProved && !fullAgain ? liveScrollbackLines : fullScrollbackLines
+    }
 }
 
 /// One `shell.history` request: the scrollback page just above the lines the phone already has.
@@ -64,6 +84,9 @@ public struct HistoryReply: Sendable, Equatable {
     public let historySize: Int?
     /// No older lines exist above this page.
     public let complete: Bool
+    /// About what the page weighed on the wire: its text, with every escape character counted as the six bytes `\u001b` that JSON
+    /// makes of it. This is what the link was measured with.
+    public let wireBytes: Int
 
     public init(result: JSONValue) throws {
         guard let shellID = result["shell_id"].string, let text = result["output"].string else { throw RemoteError.protocolViolation("Session history identity mismatch.") }
@@ -75,6 +98,15 @@ public struct HistoryReply: Sendable, Equatable {
         lineCount = count(result["line_count"])
         historySize = count(result["history_size"])
         if case .bool(let done) = result["complete"] { complete = done } else { complete = false }
+        wireBytes = Self.wireBytes(of: text)
+    }
+
+    /// The text's UTF-8 bytes, plus five for each ESC (JSON writes it as `\u001b`).
+    public static func wireBytes(of text: String) -> Int {
+        var escapes = 0
+        var total = 0
+        for byte in text.utf8 { total += 1; if byte == 0x1B { escapes += 1 } }
+        return total + 5 * escapes
     }
 }
 

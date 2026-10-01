@@ -77,9 +77,32 @@ enum ConnectionState: Equatable {
     /// Whether `shell.history` is asked with `styled`. Cleared for the connection when the desktop rejects the field.
     @ObservationIgnored var historyStyled = true
     @ObservationIgnored var historyRetryAfter: ContinuousClock.Instant?
-    /// The view is being scrolled by a finger or its momentum: a page of older lines waits for it to stop, since it would move what is
-    /// under the finger.
-    @ObservationIgnored var scrollBusy = false
+    /// What pages of history say about the link: how fast it is. Forgotten when the kind of link changes.
+    @ObservationIgnored var linkMeter = LinkMeter()
+    /// Low Data Mode, a metered link, Low Power Mode.
+    @ObservationIgnored var linkConditions = LinkConditions()
+    @ObservationIgnored let linkWatcher: (any LinkWatching)?
+    @ObservationIgnored var linkInterface = "other"
+    /// Fetch history in the background (the default). Off, a page is fetched only when asked for (`loadOlderHistory`).
+    @ObservationIgnored var prefetchEnabled: Bool
+    /// The lines of shells that are not on screen, so that going back to one does not fetch them again.
+    @ObservationIgnored var terminalCache = TerminalCache()
+    /// Where the reader is, from the surface: the first line in view and how many rows fit.
+    @ObservationIgnored var readerTop: Int?
+    @ObservationIgnored var readerRows = 40
+    @ObservationIgnored var lastKickTop = Int.min
+    /// History is left alone until then: the pane was just resized or its history shrank, and a program may be drawing it again.
+    @ObservationIgnored var settleUntil: ContinuousClock.Instant?
+    /// A page was asked for (the retry row, `loadOlderHistory`): no waiting for it.
+    @ObservationIgnored var historyDemand = false
+    @ObservationIgnored var lastHistoryAnswerAt: ContinuousClock.Instant?
+    /// Pages in a row that did not line up or landed inside lines already held. Each doubles the quiet time, silently.
+    @ObservationIgnored var historyMisses = 0
+    /// The loop's pause between pages, so a reader who reaches the top can end it.
+    @ObservationIgnored var historySleeper: Task<Void, Never>?
+    /// Scales the quiet times after a resize or a shrinking history (tests make them short).
+    @ObservationIgnored var settleScale = 1.0
+    @ObservationIgnored weak var surface: TerminalSurfaceView?
     // MARK: Display, live sync and latency (RemoteModel+Display.swift, RemoteModel+Live.swift)
     /// Scale of the app chrome (headers, lists, key bar, buttons), 0.8-1.3. The terminal text size is separate.
     var interfaceScale = InterfaceScale.standard
@@ -125,7 +148,7 @@ enum ConnectionState: Equatable {
     @ObservationIgnored var outputHash: String?
     /// The `shell.output` request on the wire, so it can be cancelled alone (session change, pause) without touching the loop.
     @ObservationIgnored private var outputFlight: Task<JSONValue, any Error>?
-    @ObservationIgnored private var outputFlightIsLongPoll = false
+    @ObservationIgnored var outputFlightIsLongPoll = false
     @ObservationIgnored var liveBackoff = LongPollBackoff()
     /// Cancelled long polls that the desktop is still holding (it allows two waiting requests per device).
     @ObservationIgnored var waitSlots = WaitSlots()
@@ -177,8 +200,10 @@ enum ConnectionState: Equatable {
          defaults: UserDefaults = .standard, themeRefreshInterval: Duration = .seconds(60), themeMinimumGap: Duration = .seconds(5),
          cellMetrics: @escaping @MainActor (Double) -> (width: Double, height: Double) = { TerminalFont.cell(size: $0) },
          keepAwake: @escaping @MainActor (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 },
-         liveWaitMilliseconds: Int = LiveSync.waitMilliseconds) {
+         liveWaitMilliseconds: Int = LiveSync.waitMilliseconds, linkWatcher: (any LinkWatching)? = nil, prefetch: Bool = true) {
         self.liveWaitMilliseconds = liveWaitMilliseconds
+        self.linkWatcher = linkWatcher
+        self.prefetchEnabled = prefetch
         self.client = client
         self.keychain = keychain
         self.pollInterval = pollInterval
@@ -199,6 +224,10 @@ enum ConnectionState: Equatable {
         boldIsBright = defaults.bool(forKey: Self.boldIsBrightKey)
         theme.setScale(interfaceScale)
         loadLibrary()
+        if let linkWatcher {
+            linkConditions = linkWatcher.conditions; linkInterface = linkWatcher.interface
+            linkWatcher.onChange = { [weak self] in self?.linkChanged() }
+        }
     }
     static let lineComposerKey = "riwork.lineComposer", fontSizeKey = "riwork.terminalFontSize"
     static let interfaceScaleKey = "riwork.interfaceScale", showLatencyKey = "riwork.showLatency", boldIsBrightKey = "riwork.boldIsBright"
@@ -253,7 +282,7 @@ enum ConnectionState: Equatable {
         updateKeepAwake()
         // The long poll is not renewed while the terminal is off screen (one already out just runs its course), and picks up
         // again, from the hash it has, when the terminal returns.
-        if visible { wakeLive() }
+        if visible { wakeLive(); kickPrefetch() }
         scheduleViewportUpdate()
     }
     private func scheduleViewportUpdate() {
@@ -305,6 +334,7 @@ enum ConnectionState: Equatable {
             guard generation == token else { return }
             viewportSessionID = target.shellID; appliedViewport = target.viewport
             viewportError = nil; failedViewport = nil
+            viewportWasApplied()
         } catch {
             if generation == token {
                 if !(error is CancellationError) { failedViewport = target; viewportError = error.localizedDescription }
@@ -374,7 +404,10 @@ enum ConnectionState: Equatable {
         // And for waiting on changes: the first screen tells whether this desktop sends a `hash`.
         syncMode = .unknown; outputHash = nil; liveBackoff = LongPollBackoff(); waitSlots.reset(); outputExtensions = true; latency.reset()
         // And for paging history: the first page tells whether this desktop has `shell.history`.
-        historySupport = .unknown; historyStyled = true; historyPageLines = [:]; historyRetryAfter = nil; cancelHistory()
+        historySupport = .unknown; historyStyled = true; historyPageLines = [:]; historyRetryAfter = nil; historyMisses = 0; historyFailed = false; cancelHistory()
+        // The new connection may leave on another link: it is measured again.
+        linkMeter.reset(); settleUntil = nil
+        linkWatcher?.start()
         // The same for its colors, and the last palette for this desktop is on screen while the first fetch is on its way.
         themeSupport = .unknown; appearanceFlight = nil
         theme.select(desktop.id)
@@ -424,6 +457,7 @@ enum ConnectionState: Equatable {
         snapshotStale = true; loading = false
         polling?.cancel(); polling = nil
         cancelHistory()
+        linkWatcher?.stop()
         // Clear only this authenticated connection's override before closing, when possible. Unstructured so a
         // cancelled caller cannot skip it; the cancelled poll it waits behind only detaches its own request.
         await Task { try? await self.synchronizeViewport(token: token, forceRelease: true) }.value
@@ -436,15 +470,20 @@ enum ConnectionState: Equatable {
         if drainingForBackground { resumeAfterDrain = true; return }
         if wantsConnection, state == .suspended { await connect() }
     }
-    private func clearSnapshot() { projects = []; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true }
+    private func clearSnapshot() {
+        projects = []; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
+        // Another desktop: nothing kept for the last one is of any use.
+        terminalCache.removeAll()
+    }
     private func resetOutput() {
+        stashTerminal()
         lastScreen = nil; output = ""; styledOutput = .empty; outputVersion &+= 1; outputHash = nil
         outputCursorOffset = nil; outputInMode = false; outputSessionID = nil; lastOutputAt = nil
         resetTerminal()
     }
     func refresh() async {
         guard state == .connected else { return }
-        failedViewport = nil; viewportError = nil; missingSessionIDs = []; outputLines = [:]; historyPageLines = [:]; historyRetryAfter = nil
+        failedViewport = nil; viewportError = nil; missingSessionIDs = []; outputLines = [:]; historyPageLines = [:]; historyRetryAfter = nil; historyMisses = 0
         do { try await refresh(token: generation) } catch { handle(error) }
     }
     private func rpc(_ method: String, _ params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
@@ -591,6 +630,7 @@ enum ConnectionState: Equatable {
                 clearOutputError()
                 // The same screen, but a full-screen program may have come or gone with it.
                 if let alternate = OutputExtras(result: raw).alternate { setAlternateScreen(alternate) }
+                kickPrefetch()
                 return .unchanged
             case .screen(let screen):
                 guard screen.shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
@@ -613,6 +653,8 @@ enum ConnectionState: Equatable {
                 outputHash = screen.hash
                 outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
                 clearOutputError()
+                // The live screen is in: older history is the next step.
+                kickPrefetch()
                 return changed ? .changed : .unchanged
             }
         } catch {
@@ -648,7 +690,7 @@ enum ConnectionState: Equatable {
     /// grids or multibyte scrollback can exceed at 500 lines. Halve until it fits and remember that per session
     /// (until reconnect or an explicit refresh), so a session that keeps failing costs one attempt per poll.
     private func fetchOutput(id: String, ifChanged: String?, wait: Int) async throws -> JSONValue {
-        var lines = outputLines[id] ?? Self.defaultOutputLines
+        var lines = min(outputLines[id] ?? Self.defaultOutputLines, liveScrollbackLines)
         var wait = wait
         while true {
             let extended = outputExtensions
@@ -817,7 +859,7 @@ enum ConnectionState: Equatable {
     func setAppActive(_ active: Bool) {
         guard appActive != active else { return }
         appActive = active
-        if active { wakeLive() }
+        if active { wakeLive(); kickPrefetch() }
     }
 }
 

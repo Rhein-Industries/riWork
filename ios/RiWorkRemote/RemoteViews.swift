@@ -254,8 +254,8 @@ struct TerminalTabsView: View {
                         if model.keysSupport != .unsupported {
                             Toggle("Line composer instead of direct typing", isOn: Binding(get: { model.preferLineComposer }, set: { model.setPreferLineComposer($0) }))
                         }
-                        // The latest answer only: the screen and the scrollback that came with it (up to 500 lines), not every page loaded since.
-                        Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.output.replacingOccurrences(of: "\u{FE0E}", with: "") }.disabled(model.output.isEmpty)
+                        // The screen and the last 500 lines of scrollback above it, not everything loaded.
+                        Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.screenTextForCopy }.disabled(model.output.isEmpty)
                         Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                         Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                         Divider()

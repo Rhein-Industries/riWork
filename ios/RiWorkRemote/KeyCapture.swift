@@ -6,18 +6,33 @@ import RiWorkCore
 /// Menlo metrics for the terminal grid, measured the same way the text is drawn.
 enum TerminalFont {
     static func uiFont(size: Double) -> UIFont { UIFont(name: "Menlo-Regular", size: size) ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular) }
+    /// The face for a style, in the same Menlo as `uiFont` (every Menlo face advances by the same amount, so attributes never move a cell).
+    static func uiFont(size: Double, bold: Bool, italic: Bool) -> UIFont {
+        let name = switch (bold, italic) { case (false, false): "Menlo-Regular"; case (true, false): "Menlo-Bold"; case (false, true): "Menlo-Italic"; case (true, true): "Menlo-BoldItalic" }
+        return UIFont(name: name, size: size) ?? uiFont(size: size)
+    }
+    /// Device pixels per point, for rounding the line height. Set once by the app at launch (the font cache below can be asked from any
+    /// thread, so it cannot ask the screen); 3 is every iPhone since the 6 Plus except the SE.
+    nonisolated(unsafe) static var pixelsPerPoint = 3.0
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var cells: [Double: (width: Double, height: Double)] = [:]
+    private struct CellKey: Hashable { let size: Double, scale: Double }
+    nonisolated(unsafe) private static var cells: [CellKey: (width: Double, height: Double)] = [:]
     /// The size of one grid cell. Measured once per size: the terminal asks for it on every line it draws.
+    ///
+    /// The height is the font's line height rounded to a whole device pixel. Every row of the terminal is then a whole number of pixels
+    /// tall and sits on the pixel grid, so text stays crisp at any scroll position and the rows tile without a seam; the desktop
+    /// grid (rows that fit) is worked out from the same number, so the two agree to the pixel.
     static func cell(size: Double) -> (width: Double, height: Double) {
         lock.lock()
-        if let known = cells[size] { lock.unlock(); return known }
+        let key = CellKey(size: size, scale: max(1, pixelsPerPoint))
+        if let known = cells[key] { lock.unlock(); return known }
         lock.unlock()
         let font = uiFont(size: size)
-        let measured: (width: Double, height: Double) = (Double(("M" as NSString).size(withAttributes: [.font: font]).width), Double(font.lineHeight))
+        let height = max(1, (Double(font.lineHeight) * key.scale).rounded() / key.scale)
+        let measured: (width: Double, height: Double) = (Double(("M" as NSString).size(withAttributes: [.font: font]).width), height)
         lock.lock()
         if cells.count > 256 { cells.removeAll() }
-        cells[size] = measured
+        cells[key] = measured
         lock.unlock()
         return measured
     }

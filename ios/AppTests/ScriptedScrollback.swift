@@ -10,15 +10,25 @@ struct ScriptedScrollback: Sendable {
     var cap: Int?
     /// One line (by serial) that is far wider than any screen, for checking that long lines are clipped rather than scrolled.
     var longLine: Int?
+    /// Colors that change nothing: this many SGR resets after every line, so a line weighs more on the wire (a styled terminal's lines
+    /// are 50 to 100 bytes) while its text stays `L<serial>`.
+    var weight = 0
+    /// What the lines say: `L` followed by the serial. A desktop that drew its transcript again says something else (`W`).
+    var label = "L"
+    /// Lines (by serial) that are blank.
+    var blanks: Set<Int> = []
     private var next: Int
-    init(history: Int, rows: Int = 12, cap: Int? = nil) {
-        self.rows = rows; self.cap = cap
+    init(history: Int, rows: Int = 12, cap: Int? = nil, weight: Int = 0) {
+        self.rows = rows; self.cap = cap; self.weight = weight
         serials = Array(0..<(history + rows))
         next = history + rows
     }
     var historySize: Int { max(0, serials.count - rows) }
     static func text(_ serial: Int) -> String { "L\(serial)" }
-    private func text(of serial: Int) -> String { serial == longLine ? "L\(serial) " + String(repeating: "x", count: 400) : Self.text(serial) }
+    private func text(of serial: Int) -> String {
+        let base = blanks.contains(serial) ? "" : (serial == longLine ? "\(label)\(serial) " + String(repeating: "x", count: 400) : "\(label)\(serial)")
+        return base + String(repeating: "\u{1B}[0m", count: weight)
+    }
 
     mutating func write(_ count: Int) {
         for _ in 0..<count { serials.append(next); next += 1 }
@@ -48,7 +58,8 @@ struct ScriptedScrollback: Sendable {
         let top = min(hist, end + lines), bottom = min(hist, end)
         let first = serials.count - rows - hist
         let slice = serials[(first + hist - top)..<(first + hist - bottom)]
-        return ["shell_id": shellID, "output": .string(slice.isEmpty ? "" : join(slice)), "line_count": .number(Double(slice.count)),
+        // As on the wire: the lines joined by line breaks, none after the last. One blank line is "" and three are "\n\n".
+        return ["shell_id": shellID, "output": .string(slice.map(text(of:)).joined(separator: "\n")), "line_count": .number(Double(slice.count)),
                 "history_size": .number(Double(hist)), "complete": .bool(end + lines >= hist)]
     }
 }
