@@ -110,7 +110,9 @@ import RiWorkCore
         try fire("c", .control); try fire("z", .control)
         XCTAssertEqual(got.items, [.key(.up), .key(.down), .key(.left), .key(.right), .key(.escape), .key(.tab), .key(.backTab),
                                    .key(.home), .key(.end), .key(.pageUp), .key(.pageDown), .key(.control("c")), .key(.control("z"))])
-        XCTAssertEqual(commands.filter { $0.modifierFlags == .control }.count, 26, "Ctrl-a … Ctrl-z")
+        XCTAssertEqual(commands.filter { $0.modifierFlags == .control && ($0.input ?? "").unicodeScalars.allSatisfy { (97...122).contains($0.value) } }.count, 26, "Ctrl-a … Ctrl-z")
+        try fire("[", .control)
+        XCTAssertEqual(got.items.last, .key(.escape), "Ctrl-[ is Escape")
     }
     func testARefusedKeystrokeDoesNotBreakTheView() {
         let (view, got) = makeView(accept: false)

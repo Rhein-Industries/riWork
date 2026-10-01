@@ -135,7 +135,8 @@ prediction off; return key "return"). A key bar sits on the keyboard, always 44 
 puts it: on top of the software keyboard, or alone at the bottom edge when a hardware keyboard is attached. It
 scrolls sideways: Esc, Tab, a sticky Ctrl (armed until the next letter, sent as `C-<letter>`), a sticky Alt (Meta,
 sent as `Escape` followed by the next key or text, readline style), arrows, Shift-Tab, Home, End, PgUp, PgDn, Delete,
-Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held) and Paste, then the hotkeys, then the
+Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held) and Paste, then a ⌘ button that opens the hotkey menu and the hotkeys (those that
+want a button), then the
 symbols that are awkward on the iOS keyboard (`` | / \ ~ - _ ` * & $ > < { } [ ] ; : ' " ``), then a "+" that opens the
 hotkey editor. Hide keyboard stays at the right end. The ends of the row are padded so the first and last key clear
 the display's rounded corners (about 20-28 pt derived from the safe area, not from a device model); in focus mode with
@@ -143,11 +144,69 @@ a hardware keyboard the bar is a centered pill. The iPhone is portrait only.
 
 **Hotkeys** send a fixed sequence of text and special keys, validated against the `shell.keys` contract (text without
 control characters, whitelisted key names only, at most 64 steps). Built in: Ctrl+C, D, Z, L, R, A, E, U, W and Esc Esc.
-Your own (a name of up to 12 characters plus steps, e.g. "/clear" then Enter, or Ctrl+C then "exit" then Enter) can be
+Your own (a name of up to 12 characters plus steps, e.g. "/clear" then Enter, or Ctrl+C then "exit" then Enter; up to 64 hotkeys) can be
 added, edited, deleted and reordered in the editor, and are kept on the device (UserDefaults). A hotkey ignores an armed
 Ctrl/Alt. A hardware keyboard sends arrows, Esc, Tab,
-Shift-Tab, Home/End/Page keys and Ctrl-letters. Newlines in typed or pasted text
+Shift-Tab, Home/End/Page keys, Ctrl-letters and Ctrl-[ (Esc, as in every terminal). Newlines in typed or pasted text
 become Enter, tabs become Tab, other control characters are dropped.
+
+**Keyboard first.** The next paragraphs are for typing on a hardware keyboard (the Clicks keyboard case, a Bluetooth keyboard)
+without touching the screen: focus, the hotkey menu, shortcuts, the editor and the Clicks template.
+
+**Focus when a shell is ready.** A shell is *ready* when it is connected and its first live screen is shown. Whenever a shell becomes
+ready (first open, another tab, a reconnect, back from the background) the key capture view takes the keyboard, so typing goes straight
+into it. Display → Keyboard → **Focus keyboard when a shell opens**: *Always* (also brings up the on-screen keyboard), *With a
+hardware keyboard* (the default; `GCKeyboard.coalesced`, so focusing costs no screen) or *Never*. It never takes the keyboard from a
+sheet, an alert or another text field (it looks again for about a second, so the moment a sheet goes it takes it), a keyboard hidden
+on purpose with Hide stays hidden in that shell until the terminal is tapped, and a shell that replaced a closed one waits for a tap. The
+hotkey editor gives the keyboard back to the shell when it closes. The rules are pure and tested (`Core/KeyboardFocus.swift`).
+
+**Hotkey menu.** ⌘K from any shell, the key bar's ⌘ button, or a tap on a lone modifier key you chose (see below). Type to filter
+(case blind, all words, by name, keys sent or shortcut), ↑ ↓ (or Tab, Shift-Tab, Ctrl-N, Ctrl-P, Ctrl-J, Ctrl-K, Page Up/Down) to move,
+Return (or Ctrl-M) to send, Shift-Return to edit the chosen hotkey, ⌘N for a new one, Esc, ⌘K again, ⌘. or Ctrl-C/Ctrl-G to close. The
+rows are your hotkeys, the built-in ones, plain keys (Esc, Tab, arrows, Page Up/Down, Home, End, Enter, Backspace, Delete) and
+"New hotkey…" / "Configure hotkeys…" (also ⌘,). While the menu is open every key goes to it, never to the shell, and a shortcut whose hotkey
+is one navigation key stands in for that key: with the Clicks template ⌘S moves down and ⌘W up, as they do in the shell. Focus stays on
+the shell throughout (the menu is driven by its own keyboard), and works with the software keyboard and by touch too.
+
+**Shortcuts.** A hotkey can have a shortcut that sends it without opening the menu. It is matched by the key's HID usage and the
+modifiers, not by the character, so ⌥E is still E. Typing keys need ⌃, ⌥ or ⌘ (a bare letter would stop typing); function keys,
+Page keys and the like may be bare; ⌘K and ⌘, are reserved. A modifier key pressed and let go on its own is a *tap* and can open the
+menu. Keys a `UIKeyCommand` can name are registered with `wantsPriorityOverSystemBehavior`, since iOS keeps ⌘E, ⌘F, ⌘G … for itself;
+the rest (function keys, taps) are taken from the key presses. Hotkeys made for a shortcut only can stay off the key bar. Everything is in
+`Core/KeyChord.swift`, `Core/KeyShortcuts.swift`.
+
+**Editor from the keyboard.** The list: ↑ ↓ (Ctrl-P/N, Tab) select a row, Return (Ctrl-M) opens or runs it, ⌘N adds, ⌘⌫ deletes,
+⌘↑ ⌘↓ reorder, Esc or ⌘. closes. The form: Tab and Shift-Tab move between the name and the text steps, Return saves, Esc or ⌘. cancels,
+⌘S saves, ⌘T adds a text step, ⌘R records a key step by pressing the key, ⌘L **learns the shortcut**: press a key or chord and it is
+stored as its HID usage and modifiers (a lone modifier is a tap; Esc cancels).
+
+**Key readout.** Display → Show key events overlays the last key event over the terminal (event type, `UIKey.keyCode` as decimal and HID
+usage, key name, modifiers and the raw `UIKeyModifierFlags`, `characters` and `charactersIgnoringModifiers`); the hotkey editor's *Key
+tester* shows the same while you press keys. It sees key presses and key commands, so it settles what a key such as the Clicks button
+sends; if a key shows nothing, it is not an event an app can receive (a system or consumer-page key).
+
+**Clicks keyboard template** (hotkey editor → Keyboard templates → Install). Adds, never replaces or edits, and skips what is there
+already (the same id, the same steps on the same shortcut, or a shortcut that is yours). All on ⌘, which the case has and which works
+whichever way the Clicks Key is set: **⌘ + letter is a key, ⌘⇧ + letter is Ctrl + letter.**
+
+| ⌘E Esc | ⌘T Tab | ⌘⇧T Shift-Tab | ⌘W ⌘A ⌘S ⌘D ↑ ← ↓ → | ⌘B Page Up | ⌘F Page Down |
+|---|---|---|---|---|---|
+| ⌘⇧C ^C | ⌘⇧D ^D | ⌘⇧Z ^Z | ⌘⇧R ^R | ⌘⇧L ^L | tap Control: hotkey menu |
+
+What is known about the hardware (checked against Clicks' own pages, 2026-10): the case has letters, Shift, 123, Globe, ⌘, Space, the
+Clicks Key, Return, Backspace and a keyboard-toggle and dictation key, and no Esc, Alt or arrow keys. The **Clicks Key is a setting in the
+Clicks app: Tab or Ctrl** ([app v1.2](https://discover.clicks.tech/clicks-keyboard-app-v12-introduces-cursor-mode-clicks-key-customization-and-more)).
+Clicks does not publish the HID usage it sends, and there is no per-key remapping in the app. Arrows come from Cursor Mode (123 + ⌘, then
+WASD or IJKL). Clicks Mode (the Clicks Key, ⌘ or Globe as a base key, then a letter) works through iOS *Full Keyboard Access*, so it
+makes iOS act and sends the app no keys ([CrackBerry](https://crackberry.com/how-create-custom-shortcuts-your-iphone-clicks-keyboard)).
+The most likely story is a plain Control (usage 0xE0) or Tab (0x2B), which the readout will confirm. Practical consequences: with the
+Clicks Key set to **Ctrl**, Ctrl-letters (^C ^D ^Z ^R ^L …) work as on any keyboard, **Ctrl-[ is Esc**, and a tap on the Clicks Key alone
+opens the hotkey menu (the template binds a tap on either Control); set to Tab you have Tab but no Ctrl and need the ⌘⇧ shortcuts. The template
+is a starting point: use *Learn key* to move any shortcut. Sources: [Clicks for iPhone 17](https://www.clicks.tech/products/clicks-keyboard-for-iphone-17)
+(USB-C), [Power Keyboard layout](https://learn.clicks.tech/knowledge-base/kb-power-keyboard-getting-started-get-to-know),
+[Power Keyboard shortcuts](https://learn.clicks.tech/knowledge-base/kb-power-keyboard-tips-iphone-keyboard-shortcuts),
+[iOS modifier remapping](https://www.macrumors.com/how-to/remap-modifier-keys-ipad-keyboard/).
 
 Keys are queued in order per shell and sent by one sender with exactly one batch in
 flight, coalescing adjacent text every ~40 ms (or at once when idle). A batch ends at an

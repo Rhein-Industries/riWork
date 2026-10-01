@@ -40,7 +40,7 @@ import RiWorkCore
         let bar = makeBar()
         let named: [TerminalKey] = [.escape, .tab, .backTab, .left, .up, .down, .right, .home, .end, .pageUp, .pageDown, .delete, .backspace, .enter]
         for key in named { XCTAssertNotNil(bar.buttons[.key(key)], key.name) }
-        for action in [KeyBarView.Action.control, .alt, .paste, .hide, .editHotkeys] { XCTAssertNotNil(bar.buttons[action], "\(action)") }
+        for action in [KeyBarView.Action.control, .alt, .paste, .hide, .editHotkeys, .palette] { XCTAssertNotNil(bar.buttons[action], "\(action)") }
         for symbol in ["|", "/", "\\", "~", "-", "_", "`", "*", "&", "$", ">", "<", "{", "}", "[", "]", ";", ":", "'", "\""] {
             XCTAssertNotNil(bar.buttons[.text(symbol)], symbol)
         }
@@ -50,11 +50,12 @@ import RiWorkCore
         XCTAssertEqual(bar.buttons[.text("|")]?.accessibilityLabel, "Pipe")
         XCTAssertEqual(bar.buttons[.hide]?.accessibilityLabel, "Hide keyboard")
         XCTAssertEqual(bar.buttons[.editHotkeys]?.accessibilityLabel, "Add or edit hotkeys")
+        XCTAssertEqual(bar.buttons[.palette]?.accessibilityLabel, "Hotkey menu", "the key bar opens the hotkey menu too")
     }
     func testTheOrderIsSpecialKeysThenHotkeysThenSymbolsAndTheEditorLast() throws {
         let bar = makeBar()
         layout(bar)
-        let order: [KeyBarView.Action] = [.key(.escape), .key(.tab), .control, .alt, .key(.left), .key(.right), .paste, .hotkey(Hotkey.builtIn[0].id),
+        let order: [KeyBarView.Action] = [.key(.escape), .key(.tab), .control, .alt, .key(.left), .key(.right), .paste, .palette, .hotkey(Hotkey.builtIn[0].id),
                                           .hotkey(Hotkey.builtIn.last!.id), .text("|"), .text("\""), .editHotkeys]
         let xs = try order.map { try frame($0, in: bar).minX }
         XCTAssertEqual(xs, xs.sorted(), "left to right in this order")

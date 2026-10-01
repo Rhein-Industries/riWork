@@ -16,7 +16,7 @@ private final class KeyScrollView: UIScrollView {
 /// including the "+" that opens the hotkey editor at the very end, is in the scrolling part.
 @MainActor final class KeyBarView: UIInputView {
     enum Action: Hashable {
-        case key(TerminalKey), control, alt, text(String), paste, hide, hotkey(String), editHotkeys
+        case key(TerminalKey), control, alt, text(String), paste, hide, hotkey(String), editHotkeys, palette
     }
     /// How the bar is drawn when it is alone at the bottom edge. Above the keyboard it is always a strip.
     enum Presentation: Equatable { case strip, pill }
@@ -151,7 +151,7 @@ private final class KeyScrollView: UIScrollView {
 
     // MARK: Keys
 
-    /// Special keys, then the built-in and added hotkeys, then symbols, then the hotkey editor's "+" at the very end.
+    /// Special keys, then the hotkey menu button and the built-in and added hotkeys, then symbols, then the hotkey editor's "+" at the very end.
     private func rebuild() {
         for view in stack.arrangedSubviews { stack.removeArrangedSubview(view); view.removeFromSuperview() }
         let hide = buttons[.hide]
@@ -168,6 +168,8 @@ private final class KeyScrollView: UIScrollView {
         key(.delete, "Del", nil, "Delete"); key(.backspace, nil, "delete.left", "Backspace"); key(.enter, nil, "return", "Enter")
         add(.paste, title: nil, symbol: "doc.on.clipboard", label: "Paste", role: .plain)
         addDivider()
+        // The hotkey menu first: it reaches every hotkey, shortcut and key from the keyboard (also ⌘K).
+        add(.palette, title: nil, symbol: "command", label: "Hotkey menu", role: .hotkey)
         for hotkey in Hotkey.builtIn + hotkeys {
             add(.hotkey(hotkey.id), title: hotkey.label, symbol: nil, label: "Hotkey \(hotkey.label)", role: .hotkey)
         }
