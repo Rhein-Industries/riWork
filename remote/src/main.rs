@@ -62,6 +62,10 @@ enum Action {
         #[arg(long)]
         riwork: Option<PathBuf>,
     },
+    /// Use another Mac as a client (hosts, call, status, attach).
+    #[cfg(unix)]
+    #[command(flatten)]
+    Mac(riwork_remote::client_cli::ClientCommand),
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -132,6 +136,8 @@ async fn main() -> Result<()> {
                 .context("pass --riwork /absolute/path/to/riwork or set RIWORK_CLI")?;
             riwork_remote::connector::start(Storage::from_env()?, path).await?;
         }
+        #[cfg(unix)]
+        Action::Mac(command) => riwork_remote::client_cli::run(command).await?,
     }
     Ok(())
 }
