@@ -1867,8 +1867,14 @@ impl SettingsPanel {
     }
 
     fn change_text_size(&mut self, change: SizeChange, cx: &mut Context<Self>) {
-        let shown = ui_text::current_points(cx);
-        self.change(|settings| change.apply(settings, shown), cx);
+        match ui_text::save(&self.store, change, cx) {
+            Ok(settings) => {
+                cx.set_global(settings);
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
     }
 
     /// RiWork's text size: − / the size / + / reset, and MATCH TERMINAL to follow
@@ -2444,22 +2450,23 @@ mod tests {
         assert!(!loaded.ui_text_matches_terminal);
         assert_eq!(fs::read_to_string(dir.join("settings.json")).unwrap(), older);
 
-        // A size change writes both keys in points and leaves the neighbours alone.
+        // A size change steps from the stored 11 pt, writes both keys in points and
+        // leaves the neighbours alone.
         let saved = store
             .update(|settings| SizeChange::Bigger.apply(settings, 13.0))
             .unwrap();
-        assert_eq!(saved.ui_text_size.points(), 14.0);
+        assert_eq!(saved.ui_text_size.points(), 12.0);
         let file = document(&dir);
-        assert_eq!(file["ui_text_size"], 14);
+        assert_eq!(file["ui_text_size"], 12);
         assert_eq!(file["ui_text_matches_terminal"], false);
         assert_eq!(file["theme"], "tokyo_night");
         assert_eq!(file["ui_text_size_percent"], 140);
         assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
         let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
-        assert_eq!(reloaded.ui_text_size.points(), 14.0);
+        assert_eq!(reloaded.ui_text_size.points(), 12.0);
         store.update(toggle_text_match).unwrap();
         assert_eq!(document(&dir)["ui_text_matches_terminal"], true);
-        assert_eq!(document(&dir)["ui_text_size"], 14);
+        assert_eq!(document(&dir)["ui_text_size"], 12);
 
         // Out of range is pulled into range, a fraction keeps a tenth, another
         // shape is the default. Each stays in the file until changed.

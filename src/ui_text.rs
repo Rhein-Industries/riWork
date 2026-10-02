@@ -174,7 +174,7 @@ pub fn terminal_font_size(cx: &App) -> Option<f32> {
 }
 
 /// What the text-size commands do to the saved settings. Stepping while
-/// matching the terminal stops matching and steps from the size on screen.
+/// matching the terminal stops matching and steps from the size it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SizeChange {
     Bigger,
@@ -183,7 +183,12 @@ pub enum SizeChange {
 }
 
 impl SizeChange {
-    pub fn apply(self, settings: &mut Settings, shown: f32) {
+    /// Steps from the size `settings` itself shows, so a command applied to the
+    /// settings just read under the store's lock starts from what another window
+    /// or process saved last, not from this process's copy. `terminal_font_size`
+    /// is Ghostty's `font-size`, for settings that match it.
+    pub fn apply(self, settings: &mut Settings, terminal_font_size: f32) {
+        let shown = effective_points(settings, Some(terminal_font_size));
         settings.ui_text_matches_terminal = false;
         settings.ui_text_size = TextPoints::new(match self {
             Self::Bigger => stepped(shown, true),
@@ -236,11 +241,38 @@ pub fn refresh_terminal_font_size(cx: &mut App) {
 }
 
 /// Brings the scale in line with the globals and redraws every window if it moved.
+/// A hint on screen or about to open was measured at the old scale; its popup
+/// window would keep that size, so it goes until the pointer rests again.
 fn sync(cx: &mut App) {
     let scale = current_points(cx) / REFERENCE_SIZE;
     if SCALE.with(|cell| cell.replace(scale)) != scale {
+        crate::tooltip::hide(cx);
         cx.refresh_windows();
     }
+}
+
+/// Ghostty's `font-size` now: the cached value while its config files are
+/// unchanged, else read again. A size command needs it even when this process
+/// was not matching, since another process may have turned matching on.
+fn ghostty_font_size_now(cx: &mut App) -> f32 {
+    let stamp = theme::ghostty_config_stamp();
+    if let Some(font) = cx.try_global::<TerminalFontSize>().filter(|font| font.stamp == stamp) {
+        return font.size;
+    }
+    let size = theme::read_ghostty_font_size().unwrap_or_else(|error| {
+        eprintln!("riwork: {error}");
+        GHOSTTY_DEFAULT_FONT_SIZE
+    });
+    cx.set_global(TerminalFontSize { stamp, size });
+    size
+}
+
+/// Saves a text-size command to `store` and returns the saved settings, for the
+/// shortcuts, the View menu and the Settings row alike. The step starts from the
+/// settings read under the store's lock.
+pub fn save(store: &SettingsStore, change: SizeChange, cx: &mut App) -> Result<Settings, String> {
+    let terminal_font_size = ghostty_font_size_now(cx);
+    store.update(|settings| change.apply(settings, terminal_font_size))
 }
 
 /// Call once both `Settings` and the window-independent globals exist.
@@ -257,8 +289,7 @@ pub fn init(cx: &mut App) {
 
 /// Saves a text-size command, for the menu and the shortcuts.
 pub fn change(change: SizeChange, cx: &mut App) {
-    let shown = current_points(cx);
-    match SettingsStore::open_default().and_then(|store| store.update(|settings| change.apply(settings, shown))) {
+    match SettingsStore::open_default().and_then(|store| save(&store, change, cx)) {
         Ok(settings) => cx.set_global(settings),
         Err(error) => eprintln!("riwork: {error}"),
     }
@@ -332,6 +363,33 @@ mod tests {
             assert!(!settings.ui_text_matches_terminal);
             assert_eq!(settings.ui_text_size.points(), expected);
         }
+    }
+
+    #[test]
+    fn a_step_starts_from_the_stored_size_not_the_cached_one() {
+        let dir = std::env::temp_dir().join(format!("riwork-text-step-{}", uuid::Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        // This process still holds 11 pt while another one saved 15 pt.
+        let cached = Settings::default();
+        store.update(|settings| settings.ui_text_size = TextPoints::new(15.0)).unwrap();
+        assert_eq!(effective_points(&cached, None), 11.0);
+        let saved = store
+            .update(|settings| SizeChange::Bigger.apply(settings, 13.0))
+            .unwrap();
+        assert_eq!(saved.ui_text_size.points(), 16.0);
+        // Two quick steps each start from the one before.
+        let saved = store
+            .update(|settings| SizeChange::Bigger.apply(settings, 13.0))
+            .unwrap();
+        assert_eq!(saved.ui_text_size.points(), 17.0);
+        // Another process turned matching on: the step starts from Ghostty's size.
+        store.update(|settings| settings.ui_text_matches_terminal = true).unwrap();
+        let saved = store
+            .update(|settings| SizeChange::Smaller.apply(settings, 20.0))
+            .unwrap();
+        assert!(!saved.ui_text_matches_terminal);
+        assert_eq!(saved.ui_text_size.points(), 19.0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

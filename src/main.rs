@@ -4653,9 +4653,15 @@ impl Workspace {
         };
         let selected = self.active_pane == pane_id;
         let window_drag_enabled = at_window_top;
+        // The menu button and the drag handle at their scaled widths. A pane too
+        // narrow for both drops the handle, so the menu button is never clipped.
+        let (menu_width, handle_width) = (ui_text::space_f32(28.0), ui_text::space_f32(12.0));
+        let drag_handle = window_drag_enabled && pane_width >= menu_width + handle_width;
         let control_inset = if at_window_top && x < WINDOW_CONTROLS_CONTENT_INSET {
-            // Keep the pane menu and a fixed drag area outside the scrolling tabs.
-            (WINDOW_CONTROLS_CONTENT_INSET - x).min((pane_width - 40.0).max(0.0))
+            // Keep the pane menu and the drag handle outside the scrolling tabs; in a
+            // pane too narrow for all of it, the tabs give way to the controls.
+            let reserved = menu_width + if drag_handle { handle_width } else { 0.0 };
+            (WINDOW_CONTROLS_CONTENT_INSET - x).min((pane_width - reserved).max(0.0))
         } else {
             0.0
         };
@@ -4668,8 +4674,8 @@ impl Workspace {
         // a narrow sidebar) show their icons, as with "Icons instead of labels".
         let buttons = 1 + usize::from(show_lock) + usize::from(show_focus);
         let strip_room = header_width
-            - ui_text::space_f32(28.0) * buttons as f32
-            - if window_drag_enabled { ui_text::space_f32(12.0) } else { 0.0 }
+            - menu_width * buttons as f32
+            - if drag_handle { handle_width } else { 0.0 }
             - ui_text::space_f32(18.0);
         let compact_panels = !self.settings.panel_tab_icons
             && pane.tabs.iter().any(|tab| tab.panel().is_some())
@@ -4844,11 +4850,11 @@ impl Workspace {
                         }),
                     ),
             )
-            .children(window_drag_enabled.then(|| {
+            .children(drag_handle.then(|| {
                 div()
                     .id(("window-drag-handle", pane_id))
                     .flex_none()
-                    .w(ui_text::space(12.0))
+                    .w(px(handle_width))
                     .h_full()
                     .cursor_grab()
                     .on_mouse_down(MouseButton::Left, start_window_drag)
@@ -5326,14 +5332,17 @@ impl Workspace {
             .text_size(ui_text::text(9.0))
             .text_color(rgb(colors.muted))
             // Items keep one line; at larger text the right side gives way first and
-            // the left (the project, by default) keeps up to 40 % of the bar.
+            // the left (the project, by default) keeps up to 40 % of the bar, or all
+            // of it when nothing sits on the right.
             .whitespace_nowrap()
             .child(
                 div()
                     .id("status-left")
                     .flex()
                     .flex_shrink_0()
-                    .max_w(gpui::relative(0.4))
+                    .max_w(gpui::relative(
+                        if settings.visible_items(StatusSide::Right).is_empty() { 1.0 } else { 0.4 },
+                    ))
                     .min_w_0()
                     .items_center()
                     .gap(ui_text::space(10.0))
