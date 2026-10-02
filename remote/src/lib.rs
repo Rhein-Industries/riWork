@@ -1,4 +1,11 @@
 pub mod appearance;
+#[cfg(unix)]
+pub mod bridge;
+pub mod client;
+#[cfg(unix)]
+pub mod client_cli;
+#[cfg(unix)]
+pub mod client_daemon;
 pub mod config;
 pub mod connector;
 pub mod crypto;
