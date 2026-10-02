@@ -737,8 +737,18 @@ impl PanelKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SavedTab {
-    Shell { shell_id: String },
-    Panel { panel: PanelKind },
+    Shell {
+        shell_id: String,
+    },
+    Panel {
+        panel: PanelKind,
+    },
+    /// A shell of another Mac's RiWork, reached through the paired host `desktop_id`. The
+    /// shell belongs to that Mac, so it is never one of this Mac's `shell_ids`.
+    RemoteShell {
+        desktop_id: String,
+        shell_id: String,
+    },
 }
 
 impl SavedTab {
@@ -746,6 +756,10 @@ impl SavedTab {
         match self {
             Self::Shell { shell_id } => format!("shell:{shell_id}"),
             Self::Panel { panel } => format!("panel:{}", panel.name()),
+            Self::RemoteShell {
+                desktop_id,
+                shell_id,
+            } => format!("remote:{desktop_id}:{shell_id}"),
         }
     }
 }
@@ -912,7 +926,7 @@ impl ProjectLayout {
             .flat_map(|pane| {
                 pane.tabs.iter().filter_map(|tab| match tab {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
-                    SavedTab::Panel { .. } => None,
+                    SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => None,
                 })
             })
             .collect::<HashSet<_>>();
@@ -1023,6 +1037,7 @@ impl ProjectLayout {
 
         let mut shell_ids = HashSet::new();
         let mut panel_kinds = HashSet::new();
+        let mut remote_shells = HashSet::new();
         for id in ordered_pane_ids {
             let pane = self.panes.entry(id).or_default();
             // Older layouts may have bottom strips; all current strips belong at the top.
@@ -1047,6 +1062,16 @@ impl ProjectLayout {
                     !shell_id.is_empty() && shell_ids.insert(shell_id.clone())
                 }
                 SavedTab::Panel { panel } => panel_kinds.insert(*panel),
+                // A host's id is a UUID of this Mac's registry and a shell's of the host's,
+                // so only the pair names a tab, and an empty half is no tab at all.
+                SavedTab::RemoteShell {
+                    desktop_id,
+                    shell_id,
+                } => {
+                    !desktop_id.is_empty()
+                        && !shell_id.is_empty()
+                        && remote_shells.insert((desktop_id.clone(), shell_id.clone()))
+                }
             });
             if !pane
                 .active_tab_key
@@ -1060,7 +1085,7 @@ impl ProjectLayout {
                 .iter()
                 .filter_map(|tab| match tab {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
-                    SavedTab::Panel { .. } => None,
+                    SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => None,
                 })
                 .collect();
             pane.active_shell_id = pane.tabs.iter().find_map(|tab| match tab {
@@ -1234,7 +1259,7 @@ fn sync_saved_pane(pane: &mut SavedPane) {
         .iter()
         .filter_map(|tab| match tab {
             SavedTab::Shell { shell_id } => Some(shell_id.clone()),
-            SavedTab::Panel { .. } => None,
+            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => None,
         })
         .collect();
     pane.active_shell_id = pane.tabs.iter().find_map(|tab| match tab {
@@ -2572,6 +2597,164 @@ mod tests {
         );
         let loaded = store.load("newer").unwrap().unwrap();
         assert_eq!(loaded, saved_layout());
+    }
+
+    fn remote(desktop: &str, shell_id: &str) -> SavedTab {
+        SavedTab::RemoteShell {
+            desktop_id: desktop.into(),
+            shell_id: shell_id.into(),
+        }
+    }
+
+    #[test]
+    fn a_remote_shell_tab_has_a_fixed_json_shape_and_key() {
+        let tab = remote("host-1", "shell-9");
+        assert_eq!(tab.key(), "remote:host-1:shell-9");
+        let json = serde_json::json!({
+            "kind": "remote_shell",
+            "desktop_id": "host-1",
+            "shell_id": "shell-9",
+        });
+        assert_eq!(serde_json::to_value(&tab).unwrap(), json);
+        assert_eq!(serde_json::from_value::<SavedTab>(json).unwrap(), tab);
+        // The same shell id on another host is another tab.
+        assert_ne!(tab.key(), remote("host-2", "shell-9").key());
+    }
+
+    #[test]
+    fn remote_shell_tabs_round_trip_and_are_not_this_macs_shells() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let mut layout = saved_layout();
+        layout.panes.insert(
+            4,
+            pane(
+                vec![
+                    shell("shell-a"),
+                    remote("host-1", "shell-9"),
+                    panel(PanelKind::Files),
+                    remote("host-2", "shell-9"),
+                ],
+                1,
+            ),
+        );
+        layout.normalize().unwrap();
+        // Only this Mac's own shells are listed as shells; a remote id would otherwise be
+        // adopted, detached or looked up in the local session registry.
+        assert_eq!(layout.panes[&4].shell_ids, ["shell-a"]);
+        assert_eq!(layout.panes[&4].active_shell_id, None);
+        assert_eq!(
+            layout.panes[&4].active_tab_key.as_deref(),
+            Some("remote:host-1:shell-9")
+        );
+
+        store.save("project-a", &layout).unwrap();
+        let file = directory.read_value();
+        assert!(
+            file["projects"]["project-a"]["panes"]["4"]["tabs"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!({
+                    "kind": "remote_shell",
+                    "desktop_id": "host-2",
+                    "shell_id": "shell-9",
+                }))
+        );
+        assert_eq!(store.load("project-a").unwrap(), Some(layout));
+    }
+
+    #[test]
+    fn duplicate_or_empty_remote_tabs_are_dropped_by_normalization() {
+        let mut layout = saved_layout();
+        layout.panes.insert(
+            4,
+            pane(
+                vec![
+                    remote("host-1", "shell-9"),
+                    remote("host-1", "shell-9"),
+                    remote("", "shell-9"),
+                    remote("host-1", ""),
+                    remote("host-2", "shell-9"),
+                ],
+                0,
+            ),
+        );
+        // Another pane showing the same remote shell does not get it twice either.
+        layout
+            .panes
+            .get_mut(&8)
+            .unwrap()
+            .tabs
+            .push(remote("host-2", "shell-9"));
+        layout.normalize().unwrap();
+        assert_eq!(
+            layout.panes[&4]
+                .tabs
+                .iter()
+                .map(SavedTab::key)
+                .collect::<Vec<_>>(),
+            ["remote:host-1:shell-9", "remote:host-2:shell-9"]
+        );
+        assert!(
+            !layout.panes[&8]
+                .tabs
+                .iter()
+                .any(|tab| matches!(tab, SavedTab::RemoteShell { .. }))
+        );
+    }
+
+    #[test]
+    fn remote_tabs_parse_beside_tabs_of_a_kind_that_is_still_unknown() {
+        let browser = serde_json::json!({"kind": "browser", "url": "https://example.com"});
+        let remote_json = serde_json::json!({
+            "kind": "remote_shell",
+            "desktop_id": "host-1",
+            "shell_id": "shell-9",
+        });
+        let mut raw = serde_json::to_value(saved_layout()).unwrap();
+        let tabs = raw["panes"]["4"]["tabs"].as_array_mut().unwrap();
+        tabs.push(browser.clone());
+        tabs.push(remote_json.clone());
+        let SavedEntry::Layout { layout, skipped } = SavedEntry::parse(raw) else {
+            panic!("a layout with a remote tab must stay readable");
+        };
+        // The remote tab is a tab of this build; only the unknown one is set aside.
+        assert!(layout.panes[&4].tabs.contains(&remote("host-1", "shell-9")));
+        assert_eq!(skipped, SkippedTabs::from([(4, vec![browser.clone()])]));
+        let written = serde_json::to_value(SavedEntry::Layout { layout, skipped }).unwrap();
+        let tabs = written["panes"]["4"]["tabs"].as_array().unwrap();
+        assert!(tabs.contains(&remote_json) && tabs.contains(&browser));
+    }
+
+    #[test]
+    fn a_build_that_predates_remote_tabs_keeps_them_verbatim() {
+        // What an older build does with the tab: the kind is unknown to it, so the tab is
+        // set aside and written back unchanged. Simulated with a kind no build knows.
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let remote_json = serde_json::json!({
+            "kind": "remote_shell_from_the_future",
+            "desktop_id": "host-1",
+            "shell_id": "shell-9",
+        });
+        let stored = newer_layout(remote_json.clone());
+        directory.write(
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "projects": {"newer": stored},
+            }))
+            .unwrap(),
+        );
+        let mut loaded = store.load("newer").unwrap().unwrap();
+        loaded.selected_task_id = Some("another-task".to_owned());
+        store.save("newer", &loaded).unwrap();
+        let file = directory.read_value();
+        assert!(
+            file["projects"]["newer"]["panes"]["4"]["tabs"]
+                .as_array()
+                .unwrap()
+                .contains(&remote_json)
+        );
     }
 
     #[test]

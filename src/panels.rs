@@ -19,6 +19,7 @@ use crate::{
     icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
+    remote_tree::{Link, NewShellKind, RemoteShell, Row as RemoteRow},
     sessions::{SessionMetrics, ShellKind, ShellSession},
     store::{State, TaskStatus},
     theme::{self, Palette},
@@ -53,6 +54,40 @@ pub enum PanelAction {
     ToggleProjectSortMenu,
     CloseProjectSortMenu,
     SetProjectOrder(ProjectOrder),
+    Remote(RemoteAction),
+}
+
+/// What a row of the REMOTE section does when clicked.
+#[derive(Clone)]
+pub enum RemoteAction {
+    /// Open or close a host.
+    Host(String),
+    /// Open or close a project of a host.
+    Project {
+        host: String,
+        project: String,
+    },
+    /// Show or hide the Shell/Codex/Claude/Grok choice under a project.
+    Chooser {
+        host: String,
+        project: String,
+    },
+    OpenShell {
+        host: String,
+        shell: RemoteShell,
+    },
+    NewShell {
+        host: String,
+        project: String,
+        kind: NewShellKind,
+    },
+    /// Ask for a name, then create a project on the host.
+    NewProject(String),
+    /// Dismiss what a failed creation left under a row.
+    Dismiss {
+        host: String,
+        project: Option<String>,
+    },
 }
 
 /// How long a worktree folder check stays fresh; the workspace redraws about
@@ -159,6 +194,9 @@ pub struct PanelData<'a> {
     pub project_order: ProjectOrder,
     pub project_last_edits: &'a BTreeMap<String, u64>,
     pub project_sort_menu_open: bool,
+    /// The rows of other Macs' projects, already filtered by the search. Only the Projects
+    /// panel draws them.
+    pub remote: &'a [RemoteRow],
 }
 
 #[derive(Clone, Debug)]
@@ -655,6 +693,20 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                         ));
                     }
                 }
+            }
+            if !data.remote.is_empty() {
+                rows.push(remote_header(
+                    data.remote
+                        .iter()
+                        .filter(|row| matches!(row, RemoteRow::Host { .. }))
+                        .count(),
+                    cx,
+                ));
+                rows.extend(
+                    data.remote
+                        .iter()
+                        .map(|row| remote_row(row, on_action.clone(), cx)),
+                );
             }
         }
         PanelKind::Worktrees => {
@@ -1342,6 +1394,327 @@ fn project_notification_control<V: 'static>(
             );
         }))
         .into_any_element()
+}
+
+/// The heading of the other Macs, drawn like a folder heading but in the remote accent.
+fn remote_header<V: 'static>(hosts: usize, cx: &mut Context<V>) -> AnyElement {
+    let colors = theme::palette(cx);
+    div()
+        .id("remote-section")
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .h(px(27.0))
+        .pl(px(project_indent(0)))
+        .pr(px(8.0))
+        .mt(px(8.0))
+        .border_b_1()
+        .border_color(rgb(colors.magenta))
+        .bg(rgb(colors.panel_active))
+        .text_color(rgb(colors.magenta))
+        .child("⇄")
+        .child(div().flex_1().min_w_0().child("REMOTE"))
+        .child(
+            div()
+                .text_size(px(9.0))
+                .text_color(rgb(colors.muted))
+                .child(format!("{hosts:02}")),
+        )
+        .child(tooltip::anchor(
+            "Other Macs paired in Settings → Remote",
+            Look::Control,
+        ))
+        .into_any_element()
+}
+
+/// The dot beside a host: its color is the link state, and its hint says it in words.
+fn link_color(link: Option<Link>, colors: Palette) -> u32 {
+    match link {
+        Some(Link::Online) => colors.cyan,
+        Some(Link::Offline) => colors.muted,
+        Some(Link::Connecting) | None => colors.gold,
+    }
+}
+
+/// One row of the REMOTE section.
+fn remote_row<V: 'static>(
+    row: &RemoteRow,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    let remote = |action: RemoteAction| PanelAction::Remote(action);
+    match row {
+        RemoteRow::Host {
+            id,
+            label,
+            link,
+            expanded,
+            creating,
+        } => {
+            let toggle = remote(RemoteAction::Host(id.clone()));
+            let dot_text = link.map_or("Connecting…", Link::text);
+            div()
+                .id(format!("remote-host-{id}"))
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .min_w_0()
+                .h(px(27.0))
+                .pl(px(project_indent(0)))
+                .pr(px(8.0))
+                .border_b_1()
+                .border_color(rgb(colors.divider))
+                .bg(rgb(colors.panel))
+                .text_color(rgb(colors.text))
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(colors.panel_active)))
+                .child(div().text_color(rgb(colors.magenta)).child(if *expanded {
+                    "▾"
+                } else {
+                    "▸"
+                }))
+                .child(
+                    div()
+                        .relative()
+                        .text_color(rgb(link_color(*link, colors)))
+                        .child(if *link == Some(Link::Offline) {
+                            "○"
+                        } else {
+                            "●"
+                        })
+                        .child(tooltip::anchor(dot_text, Look::Control)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_ellipsis()
+                        .overflow_hidden()
+                        .child(label.clone()),
+                )
+                .children(creating.then(|| {
+                    div()
+                        .text_size(px(9.0))
+                        .text_color(rgb(colors.muted))
+                        .child("creating…")
+                }))
+                .children((*link == Some(Link::Online)).then(|| {
+                    project_control(
+                        id,
+                        "remote-new-project",
+                        "+",
+                        "New project on this Mac",
+                        remote(RemoteAction::NewProject(id.clone())),
+                        on_action.clone(),
+                        cx,
+                    )
+                }))
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    on_action(view, toggle.clone(), window, cx);
+                }))
+                .into_any_element()
+        }
+        RemoteRow::Project {
+            host,
+            id,
+            name,
+            expanded,
+            creating,
+        } => {
+            let toggle = remote(RemoteAction::Project {
+                host: host.clone(),
+                project: id.clone(),
+            });
+            let chooser = remote(RemoteAction::Chooser {
+                host: host.clone(),
+                project: id.clone(),
+            });
+            div()
+                .id(format!("remote-project-{host}-{id}"))
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .min_w_0()
+                .py(px(5.0))
+                .pl(px(project_indent(1)))
+                .pr(px(8.0))
+                .text_color(rgb(colors.text))
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(colors.panel_active)))
+                .child(div().text_color(rgb(colors.muted)).child(if *expanded {
+                    "▾"
+                } else {
+                    "▸"
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_ellipsis()
+                        .overflow_hidden()
+                        .child(name.clone()),
+                )
+                .children(creating.then(|| {
+                    div()
+                        .text_size(px(9.0))
+                        .text_color(rgb(colors.muted))
+                        .child("starting…")
+                }))
+                .child(project_control(
+                    &format!("{host}-{id}"),
+                    "remote-new-shell",
+                    "+",
+                    "New shell or agent in this project",
+                    chooser,
+                    on_action.clone(),
+                    cx,
+                ))
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    on_action(view, toggle.clone(), window, cx);
+                }))
+                .into_any_element()
+        }
+        RemoteRow::Chooser { host, project } => div()
+            .flex()
+            .flex_wrap()
+            .gap(px(6.0))
+            .pl(px(project_indent(2)))
+            .pr(px(8.0))
+            .py(px(4.0))
+            .children(NewShellKind::ALL.into_iter().map(|kind| {
+                let action = remote(RemoteAction::NewShell {
+                    host: host.clone(),
+                    project: project.clone(),
+                    kind,
+                });
+                let on_action = on_action.clone();
+                div()
+                    .id(format!("remote-new-{}-{host}-{project}", kind.wire()))
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .border_1()
+                    .border_color(rgb(colors.divider))
+                    .text_size(px(10.0))
+                    .text_color(rgb(colors.cyan))
+                    .cursor_pointer()
+                    .hover(|style| {
+                        style
+                            .bg(rgb(colors.divider))
+                            .text_color(rgb(colors.magenta))
+                    })
+                    .child(kind.label())
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        on_action(view, action.clone(), window, cx);
+                    }))
+            }))
+            .into_any_element(),
+        RemoteRow::Worktree { label } => div()
+            .pl(px(project_indent(2)))
+            .pr(px(8.0))
+            .pt(px(4.0))
+            .text_size(px(10.0))
+            .text_color(rgb(colors.muted))
+            .overflow_hidden()
+            .text_ellipsis()
+            .child(label.clone())
+            .into_any_element(),
+        RemoteRow::Shell { host, shell, depth } => {
+            let open = remote(RemoteAction::OpenShell {
+                host: host.clone(),
+                shell: shell.clone(),
+            });
+            div()
+                .id(format!("remote-shell-{host}-{}", shell.id))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .min_w_0()
+                .py(px(4.0))
+                .pl(px(project_indent(*depth)))
+                .pr(px(8.0))
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(colors.panel_active)))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(rgb(if shell.alive {
+                            colors.cyan
+                        } else {
+                            colors.magenta
+                        }))
+                        .child(if shell.alive { "●" } else { "×" }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_ellipsis()
+                        .overflow_hidden()
+                        .text_color(rgb(if shell.alive {
+                            colors.text
+                        } else {
+                            colors.muted
+                        }))
+                        .child(shell.display()),
+                )
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    on_action(view, open.clone(), window, cx);
+                }))
+                .into_any_element()
+        }
+        RemoteRow::Note { text, error, depth } => div()
+            .pl(px(project_indent(*depth)))
+            .pr(px(8.0))
+            .py(px(3.0))
+            .text_size(px(10.0))
+            .text_color(rgb(if *error { colors.gold } else { colors.muted }))
+            .child(text.clone())
+            .into_any_element(),
+        RemoteRow::Failure {
+            host,
+            project,
+            text,
+            depth,
+        } => {
+            let dismiss = remote(RemoteAction::Dismiss {
+                host: host.clone(),
+                project: project.clone(),
+            });
+            div()
+                .id(format!(
+                    "remote-failure-{host}-{}",
+                    project.as_deref().unwrap_or("host")
+                ))
+                .flex()
+                .items_start()
+                .gap(px(6.0))
+                .pl(px(project_indent(*depth)))
+                .pr(px(8.0))
+                .py(px(3.0))
+                .text_size(px(10.0))
+                .text_color(rgb(colors.gold))
+                .child(div().flex_1().min_w_0().child(text.clone()))
+                .child(
+                    div()
+                        .id(format!(
+                            "remote-dismiss-{host}-{}",
+                            project.as_deref().unwrap_or("host")
+                        ))
+                        .flex_none()
+                        .px(px(4.0))
+                        .cursor_pointer()
+                        .text_color(rgb(colors.muted))
+                        .hover(|style| style.text_color(rgb(colors.text)))
+                        .child("×")
+                        .child(tooltip::anchor("Dismiss", Look::Control))
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            on_action(view, dismiss.clone(), window, cx);
+                        })),
+                )
+                .into_any_element()
+        }
+    }
 }
 
 fn project_indent(depth: usize) -> f32 {

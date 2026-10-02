@@ -4538,7 +4538,7 @@ fn tmux_error(output: &Output) -> String {
     }
 }
 
-fn quote_arg(argument: &str) -> String {
+pub(crate) fn quote_arg(argument: &str) -> String {
     if !argument.is_empty()
         && argument
             .bytes()
