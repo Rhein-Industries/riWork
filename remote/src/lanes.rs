@@ -21,12 +21,24 @@
 //!   nothing, so it needs no order, and it takes one of the three shared
 //!   slots, never the `Ordered` one.
 //!
-//! At most four requests run at once: the one `Ordered` slot and three shared
+//! At most four of those run at once: the one `Ordered` slot and three shared
 //! by `LongPoll` and `Read`. So a wait, or three, can never keep a typing
 //! batch or a resize from starting (it has a slot of its own), and two long
 //! polls leave a slot for reads. Requests that find no slot wait in a queue in
 //! arrival order; a request that has to wait does not hold up a later one it
 //! does not compete with.
+//!
+//! A desktop device's terminal streams (`pty.*`, see `pty`) have two lanes of
+//! their own, outside those four, so a stream can never take a phone's slot nor
+//! the other way round:
+//!
+//! - `Attach`: `pty.open`, which starts a process and answers on its first
+//!   byte. One at a time.
+//! - `Stream`: `pty.read`, parked until the stream has output. No process, so
+//!   it is cheap to hold, but it is bounded: `STREAM_SLOTS` at once.
+//!
+//! `pty.write`, `pty.resize` and `pty.close` have no lane: the connection loop
+//! answers them itself, in arrival order, because they never wait.
 use serde_json::Value;
 use std::collections::VecDeque;
 
@@ -39,6 +51,11 @@ pub const LONG_POLL_SLOTS: usize = 2;
 // Four in flight at most, and always a shared slot that no wait can take.
 const _: () = assert!(ORDERED_SLOTS + SHARED_SLOTS == 4 && LONG_POLL_SLOTS < SHARED_SLOTS);
 
+/// `pty.open` requests that run at once.
+pub const ATTACH_SLOTS: usize = 1;
+/// `pty.read` requests that are parked at once (`max_reads` in `features.pty`).
+pub const STREAM_SLOTS: usize = 12;
+
 /// Requests that are received but not started. A device that queues more is
 /// not read from until some have started.
 pub const MAX_QUEUED: usize = 64;
@@ -48,6 +65,8 @@ pub enum Lane {
     Ordered,
     LongPoll,
     Read,
+    Attach,
+    Stream,
 }
 
 impl Lane {
@@ -67,6 +86,8 @@ pub fn classify(request: &Value) -> Lane {
             "shell.keys" | "shell.input" | "shell.resize" | "shell.resize.clear" | "shell.create"
             | "shell.close" | "project.create",
         ) => Lane::Ordered,
+        Some("pty.open") => Lane::Attach,
+        Some("pty.read") => Lane::Stream,
         Some("shell.output")
             if params
                 .and_then(|p| p.get("if_changed"))
@@ -89,6 +110,8 @@ pub struct Lanes<T> {
     ordered: usize,
     shared: usize,
     long_polls: usize,
+    attaching: usize,
+    streaming: usize,
 }
 
 impl<T> Default for Lanes<T> {
@@ -98,6 +121,8 @@ impl<T> Default for Lanes<T> {
             ordered: 0,
             shared: 0,
             long_polls: 0,
+            attaching: 0,
+            streaming: 0,
         }
     }
 }
@@ -114,7 +139,7 @@ impl<T> Lanes<T> {
 
     /// Started and not finished.
     pub fn running(&self) -> usize {
-        self.ordered + self.shared
+        self.ordered + self.shared + self.attaching + self.streaming
     }
 
     fn admits(&self, lane: Lane) -> bool {
@@ -122,6 +147,8 @@ impl<T> Lanes<T> {
             Lane::Ordered => self.ordered < ORDERED_SLOTS,
             Lane::Read => self.shared < SHARED_SLOTS,
             Lane::LongPoll => self.shared < SHARED_SLOTS && self.long_polls < LONG_POLL_SLOTS,
+            Lane::Attach => self.attaching < ATTACH_SLOTS,
+            Lane::Stream => self.streaming < STREAM_SLOTS,
         }
     }
 
@@ -138,6 +165,8 @@ impl<T> Lanes<T> {
                 self.shared += 1;
                 self.long_polls += 1;
             }
+            Lane::Attach => self.attaching += 1,
+            Lane::Stream => self.streaming += 1,
         }
         Some((lane, item))
     }
@@ -151,6 +180,8 @@ impl<T> Lanes<T> {
                 self.shared = self.shared.saturating_sub(1);
                 self.long_polls = self.long_polls.saturating_sub(1);
             }
+            Lane::Attach => self.attaching = self.attaching.saturating_sub(1),
+            Lane::Stream => self.streaming = self.streaming.saturating_sub(1),
         }
     }
 
@@ -283,6 +314,30 @@ mod tests {
                 "shell.history"
             );
         }
+        // A desktop's terminal streams: opening is the attach lane, reading is
+        // parked; writing, resizing and closing are answered by the connection loop,
+        // so to the lanes (which they never reach for a desktop) they are plain reads.
+        for params in [
+            json!({}),
+            json!(null),
+            json!({"stream":"s","wait_ms":25000}),
+        ] {
+            assert_eq!(classify(&request("pty.open", params.clone())), Lane::Attach);
+            assert_eq!(classify(&request("pty.read", params.clone())), Lane::Stream);
+            for method in [
+                "pty.write",
+                "pty.resize",
+                "pty.close",
+                "pty.reads",
+                "Pty.open",
+            ] {
+                assert_eq!(
+                    classify(&request(method, params.clone())),
+                    Lane::Read,
+                    "{method}"
+                );
+            }
+        }
         let output = |params| classify(&request("shell.output", params));
         assert_eq!(output(json!({"shell_id":"s"})), Lane::Read);
         assert_eq!(output(json!({"if_changed":"h"})), Lane::Read);
@@ -400,6 +455,55 @@ mod tests {
     }
 
     #[test]
+    fn terminal_streams_have_slots_of_their_own_and_never_take_a_phones() {
+        let mut lanes = Lanes::default();
+        // The shared slots, the ordered slot and a poll are all taken.
+        for n in 0..3 {
+            lanes.push(Lane::Read, n);
+        }
+        lanes.push(Lane::Ordered, 3);
+        assert_eq!(start_all(&mut lanes).len(), 4);
+        // Opens run one at a time, whatever else is running.
+        for n in 10..13 {
+            lanes.push(Lane::Attach, n);
+        }
+        assert_eq!(start_all(&mut lanes), vec![(Lane::Attach, 10)]);
+        assert_eq!(lanes.queued(), 2);
+        // Reads park up to the announced number, then wait their turn in order.
+        for n in 20..20 + STREAM_SLOTS as u32 + 3 {
+            lanes.push(Lane::Stream, n);
+        }
+        let parked = start_all(&mut lanes);
+        assert_eq!(parked.len(), STREAM_SLOTS);
+        assert!(parked.iter().all(|(lane, _)| *lane == Lane::Stream));
+        assert_eq!(parked[0].1, 20);
+        assert_eq!(lanes.queued(), 2 + 3);
+        assert_eq!(lanes.running(), 4 + 1 + STREAM_SLOTS);
+        // A parked read that ends hands its slot to the oldest waiting one, and an
+        // open that ends to the next open: each lane is its own queue.
+        lanes.finished(Lane::Stream);
+        assert_eq!(
+            start_all(&mut lanes),
+            vec![(Lane::Stream, 20 + STREAM_SLOTS as u32)]
+        );
+        lanes.finished(Lane::Attach);
+        assert_eq!(start_all(&mut lanes), vec![(Lane::Attach, 11)]);
+        // A phone's read still waits only for a phone's slot, and a stream's read never
+        // waits for one: here every shared slot is taken and a read for a stream runs anyway.
+        lanes.finished(Lane::Stream);
+        lanes.push(Lane::Read, 99);
+        assert!(
+            start_all(&mut lanes)
+                .iter()
+                .all(|(lane, _)| *lane == Lane::Stream)
+        );
+        // Both are cut short with their session; typing is not.
+        assert!(Lane::Attach.cancellable() && Lane::Stream.cancellable());
+        lanes.drop_queued_cancellable();
+        assert_eq!(lanes.queued(), 0);
+    }
+
+    #[test]
     fn the_limits_add_up() {
         let mut lanes = Lanes::default();
         // Every kind at once never runs more than four.
@@ -412,7 +516,13 @@ mod tests {
         assert!(start_all(&mut lanes).len() <= 4);
         assert!(lanes.running() <= 4);
         // Finishing more than started never underflows.
-        for lane in [Lane::Ordered, Lane::Read, Lane::LongPoll] {
+        for lane in [
+            Lane::Ordered,
+            Lane::Read,
+            Lane::LongPoll,
+            Lane::Attach,
+            Lane::Stream,
+        ] {
             for _ in 0..8 {
                 lanes.finished(lane);
             }

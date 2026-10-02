@@ -210,6 +210,38 @@ is not idempotent and not deduplicated: a repeat answers `already_exists`. Its t
 and output the connector relies on (in a throwaway `HOME` and `RIWORK_HOME`), and an ignored test
 drives the real CLI with `RIWORK_TEST_CLI` the same way.
 
+## Pairing another Mac (desktop devices)
+
+A second Mac running RiWork can show this Mac's shells as real terminals (the contract is
+in [remote-protocol.md](../docs/remote-protocol.md), "Desktop terminal extension"). It is paired as a
+*desktop* device, on protocol 2 only:
+
+```sh
+riwork remote pair --relay wss://relay.example.com/v1/ws --protocol 2 --kind desktop \
+  --name 'Studio Mac' --out "$RIWORK_PAIR_DIR/studio.pairing.json" \
+  --relay-routes "$RIWORK_PAIR_DIR/relay-routes.json" --show-link
+riwork remote devices   # each device now says "kind": "mobile" or "desktop"
+```
+
+`--kind` is `mobile` (the default) or `desktop`; `--kind desktop` without `--protocol 2` is refused.
+Import the printed `riwork://pair?v=2&data=...` link on the other Mac, then provision the relay route
+and start the connector exactly as for a phone. The kind is stored in the host's `devices.json` only
+(the field is left out for a phone, so a config of phones is unchanged byte for byte), and only a
+desktop on a v2 session is told in `ready` (`features.pty`) that terminal streams exist. Revoke it
+like any device; its streams end within a second. Do not downgrade `riwork-remote` once a desktop is
+paired: an older build refuses a `devices.json` with a `kind` it does not know, rather than treating
+the desktop as a phone.
+
+`pty.open` runs `riwork shell attach SHELL_UUID --exec [--ignore-size]` (which needs a `riwork` that
+reports `shell_attach_exec` in `riwork capabilities --json`) on a pseudo-terminal the connector owns
+(`src/pty.rs`: `openpty`, a session of its own with the terminal as controlling terminal, an
+allowlisted environment, and the process killed and reaped when the stream, the session or the
+connector ends). The connector's `lanes.rs` gives `pty.open` a lane of its own (one at a time) and
+`pty.read` another (up to 12 parked), and the connection loop answers `pty.write`, `pty.resize` and
+`pty.close` itself, in arrival order, because they never wait. The tests are `tests/pty.rs` (a
+stand-in CLI, through the RPC layer and through a real relay and connector) and, in the root crate,
+`tests/shell_attach_exec_cli.rs`.
+
 Revocation stops live endpoint access within one second and removes its local
 PSK/tokens. Remove that route from the relay manifest and restart the relay to
 invalidate relay tokens too. Other paired devices keep their endpoint secrets;
@@ -285,8 +317,9 @@ uv run --with cryptography python remote/fixtures/generate.py
   pair a device; watch the connector log and `devices` output, and `revoke` strays.
 - Relay sees route IDs, role tokens during registration, timing and frame sizes.
   It cannot decrypt session content or authenticate as an endpoint with a role token.
-- Terminal support is captured text and one control-free physical line followed
-  by Return. It is not a remote PTY or a semantic harness API.
+- For a phone, terminal support is captured text and one control-free physical line followed
+  by Return (or `shell.keys`). It is not a remote PTY or a semantic harness API. A paired
+  desktop (`pair --kind desktop`, above) is the exception: it gets a real terminal stream.
 - Outcome ledger is durable and never evicted, up to 4096 inputs per device.
   At capacity, review outcomes and pair a new device. Pending/uncertain sends
   return `outcome_unknown`; inspect the shell before any deliberate manual retry.

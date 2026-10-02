@@ -165,6 +165,24 @@ sessions exactly as to v1. It makes a folder named by the phone, always in the d
 projects folder (the phone never sends a path), and never touches a folder or project that
 exists; like terminal creation it adds no authority a paired device lacks.
 
+## Desktop devices (2026-10-02)
+
+A paired device is either a phone (the default) or a *desktop*: another Mac
+running RiWork that shows this Mac's shells as terminals. `riwork remote pair
+--protocol 2 --kind desktop` mints the invite for a desktop; `--kind desktop`
+with `--protocol 1` is refused, because the extra capability (terminal streams,
+`pty.*` in [remote-protocol.md](remote-protocol.md), "Desktop terminal
+extension") is offered only on a forward-secret session, never on a long-lived
+PSK. The kind is a field of the host's own device record (`kind`, absent for a
+phone, so an old `devices.json` is read and written back unchanged); the
+pairing record, the invite, the handshake, the transcript and the vectors are
+the same bytes as for a phone. The desktop redeems its invite the same way, and
+keeps the established record as a phone does. Authority, revocation and the 64
+device limit are unchanged: a desktop can type into any live shell, as a phone
+can, and revoking it ends its streams within a second. An older connector that
+reads a `devices.json` holding a desktop device refuses the file (the record has
+a field it does not know) instead of treating the desktop as a phone.
+
 ## Vectors and tests
 
 `remote/fixtures/generate.py` writes `remote/fixtures/v2.json` and
