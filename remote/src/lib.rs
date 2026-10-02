@@ -1,9 +1,17 @@
 pub mod appearance;
+#[cfg(unix)]
+pub mod bridge;
+pub mod client;
+#[cfg(unix)]
+pub mod client_cli;
+#[cfg(unix)]
+pub mod client_daemon;
 pub mod config;
 pub mod connector;
 pub mod crypto;
 pub mod lanes;
 pub mod link;
+pub mod pty;
 pub mod relay;
 pub mod rpc;
 pub mod viewport;

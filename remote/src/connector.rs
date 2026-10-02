@@ -1,6 +1,6 @@
 use crate::{
     HANDSHAKE_SECONDS, MAX_FRAME, MAX_PLAINTEXT,
-    config::{Device, Storage},
+    config::{Device, DeviceKind, Storage},
     crypto::{
         ClientFinish, ClientHello, ClientHelloV2, Envelope, PairFinish, PairHello, Pending,
         Session, accept_client_hello_v2, accept_hello, decode, random32,
@@ -8,6 +8,7 @@ use crate::{
     lanes::{Lane, Lanes, MAX_QUEUED, classify},
     link::{self, EncodeError},
     log_safe,
+    pty::{self, PtySet},
     rpc::Rpc,
     viewport::Viewport,
 };
@@ -277,6 +278,30 @@ impl Default for Timing {
 /// no longer exists.
 type SharedViewport = Arc<tokio::sync::Mutex<Option<Viewport>>>;
 
+/// The terminal streams of the session in progress, if the device may have any
+/// (a desktop on protocol 2). Whatever way the session ends, its streams end
+/// with it and their client processes are killed: a peer change, a revoked
+/// device, any error that closes the connection, or the connector stopping.
+#[derive(Default)]
+struct SessionStreams(Option<Arc<PtySet>>);
+impl SessionStreams {
+    /// A new session begins. `allowed`: whether this device may open streams.
+    fn begin(&mut self, allowed: bool) {
+        self.end();
+        self.0 = allowed.then(PtySet::new);
+    }
+    fn end(&mut self) {
+        if let Some(set) = self.0.take() {
+            set.close_all();
+        }
+    }
+}
+impl Drop for SessionStreams {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
 /// A received request waiting for a slot; see `lanes`.
 struct Queued {
     /// The session it arrived in.
@@ -287,6 +312,8 @@ struct Queued {
     received: std::time::Instant,
     /// The most JSON its response may hold (see `link`).
     reply_limit: usize,
+    /// The terminal streams of the session, for a device that may have any.
+    pty: Option<Arc<PtySet>>,
 }
 
 /// How a request ended. `outcome` is `None` when it was cut short because its
@@ -319,8 +346,10 @@ fn start_ready(
                 request,
                 received,
                 reply_limit,
+                pty,
             } = queued;
-            let run = rpc.handle_shared_up_to(&device, request, &viewport, reply_limit);
+            let run =
+                rpc.handle_session_up_to(&device, request, &viewport, pty.as_ref(), reply_limit);
             let outcome = if lane.cancellable() {
                 tokio::select! {
                     result = run => Some(result),
@@ -430,6 +459,10 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
     // `link.configure` (see `link`). Every new session starts without.
     let mut compress = false;
     let mut viewport: Option<SharedViewport> = None;
+    // Only a desktop on protocol 2 may open terminal streams (`pty`). Dropped
+    // with this function, however it ends, which kills every client process.
+    let streams_allowed = device.kind == DeviceKind::Desktop && p.v == 2;
+    let mut streams = SessionStreams::default();
     // Request tasks; dropped (so aborted) with this function, however it ends.
     let mut tasks: JoinSet<Done> = JoinSet::new();
     let mut lanes: Lanes<Queued> = Lanes::default();
@@ -509,6 +542,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 epoch += 1;
                 session_ended.send_replace(epoch);
                 lanes.drop_queued_cancellable();
+                streams.end();
                 if let Some(shared) = viewport.take() {
                     // Waits for a resize that is running; the tasks run on their own.
                     if let Some(mut v) = shared.lock().await.take() {
@@ -585,11 +619,17 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 let f: ClientFinish = serde_json::from_value(value)?;
                 let mut s = pending.take().context("unexpected finish")?.finish(&f)?;
                 // `features` is additive: an older phone reads only the three fields it knows.
-                let ready = json!({"v":1,"type":"ready","desktop_id":p.desktop_id,"device_id":p.device_id,"features":link::features(rpc.history_max_lines())});
+                let mut features = link::features(rpc.history_max_lines());
+                if streams_allowed {
+                    // Only a device that may open streams is told they exist.
+                    features["pty"] = pty::features();
+                }
+                let ready = json!({"v":1,"type":"ready","desktop_id":p.desktop_id,"device_id":p.device_id,"features":features});
                 let e = s.seal("d2c", &serde_json::to_vec(&ready)?)?;
                 send_json(&mut ws, &e).await?;
                 session = Some(s);
                 compress = false;
+                streams.begin(streams_allowed);
                 viewport = Some(Arc::new(tokio::sync::Mutex::new(Some(Viewport::new(
                     rpc.cli.clone(),
                     p.device_id.clone(),
@@ -626,6 +666,19 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     send_json(&mut ws, &reply).await?;
                     continue;
                 }
+                // Writing, resizing and closing a terminal stream never wait, so
+                // they are answered here, in order, like `link.configure`.
+                if let Some(set) = &streams.0
+                    && matches!(
+                        request.get("method").and_then(Value::as_str),
+                        Some("pty.write" | "pty.resize" | "pty.close")
+                    )
+                {
+                    let answer = rpc.handle_pty_inline(&p.device_id, request, set)?;
+                    let reply = seal_reply(s, answer, received, compress).await?;
+                    send_json(&mut ws, &reply).await?;
+                    continue;
+                }
                 lanes.push(
                     classify(&request),
                     Queued {
@@ -640,6 +693,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                         } else {
                             MAX_PLAINTEXT
                         },
+                        pty: streams.0.clone(),
                     },
                 );
                 start_ready(&mut lanes, &mut tasks, rpc, &p.device_id, &session_ended);

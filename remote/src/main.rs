@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use riwork_remote::{
-    config::{Storage, private_read},
+    config::{DeviceKind, Storage, private_read},
     relay::{Relay, Routes},
 };
 use std::{net::SocketAddr, path::PathBuf};
@@ -48,6 +48,10 @@ enum Action {
         /// v2 invite lifetime in seconds (30..=3600). Ignored for protocol 1.
         #[arg(long, default_value_t = 600)]
         ttl_seconds: u64,
+        /// `mobile` (a phone, the default) or `desktop` (another Mac running RiWork, which may also
+        /// open terminal streams). `desktop` requires `--protocol 2`.
+        #[arg(long, default_value = "mobile", value_parser = ["mobile", "desktop"])]
+        kind: String,
     },
     /// Revoke a device locally; live connector closes its access within one second.
     Revoke { device_id: String },
@@ -58,6 +62,10 @@ enum Action {
         #[arg(long)]
         riwork: Option<PathBuf>,
     },
+    /// Use another Mac as a client (hosts, call, status, attach).
+    #[cfg(unix)]
+    #[command(flatten)]
+    Mac(riwork_remote::client_cli::ClientCommand),
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -80,8 +88,10 @@ async fn main() -> Result<()> {
             show_link,
             protocol,
             ttl_seconds,
+            kind,
         } => {
-            let p = Storage::from_env()?.pair_with(
+            let kind = DeviceKind::parse(&kind)?;
+            let p = Storage::from_env()?.pair_kind(
                 relay,
                 name,
                 allow_insecure_loopback,
@@ -89,6 +99,7 @@ async fn main() -> Result<()> {
                 relay_routes.as_deref(),
                 protocol,
                 ttl_seconds,
+                kind,
             )?;
             println!(
                 "Paired device {}. Secret pairing JSON: {}",
@@ -112,7 +123,7 @@ async fn main() -> Result<()> {
             let c = Storage::from_env()?.config()?;
             // Unix seconds, null when unknown: legacy pairings have no paired_at, and a
             // device that never completed a handshake has never authenticated.
-            println!("{}",serde_json::to_string_pretty(&c.devices.iter().map(|d|serde_json::json!({"device_id":d.pairing.device_id,"device_name":d.pairing.device_name,"route_id":d.pairing.route_id,"revoked":d.revoked,"protocol":d.pairing.v,"invite_state":d.pairing.invite_state,"expires_at":d.pairing.expires_at,"paired_at_unix":d.paired_at_unix,"first_authenticated_unix":d.first_authenticated_unix,"last_authenticated_unix":d.last_authenticated_unix})).collect::<Vec<_>>())?);
+            println!("{}",serde_json::to_string_pretty(&c.devices.iter().map(|d|serde_json::json!({"device_id":d.pairing.device_id,"device_name":d.pairing.device_name,"route_id":d.pairing.route_id,"revoked":d.revoked,"kind":d.kind,"protocol":d.pairing.v,"invite_state":d.pairing.invite_state,"expires_at":d.pairing.expires_at,"paired_at_unix":d.paired_at_unix,"first_authenticated_unix":d.first_authenticated_unix,"last_authenticated_unix":d.last_authenticated_unix})).collect::<Vec<_>>())?);
         }
         Action::Start { riwork } => {
             let path = riwork
@@ -125,6 +136,8 @@ async fn main() -> Result<()> {
                 .context("pass --riwork /absolute/path/to/riwork or set RIWORK_CLI")?;
             riwork_remote::connector::start(Storage::from_env()?, path).await?;
         }
+        #[cfg(unix)]
+        Action::Mac(command) => riwork_remote::client_cli::run(command).await?,
     }
     Ok(())
 }

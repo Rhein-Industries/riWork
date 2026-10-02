@@ -24,6 +24,8 @@ use crate::{
     cua::{CuaManager, CuaStatus},
     orca_import::{ImportManager, ImportPreview, ImportReceipt},
     project_sort::ProjectOrder,
+    remote_service::{self, RemoteState},
+    remote_tree::Link,
     status_bar::StatusBarSettings,
     theme::{Appearance, Palette, ThemeChoice, palette},
     ui_text::{self, SizeChange, TextPoints},
@@ -380,6 +382,10 @@ fn merged_document(
 
 pub enum SettingsEvent {
     OrcaImported,
+    /// Ask for a pairing link and add the Mac it comes from.
+    AddHost,
+    /// Make a link that lets another Mac control this one.
+    PairMac,
 }
 
 /// The on/off rows of the panel. Each owns one boolean setting and one focus handle.
@@ -436,6 +442,14 @@ pub struct SettingsPanel {
     text_size_focus: FocusHandle,
     orca_preview_focus: FocusHandle,
     orca_import_focus: FocusHandle,
+    remote_add_focus: FocusHandle,
+    remote_pair_focus: FocusHandle,
+    /// One per host listed, in the order they are drawn.
+    remote_focus: Vec<(String, FocusHandle)>,
+    /// The host whose removal waits for a second click.
+    remote_confirm: Option<String>,
+    remote_pending: Option<&'static str>,
+    remote_error: Option<String>,
     orca_preview: Option<ImportPreview>,
     orca_receipt: Option<ImportReceipt>,
     orca_pending: Option<&'static str>,
@@ -527,11 +541,12 @@ enum Section {
     Agents,
     Windows,
     StatusBar,
+    Remote,
     Orca,
 }
 
 impl Section {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Cua,
         Self::Codex,
         Self::Appearance,
@@ -539,6 +554,7 @@ impl Section {
         Self::Agents,
         Self::Windows,
         Self::StatusBar,
+        Self::Remote,
         Self::Orca,
     ];
 
@@ -551,7 +567,8 @@ impl Section {
             Self::Agents => "05",
             Self::Windows => "06",
             Self::StatusBar => "07",
-            Self::Orca => "08",
+            Self::Remote => "08",
+            Self::Orca => "09",
         }
     }
 
@@ -564,6 +581,7 @@ impl Section {
             Self::Agents => "AGENT SESSIONS",
             Self::Windows => "WINDOWS",
             Self::StatusBar => "STATUS BAR",
+            Self::Remote => "REMOTE",
             Self::Orca => "IMPORT FROM ORCA",
         }
     }
@@ -577,6 +595,9 @@ impl Section {
             Self::Agents => "How new Codex, Grok, and Claude sessions use the terminal screen.",
             Self::Windows => "How project windows open.",
             Self::StatusBar => "Choose what appears, which side it sits on, and its order.",
+            Self::Remote => {
+                "Control other Macs' shells from here, or let another Mac control this one."
+            }
             Self::Orca => "Bring projects and worktrees over from Orca once.",
         }
     }
@@ -586,7 +607,7 @@ impl Section {
 /// numbered order in half, so Tab still reads down the left column and then
 /// the right, and the two stacks end up about as tall (Computer Use, Codex
 /// Accounts, Appearance, Files against Agent sessions, Windows, Status bar,
-/// Import).
+/// Remote, Import).
 fn section_columns(layout: SettingsLayout) -> Vec<Vec<Section>> {
     match layout {
         SettingsLayout::Wide => {
@@ -828,6 +849,12 @@ impl SettingsPanel {
             text_size_focus: cx.focus_handle(),
             orca_preview_focus: cx.focus_handle(),
             orca_import_focus: cx.focus_handle(),
+            remote_add_focus: cx.focus_handle(),
+            remote_pair_focus: cx.focus_handle(),
+            remote_focus: Vec::new(),
+            remote_confirm: None,
+            remote_pending: None,
+            remote_error: None,
             orca_preview: None,
             orca_receipt: None,
             orca_pending: None,
@@ -884,6 +911,9 @@ impl SettingsPanel {
         handles.push(self.preview_focus.clone());
         handles.push(self.inline_focus.clone());
         handles.push(self.size_focus.clone());
+        handles.push(self.remote_add_focus.clone());
+        handles.push(self.remote_pair_focus.clone());
+        handles.extend(self.remote_focus.iter().map(|(_, focus)| focus.clone()));
         if self.orca_pending.is_none() {
             handles.push(self.orca_preview_focus.clone());
             if self.can_import_orca() {
@@ -1186,6 +1216,19 @@ impl SettingsPanel {
                     self.change(|settings| Toggle::AgentInline.flip(settings), cx);
                 } else if self.size_focus.is_focused(window) {
                     self.change(|settings| Toggle::WindowSize.flip(settings), cx);
+                } else if self.remote_add_focus.is_focused(window) {
+                    self.remote_confirm = None;
+                    cx.emit(SettingsEvent::AddHost);
+                } else if self.remote_pair_focus.is_focused(window) {
+                    self.remote_confirm = None;
+                    cx.emit(SettingsEvent::PairMac);
+                } else if let Some(host) = self
+                    .remote_focus
+                    .iter()
+                    .find(|(_, focus)| focus.is_focused(window))
+                    .map(|(id, _)| id.clone())
+                {
+                    self.remove_host(&host, cx);
                 } else if self.orca_preview_focus.is_focused(window) {
                     self.preview_orca(cx);
                 } else if self.orca_import_focus.is_focused(window) {
@@ -1474,6 +1517,266 @@ impl SettingsPanel {
                             .and_then(OrcaImportOffer::button)
                             .map(|label| self.orca_button(label, true, !self.can_import_orca(), cx)),
                     ),
+            )
+            .into_any_element()
+    }
+
+    /// Give each host listed a focus handle, in the order they are drawn.
+    fn sync_remote_focus(&mut self, cx: &mut Context<Self>) {
+        let ids = remote_service::hosts(cx)
+            .into_iter()
+            .map(|(host, _)| host.id)
+            .collect::<Vec<_>>();
+        if self.remote_focus.iter().map(|(id, _)| id).eq(ids.iter()) {
+            return;
+        }
+        let mut previous = std::mem::take(&mut self.remote_focus);
+        self.remote_focus = ids
+            .into_iter()
+            .map(|id| {
+                let focus = previous
+                    .iter()
+                    .position(|(old, _)| *old == id)
+                    .map(|index| previous.swap_remove(index).1)
+                    .unwrap_or_else(|| cx.focus_handle());
+                (id, focus)
+            })
+            .collect();
+        if self
+            .remote_confirm
+            .as_ref()
+            .is_some_and(|id| !self.remote_focus.iter().any(|(host, _)| host == id))
+        {
+            self.remote_confirm = None;
+        }
+    }
+
+    /// Forget a paired Mac. The first click asks, the second removes: the Mac has to send
+    /// a new link to be paired again.
+    fn remove_host(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.remote_pending.is_some() {
+            return;
+        }
+        if self.remote_confirm.as_deref() != Some(id) {
+            self.remote_confirm = Some(id.to_owned());
+            cx.notify();
+            return;
+        }
+        self.remote_confirm = None;
+        self.remote_error = None;
+        let backend = match cx.global_mut::<RemoteState>().backend() {
+            Ok(backend) => backend,
+            Err(error) => {
+                self.remote_error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        self.remote_pending = Some("Removing…");
+        let id = id.to_owned();
+        let work = cx
+            .background_executor()
+            .spawn(async move { backend.remove_host(&id) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |panel, cx| {
+                panel.remote_pending = None;
+                match result {
+                    Ok(()) => {
+                        cx.global_mut::<RemoteState>().tree_mut().invalidate_hosts();
+                    }
+                    Err(error) => panel.remote_error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn remote_button(
+        &self,
+        id: String,
+        label: &'static str,
+        focus: &FocusHandle,
+        accent: u32,
+        on_press: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = palette(cx);
+        let on_press = Rc::new(on_press);
+        let focus_on_press = focus.clone();
+        div()
+            .id(id)
+            .track_focus(focus)
+            .px(ui_text::space(10.0))
+            .py(ui_text::space(6.0))
+            .border_1()
+            .border_color(rgb(accent))
+            .bg(rgb(colors.panel))
+            .text_size(ui_text::text(10.0))
+            .text_color(rgb(accent))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .focus_visible(|style| style.border_color(rgb(colors.magenta)))
+            .child(label)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |_, _, window, cx| focus_on_press.focus(window, cx)),
+            )
+            .on_click(cx.listener(move |view, _, _, cx| on_press(view, cx)))
+            .into_any_element()
+    }
+
+    fn remote_section(&self, layout: SettingsLayout, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
+        let hosts = remote_service::hosts(cx);
+        let error = cx
+            .global::<RemoteState>()
+            .tree()
+            .hosts_error()
+            .map(str::to_owned);
+        let rows = hosts
+            .iter()
+            .zip(self.remote_focus.iter())
+            .map(|((host, link), (_, focus))| {
+                let confirming = self.remote_confirm.as_deref() == Some(host.id.as_str());
+                let dot = match link {
+                    Some(Link::Online) => colors.cyan,
+                    Some(Link::Offline) => colors.muted,
+                    Some(Link::Connecting) | None => colors.gold,
+                };
+                let id = host.id.clone();
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(ui_text::space(10.0))
+                    .px(ui_text::space(ROW_PAD_X))
+                    .py(ui_text::space(ROW_PAD_Y))
+                    .border_1()
+                    .border_color(rgb(colors.divider))
+                    .bg(rgb(colors.panel_active))
+                    .child(div().flex_none().text_color(rgb(dot)).child(
+                        if *link == Some(Link::Offline) {
+                            "○"
+                        } else {
+                            "●"
+                        },
+                    ))
+                    .child(
+                        row_text()
+                            .gap(ui_text::space(2.0))
+                            .child(
+                                div()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_size(ui_text::text(12.0))
+                                    .child(host.label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(ui_text::text(10.0))
+                                    .text_color(rgb(colors.muted))
+                                    .child(link.map_or("Connecting…", Link::text)),
+                            ),
+                    )
+                    .child(self.remote_button(
+                        format!("remote-remove-{}", host.id),
+                        if confirming {
+                            "CONFIRM REMOVE"
+                        } else {
+                            "REMOVE"
+                        },
+                        focus,
+                        if confirming {
+                            colors.gold
+                        } else {
+                            colors.muted
+                        },
+                        move |view, cx| view.remove_host(&id, cx),
+                        cx,
+                    ))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let empty = rows.is_empty();
+        div()
+            .id("remote-hosts")
+            .flex()
+            .flex_col()
+            .gap(ui_text::space(9.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(10.0))
+                    .child(div().flex_1().text_size(ui_text::text(13.0)).child("Other Macs"))
+                    .child(status_chip(
+                        if self.remote_pending.is_some() {
+                            "WORKING"
+                        } else {
+                            "ENCRYPTED"
+                        },
+                        colors.magenta,
+                        colors,
+                    )),
+            )
+            .child(
+                div()
+                    .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                    .text_size(ui_text::text(11.0))
+                    .text_color(rgb(colors.muted))
+                    .child("Add a Mac to open its projects and shells in this window. A paired Mac has the same control over the other as a paired phone: it can type into any terminal."),
+            )
+            .child(row_list().children(rows))
+            .children(empty.then(|| {
+                div()
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child("No other Mac is paired yet.")
+            }))
+            .children(error.map(|error| {
+                div()
+                    .text_size(ui_text::text(11.0))
+                    .text_color(rgb(colors.gold))
+                    .child(error)
+            }))
+            .children(self.remote_pending.map(|message| {
+                div()
+                    .text_size(ui_text::text(11.0))
+                    .text_color(rgb(colors.cyan))
+                    .child(message)
+            }))
+            .children(self.remote_error.as_ref().map(|error| {
+                div()
+                    .text_size(ui_text::text(11.0))
+                    .text_color(rgb(colors.gold))
+                    .child(error.clone())
+            }))
+            .child(
+                action_bar(layout)
+                    .child(self.remote_button(
+                        "remote-pair-mac".to_owned(),
+                        "PAIR ANOTHER MAC",
+                        &self.remote_pair_focus,
+                        colors.text,
+                        |view, cx| {
+                            view.remote_confirm = None;
+                            cx.emit(SettingsEvent::PairMac);
+                        },
+                        cx,
+                    ))
+                    .child(self.remote_button(
+                        "remote-add-host".to_owned(),
+                        "ADD HOST",
+                        &self.remote_add_focus,
+                        colors.cyan,
+                        |view, cx| {
+                            view.remote_confirm = None;
+                            cx.emit(SettingsEvent::AddHost);
+                        },
+                        cx,
+                    )),
             )
             .into_any_element()
     }
@@ -2053,6 +2356,7 @@ impl SettingsPanel {
             Section::StatusBar => crate::status_bar::render_settings(&settings.status_bar, |view: &mut Self, status, _, cx| {
                 view.change(move |settings| settings.status_bar = status, cx);
             }, cx),
+            Section::Remote => self.remote_section(layout, cx),
             Section::Orca => self.orca_section(layout, cx),
         }
     }
@@ -2060,6 +2364,7 @@ impl SettingsPanel {
 
 impl Render for SettingsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_remote_focus(cx);
         let settings = cx.global::<Settings>().clone();
         let colors = palette(cx);
         let width = self.bounds.get().size.width.as_f32();
@@ -2852,6 +3157,7 @@ mod tests {
                     Section::Agents,
                     Section::Windows,
                     Section::StatusBar,
+                    Section::Remote,
                     Section::Orca
                 ],
             ]

@@ -130,6 +130,52 @@ pub fn sorted_project_indices(
     indices
 }
 
+/// What the order of a host's project needs to know. Another Mac's files cannot be sampled,
+/// so "last edited" has no figure of its own and follows when the project was added.
+pub struct RemoteSortKey<'a> {
+    pub name: &'a str,
+    pub id: &'a str,
+    pub created_at: u64,
+    /// Live shells, `None` until the host's list of them has been read.
+    pub live: Option<u64>,
+}
+
+/// The order a folder lists a host's projects in, by the same rules as the local ones:
+/// unknown figures follow known ones, and ties fall back to name and id.
+pub fn sorted_remote_indices(keys: &[RemoteSortKey<'_>], order: ProjectOrder) -> Vec<usize> {
+    let value = |key: &RemoteSortKey<'_>| match order.by {
+        ProjectSort::Name => None,
+        ProjectSort::LastEdited | ProjectSort::DateAdded => {
+            (key.created_at > 0).then_some(key.created_at)
+        }
+        ProjectSort::LiveSessions => key.live,
+    };
+    let mut indices: Vec<_> = (0..keys.len()).collect();
+    indices.sort_by(|&a, &b| {
+        let (left, right) = (&keys[a], &keys[b]);
+        let name_order = || {
+            left.name
+                .to_lowercase()
+                .cmp(&right.name.to_lowercase())
+                .then_with(|| left.name.cmp(right.name))
+        };
+        let primary = if order.by == ProjectSort::Name {
+            directed(name_order(), order.descending)
+        } else {
+            match (value(left), value(right)) {
+                (Some(a), Some(b)) => directed(a.cmp(&b), order.descending),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            }
+        };
+        primary
+            .then_with(name_order)
+            .then_with(|| left.id.cmp(right.id))
+    });
+    indices
+}
+
 fn directed(ordering: Ordering, descending: bool) -> Ordering {
     if descending {
         ordering.reverse()
@@ -272,6 +318,49 @@ mod tests {
         assert_eq!(
             ids(&state, order.toggled(), &BTreeMap::new(), &shells),
             ["c", "a", "b"]
+        );
+    }
+
+    #[test]
+    fn a_hosts_projects_sort_by_the_same_rules_with_unknown_figures_last() {
+        let key = |id: &'static str, name: &'static str, created_at, live| RemoteSortKey {
+            name,
+            id,
+            created_at,
+            live,
+        };
+        let keys = [
+            key("unknown", "Unknown", 0, None),
+            key("old", "beta", 10, Some(1)),
+            key("new", "Alpha", 20, Some(3)),
+            key("same", "alpha", 20, None),
+        ];
+        let order = |by: ProjectSort| {
+            sorted_remote_indices(&keys, ProjectOrder::for_sort(by))
+                .into_iter()
+                .map(|index| keys[index].id)
+                .collect::<Vec<_>>()
+        };
+        // Newest first; "last edited" follows the date added, which is all that is known.
+        assert_eq!(
+            order(ProjectSort::DateAdded),
+            ["new", "same", "old", "unknown"]
+        );
+        assert_eq!(
+            order(ProjectSort::LastEdited),
+            order(ProjectSort::DateAdded)
+        );
+        assert_eq!(order(ProjectSort::Name), ["new", "same", "old", "unknown"]);
+        assert_eq!(
+            order(ProjectSort::LiveSessions),
+            ["new", "old", "same", "unknown"]
+        );
+        assert_eq!(
+            sorted_remote_indices(&keys, ProjectOrder::for_sort(ProjectSort::Name).toggled())
+                .into_iter()
+                .map(|index| keys[index].id)
+                .collect::<Vec<_>>(),
+            ["unknown", "old", "same", "new"]
         );
     }
 

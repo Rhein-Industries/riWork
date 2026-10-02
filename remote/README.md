@@ -210,11 +210,129 @@ is not idempotent and not deduplicated: a repeat answers `already_exists`. Its t
 and output the connector relies on (in a throwaway `HOME` and `RIWORK_HOME`), and an ignored test
 drives the real CLI with `RIWORK_TEST_CLI` the same way.
 
+## Pairing another Mac (desktop devices)
+
+A second Mac running RiWork can show this Mac's shells as real terminals (the contract is
+in [remote-protocol.md](../docs/remote-protocol.md), "Desktop terminal extension"). It is paired as a
+*desktop* device, on protocol 2 only:
+
+```sh
+riwork remote pair --relay wss://relay.example.com/v1/ws --protocol 2 --kind desktop \
+  --name 'Studio Mac' --out "$RIWORK_PAIR_DIR/studio.pairing.json" \
+  --relay-routes "$RIWORK_PAIR_DIR/relay-routes.json" --show-link
+riwork remote devices   # each device now says "kind": "mobile" or "desktop"
+```
+
+`--kind` is `mobile` (the default) or `desktop`; `--kind desktop` without `--protocol 2` is refused.
+Import the printed `riwork://pair?v=2&data=...` link on the other Mac, then provision the relay route
+and start the connector exactly as for a phone. The kind is stored in the host's `devices.json` only
+(the field is left out for a phone, so a config of phones is unchanged byte for byte), and only a
+desktop on a v2 session is told in `ready` (`features.pty`) that terminal streams exist. Revoke it
+like any device; its streams end within a second. Do not downgrade `riwork-remote` once a desktop is
+paired: an older build refuses a `devices.json` with a `kind` it does not know, rather than treating
+the desktop as a phone.
+
+`pty.open` runs `riwork shell attach SHELL_UUID --exec [--ignore-size]` (which needs a `riwork` that
+reports `shell_attach_exec` in `riwork capabilities --json`) on a pseudo-terminal the connector owns
+(`src/pty.rs`: `openpty`, a session of its own with the terminal as controlling terminal, an
+allowlisted environment, and the process killed and reaped when the stream, the session or the
+connector ends). The connector's `lanes.rs` gives `pty.open` a lane of its own (one at a time) and
+`pty.read` another (up to 12 parked), and the connection loop answers `pty.write`, `pty.resize` and
+`pty.close` itself, in arrival order, because they never wait. The tests are `tests/pty.rs` (a
+stand-in CLI, through the RPC layer and through a real relay and connector) and, in the root crate,
+`tests/shell_attach_exec_cli.rs`.
+
 Revocation stops live endpoint access within one second and removes its local
 PSK/tokens. Remove that route from the relay manifest and restart the relay to
 invalidate relay tokens too. Other paired devices keep their endpoint secrets;
 a relay restart reconnects them with fresh session keys. An input already in
 flight cannot be undone.
+
+## Using another Mac as a client
+
+Another Mac running RiWork can control this Mac's shells the way a phone does, through the same
+blind relay and the same end-to-end encryption, and show them in real terminals. The shell stays
+a tmux session on the host; the client runs a bridge process whose child is a Ghostty surface, and
+the bytes of a `tmux attach` that the host runs in a pseudo-terminal travel over the `pty.*` RPCs
+(`pty.open`, `pty.read`, `pty.write`, `pty.resize`, `pty.close`). Scrollback, the alternate screen,
+mouse and the repaint after a reconnect therefore come from tmux and the terminal, not from a
+re-drawing of captured text. A Mac pairs with `--protocol 2 --kind desktop` and has the same
+authority as a phone: full terminal control, revocable with `revoke` like any device. A phone's
+pairing is refused `pty.*` ("unsupported RPC method").
+
+```sh
+# On the host (the Mac whose shells are shown); see "Pair, provision and start".
+riwork remote pair --protocol 2 --kind desktop --relay wss://relay.example.com/v1/ws \
+  --name 'My MacBook' --out "$RIWORK_PAIR_DIR/macbook.pairing.json" \
+  --relay-routes "$RIWORK_PAIR_DIR/relay-routes.json" --show-link
+# On the client, within the invite's lifetime, with the host's connector and relay running:
+riwork-remote hosts add --link 'riwork://pair?v=2&data=...' --label 'Studio'   # or --link - to read it from stdin
+riwork-remote hosts list [--json]
+riwork-remote status --desktop DESKTOP_ID [--watch] [--json]
+riwork-remote call --desktop DESKTOP_ID projects.list
+riwork-remote attach --desktop DESKTOP_ID --shell SHELL_UUID [--ignore-size]
+riwork-remote hosts remove DESKTOP_ID
+```
+
+**Registry.** `hosts add` redeems the invite at once (`pair_hello`, `pair_accept`, `pair_finish` of
+[remote-protocol-v2.md](../docs/remote-protocol-v2.md)) and stores the established record in
+`$RIWORK_HOME/remote/hosts.json` (mode 600, mode-700 directory, written atomically with the same
+helpers as `devices.json`) before it sends the first RPC. The invite secret is gone from the record;
+what stays is the root key and the relay token, so the file is a secret and nothing prints it:
+`hosts list` shows the id (the host's desktop id, which `--desktop` takes), label, relay and route,
+and `hosts add --json` the same for the new host. A host is added once; to pair it again, remove it first.
+`--allow-insecure-loopback` is the development switch of `pair`, for a `ws://127.0.0.1` relay. Add the
+host from a link only; the link, the export file and any terminal scrollback that held it are as
+secret as the invite until it is redeemed (`--link -` reads it from standard input, which keeps it out of
+the process list).
+
+**One process per host.** The relay lets one socket per role hold a route, so `riwork-remote client serve
+--desktop ID` owns the connection (role "mobile", the v2 handshake, deflate when the host offers it, a
+ping and a probe every 10 s, reconnects with backoff of 0.5 to 15 s) and everything else on this Mac
+talks to it over a Unix socket. `client ensure --desktop ID` starts it detached unless one answers
+(safe to repeat or run at once; it logs to `run/*.log`), `client socket --desktop ID` prints the
+socket's absolute path without starting anything, and it exits after five minutes without a client.
+`hosts remove` ends it. The socket is `$RIWORK_HOME/remote/run/<12 hex>.sock`, mode 600 in a mode-700
+directory, with a hashed name because a macOS socket path may hold 104 bytes (a longer `RIWORK_HOME` is
+refused with that advice). A connection from another user is dropped (`getpeereid` on macOS). The
+daemon is a fixed list of operations, one JSON request per line, answered with JSON lines:
+
+| Request | Answer |
+| --- | --- |
+| `{"op":"call","id","method","params","timeout_ms"}` | `{"id","ok":true,"result","server_ms"}` or `{"id","ok":false,"error":{"code","message"},"server_ms"}`. Many calls may run at once on a connection. While the first connection is still being made a call waits for it; once the host is known to be away it fails at once with `offline`. The daemon's own codes are `offline`, `timeout` and `invalid_request`. |
+| `{"op":"status"}` | `{"state":"connecting"\|"online"\|"offline","rtt_ms"?,"since"?,"reason"?,"label"}` (`since` is Unix seconds; the reason of a host that is away is "host offline (or access revoked)") |
+| `{"op":"watch"}` | that line now and again at every change, until the client closes |
+| `{"op":"shutdown"}` | `{"ok":true}`, then the daemon quits |
+| `{"op":"attach","shell_id","columns","rows","term","ignore_size"}` | the connection becomes binary frames |
+
+An attached connection carries frames `u8 type || u32 big-endian length || payload` (at most 1 MiB):
+`D` terminal data in both directions, `R` `{"columns","rows"}` from the bridge, `S` a status line
+as above and `E` `{"reason"}` from the daemon (`exited`, `closed`, `limit`, or the host's refusal such as
+`not_found: ...`), after which the daemon hangs up. The daemon `pty.open`s the stream (with TERM
+`xterm-ghostty` or `xterm-256color`), parks one `pty.read` per stream and files its reply by `seq`
+(the host's `max_reads` are counted over all attached terminals, and a terminal waits for a free one;
+the relay closes a socket whose queue passes 16 messages, so more would only risk that), and pipelines
+`pty.write` in chunks of at most `max_write` with a running `seq`, at most four in flight. A host that is
+behind answers a write `pty_limit` without advancing the offset, and the writes already sent behind it
+skip bytes; the daemon lets the window drain and sends them again, in order and at the same offsets,
+after 100 ms. A chunk that starts with CR carries `gap_ms`, the pause the person made before it (at most
+150 ms) less what the two writes are apart anyway, so that a Return typed after a pause costs no delay and
+one squeezed against its text by a full window keeps the pause that Codex's paste detection looks for.
+Window changes are folded into the latest size, with one `pty.resize` in flight. When the link drops the bridge gets `S`
+offline, the daemon waits for the next session and opens the stream again with the current window
+size (`S` online follows), whether the host was away for a minute or for a moment. Keys typed while
+the stream is down are dropped, never replayed. Closing the bridge sends `pty.close`; the host also
+drops a session's streams when the session ends.
+
+**The bridge.** `attach` runs `client ensure`, puts its terminal in raw mode (every key, Ctrl-C
+included, goes to the host; the mode is restored when it exits, also on SIGTERM and SIGHUP), attaches
+with the terminal's size and `xterm-ghostty` if `TERM` says Ghostty (otherwise `xterm-256color`),
+copies keys and output, and sends `R` on SIGWINCH. On `S` offline it freezes the screen and draws one
+dimmed line on the last row; on `S` online after an interruption it first writes a reset (`ESC [ ! p`,
+the alternate screen left, mouse, focus and bracketed-paste modes off, the cursor shown) so that
+whatever mode the frozen frame left on is gone before tmux repaints. On `E` it prints the reason and
+exits 0. A host that cannot attach this Mac says why: "unsupported RPC method" means it was paired as a
+phone (pair again with `--kind desktop`).
 
 ## Local development
 
@@ -271,6 +389,16 @@ The small default terminal-control test also requires `tmux` (and uses its own
 temporary server). Root input/viewport modules are compiled here with strict
 Clippy independently of GPUI.
 
+The client tests (`tests/client*.rs`) run in temporary homes with short paths and touch no real
+state. `client.rs` pairs a real relay and the real connector by a v2 link and drives the real binary
+(`hosts`, `call`, `status`, the client process, host restart and revocation). `client_attach.rs`,
+`client_link.rs` and `client_bridge.rs` use a host stand-in (`tests/client_support`) that does the
+real v2 handshake and answers `pty.*` as the design says, so the stream, the reconnect and the bridge
+(in a real pseudo-terminal: raw mode, SIGWINCH, the reset, the restored terminal) are tested
+independently of the host's `pty.*`. `client_real_host.rs` checks the same against the real connector;
+its attach test is ignored until the host's `pty.*` and `pair --kind desktop` exist
+(`cargo test --test client_real_host -- --ignored`).
+
 Fixtures were generated independently with Python `cryptography`, checked in
 Rust, and verified against native Swift CryptoKit. To regenerate:
 
@@ -285,8 +413,9 @@ uv run --with cryptography python remote/fixtures/generate.py
   pair a device; watch the connector log and `devices` output, and `revoke` strays.
 - Relay sees route IDs, role tokens during registration, timing and frame sizes.
   It cannot decrypt session content or authenticate as an endpoint with a role token.
-- Terminal support is captured text and one control-free physical line followed
-  by Return. It is not a remote PTY or a semantic harness API.
+- For a phone, terminal support is captured text and one control-free physical line followed
+  by Return (or `shell.keys`). It is not a remote PTY or a semantic harness API. A paired
+  desktop (`pair --kind desktop`, above) is the exception: it gets a real terminal stream.
 - Outcome ledger is durable and never evicted, up to 4096 inputs per device.
   At capacity, review outcomes and pair a new device. Pending/uncertain sends
   return `outcome_unknown`; inspect the shell before any deliberate manual retry.

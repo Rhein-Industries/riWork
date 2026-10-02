@@ -122,6 +122,16 @@ struct Registry {
     sessions: Vec<ShellSession>,
 }
 
+/// How a tmux client attaches to a shell (see `SessionManager::attach_argv`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AttachOptions {
+    /// `-f ignore-size`: the client never sizes the window, so a second
+    /// display (a remote desktop's) does not shrink the one the shell has.
+    pub ignore_size: bool,
+    /// `-r`: the client only watches; its keys are not sent to the shell.
+    pub read_only: bool,
+}
+
 /// Handles shell metadata and a dedicated tmux server. Clone is safe because
 /// all registry writes take the same on-disk lock.
 #[derive(Clone, Debug)]
@@ -762,6 +772,19 @@ impl SessionManager {
     /// The command to pass as `TerminalOptions.command` in gpui-libghostty.
     /// Ghostty parses the command into argv and renders the tmux client.
     pub fn attach_command(&self, id: &str) -> Result<String, String> {
+        let argv = self.attach_argv(id, AttachOptions::default())?;
+        Ok(argv
+            .iter()
+            .map(|argument| quote_arg(argument))
+            .collect::<Vec<_>>()
+            .join(" "))
+    }
+
+    /// The argument vector of a tmux client attached to shell `id`, after
+    /// checking that it is live and configuring its scrolling. `attach_command`
+    /// is this, quoted for Ghostty to parse; `attach_exec_command` is this,
+    /// run by `riwork shell attach ID --exec`.
+    pub fn attach_argv(&self, id: &str, options: AttachOptions) -> Result<Vec<String>, String> {
         self.require_live(id)?;
         // Ghostty renders a tmux client: scrollback belongs to tmux, so mouse
         // reporting is needed for wheel/trackpad scrolling and copy mode.
@@ -769,13 +792,49 @@ impl SessionManager {
         let configured = self.configure_scrolling(id);
         self.invalidate_sample();
         configured?;
-        Ok(format!(
-            "{} -u TMUX -u TMUX_TMPDIR {} -L {} attach-session -t {}",
-            quote_arg("/usr/bin/env"),
-            quote_arg(&self.tmux.to_string_lossy()),
-            quote_arg(&self.socket_name),
-            quote_arg(id)
-        ))
+        let mut argv: Vec<String> = [
+            "/usr/bin/env",
+            "-u",
+            "TMUX",
+            "-u",
+            "TMUX_TMPDIR",
+            &self.tmux.to_string_lossy(),
+            "-L",
+            &self.socket_name,
+            "attach-session",
+        ]
+        .map(str::to_owned)
+        .into();
+        if options.read_only {
+            argv.push("-r".to_owned());
+        }
+        if options.ignore_size {
+            argv.extend(["-f".to_owned(), "ignore-size".to_owned()]);
+        }
+        argv.extend(["-t".to_owned(), id.to_owned()]);
+        Ok(argv)
+    }
+
+    /// The process `riwork shell attach ID --exec` turns into: `attach_argv`
+    /// with the terminal type its tmux client should announce (see
+    /// `attach_terminal`). The caller replaces itself with it, so the tmux
+    /// client owns the terminal it was started on, which is what a remote
+    /// desktop's pseudo-terminal needs.
+    pub fn attach_exec_command(&self, id: &str, options: AttachOptions) -> Result<Command, String> {
+        let argv = self.attach_argv(id, options)?;
+        let inherited = env::var_os("TERMINFO").map(PathBuf::from);
+        let terminal = attach_terminal(
+            env::var("TERM").ok().as_deref(),
+            inherited.as_deref(),
+            &bundled_terminfo_dirs(),
+        );
+        let mut command = Command::new(&argv[0]);
+        command.args(&argv[1..]).env("TERM", &terminal.term);
+        match &terminal.terminfo {
+            Some(dir) => command.env("TERMINFO", dir),
+            None => command.env_remove("TERMINFO"),
+        };
+        Ok(command)
     }
 
     fn configure_scrolling(&self, id: &str) -> Result<(), String> {
@@ -2277,6 +2336,96 @@ mod compat_tests {
         settings("not json");
         assert!(selected_codex_binding(&home.0, None).is_err());
     }
+}
+
+/// The terminal type an attached tmux client announces, and the terminfo
+/// directory that describes it.
+#[derive(Debug, PartialEq, Eq)]
+struct AttachTerminal {
+    term: String,
+    /// `None` leaves the lookup to the system.
+    terminfo: Option<PathBuf>,
+}
+
+/// `TERM` for a tmux client started by `shell attach --exec`. `requested` is
+/// the `TERM` it was started with: a remote desktop's host asks for
+/// `xterm-ghostty` or `xterm-256color` and the display there is a Ghostty.
+///
+/// - `xterm-ghostty` is kept when its terminfo can be found: in the app
+///   bundle (`bundled`: `Contents/Resources/terminfo`, which RiWork ships
+///   because the system has no entry for it) or in the `inherited` `TERMINFO`
+///   (a Ghostty that started this). `TERMINFO` is then set to that directory.
+///   Without one tmux would refuse the terminal, so it becomes
+///   `xterm-256color`, which every system describes.
+/// - A missing, empty or `dumb` `TERM` is `xterm-256color` too.
+/// - Anything else is the caller's own terminal and stays.
+fn attach_terminal(
+    requested: Option<&str>,
+    inherited: Option<&Path>,
+    bundled: &[PathBuf],
+) -> AttachTerminal {
+    const GHOSTTY: &str = "xterm-ghostty";
+    const FALLBACK: &str = "xterm-256color";
+    match requested.map(str::trim) {
+        Some(GHOSTTY) => {
+            let found = bundled
+                .iter()
+                .map(PathBuf::as_path)
+                .chain(inherited)
+                .find(|dir| terminfo_entry(dir, GHOSTTY));
+            match found {
+                Some(dir) => AttachTerminal {
+                    term: GHOSTTY.to_owned(),
+                    terminfo: Some(dir.to_path_buf()),
+                },
+                None => AttachTerminal {
+                    term: FALLBACK.to_owned(),
+                    terminfo: None,
+                },
+            }
+        }
+        None | Some("" | "dumb") => AttachTerminal {
+            term: FALLBACK.to_owned(),
+            terminfo: None,
+        },
+        Some(other) => AttachTerminal {
+            term: other.to_owned(),
+            terminfo: inherited.map(Path::to_path_buf),
+        },
+    }
+}
+
+/// Whether `dir` holds a compiled entry for `term`, in the layout of macOS's
+/// ncurses (`78/xterm-ghostty`, a hex directory) or of the others
+/// (`x/xterm-ghostty`).
+fn terminfo_entry(dir: &Path, term: &str) -> bool {
+    let Some(first) = term.bytes().next() else {
+        return false;
+    };
+    [format!("{first:02x}"), char::from(first).to_string()]
+        .iter()
+        .any(|folder| dir.join(folder).join(term).is_file())
+}
+
+/// Where this executable's app bundle keeps Ghostty's terminfo: next to the
+/// executable inside `RiWork.app/Contents/MacOS`, or, for a build that sits
+/// beside the app (a `target/release/riwork` next to a packaged `RiWork.app`),
+/// inside that app.
+fn bundled_terminfo_dirs() -> Vec<PathBuf> {
+    let Ok(exe) = env::current_exe() else {
+        return Vec::new();
+    };
+    let exe = exe.canonicalize().unwrap_or(exe);
+    let Some(dir) = exe.parent() else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = dir
+        .parent()
+        .map(|contents| contents.join("Resources/terminfo"))
+        .into_iter()
+        .collect();
+    dirs.push(dir.join("RiWork.app/Contents/Resources/terminfo"));
+    dirs
 }
 
 fn find_tmux() -> Option<PathBuf> {
@@ -4538,7 +4687,7 @@ fn tmux_error(output: &Output) -> String {
     }
 }
 
-fn quote_arg(argument: &str) -> String {
+pub(crate) fn quote_arg(argument: &str) -> String {
     if !argument.is_empty()
         && argument
             .bytes()
@@ -4862,6 +5011,70 @@ mod tmux_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A terminfo directory with the compiled entries named by `files`.
+    fn terminfo_dir(files: &[&str]) -> PathBuf {
+        let dir = env::temp_dir().join(format!("riwork-terminfo-{}", Uuid::new_v4()));
+        for file in files {
+            fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+            fs::write(dir.join(file), b"entry").unwrap();
+        }
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_attached_client_announces_ghostty_only_where_its_terminfo_can_be_found() {
+        let hex = terminfo_dir(&["78/xterm-ghostty"]);
+        let letter = terminfo_dir(&["x/xterm-ghostty"]);
+        let empty = terminfo_dir(&["78/xterm-kitty"]);
+        let ghostty = |inherited: Option<&Path>, bundled: &[PathBuf]| {
+            attach_terminal(Some("xterm-ghostty"), inherited, bundled)
+        };
+        let announced = |dir: &Path| AttachTerminal {
+            term: "xterm-ghostty".into(),
+            terminfo: Some(dir.to_path_buf()),
+        };
+        let fallback = AttachTerminal {
+            term: "xterm-256color".into(),
+            terminfo: None,
+        };
+
+        // The app bundle's terminfo, in macOS's hex layout or the plain one.
+        assert_eq!(ghostty(None, &[hex.clone()]), announced(&hex));
+        assert_eq!(ghostty(None, &[letter.clone()]), announced(&letter));
+        // The first directory that has the entry wins; a bundle beats the environment.
+        assert_eq!(
+            ghostty(Some(&letter), &[empty.clone(), hex.clone()]),
+            announced(&hex)
+        );
+        // A Ghostty that started the process has already said where it is.
+        assert_eq!(ghostty(Some(&letter), &[empty.clone()]), announced(&letter));
+        // Nowhere: tmux would refuse the terminal, so it is a plain xterm.
+        assert_eq!(ghostty(None, &[]), fallback);
+        assert_eq!(ghostty(Some(&empty), &[empty.clone()]), fallback);
+        assert_eq!(ghostty(None, &[PathBuf::from("/nonexistent")]), fallback);
+
+        // No terminal, or none that tmux can use, is a plain xterm; any other
+        // is the caller's own and stays.
+        for requested in [None, Some(""), Some("dumb"), Some("  ")] {
+            assert_eq!(attach_terminal(requested, None, &[hex.clone()]), fallback);
+        }
+        assert_eq!(
+            attach_terminal(Some("xterm-256color"), None, &[hex.clone()]),
+            fallback
+        );
+        assert_eq!(
+            attach_terminal(Some("screen-256color"), Some(&empty), &[hex.clone()]),
+            AttachTerminal {
+                term: "screen-256color".into(),
+                terminfo: Some(empty.clone())
+            }
+        );
+        for dir in [hex, letter, empty] {
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
 
     #[test]
     fn a_missing_agent_is_reported_in_the_words_the_remote_connector_recognizes() {
