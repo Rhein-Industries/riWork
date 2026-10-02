@@ -17,7 +17,7 @@ use crate::{
         CreateRequest, RepeatChange, ScheduleError, ScheduleKey, ScheduleService, ScopeInput,
         UpdateRequest,
     },
-    sessions::{HarnessKind, SessionManager, ShellKind, ShellSession},
+    sessions::{AttachOptions, HarnessKind, SessionManager, ShellKind, ShellSession},
     store::{SearchHit, State, Store, Task, TaskStatus, Worktree},
 };
 
@@ -94,6 +94,7 @@ riwork shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no R
 riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
 riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
 riwork shell cwd|metrics|attach|close ID
+riwork shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux client of the shell (for remote terminals)
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD]
 riwork orchestrator list [--project ID]   List global and project orchestrators
@@ -737,15 +738,23 @@ fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
 /// `project_create_exclusive`: `project create` takes `--exclusive` (see `Store::create_new_project`).
 /// A CLI without it would read the flag as a PATH and make a folder of that name in its working
 /// directory, so a caller must see this say yes before it sends the flag.
+///
+/// `shell_attach_exec`: `shell attach ID --exec [--ignore-size] [--read-only]` replaces the
+/// process with a tmux client of the shell, which is what a remote desktop's terminal stream runs
+/// (`pty.open` in the remote connector). An older CLI would refuse the flags as a usage error.
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
-        return print_json(
-            &json!({"v": 1, "verifies_shell": true, "project_create_exclusive": true}),
-        );
+        return print_json(&json!({
+            "v": 1,
+            "verifies_shell": true,
+            "project_create_exclusive": true,
+            "shell_attach_exec": true
+        }));
     }
     println!("verifies_shell yes");
     println!("project_create_exclusive yes");
+    println!("shell_attach_exec yes");
     Ok(())
 }
 
@@ -1703,7 +1712,28 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             }
         }
         "attach" => {
-            let id = take_single(args, "shell attach ID")?;
+            let exec = take_flag(&mut args, "--exec");
+            let options = AttachOptions {
+                ignore_size: take_flag(&mut args, "--ignore-size"),
+                read_only: take_flag(&mut args, "--read-only"),
+            };
+            if !exec && options != AttachOptions::default() {
+                return Err("--ignore-size and --read-only only apply to --exec".to_owned());
+            }
+            let id = take_single(
+                args,
+                if exec {
+                    ATTACH_EXEC_USAGE
+                } else {
+                    "shell attach ID"
+                },
+            )?;
+            if exec {
+                if json {
+                    return Err("shell attach --exec cannot print JSON".to_owned());
+                }
+                return exec_attach(&manager, &id, options);
+            }
             let command = manager.attach_command(&id)?;
             if json {
                 print_json(&json!({ "id": id, "command": command }))?;
@@ -1714,6 +1744,27 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         _ => return Err(format!("Unknown shell command '{operation}'\n{HELP}")),
     }
     Ok(())
+}
+
+const ATTACH_EXEC_USAGE: &str = "shell attach ID --exec [--ignore-size] [--read-only]";
+
+/// `shell attach ID --exec`: this process becomes a tmux client of the shell.
+/// The shell is checked first and its scrolling configured, exactly as for
+/// the command `shell attach` prints, so a refusal is a plain error on
+/// stderr and the terminal is still the caller's. Only returns on failure.
+fn exec_attach(manager: &SessionManager, id: &str, options: AttachOptions) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let mut command = manager.attach_exec_command(id, options)?;
+        let error = command.exec();
+        Err(format!("start tmux for {id}: {error}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (manager, id, options);
+        Err("shell attach --exec needs a Unix system".to_owned())
+    }
 }
 
 fn orchestrator_command(mut args: Vec<String>, json: bool) -> Result<(), String> {

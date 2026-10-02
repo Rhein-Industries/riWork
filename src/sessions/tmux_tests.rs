@@ -3091,3 +3091,98 @@ fn bounded_runner_returns_the_exit_status_and_both_streams_when_the_child_ends()
     assert!(started.elapsed() >= Duration::from_millis(300));
     assert!(started.elapsed() < Duration::from_secs(5));
 }
+
+#[cfg(unix)]
+#[test]
+fn attach_command_is_the_quoted_attach_argv_and_exec_adds_only_the_flags_asked_for() {
+    let id = "00000000-0000-4000-8000-0000000000c1";
+    let fixture = Fixture::with_live_sessions(&[id]);
+    fixture.registry(vec![shell(id, None, None)]);
+    let manager = &fixture.manager;
+    let (tmux, socket) = (manager.tmux.to_string_lossy(), &manager.socket_name);
+
+    // The string Ghostty parses is exactly what it always was.
+    assert_eq!(
+        manager.attach_command(id).unwrap(),
+        format!(
+            "/usr/bin/env -u TMUX -u TMUX_TMPDIR {} -L {} attach-session -t {id}",
+            quote_arg(&tmux),
+            quote_arg(socket)
+        )
+    );
+    let argv = |options| manager.attach_argv(id, options).unwrap();
+    let plain = argv(AttachOptions::default());
+    assert_eq!(
+        plain,
+        [
+            "/usr/bin/env",
+            "-u",
+            "TMUX",
+            "-u",
+            "TMUX_TMPDIR",
+            &tmux,
+            "-L",
+            socket,
+            "attach-session",
+            "-t",
+            id
+        ]
+    );
+    // `-r` and `-f ignore-size` go before `-t`, and nothing else changes.
+    let tail = |options| argv(options)[8..].to_vec();
+    assert_eq!(
+        tail(AttachOptions {
+            ignore_size: true,
+            read_only: false
+        }),
+        ["attach-session", "-f", "ignore-size", "-t", id]
+    );
+    assert_eq!(
+        tail(AttachOptions {
+            ignore_size: false,
+            read_only: true
+        }),
+        ["attach-session", "-r", "-t", id]
+    );
+    assert_eq!(
+        tail(AttachOptions {
+            ignore_size: true,
+            read_only: true
+        }),
+        ["attach-session", "-r", "-f", "ignore-size", "-t", id]
+    );
+
+    // Run in place it is that argv, announcing a terminal tmux can start.
+    let command = manager
+        .attach_exec_command(
+            id,
+            AttachOptions {
+                ignore_size: true,
+                read_only: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(command.get_program(), "/usr/bin/env");
+    let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy()).collect();
+    assert_eq!(
+        args,
+        argv(AttachOptions {
+            ignore_size: true,
+            read_only: true
+        })[1..]
+    );
+    let term = command
+        .get_envs()
+        .find(|(name, _)| *name == "TERM")
+        .and_then(|(_, value)| value)
+        .expect("TERM is set");
+    assert!(!term.is_empty() && term != "dumb");
+
+    // A shell that is not live is refused before anything is run.
+    let gone = "00000000-0000-4000-8000-0000000000c2";
+    assert!(
+        manager
+            .attach_exec_command(gone, AttachOptions::default())
+            .is_err()
+    );
+}

@@ -207,7 +207,10 @@ riwork shell metrics SHELL_UUID
 riwork shell send SHELL_UUID "pwd"
 riwork shell keys SHELL_UUID -- t:'git status' k:Enter
 riwork shell attach SHELL_UUID
+riwork shell attach SHELL_UUID --exec [--ignore-size] [--read-only]
 ```
+
+`shell attach` prints the tmux command a terminal runs to show the shell; with `--exec` it runs it instead, replacing the `riwork` process with the tmux client (`--ignore-size` keeps this display from resizing the shell's window, `--read-only` makes the client watch only). A remote desktop's terminal stream uses it (`remote/README.md`). In a terminal that says `xterm-ghostty` it announces that when the app bundle (or the caller's `TERMINFO`) has Ghostty's terminfo, otherwise `xterm-256color`.
 
 Every shell has a UUID. `shell output` captures tmux scrollback and the current pane as text, including when the GPUI app is closed. Full screen terminal programs may show only their current rendered screen rather than a complete semantic transcript. Closing a tab or window detaches its shell; `riwork shell close UUID` ends it.
 

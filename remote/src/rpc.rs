@@ -3,6 +3,7 @@ use crate::{
     MAX_PLAINTEXT, appearance,
     config::{Storage, private_read, private_write, private_write_relaxed},
     crypto::uuid,
+    pty::{self, PtyFault, PtySet},
     viewport::Viewport,
 };
 use anyhow::{Context, Result, ensure};
@@ -15,7 +16,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 use tokio::{
@@ -50,6 +51,17 @@ impl Fault {
 fn invalid(e: impl std::fmt::Display) -> Fault {
     Fault::new("invalid_request", e.to_string())
 }
+impl From<PtyFault> for Fault {
+    fn from(fault: PtyFault) -> Self {
+        Self::new(fault.code, fault.message)
+    }
+}
+/// The terminal streams of the connection a desktop request arrived on. A
+/// device that may not have any (a phone) has none, and the methods do not exist
+/// for it: exactly what a connector from before them would answer.
+fn pty_set(pty: Option<&Arc<PtySet>>) -> std::result::Result<&Arc<PtySet>, Fault> {
+    pty.ok_or_else(|| invalid("unsupported RPC method"))
+}
 fn cli_fault(e: impl std::fmt::Display) -> Fault {
     Fault::new("cli_error", e.to_string())
 }
@@ -82,6 +94,25 @@ pub(crate) fn error_for(id: Value, code: &str, message: impl AsRef<str>) -> Valu
 }
 fn success(id: &str, result: Value) -> Value {
     json!({"v":1,"type":"response","id":id,"ok":true,"result":result})
+}
+/// The request in `value` and its id, or the response to send instead.
+/// Malformed requests get an error response, not a dropped session. Only an ID
+/// that is a bounded string can be echoed for correlation.
+fn parse_request(value: Value) -> std::result::Result<(String, Request), Value> {
+    let request_id = match value.get("id") {
+        Some(Value::String(s)) if s.len() <= 64 => s.clone(),
+        _ => {
+            return Err(error_for(
+                Value::Null,
+                "invalid_request",
+                "request must be a JSON object with a string id of at most 64 bytes",
+            ));
+        }
+    };
+    match serde_json::from_value(value) {
+        Ok(request) => Ok((request_id, request)),
+        Err(e) => Err(error(&request_id, "invalid_request", e.to_string())),
+    }
 }
 
 #[derive(Deserialize)]
@@ -945,6 +976,8 @@ pub struct Rpc {
     /// Whether the CLI itself refuses a shell that is not registered and alive
     /// (see `shell_checked_by_cli`), learned once from the CLI.
     cli_checks_shells: tokio::sync::OnceCell<bool>,
+    /// Whether the CLI said it has `shell attach --exec` (see `require_attach_exec`).
+    attach_exec: AtomicBool,
 }
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
@@ -954,6 +987,7 @@ impl Rpc {
             input_locks: Mutex::new(BTreeMap::new()),
             history_cap: AtomicU32::new(HISTORY_PAGE_MAX),
             cli_checks_shells: tokio::sync::OnceCell::new(),
+            attach_exec: AtomicBool::new(false),
         }
     }
     /// The most lines a `shell.history` page may have right now (announced in `ready`).
@@ -1073,6 +1107,37 @@ impl Rpc {
         }
         Ok(())
     }
+    /// Whether the installed CLI can become a tmux client in place
+    /// (`shell attach ID --exec`, `riwork capabilities`). Only a yes is
+    /// remembered: a CLI updated while the connector runs is believed at once,
+    /// and an older one would refuse the flags as a usage error.
+    async fn require_attach_exec(&self) -> std::result::Result<(), Fault> {
+        if self.attach_exec.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let too_old = || {
+            Fault::new(
+                "cli_error",
+                "the installed riwork CLI cannot open terminal streams; update RiWork",
+            )
+        };
+        match self.raw(vec!["capabilities".into(), "--json".into()]).await {
+            Ok(data) => {
+                let reply = serde_json::from_slice::<Value>(&data).unwrap_or(Value::Null);
+                if reply.get("v") == Some(&json!(1))
+                    && reply.get("shell_attach_exec") == Some(&Value::Bool(true))
+                {
+                    self.attach_exec.store(true, Ordering::Relaxed);
+                    Ok(())
+                } else {
+                    Err(too_old())
+                }
+            }
+            // It ran and refused the question: a CLI from before capabilities.
+            Err(e) if e.to_string().starts_with("RiWork CLI failed") => Err(too_old()),
+            Err(e) => Err(cli_fault(e)),
+        }
+    }
     /// Whether this CLI checks, before it reads from or types into a shell,
     /// that the shell is a registered, live session, and says so in its own
     /// words (`riwork capabilities`). A CLI that predates the question, or a
@@ -1145,13 +1210,52 @@ impl Rpc {
         viewport: &tokio::sync::Mutex<Option<Viewport>>,
         reply_limit: usize,
     ) -> Result<Value> {
+        self.handle_session_up_to(device, value, viewport, None, reply_limit)
+            .await
+    }
+    /// Like `handle_shared_up_to`, for a session that may also have terminal
+    /// streams (`pty`): `pty` is its stream set, `None` for a device that may not
+    /// open any, for which `pty.*` is an unsupported method.
+    pub async fn handle_session_up_to(
+        &self,
+        device: &str,
+        value: Value,
+        viewport: &tokio::sync::Mutex<Option<Viewport>>,
+        pty: Option<&Arc<PtySet>>,
+        reply_limit: usize,
+    ) -> Result<Value> {
         self.handle_limited(
             device,
             value,
             ViewportAccess::Shared(viewport),
+            pty,
             reply_limit.clamp(MAX_PLAINTEXT, crate::link::MAX_INFLATED),
         )
         .await
+    }
+    /// `pty.write`, `pty.resize` or `pty.close`, which the connection loop
+    /// answers itself, in arrival order (they never wait). The same checks as
+    /// every other request; the device's authorization is looked at again
+    /// because the loop does not start a task, and so does not reach the check
+    /// that long requests get.
+    pub fn handle_pty_inline(&self, device: &str, value: Value, set: &PtySet) -> Result<Value> {
+        let (request_id, request) = match parse_request(value) {
+            Ok(parsed) => parsed,
+            Err(response) => return Ok(response),
+        };
+        let result = if request.v != 1 || request.kind != "request" {
+            Err(invalid("unsupported request version/type"))
+        } else if let Err(e) = id(&request.id) {
+            Err(e)
+        } else if !self.storage.authorized(device)? {
+            return Err(anyhow::anyhow!("device revoked"));
+        } else {
+            pty::inline(set, &request.method, &request.params).map_err(Fault::from)
+        };
+        Ok(match result {
+            Ok(v) => success(&request_id, v),
+            Err(f) => error(&request_id, f.code, f.message),
+        })
     }
     async fn handle_with(
         &self,
@@ -1159,7 +1263,7 @@ impl Rpc {
         value: Value,
         viewport: ViewportAccess<'_>,
     ) -> Result<Value> {
-        self.handle_limited(device, value, viewport, MAX_PLAINTEXT)
+        self.handle_limited(device, value, viewport, None, MAX_PLAINTEXT)
             .await
     }
     async fn handle_limited(
@@ -1167,23 +1271,12 @@ impl Rpc {
         device: &str,
         value: Value,
         viewport: ViewportAccess<'_>,
+        pty: Option<&Arc<PtySet>>,
         reply_limit: usize,
     ) -> Result<Value> {
-        // Malformed requests get an error response, not a dropped session. Only
-        // an ID that is a bounded string can be echoed for correlation.
-        let request_id = match value.get("id") {
-            Some(Value::String(s)) if s.len() <= 64 => s.clone(),
-            _ => {
-                return Ok(error_for(
-                    Value::Null,
-                    "invalid_request",
-                    "request must be a JSON object with a string id of at most 64 bytes",
-                ));
-            }
-        };
-        let request: Request = match serde_json::from_value(value) {
-            Ok(r) => r,
-            Err(e) => return Ok(error(&request_id, "invalid_request", e.to_string())),
+        let (request_id, request) = match parse_request(value) {
+            Ok(parsed) => parsed,
+            Err(response) => return Ok(response),
         };
         let result = if request.v != 1 || request.kind != "request" {
             Err(invalid("unsupported request version/type"))
@@ -1193,7 +1286,11 @@ impl Rpc {
             return Err(anyhow::anyhow!("device revoked"));
         } else {
             let ledger_path = self.storage.dir.join(format!("outcomes-{device}.json"));
-            if request.method != "shell.input" && ledger_path.exists() {
+            // Terminal streams are not recorded, and `pty.read` comes many times a second.
+            if request.method != "shell.input"
+                && !request.method.starts_with("pty.")
+                && ledger_path.exists()
+            {
                 let ledger: Ledger = private_read(&ledger_path, 64 * 1024 * 1024)?;
                 if ledger.entries.contains_key(&request.id) {
                     return Ok(error(
@@ -1203,7 +1300,8 @@ impl Rpc {
                     ));
                 }
             }
-            self.dispatch(device, &request, viewport, reply_limit).await
+            self.dispatch(device, &request, viewport, pty, reply_limit)
+                .await
         };
         let response = match result {
             Ok(v) => success(&request_id, v),
@@ -1223,6 +1321,7 @@ impl Rpc {
         device: &str,
         r: &Request,
         viewport: ViewportAccess<'_>,
+        pty: Option<&Arc<PtySet>>,
         reply_limit: usize,
     ) -> std::result::Result<Value, Fault> {
         match r.method.as_str() {
@@ -1536,6 +1635,17 @@ impl Rpc {
             "project.create" => {
                 let spec = project_spec(&r.params)?;
                 self.create_project(device, spec).await
+            }
+            // A desktop device's terminal streams; see `pty`.
+            "pty.open" => {
+                let set = pty_set(pty)?;
+                let spec = pty::open_spec(&r.params)?;
+                self.require_attach_exec().await?;
+                Ok(pty::open(set, &self.cli, spec).await?)
+            }
+            "pty.read" => Ok(pty::read(pty_set(pty)?, &r.params).await?),
+            "pty.write" | "pty.resize" | "pty.close" => {
+                Ok(pty::inline(pty_set(pty)?, &r.method, &r.params)?)
             }
             _ => Err(invalid("unsupported RPC method")),
         }

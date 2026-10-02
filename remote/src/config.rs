@@ -120,6 +120,45 @@ impl Pairing {
         ))
     }
 }
+/// What a paired device is. A phone (the default, and what every config written
+/// before kinds existed holds) drives terminals through the request/response RPCs;
+/// a desktop, another Mac running RiWork, may also open a terminal stream
+/// (`pty.*`, "Desktop terminal extension" in `docs/remote-protocol.md`). It is the
+/// desktop's decision, made at pairing, and the device cannot change it: a v2
+/// invite is bound to the device record that carries it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKind {
+    #[default]
+    Mobile,
+    Desktop,
+}
+impl DeviceKind {
+    /// For `skip_serializing_if`: a phone is written as before, with no `kind` field.
+    pub fn is_mobile(&self) -> bool {
+        matches!(self, Self::Mobile)
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mobile => "mobile",
+            Self::Desktop => "desktop",
+        }
+    }
+    /// The `--kind` value of `pair`.
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            "mobile" => Ok(Self::Mobile),
+            "desktop" => Ok(Self::Desktop),
+            _ => bail!("--kind must be mobile or desktop"),
+        }
+    }
+}
+impl std::fmt::Display for DeviceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
@@ -127,6 +166,9 @@ pub struct Device {
     pub desktop_token: String,
     pub allow_insecure_loopback: bool,
     pub revoked: bool,
+    /// Absent (a phone) in every config written before desktops could pair.
+    #[serde(default, skip_serializing_if = "DeviceKind::is_mobile")]
+    pub kind: DeviceKind,
     // Unix seconds. Absent in configs written before these were recorded, and
     // `first`/`last` stay absent until the device completes a handshake.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -407,8 +449,37 @@ impl Storage {
         version: u8,
         ttl_secs: u64,
     ) -> Result<Pairing> {
+        self.pair_kind(
+            relay,
+            name,
+            dev,
+            out,
+            routes,
+            version,
+            ttl_secs,
+            DeviceKind::Mobile,
+        )
+    }
+    /// `pair_with` for a device of `kind`. A desktop needs protocol 2: its
+    /// terminal streams are only ever offered on a forward-secret session.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pair_kind(
+        &self,
+        relay: String,
+        name: String,
+        dev: bool,
+        out: &Path,
+        routes: Option<&Path>,
+        version: u8,
+        ttl_secs: u64,
+        kind: DeviceKind,
+    ) -> Result<Pairing> {
         validate_url(&relay, dev)?;
         ensure!(version == 1 || version == 2, "unsupported pairing version");
+        ensure!(
+            kind == DeviceKind::Mobile || version == 2,
+            "--kind desktop requires --protocol 2"
+        );
         if version == 2 {
             ensure!(
                 (30..=3600).contains(&ttl_secs),
@@ -510,6 +581,7 @@ impl Storage {
             desktop_token,
             allow_insecure_loopback: dev,
             revoked: false,
+            kind,
             paired_at_unix: Some(now_unix()),
             first_authenticated_unix: None,
             last_authenticated_unix: None,
@@ -783,4 +855,179 @@ fn remove_route(path: &Path, route_id: &str, existed: bool) -> Result<()> {
         private_write(path, &r)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A device record as every build before kinds wrote it.
+    const LEGACY_DEVICES: &str = r#"{
+  "v": 1,
+  "desktop_id": "11111111-1111-4111-8111-111111111111",
+  "devices": [
+    {
+      "pairing": {
+        "v": 1,
+        "relay_url": "wss://relay.example.com/v1/ws",
+        "desktop_id": "11111111-1111-4111-8111-111111111111",
+        "device_id": "22222222-2222-4222-8222-222222222222",
+        "route_id": "33333333-3333-4333-8333-333333333333",
+        "device_name": "My iPhone",
+        "pairing_secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "relay_token": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+      },
+      "desktop_token": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "allow_insecure_loopback": false,
+      "revoked": false,
+      "paired_at_unix": 1790000000,
+      "first_authenticated_unix": 1790000100,
+      "last_authenticated_unix": 1790000200
+    },
+    {
+      "pairing": {
+        "v": 1,
+        "relay_url": "wss://relay.example.com/v1/ws",
+        "desktop_id": "11111111-1111-4111-8111-111111111111",
+        "device_id": "44444444-4444-4444-8444-444444444444",
+        "route_id": "55555555-5555-4555-8555-555555555555",
+        "device_name": "Old iPad",
+        "relay_token": ""
+      },
+      "desktop_token": "",
+      "allow_insecure_loopback": false,
+      "revoked": true
+    }
+  ]
+}
+"#;
+
+    fn parse(text: &str) -> serde_json::Result<Config> {
+        serde_json::from_str(text)
+    }
+    /// What `private_write` puts in the file.
+    fn written(config: &Config) -> String {
+        let mut text = serde_json::to_string_pretty(config).unwrap();
+        text.push('\n');
+        text
+    }
+
+    #[test]
+    fn a_record_without_a_kind_is_a_phone_and_is_written_back_exactly_as_it_was() {
+        let config = parse(LEGACY_DEVICES).unwrap();
+        assert!(config.devices.iter().all(|d| d.kind == DeviceKind::Mobile));
+        assert_eq!(written(&config), LEGACY_DEVICES);
+    }
+
+    #[test]
+    fn a_desktop_is_written_with_its_kind_and_read_back_as_one() {
+        let mut config = parse(LEGACY_DEVICES).unwrap();
+        config.devices[0].kind = DeviceKind::Desktop;
+        let text = written(&config);
+        assert_eq!(text.matches("\"kind\"").count(), 1);
+        assert!(text.contains("\"kind\": \"desktop\""), "{text}");
+        let back = parse(&text).unwrap();
+        assert_eq!(back.devices[0].kind, DeviceKind::Desktop);
+        assert_eq!(back.devices[1].kind, DeviceKind::Mobile);
+        // Writing it again changes nothing, and the phone beside it is untouched.
+        assert_eq!(written(&back), text);
+        // An explicit mobile is the same as none.
+        let explicit = text.replace("\"kind\": \"desktop\"", "\"kind\": \"mobile\"");
+        assert_eq!(written(&parse(&explicit).unwrap()), LEGACY_DEVICES);
+    }
+
+    #[test]
+    fn a_kind_that_is_not_one_is_refused_instead_of_taken_for_a_phone() {
+        let desktop = LEGACY_DEVICES.replacen(
+            "\"revoked\": false,",
+            "\"revoked\": false,\n      \"kind\": \"desktop\",",
+            1,
+        );
+        assert!(parse(&desktop).is_ok());
+        for bad in ["tablet", "Desktop", "", "mobile "] {
+            let text = desktop.replace("\"desktop\"", &format!("{bad:?}"));
+            assert!(parse(&text).is_err(), "{bad:?}");
+        }
+        for bad in ["null", "7", "true", "[\"desktop\"]"] {
+            let text = desktop.replace("\"desktop\"", bad);
+            assert!(parse(&text).is_err(), "{bad}");
+        }
+        assert_eq!(
+            serde_json::to_value(DeviceKind::Desktop).unwrap(),
+            json!("desktop")
+        );
+        assert_eq!(
+            serde_json::to_value(DeviceKind::Mobile).unwrap(),
+            json!("mobile")
+        );
+        assert_eq!(DeviceKind::default(), DeviceKind::Mobile);
+        assert!(DeviceKind::Mobile.is_mobile() && !DeviceKind::Desktop.is_mobile());
+    }
+
+    #[test]
+    fn the_kind_flag_names_exactly_the_two_kinds() {
+        assert_eq!(DeviceKind::parse("mobile").unwrap(), DeviceKind::Mobile);
+        assert_eq!(DeviceKind::parse("desktop").unwrap(), DeviceKind::Desktop);
+        for bad in ["", "phone", "Desktop", "desktop "] {
+            assert!(DeviceKind::parse(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(DeviceKind::Desktop.to_string(), "desktop");
+    }
+
+    #[test]
+    fn only_a_v2_pairing_can_be_a_desktop_and_a_refused_one_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::at(dir.path().into()).unwrap();
+        let pair = |name: &str, version: u8, kind: DeviceKind, routes: bool| {
+            storage.pair_kind(
+                "wss://relay.example.com/v1/ws".into(),
+                name.into(),
+                false,
+                &dir.path().join(format!("{name}.json")),
+                routes.then(|| dir.path().join("routes.json")).as_deref(),
+                version,
+                600,
+                kind,
+            )
+        };
+        let refused = pair("mac-v1", 1, DeviceKind::Desktop, true).err().unwrap();
+        assert!(format!("{refused:#}").contains("--kind desktop requires --protocol 2"));
+        assert!(!dir.path().join("mac-v1.json").exists());
+        assert!(!dir.path().join("routes.json").exists());
+        assert!(storage.config().unwrap().devices.is_empty());
+
+        let mac = pair("mac", 2, DeviceKind::Desktop, true).unwrap();
+        let phone = pair("phone", 2, DeviceKind::Mobile, true).unwrap();
+        let old_phone = storage
+            .pair(
+                "wss://relay.example.com/v1/ws".into(),
+                "old".into(),
+                false,
+                &dir.path().join("old.json"),
+                None,
+            )
+            .unwrap();
+        let kind_of = |id: &str| storage.fresh_device(id).unwrap().unwrap().kind;
+        assert_eq!(kind_of(&mac.device_id), DeviceKind::Desktop);
+        assert_eq!(kind_of(&phone.device_id), DeviceKind::Mobile);
+        assert_eq!(kind_of(&old_phone.device_id), DeviceKind::Mobile);
+        // Only the desktop's record says so; the pairing the other Mac imports does not.
+        let file = std::fs::read_to_string(dir.path().join("remote/devices.json")).unwrap();
+        assert_eq!(file.matches("\"kind\"").count(), 1);
+        assert!(
+            !std::fs::read_to_string(dir.path().join("mac.json"))
+                .unwrap()
+                .contains("kind")
+        );
+        // Revoking and re-reading keeps it.
+        storage.revoke(&mac.device_id).unwrap();
+        let revoked = storage.config().unwrap();
+        let record = revoked
+            .devices
+            .iter()
+            .find(|d| d.pairing.device_id == mac.device_id)
+            .unwrap();
+        assert!(record.revoked && record.kind == DeviceKind::Desktop);
+    }
 }
