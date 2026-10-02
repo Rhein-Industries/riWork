@@ -107,6 +107,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>A program running within RiWork would like to use your microphone.</string>
 </dict>
 </plist>
 PLIST
