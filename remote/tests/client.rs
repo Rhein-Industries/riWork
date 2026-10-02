@@ -511,9 +511,14 @@ async fn the_client_process_exits_when_idle_and_a_second_one_does_not_start() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    eventually(10, "the socket", || socket.exists()).await;
-    // A client keeps it alive however long this takes, and shows that it answers.
-    let client = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    // A client keeps it alive however long this takes (the socket file is there a moment
+    // before it takes connections, so connecting is retried).
+    let client = loop {
+        match tokio::net::UnixStream::connect(&socket).await {
+            Ok(client) => break client,
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    };
     let held = std::time::Instant::now();
     // Another one for the same host steps aside at once and does not disturb the first.
     let second = rig

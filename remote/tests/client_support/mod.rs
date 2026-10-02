@@ -54,6 +54,19 @@ pub async fn eventually(seconds: u64, what: &str, mut condition: impl FnMut() ->
     }
 }
 
+/// Waits until a daemon takes connections on `socket`. The socket file appears a moment
+/// before it does.
+pub async fn wait_for_daemon(socket: &Path) {
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        if tokio::net::UnixStream::connect(socket).await.is_ok() {
+            return;
+        }
+        assert!(Instant::now() < end, "the daemon never took connections");
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// A relay on loopback and a host's storage with `invites` pending v2 invites.
 pub struct Net {
     pub dir: tempfile::TempDir,
@@ -677,16 +690,26 @@ impl Bridge {
             }
         }
     }
-    /// Data frames until `needle` has arrived; returns all that came.
+    /// Data frames until `needle` has arrived; returns all that came. If the daemon hangs
+    /// up first, the test fails with what else it said.
     pub async fn data_until(&mut self, needle: &[u8]) -> Vec<u8> {
         let mut seen = Vec::new();
+        let mut others = Vec::new();
         loop {
-            let (kind, payload) = self.next().await.expect("the daemon is still there");
+            let Some((kind, payload)) = self.next().await else {
+                panic!(
+                    "the daemon hung up before {:?}; it had sent {:?} and the frames {others:?}",
+                    String::from_utf8_lossy(needle),
+                    String::from_utf8_lossy(&seen)
+                );
+            };
             if kind == b'D' {
                 seen.extend(payload);
                 if seen.windows(needle.len()).any(|w| w == needle) {
                     return seen;
                 }
+            } else {
+                others.push((kind as char, String::from_utf8_lossy(&payload).into_owned()));
             }
         }
     }

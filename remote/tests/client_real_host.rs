@@ -4,7 +4,7 @@
 //! (branch `mac-remote-host`) and is ignored until both are in.
 mod client_support;
 
-use client_support::{Bridge, Net, REMOTE, eventually, short_dir};
+use client_support::{Bridge, Net, REMOTE, short_dir, wait_for_daemon};
 use riwork_remote::{
     client::add_host,
     client_daemon::{serve, socket_path},
@@ -37,8 +37,8 @@ fn start_connector(host_home: &Path, cli: &Path) -> Connector {
             .unwrap(),
     )
 }
-/// A CLI that lists one live shell, claims `shell attach --exec`, and attaches to a
-/// terminal that reports its size and then echoes like `cat`.
+/// A CLI that lists one live shell, says it can `shell attach --exec`, and attaches like a
+/// tmux client that draws, reports its size and then echoes like `cat`.
 fn cli(dir: &Path, shell: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("real-host-cli");
@@ -46,10 +46,10 @@ fn cli(dir: &Path, shell: &str) -> PathBuf {
 case "$1 $2" in
 'shell list') printf '[{"id":"@SHELL@","alive":true}]';;
 'orchestrator list'|'project list') echo '[]';;
-'shell attach') exec sh -c 'stty size; exec cat';;
-esac
-case "$1" in
-capabilities) echo '{"shell_attach_exec":true}';;
+'capabilities --json') printf '{"v":1,"verifies_shell":true,"shell_attach_exec":true}';;
+'shell attach')
+  # A tmux client starts by drawing with an escape sequence; the host waits for it.
+  printf '\033[?25l'; stty size; exec cat;;
 esac
 "#
     .replace("@SHELL@", shell);
@@ -86,7 +86,7 @@ async fn a_pairing_that_is_not_a_macs_cannot_attach_and_is_told_how_to_fix_it() 
         tokio::spawn(async move { serve(client, &id, Duration::from_secs(300)).await })
     };
     let socket = socket_path(&client, &id).unwrap();
-    eventually(10, "the daemon", || socket.exists()).await;
+    wait_for_daemon(&socket).await;
     let mut bridge = Bridge::attach(&socket, &shell, 80, 24).await;
     let reason = last_end(&mut bridge).await;
     assert!(reason.contains("--kind desktop"), "{reason}");
@@ -94,7 +94,7 @@ async fn a_pairing_that_is_not_a_macs_cannot_attach_and_is_told_how_to_fix_it() 
 }
 
 #[tokio::test]
-#[ignore = "needs the host side: `pair --kind desktop` and pty.* (branch mac-remote-host)"]
+#[ignore = "needs the host side: `pair --kind desktop` and pty.* (merge branch mac-remote-host, then --ignored)"]
 async fn a_mac_attaches_to_a_shell_through_the_real_connector() {
     let dir = short_dir("rwr");
     let host_home = dir.path().join("host");
@@ -133,7 +133,8 @@ async fn a_mac_attaches_to_a_shell_through_the_real_connector() {
     let relay = Relay::new(routes, 16).unwrap();
     let relay = tokio::spawn(async move { axum::serve(listener, relay.router()).await.unwrap() });
     let shell = uuid::Uuid::new_v4().to_string();
-    let _connector = start_connector(&host_home, &cli(dir.path(), &shell));
+    let cli = cli(dir.path(), &shell);
+    let connector = start_connector(&host_home, &cli);
 
     let client = Storage::at({
         let home = dir.path().join("client");
@@ -157,7 +158,7 @@ async fn a_mac_attaches_to_a_shell_through_the_real_connector() {
         tokio::spawn(async move { serve(client, &id, Duration::from_secs(300)).await })
     };
     let socket = socket_path(&client, &id).unwrap();
-    eventually(10, "the daemon", || socket.exists()).await;
+    wait_for_daemon(&socket).await;
 
     let mut bridge = Bridge::attach(&socket, &shell, 100, 30).await;
     // The stand-in terminal reports its size first: rows, then columns.
@@ -165,6 +166,17 @@ async fn a_mac_attaches_to_a_shell_through_the_real_connector() {
     assert!(String::from_utf8_lossy(&first).contains("30 100"));
     bridge.data(b"hello\r").await;
     bridge.data_until(b"hello").await;
+
+    // The connector dies (kill -9): the bridge is told, and when the connector is back the
+    // stream is opened again from the start.
+    drop(connector);
+    assert_eq!(bridge.status().await["state"], "offline");
+    let _connector = start_connector(&host_home, &cli);
+    assert_eq!(bridge.status().await["state"], "online");
+    bridge.data_until(b"30 100").await;
+    bridge.data(b"again\r").await;
+    bridge.data_until(b"again").await;
+
     // Ctrl-D ends `cat`, and the stream with it.
     bridge.data(&[4]).await;
     assert_eq!(last_end(&mut bridge).await, "exited");

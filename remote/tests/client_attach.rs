@@ -5,7 +5,7 @@
 //! `client_bridge.rs`.
 mod client_support;
 
-use client_support::{Bridge, FakeHost, HostOptions, Net, eventually};
+use client_support::{Bridge, FakeHost, HostOptions, Net, wait_for_daemon};
 use riwork_remote::{
     client::add_host,
     client_daemon::{daemon_call, serve, socket_path},
@@ -43,7 +43,7 @@ async fn setup(options: HostOptions) -> Setup {
         let (client, id) = (client.clone(), id.clone());
         tokio::spawn(async move { serve(client, &id, Duration::from_secs(300)).await })
     };
-    eventually(10, "the daemon's socket", || socket.exists()).await;
+    wait_for_daemon(&socket).await;
     // Wait for its link: the sessions the host counts from here are the daemon's.
     loop {
         let status = riwork_remote::client_daemon::daemon_status(&socket)
