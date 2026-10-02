@@ -26,6 +26,7 @@ use crate::{
     project_sort::ProjectOrder,
     status_bar::StatusBarSettings,
     theme::{Appearance, Palette, ThemeChoice, palette},
+    ui_text::{self, SizeChange, TextPoints},
 };
 
 #[derive(Clone, Default)]
@@ -145,6 +146,12 @@ pub struct Settings {
     /// scroll locally. Off leaves every agent on its own default screen. A
     /// session that is already running keeps the mode it started in.
     pub agent_inline_mode: bool,
+    /// RiWork's own interface text in points of its panel list text, like
+    /// Ghostty's `font-size`: 11 is the design size, from `ui_text::MIN_POINTS`
+    /// to `MAX_POINTS`. Terminals keep Ghostty's size.
+    pub ui_text_size: TextPoints,
+    /// Interface text follows Ghostty's `font-size` instead of `ui_text_size`.
+    pub ui_text_matches_terminal: bool,
 }
 
 impl Default for Settings {
@@ -160,6 +167,8 @@ impl Default for Settings {
             selected_codex_account: None,
             status_bar: StatusBarSettings::default(),
             agent_inline_mode: true,
+            ui_text_size: TextPoints::DEFAULT,
+            ui_text_matches_terminal: false,
         }
     }
 }
@@ -203,6 +212,13 @@ impl<'de> Deserialize<'de> for Settings {
                 &object,
                 "agent_inline_mode",
                 defaults.agent_inline_mode,
+            ),
+            // A size out of range is pulled into it; anything but a number is the default.
+            ui_text_size: lenient_field(&object, "ui_text_size", defaults.ui_text_size),
+            ui_text_matches_terminal: lenient_field(
+                &object,
+                "ui_text_matches_terminal",
+                defaults.ui_text_matches_terminal,
             ),
         })
     }
@@ -399,6 +415,12 @@ impl Toggle {
     }
 }
 
+/// The Text size row's MATCH TERMINAL control: interface text follows Ghostty's
+/// `font-size`, or goes back to the saved size.
+fn toggle_text_match(settings: &mut Settings) {
+    settings.ui_text_matches_terminal = !settings.ui_text_matches_terminal;
+}
+
 pub struct SettingsPanel {
     store: SettingsStore,
     cua_focus: FocusHandle,
@@ -411,6 +433,7 @@ pub struct SettingsPanel {
     preview_focus: FocusHandle,
     inline_focus: FocusHandle,
     size_focus: FocusHandle,
+    text_size_focus: FocusHandle,
     orca_preview_focus: FocusHandle,
     orca_import_focus: FocusHandle,
     orca_preview: Option<ImportPreview>,
@@ -549,7 +572,7 @@ impl Section {
         match self {
             Self::Cua => "Let RiWork agents operate desktop apps through Cua.ai.",
             Self::Codex => "The account new Codex sessions start with.",
-            Self::Appearance => "Choose a theme, or sync with Ghostty.",
+            Self::Appearance => "Choose a theme and text size, or sync with Ghostty.",
             Self::Files => "How the Files tree and its Preview pane open together.",
             Self::Agents => "How new Codex, Grok, and Claude sessions use the terminal screen.",
             Self::Windows => "How project windows open.",
@@ -590,7 +613,7 @@ fn theme_columns(layout: SettingsLayout, width: f32) -> usize {
     if layout == SettingsLayout::Narrow {
         return 1;
     }
-    let fit = (card_inner_width(layout, width) + ROW_GAP) / (THEME_CELL_MIN_WIDTH + ROW_GAP);
+    let fit = (card_inner_width(layout, width) + ROW_GAP) / (ui_text::space_f32(THEME_CELL_MIN_WIDTH) + ROW_GAP);
     (fit as usize).clamp(2, 3)
 }
 
@@ -601,8 +624,25 @@ fn width_class(width: f32) -> (SettingsLayout, usize) {
     (layout, theme_columns(layout, width))
 }
 
+/// The narrowest a row's title and description get beside its controls.
+const ROW_TEXT_MIN_WIDTH: f32 = 220.0;
+
+/// A row's title and description. In a row that is `flex_wrap`, it takes the room
+/// beside the controls, and once that is less than `ROW_TEXT_MIN_WIDTH` the
+/// controls move onto a line of their own below it instead of squeezing it.
+fn row_text() -> Div {
+    div()
+        .flex_grow(1.0)
+        .flex_shrink(1.0)
+        .flex_basis(ui_text::space(ROW_TEXT_MIN_WIDTH))
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(ui_text::space(4.0))
+}
+
 fn row_list() -> Div {
-    div().flex().flex_col().gap(px(ROW_GAP))
+    div().flex().flex_col().gap(ui_text::space(ROW_GAP))
 }
 
 /// Button rows sit at the end of their card once there is room for that.
@@ -610,7 +650,7 @@ fn action_bar(layout: SettingsLayout) -> Div {
     div()
         .flex()
         .flex_wrap()
-        .gap(px(7.0))
+        .gap(ui_text::space(7.0))
         .when(layout != SettingsLayout::Narrow, |bar| bar.justify_end())
 }
 
@@ -624,7 +664,7 @@ fn section_card(
         .flex()
         .flex_col()
         .min_w_0()
-        .gap(px(12.0))
+        .gap(ui_text::space(12.0))
         .p(px(layout.card_padding()))
         .bg(rgb(colors.panel))
         .border_1()
@@ -633,16 +673,16 @@ fn section_card(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(4.0))
-                .pb(px(10.0))
+                .gap(ui_text::space(4.0))
+                .pb(ui_text::space(10.0))
                 .border_b_1()
                 .border_color(rgb(colors.divider))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(10.0))
-                        .text_size(px(11.0))
+                        .gap(ui_text::space(10.0))
+                        .text_size(ui_text::text(11.0))
                         .child(
                             div()
                                 .text_color(rgb(colors.magenta))
@@ -652,8 +692,8 @@ fn section_card(
                 )
                 .child(
                     div()
-                        .max_w(px(DESCRIPTION_MAX_WIDTH))
-                        .text_size(px(10.0))
+                        .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                        .text_size(ui_text::text(10.0))
                         .text_color(rgb(colors.muted))
                         .child(section.description()),
                 ),
@@ -665,12 +705,12 @@ fn section_card(
 fn status_chip(label: &'static str, color: u32, colors: Palette) -> AnyElement {
     div()
         .flex_none()
-        .px(px(7.0))
-        .py(px(3.0))
+        .px(ui_text::space(7.0))
+        .py(ui_text::space(3.0))
         .border_1()
         .border_color(rgb(color))
         .bg(rgb(colors.panel_active))
-        .text_size(px(9.0))
+        .text_size(ui_text::text(9.0))
         .text_color(rgb(color))
         .child(label)
         .into_any_element()
@@ -685,15 +725,15 @@ fn import_counts(projects: usize, folders: usize, worktrees: usize, colors: Pale
     div()
         .flex()
         .flex_wrap()
-        .gap(px(7.0))
+        .gap(ui_text::space(7.0))
         .children(counts.into_iter().map(|(count, label)| {
             div()
-                .px(px(8.0))
-                .py(px(5.0))
+                .px(ui_text::space(8.0))
+                .py(ui_text::space(5.0))
                 .border_1()
                 .border_color(rgb(colors.divider))
                 .bg(rgb(colors.panel_active))
-                .text_size(px(10.0))
+                .text_size(ui_text::text(10.0))
                 .text_color(rgb(colors.cyan))
                 .child(format!("{count} {label}"))
         }))
@@ -785,6 +825,7 @@ impl SettingsPanel {
             preview_focus: cx.focus_handle(),
             inline_focus: cx.focus_handle(),
             size_focus: cx.focus_handle(),
+            text_size_focus: cx.focus_handle(),
             orca_preview_focus: cx.focus_handle(),
             orca_import_focus: cx.focus_handle(),
             orca_preview: None,
@@ -839,6 +880,7 @@ impl SettingsPanel {
             handles.push(self.terminal_focus.clone());
         }
         handles.push(self.tab_icons_focus.clone());
+        handles.push(self.text_size_focus.clone());
         handles.push(self.preview_focus.clone());
         handles.push(self.inline_focus.clone());
         handles.push(self.size_focus.clone());
@@ -937,10 +979,11 @@ impl SettingsPanel {
                         div()
                             .id(format!("codex-account-{id}"))
                             .flex()
+                            .flex_wrap()
                             .items_center()
-                            .gap(px(10.0))
-                            .px(px(ROW_PAD_X))
-                            .py(px(ROW_PAD_Y))
+                            .gap(ui_text::space(10.0))
+                            .px(ui_text::space(ROW_PAD_X))
+                            .py(ui_text::space(ROW_PAD_Y))
                             .border_1()
                             .border_color(rgb(if active { colors.cyan } else { colors.divider }))
                             .bg(rgb(if active {
@@ -955,22 +998,18 @@ impl SettingsPanel {
                                     .hover(|style| style.bg(rgb(colors.panel_active)))
                             })
                             .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
+                                row_text()
+                                    .gap(ui_text::space(3.0))
                                     .child(
                                         div()
-                                            .text_size(px(12.0))
+                                            .text_size(ui_text::text(12.0))
                                             .text_color(rgb(colors.text))
                                             .text_ellipsis()
                                             .child(account.label.clone()),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(10.0))
+                                            .text_size(ui_text::text(10.0))
                                             .text_color(rgb(colors.muted))
                                             .child(
                                                 account.unavailable_reason.clone().unwrap_or_else(
@@ -1034,12 +1073,12 @@ impl SettingsPanel {
             .child(
                 div()
                     .flex()
-                    .gap(px(16.0))
+                    .gap(ui_text::space(16.0))
                     .when(narrow, |head| head.flex_col())
                     .child(
                         div()
-                            .max_w(px(DESCRIPTION_MAX_WIDTH))
-                            .text_size(px(10.0))
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
                             .text_color(rgb(colors.muted))
                             .when(narrow, |note| note.w_full())
                             .when(!narrow, |note| note.flex_1().min_w_0())
@@ -1047,9 +1086,9 @@ impl SettingsPanel {
                     )
                     .child(
                         div().id("refresh-codex-accounts").track_focus(&self.account_refresh_focus)
-                            .flex_none().px(px(10.0)).py(px(6.0)).self_start()
+                            .flex_none().px(ui_text::space(10.0)).py(ui_text::space(6.0)).self_start()
                             .border_1().border_color(rgb(colors.divider)).cursor_pointer()
-                            .text_size(px(10.0)).text_color(rgb(colors.cyan))
+                            .text_size(ui_text::text(10.0)).text_color(rgb(colors.cyan))
                             .hover(|style| style.bg(rgb(colors.panel_active)))
                             .focus_visible(|style| style.bg(rgb(colors.panel_active)).border_color(rgb(colors.cyan)))
                             .child(if state.pending { "CHECKING ACCOUNTS…" } else { "REFRESH ACCOUNTS" })
@@ -1058,13 +1097,13 @@ impl SettingsPanel {
                     ),
             )
             .children(rows)
-            .children(selected_missing.then(|| div().text_size(px(10.0)).text_color(rgb(colors.gold))
+            .children(selected_missing.then(|| div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold))
                 .child("Your selected account is unavailable. Refresh accounts or choose another before starting Codex.")))
             .children(state.snapshot.as_ref().and_then(|snapshot| snapshot.error.as_ref()).map(|error| {
-                div().text_size(px(10.0)).text_color(rgb(colors.gold)).child(error.clone())
+                div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold)).child(error.clone())
             }))
             .children(state.snapshot.as_ref().filter(|snapshot| snapshot.from_cache).map(|_| {
-                div().text_size(px(10.0)).text_color(rgb(colors.muted)).child("Showing saved accounts while Orca is unavailable.")
+                div().text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("Showing saved accounts while Orca is unavailable.")
             }))
             .into_any_element()
     }
@@ -1097,6 +1136,19 @@ impl SettingsPanel {
                 };
                 handles[next].focus(window, cx);
             }
+            "m" if self.text_size_focus.is_focused(window) => {
+                self.change(toggle_text_match, cx);
+            }
+            "up" | "left" | "down" | "right" | "-" | "=" | "+" | "0"
+                if self.text_size_focus.is_focused(window) =>
+            {
+                let change = match event.keystroke.key.as_str() {
+                    "up" | "right" | "=" | "+" => SizeChange::Bigger,
+                    "down" | "left" | "-" => SizeChange::Smaller,
+                    _ => SizeChange::Reset,
+                };
+                self.change_text_size(change, cx);
+            }
             "up" | "left" | "down" | "right" => {
                 let Some(index) = theme_index else {
                     return;
@@ -1126,6 +1178,8 @@ impl SettingsPanel {
                     self.change(|settings| Toggle::TerminalColors.flip(settings), cx);
                 } else if self.tab_icons_focus.is_focused(window) {
                     self.change(|settings| Toggle::PanelTabIcons.flip(settings), cx);
+                } else if self.text_size_focus.is_focused(window) {
+                    self.change(toggle_text_match, cx);
                 } else if self.preview_focus.is_focused(window) {
                     self.change(|settings| Toggle::PreviewOnSelect.flip(settings), cx);
                 } else if self.inline_focus.is_focused(window) {
@@ -1242,8 +1296,8 @@ impl SettingsPanel {
             } else {
                 &self.orca_preview_focus
             })
-            .px(px(10.0))
-            .py(px(6.0))
+            .px(ui_text::space(10.0))
+            .py(ui_text::space(6.0))
             .border_1()
             .border_color(rgb(if disabled {
                 colors.divider
@@ -1257,7 +1311,7 @@ impl SettingsPanel {
             } else {
                 colors.panel
             }))
-            .text_size(px(10.0))
+            .text_size(ui_text::text(10.0))
             .text_color(rgb(if disabled {
                 colors.muted
             } else if import {
@@ -1327,13 +1381,13 @@ impl SettingsPanel {
             .id("orca-import")
             .flex()
             .flex_col()
-            .gap(px(9.0))
+            .gap(ui_text::space(9.0))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.0))
-                    .child(div().flex_1().text_size(px(13.0)).child("Orca"))
+                    .gap(ui_text::space(10.0))
+                    .child(div().flex_1().text_size(ui_text::text(13.0)).child("Orca"))
                     .child(status_chip(
                         if pending {
                             "WORKING"
@@ -1352,8 +1406,8 @@ impl SettingsPanel {
             )
             .child(
                 div()
-                    .max_w(px(DESCRIPTION_MAX_WIDTH))
-                    .text_size(px(11.0))
+                    .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                    .text_size(ui_text::text(11.0))
                     .text_color(rgb(colors.muted))
                     .child(if receipt.is_some() {
                         "Import completed. This receipt is saved across RiWork restarts."
@@ -1366,39 +1420,39 @@ impl SettingsPanel {
                     .min_w_0()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .text_color(rgb(colors.muted))
                     .child(format!("ORCA CLI · {}", source.display()))
             }))
             .children(counts)
             .children(offer.filter(|_| receipt.is_none()).map(|offer| {
                 div()
-                    .max_w(px(DESCRIPTION_MAX_WIDTH))
-                    .text_size(px(10.0))
+                    .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                    .text_size(ui_text::text(10.0))
                     .text_color(rgb(colors.muted))
                     .child(offer.hint())
             }))
             .children(preview.filter(|preview| !preview.warnings.is_empty()).map(|preview| {
                 div()
                     .id("orca-import-warnings")
-                    .max_h(px(120.0))
+                    .max_h(ui_text::space(120.0))
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
-                    .gap(px(5.0))
-                    .text_size(px(10.0))
+                    .gap(ui_text::space(5.0))
+                    .text_size(ui_text::text(10.0))
                     .text_color(rgb(colors.gold))
                     .children(preview.warnings.iter().cloned().map(|warning| div().child(warning)))
             }))
             .children(self.orca_pending.map(|message| {
                 div()
-                    .text_size(px(11.0))
+                    .text_size(ui_text::text(11.0))
                     .text_color(rgb(colors.cyan))
                     .child(message)
             }))
             .children(self.orca_error.as_ref().map(|error| {
                 div()
-                    .text_size(px(11.0))
+                    .text_size(ui_text::text(11.0))
                     .text_color(rgb(colors.gold))
                     .child(error.clone())
             }))
@@ -1452,8 +1506,8 @@ impl SettingsPanel {
             } else {
                 &self.cua_check_focus
             })
-            .px(px(10.0))
-            .py(px(6.0))
+            .px(ui_text::space(10.0))
+            .py(ui_text::space(6.0))
             .border_1()
             .border_color(rgb(if disabled {
                 colors.divider
@@ -1467,7 +1521,7 @@ impl SettingsPanel {
             } else {
                 colors.panel
             }))
-            .text_size(px(10.0))
+            .text_size(ui_text::text(10.0))
             .text_color(rgb(if disabled {
                 colors.muted
             } else if primary {
@@ -1524,7 +1578,7 @@ impl SettingsPanel {
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(6.0))
+                .gap(ui_text::space(6.0))
                 .child(status_chip(
                     if status.accessibility {
                         "ACCESSIBILITY READY"
@@ -1569,24 +1623,24 @@ impl SettingsPanel {
             .id("cua-setup")
             .flex()
             .flex_col()
-            .gap(px(9.0))
+            .gap(ui_text::space(9.0))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.0))
-                    .child(div().flex_1().text_size(px(13.0)).child("Cua.ai"))
+                    .gap(ui_text::space(10.0))
+                    .child(div().flex_1().text_size(ui_text::text(13.0)).child("Cua.ai"))
                     .child(status_chip(
                         if state.pending.is_some() { "WORKING" } else if ready { "CONNECTED" } else { "SETUP NEEDED" },
                         if ready { colors.cyan } else { colors.gold },
                         colors,
                     )),
             )
-            .child(div().max_w(px(DESCRIPTION_MAX_WIDTH)).text_size(px(11.0)).text_color(rgb(if state.error.is_some() { colors.gold } else { colors.muted })).child(message))
+            .child(div().max_w(ui_text::space(DESCRIPTION_MAX_WIDTH)).text_size(ui_text::text(11.0)).text_color(rgb(if state.error.is_some() { colors.gold } else { colors.muted })).child(message))
             .children(access)
-            .children((installed && !ready && !verify_capture).then(|| div().max_w(px(DESCRIPTION_MAX_WIDTH)).text_size(px(11.0)).text_color(rgb(colors.muted))
+            .children((installed && !ready && !verify_capture).then(|| div().max_w(ui_text::space(DESCRIPTION_MAX_WIDTH)).text_size(ui_text::text(11.0)).text_color(rgb(colors.muted))
                 .child("Enable CuaDriver in macOS Accessibility and Screen Recording to connect all agents.")))
-            .child(div().max_w(px(DESCRIPTION_MAX_WIDTH)).text_size(px(10.0)).text_color(rgb(colors.muted)).child("New agent sessions connect automatically. Restart existing sessions to connect them."))
+            .child(div().max_w(ui_text::space(DESCRIPTION_MAX_WIDTH)).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("New agent sessions connect automatically. Restart existing sessions to connect them."))
             .child(action_bar(layout)
                 .child(self.cua_button(if ready { "CHECK CUA" } else if repair { "REPAIR CUA" } else if verify_capture { "VERIFY SCREEN CAPTURE" } else if installed { "GRANT MACOS ACCESS" } else { "SET UP CUA" }, true, state.pending.is_some(), cx))
                 .child(self.cua_button("CHECK AGAIN", false, state.pending.is_some(), cx)))
@@ -1608,9 +1662,9 @@ impl SettingsPanel {
             .min_w_0()
             .flex()
             .items_start()
-            .gap(px(12.0))
-            .px(px(ROW_PAD_X))
-            .py(px(ROW_PAD_Y))
+            .gap(ui_text::space(12.0))
+            .px(ui_text::space(ROW_PAD_X))
+            .py(ui_text::space(ROW_PAD_Y))
             .bg(rgb(if selected {
                 colors.panel_active
             } else {
@@ -1628,8 +1682,8 @@ impl SettingsPanel {
             .child(
                 div()
                     .flex_none()
-                    .mt(px(4.0))
-                    .size(px(8.0))
+                    .mt(ui_text::space(4.0))
+                    .size(ui_text::space(8.0))
                     .border_1()
                     .border_color(rgb(if selected { colors.cyan } else { colors.muted }))
                     .when(selected, |style| style.bg(rgb(colors.cyan))),
@@ -1640,18 +1694,18 @@ impl SettingsPanel {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(3.0))
+                    .gap(ui_text::space(3.0))
                     .child(
                         // The chip shares the title's line so a grid cell keeps its width for the text.
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.0))
+                            .gap(ui_text::space(8.0))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .text_size(px(12.0))
+                                    .text_size(ui_text::text(12.0))
                                     .text_color(rgb(colors.text))
                                     .child(theme.label()),
                             )
@@ -1659,7 +1713,7 @@ impl SettingsPanel {
                     )
                     .child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(ui_text::text(10.0))
                             .text_color(rgb(colors.muted))
                             .child(theme.description()),
                     ),
@@ -1688,7 +1742,7 @@ impl SettingsPanel {
             .peekable();
         let mut grid = row_list();
         while cells.peek().is_some() {
-            let mut row = div().flex().gap(px(ROW_GAP));
+            let mut row = div().flex().gap(ui_text::space(ROW_GAP));
             for _ in 0..columns {
                 let cell = div().flex_1().min_w_0().flex();
                 row = row.child(match cells.next() {
@@ -1721,10 +1775,11 @@ impl SettingsPanel {
             .id(toggle.id())
             .track_focus(focus)
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap(px(12.0))
-            .px(px(ROW_PAD_X))
-            .py(px(ROW_PAD_Y))
+            .gap(ui_text::space(12.0))
+            .px(ui_text::space(ROW_PAD_X))
+            .py(ui_text::space(ROW_PAD_Y))
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.divider))
@@ -1732,22 +1787,17 @@ impl SettingsPanel {
             .hover(|style| style.bg(rgb(colors.panel_active)))
             .focus_visible(|style| style.border_color(rgb(colors.cyan)))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.0))
+                row_text()
                     .child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(ui_text::text(12.0))
                             .text_color(rgb(colors.text))
                             .child(title),
                     )
                     .child(
                         div()
-                            .max_w(px(DESCRIPTION_MAX_WIDTH))
-                            .text_size(px(10.0))
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
                             .text_color(rgb(colors.muted))
                             .child(description),
                     ),
@@ -1755,13 +1805,13 @@ impl SettingsPanel {
             .child(
                 div()
                     .flex_none()
-                    .w(px(42.0))
-                    .py(px(4.0))
+                    .w(ui_text::space(42.0))
+                    .py(ui_text::space(4.0))
                     .border_1()
                     .border_color(rgb(if enabled { colors.cyan } else { colors.divider }))
                     .bg(rgb(colors.panel_active))
                     .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .text_center()
                     .child(if enabled { "ON" } else { "OFF" }),
             )
@@ -1803,7 +1853,7 @@ impl SettingsPanel {
         });
         row_list()
             .child(self.theme_grid(theme_columns, settings.theme, cx))
-            .children(appearance_error.map(|error| div().text_size(px(11.0)).text_color(rgb(colors.gold)).child(error)))
+            .children(appearance_error.map(|error| div().text_size(ui_text::text(11.0)).text_color(rgb(colors.gold)).child(error)))
             .children(terminal_row)
             .child(self.toggle_row(
                 Toggle::PanelTabIcons,
@@ -1812,6 +1862,152 @@ impl SettingsPanel {
                 settings.panel_tab_icons,
                 cx,
             ))
+            .child(self.text_size_row(settings, cx))
+            .into_any_element()
+    }
+
+    fn change_text_size(&mut self, change: SizeChange, cx: &mut Context<Self>) {
+        let shown = ui_text::current_points(cx);
+        self.change(|settings| change.apply(settings, shown), cx);
+    }
+
+    /// RiWork's text size: − / the size / + / reset, and MATCH TERMINAL to follow
+    /// Ghostty's `font-size`. The row takes focus like a toggle: arrows or − and =
+    /// step, 0 resets, and M, Enter or Space switch matching. While matching, the
+    /// size is Ghostty's and dimmed, and stepping it stops matching.
+    fn text_size_row(&self, settings: &Settings, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
+        let shown = ui_text::current_points(cx);
+        let matching = settings.ui_text_matches_terminal;
+        let value_color = if matching { colors.muted } else { colors.cyan };
+        let button = |id: &'static str, label: &'static str, change: SizeChange, cx: &mut Context<Self>| {
+            let limit = match change {
+                SizeChange::Bigger => shown >= ui_text::MAX_POINTS,
+                SizeChange::Smaller => shown <= ui_text::MIN_POINTS,
+                SizeChange::Reset => shown == ui_text::DEFAULT_POINTS && !matching,
+            };
+            let active = !matching && !limit;
+            div()
+                .id(id)
+                .flex_none()
+                .min_w(ui_text::space(26.0))
+                .px(ui_text::space(6.0))
+                .py(ui_text::space(4.0))
+                .border_1()
+                .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                .bg(rgb(colors.panel_active))
+                .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+                .text_size(ui_text::text(10.0))
+                .text_center()
+                .cursor_pointer()
+                .hover(|style| style.border_color(rgb(colors.cyan)))
+                .child(label)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.change_text_size(change, cx);
+                }))
+        };
+        let description = match ui_text::terminal_font_size(cx).filter(|_| matching) {
+            Some(size) => format!("Panels, tabs, menus and status bar. Matches Ghostty's font-size = {size}."),
+            None => "Panels, tabs, menus and status bar.".to_owned(),
+        };
+        // Each shortcut is one unbreakable item: wrapping inside the text broke
+        // lines between "⌘" and "−".
+        let shortcut = |key: &'static str, label: &'static str| {
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .child(div().flex().gap(ui_text::space(4.0))
+                    .child(div().text_color(rgb(colors.text)).child(key))
+                    .child(label))
+        };
+        let shortcuts = div()
+            .flex()
+            .flex_wrap()
+            .gap_x(ui_text::space(10.0))
+            .text_size(ui_text::text(10.0))
+            .text_color(rgb(colors.muted))
+            .child(shortcut("⌘+", "bigger"))
+            .child(shortcut("⌘−", "smaller"))
+            .child(shortcut("⌘0", "reset"))
+            .child(div().flex_none().whitespace_nowrap().child("outside a terminal"));
+        let match_button = div()
+            .id("ui-text-match")
+            .flex_none()
+            .px(ui_text::space(6.0))
+            .py(ui_text::space(4.0))
+            .border_1()
+            .border_color(rgb(if matching { colors.cyan } else { colors.divider }))
+            .bg(rgb(colors.panel_active))
+            .text_color(rgb(if matching { colors.cyan } else { colors.muted }))
+            .text_size(ui_text::text(10.0))
+            .text_center()
+            .cursor_pointer()
+            .hover(|style| style.border_color(rgb(colors.cyan)))
+            .child(if matching { "MATCH TERMINAL · ON" } else { "MATCH TERMINAL · OFF" })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
+            )
+            .on_click(cx.listener(|view, _, _, cx| {
+                cx.stop_propagation();
+                view.change(toggle_text_match, cx);
+            }));
+        div()
+            .id("ui-text-size")
+            .track_focus(&self.text_size_focus)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(ui_text::space(12.0))
+            .px(ui_text::space(ROW_PAD_X))
+            .py(ui_text::space(ROW_PAD_Y))
+            .bg(rgb(colors.panel))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .child(
+                row_text()
+                    .child(div().text_size(ui_text::text(12.0)).text_color(rgb(colors.text)).child("Text size"))
+                    .child(
+                        div()
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            .child(description),
+                    )
+                    .child(shortcuts),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .max_w_full()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(ui_text::space(4.0))
+                    .child(button("ui-text-smaller", "−", SizeChange::Smaller, cx))
+                    .child(
+                        div()
+                            .flex_none()
+                            .min_w(ui_text::space(44.0))
+                            .text_size(ui_text::text(10.0))
+                            .text_center()
+                            .text_color(rgb(value_color))
+                            .child(ui_text::label(shown)),
+                    )
+                    .child(button("ui-text-bigger", "+", SizeChange::Bigger, cx))
+                    .child(button("ui-text-reset", "RESET", SizeChange::Reset, cx))
+                    .child(match_button),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
+            )
             .into_any_element()
     }
 
@@ -1931,8 +2127,8 @@ impl Render for SettingsPanel {
                                         div()
                                             .flex()
                                             .items_center()
-                                            .gap(px(12.0))
-                                            .pb(px(14.0))
+                                            .gap(ui_text::space(12.0))
+                                            .pb(ui_text::space(14.0))
                                             .border_b_1()
                                             .border_color(rgb(colors.cyan))
                                             .child(
@@ -1941,16 +2137,16 @@ impl Render for SettingsPanel {
                                                     .min_w_0()
                                                     .flex()
                                                     .flex_col()
-                                                    .gap(px(4.0))
-                                                    .child(div().text_size(px(10.0)).text_color(rgb(colors.magenta)).child("RIWORK / PREFERENCES"))
-                                                    .child(div().text_size(px(20.0)).child("Settings")),
+                                                    .gap(ui_text::space(4.0))
+                                                    .child(div().text_size(ui_text::text(10.0)).text_color(rgb(colors.magenta)).child("RIWORK / PREFERENCES"))
+                                                    .child(div().text_size(ui_text::text(20.0)).child("Settings")),
                                             )
                                             .child(status_chip("ALL PROJECTS", colors.magenta, colors)),
                                     )
                                     // Columns only differ in the wide layout; otherwise this is one stack of cards.
                                     .child(div().flex().items_start().gap(px(layout.gap())).children(columns))
-                                    .children(self.error.as_ref().map(|error| div().text_size(px(11.0)).text_color(rgb(colors.gold)).child(error.clone())))
-                                    .child(div().pt(px(10.0)).border_t_1().border_color(rgb(colors.divider)).text_size(px(10.0)).text_color(rgb(colors.muted)).child("Saved automatically · Tab to move · Enter or Space to select")),
+                                    .children(self.error.as_ref().map(|error| div().text_size(ui_text::text(11.0)).text_color(rgb(colors.gold)).child(error.clone())))
+                                    .child(div().pt(ui_text::space(10.0)).border_t_1().border_color(rgb(colors.divider)).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("Saved automatically · Tab to move · Enter or Space to select · Arrows step the text size")),
                             ),
                     ),
             )
@@ -2226,6 +2422,100 @@ mod tests {
         fs::write(dir.join("settings.json"), "{ not json").unwrap();
         assert!(agent_inline_mode(&dir));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed() {
+        let dir = env::temp_dir().join(format!("riwork-settings-text-size-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let document = |dir: &std::path::Path| -> Value {
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
+        };
+        let defaults = Settings::default();
+        assert_eq!(defaults.ui_text_size.points(), 11.0);
+        assert!(!defaults.ui_text_matches_terminal);
+
+        // A file from a build without the settings (or with the earlier percentage
+        // key) reads as today's size and is not rewritten.
+        let older = r#"{"schema_version":1,"theme":"tokyo_night","ui_text_size_percent":140,"future_setting":{"a":1}}"#;
+        fs::write(dir.join("settings.json"), older).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.ui_text_size, TextPoints::DEFAULT);
+        assert!(!loaded.ui_text_matches_terminal);
+        assert_eq!(fs::read_to_string(dir.join("settings.json")).unwrap(), older);
+
+        // A size change writes both keys in points and leaves the neighbours alone.
+        let saved = store
+            .update(|settings| SizeChange::Bigger.apply(settings, 13.0))
+            .unwrap();
+        assert_eq!(saved.ui_text_size.points(), 14.0);
+        let file = document(&dir);
+        assert_eq!(file["ui_text_size"], 14);
+        assert_eq!(file["ui_text_matches_terminal"], false);
+        assert_eq!(file["theme"], "tokyo_night");
+        assert_eq!(file["ui_text_size_percent"], 140);
+        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
+        assert_eq!(reloaded.ui_text_size.points(), 14.0);
+        store.update(toggle_text_match).unwrap();
+        assert_eq!(document(&dir)["ui_text_matches_terminal"], true);
+        assert_eq!(document(&dir)["ui_text_size"], 14);
+
+        // Out of range is pulled into range, a fraction keeps a tenth, another
+        // shape is the default. Each stays in the file until changed.
+        for (value, expected) in [
+            ("500", 24.0),
+            ("3", 9.0),
+            ("12.5", 12.5),
+            ("-120", 9.0),
+            (r#""large""#, 11.0),
+        ] {
+            fs::write(
+                dir.join("settings.json"),
+                format!(r#"{{"schema_version":1,"ui_text_size":{value},"ui_text_matches_terminal":"yes"}}"#),
+            )
+            .unwrap();
+            let loaded = store.load().unwrap();
+            assert_eq!(loaded.ui_text_size.points(), expected, "{value}");
+            assert!(!loaded.ui_text_matches_terminal);
+            store
+                .update(|settings| settings.use_riwork_colors = true)
+                .unwrap();
+            assert_eq!(
+                document(&dir)["ui_text_size"],
+                serde_json::from_str::<Value>(value).unwrap()
+            );
+            assert_eq!(document(&dir)["ui_text_matches_terminal"], "yes");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn match_terminal_changes_only_its_own_setting_and_keeps_the_saved_size() {
+        let base = Settings {
+            ui_text_size: TextPoints::new(14.0),
+            ..Settings::default()
+        };
+        let mut matched = base.clone();
+        toggle_text_match(&mut matched);
+        assert!(matched.ui_text_matches_terminal);
+        let (before, after) = (
+            serde_json::to_value(&base).unwrap(),
+            serde_json::to_value(&matched).unwrap(),
+        );
+        let changed: Vec<_> = before
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(key, value)| after[key.as_str()] != **value)
+            .map(|(key, _)| key.as_str())
+            .collect();
+        assert_eq!(changed, ["ui_text_matches_terminal"]);
+        assert_eq!(ui_text::effective_points(&matched, Some(20.0)), 20.0);
+        // Turning it off again returns to the saved size, not the size matched.
+        toggle_text_match(&mut matched);
+        assert_eq!(matched, base);
+        assert_eq!(ui_text::effective_points(&matched, Some(20.0)), 14.0);
     }
 
     #[test]

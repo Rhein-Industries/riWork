@@ -37,6 +37,7 @@ mod store;
 mod terminal_lifecycle;
 mod theme;
 mod tooltip;
+mod ui_text;
 mod update;
 mod usage;
 
@@ -107,6 +108,9 @@ actions!(
         OpenSchedules,
         OpenFiles,
         OpenPreview,
+        BiggerText,
+        SmallerText,
+        ActualSizeText,
         Quit
     ]
 );
@@ -131,7 +135,9 @@ const WINDOW_CONTROLS_CONTENT_INSET: f32 = WINDOW_CONTROLS_WIDTH + 14.0;
 const FOCUS_MAX_WIDTH: f32 = 1100.0;
 const FOCUS_BOTTOM_MARGIN: f32 = 0.30;
 const FOCUS_TOOLBAR_HEIGHT: f32 = 32.0;
+/// Design sizes at 100 % interface text; they grow with it (`ui_text::space`).
 const STATUS_BAR_HEIGHT: f32 = 22.0;
+const PANE_HEADER_HEIGHT: f32 = 28.0;
 /// A window restored fullscreen or zoomed is first drawn at its opening size and animates
 /// to the real one. Sizes seen this soon after the first draw are that settling, not the
 /// user resizing, so they must not rebalance the saved ratios.
@@ -233,14 +239,14 @@ impl Render for DraggedTab {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
         div()
-            .px(px(12.0))
-            .py(px(7.0))
+            .px(ui_text::space(12.0))
+            .py(ui_text::space(7.0))
             .bg(rgb(colors.panel_active))
             .border_1()
             .border_color(rgb(colors.cyan))
             .text_color(rgb(colors.text))
             .font_family("Menlo")
-            .text_size(px(11.0))
+            .text_size(ui_text::text(11.0))
             .child(self.title.clone())
     }
 }
@@ -4381,6 +4387,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A text-size key gets here only when no binding took it, which means a
+        // terminal had focus and Ghostty already zoomed its font. Handling it keeps
+        // AppKit from offering it to the View menu's item, which would also resize
+        // RiWork's text.
+        if ui_text::is_size_keystroke(&event.keystroke) {
+            cx.stop_propagation();
+            return;
+        }
         if event.keystroke.key == "escape" && self.project_sort_menu_open {
             self.project_sort_menu_open = false;
             self.focus_active(window, cx);
@@ -4461,7 +4475,7 @@ impl Workspace {
         }
         let viewport = window.viewport_size();
         let footer = if self.settings.status_bar.enabled {
-            STATUS_BAR_HEIGHT
+            ui_text::space_f32(STATUS_BAR_HEIGHT)
         } else {
             0.0
         };
@@ -4646,10 +4660,27 @@ impl Workspace {
             0.0
         };
         let header_width = pane_width - control_inset;
-        let show_lock = header_width >= 108.0;
-        let show_focus = header_width >= 180.0;
+        let show_lock = header_width >= ui_text::space_f32(108.0);
+        let show_focus = header_width >= ui_text::space_f32(180.0);
         let pane_locked = self.pane_is_locked(pane_id);
         let account_numbers = codex_account_numbers(&self.shells);
+        // Panel tabs whose labels would not fit beside the pane buttons (larger text,
+        // a narrow sidebar) show their icons, as with "Icons instead of labels".
+        let buttons = 1 + usize::from(show_lock) + usize::from(show_focus);
+        let strip_room = header_width
+            - ui_text::space_f32(28.0) * buttons as f32
+            - if window_drag_enabled { ui_text::space_f32(12.0) } else { 0.0 }
+            - ui_text::space_f32(18.0);
+        let compact_panels = !self.settings.panel_tab_icons
+            && pane.tabs.iter().any(|tab| tab.panel().is_some())
+            && tab_labels_width(
+                pane.tabs.iter().enumerate().map(|(index, tab)| {
+                    let close = index == pane.active
+                        && user_close_refusal(pane_locked, UserClose::Tab).is_none();
+                    (tab.title.chars().count(), tab.panel().is_some(), close)
+                }),
+                ui_text::scale(),
+            ) > strip_room;
         let tabs = pane
             .tabs
             .iter()
@@ -4659,7 +4690,8 @@ impl Workspace {
                 let active = index == pane.active;
                 let panel = tab.panel().is_some();
                 // Shell tabs keep their titles; only built-in panels swap in an icon.
-                let icon_panel = tab.panel().filter(|_| self.settings.panel_tab_icons);
+                let icon_panel =
+                    tab.panel().filter(|_| self.settings.panel_tab_icons || compact_panels);
                 // The X is left out, not disabled, so a locked pane's tabs lose no room to it.
                 let close_visible =
                     active && user_close_refusal(pane_locked, UserClose::Tab).is_none();
@@ -4684,9 +4716,9 @@ impl Workspace {
                     .flex_shrink_0()
                     .items_center()
                     .h_full()
-                    .pl(px(pad_left))
-                    .pr(px(pad_right))
-                    .gap(px(gap))
+                    .pl(ui_text::space(pad_left))
+                    .pr(ui_text::space(pad_right))
+                    .gap(ui_text::space(gap))
                     .border_r_1()
                     .border_b_1()
                     .border_color(rgb(if active { colors.cyan } else { colors.divider }))
@@ -4696,7 +4728,7 @@ impl Workspace {
                         colors.panel
                     }))
                     .text_color(rgb(tab_color))
-                    .text_size(px(if panel { 9.0 } else { 10.0 }))
+                    .text_size(ui_text::text(if panel { 9.0 } else { 10.0 }))
                     .cursor_grab()
                     .hover(|style| style.bg(rgb(colors.panel_active)))
                     .drag_over::<DraggedTab>(move |style, _, _, _| {
@@ -4707,8 +4739,8 @@ impl Workspace {
                         Some(kind) => div()
                             .id(("tab-icon", tab_id))
                             .h_full()
-                            .min_w(px(32.0))
-                            .px(px(8.0))
+                            .min_w(ui_text::space(32.0))
+                            .px(ui_text::space(8.0))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -4720,7 +4752,7 @@ impl Workspace {
                     .children(close_visible.then(|| {
                         div()
                             .id(("close-tab", tab_id))
-                            .size(px(18.0))
+                            .size(ui_text::space(18.0))
                             .flex_none()
                             .flex()
                             .items_center()
@@ -4766,7 +4798,7 @@ impl Workspace {
         let header = div()
             .id(("pane-header", pane_id))
             .overflow_hidden()
-            .h(px(28.0))
+            .h(ui_text::space(PANE_HEADER_HEIGHT))
             .flex_none()
             .flex()
             .min_w_0()
@@ -4792,7 +4824,7 @@ impl Workspace {
                         div()
                             .id(("window-drag-space", pane_id))
                             .flex_1()
-                            .min_w(px(18.0))
+                            .min_w(ui_text::space(18.0))
                             .h_full()
                             .when(window_drag_enabled, |space| {
                                 space
@@ -4816,7 +4848,7 @@ impl Workspace {
                 div()
                     .id(("window-drag-handle", pane_id))
                     .flex_none()
-                    .w(px(12.0))
+                    .w(ui_text::space(12.0))
                     .h_full()
                     .cursor_grab()
                     .on_mouse_down(MouseButton::Left, start_window_drag)
@@ -4905,7 +4937,7 @@ impl Workspace {
                     // attach, so there is nothing to keep here.
                     div()
                         .size_full()
-                        .p(px(14.0))
+                        .p(ui_text::space(14.0))
                         .bg(rgb(colors.bg))
                         .text_color(rgb(colors.muted))
                         .child(
@@ -4955,6 +4987,7 @@ impl Workspace {
                     search_focused: self.search_focused && selected,
                     focus: self.focus.clone(),
                     control_inset: 0.0,
+                    width: pane_width,
                     collapsed_folders: &self.collapsed_project_folders,
                     state_home: self.sessions.state_home(),
                     project_order: self.settings.project_order,
@@ -4965,7 +4998,7 @@ impl Workspace {
                 cx,
             ),
             None => div()
-                .p(px(14.0))
+                .p(ui_text::space(14.0))
                 .text_color(rgb(colors.muted))
                 .child("Drop a tab here or use the pane menu")
                 .into_any_element(),
@@ -5075,11 +5108,11 @@ impl Workspace {
             .children((!self.focus_mode).then_some(header))
             .children(skill_upgrade.filter(|_| !self.focus_mode).map(|shell_id| {
                 div()
-                    .h(px(23.0))
+                    .h(ui_text::space(23.0))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px(px(10.0))
+                    .px(ui_text::space(10.0))
                     .bg(rgb(colors.panel_active))
                     .border_b_1()
                     .border_color(rgb(colors.divider))
@@ -5113,15 +5146,15 @@ impl Workspace {
                     let menu = div()
                         .id(("view-menu", pane_id))
                         .absolute()
-                        .top(px(30.0))
+                        .top(ui_text::space(PANE_HEADER_HEIGHT) + px(2.0))
                         .right(px(6.0))
-                        .w(px(248.0_f32.min((pane_width - 12.0).max(0.0))))
+                        .w(px(ui_text::space_f32(248.0).min((pane_width - 12.0).max(0.0))))
                         .max_h(gpui::relative(0.9))
                         .overflow_y_scroll()
                         .bg(rgb(colors.panel_active))
                         .border_1()
                         .border_color(rgb(colors.magenta))
-                        .p(px(3.0))
+                        .p(ui_text::space(3.0))
                         .on_mouse_down_out(cx.listener(|workspace, _, window, cx| {
                             workspace.panel_menu = None;
                             workspace.finish_tab_drag(cx);
@@ -5288,17 +5321,22 @@ impl Workspace {
             .min_w_0()
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .px(px(8.0))
-            .text_size(px(9.0))
+            .gap(ui_text::space(8.0))
+            .px(ui_text::space(8.0))
+            .text_size(ui_text::text(9.0))
             .text_color(rgb(colors.muted))
+            // Items keep one line; at larger text the right side gives way first and
+            // the left (the project, by default) keeps up to 40 % of the bar.
+            .whitespace_nowrap()
             .child(
                 div()
                     .id("status-left")
                     .flex()
+                    .flex_shrink_0()
+                    .max_w(gpui::relative(0.4))
                     .min_w_0()
                     .items_center()
-                    .gap(px(10.0))
+                    .gap(ui_text::space(10.0))
                     .overflow_x_scroll()
                     .children(
                         settings
@@ -5307,14 +5345,14 @@ impl Workspace {
                             .map(|kind| self.render_status_item(kind, cx)),
                     ),
             )
-            .child(div().flex_1().min_w(px(4.0)))
+            .child(div().flex_1().min_w(ui_text::space(4.0)))
             .child(
                 div()
                     .id("status-right")
                     .flex()
                     .min_w_0()
                     .items_center()
-                    .gap(px(10.0))
+                    .gap(ui_text::space(10.0))
                     .overflow_x_scroll()
                     .children(
                         settings
@@ -5342,7 +5380,7 @@ impl Workspace {
                     .unwrap_or_else(|_| "Project unavailable".to_owned());
                 div()
                     .id("status-current-project")
-                    .max_w(px(240.0))
+                    .max_w(ui_text::space(240.0))
                     .min_w_0()
                     .text_ellipsis()
                     .overflow_hidden()
@@ -5372,7 +5410,7 @@ impl Workspace {
                     .unwrap_or_else(|| "No worktree".to_owned());
                 div()
                     .id("status-current-worktree")
-                    .max_w(px(220.0))
+                    .max_w(ui_text::space(220.0))
                     .min_w_0()
                     .text_ellipsis()
                     .overflow_hidden()
@@ -5396,7 +5434,7 @@ impl Workspace {
                 );
                 div()
                     .id("status-agent-activity")
-                    .max_w(px(250.0))
+                    .max_w(ui_text::space(250.0))
                     .min_w_0()
                     .text_ellipsis()
                     .overflow_hidden()
@@ -5517,7 +5555,7 @@ impl Workspace {
         };
         div()
             .id("status-codex-account")
-            .max_w(px(300.0))
+            .max_w(ui_text::space(300.0))
             .min_w_0()
             .overflow_hidden()
             .text_ellipsis()
@@ -5580,7 +5618,7 @@ impl Workspace {
         };
         div()
             .id("usage-chip")
-            .max_w(px(220.0))
+            .max_w(ui_text::space(220.0))
             .overflow_hidden()
             .text_ellipsis()
             .text_color(rgb(colors.cyan))
@@ -5621,11 +5659,11 @@ impl Workspace {
             } else {
                 cards.push(
                     div()
-                        .p(px(12.0))
+                        .p(ui_text::space(12.0))
                         .border_t_1()
                         .border_color(rgb(colors.divider))
                         .child(title)
-                        .child(div().mt(px(6.0)).text_color(rgb(colors.muted)).child(
+                        .child(div().mt(ui_text::space(6.0)).text_color(rgb(colors.muted)).child(
                             if entry.is_some_and(|entry| entry.pending) {
                                 "Reading account usage…".to_owned()
                             } else {
@@ -5643,7 +5681,7 @@ impl Workspace {
             {
                 cards.push(
                     div()
-                        .px(px(12.0))
+                        .px(ui_text::space(12.0))
                         .text_color(rgb(colors.gold))
                         .child(format!("Last refresh: {error}"))
                         .into_any_element(),
@@ -5663,13 +5701,13 @@ impl Workspace {
             } else {
                 cards.push(
                     div()
-                        .p(px(12.0))
+                        .p(ui_text::space(12.0))
                         .border_t_1()
                         .border_color(rgb(colors.divider))
                         .child(title)
                         .child(
                             div()
-                                .mt(px(6.0))
+                                .mt(ui_text::space(6.0))
                                 .text_color(rgb(colors.muted))
                                 .child("Waiting for Claude usage after its first response"),
                         )
@@ -5680,7 +5718,7 @@ impl Workspace {
         if !has_claude {
             cards.push(
                 div()
-                    .p(px(12.0))
+                    .p(ui_text::space(12.0))
                     .text_color(rgb(colors.muted))
                     .child("Open a Claude session to see its usage here")
                     .into_any_element(),
@@ -5688,7 +5726,7 @@ impl Workspace {
         }
         cards.extend(self.render_grok_usage_cards(colors));
         div().size_full().flex().flex_col().min_h_0().bg(rgb(colors.panel))
-            .child(div().h(px(32.0)).flex_none().flex().items_center().px(px(10.0)).justify_between()
+            .child(div().h(ui_text::space(32.0)).flex_none().flex().items_center().px(ui_text::space(10.0)).justify_between()
                 .border_b_1().border_color(rgb(colors.divider)).child("ACCOUNT USAGE")
                 .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan)).cursor_pointer()
                     .child(if pending || self.grok_usage_pending { "REFRESHING…" } else { "↻ REFRESH" })
@@ -5703,7 +5741,7 @@ impl Workspace {
                         workspace.refresh(window, cx);
                     }))))
             .child(div().id("usage-panel-scroll").flex_1().min_h_0().overflow_y_scroll().children(cards))
-            .child(div().flex_none().p(px(10.0)).border_t_1().border_color(rgb(colors.divider)).text_color(rgb(colors.muted)).text_size(px(9.0))
+            .child(div().flex_none().p(ui_text::space(10.0)).border_t_1().border_color(rgb(colors.divider)).text_color(rgb(colors.muted)).text_size(ui_text::text(9.0))
                 .child("Quota is shared by all sessions on the same account. Missing windows are unavailable. Claude subscription quota requires a supported Pro/Max account. Grok shows each session's tokens and cost only."))
             .into_any_element()
     }
@@ -5735,7 +5773,7 @@ impl Workspace {
         if listed == 0 {
             cards.push(
                 div()
-                    .p(px(12.0))
+                    .p(ui_text::space(12.0))
                     .border_t_1()
                     .border_color(rgb(colors.divider))
                     .text_color(rgb(colors.muted))
@@ -5751,13 +5789,13 @@ impl Workspace {
         }
         cards.push(
             div()
-                .px(px(12.0))
-                .pb(px(12.0))
-                .pt(px(8.0))
+                .px(ui_text::space(12.0))
+                .pb(ui_text::space(12.0))
+                .pt(ui_text::space(8.0))
                 .border_t_1()
                 .border_color(rgb(colors.divider))
                 .text_color(rgb(colors.muted))
-                .text_size(px(9.0))
+                .text_size(ui_text::text(9.0))
                 .child("Grok's account allowance and credits are shown only in Grok's own /usage screen. RiWork cannot read them through an official interface.")
                 .into_any_element(),
         );
@@ -5782,14 +5820,14 @@ impl Workspace {
             .flex()
             .flex_none()
             .items_center()
-            .h(px(FOCUS_TOOLBAR_HEIGHT))
+            .h(ui_text::space(FOCUS_TOOLBAR_HEIGHT))
             .pl(px(if show_window_controls {
                 WINDOW_CONTROLS_CONTENT_INSET
             } else {
                 12.0
             }))
-            .pr(px(12.0))
-            .gap(px(12.0))
+            .pr(ui_text::space(12.0))
+            .gap(ui_text::space(12.0))
             .bg(rgb(colors.panel))
             .border_b_1()
             .border_color(rgb(colors.divider))
@@ -5801,7 +5839,7 @@ impl Workspace {
                     .min_w_0()
                     .h_full()
                     .items_center()
-                    .gap(px(12.0))
+                    .gap(ui_text::space(12.0))
                     .when(show_window_controls, |space| {
                         space
                             .cursor_grab()
@@ -5824,8 +5862,8 @@ impl Workspace {
                 div()
                     .id("focus-layout-toggle")
                     .flex_none()
-                    .px(px(8.0))
-                    .py(px(5.0))
+                    .px(ui_text::space(8.0))
+                    .py(ui_text::space(5.0))
                     .cursor_pointer()
                     .text_color(rgb(colors.muted))
                     .hover(|style| {
@@ -5848,8 +5886,8 @@ impl Workspace {
                 div()
                     .id("restore-workspace")
                     .flex_none()
-                    .px(px(10.0))
-                    .py(px(5.0))
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(5.0))
                     .border_1()
                     .border_color(rgb(colors.divider))
                     .bg(rgb(colors.panel_active))
@@ -5866,10 +5904,11 @@ impl Workspace {
                     })),
             );
         let content = if centered {
-            let top_gap = 20.0_f32.min((height - FOCUS_TOOLBAR_HEIGHT).max(0.0));
+            let toolbar_height = ui_text::space_f32(FOCUS_TOOLBAR_HEIGHT);
+            let top_gap = 20.0_f32.min((height - toolbar_height).max(0.0));
             let content_width = (width - 48.0).max(0.0).min(FOCUS_MAX_WIDTH);
             let content_height =
-                (height * (1.0 - FOCUS_BOTTOM_MARGIN) - FOCUS_TOOLBAR_HEIGHT - top_gap).max(0.0);
+                (height * (1.0 - FOCUS_BOTTOM_MARGIN) - toolbar_height - top_gap).max(0.0);
             div()
                 .flex()
                 .flex_none()
@@ -5922,7 +5961,7 @@ impl Workspace {
         div()
             .id(format!("pane-{pane_id}-{key}"))
             .h_full()
-            .w(px(28.0))
+            .w(ui_text::space(28.0))
             .flex()
             .flex_none()
             .items_center()
@@ -5968,16 +6007,16 @@ impl Workspace {
             .id(format!("pane-menu-{pane_id}-{label}"))
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .px(px(8.0))
-            .py(px(5.0))
-            .text_size(px(10.0))
+            .gap(ui_text::space(8.0))
+            .px(ui_text::space(8.0))
+            .py(ui_text::space(5.0))
+            .text_size(ui_text::text(10.0))
             .text_color(rgb(colors.text))
             .cursor_pointer()
             .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan)))
             .child(
                 div()
-                    .w(px(14.0))
+                    .w(ui_text::space(14.0))
                     .flex_none()
                     .children(icon.map(|icon| icons::icon(icon, colors.muted))),
             )
@@ -5985,7 +6024,7 @@ impl Workspace {
             .children((!shortcut.is_empty()).then(|| {
                 div()
                     .flex_none()
-                    .text_size(px(9.0))
+                    .text_size(ui_text::text(9.0))
                     .text_color(rgb(colors.muted))
                     .child(shortcut)
             }))
@@ -6026,7 +6065,7 @@ impl Workspace {
         let footer_height = if self.focus_mode || !self.settings.status_bar.enabled {
             0.0
         } else {
-            STATUS_BAR_HEIGHT
+            ui_text::space_f32(STATUS_BAR_HEIGHT)
         };
         let target = div()
             .id(match side {
@@ -6234,7 +6273,7 @@ impl Render for Workspace {
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
             .font_family("Menlo")
-            .text_size(px(10.0))
+            .text_size(ui_text::text(10.0))
             .child(
                 div()
                     .flex()
@@ -6260,7 +6299,7 @@ impl Render for Workspace {
                     div()
                         .id("bottom-status-bar")
                         .w_full()
-                        .h(px(STATUS_BAR_HEIGHT))
+                        .h(ui_text::space(STATUS_BAR_HEIGHT))
                         .flex_none()
                         .flex()
                         .items_center()
@@ -6276,7 +6315,7 @@ impl Render for Workspace {
                     .absolute()
                     .inset_0()
                     .size_full()
-                    .p(px(16.0))
+                    .p(ui_text::space(16.0))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -6289,7 +6328,7 @@ impl Render for Workspace {
                     .absolute()
                     .inset_0()
                     .size_full()
-                    .p(px(16.0))
+                    .p(ui_text::space(16.0))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -6300,10 +6339,10 @@ impl Render for Workspace {
             .children(self.notice.as_ref().map(|notice| {
                 div()
                     .absolute()
-                    .top(px(31.0))
+                    .top(ui_text::space(PANE_HEADER_HEIGHT) + px(3.0))
                     .right(px(8.0))
-                    .max_w(px(520.0))
-                    .p(px(8.0))
+                    .max_w(ui_text::space(520.0))
+                    .p(ui_text::space(8.0))
                     .bg(rgb(colors.panel_active))
                     .text_color(rgb(colors.gold))
                     .child(notice.clone())
@@ -6328,12 +6367,12 @@ impl Render for Workspace {
 
 fn pane_menu_heading(label: &'static str, colors: Palette) -> AnyElement {
     div()
-        .px(px(8.0))
-        .py(px(6.0))
+        .px(ui_text::space(8.0))
+        .py(ui_text::space(6.0))
         .border_t_1()
         .border_color(rgb(colors.divider))
         .text_color(rgb(colors.muted))
-        .text_size(px(9.0))
+        .text_size(ui_text::text(9.0))
         .child(label)
         .into_any_element()
 }
@@ -6366,6 +6405,18 @@ enum UserClose {
 /// pane keeps its tabs and stays a pane. Only requests from the user ask this:
 /// moving a tab to another pane, project switches, restore and layout repair remove
 /// tabs on their own terms, and a locked pane never blocks them.
+/// About how wide a strip of labelled tabs is: Menlo advances 0.6 em, and each tab
+/// adds its padding, its border and, when shown, the close button. `tabs` gives
+/// each title's length, whether it is a panel tab (9 px text) and whether it has an X.
+fn tab_labels_width(tabs: impl Iterator<Item = (usize, bool, bool)>, scale: f32) -> f32 {
+    tabs.map(|(chars, panel, close)| {
+        let font = if panel { 9.0 } else { 10.0 } * scale;
+        let close = if close { ui_text::space_f32(6.0) + ui_text::space_f32(18.0) } else { 0.0 };
+        chars as f32 * font * 0.6 + 2.0 * ui_text::space_f32(8.0) + 1.0 + close
+    })
+    .sum()
+}
+
 fn user_close_refusal(pane_locked: bool, close: UserClose) -> Option<&'static str> {
     pane_locked.then_some(match close {
         UserClose::Tab => "Unlock the pane to close its tabs",
@@ -6687,7 +6738,7 @@ fn render_grok_session(
     colors: Palette,
 ) -> AnyElement {
     let card = div()
-        .p(px(12.0))
+        .p(ui_text::space(12.0))
         .border_t_1()
         .border_color(rgb(colors.divider));
     let Some(tab) = tab else {
@@ -6695,7 +6746,7 @@ fn render_grok_session(
             .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
             .child(
                 div()
-                    .mt(px(6.0))
+                    .mt(ui_text::space(6.0))
                     .text_color(rgb(colors.muted))
                     .child("Reading Grok usage…"),
             )
@@ -6706,7 +6757,7 @@ fn render_grok_session(
             .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
             .child(
                 div()
-                    .mt(px(6.0))
+                    .mt(ui_text::space(6.0))
                     .text_color(rgb(colors.muted))
                     .child(format!(
                         "usage unavailable: {}",
@@ -6745,12 +6796,12 @@ fn render_grok_session(
             .flex()
             .items_center()
             .justify_between()
-            .gap(px(8.0))
+            .gap(ui_text::space(8.0))
             .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
             .child(
                 div()
                     .text_color(rgb(colors.muted))
-                    .text_size(px(9.0))
+                    .text_size(ui_text::text(9.0))
                     .child(
                         session
                             .primary_model
@@ -6759,19 +6810,19 @@ fn render_grok_session(
                     ),
             ),
     )
-    .child(div().mt(px(6.0)).child(headline))
+    .child(div().mt(ui_text::space(6.0)).child(headline))
     .child(
         div()
-            .mt(px(4.0))
+            .mt(ui_text::space(4.0))
             .text_color(rgb(colors.muted))
-            .text_size(px(9.0))
+            .text_size(ui_text::text(9.0))
             .child(token_breakdown(&session.tokens)),
     )
     .children((session.models.len() > 1).then(|| {
         div()
-            .mt(px(4.0))
+            .mt(ui_text::space(4.0))
             .text_color(rgb(colors.muted))
-            .text_size(px(9.0))
+            .text_size(ui_text::text(9.0))
             .children(session.models.iter().map(|model| {
                 div().child(format!(
                     "{} · {} tokens · {} calls{}",
@@ -6787,9 +6838,9 @@ fn render_grok_session(
     }))
     .child(
         div()
-            .mt(px(4.0))
+            .mt(ui_text::space(4.0))
             .text_color(rgb(if tab.stale { colors.gold } else { colors.muted }))
-            .text_size(px(9.0))
+            .text_size(ui_text::text(9.0))
             .child(if tab.stale {
                 format!(
                     "STALE · {} · {}",
@@ -6805,11 +6856,11 @@ fn render_grok_session(
 
 fn render_grok_total(totals: &usage::GrokTotals, missing: usize, colors: Palette) -> AnyElement {
     div()
-        .p(px(12.0))
+        .p(ui_text::space(12.0))
         .border_t_1()
         .border_color(rgb(colors.divider))
         .child(div().text_color(rgb(colors.cyan)).child("GROK · TOTAL"))
-        .child(div().mt(px(6.0)).child(format!(
+        .child(div().mt(ui_text::space(6.0)).child(format!(
             "{} · {} tokens · {} session{}",
             usage::format_usd(totals.cost_usd),
             usage::format_tokens(totals.tokens.total),
@@ -6818,25 +6869,25 @@ fn render_grok_total(totals: &usage::GrokTotals, missing: usize, colors: Palette
         )))
         .child(
             div()
-                .mt(px(4.0))
+                .mt(ui_text::space(4.0))
                 .text_color(rgb(colors.muted))
-                .text_size(px(9.0))
+                .text_size(ui_text::text(9.0))
                 .child(token_breakdown(&totals.tokens)),
         )
         .child(
             div()
-                .mt(px(4.0))
+                .mt(ui_text::space(4.0))
                 .text_color(rgb(colors.muted))
-                .text_size(px(9.0))
+                .text_size(ui_text::text(9.0))
                 .child(
                     "A session resumed or forked from another includes that history, so the total can overcount.",
                 ),
         )
         .children((missing > 0).then(|| {
             div()
-                .mt(px(4.0))
+                .mt(ui_text::space(4.0))
                 .text_color(rgb(colors.muted))
-                .text_size(px(9.0))
+                .text_size(ui_text::text(9.0))
                 .child(format!(
                     "{missing} listed session{} without usage not counted",
                     if missing == 1 { "" } else { "s" }
@@ -6853,23 +6904,23 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
         .map(|window| {
             let remaining = (100.0 - window.used_percent).clamp(0.0, 100.0);
             div()
-                .mt(px(10.0))
+                .mt(ui_text::space(10.0))
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
-                        .gap(px(8.0))
+                        .gap(ui_text::space(8.0))
                         .child(format!("{} · {:.0}% left", window.label, remaining))
                         .child(
                             div()
                                 .text_color(rgb(colors.muted))
-                                .text_size(px(9.0))
+                                .text_size(ui_text::text(9.0))
                                 .child(reset_summary(window.resets_at)),
                         ),
                 )
                 .child(
-                    div().mt(px(5.0)).h(px(3.0)).bg(rgb(colors.divider)).child(
+                    div().mt(ui_text::space(5.0)).h(ui_text::space(3.0)).bg(rgb(colors.divider)).child(
                         div()
                             .h_full()
                             .w(gpui::relative((remaining / 100.0) as f32))
@@ -6884,21 +6935,21 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
         })
         .collect::<Vec<_>>();
     div()
-        .p(px(12.0))
+        .p(ui_text::space(12.0))
         .border_t_1()
         .border_color(rgb(colors.divider))
         .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
         .children(snapshot.account_label.as_ref().map(|label| {
             div()
-                .mt(px(4.0))
+                .mt(ui_text::space(4.0))
                 .text_color(rgb(colors.muted))
                 .child(label.clone())
         }))
         .child(
             div()
-                .mt(px(4.0))
+                .mt(ui_text::space(4.0))
                 .text_color(rgb(if age > 900 { colors.gold } else { colors.muted }))
-                .text_size(px(9.0))
+                .text_size(ui_text::text(9.0))
                 .child(format!(
                     "{}Updated {}m ago",
                     if age > 900 { "STALE · " } else { "" },
@@ -6908,19 +6959,19 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
         .children(limits)
         .children(snapshot.windows.is_empty().then(|| {
             div()
-                .mt(px(8.0))
+                .mt(ui_text::space(8.0))
                 .text_color(rgb(colors.muted))
                 .child("Quota windows unavailable")
         }))
         .children(snapshot.context_used_percent.map(|used| {
             div()
-                .mt(px(10.0))
+                .mt(ui_text::space(10.0))
                 .text_color(rgb(colors.muted))
                 .child(format!("Context · {used:.0}% used"))
         }))
         .children(snapshot.session_cost_usd.map(|cost| {
             div()
-                .mt(px(5.0))
+                .mt(ui_text::space(5.0))
                 .text_color(rgb(colors.muted))
                 .child(format!("Estimated session cost · ${cost:.2}"))
         }))
@@ -6928,6 +6979,8 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
 }
 
 fn sync_appearance(cx: &mut App) {
+    // Text matching the terminal follows edits to Ghostty's font-size, whatever the theme.
+    ui_text::refresh_terminal_font_size(cx);
     let selected = cx.global::<Settings>().theme;
     // Presets are static; native configuration is resolved again to pick up edits,
     // including recursive config files and custom theme files. The parse itself is
@@ -7016,6 +7069,7 @@ fn main() {
             });
         cx.set_global(Appearance::resolve(settings.theme));
         cx.set_global(settings);
+        ui_text::init(cx);
         // After both globals exist: publishes now and again on every change.
         appearance_sync::start(state_home, cx);
         settings::refresh_codex_accounts(cx);
@@ -7048,6 +7102,21 @@ fn main() {
             }
             cx.quit();
         });
+        cx.on_action(|_: &BiggerText, cx| ui_text::change(ui_text::SizeChange::Bigger, cx));
+        cx.on_action(|_: &SmallerText, cx| ui_text::change(ui_text::SizeChange::Smaller, cx));
+        cx.on_action(|_: &ActualSizeText, cx| ui_text::change(ui_text::SizeChange::Reset, cx));
+        // RiWork's text size, except inside a terminal: there GPUI finds no binding,
+        // so the key reaches Ghostty for its own font zoom (see `search_key_down`).
+        // `!Terminal` fails when any focused ancestor is gpui-libghostty's
+        // `key_context("Terminal")`. The first binding is the one the menu shows.
+        let outside_terminals = Some("!Terminal");
+        cx.bind_keys([
+            KeyBinding::new("cmd-=", BiggerText, outside_terminals),
+            KeyBinding::new("cmd-+", BiggerText, outside_terminals),
+            KeyBinding::new("cmd-shift-=", BiggerText, outside_terminals),
+            KeyBinding::new("cmd--", SmallerText, outside_terminals),
+            KeyBinding::new("cmd-0", ActualSizeText, outside_terminals),
+        ]);
         cx.bind_keys([
             KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("cmd-alt-a", OpenProjectSettings, None),
@@ -7073,13 +7142,21 @@ fn main() {
             KeyBinding::new("cmd-shift-l", OpenClaude, None),
             KeyBinding::new("cmd-shift-g", OpenGrok, None),
         ]);
-        cx.set_menus([Menu::new("RiWork").items([
-            MenuItem::action("Settings…", OpenSettings),
-            MenuItem::action("Project Settings…", OpenProjectSettings),
-            MenuItem::action("Schedules", OpenSchedules),
-            MenuItem::separator(),
-            MenuItem::action("Quit RiWork", Quit),
-        ])]);
+        cx.set_menus([
+            Menu::new("RiWork").items([
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::action("Project Settings…", OpenProjectSettings),
+                MenuItem::action("Schedules", OpenSchedules),
+                MenuItem::separator(),
+                MenuItem::action("Quit RiWork", Quit),
+            ]),
+            // RiWork's own text; terminals zoom with the same keys while focused.
+            Menu::new("View").items([
+                MenuItem::action("Bigger Text", BiggerText),
+                MenuItem::action("Smaller Text", SmallerText),
+                MenuItem::action("Actual Size", ActualSizeText),
+            ]),
+        ]);
         dock_menu::init(cx);
         tooltip::init(cx);
         cx.on_window_closed(|cx, window| {
@@ -7422,6 +7499,16 @@ mod startup_tests {
 #[cfg(test)]
 mod workspace_tab_tests {
     use super::*;
+
+    #[test]
+    fn tab_label_widths_grow_with_the_text_and_the_close_button() {
+        // PROJECTS FILES WORKTREES, the first one active with its X.
+        let sidebar = || [(8, true, true), (5, true, false), (9, true, false)].into_iter();
+        let normal = tab_labels_width(sidebar(), 1.0);
+        assert!((normal - (22.0 * 5.4 + 3.0 * 17.0 + 24.0)).abs() < 0.01, "{normal}");
+        assert!(tab_labels_width(sidebar(), 1.2) > normal);
+        assert_eq!(tab_labels_width(std::iter::empty(), 1.5), 0.0);
+    }
 
     #[test]
     fn a_locked_pane_refuses_user_closes_but_an_unlocked_one_allows_them() {

@@ -34,7 +34,7 @@ use crate::{
     settings::Settings,
     theme,
     tooltip::{self, Look},
-    utf16_to_byte,
+    ui_text, utf16_to_byte,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1781,7 +1781,7 @@ impl FileExplorer {
             .text_color(rgb(color));
         let button = match face {
             Face::Text(label) => {
-                let button = button.px(px(7.0)).py(px(5.0)).child(label.to_owned());
+                let button = button.px(ui_text::space(7.0)).py(ui_text::space(5.0)).child(label.to_owned());
                 match explanation {
                     Some(text) => button.child(tooltip::anchor(text, Look::Control)),
                     None => button,
@@ -1792,7 +1792,7 @@ impl FileExplorer {
                 let detail = explanation.or_else(|| tooltip_hint(mode).filter(|_| available));
                 let tooltip: SharedString = icon_tooltip(name, detail).into();
                 button
-                    .size(px(24.0))
+                    .size(ui_text::space(24.0))
                     .child(icons::icon(Icon::Action(glyph), color))
                     .child(tooltip::anchor(tooltip, Look::Control))
             }
@@ -1825,8 +1825,8 @@ impl FileExplorer {
             .ml_auto()
             .flex()
             .flex_wrap()
-            .gap(px(4.0))
-            .text_size(px(9.0))
+            .gap(ui_text::space(4.0))
+            .text_size(ui_text::text(9.0))
             .children(
                 TOOLBAR
                     .iter()
@@ -1878,8 +1878,8 @@ impl FileExplorer {
         div()
             .id("file-explorer-filter")
             .relative()
-            .h(px(29.0))
-            .px(px(8.0))
+            .h(ui_text::space(29.0))
+            .px(ui_text::space(8.0))
             .flex()
             .items_center()
             .min_w_0()
@@ -1934,13 +1934,13 @@ impl FileExplorer {
         };
         div()
             .id(("file-explorer-row", index))
-            .h(px(27.0))
+            .h(ui_text::space(27.0))
             .w_full()
             .pl(px(8.0 + row.depth as f32 * 14.0))
-            .pr(px(8.0))
+            .pr(ui_text::space(8.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(ui_text::space(6.0))
             .cursor_pointer()
             .bg(rgb(if selected {
                 colors.panel_active
@@ -1960,7 +1960,7 @@ impl FileExplorer {
             .hover(|style| style.bg(rgb(colors.panel_active)))
             .child(
                 div()
-                    .w(px(10.0))
+                    .w(ui_text::space(10.0))
                     .flex_none()
                     .text_color(rgb(color))
                     .child(icon),
@@ -1976,7 +1976,7 @@ impl FileExplorer {
             )
             .children((row.kind == RowKind::Entry(EntryKind::Symlink)).then(|| {
                 div()
-                    .text_size(px(8.0))
+                    .text_size(ui_text::text(8.0))
                     .text_color(rgb(colors.muted))
                     .child("LINK")
             }))
@@ -2010,21 +2010,21 @@ impl FileExplorer {
         let title = preview_title(self.preview_path.as_deref(), self.selected.as_deref());
         let content: AnyElement = match &self.preview {
             PreviewState::Empty => div()
-                .p(px(18.0))
+                .p(ui_text::space(18.0))
                 .text_color(rgb(colors.muted))
                 .child("Select a file to preview it here.")
                 .into_any_element(),
             PreviewState::Loading => div()
-                .p(px(18.0))
+                .p(ui_text::space(18.0))
                 .text_color(rgb(colors.muted))
                 .child("Loading preview…")
                 .into_any_element(),
             PreviewState::PdfPending => div()
-                .p(px(18.0))
+                .p(ui_text::space(18.0))
                 .flex()
                 .flex_col()
                 .items_start()
-                .gap(px(10.0))
+                .gap(ui_text::space(10.0))
                 .child(div().text_color(rgb(colors.muted)).child(
                     "PDFs are only rendered on request, because the PDF parser runs inside RiWork.",
                 ))
@@ -2032,8 +2032,8 @@ impl FileExplorer {
                 .children((self.preview_path == self.selected).then(|| {
                     div()
                         .id("file-preview-open-pdf")
-                        .px(px(7.0))
-                        .py(px(5.0))
+                        .px(ui_text::space(7.0))
+                        .py(ui_text::space(5.0))
                         .border_1()
                         .border_color(rgb(colors.divider))
                         .text_color(rgb(colors.cyan))
@@ -2047,12 +2047,12 @@ impl FileExplorer {
                 }))
                 .into_any_element(),
             PreviewState::Error(error) => div()
-                .p(px(18.0))
+                .p(ui_text::space(18.0))
                 .text_color(rgb(colors.gold))
                 .child(error.clone())
                 .into_any_element(),
             PreviewState::Ready(PreviewContent::Message(message)) => div()
-                .p(px(18.0))
+                .p(ui_text::space(18.0))
                 .text_color(rgb(colors.muted))
                 .child(message.clone())
                 .into_any_element(),
@@ -2075,9 +2075,9 @@ impl FileExplorer {
                     .child(
                         div()
                             .flex_none()
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .text_size(px(9.0))
+                            .px(ui_text::space(12.0))
+                            .py(ui_text::space(6.0))
+                            .text_size(ui_text::text(9.0))
                             .text_color(rgb(if *truncated { gold } else { muted }))
                             .child(if *truncated {
                                 "PREVIEW TRUNCATED AT 1 MiB OR 10,000 LINES"
@@ -2094,17 +2094,17 @@ impl FileExplorer {
                                     let line = &lines[index];
                                     let heading = markdown && line.trim_start().starts_with('#');
                                     div()
-                                        .h(px(20.0))
+                                        .h(ui_text::space(20.0))
                                         .w_full()
                                         .flex()
                                         .items_center()
-                                        .px(px(10.0))
+                                        .px(ui_text::space(10.0))
                                         .child(
                                             div()
-                                                .w(px(42.0))
+                                                .w(ui_text::space(42.0))
                                                 .flex_none()
                                                 .text_color(rgb(muted))
-                                                .text_size(px(9.0))
+                                                .text_size(ui_text::text(9.0))
                                                 .child(format!("{}", index + 1)),
                                         )
                                         .child(
@@ -2135,9 +2135,9 @@ impl FileExplorer {
                 .child(
                     div()
                         .flex_none()
-                        .px(px(12.0))
-                        .py(px(6.0))
-                        .text_size(px(9.0))
+                        .px(ui_text::space(12.0))
+                        .py(ui_text::space(6.0))
+                        .text_size(ui_text::text(9.0))
                         .text_color(rgb(colors.muted))
                         .child(format!("{description} · READ ONLY")),
                 )
@@ -2146,7 +2146,7 @@ impl FileExplorer {
                         .flex_1()
                         .min_h_0()
                         .min_w_0()
-                        .p(px(12.0))
+                        .p(ui_text::space(12.0))
                         .child(img(image.clone()).size_full()),
                 )
                 .into_any_element(),
@@ -2166,12 +2166,12 @@ impl FileExplorer {
                     .child(
                         div()
                             .flex_none()
-                            .px(px(12.0))
-                            .py(px(6.0))
+                            .px(ui_text::space(12.0))
+                            .py(ui_text::space(6.0))
                             .flex()
                             .items_center()
-                            .gap(px(10.0))
-                            .text_size(px(10.0))
+                            .gap(ui_text::space(10.0))
+                            .text_size(ui_text::text(10.0))
                             .child(
                                 div()
                                     .id("file-preview-previous-page")
@@ -2219,7 +2219,7 @@ impl FileExplorer {
                             .flex_1()
                             .min_h_0()
                             .min_w_0()
-                            .p(px(12.0))
+                            .p(ui_text::space(12.0))
                             .child(img(image.clone()).size_full()),
                     )
                     .into_any_element()
@@ -2238,7 +2238,7 @@ impl FileExplorer {
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
             .font_family("SF Mono")
-            .text_size(px(11.0))
+            .text_size(ui_text::text(11.0))
             .border_1()
             .border_color(rgb(if self.is_current(Mode::Preview, window) {
                 colors.gold
@@ -2251,23 +2251,23 @@ impl FileExplorer {
                 div()
                     .id("file-preview-header")
                     .flex_none()
-                    .px(px(12.0))
-                    .py(px(8.0))
+                    .px(ui_text::space(12.0))
+                    .py(ui_text::space(8.0))
                     .border_b_1()
                     .border_color(rgb(colors.divider))
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap_x(px(10.0))
-                    .gap_y(px(6.0))
+                    .gap_x(ui_text::space(10.0))
+                    .gap_y(ui_text::space(6.0))
                     .child(
                         div()
                             .flex_grow(1.0)
                             .flex_basis(px(0.0))
-                            .min_w(px(40.0))
+                            .min_w(ui_text::space(40.0))
                             .flex()
                             .flex_col()
-                            .gap(px(2.0))
+                            .gap(ui_text::space(2.0))
                             .child(
                                 div()
                                     .min_w_0()
@@ -2281,7 +2281,7 @@ impl FileExplorer {
                                     .min_w_0()
                                     .overflow_hidden()
                                     .text_ellipsis()
-                                    .text_size(px(9.0))
+                                    .text_size(ui_text::text(9.0))
                                     .text_color(rgb(colors.muted))
                                     .child(
                                         if self.preview_loading
@@ -2300,11 +2300,11 @@ impl FileExplorer {
             .children(self.notice.as_ref().map(|notice| {
                 div()
                     .flex_none()
-                    .px(px(12.0))
-                    .py(px(6.0))
+                    .px(ui_text::space(12.0))
+                    .py(ui_text::space(6.0))
                     .border_b_1()
                     .border_color(rgb(colors.divider))
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .text_color(rgb(if notice.confirmation {
                         colors.cyan
                     } else {
@@ -2395,14 +2395,14 @@ impl Render for FileExplorer {
             .bg(rgb(colors.panel))
             .text_color(rgb(colors.text))
             .font_family("SF Mono")
-            .text_size(px(11.0))
+            .text_size(ui_text::text(11.0))
             .child(
                 div()
                     .flex_none()
-                    .p(px(10.0))
+                    .p(ui_text::space(10.0))
                     .flex()
                     .flex_col()
-                    .gap(px(8.0))
+                    .gap(ui_text::space(8.0))
                     .border_b_1()
                     .border_color(rgb(colors.divider))
                     .child(
@@ -2410,7 +2410,7 @@ impl Render for FileExplorer {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .gap(px(8.0))
+                            .gap(ui_text::space(8.0))
                             .child(
                                 div()
                                     .min_w_0()
@@ -2427,7 +2427,7 @@ impl Render for FileExplorer {
                             .child(
                                 div()
                                     .text_color(rgb(colors.magenta))
-                                    .text_size(px(9.0))
+                                    .text_size(ui_text::text(9.0))
                                     .flex_none()
                                     .child(format!("{item_count:02} ITEMS")),
                             ),
@@ -2436,8 +2436,8 @@ impl Render for FileExplorer {
                         div()
                             .flex()
                             .flex_wrap()
-                            .gap(px(5.0))
-                            .text_size(px(9.0))
+                            .gap(ui_text::space(5.0))
+                            .text_size(ui_text::text(9.0))
                             .child(self.button(
                                 "file-explorer-refresh",
                                 "↻ REFRESH",
@@ -2468,7 +2468,7 @@ impl Render for FileExplorer {
             )
             .children(message.map(|message| {
                 div()
-                    .p(px(12.0))
+                    .p(ui_text::space(12.0))
                     .text_color(rgb(
                         if root_state.is_some_and(|state| state.error.is_some()) {
                             colors.gold
@@ -2482,7 +2482,7 @@ impl Render for FileExplorer {
             .child(
                 div()
                     .flex_none()
-                    .p(px(8.0))
+                    .p(ui_text::space(8.0))
                     .border_t_1()
                     .border_color(rgb(colors.divider))
                     .child(
@@ -2491,7 +2491,7 @@ impl Render for FileExplorer {
                             .overflow_hidden()
                             .text_ellipsis()
                             .text_color(rgb(colors.muted))
-                            .text_size(px(10.0))
+                            .text_size(ui_text::text(10.0))
                             .child(relative),
                     ),
             );

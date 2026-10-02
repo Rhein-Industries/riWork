@@ -2,13 +2,14 @@
 
 use std::collections::HashSet;
 
-use gpui::{AnyElement, Context, IntoElement, Window, div, prelude::*, px, rgb};
+use gpui::{AnyElement, Context, IntoElement, Window, div, prelude::*, rgb};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
     theme::{self, Palette},
     tooltip::{self, Look},
+    ui_text,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -290,11 +291,11 @@ pub fn render_settings<V: 'static>(
         .id("status-bar-settings")
         .flex()
         .flex_col()
-        .gap(px(9.0))
+        .gap(ui_text::space(9.0))
         .child(
             div()
                 .flex()
-                .gap(px(8.0))
+                .gap(ui_text::space(8.0))
                 .child(
                     div()
                         .id("status-bar-visible")
@@ -302,12 +303,12 @@ pub fn render_settings<V: 'static>(
                         .min_w_0()
                         .flex()
                         .items_center()
-                        .gap(px(8.0))
-                        .px(px(8.0))
-                        .py(px(7.0))
+                        .gap(ui_text::space(8.0))
+                        .px(ui_text::space(8.0))
+                        .py(ui_text::space(7.0))
                         .cursor_pointer()
                         .bg(rgb(colors.panel_active))
-                        .text_size(px(11.0))
+                        .text_size(ui_text::text(11.0))
                         .text_color(rgb(colors.text))
                         .hover(|style| style.bg(rgb(colors.divider)))
                         .child(check_box(master_enabled, colors))
@@ -324,11 +325,11 @@ pub fn render_settings<V: 'static>(
                         .flex_none()
                         .flex()
                         .items_center()
-                        .px(px(8.0))
+                        .px(ui_text::space(8.0))
                         .cursor_pointer()
                         .border_1()
                         .border_color(rgb(colors.divider))
-                        .text_size(px(9.0))
+                        .text_size(ui_text::text(9.0))
                         .text_color(rgb(colors.cyan))
                         .hover(|style| {
                             style
@@ -352,11 +353,11 @@ pub fn render_settings<V: 'static>(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(4.0))
+                .gap(ui_text::space(4.0))
                 .child(
                     div()
-                        .pt(px(4.0))
-                        .text_size(px(9.0))
+                        .pt(ui_text::space(4.0))
+                        .text_size(ui_text::text(9.0))
                         .text_color(rgb(if side == StatusSide::Left {
                             colors.cyan
                         } else {
@@ -395,9 +396,9 @@ fn render_item<V: 'static>(
     div()
         .flex()
         .items_center()
-        .gap(px(7.0))
-        .px(px(7.0))
-        .py(px(5.0))
+        .gap(ui_text::space(7.0))
+        .px(ui_text::space(7.0))
+        .py(ui_text::space(5.0))
         .bg(rgb(colors.panel_active))
         .border_1()
         .border_color(rgb(colors.divider))
@@ -408,7 +409,7 @@ fn render_item<V: 'static>(
                 .flex_1()
                 .min_w_0()
                 .items_center()
-                .gap(px(8.0))
+                .gap(ui_text::space(8.0))
                 .cursor_pointer()
                 .hover(|style| style.text_color(rgb(colors.cyan)))
                 .child(check_box(item.enabled, colors))
@@ -416,7 +417,7 @@ fn render_item<V: 'static>(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(11.0))
+                        .text_size(ui_text::text(11.0))
                         .text_color(rgb(if item.enabled {
                             colors.text
                         } else {
@@ -436,12 +437,12 @@ fn render_item<V: 'static>(
             div()
                 .id(format!("status-item-{}-side", item.kind.key()))
                 .flex_none()
-                .px(px(5.0))
-                .py(px(4.0))
+                .px(ui_text::space(5.0))
+                .py(ui_text::space(4.0))
                 .border_1()
                 .border_color(rgb(colors.divider))
                 .cursor_pointer()
-                .text_size(px(9.0))
+                .text_size(ui_text::text(9.0))
                 .text_color(rgb(if item.side == StatusSide::Left {
                     colors.cyan
                 } else {
@@ -502,9 +503,9 @@ fn move_button<V: 'static>(
         .flex()
         .items_center()
         .justify_center()
-        .w(px(22.0))
-        .h(px(22.0))
-        .text_size(px(11.0))
+        .w(ui_text::space(22.0))
+        .h(ui_text::space(22.0))
+        .text_size(ui_text::text(11.0))
         .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
         .when(enabled, |button| {
             button
@@ -537,10 +538,10 @@ fn check_box(enabled: bool, colors: Palette) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
-        .size(px(12.0))
+        .size(ui_text::space(12.0))
         .border_1()
         .border_color(rgb(if enabled { colors.cyan } else { colors.muted }))
-        .text_size(px(9.0))
+        .text_size(ui_text::text(9.0))
         .text_color(rgb(colors.cyan))
         .child(if enabled { "✓" } else { "" })
         .into_any_element()

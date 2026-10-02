@@ -2,7 +2,7 @@
 
 use gpui::{AnyElement, App, IntoElement, PathBuilder, canvas, point, prelude::*, px, rgb};
 
-use crate::{layouts::PanelKind, settings::Settings};
+use crate::{layouts::PanelKind, settings::Settings, ui_text};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Icon {
@@ -41,8 +41,10 @@ pub fn labels_as_icons(cx: &App) -> bool {
         .is_some_and(|settings| settings.panel_tab_icons)
 }
 
-/// Paint an icon in a fixed 14 px box. The caller owns its hit target and tooltip.
+/// Paint an icon in a 14 px box, drawn at the interface text scale so it stays in
+/// proportion with the text beside it. The caller owns its hit target and tooltip.
 pub fn icon(kind: Icon, color: u32) -> AnyElement {
+    let scale = ui_text::scale();
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -140,13 +142,14 @@ pub fn icon(kind: Icon, color: u32) -> AnyElement {
                 Icon::Panel(panel) => panel_glyph(&mut path, panel),
                 Icon::Action(action) => action_glyph(&mut path, action),
             }
+            path.scale(scale);
             path.translate(bounds.origin);
             if let Ok(path) = path.build() {
                 window.paint_path(path, rgb(color));
             }
         },
     )
-    .size(px(14.0))
+    .size(px(14.0 * scale))
     .flex_shrink_0()
     .into_any_element()
 }

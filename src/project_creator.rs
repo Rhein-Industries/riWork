@@ -12,12 +12,12 @@ use gpui::{
     AnyElement, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
     EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, Modifiers, MouseButton,
     PathPromptOptions, Pixels, Point, Render, StyledText, UTF16Selection, Window, canvas, div,
-    prelude::*, px, rgb,
+    prelude::*, rgb,
 };
 
 use crate::{
     store::{Project, ProjectInspection, Store},
-    theme, utf16_to_byte,
+    theme, ui_text, utf16_to_byte,
 };
 
 pub enum ProjectCreationEvent {
@@ -562,11 +562,11 @@ impl ProjectCreator {
         div()
             .flex()
             .flex_col()
-            .gap(px(5.0))
+            .gap(ui_text::space(5.0))
             .child(
                 div()
                     .text_color(rgb(colors.muted))
-                    .text_size(px(9.0))
+                    .text_size(ui_text::text(9.0))
                     .child(label.to_owned()),
             )
             .child(
@@ -577,8 +577,8 @@ impl ProjectCreator {
                         "project-name"
                     })
                     .relative()
-                    .h(px(32.0))
-                    .px(px(8.0))
+                    .h(ui_text::space(32.0))
+                    .px(ui_text::space(8.0))
                     .flex()
                     .items_center()
                     .min_w_0()
@@ -663,20 +663,20 @@ impl Render for ProjectCreator {
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation())
-            .w(px(540.0))
-            .h(px(height))
+            .w(ui_text::space(540.0))
+            .h(ui_text::space(height))
             .flex_none()
             .max_w_full()
             .max_h(gpui::relative(0.9))
             .overflow_y_scroll()
-            .p(px(16.0))
+            .p(ui_text::space(16.0))
             .flex()
             .flex_col()
-            .gap(px(14.0))
+            .gap(ui_text::space(14.0))
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.magenta))
-            .text_size(px(11.0))
+            .text_size(ui_text::text(11.0))
             .child(
                 div()
                     .flex()
@@ -699,7 +699,7 @@ impl Render for ProjectCreator {
             .child(
                 div()
                     .flex()
-                    .gap(px(8.0))
+                    .gap(ui_text::space(8.0))
                     .items_end()
                     .child(div().flex_1().min_w_0().child(self.render_field(
                         Field::Path,
@@ -710,8 +710,8 @@ impl Render for ProjectCreator {
                     .child(
                         div()
                             .id("browse-project-folder")
-                            .h(px(32.0))
-                            .px(px(10.0))
+                            .h(ui_text::space(32.0))
+                            .px(ui_text::space(10.0))
                             .flex()
                             .items_center()
                             .cursor_pointer()
@@ -739,19 +739,19 @@ impl Render for ProjectCreator {
             .child(
                 div()
                     .text_color(rgb(colors.muted))
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .child(summary),
             )
             .child(
                 // The folder the project will use once `~` and symlinks are resolved.
                 div()
-                    .h(px(14.0))
+                    .h(ui_text::space(14.0))
                     .min_w_0()
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
                     .text_color(rgb(colors.muted))
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .child(
                         self.inspection
                             .as_ref()
@@ -769,7 +769,7 @@ impl Render for ProjectCreator {
                 div()
                     .id("init-project-git")
                     .flex()
-                    .gap(px(8.0))
+                    .gap(ui_text::space(8.0))
                     .items_center()
                     .cursor_pointer()
                     .text_color(rgb(colors.cyan))
@@ -789,7 +789,7 @@ impl Render for ProjectCreator {
                     .map(|_| {
                         div()
                             .text_color(rgb(colors.muted))
-                            .text_size(px(10.0))
+                            .text_size(ui_text::text(10.0))
                             .child("Use existing repositories")
                     }),
             )
@@ -802,12 +802,12 @@ impl Render for ProjectCreator {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(10.0))
+                    .gap(ui_text::space(10.0))
                     .child(
                         div()
                             .id("cancel-project")
-                            .px(px(12.0))
-                            .py(px(8.0))
+                            .px(ui_text::space(12.0))
+                            .py(ui_text::space(8.0))
                             .cursor_pointer()
                             .text_color(rgb(colors.muted))
                             .child("CANCEL")
@@ -820,8 +820,8 @@ impl Render for ProjectCreator {
                     .child(
                         div()
                             .id("create-project")
-                            .px(px(12.0))
-                            .py(px(8.0))
+                            .px(ui_text::space(12.0))
+                            .py(ui_text::space(8.0))
                             .cursor_pointer()
                             .bg(rgb(colors.panel_active))
                             .border_1()

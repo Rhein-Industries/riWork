@@ -6,7 +6,7 @@ use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent,
     MouseButton, Pixels, Point, Render, StyledText, UTF16Selection, Window, canvas, div,
-    prelude::*, px, rgb,
+    prelude::*, rgb,
 };
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
     store::{Project, ProjectCodexAccount, ProjectFolder, State, Store},
     theme::{self, Palette},
     tooltip::{self, Look},
-    utf16_to_byte,
+    ui_text, utf16_to_byte,
 };
 
 pub enum ProjectSettingsEvent {
@@ -227,8 +227,8 @@ pub(crate) fn input_content<T: EntityInputHandler>(
     }
     div()
         .relative()
-        .h(px(34.0))
-        .px(px(10.0))
+        .h(ui_text::space(34.0))
+        .px(ui_text::space(10.0))
         .flex()
         .items_center()
         .min_w_0()
@@ -254,10 +254,10 @@ pub(crate) fn input_content<T: EntityInputHandler>(
 
 fn section(label: &str, colors: Palette) -> AnyElement {
     div()
-        .pb(px(8.0))
+        .pb(ui_text::space(8.0))
         .border_b_1()
         .border_color(rgb(colors.divider))
-        .text_size(px(10.0))
+        .text_size(ui_text::text(10.0))
         .text_color(rgb(colors.cyan))
         .child(label.to_owned())
         .into_any_element()
@@ -703,11 +703,11 @@ impl Render for ProjectSettingsPanel {
         let dirty =
             self.name.text.trim() != self.project.name || self.folder_id != self.project.folder_id;
         let focused = self.focus.is_focused(window);
-        let mut folders = div().flex().flex_wrap().gap(px(6.0)).child(
+        let mut folders = div().flex().flex_wrap().gap(ui_text::space(6.0)).child(
             div()
                 .id("project-folder-unfiled")
-                .px(px(10.0))
-                .py(px(7.0))
+                .px(ui_text::space(10.0))
+                .py(ui_text::space(7.0))
                 .cursor_pointer()
                 .border_1()
                 .border_color(rgb(if focused && self.active == Field::Folder(0) {
@@ -741,8 +741,8 @@ impl Render for ProjectSettingsPanel {
             folders = folders.child(
                 div()
                     .id(format!("project-folder-{}", folder.id))
-                    .px(px(10.0))
-                    .py(px(7.0))
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(7.0))
                     .cursor_pointer()
                     .border_1()
                     .border_color(rgb(if focused && self.active == Field::Folder(index + 1) {
@@ -776,7 +776,7 @@ impl Render for ProjectSettingsPanel {
                     })),
             );
         }
-        let mut repositories = div().flex().flex_col().gap(px(6.0));
+        let mut repositories = div().flex().flex_col().gap(ui_text::space(6.0));
         if self.project.repository_roots.is_empty() {
             repositories = repositories.child(
                 div()
@@ -787,8 +787,8 @@ impl Render for ProjectSettingsPanel {
             for root in &self.project.repository_roots {
                 repositories = repositories.child(
                     div()
-                        .px(px(10.0))
-                        .py(px(8.0))
+                        .px(ui_text::space(10.0))
+                        .py(ui_text::space(8.0))
                         .bg(rgb(colors.bg))
                         .border_l_1()
                         .border_color(rgb(colors.magenta))
@@ -797,7 +797,7 @@ impl Render for ProjectSettingsPanel {
             }
         }
         let account_state = cx.global::<CodexAccountsState>().clone();
-        let mut account_rows = div().flex().flex_wrap().gap(px(6.0));
+        let mut account_rows = div().flex().flex_wrap().gap(ui_text::space(6.0));
         for (index, (choice, label, available)) in self.account_choices(cx).into_iter().enumerate()
         {
             let selected = choice == self.project.codex_account;
@@ -809,13 +809,13 @@ impl Render for ProjectSettingsPanel {
             account_rows = account_rows.child(
                 div()
                     .id(id)
-                    .max_w(px(300.0))
+                    .max_w(ui_text::space(300.0))
                     .min_w_0()
-                    .px(px(10.0))
-                    .py(px(7.0))
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(7.0))
                     .flex()
                     .items_center()
-                    .gap(px(7.0))
+                    .gap(ui_text::space(7.0))
                     .cursor_pointer()
                     .border_1()
                     .border_color(rgb(if focused && self.active == Field::Account(index) {
@@ -858,51 +858,51 @@ impl Render for ProjectSettingsPanel {
             .id("project-settings-panel")
             .size_full().min_w_0().track_focus(&self.focus).key_context("ProjectSettings")
             .on_key_down(cx.listener(Self::key_down)).overflow_y_scroll()
-            .bg(rgb(colors.bg)).text_color(rgb(colors.text)).font_family("Menlo").text_size(px(11.0))
-            .p(px(20.0))
+            .bg(rgb(colors.bg)).text_color(rgb(colors.text)).font_family("Menlo").text_size(ui_text::text(11.0))
+            .p(ui_text::space(20.0))
             .child(
-                div().w_full().min_w_0().max_w(px(760.0)).flex().flex_col().gap(px(18.0))
+                div().w_full().min_w_0().max_w(ui_text::space(760.0)).flex().flex_col().gap(ui_text::space(18.0))
                     .child(
-                        div().flex().flex_wrap().min_w_0().justify_between().items_center().gap(px(12.0))
-                            .border_l_2().border_color(rgb(colors.cyan)).pl(px(12.0)).py(px(6.0))
-                            .child(div().min_w_0().flex().flex_col().gap(px(5.0))
-                                .child(div().text_color(rgb(colors.cyan)).text_size(px(16.0)).child("PROJECT SETTINGS"))
-                                .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(rgb(colors.muted)).text_size(px(10.0)).child(self.project.name.clone())))
-                            .child(div().px(px(8.0)).py(px(4.0)).border_1().border_color(rgb(colors.divider))
-                                .text_size(px(9.0)).text_color(rgb(if dirty { colors.magenta } else { colors.muted }))
+                        div().flex().flex_wrap().min_w_0().justify_between().items_center().gap(ui_text::space(12.0))
+                            .border_l_2().border_color(rgb(colors.cyan)).pl(ui_text::space(12.0)).py(ui_text::space(6.0))
+                            .child(div().min_w_0().flex().flex_col().gap(ui_text::space(5.0))
+                                .child(div().text_color(rgb(colors.cyan)).text_size(ui_text::text(16.0)).child("PROJECT SETTINGS"))
+                                .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child(self.project.name.clone())))
+                            .child(div().px(ui_text::space(8.0)).py(ui_text::space(4.0)).border_1().border_color(rgb(colors.divider))
+                                .text_size(ui_text::text(9.0)).text_color(rgb(if dirty { colors.magenta } else { colors.muted }))
                                 .child(if dirty { "UNSAVED" } else { "LOCAL PROJECT" })),
                     )
                     .child(
-                        div().p(px(14.0)).flex().flex_col().gap(px(12.0)).bg(rgb(colors.panel))
+                        div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(12.0)).bg(rgb(colors.panel))
                             .border_1().border_color(rgb(colors.divider))
                             .child(section("01  IDENTITY", colors))
-                            .child(div().text_color(rgb(colors.muted)).text_size(px(10.0)).child("PROJECT NAME"))
+                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child("PROJECT NAME"))
                             .child(self.field(Field::Name, window, cx)),
                     )
                     .child(
-                        div().p(px(14.0)).flex().flex_col().gap(px(12.0)).bg(rgb(colors.panel))
+                        div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(12.0)).bg(rgb(colors.panel))
                             .border_1().border_color(rgb(colors.divider))
                             .child(section("02  VIRTUAL FOLDER", colors))
                             .child(folders)
-                            .child(div().text_color(rgb(colors.muted)).text_size(px(10.0)).child("Group projects in the browser. Files stay in their current locations."))
+                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child("Group projects in the browser. Files stay in their current locations."))
                             .children(self.folder_id.as_ref().and_then(|id| self.folder_paths.get(id)).map(|path| {
-                                div().text_color(rgb(colors.magenta)).text_size(px(10.0)).child(format!("NEW SUBFOLDER UNDER  /  {path}"))
+                                div().text_color(rgb(colors.magenta)).text_size(ui_text::text(10.0)).child(format!("NEW SUBFOLDER UNDER  /  {path}"))
                             }))
-                            .child(div().flex().flex_wrap().min_w_0().items_center().gap(px(8.0))
+                            .child(div().flex().flex_wrap().min_w_0().items_center().gap(ui_text::space(8.0))
                                 .child(self.field(Field::FolderName, window, cx))
                                 .child({
                                     let subfolder = self.folder_id.is_some();
-                                    let button = div().id("project-settings-create-folder").h(px(34.0))
+                                    let button = div().id("project-settings-create-folder").h(ui_text::space(34.0))
                                         .flex_none().flex().items_center().cursor_pointer().border_1()
                                         .border_color(rgb(if focused && self.active == Field::AddFolder { colors.gold } else { colors.magenta }))
                                         .text_color(rgb(colors.magenta));
                                     // Icons keep the button's size, colour and focus ring; the tooltip names it.
                                     let button = if icons::labels_as_icons(cx) {
-                                        button.w(px(34.0)).justify_center()
+                                        button.w(ui_text::space(34.0)).justify_center()
                                             .child(icons::icon(Icon::Action(ActionGlyph::NewFolder), colors.magenta))
                                             .child(tooltip::anchor(if subfolder { "New subfolder" } else { "New folder" }, Look::Control))
                                     } else {
-                                        button.px(px(12.0)).child(if subfolder { "+ SUBFOLDER" } else { "+ FOLDER" })
+                                        button.px(ui_text::space(12.0)).child(if subfolder { "+ SUBFOLDER" } else { "+ FOLDER" })
                                     };
                                     button.on_click(cx.listener(|form, _, window, cx| {
                                         form.active = Field::AddFolder;
@@ -912,14 +912,14 @@ impl Render for ProjectSettingsPanel {
                                 })),
                     )
                     .child(
-                        div().p(px(14.0)).flex().flex_col().gap(px(10.0)).bg(rgb(colors.panel))
+                        div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(10.0)).bg(rgb(colors.panel))
                             .border_1().border_color(rgb(colors.divider))
                             .child(section("03  CODEX ACCOUNT", colors))
-                            .child(div().text_size(px(10.0)).text_color(rgb(colors.muted))
+                            .child(div().text_size(ui_text::text(10.0)).text_color(rgb(colors.muted))
                                 .child("New Codex sessions use this choice. Running sessions keep their account. Selection saves immediately."))
                             .child(account_rows)
                             .child(div().id("project-codex-refresh").cursor_pointer()
-                                .text_size(px(10.0))
+                                .text_size(ui_text::text(10.0))
                                 .text_color(rgb(if focused && self.active == Field::AccountRefresh { colors.gold } else { colors.cyan }))
                                 .child(if account_state.pending { "CHECKING ACCOUNTS…" } else { "REFRESH ACCOUNTS" })
                                 .on_click(cx.listener(|form, _, window, cx| {
@@ -928,18 +928,18 @@ impl Render for ProjectSettingsPanel {
                                     refresh_codex_accounts(cx);
                                 })))
                             .children(account_state.snapshot.as_ref().and_then(|snapshot| snapshot.error.as_ref()).map(|error|
-                                div().text_size(px(10.0)).text_color(rgb(colors.gold)).child(error.clone())))
+                                div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold)).child(error.clone())))
                             .children(matches!(self.project.codex_account, ProjectCodexAccount::Saved(_))
                                 .then_some(self.project.codex_account.clone())
                                 .filter(|choice| self.account_choices(cx).iter().any(|(row, _, available)| row == choice && !available))
-                                .map(|_| div().text_size(px(10.0)).text_color(rgb(colors.gold))
+                                .map(|_| div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold))
                                     .child("Selected account unavailable. Choose another before starting Codex."))),
                     )
                     .child(
-                        div().flex().flex_wrap().min_w_0().items_center().justify_between().gap(px(10.0))
-                            .child(div().min_w_0().text_size(px(10.0)).text_color(rgb(if self.error.is_some() { colors.gold } else { colors.muted }))
+                        div().flex().flex_wrap().min_w_0().items_center().justify_between().gap(ui_text::space(10.0))
+                            .child(div().min_w_0().text_size(ui_text::text(10.0)).text_color(rgb(if self.error.is_some() { colors.gold } else { colors.muted }))
                                 .child(self.error.clone().unwrap_or_else(|| self.status.message().into())))
-                            .child(div().id("project-settings-save").flex_none().px(px(14.0)).py(px(10.0)).cursor_pointer()
+                            .child(div().id("project-settings-save").flex_none().px(ui_text::space(14.0)).py(ui_text::space(10.0)).cursor_pointer()
                                 .bg(rgb(colors.panel_active)).border_1()
                                 .border_color(rgb(if focused && self.active == Field::Save { colors.gold } else { colors.cyan }))
                                 .text_color(rgb(colors.cyan)).child("SAVE PROJECT")
@@ -950,16 +950,16 @@ impl Render for ProjectSettingsPanel {
                                 }))),
                     )
                     .child(
-                        div().p(px(14.0)).flex().flex_col().gap(px(12.0)).bg(rgb(colors.panel))
+                        div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(12.0)).bg(rgb(colors.panel))
                             .border_1().border_color(rgb(colors.divider))
                             .child(section("04  LOCATIONS", colors))
-                            .child(div().text_color(rgb(colors.muted)).text_size(px(10.0)).child("PROJECT ROOT"))
-                            .child(div().px(px(10.0)).py(px(8.0)).bg(rgb(colors.bg)).border_l_1()
+                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child("PROJECT ROOT"))
+                            .child(div().px(ui_text::space(10.0)).py(ui_text::space(8.0)).bg(rgb(colors.bg)).border_l_1()
                                 .border_color(rgb(colors.cyan)).child(self.project.root.to_string_lossy().into_owned()))
-                            .child(div().text_color(rgb(colors.muted)).text_size(px(10.0))
+                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0))
                                 .child(format!("REPOSITORIES  /  {:02}", self.project.repository_roots.len())))
                             .child(repositories)
-                            .child(div().text_color(rgb(colors.muted)).text_size(px(9.0)).child(format!("PROJECT ID  /  {}", self.project.id))),
+                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).child(format!("PROJECT ID  /  {}", self.project.id))),
                     ),
             )
             .into_any_element()
@@ -1113,20 +1113,20 @@ impl Render for FolderEditor {
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation())
-            .w(px(440.0))
+            .w(ui_text::space(440.0))
             .max_w_full()
             .max_h(gpui::relative(0.9))
             .overflow_y_scroll()
-            .p(px(18.0))
+            .p(ui_text::space(18.0))
             .flex()
             .flex_col()
-            .gap(px(14.0))
+            .gap(ui_text::space(14.0))
             .font_family("Menlo")
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.magenta))
             .text_color(rgb(colors.text))
-            .text_size(px(11.0))
+            .text_size(ui_text::text(11.0))
             .child(
                 div()
                     .text_color(rgb(colors.cyan))
@@ -1141,13 +1141,13 @@ impl Render for FolderEditor {
             .child(
                 div()
                     .text_color(rgb(colors.muted))
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .child("Group projects without moving their files."),
             )
             .children(self.parent_path.as_ref().map(|path| {
                 div()
                     .text_color(rgb(colors.magenta))
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .child(format!("PARENT  /  {path}"))
             }))
             .child(
@@ -1176,12 +1176,12 @@ impl Render for FolderEditor {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(10.0))
+                    .gap(ui_text::space(10.0))
                     .child(
                         div()
                             .id("cancel-virtual-folder")
-                            .px(px(12.0))
-                            .py(px(8.0))
+                            .px(ui_text::space(12.0))
+                            .py(ui_text::space(8.0))
                             .cursor_pointer()
                             .border_1()
                             .border_color(rgb(
@@ -1200,8 +1200,8 @@ impl Render for FolderEditor {
                     .child(
                         div()
                             .id("save-virtual-folder")
-                            .px(px(12.0))
-                            .py(px(8.0))
+                            .px(ui_text::space(12.0))
+                            .py(ui_text::space(8.0))
                             .cursor_pointer()
                             .bg(rgb(colors.panel_active))
                             .border_1()

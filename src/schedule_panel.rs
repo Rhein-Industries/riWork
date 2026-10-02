@@ -4,12 +4,12 @@ use crate::{
     schedules::{self, Schedule, ScheduleStore, Scope, Target, Timing},
     sessions::{HarnessKind, SessionManager, ShellSession},
     store::{State, Store},
-    theme, utf16_to_byte,
+    theme, ui_text, utf16_to_byte,
 };
 use chrono::{DateTime, Local};
 use gpui::{
     AnyElement, Bounds, Context, EntityInputHandler, FocusHandle, IntoElement, KeyDownEvent,
-    Pixels, Point, Render, UTF16Selection, Window, div, prelude::*, px, rgb,
+    Pixels, Point, Render, UTF16Selection, Window, div, prelude::*, rgb,
 };
 use std::{ops::Range, time::Duration};
 
@@ -486,8 +486,8 @@ impl SchedulePanel {
         self.controls.push(action.clone());
         div()
             .id(format!("schedule-control-{index}"))
-            .px(px(8.0))
-            .py(px(5.0))
+            .px(ui_text::space(8.0))
+            .py(ui_text::space(5.0))
             .cursor_pointer()
             .border_1()
             .border_color(rgb(
@@ -529,12 +529,12 @@ impl SchedulePanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(4.0))
+            .gap(ui_text::space(4.0))
             .min_w_0()
             .w_full()
             .child(
                 div()
-                    .text_size(px(9.0))
+                    .text_size(ui_text::text(9.0))
                     .text_color(rgb(colors.muted))
                     .child(label.to_owned()),
             )
@@ -569,21 +569,21 @@ impl Render for SchedulePanel {
         let mut body = div()
             .w_full()
             .min_w_0()
-            .max_w(px(800.0))
+            .max_w(ui_text::space(800.0))
             .flex()
             .flex_col()
-            .gap(px(12.0));
+            .gap(ui_text::space(12.0));
         body = body.child(
             div()
                 .flex()
                 .flex_wrap()
                 .justify_between()
                 .items_center()
-                .gap(px(8.0))
+                .gap(ui_text::space(8.0))
                 .child(div().text_color(rgb(colors.cyan)).child("SCHEDULES"))
                 .child(self.button("+ SCHEDULE", Control::New, false, window, cx)),
         );
-        body = body.child(div().text_color(rgb(colors.muted)).text_size(px(10.0)).child("App → global orchestrator · Project → project orchestrator · Workspace → selected worktree worker"));
+        body = body.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child("App → global orchestrator · Project → project orchestrator · Workspace → selected worktree worker"));
         if let Some(editor) = &self.editor {
             let scope_index = editor.scope;
             let repeat = editor.repeat;
@@ -601,12 +601,12 @@ impl Render for SchedulePanel {
             let mut form = div()
                 .flex()
                 .flex_col()
-                .gap(px(10.0))
-                .p(px(12.0))
+                .gap(ui_text::space(10.0))
+                .p(ui_text::space(12.0))
                 .border_1()
                 .border_color(rgb(colors.divider))
                 .bg(rgb(colors.panel));
-            let mut scopes = div().flex().flex_wrap().gap(px(5.0));
+            let mut scopes = div().flex().flex_wrap().gap(ui_text::space(5.0));
             for (i, label) in ["APP", "PROJECT", "WORKSPACE"].iter().enumerate() {
                 scopes = scopes.child(self.button(
                     *label,
@@ -624,7 +624,7 @@ impl Render for SchedulePanel {
                     .into_iter()
                     .cloned()
                     .collect();
-                let mut choices = div().flex().flex_wrap().gap(px(5.0));
+                let mut choices = div().flex().flex_wrap().gap(ui_text::space(5.0));
                 for workspace in workspaces {
                     choices = choices.child(self.button(
                         format!("{} · {}", workspace.branch, workspace.id),
@@ -638,7 +638,7 @@ impl Render for SchedulePanel {
                     .child(
                         div()
                             .text_color(rgb(colors.muted))
-                            .text_size(px(9.0))
+                            .text_size(ui_text::text(9.0))
                             .child("WORKSPACE / WORKTREE"),
                     )
                     .child(choices);
@@ -659,10 +659,10 @@ impl Render for SchedulePanel {
                 })
                 .cloned()
                 .collect();
-            let mut choices = div().flex().flex_col().gap(px(5.0)).child(
+            let mut choices = div().flex().flex_col().gap(ui_text::space(5.0)).child(
                 div()
                     .text_color(rgb(colors.muted))
-                    .text_size(px(9.0))
+                    .text_size(ui_text::text(9.0))
                     .child("EXISTING TARGET · CLICK TO EXPLICITLY BIND THIS SESSION"),
             );
             if targets.is_empty() {
@@ -681,11 +681,11 @@ impl Render for SchedulePanel {
                 choices = choices.child(
                     div()
                         .text_color(rgb(colors.muted))
-                        .text_size(px(9.0))
+                        .text_size(ui_text::text(9.0))
                         .child(format!("PINNED TARGET  /  {id}")),
                 );
             }
-            let mut first_choices = div().flex().flex_wrap().gap(px(5.0));
+            let mut first_choices = div().flex().flex_wrap().gap(ui_text::space(5.0));
             for (seconds, label) in [
                 (600, "IN 10 MIN"),
                 (1800, "IN 30 MIN"),
@@ -712,13 +712,13 @@ impl Render for SchedulePanel {
                 .child(
                     div()
                         .text_color(rgb(colors.muted))
-                        .text_size(px(9.0))
+                        .text_size(ui_text::text(9.0))
                         .child("FIRST RUN"),
                 )
                 .child(first_choices)
                 .child(
                     div()
-                        .text_size(px(10.0))
+                        .text_size(ui_text::text(10.0))
                         .child(format!("LOCAL  {first_display}")),
                 );
             if exact_time {
@@ -729,7 +729,7 @@ impl Render for SchedulePanel {
                     cx,
                 ));
             }
-            let mut presets = div().flex().flex_wrap().gap(px(5.0));
+            let mut presets = div().flex().flex_wrap().gap(ui_text::space(5.0));
             for (seconds, label) in [
                 (0, "ONCE"),
                 (3600, "HOURLY"),
@@ -749,14 +749,14 @@ impl Render for SchedulePanel {
             if repeat == u64::MAX {
                 form = form.child(self.field(3, "EVERY N MINUTES · MINIMUM 5", window, cx));
             }
-            form = form.child(div().text_color(rgb(colors.muted)).text_size(px(9.0)).child("Repeats use elapsed time from the first run (fixed UTC cadence, including DST)."))
-                .child(div().flex().gap(px(6.0)).child(self.button(if editing {"SAVE CHANGES"} else {"CREATE SCHEDULE"},Control::Save,true,window,cx)).child(self.button("CANCEL",Control::Cancel,false,window,cx)));
+            form = form.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).child("Repeats use elapsed time from the first run (fixed UTC cadence, including DST)."))
+                .child(div().flex().gap(ui_text::space(6.0)).child(self.button(if editing {"SAVE CHANGES"} else {"CREATE SCHEDULE"},Control::Save,true,window,cx)).child(self.button("CANCEL",Control::Cancel,false,window,cx)));
             body = body.child(form);
         }
         if self.rows.is_empty() {
             body = body.child(
                 div()
-                    .py(px(12.0))
+                    .py(ui_text::space(12.0))
                     .text_color(rgb(colors.muted))
                     .child("No schedules. Create a prompt when you are ready."),
             );
@@ -781,8 +781,8 @@ impl Render for SchedulePanel {
             let mut item = div()
                 .flex()
                 .flex_col()
-                .gap(px(5.0))
-                .py(px(10.0))
+                .gap(ui_text::space(5.0))
+                .py(ui_text::space(10.0))
                 .border_b_1()
                 .border_color(rgb(colors.divider))
                 .child(
@@ -790,7 +790,7 @@ impl Render for SchedulePanel {
                         .flex()
                         .flex_wrap()
                         .justify_between()
-                        .gap(px(8.0))
+                        .gap(ui_text::space(8.0))
                         .child(format!("{}  /  {}", row.target.scope.label(), row.title))
                         .child(
                             div()
@@ -806,7 +806,7 @@ impl Render for SchedulePanel {
                 )
                 .child(
                     div()
-                        .text_size(px(10.0))
+                        .text_size(ui_text::text(10.0))
                         .text_color(rgb(colors.muted))
                         .child(format!(
                             "{} · {} · {}",
@@ -815,20 +815,20 @@ impl Render for SchedulePanel {
                             timing
                         )),
                 )
-                .child(div().text_size(px(10.0)).child(format!(
+                .child(div().text_size(ui_text::text(10.0)).child(format!(
                     "NEXT  {}",
                     row.next_run.map(format_display).unwrap_or("—".into())
                 )))
                 .child(
                     div()
-                        .text_size(px(10.0))
+                        .text_size(ui_text::text(10.0))
                         .text_color(rgb(colors.muted))
                         .child(last),
                 );
             if let Some(run) = &row.last_run {
                 item = item.child(
                     div()
-                        .text_size(px(10.0))
+                        .text_size(ui_text::text(10.0))
                         .text_color(rgb(
                             if matches!(
                                 run.outcome,
@@ -847,7 +847,7 @@ impl Render for SchedulePanel {
             let actions = div()
                 .flex()
                 .flex_wrap()
-                .gap(px(5.0))
+                .gap(ui_text::space(5.0))
                 .child(self.button("EDIT", Control::Edit(row.id.clone()), false, window, cx))
                 .child(self.button(
                     if row.paused { "RESUME" } else { "PAUSE" },
@@ -879,7 +879,7 @@ impl Render for SchedulePanel {
                     .child(format!("SCHEDULER ERROR  /  {error}")),
             );
         }
-        body = body.child(div().text_color(rgb(colors.muted)).text_size(px(9.0)).child(if self.pending {"SAVING…"} else {"Runs while RiWork is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review. TAB / ENTER · CMD+S to save."}));
+        body = body.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).child(if self.pending {"SAVING…"} else {"Runs while RiWork is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review. TAB / ENTER · CMD+S to save."}));
         if let Some(control) = focused_control
             && let Some(index) = self.controls.iter().position(|c| c == &control)
         {
@@ -893,11 +893,11 @@ impl Render for SchedulePanel {
             .key_context("Schedules")
             .on_key_down(cx.listener(Self::key_down))
             .overflow_y_scroll()
-            .p(px(14.0))
+            .p(ui_text::space(14.0))
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
             .font_family("Menlo")
-            .text_size(px(11.0))
+            .text_size(ui_text::text(11.0))
             .child(body)
     }
 }

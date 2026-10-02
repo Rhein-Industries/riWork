@@ -23,6 +23,7 @@ use crate::{
     store::{State, TaskStatus},
     theme::{self, Palette},
     tooltip::{self, Look},
+    ui_text,
 };
 
 #[derive(Clone)]
@@ -154,6 +155,8 @@ pub struct PanelData<'a> {
     pub search_focused: bool,
     pub focus: FocusHandle,
     pub control_inset: f32,
+    /// The pane's width, to fall back to icons when header labels would crowd it.
+    pub width: f32,
     pub collapsed_folders: &'a HashSet<String>,
     pub state_home: &'a Path,
     pub project_order: ProjectOrder,
@@ -180,16 +183,16 @@ impl Render for DraggedProjectItem {
         div()
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .px(px(10.0))
-            .py(px(6.0))
-            .max_w(px(280.0))
+            .gap(ui_text::space(6.0))
+            .px(ui_text::space(10.0))
+            .py(ui_text::space(6.0))
+            .max_w(ui_text::space(280.0))
             .bg(rgb(colors.panel_active))
             .border_1()
             .border_color(rgb(colors.cyan))
             .text_color(rgb(colors.text))
             .font_family("Menlo")
-            .text_size(px(11.0))
+            .text_size(ui_text::text(11.0))
             .child(match self.kind {
                 ProjectDragKind::Project(_) => "◇",
                 ProjectDragKind::Folder(_) => "▱",
@@ -563,9 +566,9 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                         rows.push(
                             div()
                                 .pl(px(project_indent(depth)))
-                                .pr(px(8.0))
-                                .py(px(6.0))
-                                .text_size(px(10.0))
+                                .pr(ui_text::space(8.0))
+                                .py(ui_text::space(6.0))
+                                .text_size(ui_text::text(10.0))
                                 .text_color(rgb(colors.muted))
                                 .child("Drop projects here")
                                 .into_any_element(),
@@ -592,7 +595,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                         let title = div()
                             .flex()
                             .items_center()
-                            .gap(px(4.0))
+                            .gap(ui_text::space(4.0))
                             .child(div().flex_1().min_w_0().child(line(
                                 project.name.clone(),
                                 colors.text,
@@ -747,7 +750,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     vec![
                         div()
                             .flex()
-                            .gap(px(6.0))
+                            .gap(ui_text::space(6.0))
                             .child(div().text_color(rgb(color)).child(mark))
                             .child(line(task.title.clone(), colors.text, 11.0))
                             .into_any_element(),
@@ -800,7 +803,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             .flex()
                             .items_center()
                             .justify_between()
-                            .gap(px(6.0))
+                            .gap(ui_text::space(6.0))
                             .child(line(
                                 format!("{} · {label}", short_id(&shell.id)),
                                 colors.text,
@@ -849,7 +852,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
     if rows.is_empty() {
         rows.push(
             div()
-                .p(px(10.0))
+                .p(ui_text::space(10.0))
                 .text_color(rgb(colors.muted))
                 .child(if query.is_empty() {
                     format!("NO {}", name.to_uppercase())
@@ -883,7 +886,8 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
         .into_any_element()
     });
     let search_action = on_action.clone();
-    let as_icons = icons::labels_as_icons(cx);
+    let as_icons = icons::labels_as_icons(cx)
+        || (kind == PanelKind::Projects && project_labels_crowd(data.width, ui_text::scale()));
     let sort_selector_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
     let mut panel = div()
         .relative()
@@ -893,10 +897,10 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
         .min_w_0()
         .min_h_0()
         .bg(rgb(colors.panel))
-        .text_size(px(11.0))
+        .text_size(ui_text::text(11.0))
         .child(
             div()
-                .h(px(30.0))
+                .h(ui_text::space(30.0))
                 .flex_none()
                 .flex()
                 .border_b_1()
@@ -914,7 +918,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .px(px(8.0))
+                        .px(ui_text::space(8.0))
                         .flex()
                         .items_center()
                         .text_color(rgb(if data.search_focused {
@@ -968,10 +972,10 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(6.0))
-                .px(px(8.0))
-                .py(px(4.0))
-                .text_size(px(10.0))
+                .gap(ui_text::space(6.0))
+                .px(ui_text::space(8.0))
+                .py(ui_text::space(4.0))
+                .text_size(ui_text::text(10.0))
                 .text_color(rgb(colors.muted))
                 .child(
                     div()
@@ -1014,24 +1018,24 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 .id("task-detail")
                 .flex_none()
                 .min_h_0()
-                .max_h(px(200.0))
+                .max_h(ui_text::space(200.0))
                 .overflow_y_scroll()
                 .border_t_1()
                 .border_color(rgb(colors.divider))
-                .p(px(8.0))
+                .p(ui_text::space(8.0))
                 .child(div().text_color(rgb(colors.gold)).child("TASK DETAIL"))
                 .child(
                     div()
-                        .pt(px(5.0))
+                        .pt(ui_text::space(5.0))
                         .text_color(rgb(colors.text))
                         .child(task.title.clone()),
                 )
-                .child(div().pt(px(4.0)).text_color(rgb(color)).child(format!(
+                .child(div().pt(ui_text::space(4.0)).text_color(rgb(color)).child(format!(
                     "{} · @ {}",
                     task.status.as_str(),
                     worktree_label(data.state, task.worktree_id.as_deref())
                 )))
-                .child(div().pt(px(6.0)).text_color(rgb(colors.muted)).child(
+                .child(div().pt(ui_text::space(6.0)).text_color(rgb(colors.muted)).child(
                     if task.details.is_empty() {
                         "No details".to_owned()
                     } else {
@@ -1096,12 +1100,12 @@ fn project_header_button<V: 'static>(
         .map(|button| {
             if as_icon {
                 button
-                    .w(px(28.0))
+                    .w(ui_text::space(28.0))
                     .justify_center()
                     .child(icons::icon(Icon::Action(glyph), color))
                     .child(tooltip::anchor(tooltip, Look::Control))
             } else {
-                button.px(px(pad)).child(label)
+                button.px(ui_text::space(pad)).child(label)
             }
         })
         .on_click(cx.listener(move |view, _, window, cx| {
@@ -1123,17 +1127,17 @@ fn project_sort_controls<V: 'static>(
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(2.0))
-        .text_size(px(9.0))
+        .gap(ui_text::space(2.0))
+        .text_size(ui_text::text(9.0))
         .child(
             div()
                 .id("project-sort-selector")
                 .relative()
                 .flex()
                 .items_center()
-                .gap(px(5.0))
-                .px(px(5.0))
-                .h(px(20.0))
+                .gap(ui_text::space(5.0))
+                .px(ui_text::space(5.0))
+                .h(ui_text::space(20.0))
                 .cursor_pointer()
                 .bg(rgb(if open {
                     colors.panel_active
@@ -1172,8 +1176,8 @@ fn project_sort_controls<V: 'static>(
                 .flex()
                 .items_center()
                 .justify_center()
-                .w(px(22.0))
-                .h(px(20.0))
+                .w(ui_text::space(22.0))
+                .h(ui_text::space(20.0))
                 .cursor_pointer()
                 .text_color(rgb(colors.cyan))
                 .hover(|style| style.bg(rgb(colors.panel_active)))
@@ -1204,17 +1208,17 @@ fn project_sort_menu<V: 'static>(
     div()
         .id("project-sort-menu")
         .absolute()
-        .top(px(56.0))
+        .top(ui_text::space(56.0))
         .right(px(8.0))
-        .w(px(220.0))
+        .w(ui_text::space(220.0))
         .max_w(gpui::relative(0.9))
         .bottom(px(8.0))
-        .max_h(px(128.0))
+        .max_h(ui_text::space(128.0))
         .overflow_y_scroll()
         .bg(rgb(colors.panel_active))
         .border_1()
         .border_color(rgb(colors.magenta))
-        .p(px(3.0))
+        .p(ui_text::space(3.0))
         .occlude()
         .on_mouse_down_out(
             cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
@@ -1244,17 +1248,17 @@ fn project_sort_menu<V: 'static>(
                     .id(format!("project-sort-{}", by.label()))
                     .flex()
                     .items_center()
-                    .gap(px(7.0))
-                    .px(px(8.0))
-                    .py(px(7.0))
+                    .gap(ui_text::space(7.0))
+                    .px(ui_text::space(8.0))
+                    .py(ui_text::space(7.0))
                     .cursor_pointer()
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .text_color(rgb(if selected { colors.cyan } else { colors.text }))
                     .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan)))
                     .child(
                         div()
                             .flex_none()
-                            .w(px(12.0))
+                            .w(ui_text::space(12.0))
                             .child(if selected { "✓" } else { "" }),
                     )
                     .child(div().flex_1().min_w_0().text_ellipsis().child(by.label()))
@@ -1282,8 +1286,8 @@ fn project_control<V: 'static>(
         .flex()
         .items_center()
         .justify_center()
-        .w(px(20.0))
-        .h(px(18.0))
+        .w(ui_text::space(20.0))
+        .h(ui_text::space(18.0))
         .text_color(rgb(colors.cyan))
         .cursor_pointer()
         .hover(|style| {
@@ -1315,8 +1319,8 @@ fn project_notification_control<V: 'static>(
         .flex()
         .items_center()
         .justify_center()
-        .w(px(20.0))
-        .h(px(18.0))
+        .w(ui_text::space(20.0))
+        .h(ui_text::space(18.0))
         .cursor_pointer()
         .hover(|style| style.bg(rgb(colors.divider)))
         .child(icons::icon(
@@ -1377,12 +1381,12 @@ fn folder_header<V: 'static>(
         .id(format!("project-folder-{}", id.unwrap_or("unfiled")))
         .flex()
         .items_center()
-        .gap(px(5.0))
+        .gap(ui_text::space(5.0))
         .min_w_0()
-        .h(px(27.0))
+        .h(ui_text::space(27.0))
         .pl(px(project_indent(depth)))
-        .pr(px(8.0))
-        .mt(px(3.0))
+        .pr(ui_text::space(8.0))
+        .mt(ui_text::space(3.0))
         .border_b_1()
         .border_color(rgb(colors.divider))
         .bg(rgb(colors.panel_active))
@@ -1409,7 +1413,7 @@ fn folder_header<V: 'static>(
         )
         .child(
             div()
-                .text_size(px(9.0))
+                .text_size(ui_text::text(9.0))
                 .text_color(rgb(colors.muted))
                 .child(format!("{count:02}")),
         )
@@ -1520,11 +1524,11 @@ fn project_row<V: 'static>(
         .id(format!("project-{project_id}"))
         .flex()
         .flex_col()
-        .gap(px(3.0))
+        .gap(ui_text::space(3.0))
         .min_w_0()
         .pl(px(project_indent(depth)))
-        .pr(px(8.0))
-        .py(px(6.0))
+        .pr(ui_text::space(8.0))
+        .py(ui_text::space(6.0))
         .border_l_1()
         .border_color(rgb(if selected { colors.cyan } else { colors.panel }))
         .bg(rgb(if selected {
@@ -1561,10 +1565,10 @@ fn row<V: 'static>(
         .id(id)
         .flex()
         .flex_col()
-        .gap(px(3.0))
+        .gap(ui_text::space(3.0))
         .min_w_0()
-        .px(px(8.0))
-        .py(px(6.0))
+        .px(ui_text::space(8.0))
+        .py(ui_text::space(6.0))
         .border_l_1()
         .border_color(rgb(if selected { accent } else { colors.panel }))
         .bg(rgb(if selected {
@@ -1580,12 +1584,21 @@ fn row<V: 'static>(
         .into_any_element()
 }
 
+/// Whether "+ FOLDER" and "+ PROJECT" would leave the search field too little room
+/// for "SEARCH [CMD+F]" at this text scale (Menlo advances 0.6 em; 11 px text).
+fn project_labels_crowd(width: f32, scale: f32) -> bool {
+    let advance = 0.6 * 11.0 * scale;
+    let labels = 17.0 * advance + 2.0 * (ui_text::space_f32(6.0) + ui_text::space_f32(8.0));
+    let search = 14.0 * advance + 2.0 * ui_text::space_f32(8.0);
+    labels + search > width
+}
+
 fn line(text: String, color: u32, size: f32) -> AnyElement {
     div()
         .min_w_0()
         .overflow_hidden()
         .text_ellipsis()
-        .text_size(px(size))
+        .text_size(ui_text::text(size))
         .text_color(rgb(color))
         .child(text)
         .into_any_element()
@@ -1622,6 +1635,15 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::store::{Project, ProjectFolder};
+
+    #[test]
+    fn project_header_labels_give_way_to_icons_only_when_crowded() {
+        // The default sidebar keeps its labels at 100 %, not at twice the size.
+        assert!(!project_labels_crowd(330.0, 1.0));
+        assert!(project_labels_crowd(330.0, 2.0));
+        assert!(!project_labels_crowd(600.0, 2.0));
+        assert!(project_labels_crowd(150.0, 1.0));
+    }
 
     fn project_tree(state: &State, query: &str, collapsed: &HashSet<String>) -> ProjectTree {
         super::project_tree(

@@ -24,7 +24,7 @@ use gpui::{
     WindowBounds, WindowKind, WindowOptions, canvas, div, point, prelude::*, px, rgb, size,
 };
 
-use crate::theme;
+use crate::{theme, ui_text};
 
 /// GPUI's own delay before a tooltip shows.
 const SHOW_DELAY: Duration = Duration::from_millis(500);
@@ -48,12 +48,14 @@ pub(crate) enum Look {
 }
 
 impl Look {
+    /// Grows with the interface text size, like the text inside.
     fn padding(self) -> (f32, f32) {
-        match self {
+        let (x, y) = match self {
             Self::Pane => (9.0, 6.0),
             Self::Control => (8.0, 5.0),
             Self::Status => (8.0, 6.0),
-        }
+        };
+        (ui_text::space_f32(x), ui_text::space_f32(y))
     }
 
     fn text_style(self) -> TextStyle {
@@ -66,7 +68,7 @@ impl Look {
         if let Some(family) = family {
             style.font_family = family.into();
         }
-        style.font_size = px(font_size).into();
+        style.font_size = ui_text::text(font_size).into();
         style
     }
 }
