@@ -3174,46 +3174,68 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Choosing a worktree of a remote project makes it the one new terminals start in, and
-    /// shows a live terminal of it if there is one. Unlike a local worktree it starts none:
-    /// that would run something on another Mac for a click.
+    /// A click on a worktree of a project on another Mac does what `select_worktree` does for a
+    /// local one, step for step: the worktree becomes the selected one; a tab already open on a
+    /// shell started in it is shown; else the project's newest live shell of that worktree is
+    /// opened (`show_shell`); else a plain shell is started there (`add_tab`), in the pane
+    /// that is selected, with `shell.create` on the host. The choice itself is
+    /// `RemoteTree::click_worktree`. The creation is sent once, a second click while it is out
+    /// does nothing, and nothing is ever sent again for the person.
     fn select_remote_worktree(
         &mut self,
         worktree_id: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(host) = self.remote_project().map(|(host, _)| host.to_owned()) else {
+        let Some((host, project)) = self
+            .remote_project()
+            .map(|(host, project)| (host.to_owned(), project.to_owned()))
+        else {
             return;
         };
         if !self.ensure_layout(window, cx) {
             return;
         }
         self.selected_worktree_id = Some(worktree_id.to_owned());
-        let tree = cx.global::<RemoteState>().tree();
-        let in_worktree = |shell: &RemoteShell| shell.worktree_id.as_deref() == Some(worktree_id);
-        let existing = self.panes.iter().find_map(|(pane_id, pane)| {
-            pane.tabs
-                .iter()
-                .find(|tab| {
-                    tab.remote()
-                        .filter(|(tab_host, _)| *tab_host == host)
-                        .and_then(|(_, shell)| tree.known_shell(&host, shell))
-                        .is_some_and(in_worktree)
-                })
-                .map(|tab| (*pane_id, tab.id))
-        });
-        let live = tree.selected_view(&self.project_id).and_then(|view| {
-            view.shells
-                .items
-                .into_iter()
-                .rev()
-                .find(|shell| shell.alive && !shell.orchestrator && in_worktree(shell))
-        });
-        if let Some((pane_id, tab_id)) = existing {
-            self.select_tab(pane_id, tab_id, window, cx);
-        } else if let Some(shell) = live {
-            self.open_remote_shell(host, shell, window, cx);
+        let open_tabs = self
+            .panes
+            .values()
+            .flat_map(|pane| pane.tabs.iter().filter_map(Tab::remote))
+            .filter(|(tab_host, _)| *tab_host == host)
+            .map(|(_, shell)| shell)
+            .collect::<Vec<_>>();
+        let click = cx.global::<RemoteState>().tree().click_worktree(
+            &host,
+            &project,
+            worktree_id,
+            &open_tabs,
+        );
+        match click {
+            remote_tree::WorktreeClick::Tab(shell_id) => {
+                let found = self.panes.iter().find_map(|(pane_id, pane)| {
+                    pane.tabs
+                        .iter()
+                        .find(|tab| tab.remote() == Some((host.as_str(), shell_id.as_str())))
+                        .map(|tab| (*pane_id, tab.id))
+                });
+                if let Some((pane_id, tab_id)) = found {
+                    self.select_tab(pane_id, tab_id, window, cx);
+                }
+            }
+            remote_tree::WorktreeClick::Live(shell) => {
+                self.open_remote_shell(host, shell, window, cx);
+            }
+            remote_tree::WorktreeClick::Start => {
+                self.create_remote_shell(NewShellKind::Shell, false, cx);
+            }
+            remote_tree::WorktreeClick::Unknown => {
+                // Listed within a few seconds while the Worktrees panel shows; a click before
+                // that must not start a second shell beside one not heard of yet.
+                self.notice = Some(format!(
+                    "Reading the terminals on {}; click again in a moment",
+                    cx.global::<RemoteState>().tree().host_name(&host)
+                ));
+            }
         }
         self.save_layout();
         cx.notify();
@@ -3392,7 +3414,8 @@ impl Workspace {
                     project: project.to_owned(),
                     worktrees: worktrees || tasks || shells,
                     tasks: tasks || worktrees,
-                    shells,
+                    // A click on a worktree decides from the host's shells.
+                    shells: shells || worktrees,
                 }),
         }
     }
@@ -3508,10 +3531,25 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Show a shell of another Mac: select its tab if one is open, otherwise open one in
-    /// the active pane, or the first pane that is not locked.
+    /// Show a shell of another Mac the way `show_shell` shows a local one: select its tab if
+    /// one is open, otherwise open one in the active pane.
     fn open_remote_shell(
         &mut self,
+        desktop_id: String,
+        shell: RemoteShell,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pane_id = self.active_pane;
+        self.open_remote_shell_in(pane_id, desktop_id, shell, window, cx);
+    }
+
+    /// `open_remote_shell` for a pane chosen earlier: a shell made on the host arrives some
+    /// time after it was asked for, and opens where the person asked, as a local one made at
+    /// once would. If that pane has been closed meanwhile it opens in the active one.
+    fn open_remote_shell_in(
+        &mut self,
+        pane_id: PaneId,
         desktop_id: String,
         shell: RemoteShell,
         window: &mut Window,
@@ -3541,10 +3579,10 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let Some(pane_id) = self.adoption_pane() else {
-            self.notice = Some("No pane can hold a remote shell.".to_owned());
-            cx.notify();
-            return;
+        let pane_id = if self.panes.contains_key(&pane_id) {
+            pane_id
+        } else {
+            self.active_pane
         };
         let result = self
             .spawn_remote_terminal(&desktop_id, &shell.id, true, window, cx)
@@ -3621,6 +3659,8 @@ impl Workspace {
             return;
         }
         cx.notify();
+        // The shell opens in the pane that was selected when it was asked for.
+        let pane_id = self.active_pane;
         // The worktree the person chose, if the host still lists it.
         let scope = match self.selected_worktree_id.clone().filter(|id| {
             cx.global::<RemoteState>()
@@ -3659,7 +3699,7 @@ impl Workspace {
                     Some(shell) => {
                         app.with_window(entity_id, |window, app| {
                             let _ = this.update(app, |workspace, cx| {
-                                workspace.open_remote_shell(host, shell, window, cx);
+                                workspace.open_remote_shell_in(pane_id, host, shell, window, cx);
                             });
                         });
                     }

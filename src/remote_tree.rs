@@ -581,6 +581,19 @@ pub struct FolderView {
     pub projects: Vec<ProjectView>,
 }
 
+/// What a click on a remote worktree does; see [`RemoteTree::click_worktree`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorktreeClick {
+    /// Show the tab on this shell id.
+    Tab(String),
+    /// Open this live shell.
+    Live(RemoteShell),
+    /// Start a plain shell in the worktree.
+    Start,
+    /// The host's shells have not been read yet.
+    Unknown,
+}
+
 /// A list the window draws, with what it has to say about itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Listing<T> {
@@ -639,6 +652,9 @@ pub struct RemoteTree {
     kept: BTreeMap<String, Vec<RemoteProject>>,
     /// The project lists changed since they were last handed out to be kept.
     kept_dirty: bool,
+    /// Shells this window had the host make, by host and id, until the host's lists name them.
+    /// A tab opened for one is then known by the worktree it was started in at once.
+    launched: BTreeMap<(String, String), RemoteShell>,
 }
 
 impl RemoteTree {
@@ -679,20 +695,23 @@ impl RemoteTree {
         link_strip(&node.host.label, node.link())
     }
 
-    /// The shell as the host last listed it, if a list this window loaded has it.
+    /// The shell as the host last listed it, if a list this window loaded has it, or else as
+    /// the host answered when it was asked to make it.
     pub fn known_shell(&self, host: &str, shell_id: &str) -> Option<&RemoteShell> {
-        let node = self.node(host)?;
-        node.orchestrators
-            .value()
-            .into_iter()
-            .flatten()
-            .chain(
-                node.data
-                    .values()
-                    .filter_map(|data| data.shells.value())
-                    .flatten(),
-            )
-            .find(|shell| shell.id == shell_id)
+        let listed = self.node(host).and_then(|node| {
+            node.orchestrators
+                .value()
+                .into_iter()
+                .flatten()
+                .chain(
+                    node.data
+                        .values()
+                        .filter_map(|data| data.shells.value())
+                        .flatten(),
+                )
+                .find(|shell| shell.id == shell_id)
+        });
+        listed.or_else(|| self.launched.get(&(host.to_owned(), shell_id.to_owned())))
     }
 
     /// The title for a tab on `shell_id` of `host`: the shell's kind when a list knows it,
@@ -987,6 +1006,8 @@ impl RemoteTree {
             Ok(shell) => {
                 data.create = Creation::Idle;
                 data.shells.poll.invalidate();
+                self.launched
+                    .insert((host.to_owned(), shell.id.clone()), shell.clone());
                 Some(shell)
             }
             Err(error) => {
@@ -996,6 +1017,47 @@ impl RemoteTree {
                 }
                 None
             }
+        }
+    }
+
+    /// What a click on a worktree of a project does. This is the local rule of
+    /// `Workspace::select_worktree`, applied to the host's shells in the same order:
+    ///
+    /// 1. a tab is already open on a shell started in that worktree: show it (whether or not the
+    ///    shell is still alive, as a local tab is);
+    /// 2. otherwise the project's newest live shell of that worktree, of any kind (agents and
+    ///    orchestrators count as they do locally);
+    /// 3. otherwise a plain shell is started in the worktree, as `Workspace::add_tab` does.
+    ///
+    /// `open_tabs` are the ids of the shells of `host` that the window has tabs on.
+    pub fn click_worktree(
+        &self,
+        host: &str,
+        project: &str,
+        worktree: &str,
+        open_tabs: &[&str],
+    ) -> WorktreeClick {
+        let in_worktree = |shell: &RemoteShell| shell.worktree_id.as_deref() == Some(worktree);
+        if let Some(open) = open_tabs
+            .iter()
+            .find(|id| self.known_shell(host, id).is_some_and(in_worktree))
+        {
+            return WorktreeClick::Tab((*open).to_owned());
+        }
+        // Without the host's list, "no live shell" is unknown: starting one then could make a
+        // second one beside a shell nobody has heard of yet.
+        let Some(shells) = self
+            .node(host)
+            .and_then(|node| node.data.get(project))
+            .and_then(|data| data.shells.value())
+        else {
+            return WorktreeClick::Unknown;
+        };
+        match shells.iter().rev().find(|shell| {
+            shell.alive && shell.project_id.as_deref() == Some(project) && in_worktree(shell)
+        }) {
+            Some(live) => WorktreeClick::Live(live.clone()),
+            None => WorktreeClick::Start,
         }
     }
 
@@ -2102,6 +2164,113 @@ mod tests {
                 project: "p1".into()
             })
         );
+    }
+
+    /// The project's shells, as the host listed them.
+    fn with_shells(shells: Vec<RemoteShell>) -> RemoteTree {
+        let mut tree = studio();
+        let first = lists(&mut tree, Instant::now(), &wants_selected("s"));
+        answer_all(&mut tree, &first);
+        tree.apply(
+            &Request::Shells {
+                host: "h1".into(),
+                project: "p1".into(),
+            },
+            Reply::Shells(Ok(shells)),
+        );
+        tree
+    }
+
+    fn click(tree: &RemoteTree, open_tabs: &[&str]) -> WorktreeClick {
+        tree.click_worktree("h1", "p1", "w1", open_tabs)
+    }
+
+    #[test]
+    fn a_worktree_with_no_shell_starts_a_plain_one_as_a_local_worktree_does() {
+        // Another worktree's shell, another project's, and a dead one in this worktree do not
+        // count; only a live shell of this worktree does.
+        let mut dead = shell("dead", Some("p1"), Some("w1"));
+        dead.alive = false;
+        let tree = with_shells(vec![
+            shell("elsewhere", Some("p1"), Some("w2")),
+            shell("rootless", Some("p1"), None),
+            shell("foreign", Some("p2"), Some("w1")),
+            dead,
+        ]);
+        assert_eq!(click(&tree, &[]), WorktreeClick::Start);
+        assert_eq!(click(&with_shells(vec![]), &[]), WorktreeClick::Start);
+    }
+
+    #[test]
+    fn a_worktree_with_a_live_shell_opens_the_newest_one_of_any_kind() {
+        let mut agent = shell("agent", Some("p1"), Some("w1"));
+        agent.harness = Some("codex".into());
+        let mut orchestrator = shell("orch", Some("p1"), Some("w1"));
+        orchestrator.orchestrator = true;
+        let tree = with_shells(vec![
+            shell("old", Some("p1"), Some("w1")),
+            agent.clone(),
+            shell("elsewhere", Some("p1"), Some("w2")),
+        ]);
+        // As the local rule takes the last live one in its list, whatever runs in it.
+        assert_eq!(click(&tree, &[]), WorktreeClick::Live(agent));
+        let tree = with_shells(vec![
+            shell("old", Some("p1"), Some("w1")),
+            orchestrator.clone(),
+        ]);
+        assert_eq!(click(&tree, &[]), WorktreeClick::Live(orchestrator));
+    }
+
+    #[test]
+    fn a_tab_already_open_on_a_shell_of_the_worktree_is_shown_before_anything_is_started() {
+        let mut dead = shell("dead", Some("p1"), Some("w1"));
+        dead.alive = false;
+        let tree = with_shells(vec![
+            shell("live", Some("p1"), Some("w1")),
+            dead,
+            shell("other", Some("p1"), Some("w2")),
+        ]);
+        // A tab on a shell of another worktree is not this worktree's.
+        assert_eq!(
+            click(&tree, &["other"]),
+            WorktreeClick::Live(shell("live", Some("p1"), Some("w1")))
+        );
+        // The tab comes first, even over a live shell and even if its own shell has ended,
+        // as a local tab on an ended shell is.
+        assert_eq!(
+            click(&tree, &["other", "dead"]),
+            WorktreeClick::Tab("dead".into())
+        );
+        let tree = with_shells(vec![]);
+        assert_eq!(click(&tree, &["unlisted"]), WorktreeClick::Start);
+    }
+
+    #[test]
+    fn a_shell_just_made_is_known_by_its_worktree_before_the_list_names_it() {
+        let mut tree = with_shells(vec![]);
+        assert!(tree.begin_shell("h1", "p1"));
+        let made = shell("made", Some("p1"), Some("w1"));
+        tree.finish_shell("h1", "p1", Ok(made));
+        // Its tab is open but the list has not caught up: the click shows the tab and does not
+        // start a second shell.
+        assert_eq!(click(&tree, &["made"]), WorktreeClick::Tab("made".into()));
+    }
+
+    #[test]
+    fn without_the_hosts_shells_a_click_starts_nothing() {
+        let mut tree = studio();
+        assert_eq!(click(&tree, &[]), WorktreeClick::Unknown);
+        // A list that failed to load is just as unknown.
+        let first = lists(&mut tree, Instant::now(), &wants_selected("s"));
+        assert!(!first.is_empty());
+        tree.apply(
+            &Request::Shells {
+                host: "h1".into(),
+                project: "p1".into(),
+            },
+            Reply::Shells(Err("No answer in time".into())),
+        );
+        assert_eq!(click(&tree, &[]), WorktreeClick::Unknown);
     }
 
     #[test]
