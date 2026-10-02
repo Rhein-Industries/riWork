@@ -1,25 +1,39 @@
-//! What the REMOTE section of the Projects panel knows about other Macs, and when it asks.
+//! What the window knows about other Macs' projects, and when it asks.
 //!
-//! There is no GPUI and no I/O here. `RemoteTree` is plain state that background tasks fill
-//! in, so the decisions (which list is wanted now, which request may start, what a failed
-//! creation leaves behind) are tested without a window or a daemon. `remote_service` runs
-//! the requests this module plans and feeds the answers back.
+//! A paired Mac shows up in the Projects panel as a folder named after it, holding its
+//! projects as ordinary rows. Selecting one of them makes it the window's project: the
+//! Worktrees, Tasks and Shells panels then draw its lists. There is no GPUI and no I/O here.
+//! `RemoteTree` is plain state that background tasks fill in, so the decisions (which list is
+//! wanted now, which request may start, what a failed creation leaves behind) are tested
+//! without a window or a daemon. `remote_service` runs the requests this module plans and
+//! feeds the answers back.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     time::{Duration, Instant},
 };
 
 use serde_json::{Value, json};
 
-use crate::remote_hosts::{Host, HostStatus, LinkState, RemoteError};
+use crate::{
+    project_sort::{ProjectOrder, RemoteSortKey, sorted_remote_indices},
+    remote_hosts::{Host, HostStatus, LinkState, RemoteError},
+    store::TaskStatus,
+};
 
 /// How often a host's link state is asked for while someone is looking at it.
 pub const STATUS_INTERVAL: Duration = Duration::from_secs(3);
-/// How often an open list is asked for again.
+/// How often a list the window is drawing is asked for again.
 pub const LIST_INTERVAL: Duration = Duration::from_secs(5);
+/// How often a host's project list is asked for again while its folder is open and shown.
+pub const PROJECTS_INTERVAL: Duration = Duration::from_secs(10);
+/// How often the figures on a project row (trees, tasks, live shells) are asked for again.
+/// Each project costs three requests, so this is slower than the lists in front of the person.
+pub const STATS_INTERVAL: Duration = Duration::from_secs(30);
 /// How often the registry of hosts is read again while it is shown.
 pub const HOSTS_INTERVAL: Duration = Duration::from_secs(10);
+/// How many requests for project rows' figures may be out at once for one host.
+const MAX_STATS_IN_FLIGHT: usize = 4;
 /// A list reply travels through the relay and the host's CLI; this is generous.
 pub const LIST_TIMEOUT: Duration = Duration::from_secs(20);
 /// Starting an agent can take a minute on the host (docs/remote-protocol.md allows 90 s).
@@ -27,6 +41,34 @@ pub const CREATE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// The longest project name the host accepts (Unicode scalar values).
 const PROJECT_NAME_LIMIT: usize = 100;
+
+/// Ids the window stores for something on another Mac start with this, so they can never be
+/// found in, or collide with, the local store.
+const KEY_PREFIX: &str = "remote:";
+
+/// The id of a project on a host as the window stores it: `remote:{host}:{project}`.
+pub fn project_key(host: &str, project: &str) -> String {
+    format!("{KEY_PREFIX}{host}:{project}")
+}
+
+/// The host and project of a key made by [`project_key`]. Anything else, including the key of
+/// a host's folder, is not one.
+pub fn parse_project_key(key: &str) -> Option<(&str, &str)> {
+    let (host, project) = key.strip_prefix(KEY_PREFIX)?.split_once(':')?;
+    (!host.is_empty() && !project.is_empty()).then_some((host, project))
+}
+
+/// The id of a host's folder in the Projects panel, which is also what the set of collapsed
+/// folders holds for it.
+pub fn folder_key(host: &str) -> String {
+    format!("{KEY_PREFIX}{host}")
+}
+
+/// The host of a key made by [`folder_key`].
+pub fn parse_folder_key(key: &str) -> Option<&str> {
+    let host = key.strip_prefix(KEY_PREFIX)?;
+    (!host.is_empty() && !host.contains(':')).then_some(host)
+}
 
 /// When a request for one thing may start again.
 #[derive(Clone, Debug, Default)]
@@ -96,7 +138,14 @@ impl<T: PartialEq> Fetch<T> {
         self.value.is_none() && self.error.is_none()
     }
 
-    /// Record an answer. Returns whether what the panel shows changed.
+    /// Show `value` until the first answer comes, as when it was kept from an earlier run.
+    fn seed(&mut self, value: T) {
+        if self.value.is_none() {
+            self.value = Some(value);
+        }
+    }
+
+    /// Record an answer. Returns whether what is shown changed.
     fn finish(&mut self, result: Result<T, String>) -> bool {
         self.poll.end();
         match result {
@@ -155,8 +204,6 @@ pub enum NewShellKind {
 }
 
 impl NewShellKind {
-    pub const ALL: [Self; 4] = [Self::Shell, Self::Codex, Self::Claude, Self::Grok];
-
     /// Spelled exactly as the protocol wants it.
     pub fn wire(self) -> &'static str {
         match self {
@@ -166,28 +213,37 @@ impl NewShellKind {
             Self::Grok => "grok",
         }
     }
+}
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Shell => "Shell",
-            Self::Codex => "Codex",
-            Self::Claude => "Claude",
-            Self::Grok => "Grok",
-        }
-    }
+/// Where `shell.create` starts a terminal: a project's root, or one of its worktrees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShellScope {
+    Project(String),
+    Worktree(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteProject {
     pub id: String,
     pub name: String,
+    pub created_at: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteWorktree {
     pub id: String,
     pub branch: String,
+    pub path: String,
     pub primary: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteTask {
+    pub id: String,
+    pub title: String,
+    pub details: String,
+    pub status: TaskStatus,
+    pub worktree_id: Option<String>,
 }
 
 /// A project shell or an orchestrator on the host.
@@ -267,7 +323,7 @@ pub fn validate_project_name(name: &str) -> Result<String, String> {
     Ok(name.to_owned())
 }
 
-/// What a creation request left behind. It is never retried by the panel: the user decides.
+/// What a creation request left behind. It is never retried by the window: the user decides.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Creation {
     #[default]
@@ -276,25 +332,89 @@ pub enum Creation {
     Failed(String),
 }
 
-#[derive(Debug)]
-struct ProjectNode {
-    expanded: bool,
+/// Which lists of one project to ask for, and how often.
+#[derive(Clone, Copy, Debug, Default)]
+struct Cadence {
+    worktrees: Option<Duration>,
+    tasks: Option<Duration>,
+    shells: Option<Duration>,
+}
+
+impl Cadence {
+    fn all(every: Duration) -> Self {
+        Self {
+            worktrees: Some(every),
+            tasks: Some(every),
+            shells: Some(every),
+        }
+    }
+}
+
+/// What is known about one project of a host.
+#[derive(Debug, Default)]
+struct ProjectData {
     worktrees: Fetch<Vec<RemoteWorktree>>,
+    tasks: Fetch<Vec<RemoteTask>>,
     shells: Fetch<Vec<RemoteShell>>,
-    /// The Shell/Codex/Claude/Grok choice is showing under the project.
-    chooser_open: bool,
+    /// The state of the last "new shell" asked of this project.
     create: Creation,
 }
 
-impl ProjectNode {
-    fn new() -> Self {
-        Self {
-            expanded: false,
-            worktrees: Fetch::default(),
-            shells: Fetch::default(),
-            chooser_open: false,
-            create: Creation::Idle,
+impl ProjectData {
+    fn in_flight(&self) -> usize {
+        usize::from(self.worktrees.poll.in_flight)
+            + usize::from(self.tasks.poll.in_flight)
+            + usize::from(self.shells.poll.in_flight)
+    }
+
+    /// Plan this project's due lists. `budget` limits how many may start; selected projects
+    /// pass a budget that never runs out.
+    fn plan(
+        &mut self,
+        host: &str,
+        project: &str,
+        cadence: Cadence,
+        now: Instant,
+        budget: &mut usize,
+        out: &mut Vec<Request>,
+    ) {
+        let key = |host: &str, project: &str| (host.to_owned(), project.to_owned());
+        if *budget > 0
+            && cadence
+                .worktrees
+                .is_some_and(|every| self.worktrees.poll.due(now, Some(every)))
+        {
+            self.worktrees.poll.begin(now);
+            *budget -= 1;
+            let (host, project) = key(host, project);
+            out.push(Request::Worktrees { host, project });
         }
+        if *budget > 0
+            && cadence
+                .tasks
+                .is_some_and(|every| self.tasks.poll.due(now, Some(every)))
+        {
+            self.tasks.poll.begin(now);
+            *budget -= 1;
+            let (host, project) = key(host, project);
+            out.push(Request::Tasks { host, project });
+        }
+        if *budget > 0
+            && cadence
+                .shells
+                .is_some_and(|every| self.shells.poll.due(now, Some(every)))
+        {
+            self.shells.poll.begin(now);
+            *budget -= 1;
+            let (host, project) = key(host, project);
+            out.push(Request::Shells { host, project });
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.worktrees.poll.invalidate();
+        self.tasks.poll.invalidate();
+        self.shells.poll.invalidate();
     }
 }
 
@@ -304,10 +424,10 @@ struct HostNode {
     /// `None` until the first answer; an error means the daemon could not be reached.
     status: Option<Result<HostStatus, String>>,
     status_poll: Poll,
-    expanded: bool,
     projects: Fetch<Vec<RemoteProject>>,
     orchestrators: Fetch<Vec<RemoteShell>>,
-    nodes: BTreeMap<String, ProjectNode>,
+    data: BTreeMap<String, ProjectData>,
+    /// The state of the last "new project" asked of this host.
     create: Creation,
 }
 
@@ -317,10 +437,9 @@ impl HostNode {
             host,
             status: None,
             status_poll: Poll::default(),
-            expanded: false,
             projects: Fetch::default(),
             orchestrators: Fetch::default(),
-            nodes: BTreeMap::new(),
+            data: BTreeMap::new(),
             create: Creation::Idle,
         }
     }
@@ -344,10 +463,19 @@ impl HostNode {
     fn invalidate_lists(&mut self) {
         self.projects.poll.invalidate();
         self.orchestrators.poll.invalidate();
-        for node in self.nodes.values_mut() {
-            node.worktrees.poll.invalidate();
-            node.shells.poll.invalidate();
+        for data in self.data.values_mut() {
+            data.invalidate();
         }
+    }
+
+    fn in_flight(&self) -> usize {
+        usize::from(self.projects.poll.in_flight)
+            + usize::from(self.orchestrators.poll.in_flight)
+            + self
+                .data
+                .values()
+                .map(ProjectData::in_flight)
+                .sum::<usize>()
     }
 }
 
@@ -359,10 +487,11 @@ pub enum Request {
     Projects { host: String },
     Orchestrators { host: String },
     Worktrees { host: String, project: String },
+    Tasks { host: String, project: String },
     Shells { host: String, project: String },
 }
 
-/// The answer to a [`Request`], already parsed. The error is text for the panel.
+/// The answer to a [`Request`], already parsed. The error is text for the window.
 #[derive(Debug)]
 pub enum Reply {
     Hosts(Result<Vec<Host>, String>),
@@ -370,72 +499,146 @@ pub enum Reply {
     Projects(Result<Vec<RemoteProject>, String>),
     Orchestrators(Result<Vec<RemoteShell>, String>),
     Worktrees(Result<Vec<RemoteWorktree>, String>),
+    Tasks(Result<Vec<RemoteTask>, String>),
     Shells(Result<Vec<RemoteShell>, String>),
+}
+
+/// The selected remote project and which of its panels are on screen.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SelectedWants {
+    pub host: String,
+    pub project: String,
+    pub worktrees: bool,
+    pub tasks: bool,
+    pub shells: bool,
 }
 
 /// What is on screen and so worth keeping up to date.
 #[derive(Clone, Debug, Default)]
 pub struct Wants {
-    /// The REMOTE section of a Projects panel is showing.
-    pub section: bool,
+    /// A Projects panel is showing the hosts' folders.
+    pub folders: bool,
+    /// The folders that are collapsed in it, by [`folder_key`].
+    pub collapsed: HashSet<String>,
     /// A Settings panel listing the hosts is showing.
     pub settings: bool,
     /// Hosts that tabs are open on; their link state drives the reconnecting strip.
     pub tab_hosts: BTreeSet<String>,
+    pub selected: Option<SelectedWants>,
 }
 
-/// A row of the REMOTE section, flattened for drawing. `depth` is the indentation level.
+/// The figures on a project row. A figure is unknown until its list has been read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    pub worktrees: Option<usize>,
+    pub tasks_done: Option<usize>,
+    pub tasks: Option<usize>,
+    pub live: Option<usize>,
+}
+
+impl Stats {
+    /// The line under a project's name, as a local project's: trees, tasks and live shells.
+    pub fn line(&self) -> String {
+        let count =
+            |value: Option<usize>| value.map_or("–".to_owned(), |value| value.to_string());
+        format!(
+            "{} trees · {}/{} tasks · {} live",
+            count(self.worktrees),
+            count(self.tasks_done),
+            count(self.tasks),
+            count(self.live)
+        )
+    }
+}
+
+/// A project of a host as a row of its folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Row {
-    Host {
-        id: String,
-        label: String,
-        link: Option<Link>,
-        expanded: bool,
-        creating: bool,
-    },
-    Project {
-        host: String,
-        id: String,
-        name: String,
-        expanded: bool,
-        creating: bool,
-    },
-    /// The Shell/Codex/Claude/Grok choice under a project.
-    Chooser {
-        host: String,
-        project: String,
-    },
-    Worktree {
-        label: String,
-    },
-    Shell {
-        host: String,
-        shell: RemoteShell,
-        depth: usize,
-    },
-    /// A line of text under its parent: loading, empty, or an error.
-    Note {
-        text: String,
-        error: bool,
-        depth: usize,
-    },
-    /// What a creation left behind, with a way to dismiss it. `project` is `None` for a
-    /// project creation on the host itself.
-    Failure {
-        host: String,
-        project: Option<String>,
-        text: String,
-        depth: usize,
-    },
+pub struct ProjectView {
+    /// The id the window stores for it, by [`project_key`].
+    pub key: String,
+    pub name: String,
+    pub selected: bool,
+    /// The host is off line: the row is what was listed last, and cannot be trusted.
+    pub dimmed: bool,
+    pub stats: Stats,
+}
+
+/// A host as a folder of the Projects panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderView {
+    pub host: String,
+    pub label: String,
+    pub link: Option<Link>,
+    pub collapsed: bool,
+    /// A project is being created on the host.
+    pub creating: bool,
+    /// What a refused or lost project creation left, until dismissed.
+    pub failure: Option<String>,
+    /// A line under the heading: why there is nothing to list, or that the host is off line.
+    pub note: Option<String>,
+    /// How many projects the folder holds, whatever the search hides.
+    pub count: usize,
+    pub projects: Vec<ProjectView>,
+}
+
+/// A list the window draws, with what it has to say about itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listing<T> {
+    pub items: Vec<T>,
+    /// Asked for and nothing to show yet.
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+impl<T> Default for Listing<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            loading: false,
+            error: None,
+        }
+    }
+}
+
+impl<T: PartialEq + Clone> Listing<T> {
+    fn of(fetch: &Fetch<Vec<T>>) -> Self {
+        Self {
+            items: fetch.value().cloned().unwrap_or_default(),
+            loading: fetch.loading(),
+            error: fetch.error().map(str::to_owned),
+        }
+    }
+}
+
+/// What the Worktrees, Tasks and Shells panels draw for the selected remote project.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedView {
+    pub host: String,
+    pub project: String,
+    pub host_label: String,
+    pub project_name: String,
+    pub link: Option<Link>,
+    /// The registry has been read and does not list the host any more.
+    pub unpaired: bool,
+    pub worktrees: Listing<RemoteWorktree>,
+    pub tasks: Listing<RemoteTask>,
+    /// The project's orchestrators first, then the host's global ones, then its shells.
+    pub shells: Listing<RemoteShell>,
+    pub creating: bool,
+    pub failure: Option<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct RemoteTree {
     hosts: Vec<HostNode>,
-    /// The registry has been read at least once.
     hosts_poll: Poll,
     hosts_error: Option<String>,
+    /// The registry has been read at least once, so a host missing from it is gone.
+    hosts_known: bool,
+    /// Project lists kept from an earlier run, for hosts the registry has not named yet.
+    kept: BTreeMap<String, Vec<RemoteProject>>,
+    /// The project lists changed since they were last handed out to be kept.
+    kept_dirty: bool,
 }
 
 impl RemoteTree {
@@ -449,6 +652,25 @@ impl RemoteTree {
 
     pub fn host_label(&self, id: &str) -> Option<&str> {
         self.node(id).map(|node| node.host.label.as_str())
+    }
+
+    /// The host's name, or the start of its id when the registry does not have it.
+    pub fn host_name(&self, id: &str) -> String {
+        self.host_label(id)
+            .unwrap_or_else(|| short_id(id))
+            .to_owned()
+    }
+
+    /// The project's name as the host's folder lists it, or the start of its id. Before the
+    /// registry has named the host this is what the last run kept.
+    pub fn project_name(&self, host: &str, project: &str) -> String {
+        let listed = match self.node(host) {
+            Some(node) => node.projects.value(),
+            None => self.kept.get(host),
+        };
+        listed
+            .and_then(|projects| projects.iter().find(|candidate| candidate.id == project))
+            .map_or_else(|| short_id(project).to_owned(), |found| found.name.clone())
     }
 
     /// The strip a tab on `host` shows, if any.
@@ -465,9 +687,9 @@ impl RemoteTree {
             .into_iter()
             .flatten()
             .chain(
-                node.nodes
+                node.data
                     .values()
-                    .filter_map(|project| project.shells.value())
+                    .filter_map(|data| data.shells.value())
                     .flatten(),
             )
             .find(|shell| shell.id == shell_id)
@@ -476,12 +698,39 @@ impl RemoteTree {
     /// The title for a tab on `shell_id` of `host`: the shell's kind when a list knows it,
     /// otherwise its short id.
     pub fn tab_title(&self, host: &str, shell_id: &str) -> String {
-        let label = self.host_label(host).unwrap_or_else(|| short_id(host));
         let detail = self
             .known_shell(host, shell_id)
             .map(RemoteShell::display)
             .unwrap_or_else(|| short_id(shell_id).to_owned());
-        remote_tab_title(label, &detail)
+        remote_tab_title(&self.host_name(host), &detail)
+    }
+
+    /// The host's orchestrator of `project` (or its global one when `project` is `None`), as
+    /// last listed. Only a live one can be opened.
+    pub fn orchestrator(&self, host: &str, project: Option<&str>) -> Option<&RemoteShell> {
+        self.node(host)?
+            .orchestrators
+            .value()?
+            .iter()
+            .find(|shell| shell.alive && shell.project_id.as_deref() == project)
+    }
+
+    /// The live shells of a project as last listed: what the status bar counts.
+    pub fn live_shells(&self, host: &str, project: &str) -> Option<usize> {
+        let shells = self.node(host)?.data.get(project)?.shells.value()?;
+        Some(shells.iter().filter(|shell| shell.alive).count())
+    }
+
+    /// The branch of a worktree of the project, as last listed.
+    pub fn worktree_branch(&self, host: &str, project: &str, worktree: &str) -> Option<&str> {
+        self.node(host)?
+            .data
+            .get(project)?
+            .worktrees
+            .value()?
+            .iter()
+            .find(|candidate| candidate.id == worktree)
+            .map(|found| found.branch.as_str())
     }
 
     fn node(&self, id: &str) -> Option<&HostNode> {
@@ -492,9 +741,11 @@ impl RemoteTree {
         self.hosts.iter_mut().find(|node| node.host.id == id)
     }
 
-    /// Replace the registry's hosts. Hosts that stay keep what was loaded for them.
-    /// Returns whether anything changed.
+    /// Replace the registry's hosts. Hosts that stay keep what was loaded for them, and a new
+    /// one starts from the project list kept from an earlier run. Returns whether anything
+    /// changed.
     pub fn set_hosts(&mut self, hosts: Vec<Host>) -> bool {
+        self.hosts_known = true;
         let before = self
             .hosts
             .iter()
@@ -513,11 +764,50 @@ impl RemoteTree {
                         node.host = host;
                         node
                     }
-                    None => HostNode::new(host),
+                    None => {
+                        let mut node = HostNode::new(host);
+                        if let Some(projects) = self.kept.get(&node.host.id) {
+                            node.projects.seed(projects.clone());
+                        }
+                        node
+                    }
                 },
             )
             .collect();
         true
+    }
+
+    /// Project lists kept from an earlier run: until a host answers, its folder lists these,
+    /// dimmed if it cannot be reached.
+    pub fn keep(&mut self, kept: BTreeMap<String, Vec<RemoteProject>>) {
+        for node in &mut self.hosts {
+            if let Some(projects) = kept.get(&node.host.id) {
+                node.projects.seed(projects.clone());
+            }
+        }
+        self.kept = kept;
+    }
+
+    /// Whether the project lists changed since they were last asked for to be kept.
+    pub fn take_kept_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.kept_dirty)
+    }
+
+    /// The project lists to keep for the next run: what each paired host last listed, and for
+    /// a host that has not answered yet what was kept before. A host that is no longer paired
+    /// is forgotten once the registry has been read.
+    pub fn kept(&mut self) -> BTreeMap<String, Vec<RemoteProject>> {
+        let mut kept = std::mem::take(&mut self.kept);
+        if self.hosts_known {
+            kept.retain(|id, _| self.node(id).is_some());
+        }
+        for node in &self.hosts {
+            if let Some(projects) = node.projects.value() {
+                kept.insert(node.host.id.clone(), projects.clone());
+            }
+        }
+        self.kept = kept.clone();
+        kept
     }
 
     /// Read the registry again at the next plan, as after a host was added or removed.
@@ -525,77 +815,15 @@ impl RemoteTree {
         self.hosts_poll.invalidate();
     }
 
-    pub fn toggle_host(&mut self, id: &str) {
-        if let Some(node) = self.node_mut(id) {
-            node.expanded = !node.expanded;
-        }
-    }
-
-    pub fn toggle_project(&mut self, host: &str, project: &str) {
-        if let Some(node) = self.node_mut(host) {
-            let project = node
-                .nodes
-                .entry(project.to_owned())
-                .or_insert_with(ProjectNode::new);
-            project.expanded = !project.expanded;
-            if !project.expanded {
-                project.chooser_open = false;
-            }
-        }
-    }
-
-    /// Open the project so its worktrees and shells are listed.
-    pub fn expand_project(&mut self, host: &str, project: &str) {
-        if let Some(node) = self.node_mut(host) {
-            node.expanded = true;
-            node.nodes
-                .entry(project.to_owned())
-                .or_insert_with(ProjectNode::new)
-                .expanded = true;
-        }
-    }
-
-    pub fn toggle_chooser(&mut self, host: &str, project: &str) {
-        if let Some(node) = self.node_mut(host) {
-            let project = node
-                .nodes
-                .entry(project.to_owned())
-                .or_insert_with(ProjectNode::new);
-            project.chooser_open = !project.chooser_open;
-            // A refused creation is read once; reopening the choice starts clean.
-            if project.chooser_open && matches!(project.create, Creation::Failed(_)) {
-                project.create = Creation::Idle;
-            }
-        }
-    }
-
-    /// Dismiss the message a failed creation left under a project, or under the host when
-    /// `project` is `None`.
-    pub fn dismiss_failure(&mut self, host: &str, project: Option<&str>) {
-        let Some(node) = self.node_mut(host) else {
-            return;
-        };
-        let slot = match project {
-            Some(project) => node
-                .nodes
-                .get_mut(project)
-                .map(|project| &mut project.create),
-            None => Some(&mut node.create),
-        };
-        if let Some(slot) = slot.filter(|slot| matches!(slot, Creation::Failed(_))) {
-            *slot = Creation::Idle;
-        }
-    }
-
     /// Decide what to ask for now, and mark those requests as running. Nothing is planned
-    /// for something nobody is looking at, so a closed section or a collapsed host costs no
+    /// for something nobody is looking at: a hidden panel or a collapsed folder costs no
     /// traffic. Creations are never planned here: only a person starts one.
     pub fn plan(&mut self, now: Instant, wants: &Wants) -> Vec<Request> {
         let mut requests = Vec::new();
-        let looking = wants.section || wants.settings;
-        let has_tabs = !wants.tab_hosts.is_empty();
-        if looking || has_tabs {
-            // Tabs alone need the labels once; a shown list is kept current.
+        let looking = wants.folders || wants.settings;
+        let wanted = looking || !wants.tab_hosts.is_empty() || wants.selected.is_some();
+        if wanted {
+            // Tabs and a selection alone need the labels once; a shown list is kept current.
             let every = looking.then_some(HOSTS_INTERVAL);
             if self.hosts_poll.due(now, every) {
                 self.hosts_poll.begin(now);
@@ -604,39 +832,63 @@ impl RemoteTree {
         }
         for node in &mut self.hosts {
             let host = node.host.id.clone();
-            let watched = looking || wants.tab_hosts.contains(&host);
+            let selected = wants.selected.as_ref().filter(|chosen| chosen.host == host);
+            let watched = looking || wants.tab_hosts.contains(&host) || selected.is_some();
             if watched && node.status_poll.due(now, Some(STATUS_INTERVAL)) {
                 node.status_poll.begin(now);
                 requests.push(Request::Status { host: host.clone() });
             }
-            if !wants.section || !node.expanded || !node.reachable() {
+            if !node.reachable() {
                 continue;
             }
-            if node.projects.poll.due(now, Some(LIST_INTERVAL)) {
+            let folder_open = wants.folders && !wants.collapsed.contains(&folder_key(&host));
+            if folder_open && node.projects.poll.due(now, Some(PROJECTS_INTERVAL)) {
                 node.projects.poll.begin(now);
                 requests.push(Request::Projects { host: host.clone() });
             }
-            if node.orchestrators.poll.due(now, Some(LIST_INTERVAL)) {
-                node.orchestrators.poll.begin(now);
-                requests.push(Request::Orchestrators { host: host.clone() });
+            if let Some(chosen) = selected {
+                let cadence = |wanted: bool| wanted.then_some(LIST_INTERVAL);
+                let cadence = Cadence {
+                    worktrees: cadence(chosen.worktrees),
+                    tasks: cadence(chosen.tasks),
+                    shells: cadence(chosen.shells),
+                };
+                // What the person is looking at is never held back by the limit on the rows' figures.
+                let mut unlimited = usize::MAX;
+                node.data.entry(chosen.project.clone()).or_default().plan(
+                    &host,
+                    &chosen.project,
+                    cadence,
+                    now,
+                    &mut unlimited,
+                    &mut requests,
+                );
+                if chosen.shells && node.orchestrators.poll.due(now, Some(LIST_INTERVAL)) {
+                    node.orchestrators.poll.begin(now);
+                    requests.push(Request::Orchestrators { host: host.clone() });
+                }
             }
-            for (id, project) in &mut node.nodes {
-                if !project.expanded {
-                    continue;
-                }
-                if project.worktrees.poll.due(now, Some(LIST_INTERVAL)) {
-                    project.worktrees.poll.begin(now);
-                    requests.push(Request::Worktrees {
-                        host: host.clone(),
-                        project: id.clone(),
-                    });
-                }
-                if project.shells.poll.due(now, Some(LIST_INTERVAL)) {
-                    project.shells.poll.begin(now);
-                    requests.push(Request::Shells {
-                        host: host.clone(),
-                        project: id.clone(),
-                    });
+            if folder_open {
+                // The figures on the rows: a few at a time, so a host with many projects is
+                // not flooded.
+                let mut budget = MAX_STATS_IN_FLIGHT.saturating_sub(node.in_flight());
+                let ids = node
+                    .projects
+                    .value()
+                    .map(|projects| projects.iter().map(|project| project.id.clone()).collect())
+                    .unwrap_or_else(Vec::<String>::new);
+                for id in ids {
+                    if budget == 0 {
+                        break;
+                    }
+                    node.data.entry(id.clone()).or_default().plan(
+                        &host,
+                        &id,
+                        Cadence::all(STATS_INTERVAL),
+                        now,
+                        &mut budget,
+                        &mut requests,
+                    );
                 }
             }
         }
@@ -674,46 +926,54 @@ impl RemoteTree {
                 // The round-trip time moves on every poll and is not drawn.
                 was != node.link()
             }
-            (Request::Projects { host }, Reply::Projects(result)) => self
-                .node_mut(host)
-                .is_some_and(|node| node.projects.finish(result)),
+            (Request::Projects { host }, Reply::Projects(result)) => {
+                let Some(node) = self.node_mut(host) else {
+                    return false;
+                };
+                let changed = node.projects.finish(result);
+                // Only a changed answer is worth writing down for the next run.
+                self.kept_dirty |= changed && node.projects.value().is_some();
+                changed
+            }
             (Request::Orchestrators { host }, Reply::Orchestrators(result)) => self
                 .node_mut(host)
                 .is_some_and(|node| node.orchestrators.finish(result)),
             (Request::Worktrees { host, project }, Reply::Worktrees(result)) => self
-                .node_mut(host)
-                .and_then(|node| node.nodes.get_mut(project))
-                .is_some_and(|project| project.worktrees.finish(result)),
+                .data_mut(host, project)
+                .is_some_and(|data| data.worktrees.finish(result)),
+            (Request::Tasks { host, project }, Reply::Tasks(result)) => self
+                .data_mut(host, project)
+                .is_some_and(|data| data.tasks.finish(result)),
             (Request::Shells { host, project }, Reply::Shells(result)) => self
-                .node_mut(host)
-                .and_then(|node| node.nodes.get_mut(project))
-                .is_some_and(|project| project.shells.finish(result)),
+                .data_mut(host, project)
+                .is_some_and(|data| data.shells.finish(result)),
             // An answer for something else is a bug in the caller; ignoring it is safest.
             _ => false,
         }
     }
 
-    /// The user asked for a new shell. Returns whether the request may be sent: not while
-    /// another creation for that project is still out, and not for a host or project this
+    fn data_mut(&mut self, host: &str, project: &str) -> Option<&mut ProjectData> {
+        self.node_mut(host)?.data.get_mut(project)
+    }
+
+    /// The user asked for a new shell in a project. Returns whether the request may be sent:
+    /// not while another creation for that project is still out, and not for a host this
     /// window does not know. Sending it is the caller's job, exactly once.
     pub fn begin_shell(&mut self, host: &str, project: &str) -> bool {
-        let Some(node) = self
-            .node_mut(host)
-            .and_then(|node| node.nodes.get_mut(project))
-        else {
+        let Some(node) = self.node_mut(host) else {
             return false;
         };
-        if node.create == Creation::Creating {
+        let data = node.data.entry(project.to_owned()).or_default();
+        if data.create == Creation::Creating {
             return false;
         }
-        node.create = Creation::Creating;
-        node.chooser_open = false;
+        data.create = Creation::Creating;
         true
     }
 
     /// Record how a shell creation ended. On success the new shell is returned so it can be
-    /// opened. After an answer that may not have been the whole story (no reply in time, a
-    /// lost connection) the list is refreshed so the person can see whether the shell exists,
+    /// opened. After an answer that may not have been the whole story (no reply in time, an
+    /// unreadable one) the list is refreshed so the person can see whether the shell exists,
     /// and nothing is retried.
     pub fn finish_shell(
         &mut self,
@@ -721,20 +981,18 @@ impl RemoteTree {
         project: &str,
         result: Result<RemoteShell, RemoteError>,
     ) -> Option<RemoteShell> {
-        let label = self.host_label(host).unwrap_or("the host").to_owned();
-        let node = self
-            .node_mut(host)
-            .and_then(|node| node.nodes.get_mut(project))?;
+        let label = self.host_name(host);
+        let data = self.data_mut(host, project)?;
         match result {
             Ok(shell) => {
-                node.create = Creation::Idle;
-                node.shells.poll.invalidate();
+                data.create = Creation::Idle;
+                data.shells.poll.invalidate();
                 Some(shell)
             }
             Err(error) => {
-                node.create = Creation::Failed(creation_failure(&error, &label, "shell"));
+                data.create = Creation::Failed(creation_failure(&error, &label, "shell"));
                 if outcome_unknown(&error) {
-                    node.shells.poll.invalidate();
+                    data.shells.poll.invalidate();
                 }
                 None
             }
@@ -753,20 +1011,19 @@ impl RemoteTree {
         true
     }
 
-    /// Record how a project creation ended; the new project is returned on success and
-    /// opened in the list.
+    /// Record how a project creation ended; the new project is returned on success and its
+    /// folder asks for its list at once.
     pub fn finish_project(
         &mut self,
         host: &str,
         result: Result<RemoteProject, RemoteError>,
     ) -> Option<RemoteProject> {
-        let label = self.host_label(host).unwrap_or("the host").to_owned();
+        let label = self.host_name(host);
         let node = self.node_mut(host)?;
         match result {
             Ok(project) => {
                 node.create = Creation::Idle;
                 node.projects.poll.invalidate();
-                node.expanded = true;
                 Some(project)
             }
             Err(error) => {
@@ -779,301 +1036,192 @@ impl RemoteTree {
         }
     }
 
-    /// The rows to draw for `query` (already lowercased and trimmed; empty shows
-    /// everything). A search looks at what has been loaded and opens the hosts and projects
-    /// that hold a match.
-    pub fn rows(&self, query: &str) -> Vec<Row> {
-        let mut rows = Vec::new();
-        for node in &self.hosts {
-            node.push_rows(query, &mut rows);
+    /// Dismiss what a failed shell creation left on a project.
+    pub fn dismiss_shell_failure(&mut self, host: &str, project: &str) {
+        if let Some(data) = self.data_mut(host, project)
+            && matches!(data.create, Creation::Failed(_))
+        {
+            data.create = Creation::Idle;
         }
-        rows
-    }
-}
-
-#[cfg(test)]
-impl RemoteTree {
-    fn link(&self, id: &str) -> Option<Link> {
-        self.node(id).and_then(HostNode::link)
     }
 
-    fn creation(&self, host: &str, project: Option<&str>) -> Option<&Creation> {
-        let node = self.node(host)?;
-        match project {
-            Some(project) => node.nodes.get(project).map(|project| &project.create),
-            None => Some(&node.create),
+    /// Dismiss what a failed project creation left on a host's folder.
+    pub fn dismiss_project_failure(&mut self, host: &str) {
+        if let Some(node) = self.node_mut(host)
+            && matches!(node.create, Creation::Failed(_))
+        {
+            node.create = Creation::Idle;
         }
+    }
+
+    /// The folders to draw for `query` (already lowercased and trimmed; empty shows
+    /// everything), in the registry's order. Projects are ordered as `order` says, as local
+    /// ones are, and a folder collapsed in `collapsed` hides them unless a search is on.
+    pub fn folders(
+        &self,
+        query: &str,
+        order: ProjectOrder,
+        collapsed: &HashSet<String>,
+        selected: Option<&str>,
+    ) -> Vec<FolderView> {
+        self.hosts
+            .iter()
+            .filter_map(|node| node.folder(query, order, collapsed, selected))
+            .collect()
+    }
+
+    /// What the panels draw for the project under `key`. `None` when `key` is not a remote
+    /// project's.
+    pub fn selected_view(&self, key: &str) -> Option<SelectedView> {
+        let (host, project) = parse_project_key(key)?;
+        let Some(node) = self.node(host) else {
+            return Some(SelectedView {
+                host: host.to_owned(),
+                project: project.to_owned(),
+                host_label: short_id(host).to_owned(),
+                project_name: short_id(project).to_owned(),
+                link: None,
+                unpaired: self.hosts_known,
+                worktrees: Listing::default(),
+                tasks: Listing::default(),
+                shells: Listing::default(),
+                creating: false,
+                failure: None,
+            });
+        };
+        let empty = ProjectData::default();
+        let data = node.data.get(project).unwrap_or(&empty);
+        let mut shells = Listing::of(&data.shells);
+        // The orchestrators come first: the project's own, then the host's global ones.
+        let orchestrators = node.orchestrators.value().map(Vec::as_slice).unwrap_or(&[]);
+        let own = orchestrators
+            .iter()
+            .filter(|shell| shell.project_id.as_deref() == Some(project));
+        let global = orchestrators
+            .iter()
+            .filter(|shell| shell.project_id.is_none());
+        shells.items = own
+            .chain(global)
+            .cloned()
+            .chain(std::mem::take(&mut shells.items))
+            .collect();
+        Some(SelectedView {
+            host: host.to_owned(),
+            project: project.to_owned(),
+            host_label: node.host.label.clone(),
+            project_name: self.project_name(host, project),
+            link: node.link(),
+            unpaired: false,
+            worktrees: Listing::of(&data.worktrees),
+            tasks: Listing::of(&data.tasks),
+            shells,
+            creating: data.create == Creation::Creating,
+            failure: match &data.create {
+                Creation::Failed(message) => Some(message.clone()),
+                _ => None,
+            },
+        })
     }
 }
 
 impl HostNode {
-    fn push_rows(&self, query: &str, rows: &mut Vec<Row>) {
+    fn folder(
+        &self,
+        query: &str,
+        order: ProjectOrder,
+        collapsed: &HashSet<String>,
+        selected: Option<&str>,
+    ) -> Option<FolderView> {
         let searching = !query.is_empty();
         let host_matches = !searching || self.host.label.to_lowercase().contains(query);
-        let found = self.matches(query);
-        if searching && !host_matches && !found {
-            return;
-        }
-        // A search shows the matches themselves, so what is closed opens for it.
-        let expanded = self.expanded || (searching && found);
-        rows.push(Row::Host {
-            id: self.host.id.clone(),
-            label: self.host.label.clone(),
-            link: self.link(),
-            expanded,
-            creating: self.create == Creation::Creating,
-        });
-        if let Creation::Failed(message) = &self.create {
-            rows.push(Row::Failure {
-                host: self.host.id.clone(),
-                project: None,
-                text: message.clone(),
-                depth: 1,
-            });
-        }
-        if !expanded {
-            return;
-        }
-        match self.link() {
-            Some(Link::Online) => {}
-            Some(Link::Offline) => {
-                rows.push(note(Link::Offline.text(), false, 1));
-                return;
-            }
-            Some(Link::Connecting) | None => {
-                rows.push(note(Link::Connecting.text(), false, 1));
-                return;
-            }
-        }
-        let show_all = host_matches;
-        match self.projects.value() {
-            None => rows.push(match self.projects.error() {
-                Some(error) => note(error, true, 1),
-                None => note("Loading projects…", false, 1),
-            }),
-            Some(projects) => {
-                let orchestrators = self.orchestrators.value();
-                // Orchestrators that belong to no project are the host's own.
-                let global = orchestrators
-                    .into_iter()
-                    .flatten()
-                    .filter(|shell| shell.project_id.is_none())
-                    .filter(|shell| show_all || shell_matches(shell, query))
-                    .collect::<Vec<_>>();
-                for shell in global {
-                    rows.push(Row::Shell {
-                        host: self.host.id.clone(),
-                        shell: shell.clone(),
-                        depth: 1,
-                    });
-                }
-                let mut shown = 0;
-                for project in projects {
-                    let node = self.nodes.get(&project.id);
-                    if !show_all
-                        && !project.name.to_lowercase().contains(query)
-                        && !node.is_some_and(|node| self.project_matches(&project.id, node, query))
-                    {
-                        continue;
-                    }
-                    shown += 1;
-                    let project_expanded =
-                        node.is_some_and(|node| node.expanded || (searching && !show_all));
-                    rows.push(Row::Project {
-                        host: self.host.id.clone(),
-                        id: project.id.clone(),
-                        name: project.name.clone(),
-                        expanded: project_expanded,
-                        creating: node.is_some_and(|node| node.create == Creation::Creating),
-                    });
-                    if let Some(node) = node {
-                        self.push_project_rows(project, node, project_expanded, query, rows);
-                    }
-                }
-                if shown == 0 && !searching {
-                    rows.push(note("No projects", false, 1));
-                }
-                if let Some(error) = self.projects.error() {
-                    rows.push(note(error, true, 1));
-                }
-            }
-        }
-    }
-
-    fn push_project_rows(
-        &self,
-        project: &RemoteProject,
-        node: &ProjectNode,
-        expanded: bool,
-        query: &str,
-        rows: &mut Vec<Row>,
-    ) {
-        if node.chooser_open {
-            rows.push(Row::Chooser {
-                host: self.host.id.clone(),
-                project: project.id.clone(),
-            });
-        }
-        if let Creation::Failed(message) = &node.create {
-            rows.push(Row::Failure {
-                host: self.host.id.clone(),
-                project: Some(project.id.clone()),
-                text: message.clone(),
-                depth: 2,
-            });
-        }
-        if !expanded {
-            return;
-        }
-        let show_all = query.is_empty() || project.name.to_lowercase().contains(query);
-        let keep = |shell: &&RemoteShell| show_all || shell_matches(shell, query);
-        let orchestrators = self
-            .orchestrators
-            .value()
-            .into_iter()
-            .flatten()
-            .filter(|shell| shell.project_id.as_deref() == Some(project.id.as_str()))
-            .filter(keep);
-        for shell in orchestrators {
-            rows.push(Row::Shell {
-                host: self.host.id.clone(),
-                shell: shell.clone(),
-                depth: 2,
-            });
-        }
-        let shells = node.shells.value();
-        let worktrees = node.worktrees.value();
-        if let Some(worktrees) = worktrees {
-            for worktree in worktrees {
-                let own = shells
-                    .into_iter()
-                    .flatten()
-                    .filter(|shell| shell.worktree_id.as_deref() == Some(worktree.id.as_str()))
-                    .filter(keep)
-                    .collect::<Vec<_>>();
-                let branch_matches = show_all || worktree.branch.to_lowercase().contains(query);
-                if !branch_matches && own.is_empty() {
-                    continue;
-                }
-                rows.push(Row::Worktree {
-                    label: format!(
-                        "{} {}",
-                        if worktree.primary { "◆" } else { "◇" },
-                        worktree.branch
-                    ),
-                });
-                for shell in own {
-                    rows.push(Row::Shell {
-                        host: self.host.id.clone(),
-                        shell: shell.clone(),
-                        depth: 3,
-                    });
-                }
-            }
-        }
-        // Shells the host did not place in a listed worktree still need a row.
-        let known = |shell: &RemoteShell| {
-            worktrees.is_some_and(|worktrees| {
-                worktrees
-                    .iter()
-                    .any(|worktree| shell.worktree_id.as_deref() == Some(worktree.id.as_str()))
-            })
-        };
-        let loose = shells
-            .into_iter()
-            .flatten()
-            .filter(|shell| !known(shell))
-            .filter(keep)
-            .collect::<Vec<_>>();
-        for shell in loose {
-            rows.push(Row::Shell {
-                host: self.host.id.clone(),
-                shell: shell.clone(),
-                depth: 2,
-            });
-        }
-        let loading = node.worktrees.loading() || node.shells.loading();
-        if let Some(error) = node.worktrees.error().or(node.shells.error()) {
-            rows.push(note(error, true, 2));
-        } else if loading {
-            rows.push(note("Loading…", false, 2));
-        } else if query.is_empty()
-            && shells.is_none_or(|shells| shells.is_empty())
-            && self
-                .orchestrators
-                .value()
-                .into_iter()
-                .flatten()
-                .all(|shell| shell.project_id.as_deref() != Some(project.id.as_str()))
-        {
-            rows.push(note("No shells", false, 2));
-        }
-    }
-
-    /// Whether anything loaded under this host matches `query`.
-    fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let global = self
-            .orchestrators
-            .value()
-            .into_iter()
-            .flatten()
-            .any(|shell| shell_matches(shell, query));
-        let projects = self.projects.value().into_iter().flatten().any(|project| {
-            project.name.to_lowercase().contains(query)
-                || self
-                    .nodes
+        let listed = self.projects.value().map(Vec::as_slice).unwrap_or_default();
+        let link = self.link();
+        let dimmed = link == Some(Link::Offline);
+        let keys = listed
+            .iter()
+            .map(|project| {
+                let live = self
+                    .data
                     .get(&project.id)
-                    .is_some_and(|node| self.project_matches(&project.id, node, query))
-        });
-        global || projects
-    }
-
-    fn project_matches(&self, project: &str, node: &ProjectNode, query: &str) -> bool {
-        node.shells
-            .value()
+                    .and_then(|data| data.shells.value())
+                    .map(|shells| shells.iter().filter(|shell| shell.alive).count() as u64);
+                RemoteSortKey {
+                    name: &project.name,
+                    id: &project.id,
+                    created_at: project.created_at,
+                    live,
+                }
+            })
+            .collect::<Vec<_>>();
+        let projects = sorted_remote_indices(&keys, order)
             .into_iter()
-            .flatten()
-            .any(|shell| shell_matches(shell, query))
-            || node
-                .worktrees
-                .value()
-                .into_iter()
-                .flatten()
-                .any(|worktree| worktree.branch.to_lowercase().contains(query))
-            || self
-                .orchestrators
-                .value()
-                .into_iter()
-                .flatten()
-                .filter(|shell| shell.project_id.as_deref() == Some(project))
-                .any(|shell| shell_matches(shell, query))
+            .map(|index| &listed[index])
+            .filter(|project| {
+                host_matches
+                    || project.name.to_lowercase().contains(query)
+                    || project.id.to_lowercase().contains(query)
+            })
+            .map(|project| {
+                let key = project_key(&self.host.id, &project.id);
+                ProjectView {
+                    selected: selected == Some(key.as_str()),
+                    key,
+                    name: project.name.clone(),
+                    dimmed,
+                    stats: self.stats(&project.id),
+                }
+            })
+            .collect::<Vec<_>>();
+        if searching && !host_matches && projects.is_empty() {
+            return None;
+        }
+        let note = match (link, self.projects.value(), self.projects.error()) {
+            (Some(Link::Offline), ..) => Some(Link::Offline.text().to_owned()),
+            (_, None, Some(error)) => Some(error.to_owned()),
+            (Some(Link::Connecting) | None, None, None) => Some(Link::Connecting.text().to_owned()),
+            (_, None, None) => Some("Loading projects…".to_owned()),
+            (_, Some(listed), error) => match error {
+                Some(error) => Some(error.to_owned()),
+                None if listed.is_empty() && !searching => Some("No projects".to_owned()),
+                None => None,
+            },
+        };
+        Some(FolderView {
+            host: self.host.id.clone(),
+            label: self.host.label.clone(),
+            link,
+            collapsed: !searching && collapsed.contains(&folder_key(&self.host.id)),
+            creating: self.create == Creation::Creating,
+            failure: match &self.create {
+                Creation::Failed(message) => Some(message.clone()),
+                _ => None,
+            },
+            note,
+            count: listed.len(),
+            projects,
+        })
     }
-}
 
-fn note(text: &str, error: bool, depth: usize) -> Row {
-    Row::Note {
-        text: text.to_owned(),
-        error,
-        depth,
+    fn stats(&self, project: &str) -> Stats {
+        let Some(data) = self.data.get(project) else {
+            return Stats::default();
+        };
+        let tasks = data.tasks.value();
+        Stats {
+            worktrees: data.worktrees.value().map(Vec::len),
+            tasks: tasks.map(Vec::len),
+            tasks_done: tasks.map(|tasks| {
+                tasks
+                    .iter()
+                    .filter(|task| task.status == TaskStatus::Done)
+                    .count()
+            }),
+            live: data
+                .shells
+                .value()
+                .map(|shells| shells.iter().filter(|shell| shell.alive).count()),
+        }
     }
-}
-
-fn shell_matches(shell: &RemoteShell, query: &str) -> bool {
-    [
-        shell.id.as_str(),
-        shell.harness.as_deref().unwrap_or("shell"),
-        shell.cwd.as_str(),
-        if shell.orchestrator {
-            "orchestrator"
-        } else {
-            ""
-        },
-    ]
-    .iter()
-    .any(|value| !value.is_empty() && value.to_lowercase().contains(query))
 }
 
 /// Whether a failed request may still have run on the host. A refusal is definite, and so
@@ -1096,9 +1244,18 @@ fn creation_failure(error: &RemoteError, host: &str, what: &str) -> String {
     }
 }
 
-/// Parameters of `shell.create` for the project's root.
-pub fn shell_create_params(project: &str, kind: NewShellKind) -> Value {
-    json!({"project_id": project, "kind": kind.wire()})
+/// Parameters of `shell.create`. Only an agent can be unrestricted; the protocol refuses
+/// the flag on a plain shell, so it is left out.
+pub fn shell_create_params(scope: &ShellScope, kind: NewShellKind, unrestricted: bool) -> Value {
+    let mut params = match scope {
+        ShellScope::Project(id) => json!({"project_id": id}),
+        ShellScope::Worktree(id) => json!({"worktree_id": id}),
+    };
+    params["kind"] = json!(kind.wire());
+    if unrestricted && kind != NewShellKind::Shell {
+        params["unrestricted"] = json!(true);
+    }
+    params
 }
 
 /// Parameters of `project.create`; the name was validated by [`validate_project_name`].
@@ -1128,6 +1285,7 @@ fn project(value: &Value) -> Option<RemoteProject> {
     Some(RemoteProject {
         id: text(value, "id")?,
         name: text(value, "name").unwrap_or_default(),
+        created_at: value.get("created_at").and_then(Value::as_u64).unwrap_or(0),
     })
 }
 
@@ -1135,10 +1293,23 @@ fn worktree(value: &Value) -> Option<RemoteWorktree> {
     Some(RemoteWorktree {
         id: text(value, "id")?,
         branch: text(value, "branch").unwrap_or_default(),
+        path: text(value, "path").unwrap_or_default(),
         primary: value
             .get("is_primary")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+    })
+}
+
+fn task(value: &Value) -> Option<RemoteTask> {
+    Some(RemoteTask {
+        id: text(value, "id")?,
+        title: text(value, "title").unwrap_or_default(),
+        details: text(value, "details").unwrap_or_default(),
+        status: text(value, "status")
+            .and_then(|status| TaskStatus::parse(&status).ok())
+            .unwrap_or_default(),
+        worktree_id: text(value, "worktree_id"),
     })
 }
 
@@ -1160,6 +1331,10 @@ pub fn parse_projects(value: &Value) -> Result<Vec<RemoteProject>, String> {
 
 pub fn parse_worktrees(value: &Value) -> Result<Vec<RemoteWorktree>, String> {
     list(value, "worktrees", worktree)
+}
+
+pub fn parse_tasks(value: &Value) -> Result<Vec<RemoteTask>, String> {
+    list(value, "tasks", task)
 }
 
 pub fn parse_shells(value: &Value) -> Result<Vec<RemoteShell>, String> {
@@ -1189,6 +1364,7 @@ pub fn parse_created_project(value: &Value) -> Result<RemoteProject, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project_sort::ProjectSort;
 
     fn host(id: &str, label: &str) -> Host {
         Host {
@@ -1207,6 +1383,14 @@ mod tests {
         }
     }
 
+    fn project(id: &str, name: &str, created_at: u64) -> RemoteProject {
+        RemoteProject {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            created_at,
+        }
+    }
+
     fn shell(id: &str, project: Option<&str>, worktree: Option<&str>) -> RemoteShell {
         RemoteShell {
             id: id.to_owned(),
@@ -1219,6 +1403,16 @@ mod tests {
         }
     }
 
+    fn task(id: &str, status: TaskStatus, worktree: Option<&str>) -> RemoteTask {
+        RemoteTask {
+            id: id.to_owned(),
+            title: format!("task {id}"),
+            details: String::new(),
+            status,
+            worktree_id: worktree.map(str::to_owned),
+        }
+    }
+
     fn rpc(code: &str, message: &str) -> RemoteError {
         RemoteError::Rpc {
             code: code.to_owned(),
@@ -1226,80 +1420,368 @@ mod tests {
         }
     }
 
-    fn wants_section() -> Wants {
+    fn by_name() -> ProjectOrder {
+        ProjectOrder::for_sort(ProjectSort::Name)
+    }
+
+    fn folders(tree: &RemoteTree, query: &str) -> Vec<FolderView> {
+        tree.folders(query, by_name(), &HashSet::new(), None)
+    }
+
+    fn names(folder: &FolderView) -> Vec<&str> {
+        folder
+            .projects
+            .iter()
+            .map(|project| project.name.as_str())
+            .collect()
+    }
+
+    fn set_link(tree: &mut RemoteTree, state: LinkState) {
+        tree.apply(
+            &Request::Status { host: "h1".into() },
+            Reply::Status(Ok(status(state))),
+        );
+    }
+
+    /// An online host called "Studio" that listed two projects.
+    fn studio() -> RemoteTree {
+        let mut tree = RemoteTree::default();
+        tree.set_hosts(vec![host("h1", "Studio")]);
+        set_link(&mut tree, LinkState::Online);
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Ok(vec![project("p1", "app", 20), project("p2", "Web", 10)])),
+        );
+        tree
+    }
+
+    fn wants_folders() -> Wants {
         Wants {
-            section: true,
+            folders: true,
             ..Wants::default()
         }
     }
 
-    /// A tree with one online host called "Studio".
-    fn online_tree() -> (RemoteTree, Instant) {
-        let now = Instant::now();
-        let mut tree = RemoteTree::default();
-        tree.set_hosts(vec![host("h1", "Studio")]);
-        tree.apply(
-            &Request::Status { host: "h1".into() },
-            Reply::Status(Ok(status(LinkState::Online))),
-        );
-        (tree, now)
+    fn wants_selected(panels: &str) -> Wants {
+        Wants {
+            selected: Some(SelectedWants {
+                host: "h1".into(),
+                project: "p1".into(),
+                worktrees: panels.contains('w'),
+                tasks: panels.contains('t'),
+                shells: panels.contains('s'),
+            }),
+            ..Wants::default()
+        }
     }
 
-    /// What a tick of a shown section asks for, leaving out the one-off registry read.
-    fn requests(tree: &mut RemoteTree, now: Instant) -> Vec<Request> {
-        tree.plan(now, &wants_section())
+    /// What a tick asks for, leaving out the one-off registry read and the link.
+    fn lists(tree: &mut RemoteTree, now: Instant, wants: &Wants) -> Vec<Request> {
+        tree.plan(now, wants)
             .into_iter()
-            .filter(|request| *request != Request::Hosts)
+            .filter(|request| !matches!(request, Request::Hosts | Request::Status { .. }))
             .collect()
     }
 
-    fn answer_lists(tree: &mut RemoteTree) {
-        tree.apply(
-            &Request::Projects { host: "h1".into() },
-            Reply::Projects(Ok(vec![RemoteProject {
-                id: "p1".into(),
-                name: "app".into(),
-            }])),
+    fn answer_all(tree: &mut RemoteTree, requests: &[Request]) {
+        for request in requests {
+            let reply = match request {
+                Request::Projects { .. } => Reply::Projects(Ok(vec![])),
+                Request::Orchestrators { .. } => Reply::Orchestrators(Ok(vec![])),
+                Request::Worktrees { .. } => Reply::Worktrees(Ok(vec![])),
+                Request::Tasks { .. } => Reply::Tasks(Ok(vec![])),
+                Request::Shells { .. } => Reply::Shells(Ok(vec![])),
+                Request::Hosts => Reply::Hosts(Ok(vec![host("h1", "Studio")])),
+                Request::Status { .. } => Reply::Status(Ok(status(LinkState::Online))),
+            };
+            tree.apply(request, reply);
+        }
+    }
+
+    #[test]
+    fn remote_ids_are_namespaced_and_never_look_like_a_local_ones() {
+        assert_eq!(project_key("h1", "p1"), "remote:h1:p1");
+        assert_eq!(parse_project_key("remote:h1:p1"), Some(("h1", "p1")));
+        assert_eq!(folder_key("h1"), "remote:h1");
+        assert_eq!(parse_folder_key("remote:h1"), Some("h1"));
+        // A host's folder is not a project, and a project is not a folder.
+        assert_eq!(parse_project_key("remote:h1"), None);
+        assert_eq!(parse_folder_key("remote:h1:p1"), None);
+        for odd in [
+            "",
+            "p1",
+            "remote:",
+            "remote::p1",
+            "remote:h1:",
+            "Remote:h1:p1",
+        ] {
+            assert_eq!(parse_project_key(odd), None, "{odd:?}");
+        }
+        // Local ids are UUIDs and folder ids are too, so none of them can parse.
+        for _ in 0..8 {
+            let local = uuid::Uuid::new_v4().to_string();
+            assert_eq!(parse_project_key(&local), None);
+            assert_eq!(parse_folder_key(&local), None);
+        }
+    }
+
+    #[test]
+    fn a_host_is_a_folder_listing_its_projects_as_rows() {
+        let tree = studio();
+        let folders = folders(&tree, "");
+        let [folder] = folders.as_slice() else {
+            panic!("one host is one folder");
+        };
+        assert_eq!(folder.label, "Studio");
+        assert_eq!(folder.link, Some(Link::Online));
+        assert_eq!(folder.count, 2);
+        assert!(!folder.collapsed && folder.note.is_none() && folder.failure.is_none());
+        // Ordered as the local list is: by name here, case-insensitively.
+        assert_eq!(names(folder), ["app", "Web"]);
+        assert_eq!(folder.projects[0].key, "remote:h1:p1");
+        assert!(folder.projects.iter().all(|project| !project.dimmed));
+        // Until their lists are read the figures are unknown, not zero.
+        assert_eq!(
+            folder.projects[0].stats.line(),
+            "– trees · –/– tasks · – live"
         );
-        tree.apply(
-            &Request::Orchestrators { host: "h1".into() },
-            Reply::Orchestrators(Ok(vec![])),
-        );
+    }
+
+    #[test]
+    fn a_project_row_has_the_same_figures_as_a_local_one() {
+        let mut tree = studio();
+        for request in [
+            Request::Worktrees {
+                host: "h1".into(),
+                project: "p1".into(),
+            },
+            Request::Tasks {
+                host: "h1".into(),
+                project: "p1".into(),
+            },
+            Request::Shells {
+                host: "h1".into(),
+                project: "p1".into(),
+            },
+        ] {
+            // The plan creates the project's data; answering without asking is ignored.
+            assert!(!tree.apply(&request, Reply::Shells(Ok(vec![]))));
+        }
+        tree.begin_shell("h1", "p1");
+        tree.finish_shell("h1", "p1", Err(rpc("cli_error", "x")));
+        let wanted = Wants {
+            folders: true,
+            ..Wants::default()
+        };
+        let asked = lists(&mut tree, Instant::now(), &wanted);
+        assert!(asked.contains(&Request::Worktrees {
+            host: "h1".into(),
+            project: "p1".into()
+        }));
         tree.apply(
             &Request::Worktrees {
                 host: "h1".into(),
                 project: "p1".into(),
             },
-            Reply::Worktrees(Ok(vec![])),
+            Reply::Worktrees(Ok(vec![
+                RemoteWorktree {
+                    id: "w1".into(),
+                    branch: "main".into(),
+                    path: "/x".into(),
+                    primary: true,
+                },
+                RemoteWorktree {
+                    id: "w2".into(),
+                    branch: "feature".into(),
+                    path: "/y".into(),
+                    primary: false,
+                },
+            ])),
         );
+        tree.apply(
+            &Request::Tasks {
+                host: "h1".into(),
+                project: "p1".into(),
+            },
+            Reply::Tasks(Ok(vec![
+                task("t1", TaskStatus::Done, None),
+                task("t2", TaskStatus::Todo, None),
+                task("t3", TaskStatus::InProgress, None),
+            ])),
+        );
+        let mut dead = shell("s2", Some("p1"), None);
+        dead.alive = false;
         tree.apply(
             &Request::Shells {
                 host: "h1".into(),
                 project: "p1".into(),
             },
-            Reply::Shells(Ok(vec![])),
+            Reply::Shells(Ok(vec![shell("s1", Some("p1"), None), dead])),
+        );
+        let folders = folders(&tree, "");
+        assert_eq!(
+            folders[0].projects[0].stats.line(),
+            "2 trees · 1/3 tasks · 1 live"
         );
     }
 
-    /// An online host, opened on its project "app", with every list answered at `now`.
-    fn settled_tree() -> (RemoteTree, Instant) {
-        let (mut tree, now) = online_tree();
-        tree.toggle_host("h1");
-        tree.expand_project("h1", "p1");
-        let _ = requests(&mut tree, now);
-        answer_lists(&mut tree);
+    #[test]
+    fn the_selected_project_is_marked_and_a_collapsed_folder_says_so() {
+        let tree = studio();
+        let collapsed = HashSet::from([folder_key("h1")]);
+        let folders = tree.folders("", by_name(), &collapsed, Some("remote:h1:p2"));
+        assert!(folders[0].collapsed);
+        assert_eq!(folders[0].count, 2);
+        let selected = folders[0]
+            .projects
+            .iter()
+            .filter(|project| project.selected)
+            .map(|project| project.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected, ["Web"]);
+        // A search shows its matches whatever is folded.
+        let searched = tree.folders("web", by_name(), &collapsed, None);
+        assert!(!searched[0].collapsed);
+    }
+
+    #[test]
+    fn a_search_filters_projects_and_a_hosts_name_shows_all_of_them() {
+        let tree = studio();
+        let found = folders(&tree, "web");
+        assert_eq!(names(&found[0]), ["Web"]);
+        assert_eq!(found[0].count, 2);
+        assert_eq!(names(&folders(&tree, "p1")[0]), ["app"]);
+        assert_eq!(names(&folders(&tree, "studio")[0]), ["app", "Web"]);
+        assert!(folders(&tree, "zzz").is_empty());
+    }
+
+    #[test]
+    fn projects_follow_the_chosen_order() {
+        let tree = studio();
+        let by = |order: ProjectOrder| {
+            tree.folders("", order, &HashSet::new(), None)[0]
+                .projects
+                .iter()
+                .map(|project| project.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            by(ProjectOrder::for_sort(ProjectSort::DateAdded)),
+            ["app", "Web"]
+        );
+        assert_eq!(
+            by(ProjectOrder::for_sort(ProjectSort::DateAdded).toggled()),
+            ["Web", "app"]
+        );
+        assert_eq!(by(by_name().toggled()), ["Web", "app"]);
+    }
+
+    #[test]
+    fn an_offline_host_keeps_its_last_projects_listed_but_dimmed() {
+        let mut tree = studio();
+        set_link(&mut tree, LinkState::Offline);
+        let folders = folders(&tree, "");
+        assert_eq!(folders[0].link, Some(Link::Offline));
+        assert_eq!(
+            folders[0].note.as_deref(),
+            Some("Offline (or access revoked)")
+        );
+        assert_eq!(names(&folders[0]), ["app", "Web"]);
+        assert!(folders[0].projects.iter().all(|project| project.dimmed));
+
+        // A daemon that cannot be reached at all is the same to the person.
+        let mut tree = studio();
         tree.apply(
             &Request::Status { host: "h1".into() },
-            Reply::Status(Ok(status(LinkState::Online))),
+            Reply::Status(Err("no daemon".into())),
         );
-        (tree, now)
+        assert_eq!(self::folders(&tree, "")[0].link, Some(Link::Offline));
+
+        // Back on line: normal again.
+        set_link(&mut tree, LinkState::Online);
+        let folders = self::folders(&tree, "");
+        assert!(folders[0].note.is_none());
+        assert!(folders[0].projects.iter().all(|project| !project.dimmed));
     }
 
-    fn asks_for_shells(asked: &[Request]) -> bool {
-        asked.contains(&Request::Shells {
-            host: "h1".into(),
-            project: "p1".into(),
-        })
+    #[test]
+    fn a_folder_says_why_it_is_empty() {
+        let mut tree = RemoteTree::default();
+        tree.set_hosts(vec![host("h1", "Studio")]);
+        // Nothing heard yet.
+        assert_eq!(folders(&tree, "")[0].note.as_deref(), Some("Connecting…"));
+        set_link(&mut tree, LinkState::Online);
+        assert_eq!(
+            folders(&tree, "")[0].note.as_deref(),
+            Some("Loading projects…")
+        );
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Err("No answer in time".into())),
+        );
+        assert_eq!(
+            folders(&tree, "")[0].note.as_deref(),
+            Some("No answer in time")
+        );
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Ok(vec![])),
+        );
+        assert_eq!(folders(&tree, "")[0].note.as_deref(), Some("No projects"));
+        // A search that finds nothing in an empty host does not repeat that.
+        assert!(folders(&tree, "zzz").is_empty());
+    }
+
+    #[test]
+    fn projects_kept_from_an_earlier_run_show_at_once_and_are_replaced_by_the_answer() {
+        let mut tree = RemoteTree::default();
+        tree.keep(BTreeMap::from([(
+            "h1".to_owned(),
+            vec![project("p1", "app", 20)],
+        )]));
+        // The registry has not been read: nothing to show yet, and nothing forgotten.
+        assert!(folders(&tree, "").is_empty());
+        assert_eq!(tree.kept().len(), 1);
+        tree.set_hosts(vec![host("h1", "Studio")]);
+        assert_eq!(names(&folders(&tree, "")[0]), ["app"]);
+        assert!(!tree.take_kept_dirty());
+        // Unreachable: the same rows, dimmed.
+        set_link(&mut tree, LinkState::Offline);
+        let folders_offline = folders(&tree, "");
+        assert!(folders_offline[0].projects[0].dimmed);
+
+        // The host answers with something else; that is what is kept now.
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Ok(vec![project("p9", "fresh", 30)])),
+        );
+        assert!(tree.take_kept_dirty());
+        assert!(!tree.take_kept_dirty());
+        assert_eq!(tree.kept()["h1"], vec![project("p9", "fresh", 30)]);
+        // The same answer again changes nothing worth writing down.
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Ok(vec![project("p9", "fresh", 30)])),
+        );
+        assert!(!tree.take_kept_dirty());
+        // A host that is no longer paired is forgotten once the registry says so.
+        tree.set_hosts(vec![]);
+        assert!(tree.kept().is_empty());
+    }
+
+    #[test]
+    fn a_project_is_named_from_what_was_kept_before_its_host_is_known() {
+        let mut tree = RemoteTree::default();
+        assert_eq!(tree.project_name("h1", "0123456789"), "01234567");
+        tree.keep(BTreeMap::from([(
+            "h1".to_owned(),
+            vec![project("p1", "app", 20)],
+        )]));
+        assert_eq!(tree.project_name("h1", "p1"), "app");
+        assert_eq!(tree.host_name("h1"), "h1");
+        tree.set_hosts(vec![host("h1", "Studio")]);
+        assert_eq!(tree.project_name("h1", "p1"), "app");
+        assert_eq!(tree.host_name("h1"), "Studio");
     }
 
     #[test]
@@ -1311,10 +1793,10 @@ mod tests {
     }
 
     #[test]
-    fn a_shown_section_reads_the_registry_then_each_hosts_link_and_repeats_on_a_timer() {
+    fn a_shown_folder_reads_the_registry_then_each_hosts_link_and_repeats_on_a_timer() {
         let now = Instant::now();
         let mut tree = RemoteTree::default();
-        let wants = wants_section();
+        let wants = wants_folders();
         assert_eq!(tree.plan(now, &wants), [Request::Hosts]);
         // The request is out: asking again would stack up subprocesses.
         assert!(tree.plan(now, &wants).is_empty());
@@ -1326,22 +1808,18 @@ mod tests {
             tree.plan(now, &wants),
             [Request::Status { host: "h1".into() }]
         );
-        assert!(tree.plan(now, &wants).is_empty());
-        tree.apply(
-            &Request::Status { host: "h1".into() },
-            Reply::Status(Ok(status(LinkState::Online))),
-        );
-        // Not due yet, then due after the interval.
-        assert!(tree.plan(now + Duration::from_secs(1), &wants).is_empty());
+        set_link(&mut tree, LinkState::Online);
+        // Not due yet: only the project list of the open folder is asked for.
         assert_eq!(
-            tree.plan(now + STATUS_INTERVAL, &wants),
-            [Request::Status { host: "h1".into() }]
+            tree.plan(now + Duration::from_secs(1), &wants),
+            [Request::Projects { host: "h1".into() }]
         );
-        // The registry is read again after its own, longer interval.
-        tree.apply(
-            &Request::Status { host: "h1".into() },
-            Reply::Status(Ok(status(LinkState::Online))),
+        let later = now + STATUS_INTERVAL;
+        assert!(
+            tree.plan(later, &wants)
+                .contains(&Request::Status { host: "h1".into() })
         );
+        set_link(&mut tree, LinkState::Online);
         assert!(
             tree.plan(now + HOSTS_INTERVAL, &wants)
                 .contains(&Request::Hosts)
@@ -1349,7 +1827,7 @@ mod tests {
     }
 
     #[test]
-    fn tabs_alone_watch_their_own_host_and_read_the_registry_once() {
+    fn tabs_and_a_selection_alone_watch_their_host_and_read_the_registry_once() {
         let now = Instant::now();
         let mut tree = RemoteTree::default();
         let wants = Wants {
@@ -1366,55 +1844,104 @@ mod tests {
             tree.plan(now, &wants),
             [Request::Status { host: "h1".into() }]
         );
-        tree.apply(
-            &Request::Status { host: "h1".into() },
-            Reply::Status(Ok(status(LinkState::Online))),
-        );
-        let much_later = now + HOSTS_INTERVAL * 3;
+        set_link(&mut tree, LinkState::Online);
         assert_eq!(
-            tree.plan(much_later, &wants),
+            tree.plan(now + HOSTS_INTERVAL * 3, &wants),
             [Request::Status { host: "h1".into() }]
         );
     }
 
     #[test]
-    fn lists_load_lazily_only_for_what_is_open() {
-        let (mut tree, now) = online_tree();
-        // Collapsed: only the link is polled.
+    fn an_open_folder_lists_projects_then_the_figures_a_few_at_a_time() {
+        let now = Instant::now();
+        let mut tree = RemoteTree::default();
+        tree.set_hosts(vec![host("h1", "Studio")]);
+        set_link(&mut tree, LinkState::Online);
+        let wants = wants_folders();
         assert_eq!(
-            requests(&mut tree, now),
-            [Request::Status { host: "h1".into() }]
+            lists(&mut tree, now, &wants),
+            [Request::Projects { host: "h1".into() }]
         );
-
-        tree.toggle_host("h1");
-        let asked = requests(&mut tree, now + Duration::from_secs(1));
-        assert_eq!(
-            asked,
-            [
-                Request::Projects { host: "h1".into() },
-                Request::Orchestrators { host: "h1".into() },
-            ]
-        );
-        // A project's own lists wait until it is opened.
+        let listed = (1..=6)
+            .map(|n| project(&format!("p{n}"), &format!("project {n}"), n))
+            .collect::<Vec<_>>();
         tree.apply(
             &Request::Projects { host: "h1".into() },
-            Reply::Projects(Ok(vec![RemoteProject {
-                id: "p1".into(),
-                name: "app".into(),
-            }])),
+            Reply::Projects(Ok(listed)),
         );
-        let t = now + Duration::from_secs(2);
+        // Three requests per project, but only four out at once for one host.
+        let first = lists(&mut tree, now, &wants);
+        assert_eq!(first.len(), MAX_STATS_IN_FLIGHT);
+        assert!(first.contains(&Request::Worktrees {
+            host: "h1".into(),
+            project: "p2".into()
+        }));
+        assert!(!first.contains(&Request::Tasks {
+            host: "h1".into(),
+            project: "p2".into()
+        }));
+        // Nothing more while those are out.
+        assert!(lists(&mut tree, now, &wants).is_empty());
+        answer_all(&mut tree, &first);
+        let second = lists(&mut tree, now, &wants);
+        assert_eq!(second.len(), MAX_STATS_IN_FLIGHT);
+        assert!(second.iter().all(|request| !first.contains(request)));
+        // Every figure is asked for once; later they wait for the slow interval.
+        answer_all(&mut tree, &second);
+        let mut asked = first.len() + second.len();
+        loop {
+            let more = lists(&mut tree, now, &wants);
+            if more.is_empty() {
+                break;
+            }
+            assert!(more.len() <= MAX_STATS_IN_FLIGHT);
+            asked += more.len();
+            answer_all(&mut tree, &more);
+        }
+        assert_eq!(asked, 18);
+        // Ten seconds on, only the project list itself is asked for again.
+        let soon = lists(&mut tree, now + Duration::from_secs(10), &wants);
+        assert_eq!(soon, [Request::Projects { host: "h1".into() }]);
+        tree.apply(
+            &soon[0],
+            Reply::Projects(Ok((1..=6)
+                .map(|n| project(&format!("p{n}"), &format!("project {n}"), n))
+                .collect())),
+        );
+        let slow = lists(&mut tree, now + STATS_INTERVAL, &wants);
         assert!(
-            !requests(&mut tree, t).iter().any(|request| matches!(
-                request,
-                Request::Worktrees { .. } | Request::Shells { .. }
-            ))
+            slow.iter()
+                .any(|request| matches!(request, Request::Worktrees { .. }))
         );
+    }
 
-        tree.toggle_project("h1", "p1");
-        let asked = requests(&mut tree, t);
+    #[test]
+    fn a_collapsed_or_hidden_folder_costs_nothing_but_the_link() {
+        let now = Instant::now();
+        let mut tree = studio();
+        let mut wants = wants_folders();
+        wants.collapsed.insert(folder_key("h1"));
+        assert!(lists(&mut tree, now, &wants).is_empty());
+        // The Projects panel is behind another tab.
+        assert!(lists(&mut tree, now, &Wants::default()).is_empty());
+        wants.collapsed.clear();
+        assert!(!lists(&mut tree, now, &wants).is_empty());
+    }
+
+    #[test]
+    fn the_selected_project_asks_only_for_the_panels_on_screen() {
+        let now = Instant::now();
+        let mut tree = studio();
         assert_eq!(
-            asked,
+            lists(&mut tree, now, &wants_selected("t")),
+            [Request::Tasks {
+                host: "h1".into(),
+                project: "p1".into()
+            }]
+        );
+        let mut tree = studio();
+        assert_eq!(
+            lists(&mut tree, now, &wants_selected("ws")),
             [
                 Request::Worktrees {
                     host: "h1".into(),
@@ -1424,336 +1951,55 @@ mod tests {
                     host: "h1".into(),
                     project: "p1".into()
                 },
+                Request::Orchestrators { host: "h1".into() },
             ]
         );
-        // Closing the project stops its polling.
-        tree.apply(
-            &Request::Worktrees {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-            Reply::Worktrees(Ok(vec![])),
-        );
-        tree.apply(
-            &Request::Shells {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-            Reply::Shells(Ok(vec![])),
-        );
-        tree.toggle_project("h1", "p1");
-        let far = t + LIST_INTERVAL * 4;
-        assert!(
-            !requests(&mut tree, far).iter().any(|request| matches!(
-                request,
-                Request::Worktrees { .. } | Request::Shells { .. }
-            ))
-        );
+        // No panel showing, nothing asked: a window that only holds terminals is quiet.
+        let mut tree = studio();
+        assert!(lists(&mut tree, now, &wants_selected("")).is_empty());
     }
 
     #[test]
-    fn open_lists_are_refreshed_on_a_timer_and_only_while_the_section_shows() {
-        let (mut tree, now) = online_tree();
-        tree.toggle_host("h1");
-        let first = requests(&mut tree, now);
-        assert!(first.contains(&Request::Projects { host: "h1".into() }));
-        tree.apply(
-            &Request::Projects { host: "h1".into() },
-            Reply::Projects(Ok(vec![])),
-        );
-        tree.apply(
-            &Request::Orchestrators { host: "h1".into() },
-            Reply::Orchestrators(Ok(vec![])),
-        );
-        let later = now + LIST_INTERVAL;
-        assert!(requests(&mut tree, later).contains(&Request::Projects { host: "h1".into() }));
-        // The section is hidden (another tab in front): no list traffic, link polling stops.
-        let hidden = later + LIST_INTERVAL * 3;
-        assert!(tree.plan(hidden, &Wants::default()).is_empty());
+    fn the_selected_projects_lists_are_refreshed_on_the_short_timer() {
+        let now = Instant::now();
+        let mut tree = studio();
+        let wants = wants_selected("s");
+        let first = lists(&mut tree, now, &wants);
+        answer_all(&mut tree, &first);
+        assert!(lists(&mut tree, now + Duration::from_secs(2), &wants).is_empty());
+        assert_eq!(lists(&mut tree, now + LIST_INTERVAL, &wants), first);
     }
 
     #[test]
     fn an_offline_host_is_not_asked_for_lists_and_refreshes_them_when_it_returns() {
-        let (mut tree, now) = online_tree();
-        tree.toggle_host("h1");
-        requests(&mut tree, now);
-        tree.apply(
-            &Request::Projects { host: "h1".into() },
-            Reply::Projects(Ok(vec![RemoteProject {
-                id: "p1".into(),
-                name: "app".into(),
-            }])),
-        );
-        tree.apply(
-            &Request::Orchestrators { host: "h1".into() },
-            Reply::Orchestrators(Ok(vec![])),
-        );
-        tree.apply(
-            &Request::Status { host: "h1".into() },
-            Reply::Status(Ok(status(LinkState::Offline))),
-        );
-        let t = now + Duration::from_secs(1);
-        let asked = requests(&mut tree, t + LIST_INTERVAL * 2);
-        assert!(
-            asked
-                .iter()
-                .all(|request| matches!(request, Request::Status { .. })),
-            "{asked:?}"
-        );
-        // Back online a second later: the lists are asked for again immediately.
-        tree.apply(
-            &Request::Status { host: "h1".into() },
-            Reply::Status(Ok(status(LinkState::Online))),
-        );
-        let asked = requests(&mut tree, t + LIST_INTERVAL * 2 + Duration::from_secs(1));
-        assert!(asked.contains(&Request::Projects { host: "h1".into() }));
-    }
-
-    #[test]
-    fn an_unreachable_daemon_reads_as_offline_and_a_failed_poll_keeps_the_old_rows() {
-        let (mut tree, _) = online_tree();
-        tree.toggle_host("h1");
-        tree.apply(
-            &Request::Projects { host: "h1".into() },
-            Reply::Projects(Ok(vec![RemoteProject {
-                id: "p1".into(),
-                name: "app".into(),
-            }])),
-        );
-        tree.apply(
-            &Request::Orchestrators { host: "h1".into() },
-            Reply::Orchestrators(Ok(vec![])),
-        );
-        tree.apply(
-            &Request::Projects { host: "h1".into() },
-            Reply::Projects(Err("No answer in time".into())),
-        );
-        let rows = tree.rows("");
-        assert!(
-            rows.iter()
-                .any(|row| matches!(row, Row::Project { name, .. } if name == "app"))
-        );
-        assert!(rows.iter().any(
-            |row| matches!(row, Row::Note { text, error: true, .. } if text == "No answer in time")
-        ));
-
-        tree.apply(
-            &Request::Status { host: "h1".into() },
-            Reply::Status(Err("daemon unreachable".into())),
-        );
-        assert_eq!(tree.link("h1"), Some(Link::Offline));
-        assert_eq!(Link::Offline.text(), "Offline (or access revoked)");
-        let rows = tree.rows("");
-        assert!(matches!(
-            rows.as_slice(),
-            [Row::Host { link: Some(Link::Offline), .. }, Row::Note { text, .. }]
-                if text == "Offline (or access revoked)"
-        ));
-    }
-
-    #[test]
-    fn a_host_with_no_answer_yet_shows_connecting() {
-        let mut tree = RemoteTree::default();
-        tree.set_hosts(vec![host("h1", "Studio")]);
-        tree.toggle_host("h1");
-        let rows = tree.rows("");
-        assert!(matches!(
-            &rows[0],
-            Row::Host {
-                link: None,
-                expanded: true,
-                ..
-            }
-        ));
-        assert!(matches!(&rows[1], Row::Note { text, .. } if text == "Connecting…"));
-    }
-
-    #[test]
-    fn registry_changes_keep_what_was_loaded_for_hosts_that_stay() {
-        let (mut tree, _) = online_tree();
-        tree.toggle_host("h1");
-        assert!(tree.set_hosts(vec![host("h2", "New"), host("h1", "Studio renamed")]));
-        assert_eq!(tree.host_label("h1"), Some("Studio renamed"));
-        assert_eq!(tree.link("h1"), Some(Link::Online));
-        assert!(matches!(&tree.rows("")[1], Row::Host { id, expanded: true, .. } if id == "h1"));
-        assert!(!tree.set_hosts(vec![host("h2", "New"), host("h1", "Studio renamed")]));
-        assert!(tree.set_hosts(vec![host("h2", "New")]));
-        assert_eq!(tree.host_label("h1"), None);
-    }
-
-    /// A tree with host h1 open on project p1, which has a worktree, a shell in it and a loose one.
-    fn tree_with_shells() -> RemoteTree {
-        let (mut tree, now) = online_tree();
-        tree.toggle_host("h1");
-        tree.expand_project("h1", "p1");
-        let _ = requests(&mut tree, now);
-        tree.apply(
-            &Request::Projects { host: "h1".into() },
-            Reply::Projects(Ok(vec![
-                RemoteProject {
-                    id: "p1".into(),
-                    name: "app".into(),
-                },
-                RemoteProject {
-                    id: "p2".into(),
-                    name: "site".into(),
-                },
-            ])),
-        );
-        let mut orchestrator = shell("o1", Some("p1"), None);
-        orchestrator.orchestrator = true;
-        orchestrator.harness = Some("codex".into());
-        let mut global = shell("og", None, None);
-        global.orchestrator = true;
-        tree.apply(
-            &Request::Orchestrators { host: "h1".into() },
-            Reply::Orchestrators(Ok(vec![global, orchestrator])),
-        );
-        tree.apply(
-            &Request::Worktrees {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-            Reply::Worktrees(Ok(vec![RemoteWorktree {
-                id: "w1".into(),
-                branch: "main".into(),
-                primary: true,
-            }])),
-        );
-        let mut claude = shell("s-claude-0001", Some("p1"), Some("w1"));
-        claude.harness = Some("claude".into());
-        tree.apply(
-            &Request::Shells {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-            Reply::Shells(Ok(vec![claude, shell("s-loose-0002", Some("p1"), None)])),
-        );
-        tree
-    }
-
-    #[test]
-    fn rows_nest_host_project_worktree_and_shells_with_orchestrators() {
-        let tree = tree_with_shells();
-        let rows = tree.rows("");
-        let shape = rows
-            .iter()
-            .map(|row| match row {
-                Row::Host { label, .. } => format!("host {label}"),
-                Row::Project { name, expanded, .. } => format!("project {name} {expanded}"),
-                Row::Worktree { label } => format!("worktree {label}"),
-                Row::Shell { shell, depth, .. } => format!("shell{depth} {}", shell.id),
-                Row::Chooser { .. } => "chooser".to_owned(),
-                Row::Note { text, depth, .. } => format!("note{depth} {text}"),
-                Row::Failure { text, depth, .. } => format!("failure{depth} {text}"),
-            })
-            .collect::<Vec<_>>();
+        let now = Instant::now();
+        let mut tree = studio();
+        let wants = wants_selected("t");
+        let first = lists(&mut tree, now, &wants);
+        answer_all(&mut tree, &first);
+        set_link(&mut tree, LinkState::Offline);
+        let later = now + Duration::from_secs(1) + LIST_INTERVAL * 2;
+        assert!(lists(&mut tree, later, &wants).is_empty());
+        // Back online a second later: asked again at once, not at the next timer.
+        set_link(&mut tree, LinkState::Online);
         assert_eq!(
-            shape,
-            [
-                "host Studio",
-                "shell1 og",
-                "project app true",
-                "shell2 o1",
-                "worktree ◆ main",
-                "shell3 s-claude-0001",
-                "shell2 s-loose-0002",
-                "project site false",
-            ]
+            lists(&mut tree, later + Duration::from_secs(1), &wants),
+            first
         );
-    }
-
-    #[test]
-    fn an_empty_open_project_says_so_and_an_unloaded_one_says_loading() {
-        let (mut tree, now) = online_tree();
-        tree.toggle_host("h1");
-        tree.expand_project("h1", "p1");
-        let _ = requests(&mut tree, now);
-        tree.apply(
-            &Request::Projects { host: "h1".into() },
-            Reply::Projects(Ok(vec![RemoteProject {
-                id: "p1".into(),
-                name: "app".into(),
-            }])),
-        );
-        let loading = tree.rows("");
-        assert!(
-            loading
-                .iter()
-                .any(|row| matches!(row, Row::Note { text, .. } if text == "Loading…"))
-        );
-        tree.apply(
-            &Request::Orchestrators { host: "h1".into() },
-            Reply::Orchestrators(Ok(vec![])),
-        );
-        for request in [
-            Request::Worktrees {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-            Request::Shells {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-        ] {
-            let reply = match request {
-                Request::Worktrees { .. } => Reply::Worktrees(Ok(vec![])),
-                _ => Reply::Shells(Ok(vec![])),
-            };
-            tree.apply(&request, reply);
-        }
-        let empty = tree.rows("");
-        assert!(
-            empty
-                .iter()
-                .any(|row| matches!(row, Row::Note { text, .. } if text == "No shells"))
-        );
-    }
-
-    #[test]
-    fn search_opens_what_matches_and_hides_the_rest() {
-        let tree = tree_with_shells();
-        let rows = tree.rows("claude");
-        assert!(matches!(&rows[0], Row::Host { .. }));
-        assert!(
-            rows.iter()
-                .any(|row| matches!(row, Row::Shell { shell, .. } if shell.id == "s-claude-0001"))
-        );
-        assert!(
-            !rows
-                .iter()
-                .any(|row| matches!(row, Row::Shell { shell, .. } if shell.id == "s-loose-0002"))
-        );
-        assert!(
-            !rows
-                .iter()
-                .any(|row| matches!(row, Row::Project { name, .. } if name == "site"))
-        );
-        // A host's own name shows all of it; no match hides the host.
-        assert!(tree.rows("studio").len() > 3);
-        assert!(tree.rows("zzz").is_empty());
     }
 
     #[test]
     fn a_shell_creation_is_sent_once_and_never_retried_after_it_fails() {
-        let (mut tree, now) = settled_tree();
-        tree.toggle_chooser("h1", "p1");
-        assert!(
-            tree.rows("")
-                .iter()
-                .any(|row| matches!(row, Row::Chooser { .. }))
-        );
+        let now = Instant::now();
+        let mut tree = studio();
+        let wants = wants_selected("s");
+        let first = lists(&mut tree, now, &wants);
+        answer_all(&mut tree, &first);
 
         assert!(tree.begin_shell("h1", "p1"));
-        // The choice closes, and a second click while the first is out sends nothing.
-        assert!(
-            !tree
-                .rows("")
-                .iter()
-                .any(|row| matches!(row, Row::Chooser { .. }))
-        );
+        // A second request while the first is out sends nothing.
         assert!(!tree.begin_shell("h1", "p1"));
-        assert_eq!(tree.creation("h1", Some("p1")), Some(&Creation::Creating));
+        assert!(tree.selected_view("remote:h1:p1").unwrap().creating);
 
         // The answer never came.
         let t = now + Duration::from_millis(10);
@@ -1761,19 +2007,24 @@ mod tests {
             tree.finish_shell("h1", "p1", Err(RemoteError::Timeout))
                 .is_none()
         );
-        let Some(Creation::Failed(message)) = tree.creation("h1", Some("p1")).cloned() else {
-            panic!("a timed-out creation must stay failed");
-        };
+        let view = tree.selected_view("remote:h1:p1").unwrap();
+        assert!(!view.creating);
+        let message = view.failure.expect("the failure stays");
         assert!(message.contains("may exist"), "{message}");
         // The lost answer makes the list refresh at once so the person can look.
-        assert!(asks_for_shells(&requests(&mut tree, t)));
-        // Ticks plan reads only; whatever time passes, the failure stays until a person acts.
+        assert!(lists(&mut tree, t, &wants).contains(&Request::Shells {
+            host: "h1".into(),
+            project: "p1".into()
+        }));
+        // However many ticks pass, the failure stays until a person acts.
         for step in 1..=10 {
-            let _ = requests(&mut tree, now + Duration::from_secs(step * 7));
-            assert!(matches!(
-                tree.creation("h1", Some("p1")),
-                Some(Creation::Failed(_))
-            ));
+            let _ = lists(&mut tree, now + Duration::from_secs(step * 7), &wants);
+            assert!(
+                tree.selected_view("remote:h1:p1")
+                    .unwrap()
+                    .failure
+                    .is_some()
+            );
         }
         // Only the person can try again.
         assert!(tree.begin_shell("h1", "p1"));
@@ -1781,7 +2032,11 @@ mod tests {
 
     #[test]
     fn a_refused_creation_shows_the_hosts_reason_and_leaves_the_list_alone() {
-        let (mut tree, now) = settled_tree();
+        let now = Instant::now();
+        let mut tree = studio();
+        let wants = wants_selected("s");
+        let first = lists(&mut tree, now, &wants);
+        answer_all(&mut tree, &first);
         assert!(tree.begin_shell("h1", "p1"));
         tree.finish_shell(
             "h1",
@@ -1792,99 +2047,26 @@ mod tests {
             )),
         );
         assert_eq!(
-            tree.creation("h1", Some("p1")),
-            Some(&Creation::Failed(
-                "codex is not installed or is not on PATH".to_owned()
-            ))
+            tree.selected_view("remote:h1:p1")
+                .unwrap()
+                .failure
+                .as_deref(),
+            Some("codex is not installed or is not on PATH")
         );
-        // A definite refusal created nothing, so the list is not refreshed ahead of its timer.
-        assert!(!asks_for_shells(&requests(
-            &mut tree,
-            now + Duration::from_millis(10)
-        )));
-        // The message is on screen under the project until dismissed.
-        assert!(tree.rows("").iter().any(|row| matches!(
-            row,
-            Row::Failure { text, project: Some(project), .. }
-                if text.starts_with("codex") && project == "p1"
-        )));
-        tree.dismiss_failure("h1", Some("p1"));
-        assert_eq!(tree.creation("h1", Some("p1")), Some(&Creation::Idle));
-    }
-
-    #[test]
-    fn reopening_the_choice_clears_an_old_failure() {
-        let (mut tree, _) = settled_tree();
-        assert!(tree.begin_shell("h1", "p1"));
-        tree.finish_shell("h1", "p1", Err(rpc("cli_error", "tmux is busy")));
-        tree.toggle_chooser("h1", "p1");
-        assert_eq!(tree.creation("h1", Some("p1")), Some(&Creation::Idle));
-    }
-
-    #[test]
-    fn a_created_shell_is_handed_back_to_be_opened_and_refreshes_the_list() {
-        let (mut tree, now) = settled_tree();
-        assert!(tree.begin_shell("h1", "p1"));
-        let made = shell("new-shell", Some("p1"), Some("w1"));
-        assert_eq!(tree.finish_shell("h1", "p1", Ok(made.clone())), Some(made));
-        assert_eq!(tree.creation("h1", Some("p1")), Some(&Creation::Idle));
-        // The very next plan lists the project's shells again, ahead of the timer.
-        assert!(asks_for_shells(&requests(
-            &mut tree,
-            now + Duration::from_millis(10)
-        )));
-    }
-
-    #[test]
-    fn project_creation_follows_the_same_rules_per_host() {
-        let (mut tree, _) = online_tree();
-        assert!(tree.begin_project("h1"));
-        assert!(!tree.begin_project("h1"));
-        assert!(!tree.begin_project("unknown"));
-        let created = RemoteProject {
-            id: "p9".into(),
-            name: "fresh".into(),
-        };
-        // "already_exists" is the host's own sentence, shown as is.
-        tree.finish_project(
-            "h1",
-            Err(rpc(
-                "already_exists",
-                "A project named \"fresh\" already exists on the desktop",
-            )),
+        // A definite refusal created nothing, so the list is not asked for ahead of its timer.
+        assert!(lists(&mut tree, now + Duration::from_millis(10), &wants).is_empty());
+        tree.dismiss_shell_failure("h1", "p1");
+        assert!(
+            tree.selected_view("remote:h1:p1")
+                .unwrap()
+                .failure
+                .is_none()
         );
-        assert!(matches!(
-            tree.creation("h1", None),
-            Some(Creation::Failed(message)) if message.contains("already exists")
-        ));
-        assert!(tree.begin_project("h1"));
-        assert_eq!(
-            tree.finish_project("h1", Ok(created.clone())),
-            Some(created)
-        );
-        assert_eq!(tree.creation("h1", None), Some(&Creation::Idle));
-        assert!(matches!(
-            &tree.rows("")[0],
-            Row::Host { expanded: true, .. }
-        ));
-
-        // A lost reply: the failure says the project may exist.
-        assert!(tree.begin_project("h1"));
-        tree.finish_project(
-            "h1",
-            Err(RemoteError::Protocol(
-                "the daemon closed the connection".into(),
-            )),
-        );
-        assert!(matches!(
-            tree.creation("h1", None),
-            Some(Creation::Failed(message)) if message.contains("may exist")
-        ));
     }
 
     #[test]
     fn a_daemon_that_could_not_be_reached_sent_nothing_so_nothing_may_exist() {
-        let (mut tree, now) = settled_tree();
+        let mut tree = studio();
         assert!(tree.begin_shell("h1", "p1"));
         tree.finish_shell(
             "h1",
@@ -1894,26 +2076,222 @@ mod tests {
             )),
         );
         assert_eq!(
-            tree.creation("h1", Some("p1")),
-            Some(&Creation::Failed(
-                "Cannot connect to the client daemon for this Mac".to_owned()
-            ))
+            tree.selected_view("remote:h1:p1")
+                .unwrap()
+                .failure
+                .as_deref(),
+            Some("Cannot connect to the client daemon for this Mac")
         );
-        assert!(!asks_for_shells(&requests(
-            &mut tree,
-            now + Duration::from_millis(10)
-        )));
+    }
+
+    #[test]
+    fn a_created_shell_is_handed_back_to_be_opened_and_the_list_refreshes() {
+        let now = Instant::now();
+        let mut tree = studio();
+        let wants = wants_selected("s");
+        let first = lists(&mut tree, now, &wants);
+        answer_all(&mut tree, &first);
+        assert!(tree.begin_shell("h1", "p1"));
+        let made = shell("new-shell", Some("p1"), Some("w1"));
+        assert_eq!(tree.finish_shell("h1", "p1", Ok(made.clone())), Some(made));
+        let view = tree.selected_view("remote:h1:p1").unwrap();
+        assert!(!view.creating && view.failure.is_none());
+        assert!(
+            lists(&mut tree, now + Duration::from_millis(10), &wants).contains(&Request::Shells {
+                host: "h1".into(),
+                project: "p1".into()
+            })
+        );
+    }
+
+    #[test]
+    fn project_creation_follows_the_same_rules_per_host() {
+        let mut tree = studio();
+        assert!(tree.begin_project("h1"));
+        assert!(!tree.begin_project("h1"));
+        assert!(!tree.begin_project("unknown"));
+        assert!(folders(&tree, "")[0].creating);
+        // "already_exists" is the host's own sentence, shown as is.
+        tree.finish_project(
+            "h1",
+            Err(rpc(
+                "already_exists",
+                "A project named \"fresh\" already exists on the desktop",
+            )),
+        );
+        let folder = &folders(&tree, "")[0];
+        assert!(!folder.creating);
+        assert!(
+            folder
+                .failure
+                .as_deref()
+                .is_some_and(|message| message.contains("already exists"))
+        );
+        tree.dismiss_project_failure("h1");
+        assert!(folders(&tree, "")[0].failure.is_none());
+
+        assert!(tree.begin_project("h1"));
+        let created = project("p9", "fresh", 40);
+        assert_eq!(
+            tree.finish_project("h1", Ok(created.clone())),
+            Some(created)
+        );
+        // It joins the folder at the next answer from the host, which is asked for at once.
+        let asked = lists(&mut tree, Instant::now(), &wants_folders());
+        assert!(asked.contains(&Request::Projects { host: "h1".into() }));
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Ok(vec![
+                project("p1", "app", 20),
+                project("p2", "Web", 10),
+                project("p9", "fresh", 40),
+            ])),
+        );
+        assert_eq!(names(&folders(&tree, "")[0]), ["app", "fresh", "Web"]);
+
+        // A lost reply: the failure says the project may exist, and nothing is sent again.
+        assert!(tree.begin_project("h1"));
+        tree.finish_project(
+            "h1",
+            Err(RemoteError::Protocol(
+                "the daemon closed the connection".into(),
+            )),
+        );
+        assert!(
+            folders(&tree, "")[0]
+                .failure
+                .as_deref()
+                .is_some_and(|message| message.contains("may exist"))
+        );
+        for step in 1..=5 {
+            let _ = lists(
+                &mut tree,
+                Instant::now() + Duration::from_secs(step * 20),
+                &wants_folders(),
+            );
+            assert!(folders(&tree, "")[0].failure.is_some());
+        }
     }
 
     #[test]
     fn an_old_host_that_lacks_the_method_is_told_to_update() {
-        let (mut tree, _) = online_tree();
+        let mut tree = studio();
         assert!(tree.begin_project("h1"));
         tree.finish_project("h1", Err(rpc("invalid_request", "unsupported RPC method")));
-        assert!(matches!(
-            tree.creation("h1", None),
-            Some(Creation::Failed(message)) if message.contains("Update")
-        ));
+        assert!(
+            folders(&tree, "")[0]
+                .failure
+                .as_deref()
+                .is_some_and(|message| message.contains("Update"))
+        );
+    }
+
+    #[test]
+    fn the_selected_view_lists_orchestrators_before_shells_and_never_another_projects() {
+        let mut tree = studio();
+        let mut project_orchestrator = shell("o1", Some("p1"), None);
+        project_orchestrator.orchestrator = true;
+        let mut other_orchestrator = shell("o2", Some("p2"), None);
+        other_orchestrator.orchestrator = true;
+        let mut global = shell("og", None, None);
+        global.orchestrator = true;
+        let wants = wants_selected("wts");
+        let asked = lists(&mut tree, Instant::now(), &wants);
+        assert_eq!(asked.len(), 4);
+        tree.apply(
+            &Request::Orchestrators { host: "h1".into() },
+            Reply::Orchestrators(Ok(vec![global, other_orchestrator, project_orchestrator])),
+        );
+        tree.apply(
+            &Request::Shells {
+                host: "h1".into(),
+                project: "p1".into(),
+            },
+            Reply::Shells(Ok(vec![shell("s1", Some("p1"), Some("w1"))])),
+        );
+        tree.apply(
+            &Request::Tasks {
+                host: "h1".into(),
+                project: "p1".into(),
+            },
+            Reply::Tasks(Ok(vec![task("t1", TaskStatus::Todo, Some("w1"))])),
+        );
+        let view = tree
+            .selected_view("remote:h1:p1")
+            .expect("a remote project");
+        assert_eq!(view.host_label, "Studio");
+        assert_eq!(view.project_name, "app");
+        assert_eq!(view.link, Some(Link::Online));
+        assert!(!view.unpaired);
+        let ids = view
+            .shells
+            .items
+            .iter()
+            .map(|shell| shell.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["o1", "og", "s1"]);
+        assert_eq!(view.tasks.items.len(), 1);
+        assert!(view.worktrees.loading);
+        // The host's own orchestrators can be opened from the menu once listed.
+        assert_eq!(
+            tree.orchestrator("h1", Some("p1")).map(|s| s.id.as_str()),
+            Some("o1")
+        );
+        assert_eq!(
+            tree.orchestrator("h1", None).map(|s| s.id.as_str()),
+            Some("og")
+        );
+        assert_eq!(tree.live_shells("h1", "p1"), Some(1));
+    }
+
+    #[test]
+    fn the_selected_view_survives_an_unknown_missing_or_unpaired_host() {
+        let mut tree = RemoteTree::default();
+        // Nothing but the id yet: the window must still draw something calm.
+        let view = tree.selected_view("remote:h1:p1").expect("view");
+        assert!(!view.unpaired && view.link.is_none());
+        assert_eq!(view.host_label, "h1");
+        // The registry was read and the host is not in it.
+        tree.set_hosts(vec![host("other", "Other")]);
+        assert!(tree.selected_view("remote:h1:p1").unwrap().unpaired);
+        // A local id is never a remote view.
+        assert!(
+            tree.selected_view("5c0d2c3e-0000-4000-8000-000000000000")
+                .is_none()
+        );
+        assert!(tree.selected_view("remote:h1").is_none());
+    }
+
+    #[test]
+    fn create_requests_name_the_scope_and_only_agents_can_be_unrestricted() {
+        let project = ShellScope::Project("p1".into());
+        let worktree = ShellScope::Worktree("w1".into());
+        assert_eq!(
+            shell_create_params(&project, NewShellKind::Shell, false),
+            json!({"project_id": "p1", "kind": "shell"})
+        );
+        assert_eq!(
+            shell_create_params(&worktree, NewShellKind::Claude, false),
+            json!({"worktree_id": "w1", "kind": "claude"})
+        );
+        assert_eq!(
+            shell_create_params(&project, NewShellKind::Codex, true),
+            json!({"project_id": "p1", "kind": "codex", "unrestricted": true})
+        );
+        // The host refuses the flag on a plain shell, so it is not sent.
+        assert_eq!(
+            shell_create_params(&project, NewShellKind::Shell, true),
+            json!({"project_id": "p1", "kind": "shell"})
+        );
+        let kinds = [
+            NewShellKind::Shell,
+            NewShellKind::Codex,
+            NewShellKind::Claude,
+            NewShellKind::Grok,
+        ]
+        .map(NewShellKind::wire);
+        assert_eq!(kinds, ["shell", "codex", "claude", "grok"]);
+        assert_eq!(project_create_params("App"), json!({"name": "App"}));
     }
 
     #[test]
@@ -1942,39 +2320,30 @@ mod tests {
     }
 
     #[test]
-    fn create_requests_use_the_wire_spelling_and_a_project_id_only() {
-        for kind in NewShellKind::ALL {
-            assert_eq!(
-                shell_create_params("p1", kind),
-                json!({"project_id": "p1", "kind": kind.wire()})
-            );
-        }
-        let kinds = NewShellKind::ALL.map(NewShellKind::wire);
-        assert_eq!(kinds, ["shell", "codex", "claude", "grok"]);
-        assert_eq!(project_create_params("App"), json!({"name": "App"}));
-    }
-
-    #[test]
     fn replies_parse_leniently_and_report_a_missing_list() {
         let projects = parse_projects(&json!({"projects": [
-            {"id": "p1", "name": "app", "root": "/x", "created_at": 1, "extra": true},
+            {"id": "p1", "name": "app", "root": "/x", "created_at": 5, "extra": true},
             {"name": "no id"},
         ]}))
         .unwrap();
-        assert_eq!(
-            projects,
-            [RemoteProject {
-                id: "p1".into(),
-                name: "app".into()
-            }]
-        );
+        assert_eq!(projects, [project("p1", "app", 5)]);
         assert!(parse_projects(&json!({})).is_err());
         let worktrees = parse_worktrees(&json!({"worktrees": [
             {"id": "w1", "project_id": "p1", "branch": "main", "path": "/x", "is_primary": true},
         ]}))
         .unwrap();
         assert_eq!(worktrees[0].branch, "main");
+        assert_eq!(worktrees[0].path, "/x");
         assert!(worktrees[0].primary);
+        let tasks = parse_tasks(&json!({"tasks": [
+            {"id": "t1", "project_id": "p1", "title": "Fix", "details": "d", "status": "in_progress",
+             "worktree_id": null, "created_at": 1, "updated_at": 2},
+            {"id": "t2", "title": "Odd", "status": "from the future"},
+        ]}))
+        .unwrap();
+        assert_eq!(tasks[0].status, TaskStatus::InProgress);
+        assert_eq!(tasks[0].worktree_id, None);
+        assert_eq!(tasks[1].status, TaskStatus::Todo);
         let shells = parse_shells(&json!({"shells": [
             {"id": "s1", "project_id": "p1", "worktree_id": null, "kind": "project",
              "cwd": "/x", "harness": null, "alive": true, "created_at_unix": 1},
@@ -1992,11 +2361,11 @@ mod tests {
                 .unwrap();
         assert_eq!(created.id, "s1");
         assert!(parse_created_shell(&json!({"shell_id": "s1"})).is_err());
-        let project = parse_created_project(
+        let made = parse_created_project(
             &json!({"project_id": "p1", "project": {"id": "p1", "name": "App"}}),
         )
         .unwrap();
-        assert_eq!(project.name, "App");
+        assert_eq!(made.name, "App");
     }
 
     #[test]
@@ -2013,7 +2382,19 @@ mod tests {
 
     #[test]
     fn tabs_are_titled_from_what_the_lists_know_and_otherwise_from_ids() {
-        let tree = tree_with_shells();
+        let mut tree = studio();
+        let wants = wants_selected("s");
+        let asked = lists(&mut tree, Instant::now(), &wants);
+        assert!(!asked.is_empty());
+        let mut claude = shell("s-claude-0001", Some("p1"), None);
+        claude.harness = Some("claude".into());
+        tree.apply(
+            &Request::Shells {
+                host: "h1".into(),
+                project: "p1".into(),
+            },
+            Reply::Shells(Ok(vec![claude])),
+        );
         assert_eq!(
             tree.tab_title("h1", "s-claude-0001"),
             "⇄ Studio · claude · s-claude"
@@ -2042,12 +2423,9 @@ mod tests {
                 .unwrap()
                 .starts_with("RECONNECTING · Studio")
         );
-        let (mut tree, _) = online_tree();
+        let mut tree = studio();
         assert_eq!(tree.strip_for("h1"), None);
-        tree.apply(
-            &Request::Status { host: "h1".into() },
-            Reply::Status(Ok(status(LinkState::Connecting))),
-        );
+        set_link(&mut tree, LinkState::Connecting);
         assert_eq!(
             tree.strip_for("h1").as_deref(),
             Some("RECONNECTING · Studio")
@@ -2057,7 +2435,7 @@ mod tests {
 
     #[test]
     fn answers_for_a_vanished_host_or_the_wrong_request_are_ignored() {
-        let (mut tree, _) = online_tree();
+        let mut tree = studio();
         assert!(!tree.apply(
             &Request::Projects {
                 host: "gone".into()

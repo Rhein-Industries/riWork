@@ -10,8 +10,8 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle, IntoElement,
-    MouseButton, Pixels, Render, Window, canvas, div, prelude::*, px, rgb,
+    AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
+    IntoElement, MouseButton, Pixels, Render, Stateful, Window, canvas, div, prelude::*, px, rgb,
 };
 
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
     icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
-    remote_tree::{Link, NewShellKind, RemoteShell, Row as RemoteRow},
+    remote_tree::{FolderView, Link, Listing, ProjectView, RemoteShell, SelectedView, folder_key},
     sessions::{SessionMetrics, ShellKind, ShellSession},
     store::{State, TaskStatus},
     theme::{self, Palette},
@@ -57,37 +57,18 @@ pub enum PanelAction {
     Remote(RemoteAction),
 }
 
-/// What a row of the REMOTE section does when clicked.
+/// What a row that belongs to another Mac does when clicked, beyond what a local row of the
+/// same kind does (selecting a project, worktree or task goes through the ordinary actions).
 #[derive(Clone)]
 pub enum RemoteAction {
-    /// Open or close a host.
-    Host(String),
-    /// Open or close a project of a host.
-    Project {
-        host: String,
-        project: String,
-    },
-    /// Show or hide the Shell/Codex/Claude/Grok choice under a project.
-    Chooser {
-        host: String,
-        project: String,
-    },
-    OpenShell {
-        host: String,
-        shell: RemoteShell,
-    },
-    NewShell {
-        host: String,
-        project: String,
-        kind: NewShellKind,
-    },
+    /// Open a shell of the selected remote project in a tab.
+    OpenShell { host: String, shell: RemoteShell },
     /// Ask for a name, then create a project on the host.
     NewProject(String),
-    /// Dismiss what a failed creation left under a row.
-    Dismiss {
-        host: String,
-        project: Option<String>,
-    },
+    /// Dismiss what a failed project creation left under a host's folder.
+    DismissProject(String),
+    /// Dismiss what a failed shell creation left in the Shells panel.
+    DismissShell { host: String, project: String },
 }
 
 /// How long a worktree folder check stays fresh; the workspace redraws about
@@ -194,9 +175,11 @@ pub struct PanelData<'a> {
     pub project_order: ProjectOrder,
     pub project_last_edits: &'a BTreeMap<String, u64>,
     pub project_sort_menu_open: bool,
-    /// The rows of other Macs' projects, already filtered by the search. Only the Projects
-    /// panel draws them.
-    pub remote: &'a [RemoteRow],
+    /// The hosts' folders, already filtered by the search. Only the Projects panel draws them.
+    pub remote_folders: &'a [FolderView],
+    /// The selected project when it is on another Mac. The Worktrees, Tasks and Shells panels
+    /// then draw its lists instead of the local project's.
+    pub selected_remote: Option<&'a SelectedView>,
 }
 
 #[derive(Clone, Debug)]
@@ -661,13 +644,17 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                 cx,
                             ));
                         rows.push(project_row(
-                            DraggedProjectItem {
+                            &project.id,
+                            Some(DraggedProjectItem {
                                 kind: ProjectDragKind::Project(project.id.clone()),
                                 label: project.name.clone(),
                                 state_home: data.state_home.to_path_buf(),
+                            }),
+                            ProjectRowLook {
+                                selected: data.project_id == project.id,
+                                depth,
+                                dimmed: false,
                             },
-                            data.project_id == project.id,
-                            depth,
                             vec![
                                 title.into_any_element(),
                                 line(
@@ -694,18 +681,25 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     }
                 }
             }
-            if !data.remote.is_empty() {
-                rows.push(remote_header(
-                    data.remote
-                        .iter()
-                        .filter(|row| matches!(row, RemoteRow::Host { .. }))
-                        .count(),
+            // Each paired Mac is one more folder, below the local ones.
+            for folder in data.remote_folders {
+                total += folder.count;
+                matched_project_count += folder.projects.len();
+                push_remote_folder(&mut rows, folder, on_action.clone(), cx);
+            }
+        }
+        PanelKind::Worktrees | PanelKind::Tasks | PanelKind::Shells
+            if data.selected_remote.is_some() =>
+        {
+            if let Some(remote) = data.selected_remote {
+                total = push_remote_panel(
+                    &mut rows,
+                    kind,
+                    remote,
+                    &data,
+                    &matches,
+                    on_action.clone(),
                     cx,
-                ));
-                rows.extend(
-                    data.remote
-                        .iter()
-                        .map(|row| remote_row(row, on_action.clone(), cx)),
                 );
             }
         }
@@ -1052,46 +1046,36 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 .children(rows),
         );
 
-    if kind == PanelKind::Tasks
-        && let Some(task) = data.selected_task_id.and_then(|id| {
+    if kind == PanelKind::Tasks {
+        if let Some(remote) = data.selected_remote {
+            if let Some(task) = data
+                .selected_task_id
+                .and_then(|id| remote.tasks.items.iter().find(|task| task.id == id))
+            {
+                panel = panel.child(task_detail(
+                    task.status,
+                    &task.title,
+                    &remote_worktree_label(remote, task.worktree_id.as_deref()),
+                    &task.details,
+                    &task.id,
+                    colors,
+                ));
+            }
+        } else if let Some(task) = data.selected_task_id.and_then(|id| {
             data.state
                 .tasks
                 .iter()
                 .find(|task| task.id == id && task.project_id == data.project_id)
-        })
-    {
-        let (_, color) = task_mark(task.status, colors);
-        panel = panel.child(
-            div()
-                .id("task-detail")
-                .flex_none()
-                .min_h_0()
-                .max_h(px(200.0))
-                .overflow_y_scroll()
-                .border_t_1()
-                .border_color(rgb(colors.divider))
-                .p(px(8.0))
-                .child(div().text_color(rgb(colors.gold)).child("TASK DETAIL"))
-                .child(
-                    div()
-                        .pt(px(5.0))
-                        .text_color(rgb(colors.text))
-                        .child(task.title.clone()),
-                )
-                .child(div().pt(px(4.0)).text_color(rgb(color)).child(format!(
-                    "{} · @ {}",
-                    task.status.as_str(),
-                    worktree_label(data.state, task.worktree_id.as_deref())
-                )))
-                .child(div().pt(px(6.0)).text_color(rgb(colors.muted)).child(
-                    if task.details.is_empty() {
-                        "No details".to_owned()
-                    } else {
-                        task.details.clone()
-                    },
-                ))
-                .child(line(task.id.clone(), colors.muted, 10.0)),
-        );
+        }) {
+            panel = panel.child(task_detail(
+                task.status,
+                &task.title,
+                worktree_label(data.state, task.worktree_id.as_deref()),
+                &task.details,
+                &task.id,
+                colors,
+            ));
+        }
     }
     panel
         .children(
@@ -1396,34 +1380,49 @@ fn project_notification_control<V: 'static>(
         .into_any_element()
 }
 
-/// The heading of the other Macs, drawn like a folder heading but in the remote accent.
-fn remote_header<V: 'static>(hosts: usize, cx: &mut Context<V>) -> AnyElement {
-    let colors = theme::palette(cx);
+/// The detail of the selected task under the Tasks list.
+fn task_detail(
+    status: TaskStatus,
+    title: &str,
+    worktree: &str,
+    details: &str,
+    id: &str,
+    colors: Palette,
+) -> AnyElement {
+    let (_, color) = task_mark(status, colors);
     div()
-        .id("remote-section")
-        .flex()
-        .items_center()
-        .gap(px(5.0))
-        .h(px(27.0))
-        .pl(px(project_indent(0)))
-        .pr(px(8.0))
-        .mt(px(8.0))
-        .border_b_1()
-        .border_color(rgb(colors.magenta))
-        .bg(rgb(colors.panel_active))
-        .text_color(rgb(colors.magenta))
-        .child("⇄")
-        .child(div().flex_1().min_w_0().child("REMOTE"))
+        .id("task-detail")
+        .flex_none()
+        .min_h_0()
+        .max_h(px(200.0))
+        .overflow_y_scroll()
+        .border_t_1()
+        .border_color(rgb(colors.divider))
+        .p(px(8.0))
+        .child(div().text_color(rgb(colors.gold)).child("TASK DETAIL"))
         .child(
             div()
-                .text_size(px(9.0))
-                .text_color(rgb(colors.muted))
-                .child(format!("{hosts:02}")),
+                .pt(px(5.0))
+                .text_color(rgb(colors.text))
+                .child(title.to_owned()),
         )
-        .child(tooltip::anchor(
-            "Other Macs paired in Settings → Remote",
-            Look::Control,
-        ))
+        .child(
+            div()
+                .pt(px(4.0))
+                .text_color(rgb(color))
+                .child(format!("{} · @ {worktree}", status.as_str())),
+        )
+        .child(
+            div()
+                .pt(px(6.0))
+                .text_color(rgb(colors.muted))
+                .child(if details.is_empty() {
+                    "No details".to_owned()
+                } else {
+                    details.to_owned()
+                }),
+        )
+        .child(line(id.to_owned(), colors.muted, 10.0))
         .into_any_element()
 }
 
@@ -1436,289 +1435,532 @@ fn link_color(link: Option<Link>, colors: Palette) -> u32 {
     }
 }
 
-/// One row of the REMOTE section.
-fn remote_row<V: 'static>(
-    row: &RemoteRow,
+/// A paired Mac as a folder: its heading, what is wrong with it if anything, and its
+/// projects as ordinary rows. It cannot be renamed, moved or removed here; that is done in
+/// Settings.
+fn push_remote_folder<V: 'static>(
+    rows: &mut Vec<AnyElement>,
+    folder: &FolderView,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) {
+    let colors = theme::palette(cx);
+    let toggle_action = on_action.clone();
+    let toggle = PanelAction::ToggleFolder(folder_key(&folder.host));
+    let online = folder.link == Some(Link::Online);
+    let offline = folder.link == Some(Link::Offline);
+    let hint = folder.link.map_or("Connecting…", Link::text);
+    rows.push(
+        folder_bar(format!("remote-folder-{}", folder.host), 0, colors)
+            .cursor_pointer()
+            .child(if folder.collapsed { "▸" } else { "▾" })
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .text_color(rgb(link_color(folder.link, colors)))
+                    .child(if offline { "○" } else { "●" })
+                    .child(tooltip::anchor(hint, Look::Control)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_ellipsis()
+                    .overflow_hidden()
+                    .child(folder.label.clone()),
+            )
+            .children(folder.creating.then(|| {
+                div()
+                    .text_size(px(9.0))
+                    .text_color(rgb(colors.muted))
+                    .child("creating…")
+            }))
+            .child(
+                div()
+                    .text_size(px(9.0))
+                    .text_color(rgb(colors.muted))
+                    .child(format!("{:02}", folder.count)),
+            )
+            .children(online.then(|| {
+                project_control(
+                    &folder.host,
+                    "remote-new-project",
+                    "+",
+                    "New project on this Mac",
+                    PanelAction::Remote(RemoteAction::NewProject(folder.host.clone())),
+                    on_action.clone(),
+                    cx,
+                )
+            }))
+            .child(tooltip::anchor(
+                "A paired Mac. Its projects open here like local ones.",
+                Look::Control,
+            ))
+            .on_click(cx.listener(move |view, _, window, cx| {
+                toggle_action(view, toggle.clone(), window, cx);
+            }))
+            .into_any_element(),
+    );
+    if let Some(message) = &folder.failure {
+        rows.push(failure_row(
+            format!("remote-failure-{}", folder.host),
+            message,
+            1,
+            PanelAction::Remote(RemoteAction::DismissProject(folder.host.clone())),
+            on_action.clone(),
+            cx,
+        ));
+    }
+    if folder.collapsed {
+        return;
+    }
+    if let Some(note) = &folder.note {
+        rows.push(
+            div()
+                .pl(px(project_indent(1)))
+                .pr(px(8.0))
+                .py(px(5.0))
+                .text_size(px(10.0))
+                .text_color(rgb(if offline { colors.gold } else { colors.muted }))
+                .child(note.clone())
+                .into_any_element(),
+        );
+    }
+    for project in &folder.projects {
+        rows.push(remote_project_row(project, on_action.clone(), cx));
+    }
+}
+
+/// A project of a paired Mac, drawn as a local one is: name, then trees, tasks and live
+/// shells. Choosing it makes it the window's project.
+fn remote_project_row<V: 'static>(
+    project: &ProjectView,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    let remote = |action: RemoteAction| PanelAction::Remote(action);
-    match row {
-        RemoteRow::Host {
-            id,
-            label,
-            link,
-            expanded,
-            creating,
-        } => {
-            let toggle = remote(RemoteAction::Host(id.clone()));
-            let dot_text = link.map_or("Connecting…", Link::text);
+    project_row(
+        &project.key,
+        None,
+        ProjectRowLook {
+            selected: project.selected,
+            depth: 1,
+            dimmed: project.dimmed,
+        },
+        vec![
             div()
-                .id(format!("remote-host-{id}"))
                 .flex()
                 .items_center()
-                .gap(px(5.0))
-                .min_w_0()
-                .h(px(27.0))
-                .pl(px(project_indent(0)))
-                .pr(px(8.0))
-                .border_b_1()
-                .border_color(rgb(colors.divider))
-                .bg(rgb(colors.panel))
-                .text_color(rgb(colors.text))
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(colors.panel_active)))
-                .child(div().text_color(rgb(colors.magenta)).child(if *expanded {
-                    "▾"
-                } else {
-                    "▸"
-                }))
-                .child(
-                    div()
-                        .relative()
-                        .text_color(rgb(link_color(*link, colors)))
-                        .child(if *link == Some(Link::Offline) {
-                            "○"
-                        } else {
-                            "●"
-                        })
-                        .child(tooltip::anchor(dot_text, Look::Control)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_ellipsis()
-                        .overflow_hidden()
-                        .child(label.clone()),
-                )
-                .children(creating.then(|| {
-                    div()
-                        .text_size(px(9.0))
-                        .text_color(rgb(colors.muted))
-                        .child("creating…")
-                }))
-                .children((*link == Some(Link::Online)).then(|| {
-                    project_control(
-                        id,
-                        "remote-new-project",
-                        "+",
-                        "New project on this Mac",
-                        remote(RemoteAction::NewProject(id.clone())),
-                        on_action.clone(),
-                        cx,
-                    )
-                }))
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    on_action(view, toggle.clone(), window, cx);
-                }))
-                .into_any_element()
-        }
-        RemoteRow::Project {
-            host,
-            id,
-            name,
-            expanded,
-            creating,
-        } => {
-            let toggle = remote(RemoteAction::Project {
-                host: host.clone(),
-                project: id.clone(),
-            });
-            let chooser = remote(RemoteAction::Chooser {
-                host: host.clone(),
-                project: id.clone(),
-            });
+                .gap(px(4.0))
+                .child(div().flex_1().min_w_0().child(line(
+                    project.name.clone(),
+                    colors.text,
+                    11.0,
+                )))
+                .into_any_element(),
+            line(project.stats.line(), colors.muted, 9.0),
+        ],
+        PanelAction::Project(project.key.clone()),
+        on_action,
+        cx,
+    )
+}
+
+/// What a refused or lost creation left, with a way to dismiss it.
+fn failure_row<V: 'static>(
+    id: String,
+    message: &str,
+    depth: usize,
+    dismiss: PanelAction,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    div()
+        .id(id.clone())
+        .flex()
+        .items_start()
+        .gap(px(6.0))
+        .pl(px(project_indent(depth)))
+        .pr(px(8.0))
+        .py(px(4.0))
+        .text_size(px(10.0))
+        .text_color(rgb(colors.gold))
+        .child(div().flex_1().min_w_0().child(message.to_owned()))
+        .child(
             div()
-                .id(format!("remote-project-{host}-{id}"))
-                .flex()
-                .items_center()
-                .gap(px(5.0))
-                .min_w_0()
-                .py(px(5.0))
-                .pl(px(project_indent(1)))
-                .pr(px(8.0))
-                .text_color(rgb(colors.text))
+                .id(format!("{id}-dismiss"))
+                .flex_none()
+                .px(px(4.0))
                 .cursor_pointer()
-                .hover(|style| style.bg(rgb(colors.panel_active)))
-                .child(div().text_color(rgb(colors.muted)).child(if *expanded {
-                    "▾"
-                } else {
-                    "▸"
-                }))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_ellipsis()
-                        .overflow_hidden()
-                        .child(name.clone()),
-                )
-                .children(creating.then(|| {
-                    div()
-                        .text_size(px(9.0))
-                        .text_color(rgb(colors.muted))
-                        .child("starting…")
-                }))
-                .child(project_control(
-                    &format!("{host}-{id}"),
-                    "remote-new-shell",
-                    "+",
-                    "New shell or agent in this project",
-                    chooser,
-                    on_action.clone(),
-                    cx,
-                ))
+                .text_color(rgb(colors.muted))
+                .hover(|style| style.text_color(rgb(colors.text)))
+                .child("×")
+                .child(tooltip::anchor("Dismiss", Look::Control))
                 .on_click(cx.listener(move |view, _, window, cx| {
-                    on_action(view, toggle.clone(), window, cx);
-                }))
-                .into_any_element()
-        }
-        RemoteRow::Chooser { host, project } => div()
-            .flex()
-            .flex_wrap()
-            .gap(px(6.0))
-            .pl(px(project_indent(2)))
-            .pr(px(8.0))
-            .py(px(4.0))
-            .children(NewShellKind::ALL.into_iter().map(|kind| {
-                let action = remote(RemoteAction::NewShell {
-                    host: host.clone(),
-                    project: project.clone(),
-                    kind,
-                });
-                let on_action = on_action.clone();
-                div()
-                    .id(format!("remote-new-{}-{host}-{project}", kind.wire()))
-                    .px(px(8.0))
-                    .py(px(3.0))
-                    .border_1()
-                    .border_color(rgb(colors.divider))
-                    .text_size(px(10.0))
-                    .text_color(rgb(colors.cyan))
-                    .cursor_pointer()
-                    .hover(|style| {
-                        style
-                            .bg(rgb(colors.divider))
-                            .text_color(rgb(colors.magenta))
-                    })
-                    .child(kind.label())
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        on_action(view, action.clone(), window, cx);
-                    }))
-            }))
-            .into_any_element(),
-        RemoteRow::Worktree { label } => div()
-            .pl(px(project_indent(2)))
-            .pr(px(8.0))
-            .pt(px(4.0))
-            .text_size(px(10.0))
-            .text_color(rgb(colors.muted))
-            .overflow_hidden()
-            .text_ellipsis()
-            .child(label.clone())
-            .into_any_element(),
-        RemoteRow::Shell { host, shell, depth } => {
-            let open = remote(RemoteAction::OpenShell {
-                host: host.clone(),
-                shell: shell.clone(),
-            });
-            div()
-                .id(format!("remote-shell-{host}-{}", shell.id))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .min_w_0()
-                .py(px(4.0))
-                .pl(px(project_indent(*depth)))
-                .pr(px(8.0))
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(colors.panel_active)))
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(rgb(if shell.alive {
-                            colors.cyan
-                        } else {
-                            colors.magenta
-                        }))
-                        .child(if shell.alive { "●" } else { "×" }),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_ellipsis()
-                        .overflow_hidden()
-                        .text_color(rgb(if shell.alive {
-                            colors.text
-                        } else {
-                            colors.muted
-                        }))
-                        .child(shell.display()),
-                )
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    on_action(view, open.clone(), window, cx);
-                }))
-                .into_any_element()
-        }
-        RemoteRow::Note { text, error, depth } => div()
-            .pl(px(project_indent(*depth)))
-            .pr(px(8.0))
+                    on_action(view, dismiss.clone(), window, cx);
+                })),
+        )
+        .into_any_element()
+}
+
+/// The branch of a remote worktree, as a local one is named, or the word for none.
+fn remote_worktree_label(remote: &SelectedView, id: Option<&str>) -> String {
+    id.and_then(|id| {
+        remote
+            .worktrees
+            .items
+            .iter()
+            .find(|worktree| worktree.id == id)
+    })
+    .map_or_else(
+        || "UNASSIGNED".to_owned(),
+        |worktree| worktree.branch.clone(),
+    )
+}
+
+/// A line of the Worktrees, Tasks or Shells panel that says why the list is not (yet) full.
+fn listing_note<V: 'static, T>(
+    rows: &mut Vec<AnyElement>,
+    listing: &Listing<T>,
+    colors: Palette,
+    _: &mut Context<V>,
+) {
+    let (text, color) = match (&listing.error, listing.loading) {
+        (Some(error), _) => (error.clone(), colors.gold),
+        (None, true) => ("Loading…".to_owned(), colors.muted),
+        (None, false) => return,
+    };
+    rows.push(
+        div()
+            .px(px(8.0))
             .py(px(3.0))
             .text_size(px(10.0))
-            .text_color(rgb(if *error { colors.gold } else { colors.muted }))
-            .child(text.clone())
+            .text_color(rgb(color))
+            .child(text)
             .into_any_element(),
-        RemoteRow::Failure {
-            host,
-            project,
-            text,
-            depth,
-        } => {
-            let dismiss = remote(RemoteAction::Dismiss {
-                host: host.clone(),
-                project: project.clone(),
-            });
-            div()
-                .id(format!(
-                    "remote-failure-{host}-{}",
-                    project.as_deref().unwrap_or("host")
-                ))
-                .flex()
-                .items_start()
-                .gap(px(6.0))
-                .pl(px(project_indent(*depth)))
-                .pr(px(8.0))
-                .py(px(3.0))
-                .text_size(px(10.0))
-                .text_color(rgb(colors.gold))
-                .child(div().flex_1().min_w_0().child(text.clone()))
-                .child(
-                    div()
-                        .id(format!(
-                            "remote-dismiss-{host}-{}",
-                            project.as_deref().unwrap_or("host")
-                        ))
-                        .flex_none()
-                        .px(px(4.0))
-                        .cursor_pointer()
-                        .text_color(rgb(colors.muted))
-                        .hover(|style| style.text_color(rgb(colors.text)))
-                        .child("×")
-                        .child(tooltip::anchor("Dismiss", Look::Control))
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            on_action(view, dismiss.clone(), window, cx);
-                        })),
-                )
-                .into_any_element()
+    );
+}
+
+/// Dims what may be out of date, as a project's lists while its host cannot be reached.
+fn dimmed_if(element: AnyElement, dimmed: bool) -> AnyElement {
+    if dimmed {
+        div().opacity(0.5).child(element).into_any_element()
+    } else {
+        element
+    }
+}
+
+/// The Worktrees, Tasks or Shells panel of a project on another Mac, drawn like the local
+/// one from the host's lists. Returns how many entries the list has before the search.
+fn push_remote_panel<V: 'static>(
+    rows: &mut Vec<AnyElement>,
+    kind: PanelKind,
+    remote: &SelectedView,
+    data: &PanelData<'_>,
+    matches: &dyn Fn(&[&str]) -> bool,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> usize {
+    let colors = theme::palette(cx);
+    let note = |text: String, color: u32| {
+        div()
+            .px(px(8.0))
+            .py(px(3.0))
+            .text_size(px(10.0))
+            .text_color(rgb(color))
+            .child(text)
+            .into_any_element()
+    };
+    if remote.unpaired {
+        rows.push(note(
+            "This Mac is no longer paired. Add it again in Settings.".to_owned(),
+            colors.gold,
+        ));
+        return 0;
+    }
+    let dimmed = remote.link == Some(Link::Offline);
+    match remote.link {
+        Some(Link::Online) => {}
+        Some(Link::Offline) => rows.push(note(Link::Offline.text().to_owned(), colors.gold)),
+        Some(Link::Connecting) | None => rows.push(note(
+            format!("Connecting to {}…", remote.host_label),
+            colors.muted,
+        )),
+    }
+    let mut total = 0;
+    match kind {
+        PanelKind::Worktrees => {
+            listing_note(rows, &remote.worktrees, colors, cx);
+            for worktree in &remote.worktrees.items {
+                total += 1;
+                if !matches(&[&worktree.id, &worktree.branch, &worktree.path]) {
+                    continue;
+                }
+                let tasks = remote
+                    .tasks
+                    .items
+                    .iter()
+                    .filter(|task| task.worktree_id.as_deref() == Some(worktree.id.as_str()))
+                    .collect::<Vec<_>>();
+                let done = tasks
+                    .iter()
+                    .filter(|task| task.status == TaskStatus::Done)
+                    .count();
+                let selected = data.selected_worktree_id == Some(worktree.id.as_str());
+                rows.push(dimmed_if(
+                    row(
+                        format!("remote-worktree-{}", worktree.id),
+                        selected,
+                        colors.magenta,
+                        vec![
+                            line(
+                                format!(
+                                    "{} {}",
+                                    if worktree.primary { "◆" } else { "◇" },
+                                    worktree.branch
+                                ),
+                                if selected { colors.cyan } else { colors.text },
+                                11.0,
+                            ),
+                            line(worktree.path.clone(), colors.muted, 10.0),
+                            line(
+                                format!(
+                                    "{done}/{} TASKS · {}",
+                                    tasks.len(),
+                                    short_id(&worktree.id)
+                                ),
+                                colors.muted,
+                                10.0,
+                            ),
+                        ],
+                        PanelAction::Worktree(worktree.id.clone()),
+                        on_action.clone(),
+                        cx,
+                    ),
+                    dimmed,
+                ));
+            }
+        }
+        PanelKind::Tasks => {
+            listing_note(rows, &remote.tasks, colors, cx);
+            for task in &remote.tasks.items {
+                total += 1;
+                let worktree = remote_worktree_label(remote, task.worktree_id.as_deref());
+                if !matches(&[
+                    &task.id,
+                    &task.title,
+                    &task.details,
+                    task.status.as_str(),
+                    &worktree,
+                ]) {
+                    continue;
+                }
+                let (mark, color) = task_mark(task.status, colors);
+                rows.push(dimmed_if(
+                    row(
+                        format!("remote-task-{}", task.id),
+                        data.selected_task_id == Some(task.id.as_str()),
+                        color,
+                        vec![
+                            div()
+                                .flex()
+                                .gap(px(6.0))
+                                .child(div().text_color(rgb(color)).child(mark))
+                                .child(line(task.title.clone(), colors.text, 11.0))
+                                .into_any_element(),
+                            line(
+                                format!("{} · @ {worktree}", task.status.as_str()),
+                                colors.muted,
+                                10.0,
+                            ),
+                        ],
+                        PanelAction::Task(task.id.clone()),
+                        on_action.clone(),
+                        cx,
+                    ),
+                    dimmed,
+                ));
+            }
+        }
+        _ => {
+            if let Some(message) = &remote.failure {
+                rows.push(failure_row(
+                    format!("remote-shell-failure-{}", remote.project),
+                    message,
+                    0,
+                    PanelAction::Remote(RemoteAction::DismissShell {
+                        host: remote.host.clone(),
+                        project: remote.project.clone(),
+                    }),
+                    on_action.clone(),
+                    cx,
+                ));
+            }
+            if remote.creating {
+                rows.push(note("Starting a terminal…".to_owned(), colors.cyan));
+            }
+            listing_note(rows, &remote.shells, colors, cx);
+            for shell in &remote.shells.items {
+                total += 1;
+                let label = match (shell.orchestrator, shell.project_id.is_some()) {
+                    (true, true) => "P·ORCH".to_owned(),
+                    (true, false) => "G·ORCH".to_owned(),
+                    (false, _) => remote_worktree_label(remote, shell.worktree_id.as_deref()),
+                };
+                let command = shell.harness.as_deref().unwrap_or("shell");
+                if !matches(&[
+                    &shell.id,
+                    &label,
+                    &shell.cwd,
+                    command,
+                    if shell.alive { "live" } else { "exited" },
+                ]) {
+                    continue;
+                }
+                rows.push(dimmed_if(
+                    row(
+                        format!("remote-shell-{}", shell.id),
+                        false,
+                        colors.cyan,
+                        vec![
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(6.0))
+                                .child(line(
+                                    format!("{} · {label}", short_id(&shell.id)),
+                                    colors.text,
+                                    11.0,
+                                ))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(if shell.alive {
+                                            colors.cyan
+                                        } else {
+                                            colors.magenta
+                                        }))
+                                        .child(if shell.alive { "● LIVE" } else { "× EXITED" }),
+                                )
+                                .into_any_element(),
+                            line(shell.cwd.clone(), colors.muted, 10.0),
+                            line(
+                                command.to_owned(),
+                                if shell.alive {
+                                    colors.cyan
+                                } else {
+                                    colors.muted
+                                },
+                                10.0,
+                            ),
+                            line(shell.id.clone(), colors.muted, 10.0),
+                        ],
+                        PanelAction::Remote(RemoteAction::OpenShell {
+                            host: remote.host.clone(),
+                            shell: shell.clone(),
+                        }),
+                        on_action.clone(),
+                        cx,
+                    ),
+                    dimmed,
+                ));
+            }
         }
     }
+    total
+}
+
+/// What a panel shows while the window's project is on another Mac.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteSupport {
+    /// The host's own lists: worktrees, tasks and shells.
+    Lists,
+    /// Not about a project at all: the folders of projects, and the settings.
+    Global,
+    /// The host has no API for it yet. The panel says so rather than show local data.
+    Unavailable,
+}
+
+pub fn remote_support(kind: PanelKind) -> RemoteSupport {
+    match kind {
+        PanelKind::Worktrees | PanelKind::Tasks | PanelKind::Shells => RemoteSupport::Lists,
+        PanelKind::Projects | PanelKind::Settings => RemoteSupport::Global,
+        PanelKind::Files
+        | PanelKind::Preview
+        | PanelKind::ProjectSettings
+        | PanelKind::Schedules
+        | PanelKind::Usage => RemoteSupport::Unavailable,
+    }
+}
+
+/// What a panel with nothing behind it for a project on another Mac says instead of
+/// showing the local project's data.
+pub fn unavailable<V: 'static>(kind: PanelKind, host: &str, cx: &mut Context<V>) -> AnyElement {
+    let colors = theme::palette(cx);
+    let what = match kind {
+        PanelKind::Files => "Files",
+        PanelKind::Preview => "Preview",
+        PanelKind::ProjectSettings => "Project settings",
+        PanelKind::Schedules => "Schedules",
+        PanelKind::Usage => "Usage",
+        PanelKind::Projects => "Projects",
+        PanelKind::Worktrees => "Worktrees",
+        PanelKind::Tasks => "Tasks",
+        PanelKind::Shells => "Shells",
+        PanelKind::Settings => "Settings",
+    };
+    div()
+        .id(format!("unavailable-{}", kind.name()))
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .p(px(16.0))
+        .bg(rgb(colors.panel))
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(rgb(colors.text))
+                .child(format!("Not available for a project on {host}")),
+        )
+        .child(
+            div()
+                .max_w(px(360.0))
+                .text_size(px(10.0))
+                .text_color(rgb(colors.muted))
+                .child(format!(
+                    "{what} works with this Mac's own projects. Select one of them to use it."
+                )),
+        )
+        .into_any_element()
 }
 
 fn project_indent(depth: usize) -> f32 {
     8.0 + depth.min(16) as f32 * 12.0
+}
+
+/// The bar of a folder heading, shared by the local folders and the ones that stand for
+/// another Mac so the two read as one list.
+fn folder_bar(id: String, depth: usize, colors: Palette) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .min_w_0()
+        .h(px(27.0))
+        .pl(px(project_indent(depth)))
+        .pr(px(8.0))
+        .mt(px(3.0))
+        .border_b_1()
+        .border_color(rgb(colors.divider))
+        .bg(rgb(colors.panel_active))
+        .text_color(rgb(colors.magenta))
 }
 
 fn folder_header<V: 'static>(
@@ -1746,151 +1988,155 @@ fn folder_header<V: 'static>(
     let hover_context = drop_context.clone();
     let drop_context = drop_context.clone();
     let editable = id.is_some();
-    div()
-        .id(format!("project-folder-{}", id.unwrap_or("unfiled")))
-        .flex()
-        .items_center()
-        .gap(px(5.0))
-        .min_w_0()
-        .h(px(27.0))
-        .pl(px(project_indent(depth)))
-        .pr(px(8.0))
-        .mt(px(3.0))
-        .border_b_1()
-        .border_color(rgb(colors.divider))
-        .bg(rgb(colors.panel_active))
-        .text_color(rgb(colors.magenta))
-        .cursor_grab()
-        .drag_over::<DraggedProjectItem>(move |style, drag, _, _| {
-            if hover_context.accepts(drag, hover_destination.as_deref()) {
-                style
-                    .bg(rgb(colors.divider))
-                    .border_b_2()
-                    .border_color(rgb(colors.cyan))
-            } else {
-                style
-            }
-        })
-        .child(if collapsed { "▸" } else { "▾" })
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_ellipsis()
-                .overflow_hidden()
-                .child(name.to_owned()),
+    folder_bar(
+        format!("project-folder-{}", id.unwrap_or("unfiled")),
+        depth,
+        colors,
+    )
+    .cursor_grab()
+    .drag_over::<DraggedProjectItem>(move |style, drag, _, _| {
+        if hover_context.accepts(drag, hover_destination.as_deref()) {
+            style
+                .bg(rgb(colors.divider))
+                .border_b_2()
+                .border_color(rgb(colors.cyan))
+        } else {
+            style
+        }
+    })
+    .child(if collapsed { "▸" } else { "▾" })
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .text_ellipsis()
+            .overflow_hidden()
+            .child(name.to_owned()),
+    )
+    .child(
+        div()
+            .text_size(px(9.0))
+            .text_color(rgb(colors.muted))
+            .child(format!("{count:02}")),
+    )
+    .children(id.map(|id| {
+        project_control(
+            id,
+            "add-subfolder",
+            "+",
+            "Create subfolder",
+            PanelAction::CreateSubfolder(id.into()),
+            on_action.clone(),
+            cx,
         )
-        .child(
-            div()
-                .text_size(px(9.0))
-                .text_color(rgb(colors.muted))
-                .child(format!("{count:02}")),
+    }))
+    .children(id.map(|id| {
+        project_control(
+            id,
+            "edit-folder",
+            "✎",
+            "Rename folder",
+            PanelAction::EditFolder(id.into()),
+            on_action.clone(),
+            cx,
         )
-        .children(id.map(|id| {
-            project_control(
-                id,
-                "add-subfolder",
-                "+",
-                "Create subfolder",
-                PanelAction::CreateSubfolder(id.into()),
-                on_action.clone(),
-                cx,
-            )
-        }))
-        .children(id.map(|id| {
-            project_control(
-                id,
-                "edit-folder",
-                "✎",
-                "Rename folder",
-                PanelAction::EditFolder(id.into()),
-                on_action.clone(),
-                cx,
-            )
-        }))
-        .children(id.map(|id| {
-            project_control(
-                id,
-                "remove-folder",
-                "×",
-                "Remove folder; keep its projects and subfolders",
-                PanelAction::RemoveFolder(id.into()),
-                on_action,
-                cx,
-            )
-        }))
-        .child(tooltip::anchor(
-            if editable {
-                "Drag this folder to move it; drop projects or folders here"
-            } else {
-                "Drop projects here to unfile them, or folders to move them to the root"
+    }))
+    .children(id.map(|id| {
+        project_control(
+            id,
+            "remove-folder",
+            "×",
+            "Remove folder; keep its projects and subfolders",
+            PanelAction::RemoveFolder(id.into()),
+            on_action,
+            cx,
+        )
+    }))
+    .child(tooltip::anchor(
+        if editable {
+            "Drag this folder to move it; drop projects or folders here"
+        } else {
+            "Drop projects here to unfile them, or folders to move them to the root"
+        },
+        Look::Control,
+    ))
+    .on_click(cx.listener(move |view, _, window, cx| {
+        toggle_action(
+            view,
+            PanelAction::ToggleFolder(toggle_id.clone()),
+            window,
+            cx,
+        );
+    }))
+    .when(editable, move |element| {
+        element.on_drag(
+            DraggedProjectItem {
+                kind: ProjectDragKind::Folder(
+                    drag_folder_id.expect("an editable folder has an ID"),
+                ),
+                label: drag_label,
+                state_home: drag_state_home,
             },
-            Look::Control,
-        ))
-        .on_click(cx.listener(move |view, _, window, cx| {
-            toggle_action(
-                view,
-                PanelAction::ToggleFolder(toggle_id.clone()),
-                window,
-                cx,
-            );
-        }))
-        .when(editable, move |element| {
-            element.on_drag(
-                DraggedProjectItem {
-                    kind: ProjectDragKind::Folder(
-                        drag_folder_id.expect("an editable folder has an ID"),
-                    ),
-                    label: drag_label,
-                    state_home: drag_state_home,
-                },
-                move |drag, _, window, cx| {
-                    drag_view.update(cx, |view, cx| {
-                        drag_action(view, PanelAction::BeginProjectDrag, window, cx);
-                    });
-                    cx.new(|_| drag.clone())
-                },
-            )
-        })
-        .on_drop(
-            cx.listener(move |view, drag: &DraggedProjectItem, window, cx| {
-                if !drop_context.accepts(drag, drop_destination.as_deref()) {
-                    return;
-                }
-                let action = match &drag.kind {
-                    ProjectDragKind::Project(project_id) => PanelAction::MoveProject {
-                        project_id: project_id.clone(),
-                        folder_id: drop_destination.clone(),
-                    },
-                    ProjectDragKind::Folder(folder_id) => PanelAction::MoveFolder {
-                        folder_id: folder_id.clone(),
-                        parent_id: drop_destination.clone(),
-                    },
-                };
-                cx.stop_propagation();
-                drop_action(view, action, window, cx);
-            }),
+            move |drag, _, window, cx| {
+                drag_view.update(cx, |view, cx| {
+                    drag_action(view, PanelAction::BeginProjectDrag, window, cx);
+                });
+                cx.new(|_| drag.clone())
+            },
         )
-        .into_any_element()
+    })
+    .on_drop(
+        cx.listener(move |view, drag: &DraggedProjectItem, window, cx| {
+            if !drop_context.accepts(drag, drop_destination.as_deref()) {
+                return;
+            }
+            let action = match &drag.kind {
+                ProjectDragKind::Project(project_id) => PanelAction::MoveProject {
+                    project_id: project_id.clone(),
+                    folder_id: drop_destination.clone(),
+                },
+                ProjectDragKind::Folder(folder_id) => PanelAction::MoveFolder {
+                    folder_id: folder_id.clone(),
+                    parent_id: drop_destination.clone(),
+                },
+            };
+            cx.stop_propagation();
+            drop_action(view, action, window, cx);
+        }),
+    )
+    .into_any_element()
 }
 
-fn project_row<V: 'static>(
-    drag: DraggedProjectItem,
+/// How a project row is drawn.
+#[derive(Clone, Copy)]
+struct ProjectRowLook {
     selected: bool,
     depth: usize,
+    /// What the row says may be out of date, as when its host cannot be reached.
+    dimmed: bool,
+}
+
+/// A project of a folder. A local project can be dragged to another folder; one that belongs
+/// to another Mac (`drag` is `None`) stays where its host puts it.
+fn project_row<V: 'static>(
+    id: &str,
+    drag: Option<DraggedProjectItem>,
+    look: ProjectRowLook,
     children: Vec<AnyElement>,
     action: PanelAction,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    let ProjectDragKind::Project(ref project_id) = drag.kind else {
-        unreachable!("project rows only drag projects");
-    };
+    let ProjectRowLook {
+        selected,
+        depth,
+        dimmed,
+    } = look;
     let drag_view = cx.entity();
     let drag_action = on_action.clone();
     div()
-        .id(format!("project-{project_id}"))
+        .id(format!("project-{id}"))
         .flex()
         .flex_col()
         .gap(px(3.0))
@@ -1905,17 +2151,20 @@ fn project_row<V: 'static>(
         } else {
             colors.panel
         }))
-        .cursor_grab()
+        .when(dimmed, |row| row.opacity(0.5))
+        .when(drag.is_none(), |row| row.cursor_pointer())
         .hover(|element| element.bg(rgb(colors.panel_active)))
         .children(children)
         .on_click(cx.listener(move |view, _, window, cx| {
             on_action(view, action.clone(), window, cx);
         }))
-        .on_drag(drag, move |drag, _, window, cx| {
-            drag_view.update(cx, |view, cx| {
-                drag_action(view, PanelAction::BeginProjectDrag, window, cx);
-            });
-            cx.new(|_| drag.clone())
+        .when_some(drag, |row, drag| {
+            row.cursor_grab().on_drag(drag, move |drag, _, window, cx| {
+                drag_view.update(cx, |view, cx| {
+                    drag_action(view, PanelAction::BeginProjectDrag, window, cx);
+                });
+                cx.new(|_| drag.clone())
+            })
         })
         .into_any_element()
 }
@@ -1995,6 +2244,21 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::store::{Project, ProjectFolder};
+
+    #[test]
+    fn panels_without_a_remote_api_say_so_and_the_lists_are_the_hosts() {
+        use PanelKind::*;
+        for kind in [Worktrees, Tasks, Shells] {
+            assert_eq!(remote_support(kind), RemoteSupport::Lists, "{kind:?}");
+        }
+        for kind in [Files, Preview, ProjectSettings, Schedules, Usage] {
+            assert_eq!(remote_support(kind), RemoteSupport::Unavailable, "{kind:?}");
+        }
+        // The folders of projects and the settings are not about one project.
+        for kind in [Projects, Settings] {
+            assert_eq!(remote_support(kind), RemoteSupport::Global, "{kind:?}");
+        }
+    }
 
     fn project_tree(state: &State, query: &str, collapsed: &HashSet<String>) -> ProjectTree {
         super::project_tree(

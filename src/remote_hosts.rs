@@ -159,14 +159,14 @@ impl RemoteCli {
     }
 
     /// Redeems a pairing link from another Mac. `riwork-remote` stores the established host
-    /// before returning; the link itself is passed on and never kept or echoed.
+    /// before returning. The link goes in on standard input (`--link -`), not on the command
+    /// line where any local process could read it, and is never kept or echoed.
     pub fn add_host(&self, link: &str, label: &str) -> Result<(), String> {
         let link = link.trim();
         if link.is_empty() {
             return Err("Paste the pairing link from the other Mac first".into());
         }
-        let mut args = argv(&["hosts", "add", "--link"]);
-        args.push(link.into());
+        let mut args = argv(&["hosts", "add", "--link", "-"]);
         let label = label.trim();
         if !label.is_empty() {
             args.push("--label".into());
@@ -174,7 +174,7 @@ impl RemoteCli {
         }
         // The link is secret whatever it looks like, so it is scrubbed from errors even when it
         // lacks the usual scheme.
-        self.run(&args, CLI_TIMEOUT, &[link])?;
+        self.run_with_input(&args, CLI_TIMEOUT, &[link], Some(link))?;
         Ok(())
     }
 
@@ -252,6 +252,18 @@ impl RemoteCli {
         timeout: Duration,
         secrets: &[&str],
     ) -> Result<String, String> {
+        self.run_with_input(args, timeout, secrets, None)
+    }
+
+    /// `run`, with `input` written to the child's standard input (then closed). Without input
+    /// the child gets none at all.
+    fn run_with_input(
+        &self,
+        args: &[OsString],
+        timeout: Duration,
+        secrets: &[&str],
+        input: Option<&str>,
+    ) -> Result<String, String> {
         let timeout = self.timeout_cap.map_or(timeout, |cap| cap.min(timeout));
         let mut hidden: Vec<String> = secrets.iter().map(|secret| (*secret).to_owned()).collect();
         hidden.extend(
@@ -264,11 +276,24 @@ impl RemoteCli {
 
         let mut child = Command::new(&self.binary)
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| format!("Cannot start {}: {error}", self.binary.display()))?;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            // Written on its own thread so a child that never reads cannot stall the wait
+            // below; a child that exits first just closes the pipe.
+            let input = input.to_owned();
+            thread::spawn(move || {
+                let _ = stdin.write_all(input.as_bytes());
+                let _ = stdin.write_all(b"\n");
+            });
+        }
         let stdout = Drain::start(child.stdout.take());
         let stderr = Drain::start(child.stderr.take());
 
@@ -1063,8 +1088,9 @@ case "$1" in
     case "$2" in
       list) cat "$DIR/hosts.json" ;;
       add)
+        cat > "$DIR/stdin"
         if [ -e "$DIR/add_fail" ]; then
-          echo "riwork-remote: cannot redeem: $*" >&2
+          echo "riwork-remote: cannot redeem: $* $(cat "$DIR/stdin")" >&2
           exit 2
         fi
         ;;
@@ -1622,13 +1648,17 @@ exit 0
         fake.cli
             .add_host("riwork://pair?v=2&data=ABC", "   ")
             .expect("add without label");
+        // The link never appears on the command line, only on standard input.
         assert_eq!(
             fake.log(),
-            vec![
-                "hosts add --link riwork://pair?v=2&data=ABC --label Studio",
-                "hosts add --link riwork://pair?v=2&data=ABC",
-            ]
+            vec!["hosts add --link - --label Studio", "hosts add --link -"]
         );
+        assert!(
+            fake.log()
+                .iter()
+                .all(|line| !line.contains("riwork://") && !line.contains("ABC"))
+        );
+        assert_eq!(fake.dir.read("stdin").trim(), "riwork://pair?v=2&data=ABC");
     }
 
     #[test]

@@ -2727,6 +2727,39 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_projects_layout_is_kept_under_its_own_key_beside_the_local_ones() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let key = "remote:host-1:project-9";
+        let mut local = saved_layout();
+        local.selected_worktree_id = Some("local-worktree".to_owned());
+        let mut remote_layout = saved_layout();
+        remote_layout.selected_worktree_id = Some("remote-worktree".to_owned());
+        remote_layout.panes.insert(
+            4,
+            pane(
+                vec![remote("host-1", "shell-9"), panel(PanelKind::Worktrees)],
+                0,
+            ),
+        );
+        remote_layout.normalize().unwrap();
+        store.save("project-a", &local).unwrap();
+        store.save(key, &remote_layout).unwrap();
+
+        // Each is its own: saving or loading one never reads or replaces the other, and a
+        // remote project's id is not a local one's.
+        assert_eq!(store.load(key).unwrap(), Some(remote_layout.clone()));
+        assert_eq!(store.load("project-a").unwrap(), Some(local.clone()));
+        let mut changed = local.clone();
+        changed.selected_task_id = Some("another-task".to_owned());
+        store.save("project-a", &changed).unwrap();
+        assert_eq!(store.load(key).unwrap(), Some(remote_layout));
+        let file = directory.read_value();
+        let projects = file["projects"].as_object().unwrap();
+        assert!(projects.contains_key(key) && projects.contains_key("project-a"));
+    }
+
+    #[test]
     fn a_build_that_predates_remote_tabs_keeps_them_verbatim() {
         // What an older build does with the tab: the kind is unknown to it, so the tab is
         // set aside and written back unchanged. Simulated with a kind no build knows.

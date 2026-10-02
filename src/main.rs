@@ -20,6 +20,7 @@ mod project_creator;
 mod project_recency;
 mod project_settings;
 mod project_sort;
+mod remote_cache;
 mod remote_cli;
 mod remote_hosts;
 mod remote_prompt;
@@ -795,7 +796,10 @@ struct WorkspaceStartup {
     settings_store: SettingsStore,
     sessions: SessionManager,
     state: State,
+    /// The local project the window starts on, which also gives it its working directory.
     project: Project,
+    /// The project on another Mac to open instead, as the last launch left it.
+    remote: Option<String>,
 }
 
 impl WorkspaceStartup {
@@ -841,6 +845,7 @@ impl WorkspaceStartup {
             sessions,
             state,
             project,
+            remote: None,
         })
     }
 }
@@ -859,6 +864,7 @@ impl Workspace {
             sessions,
             state,
             project,
+            remote: remote_start,
         } = startup;
         let settings = cx.global::<Settings>().clone();
         let appearance = cx.global::<Appearance>().clone();
@@ -919,6 +925,8 @@ impl Workspace {
                 active: 0,
             },
         );
+        // A window restored on, or launched with, a project on another Mac opens that one.
+        let remote_start = remote_start_project(restore.as_ref(), remote_start.as_deref());
         let mut workspace = Self {
             project_creator: None,
             folder_editor: None,
@@ -998,6 +1006,12 @@ impl Workspace {
             window_visible: window.is_visible(),
             focus: cx.focus_handle(),
         };
+        if let Some(key) = remote_start {
+            workspace.project_id = key.clone();
+            workspace.selected_worktree_id = None;
+            remote_service::select(Some(key), cx);
+            workspace.refresh_window_title(window, cx);
+        }
         workspace.load_project(window, cx);
         workspace.refresh_project_recency(cx);
         if cua::CuaManager::open_default()
@@ -1088,6 +1102,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.local_only(cx)?;
         let worktree_id = self.selected_worktree_id.clone();
         let cwd = worktree_id
             .as_ref()
@@ -1561,7 +1576,7 @@ impl Workspace {
         select: bool,
         cx: &mut Context<Self>,
     ) {
-        if panel == PanelKind::Schedules && self.schedule_panel.is_none() {
+        if panel == PanelKind::Schedules && self.schedule_panel.is_none() && !self.is_remote() {
             let store = self.store.clone();
             let sessions = self.sessions.clone();
             let project = self.project_id.clone();
@@ -1748,8 +1763,13 @@ impl Workspace {
                 cx.notify();
             }
             PanelAction::ToggleFolder(id) => {
+                let host_folder = remote_tree::parse_folder_key(&id).is_some();
                 if !self.collapsed_project_folders.remove(&id) {
                     self.collapsed_project_folders.insert(id);
+                }
+                if host_folder {
+                    // Opening a host's folder lists its projects now, not at the next tick.
+                    remote_service::tick(&self.remote_wants(), cx);
                 }
                 cx.notify();
             }
@@ -1845,6 +1865,10 @@ impl Workspace {
     }
 
     fn ensure_file_explorer(&mut self, cx: &mut Context<Self>) {
+        // Another Mac's files are not browsable from here, and this Mac's would be the wrong ones.
+        if self.is_remote() {
+            return;
+        }
         if self.file_explorer.is_none() {
             let panel = cx.new(FileExplorer::new);
             cx.subscribe(&panel, |workspace, _, event, cx| match event {
@@ -2758,11 +2782,16 @@ impl Workspace {
                     self.selected_worktree_id = Some(worktree_id.clone());
                 }
             }
+            // A remote project's tasks are the host's: the saved choice stands until its list says
+            // otherwise.
+            let remote = self.is_remote();
             self.selected_task_id = saved.selected_task_id.clone().filter(|id| {
-                self.state
-                    .tasks
-                    .iter()
-                    .any(|task| &task.id == id && task.project_id == self.project_id)
+                remote
+                    || self
+                        .state
+                        .tasks
+                        .iter()
+                        .any(|task| &task.id == id && task.project_id == self.project_id)
             });
         }
         let mut known_shell_ids = self.detached_shell_ids.clone();
@@ -2804,7 +2833,9 @@ impl Workspace {
                 }
             }
         }
+        // A project on another Mac starts with no terminal: none is made on this Mac for it.
         if destination_missing
+            && !self.is_remote()
             && !live_shells.values().any(|shell| {
                 shell.kind == ShellKind::Project
                     && session_belongs_to_workspace(shell, &self.project_id)
@@ -2930,20 +2961,24 @@ impl Workspace {
     /// Tells the Dock menu which project and branch this window shows. Cheap when
     /// nothing changed, so it can follow every refresh.
     fn announce_to_dock(&self, window: &Window, cx: &mut App) {
-        let branch =
-            self.selected_worktree_id
+        let branch = match self.remote_project() {
+            Some((host, project)) => self.selected_worktree_id.as_deref().and_then(|id| {
+                cx.global::<RemoteState>()
+                    .tree()
+                    .worktree_branch(host, project, id)
+                    .map(str::to_owned)
+            }),
+            None => self
+                .selected_worktree_id
                 .as_ref()
                 .and_then(|id| {
                     self.state.worktrees.iter().find(|worktree| {
                         worktree.id == *id && worktree.project_id == self.project_id
                     })
                 })
-                .map(|worktree| worktree.branch.clone());
-        let project = self
-            .state
-            .project(&self.project_id)
-            .map(|project| project.name.clone())
-            .unwrap_or_default();
+                .map(|worktree| worktree.branch.clone()),
+        };
+        let project = self.project_display_name(cx).unwrap_or_default();
         dock_menu::update_window(
             dock_menu::DockWindow {
                 id: window.window_handle().window_id().as_u64(),
@@ -2989,6 +3024,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A project on another Mac is never looked up in, or recorded by, the local store.
+        if remote_tree::parse_project_key(project_id).is_some() {
+            self.activate_remote_project(project_id, window, cx);
+            return;
+        }
         let project = if persist {
             match self.store.use_project(project_id) {
                 Ok(project) => {
@@ -3022,6 +3062,10 @@ impl Workspace {
             self.carry_layout = Some(layout);
         }
         self.restore_layout = None;
+        if self.is_remote() {
+            // Back on one of this Mac's projects: the next launch opens it, not the remote one.
+            remote_service::select(None, cx);
+        }
         self.project_id = project.id;
         self.project_settings_panel = None;
         self.schedule_panel = None;
@@ -3043,7 +3087,50 @@ impl Workspace {
         self.announce_to_dock(window, cx);
     }
 
+    /// Make a project on another Mac the window's project, as selecting a local one does:
+    /// the layout is that project's own, and the Worktrees, Tasks and Shells panels draw its
+    /// lists. Nothing is created or looked up in this Mac's store for it, and the host does
+    /// not have to be reachable: what its folder listed last stays on screen, dimmed, while
+    /// the connection is made in the background.
+    fn activate_remote_project(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_id == key || remote_tree::parse_project_key(key).is_none() {
+            return;
+        }
+        tooltip::hide(cx);
+        self.save_layout();
+        if let Some(layout) = self.layout_snapshot() {
+            self.carry_layout = Some(layout);
+        }
+        self.restore_layout = None;
+        self.project_id = key.to_owned();
+        self.project_settings_panel = None;
+        self.schedule_panel = None;
+        self.file_explorer = None;
+        self.file_preview = None;
+        self.selected_worktree_id = None;
+        self.selected_task_id = None;
+        self.search_focused = false;
+        self.search.clear();
+        self.search_marked = None;
+        remote_service::select(Some(key.to_owned()), cx);
+        self.refresh_window_title(window, cx);
+        self.load_project(window, cx);
+        remote_service::tick(&self.remote_wants(), cx);
+        self.announce_to_dock(window, cx);
+    }
+
+    /// Title the window for the selected project, with the Mac it is on if it is on another.
+    fn refresh_window_title(&mut self, window: &mut Window, cx: &App) {
+        if let Some(name) = self.project_display_name(cx) {
+            self.set_window_title(&name, window);
+        }
+    }
+
     fn select_worktree(&mut self, worktree_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_remote() {
+            self.select_remote_worktree(worktree_id, window, cx);
+            return;
+        }
         let Some(worktree) = self
             .state
             .worktrees
@@ -3087,7 +3174,61 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Choosing a worktree of a remote project makes it the one new terminals start in, and
+    /// shows a live terminal of it if there is one. Unlike a local worktree it starts none:
+    /// that would run something on another Mac for a click.
+    fn select_remote_worktree(
+        &mut self,
+        worktree_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self.remote_project().map(|(host, _)| host.to_owned()) else {
+            return;
+        };
+        if !self.ensure_layout(window, cx) {
+            return;
+        }
+        self.selected_worktree_id = Some(worktree_id.to_owned());
+        let tree = cx.global::<RemoteState>().tree();
+        let in_worktree = |shell: &RemoteShell| shell.worktree_id.as_deref() == Some(worktree_id);
+        let existing = self.panes.iter().find_map(|(pane_id, pane)| {
+            pane.tabs
+                .iter()
+                .find(|tab| {
+                    tab.remote()
+                        .filter(|(tab_host, _)| *tab_host == host)
+                        .and_then(|(_, shell)| tree.known_shell(&host, shell))
+                        .is_some_and(in_worktree)
+                })
+                .map(|tab| (*pane_id, tab.id))
+        });
+        let live = tree.selected_view(&self.project_id).and_then(|view| {
+            view.shells
+                .items
+                .into_iter()
+                .rev()
+                .find(|shell| shell.alive && !shell.orchestrator && in_worktree(shell))
+        });
+        if let Some((pane_id, tab_id)) = existing {
+            self.select_tab(pane_id, tab_id, window, cx);
+        } else if let Some(shell) = live {
+            self.open_remote_shell(host, shell, window, cx);
+        }
+        self.save_layout();
+        cx.notify();
+    }
+
     fn select_task(&mut self, task_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_remote() {
+            // The host has no task writes: a task can only be read.
+            if self.ensure_layout(window, cx) {
+                self.selected_task_id = Some(task_id.to_owned());
+                self.save_layout();
+                cx.notify();
+            }
+            return;
+        }
         let Some(task) = self
             .state
             .tasks
@@ -3166,8 +3307,54 @@ impl Workspace {
         cx.notify();
     }
 
-    /// What of the remote machinery someone is looking at: the Projects panel's REMOTE
-    /// section, a Settings panel listing the hosts, and the hosts that shown tabs are on.
+    /// The selected project's place on another Mac, if that is where it is: the host's id and
+    /// the project's id on it.
+    fn remote_project(&self) -> Option<(&str, &str)> {
+        remote_tree::parse_project_key(&self.project_id)
+    }
+
+    fn is_remote(&self) -> bool {
+        self.remote_project().is_some()
+    }
+
+    /// The name of the Mac the selected project is on.
+    fn remote_host_name(&self, cx: &App) -> Option<String> {
+        let (host, _) = self.remote_project()?;
+        Some(cx.global::<RemoteState>().tree().host_name(host))
+    }
+
+    /// Why something that only works on this Mac's own projects cannot run now, when the
+    /// selected project is on another Mac. Nothing local is ever done for it instead.
+    fn local_only(&self, cx: &App) -> Result<(), String> {
+        match self.remote_host_name(cx) {
+            Some(host) => Err(format!("Not available for a project on {host}")),
+            None => Ok(()),
+        }
+    }
+
+    /// The selected project's name for the window title and the status bar: with the Mac it is
+    /// on, if it is on another one.
+    fn project_display_name(&self, cx: &App) -> Option<String> {
+        match self.remote_project() {
+            Some((host, project)) => {
+                let tree = cx.global::<RemoteState>().tree();
+                Some(format!(
+                    "{} (on {})",
+                    tree.project_name(host, project),
+                    tree.host_name(host)
+                ))
+            }
+            None => self
+                .state
+                .project(&self.project_id)
+                .ok()
+                .map(|project| project.name.clone()),
+        }
+    }
+
+    /// What of the remote machinery someone is looking at: the hosts' folders in a Projects
+    /// panel, a Settings panel listing the hosts, the lists of the selected remote project
+    /// that its panels draw, and the hosts that shown tabs are on.
     fn remote_wants(&self) -> remote_tree::Wants {
         let on_screen = |kind: PanelKind| {
             self.panes.iter().any(|(pane_id, pane)| {
@@ -3177,8 +3364,14 @@ impl Workspace {
                     )
             })
         };
+        let (worktrees, tasks, shells) = (
+            on_screen(PanelKind::Worktrees),
+            on_screen(PanelKind::Tasks),
+            on_screen(PanelKind::Shells),
+        );
         remote_tree::Wants {
-            section: on_screen(PanelKind::Projects),
+            folders: on_screen(PanelKind::Projects),
+            collapsed: self.collapsed_project_folders.clone(),
             settings: on_screen(PanelKind::Settings),
             tab_hosts: self
                 .panes
@@ -3191,6 +3384,16 @@ impl Workspace {
                         .filter_map(|(_, tab)| tab.remote().map(|(host, _)| host.to_owned()))
                 })
                 .collect(),
+            // Each panel names things by worktree, and the worktrees' rows count tasks.
+            selected: self
+                .remote_project()
+                .map(|(host, project)| remote_tree::SelectedWants {
+                    host: host.to_owned(),
+                    project: project.to_owned(),
+                    worktrees: worktrees || tasks || shells,
+                    tasks: tasks || worktrees,
+                    shells,
+                }),
         }
     }
 
@@ -3364,40 +3567,11 @@ impl Workspace {
     ) {
         use panels::RemoteAction;
         match action {
-            RemoteAction::Host(host) => {
-                cx.global_mut::<RemoteState>().tree_mut().toggle_host(&host)
-            }
-            RemoteAction::Project { host, project } => cx
-                .global_mut::<RemoteState>()
-                .tree_mut()
-                .toggle_project(&host, &project),
-            RemoteAction::Chooser { host, project } => cx
-                .global_mut::<RemoteState>()
-                .tree_mut()
-                .toggle_chooser(&host, &project),
-            RemoteAction::Dismiss { host, project } => cx
-                .global_mut::<RemoteState>()
-                .tree_mut()
-                .dismiss_failure(&host, project.as_deref()),
             RemoteAction::OpenShell { host, shell } => {
-                self.open_remote_shell(host, shell, window, cx);
-                return;
-            }
-            RemoteAction::NewShell {
-                host,
-                project,
-                kind,
-            } => {
-                self.create_remote_shell(host, project, kind, cx);
-                return;
+                self.open_remote_shell(host, shell, window, cx)
             }
             RemoteAction::NewProject(host) => {
-                let label = cx
-                    .global::<RemoteState>()
-                    .tree()
-                    .host_label(&host)
-                    .unwrap_or("the host")
-                    .to_owned();
+                let label = cx.global::<RemoteState>().tree().host_name(&host);
                 self.begin_remote_prompt(
                     PromptKind::NewProject {
                         host_id: host,
@@ -3406,23 +3580,39 @@ impl Workspace {
                     window,
                     cx,
                 );
-                return;
+            }
+            RemoteAction::DismissProject(host) => {
+                cx.global_mut::<RemoteState>()
+                    .tree_mut()
+                    .dismiss_project_failure(&host);
+                cx.notify();
+            }
+            RemoteAction::DismissShell { host, project } => {
+                cx.global_mut::<RemoteState>()
+                    .tree_mut()
+                    .dismiss_shell_failure(&host, &project);
+                cx.notify();
             }
         }
-        // Opening a row asks for its lists now, not at the next tick.
-        remote_service::tick(&self.remote_wants(), cx);
-        cx.notify();
     }
 
-    /// Ask a host for a new shell in a project, once. Whatever happens is recorded on the
-    /// project's row; nothing is sent again unless the person asks again.
+    /// Ask the host of the selected remote project for a new terminal, once: the New Tab menu,
+    /// Cmd+T and the agent shortcuts all come here for a project on another Mac. It starts in
+    /// the selected worktree, or the project's root, and opens as a tab when the host
+    /// answers. Whatever happens is recorded on the project; nothing is sent again unless
+    /// the person asks again.
     fn create_remote_shell(
         &mut self,
-        host: String,
-        project: String,
         kind: NewShellKind,
+        unrestricted: bool,
         cx: &mut Context<Self>,
     ) {
+        let Some((host, project)) = self
+            .remote_project()
+            .map(|(host, project)| (host.to_owned(), project.to_owned()))
+        else {
+            return;
+        };
         if !cx
             .global_mut::<RemoteState>()
             .tree_mut()
@@ -3431,39 +3621,133 @@ impl Workspace {
             return;
         }
         cx.notify();
+        // The worktree the person chose, if the host still lists it.
+        let scope = match self.selected_worktree_id.clone().filter(|id| {
+            cx.global::<RemoteState>()
+                .tree()
+                .worktree_branch(&host, &project, id)
+                .is_some()
+        }) {
+            Some(worktree) => remote_tree::ShellScope::Worktree(worktree),
+            None => remote_tree::ShellScope::Project(project.clone()),
+        };
         let backend = cx.global_mut::<RemoteState>().backend();
         let work = cx.background_executor().spawn({
-            let (host, project) = (host.clone(), project.clone());
+            let host = host.clone();
             async move {
                 backend
                     .map_err(remote_hosts::RemoteError::Unreachable)?
-                    .create_shell(&host, &project, kind)
+                    .create_shell(&host, &scope, kind, unrestricted)
             }
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let entity_id = this.entity_id();
             cx.update(|app| {
-                // Settled even if this window has closed meanwhile, so the row does not
+                // Settled even if this window has closed meanwhile, so the project does not
                 // stay "creating" in the others.
+                let failure = result
+                    .as_ref()
+                    .err()
+                    .map(remote_hosts::RemoteError::message);
                 let shell = app
                     .global_mut::<RemoteState>()
                     .tree_mut()
                     .finish_shell(&host, &project, result);
                 app.refresh_windows();
-                if let Some(shell) = shell {
-                    app.with_window(entity_id, |window, app| {
-                        let _ = this.update(app, |workspace, cx| {
-                            workspace.open_remote_shell(host, shell, window, cx);
+                match shell {
+                    Some(shell) => {
+                        app.with_window(entity_id, |window, app| {
+                            let _ = this.update(app, |workspace, cx| {
+                                workspace.open_remote_shell(host, shell, window, cx);
+                            });
                         });
-                    });
+                    }
+                    None => {
+                        let _ = this.update(app, |workspace, cx| {
+                            workspace.notice = failure;
+                            cx.notify();
+                        });
+                    }
                 }
             });
         })
         .detach();
     }
 
-    /// Ask a host to make a project, once, like `create_remote_shell`.
+    /// Open the host's orchestrator for the selected remote project (or its global one), if
+    /// it has one running. Orchestrators cannot be started from here.
+    fn open_remote_orchestrator(
+        &mut self,
+        project_scoped: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((host, project)) = self
+            .remote_project()
+            .map(|(host, project)| (host.to_owned(), project.to_owned()))
+        else {
+            return;
+        };
+        let wanted = project_scoped.then_some(project);
+        let known = cx
+            .global::<RemoteState>()
+            .tree()
+            .orchestrator(&host, wanted.as_deref())
+            .cloned();
+        if let Some(shell) = known {
+            self.open_remote_shell(host, shell, window, cx);
+            return;
+        }
+        // Not listed yet (the Shells panel is not showing): ask the host once.
+        let backend = match cx.global_mut::<RemoteState>().backend() {
+            Ok(backend) => backend,
+            Err(error) => {
+                self.notice = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let work = cx.background_executor().spawn({
+            let host = host.clone();
+            async move { backend.orchestrators(&host) }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let entity_id = this.entity_id();
+            cx.update(|app| {
+                let request = remote_tree::Request::Orchestrators { host: host.clone() };
+                let listed = result.is_ok();
+                let tree = app.global_mut::<RemoteState>().tree_mut();
+                tree.apply(&request, remote_tree::Reply::Orchestrators(result));
+                let shell = tree.orchestrator(&host, wanted.as_deref()).cloned();
+                let name = tree.host_name(&host);
+                app.refresh_windows();
+                let scope = if wanted.is_some() {
+                    "project"
+                } else {
+                    "global"
+                };
+                app.with_window(entity_id, |window, app| {
+                    let _ = this.update(app, |workspace, cx| match shell {
+                        Some(shell) => workspace.open_remote_shell(host, shell, window, cx),
+                        None => {
+                            workspace.notice = Some(if listed {
+                                format!("{name} has no {scope} orchestrator running")
+                            } else {
+                                format!("Cannot reach {name}")
+                            });
+                            cx.notify();
+                        }
+                    });
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// Ask a host to make a project, once, like `create_remote_shell`. It joins the host's
+    /// folder when the host answers.
     fn create_remote_project(&mut self, host: String, name: String, cx: &mut Context<Self>) {
         if !cx
             .global_mut::<RemoteState>()
@@ -3491,10 +3775,6 @@ impl Workspace {
                     .finish_project(&host, result);
                 app.refresh_windows();
                 if let Some(project) = created {
-                    // Opened, so its first shell is one click away.
-                    app.global_mut::<RemoteState>()
-                        .tree_mut()
-                        .expand_project(&host, &project.id);
                     let _ = this.update(app, |workspace, cx| {
                         workspace.notice = Some(format!("Created {}", project.name));
                         cx.notify();
@@ -3566,7 +3846,10 @@ impl Workspace {
             changed = true;
         }
         self.refresh_count += 1;
-        if self.refresh_count % 5 == 0 && self.syncing_project_ids.insert(self.project_id.clone()) {
+        if self.refresh_count % 5 == 0
+            && !self.is_remote()
+            && self.syncing_project_ids.insert(self.project_id.clone())
+        {
             let project_id = self.project_id.clone();
             let work_project_id = project_id.clone();
             let store = self.store.clone();
@@ -3616,10 +3899,7 @@ impl Workspace {
         if self.window_visible {
             self.refresh_project_recency(cx);
         }
-        if let Ok(project) = self.state.project(&self.project_id) {
-            let name = project.name.clone();
-            self.set_window_title(&name, window);
-        }
+        self.refresh_window_title(window, cx);
         self.announce_to_dock(window, cx);
         // A panel that is open in a tab but not on screen is drawn by nobody, so
         // it is brought up to date when its tab comes forward.
@@ -4021,6 +4301,10 @@ impl Workspace {
         if !self.ensure_layout(window, cx) {
             return;
         }
+        if self.is_remote() {
+            self.create_remote_shell(NewShellKind::Shell, false, cx);
+            return;
+        }
         if let Err(error) = self.spawn_tab(self.active_pane, window, cx) {
             self.notice = Some(error);
             cx.notify();
@@ -4045,7 +4329,11 @@ impl Workspace {
                 active: 0,
             },
         );
-        if let Err(error) = self.spawn_tab(new_pane, window, cx) {
+        // A pane next to a remote project's starts empty: a terminal there is made on the other
+        // Mac, and only when asked for, from the New Tab menu.
+        if !self.is_remote()
+            && let Err(error) = self.spawn_tab(new_pane, window, cx)
+        {
             self.panes.remove(&new_pane);
             self.notice = Some(error);
             cx.notify();
@@ -4399,6 +4687,23 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let project_id = self.project_id.clone();
+        if remote_tree::parse_project_key(&project_id).is_some() {
+            // A project on another Mac opens as itself in a new window.
+            let window = runtime::RuntimeWindow {
+                project_id: Some(project_id),
+                path: self.cwd.clone(),
+                bounds: None,
+                mode: runtime::WindowMode::Windowed,
+                layout: None,
+                focus_mode: false,
+                focus_centered: false,
+            };
+            if let Err(error) = open_workspace_window(None, self.cwd.clone(), Some(window), cx) {
+                self.notice = Some(error);
+            }
+            cx.notify();
+            return;
+        }
         self.open_project_window(&project_id, cx);
     }
 
@@ -4450,6 +4755,10 @@ impl Workspace {
         }
         self.panel_menu = None;
         self.finish_tab_drag(cx);
+        if self.is_remote() {
+            self.create_remote_shell(remote_shell_kind(harness), unrestricted, cx);
+            return;
+        }
         let worktree_id = self.selected_worktree_id.clone();
         let cwd = worktree_id
             .as_ref()
@@ -4932,6 +5241,11 @@ impl Workspace {
         }
         self.panel_menu = None;
         self.finish_tab_drag(cx);
+        if self.is_remote() {
+            // The other Mac's orchestrator, if it has one: this Mac makes none for it.
+            self.open_remote_orchestrator(project_id.is_some(), window, cx);
+            return;
+        }
         let session = match project_id.as_deref() {
             Some(id) => match self.state.project(id) {
                 Ok(project) => self.sessions.orchestrator_create_for_project(
@@ -5530,16 +5844,33 @@ impl Workspace {
                     && !self.sessions.orchestrator_skill_is_current(shell)
             })
             .map(|shell| shell.id.clone());
-        let remote_rows = if matches!(
-            pane.tabs.get(pane.active).map(|tab| &tab.content),
-            Some(TabContent::Panel(PanelKind::Projects))
-        ) {
-            cx.global::<RemoteState>()
-                .tree()
-                .rows(&self.search.trim().to_lowercase())
+        let active_panel = match pane.tabs.get(pane.active).map(|tab| &tab.content) {
+            Some(TabContent::Panel(panel)) => Some(*panel),
+            _ => None,
+        };
+        let remote_tree = cx.global::<RemoteState>().tree();
+        // The hosts' folders, for the Projects panel.
+        let remote_folders = if active_panel == Some(PanelKind::Projects) {
+            remote_tree.folders(
+                &self.search.trim().to_lowercase(),
+                self.settings.project_order,
+                &self.collapsed_project_folders,
+                self.remote_project().map(|_| self.project_id.as_str()),
+            )
         } else {
             Vec::new()
         };
+        // The selected remote project's lists, for the panels that draw them.
+        let remote_selected = active_panel
+            .filter(|panel| {
+                matches!(
+                    panel,
+                    PanelKind::Worktrees | PanelKind::Tasks | PanelKind::Shells
+                )
+            })
+            .and_then(|_| remote_tree.selected_view(&self.project_id));
+        // What a panel without an implementation for another Mac's project says instead.
+        let remote_host_label = self.remote_host_name(cx);
         let content = match pane.tabs.get(pane.active).map(|tab| &tab.content) {
             Some(TabContent::RemoteShell {
                 desktop_id,
@@ -5617,6 +5948,12 @@ impl Workspace {
                         .into_any_element()
                 }
             }
+            Some(TabContent::Panel(kind))
+                if remote_host_label.is_some()
+                    && panels::remote_support(*kind) == panels::RemoteSupport::Unavailable =>
+            {
+                panels::unavailable(*kind, remote_host_label.as_deref().unwrap_or_default(), cx)
+            }
             Some(TabContent::Panel(PanelKind::Usage)) => self.render_usage_panel(cx),
             Some(TabContent::Panel(PanelKind::Schedules)) => self
                 .schedule_panel
@@ -5644,7 +5981,8 @@ impl Workspace {
             Some(TabContent::Panel(panel)) => panels::render_panel(
                 *panel,
                 PanelData {
-                    remote: &remote_rows,
+                    remote_folders: &remote_folders,
+                    selected_remote: remote_selected.as_ref(),
                     state: &self.state,
                     project_id: &self.project_id,
                     selected_worktree_id: self.selected_worktree_id.as_deref(),
@@ -6038,10 +6376,8 @@ impl Workspace {
         match kind {
             StatusItemKind::Project => {
                 let name = self
-                    .state
-                    .project(&self.project_id)
-                    .map(|project| project.name.clone())
-                    .unwrap_or_else(|_| "Project unavailable".to_owned());
+                    .project_display_name(cx)
+                    .unwrap_or_else(|| "Project unavailable".to_owned());
                 div()
                     .id("status-current-project")
                     .max_w(px(240.0))
@@ -6062,16 +6398,24 @@ impl Workspace {
                     .into_any_element()
             }
             StatusItemKind::Worktree => {
-                let branch = self
-                    .selected_worktree_id
-                    .as_ref()
-                    .and_then(|id| {
-                        self.state.worktrees.iter().find(|worktree| {
-                            &worktree.id == id && worktree.project_id == self.project_id
+                let branch = match self.remote_project() {
+                    Some((host, project)) => self.selected_worktree_id.as_deref().and_then(|id| {
+                        cx.global::<RemoteState>()
+                            .tree()
+                            .worktree_branch(host, project, id)
+                            .map(str::to_owned)
+                    }),
+                    None => self
+                        .selected_worktree_id
+                        .as_ref()
+                        .and_then(|id| {
+                            self.state.worktrees.iter().find(|worktree| {
+                                &worktree.id == id && worktree.project_id == self.project_id
+                            })
                         })
-                    })
-                    .map(|worktree| worktree.branch.clone())
-                    .unwrap_or_else(|| "No worktree".to_owned());
+                        .map(|worktree| worktree.branch.clone()),
+                }
+                .unwrap_or_else(|| "No worktree".to_owned());
                 div()
                     .id("status-current-worktree")
                     .max_w(px(220.0))
@@ -6088,6 +6432,33 @@ impl Workspace {
                             cx,
                         );
                     }))
+                    .into_any_element()
+            }
+            // Agent activity and resource use are read from this Mac's own sessions; another
+            // Mac's are not sampled, so these say so rather than show the local project's.
+            StatusItemKind::AgentActivity if self.is_remote() => div()
+                .flex_none()
+                .text_color(rgb(colors.muted))
+                .child("Agents · —")
+                .into_any_element(),
+            StatusItemKind::Resources if self.is_remote() => div()
+                .flex_none()
+                .text_color(rgb(colors.muted))
+                .child("CPU — RAM —")
+                .into_any_element(),
+            StatusItemKind::Usage | StatusItemKind::CodexAccount if self.is_remote() => {
+                div().into_any_element()
+            }
+            StatusItemKind::LiveSessions if self.is_remote() => {
+                let live = self.remote_project().and_then(|(host, project)| {
+                    cx.global::<RemoteState>().tree().live_shells(host, project)
+                });
+                div()
+                    .flex_none()
+                    .child(format!(
+                        "{} LIVE",
+                        live.map_or("—".to_owned(), |live| live.to_string())
+                    ))
                     .into_any_element()
             }
             StatusItemKind::AgentActivity => {
@@ -6150,7 +6521,10 @@ impl Workspace {
                     .panes
                     .get(&self.active_pane)
                     .and_then(|pane| pane.tabs.get(pane.active))
-                    .and_then(Tab::shell_id)
+                    .and_then(|tab| {
+                        tab.shell_id()
+                            .or_else(|| tab.remote().map(|(_, shell)| shell))
+                    })
                     .map(str::to_owned);
                 div()
                     .id("copy-active-shell-id")
@@ -7147,8 +7521,34 @@ impl Drop for Workspace {
 }
 
 fn session_belongs_to_workspace(shell: &ShellSession, project_id: &str) -> bool {
-    shell.project_id.as_deref() == Some(project_id)
-        || (shell.kind == ShellKind::Orchestrator && shell.project_id.is_none())
+    // This Mac's sessions are never a project of another Mac's, not even the global
+    // orchestrator that every local project shows.
+    remote_tree::parse_project_key(project_id).is_none()
+        && (shell.project_id.as_deref() == Some(project_id)
+            || (shell.kind == ShellKind::Orchestrator && shell.project_id.is_none()))
+}
+
+/// The project on another Mac a window opens on: the one its restored state names, else the
+/// one the last launch left selected. A restored window that names a local project, or any
+/// id that is not a remote project's, opens that local project instead.
+fn remote_start_project(
+    restored: Option<&runtime::RuntimeWindow>,
+    kept: Option<&str>,
+) -> Option<String> {
+    let key = match restored {
+        Some(window) => window.project_id.as_deref(),
+        None => kept,
+    }?;
+    remote_tree::parse_project_key(key).map(|_| key.to_owned())
+}
+
+/// What the New Tab menu's agent entries ask another Mac's `shell.create` for.
+fn remote_shell_kind(harness: HarnessKind) -> NewShellKind {
+    match harness {
+        HarnessKind::Codex => NewShellKind::Codex,
+        HarnessKind::Claude => NewShellKind::Claude,
+        HarnessKind::Grok => NewShellKind::Grok,
+    }
 }
 
 /// Shells that have a tab in some window of this process (a window gives its
@@ -7998,6 +8398,10 @@ fn open_startup_window(
     fallback_cwd: PathBuf,
     cx: &mut App,
 ) -> Result<(), String> {
+    if startup_path.is_some() {
+        // Asking for a folder is choosing a project of this Mac: the next plain launch opens it.
+        remote_service::select(None, cx);
+    }
     let error = match open_workspace_window(startup_path.clone(), fallback_cwd.clone(), None, cx) {
         Ok(_) => return Ok(()),
         Err(error) if startup_path.is_some() => error,
@@ -8018,7 +8422,11 @@ fn open_workspace_window(
     restore: Option<runtime::RuntimeWindow>,
     cx: &mut App,
 ) -> Result<WindowHandle<Workspace>, String> {
-    let startup = WorkspaceStartup::prepare(startup_path, fallback_cwd)?;
+    let ordinary = startup_path.is_none() && restore.is_none();
+    let mut startup = WorkspaceStartup::prepare(startup_path, fallback_cwd)?;
+    if ordinary {
+        startup.remote = cx.global::<RemoteState>().selected().map(str::to_owned);
+    }
     // Best effort: an unreadable layout only means the default size.
     let saved_size = cx
         .global::<Settings>()
@@ -8273,6 +8681,86 @@ mod workspace_tab_tests {
         assert!(keeps_terminal(&local, &none, &[ended]));
         assert!(keeps_terminal(&local, &none, &[]));
         assert!(!keeps_terminal(&remote, &none, &[live_shell("shell-9")]));
+    }
+
+    fn restored(project_id: Option<&str>) -> runtime::RuntimeWindow {
+        runtime::RuntimeWindow {
+            project_id: project_id.map(str::to_owned),
+            path: PathBuf::from("/Users/me/app"),
+            bounds: None,
+            mode: runtime::WindowMode::Windowed,
+            layout: None,
+            focus_mode: false,
+            focus_centered: false,
+        }
+    }
+
+    #[test]
+    fn a_window_restores_on_the_remote_project_it_was_on() {
+        let key = remote_tree::project_key("h1", "p1");
+        // A reload restores each window as it was, whatever the last launch left selected.
+        assert_eq!(
+            remote_start_project(Some(&restored(Some(&key))), None),
+            Some(key.clone())
+        );
+        assert_eq!(
+            remote_start_project(Some(&restored(Some(&key))), Some("remote:h2:p2")),
+            Some(key.clone())
+        );
+        // A window that was on a local project (or none) opens that one.
+        let local = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            remote_start_project(Some(&restored(Some(&local))), Some(&key)),
+            None
+        );
+        assert_eq!(
+            remote_start_project(Some(&restored(None)), Some(&key)),
+            None
+        );
+        // An ordinary launch opens what the last one left selected.
+        assert_eq!(remote_start_project(None, Some(&key)), Some(key));
+        assert_eq!(remote_start_project(None, None), None);
+        // Nothing but a remote project's id counts; a damaged one opens the local project.
+        for odd in ["", "p1", "remote:h1", "remote::p1", "remote:h1:"] {
+            assert_eq!(remote_start_project(None, Some(odd)), None, "{odd:?}");
+            assert_eq!(remote_start_project(Some(&restored(Some(odd))), None), None);
+        }
+    }
+
+    #[test]
+    fn no_local_session_belongs_to_a_project_on_another_mac() {
+        let key = remote_tree::project_key("h1", "p1");
+        let mut global = session(ShellKind::Orchestrator, None);
+        global.id = "global".to_owned();
+        let project = session(ShellKind::Project, Some("p1"));
+        // The global orchestrator is part of every local project, and of no remote one.
+        assert!(session_belongs_to_workspace(&global, "p1"));
+        assert!(!session_belongs_to_workspace(&global, &key));
+        assert!(!session_belongs_to_workspace(&project, &key));
+        // Even a session that somehow carried the remote id is not claimed by it.
+        let odd = session(ShellKind::Project, Some(&key));
+        assert!(!session_belongs_to_workspace(&odd, &key));
+        // And nothing local is adopted into a remote project's window.
+        assert!(shells_to_adopt(&[project], &key, &HashSet::new(), &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn the_local_store_has_nothing_for_a_remote_projects_key() {
+        // Selecting a remote project never goes through the store, and a lookup that did
+        // would find nothing rather than another project.
+        let key = remote_tree::project_key("h1", "p1");
+        let state = State::default();
+        assert!(state.project(&key).is_err());
+        assert!(state.worktrees_for(&key).is_empty());
+        assert!(state.tasks_for_project(&key).is_empty());
+        assert!(file_explorer_root(&state, &key, None).is_none());
+    }
+
+    #[test]
+    fn the_new_tab_menus_agents_map_to_the_hosts_shell_kinds() {
+        assert_eq!(remote_shell_kind(HarnessKind::Codex), NewShellKind::Codex);
+        assert_eq!(remote_shell_kind(HarnessKind::Claude), NewShellKind::Claude);
+        assert_eq!(remote_shell_kind(HarnessKind::Grok), NewShellKind::Grok);
     }
 
     #[test]
