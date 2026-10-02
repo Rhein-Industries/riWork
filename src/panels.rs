@@ -155,8 +155,6 @@ pub struct PanelData<'a> {
     pub search_focused: bool,
     pub focus: FocusHandle,
     pub control_inset: f32,
-    /// The pane's width, to fall back to icons when header labels would crowd it.
-    pub width: f32,
     pub collapsed_folders: &'a HashSet<String>,
     pub state_home: &'a Path,
     pub project_order: ProjectOrder,
@@ -886,8 +884,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
         .into_any_element()
     });
     let search_action = on_action.clone();
-    let as_icons = icons::labels_as_icons(cx)
-        || (kind == PanelKind::Projects && project_labels_crowd(data.width, ui_text::scale()));
+    let as_icons = icons::labels_as_icons(cx);
     let sort_selector_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
     let mut panel = div()
         .relative()
@@ -1584,15 +1581,6 @@ fn row<V: 'static>(
         .into_any_element()
 }
 
-/// Whether "+ FOLDER" and "+ PROJECT" would leave the search field too little room
-/// for "SEARCH [CMD+F]" at this text scale (Menlo advances 0.6 em; 11 px text).
-fn project_labels_crowd(width: f32, scale: f32) -> bool {
-    let advance = 0.6 * 11.0 * scale;
-    let labels = 17.0 * advance + 2.0 * (ui_text::space_f32(6.0) + ui_text::space_f32(8.0));
-    let search = 14.0 * advance + 2.0 * ui_text::space_f32(8.0);
-    labels + search > width
-}
-
 fn line(text: String, color: u32, size: f32) -> AnyElement {
     div()
         .min_w_0()
@@ -1635,15 +1623,6 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::store::{Project, ProjectFolder};
-
-    #[test]
-    fn project_header_labels_give_way_to_icons_only_when_crowded() {
-        // The default sidebar keeps its labels at 100 %, not at twice the size.
-        assert!(!project_labels_crowd(330.0, 1.0));
-        assert!(project_labels_crowd(330.0, 2.0));
-        assert!(!project_labels_crowd(600.0, 2.0));
-        assert!(project_labels_crowd(150.0, 1.0));
-    }
 
     fn project_tree(state: &State, query: &str, collapsed: &HashSet<String>) -> ProjectTree {
         super::project_tree(

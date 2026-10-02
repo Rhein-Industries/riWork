@@ -4670,23 +4670,6 @@ impl Workspace {
         let show_focus = header_width >= ui_text::space_f32(180.0);
         let pane_locked = self.pane_is_locked(pane_id);
         let account_numbers = codex_account_numbers(&self.shells);
-        // Panel tabs whose labels would not fit beside the pane buttons (larger text,
-        // a narrow sidebar) show their icons, as with "Icons instead of labels".
-        let buttons = 1 + usize::from(show_lock) + usize::from(show_focus);
-        let strip_room = header_width
-            - menu_width * buttons as f32
-            - if drag_handle { handle_width } else { 0.0 }
-            - ui_text::space_f32(18.0);
-        let compact_panels = !self.settings.panel_tab_icons
-            && pane.tabs.iter().any(|tab| tab.panel().is_some())
-            && tab_labels_width(
-                pane.tabs.iter().enumerate().map(|(index, tab)| {
-                    let close = index == pane.active
-                        && user_close_refusal(pane_locked, UserClose::Tab).is_none();
-                    (tab.title.chars().count(), tab.panel().is_some(), close)
-                }),
-                ui_text::scale(),
-            ) > strip_room;
         let tabs = pane
             .tabs
             .iter()
@@ -4696,8 +4679,7 @@ impl Workspace {
                 let active = index == pane.active;
                 let panel = tab.panel().is_some();
                 // Shell tabs keep their titles; only built-in panels swap in an icon.
-                let icon_panel =
-                    tab.panel().filter(|_| self.settings.panel_tab_icons || compact_panels);
+                let icon_panel = tab.panel().filter(|_| self.settings.panel_tab_icons);
                 // The X is left out, not disabled, so a locked pane's tabs lose no room to it.
                 let close_visible =
                     active && user_close_refusal(pane_locked, UserClose::Tab).is_none();
@@ -4993,7 +4975,6 @@ impl Workspace {
                     search_focused: self.search_focused && selected,
                     focus: self.focus.clone(),
                     control_inset: 0.0,
-                    width: pane_width,
                     collapsed_folders: &self.collapsed_project_folders,
                     state_home: self.sessions.state_home(),
                     project_order: self.settings.project_order,
@@ -6414,18 +6395,6 @@ enum UserClose {
 /// pane keeps its tabs and stays a pane. Only requests from the user ask this:
 /// moving a tab to another pane, project switches, restore and layout repair remove
 /// tabs on their own terms, and a locked pane never blocks them.
-/// About how wide a strip of labelled tabs is: Menlo advances 0.6 em, and each tab
-/// adds its padding, its border and, when shown, the close button. `tabs` gives
-/// each title's length, whether it is a panel tab (9 px text) and whether it has an X.
-fn tab_labels_width(tabs: impl Iterator<Item = (usize, bool, bool)>, scale: f32) -> f32 {
-    tabs.map(|(chars, panel, close)| {
-        let font = if panel { 9.0 } else { 10.0 } * scale;
-        let close = if close { ui_text::space_f32(6.0) + ui_text::space_f32(18.0) } else { 0.0 };
-        chars as f32 * font * 0.6 + 2.0 * ui_text::space_f32(8.0) + 1.0 + close
-    })
-    .sum()
-}
-
 fn user_close_refusal(pane_locked: bool, close: UserClose) -> Option<&'static str> {
     pane_locked.then_some(match close {
         UserClose::Tab => "Unlock the pane to close its tabs",
@@ -7509,15 +7478,6 @@ mod startup_tests {
 mod workspace_tab_tests {
     use super::*;
 
-    #[test]
-    fn tab_label_widths_grow_with_the_text_and_the_close_button() {
-        // PROJECTS FILES WORKTREES, the first one active with its X.
-        let sidebar = || [(8, true, true), (5, true, false), (9, true, false)].into_iter();
-        let normal = tab_labels_width(sidebar(), 1.0);
-        assert!((normal - (22.0 * 5.4 + 3.0 * 17.0 + 24.0)).abs() < 0.01, "{normal}");
-        assert!(tab_labels_width(sidebar(), 1.2) > normal);
-        assert_eq!(tab_labels_width(std::iter::empty(), 1.5), 0.0);
-    }
 
     #[test]
     fn a_locked_pane_refuses_user_closes_but_an_unlocked_one_allows_them() {
