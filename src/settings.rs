@@ -3101,7 +3101,7 @@ mod tests {
         );
         assert_eq!(
             loaded.status_bar.visible_items(StatusSide::Right),
-            [StatusItemKind::CodexAccount]
+            [StatusItemKind::CodexAccount, StatusItemKind::Layout]
         );
         store
             .update(|settings| settings.remember_window_size = false)
@@ -3114,6 +3114,106 @@ mod tests {
         );
         assert_eq!(reloaded.theme, ThemeChoice::RiWork);
         assert!(!reloaded.remember_window_size);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_saved_before_the_layout_menu_show_it_and_keep_a_later_choice_to_hide_it() {
+        use crate::status_bar::{StatusItemKind, StatusSide};
+        let dir = env::temp_dir().join(format!("riwork-settings-layout-bar-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        // A file as the build before the layout menu wrote it: the old default bar, with the
+        // session ID hidden, and an unrelated setting.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"theme":"tokyo_night","status_bar":{"enabled":true,"items":[
+                {"kind":"project","enabled":true,"side":"left"},
+                {"kind":"worktree","enabled":false,"side":"left"},
+                {"kind":"agent_activity","enabled":false,"side":"left"},
+                {"kind":"live_sessions","enabled":true,"side":"right"},
+                {"kind":"resources","enabled":true,"side":"right"},
+                {"kind":"usage","enabled":true,"side":"right"},
+                {"kind":"codex_account","enabled":true,"side":"right"},
+                {"kind":"session_id","enabled":false,"side":"right"},
+                {"kind":"global_orchestrator","enabled":true,"side":"right"},
+                {"kind":"project_orchestrator","enabled":true,"side":"right"}]}}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.theme, ThemeChoice::TokyoNight);
+        assert_eq!(
+            loaded.status_bar.visible_items(StatusSide::Right),
+            [
+                StatusItemKind::LiveSessions,
+                StatusItemKind::Resources,
+                StatusItemKind::Usage,
+                StatusItemKind::CodexAccount,
+                StatusItemKind::GlobalOrchestrator,
+                StatusItemKind::ProjectOrchestrator,
+                StatusItemKind::Layout
+            ]
+        );
+
+        // An unrelated change leaves the saved bar as the old build wrote it; the menu is still
+        // derived, and shown, each time it is read.
+        store
+            .update(|settings| settings.remember_window_size = false)
+            .unwrap();
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(file["status_bar"]["items"].as_array().unwrap().len(), 10);
+        assert!(
+            store
+                .load()
+                .unwrap()
+                .status_bar
+                .visible_items(StatusSide::Right)
+                .contains(&StatusItemKind::Layout)
+        );
+
+        // Changing the bar writes the menu as a choice of its own, so hiding it sticks, and so
+        // does where the user then puts it.
+        let reopened = SettingsStore::open(&dir).unwrap();
+        reopened
+            .update(|settings| {
+                settings
+                    .status_bar
+                    .set_visible(StatusItemKind::Layout, false);
+            })
+            .unwrap();
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        let layout = file["status_bar"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["kind"] == "layout")
+            .expect("the layout menu is saved once the bar is");
+        assert_eq!(layout["enabled"], false);
+        let hidden = store.load().unwrap();
+        assert!(
+            !hidden
+                .status_bar
+                .visible_items(StatusSide::Right)
+                .contains(&StatusItemKind::Layout)
+        );
+        reopened
+            .update(|settings| {
+                settings
+                    .status_bar
+                    .set_visible(StatusItemKind::Layout, true);
+                settings
+                    .status_bar
+                    .set_side(StatusItemKind::Layout, StatusSide::Left);
+            })
+            .unwrap();
+        let moved = store.load().unwrap();
+        assert_eq!(
+            moved.status_bar.visible_items(StatusSide::Left),
+            [StatusItemKind::Project, StatusItemKind::Layout]
+        );
+        assert!(!moved.remember_window_size);
+        assert_eq!(moved.theme, ThemeChoice::TokyoNight);
         fs::remove_dir_all(dir).unwrap();
     }
 

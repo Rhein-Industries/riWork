@@ -25,10 +25,12 @@ pub enum StatusItemKind {
     SessionId,
     GlobalOrchestrator,
     ProjectOrchestrator,
+    /// The layout menu: apply the default layout, gather tabs into the main pane.
+    Layout,
 }
 
 impl StatusItemKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Project,
         Self::Worktree,
         Self::AgentActivity,
@@ -39,6 +41,7 @@ impl StatusItemKind {
         Self::SessionId,
         Self::GlobalOrchestrator,
         Self::ProjectOrchestrator,
+        Self::Layout,
     ];
 
     pub fn label(self) -> &'static str {
@@ -53,6 +56,7 @@ impl StatusItemKind {
             Self::SessionId => "Session ID",
             Self::GlobalOrchestrator => "Global orchestrator",
             Self::ProjectOrchestrator => "Project orchestrator",
+            Self::Layout => "Layout menu",
         }
     }
 
@@ -68,6 +72,7 @@ impl StatusItemKind {
             Self::SessionId => "The active session's ID; click to copy it.",
             Self::GlobalOrchestrator => "Open the global orchestrator.",
             Self::ProjectOrchestrator => "Open this project's orchestrator.",
+            Self::Layout => "Apply the default layout or gather tabs into the main pane.",
         }
     }
 
@@ -83,6 +88,7 @@ impl StatusItemKind {
             Self::SessionId => "session-id",
             Self::GlobalOrchestrator => "global-orchestrator",
             Self::ProjectOrchestrator => "project-orchestrator",
+            Self::Layout => "layout",
         }
     }
 }
@@ -199,7 +205,9 @@ impl<'de> Deserialize<'de> for StatusBarSettings {
 
 impl StatusBarSettings {
     /// First occurrence wins. New kinds stay disabled in customized bars,
-    /// except the account readout requested for existing installations.
+    /// except the account readout and the layout menu, which were requested for
+    /// existing installations. Both are appended last, so the layout menu ends
+    /// the right side; hiding or moving either is kept like any other choice.
     pub fn normalize(&mut self) {
         let had_items = !self.items.is_empty();
         let mut seen = HashSet::new();
@@ -207,9 +215,10 @@ impl StatusBarSettings {
         for kind in StatusItemKind::ALL {
             if seen.insert(kind) {
                 self.items.push(StatusBarItem {
-                    // Introduce the requested account readout to older saved
-                    // bars while retaining their other customized choices.
-                    enabled: had_items && kind == StatusItemKind::CodexAccount,
+                    // Introduce the requested readouts to older saved bars
+                    // while retaining their other customized choices.
+                    enabled: had_items
+                        && matches!(kind, StatusItemKind::CodexAccount | StatusItemKind::Layout),
                     ..StatusBarItem::default_for(kind)
                 });
             }
@@ -567,7 +576,8 @@ mod tests {
                 StatusItemKind::CodexAccount,
                 StatusItemKind::SessionId,
                 StatusItemKind::GlobalOrchestrator,
-                StatusItemKind::ProjectOrchestrator
+                StatusItemKind::ProjectOrchestrator,
+                StatusItemKind::Layout
             ]
         );
         assert!(
@@ -581,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_order_deduplicates_without_enabling_missing_items() {
+    fn custom_order_deduplicates_without_enabling_other_missing_items() {
         let mut settings = StatusBarSettings {
             enabled: true,
             items: vec![
@@ -610,7 +620,7 @@ mod tests {
         );
         assert_eq!(
             settings.visible_items(StatusSide::Right),
-            [StatusItemKind::CodexAccount]
+            [StatusItemKind::CodexAccount, StatusItemKind::Layout]
         );
         let before = settings.clone();
         settings.normalize();
@@ -626,7 +636,7 @@ mod tests {
         );
         assert_eq!(
             settings.visible_items(StatusSide::Right),
-            [StatusItemKind::CodexAccount]
+            [StatusItemKind::CodexAccount, StatusItemKind::Layout]
         );
         assert_eq!(settings.items.len(), StatusItemKind::ALL.len());
         assert_eq!(
@@ -680,5 +690,136 @@ mod tests {
         assert!(settings.visible_items(StatusSide::Right).is_empty());
         settings.enabled = true;
         assert_eq!(settings.visible_items(StatusSide::Right), right_before);
+    }
+
+    /// A bar as a build from before the layout menu saved it: ten items, in the old default
+    /// order, with the choices below.
+    const BEFORE_THE_LAYOUT_MENU: &str = r#"{"enabled":true,"items":[
+        {"kind":"project","enabled":true,"side":"left"},
+        {"kind":"worktree","enabled":true,"side":"left"},
+        {"kind":"agent_activity","enabled":false,"side":"left"},
+        {"kind":"live_sessions","enabled":true,"side":"right"},
+        {"kind":"resources","enabled":false,"side":"right"},
+        {"kind":"usage","enabled":true,"side":"right"},
+        {"kind":"codex_account","enabled":true,"side":"right"},
+        {"kind":"session_id","enabled":true,"side":"right"},
+        {"kind":"global_orchestrator","enabled":true,"side":"right"},
+        {"kind":"project_orchestrator","enabled":false,"side":"right"}]}"#;
+
+    #[test]
+    fn the_layout_menu_is_on_by_default_and_ends_the_right_side() {
+        let settings = StatusBarSettings::default();
+        let layout = settings
+            .items
+            .iter()
+            .find(|item| item.kind == StatusItemKind::Layout)
+            .unwrap();
+        assert!(layout.enabled);
+        assert_eq!(layout.side, StatusSide::Right);
+        assert_eq!(settings.items.last().unwrap().kind, StatusItemKind::Layout);
+        assert_eq!(
+            settings.visible_items(StatusSide::Right).last(),
+            Some(&StatusItemKind::Layout)
+        );
+        // It has a name and a description for Settings, and its own saved name.
+        assert_eq!(StatusItemKind::Layout.label(), "Layout menu");
+        assert!(!StatusItemKind::Layout.description().is_empty());
+        assert!(
+            serde_json::to_string(&settings)
+                .unwrap()
+                .contains(r#""kind":"layout""#)
+        );
+    }
+
+    #[test]
+    fn a_bar_saved_before_the_layout_menu_gets_it_last_on_the_right_and_keeps_every_choice() {
+        let settings: StatusBarSettings = serde_json::from_str(BEFORE_THE_LAYOUT_MENU).unwrap();
+        assert_eq!(settings.items.len(), StatusItemKind::ALL.len());
+        // The menu was requested for existing installations, so it is shown, after the
+        // orchestrators, on the right.
+        assert_eq!(
+            settings.visible_items(StatusSide::Right),
+            [
+                StatusItemKind::LiveSessions,
+                StatusItemKind::Usage,
+                StatusItemKind::CodexAccount,
+                StatusItemKind::SessionId,
+                StatusItemKind::GlobalOrchestrator,
+                StatusItemKind::Layout
+            ]
+        );
+        // What the old bar hid, showed and routed stays as it was.
+        assert_eq!(
+            settings.visible_items(StatusSide::Left),
+            [StatusItemKind::Project, StatusItemKind::Worktree]
+        );
+
+        // The first save writes it as a choice of its own, and it reads back the same.
+        let raw = serde_json::to_string(&settings).unwrap();
+        let reread: StatusBarSettings = serde_json::from_str(&raw).unwrap();
+        assert_eq!(reread, settings);
+        assert_eq!(settings.items.last().unwrap().kind, StatusItemKind::Layout);
+    }
+
+    #[test]
+    fn hiding_moving_or_routing_the_layout_menu_is_kept_across_a_save_and_a_load() {
+        let mut settings: StatusBarSettings = serde_json::from_str(BEFORE_THE_LAYOUT_MENU).unwrap();
+        settings.set_visible(StatusItemKind::Layout, false);
+        let raw = serde_json::to_string(&settings).unwrap();
+        let hidden: StatusBarSettings = serde_json::from_str(&raw).unwrap();
+        assert!(
+            !hidden
+                .visible_items(StatusSide::Right)
+                .contains(&StatusItemKind::Layout)
+        );
+        assert_eq!(hidden, settings);
+
+        // Shown again, moved two places earlier (the first step passes the project
+        // orchestrator, which the old bar hid), then to the left.
+        let mut settings = hidden;
+        settings.set_visible(StatusItemKind::Layout, true);
+        assert!(settings.move_item(StatusItemKind::Layout, true));
+        assert!(settings.move_item(StatusItemKind::Layout, true));
+        let moved: StatusBarSettings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            moved.visible_items(StatusSide::Right),
+            [
+                StatusItemKind::LiveSessions,
+                StatusItemKind::Usage,
+                StatusItemKind::CodexAccount,
+                StatusItemKind::SessionId,
+                StatusItemKind::Layout,
+                StatusItemKind::GlobalOrchestrator
+            ]
+        );
+        let mut left = moved;
+        left.set_side(StatusItemKind::Layout, StatusSide::Left);
+        assert_eq!(
+            left.visible_items(StatusSide::Left).last(),
+            Some(&StatusItemKind::Layout)
+        );
+        assert!(
+            !left
+                .visible_items(StatusSide::Right)
+                .contains(&StatusItemKind::Layout)
+        );
+
+        // With the whole bar off, nothing shows.
+        left.enabled = false;
+        assert!(left.visible_items(StatusSide::Left).is_empty());
+    }
+
+    #[test]
+    fn a_bar_emptied_on_purpose_does_not_get_the_layout_menu_back() {
+        let empty: StatusBarSettings = serde_json::from_str(r#"{"items":[]}"#).unwrap();
+        assert!(empty.visible_items(StatusSide::Right).is_empty());
+        assert!(
+            empty
+                .items
+                .iter()
+                .find(|item| item.kind == StatusItemKind::Layout)
+                .is_some_and(|item| !item.enabled)
+        );
     }
 }
