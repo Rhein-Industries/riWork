@@ -815,7 +815,12 @@ mod native {
         let mut size = 0.0_f32;
         // `font-size` is an f32 in Config.zig, which c_get writes as one.
         if !unsafe {
-            ghostty_config_get(config.0, (&mut size as *mut f32).cast(), c"font-size".as_ptr(), 9)
+            ghostty_config_get(
+                config.0,
+                (&mut size as *mut f32).cast(),
+                c"font-size".as_ptr(),
+                9,
+            )
         } {
             return Err("Ghostty did not provide its font size".to_owned());
         }
