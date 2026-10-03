@@ -3186,3 +3186,359 @@ fn attach_command_is_the_quoted_attach_argv_and_exec_adds_only_the_flags_asked_f
             .is_err()
     );
 }
+
+// ---- terminal links ---------------------------------------------------------------------
+
+/// A detached 40 x 10 session in `cwd` that runs `script`, which should end by waiting.
+fn link_session(fixture: &Fixture, cwd: &Path, script: &str) -> String {
+    let id = Uuid::new_v4().to_string();
+    fixture
+        .manager
+        .tmux_checked(&[
+            "new-session",
+            "-d",
+            "-s",
+            &id,
+            "-c",
+            &cwd.to_string_lossy(),
+            "-x",
+            "40",
+            "-y",
+            "10",
+            &format!("sh -c {}", quote_arg(script)),
+        ])
+        .unwrap();
+    id
+}
+
+/// The link view of `id` once its screen shows `text`.
+fn link_view_showing(fixture: &Fixture, id: &str, text: &str) -> crate::terminal_links::PaneView {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let raw = fixture.manager.capture_link_view(id).unwrap();
+        if raw.rows.contains(text) {
+            return crate::terminal_links::PaneView::parse(&raw).unwrap();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the screen never showed {text:?}"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
+#[test]
+fn the_screen_of_a_shell_gives_links_wrapped_or_not() {
+    use crate::terminal_links::{Bases, Link, ResolvedPath};
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    fs::create_dir_all(fixture.root.join("src")).unwrap();
+    fs::create_dir_all(fixture.root.join("My Docs")).unwrap();
+    fs::write(fixture.root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(fixture.root.join("My Docs/notes.md"), "notes\n").unwrap();
+    let long = "https://example.com/a/very/long/path/that/wraps/over/rows?x=1";
+    let id = link_session(
+        &fixture,
+        &fixture.root,
+        &format!(
+            "printf 'first line ok\\n{long}\\nsrc/main.rs:120:5 and pad   \\n\
+             open \"My Docs/notes.md\" now\\nlast\\n'; sleep 60"
+        ),
+    );
+    let view = link_view_showing(&fixture, &id, "last");
+    assert_eq!((view.cols, view.rows), (40, 10));
+    assert_eq!(view.cwd, fixture.root);
+    assert!(!view.alternate);
+    let bases = Bases {
+        cwd: &view.cwd,
+        root: None,
+        home: None,
+    };
+
+    // The address is 62 characters on a 40-column screen: rows 1 and 2. Either row is all of it.
+    let address = Some(Link::Url(long.to_owned()));
+    assert_eq!(view.link_at(1, 5, &bases), address);
+    assert_eq!(view.link_at(2, 3, &bases), address);
+    // The path, with its position, on a row that has trailing spaces.
+    assert_eq!(
+        view.link_at(3, 6, &bases),
+        Some(Link::Path(ResolvedPath {
+            path: fixture.root.join("src/main.rs"),
+            line: Some(120),
+            col: Some(5),
+            is_dir: false,
+        }))
+    );
+    // A name with a space in it, in quotes.
+    assert_eq!(
+        view.link_at(4, 9, &bases),
+        Some(Link::Path(ResolvedPath {
+            path: fixture.root.join("My Docs/notes.md"),
+            line: None,
+            col: None,
+            is_dir: false,
+        }))
+    );
+    // Words, and blank cells.
+    assert_eq!(view.link_at(0, 2, &bases), None);
+    assert_eq!(view.link_at(5, 1, &bases), None);
+    assert_eq!(view.link_at(9, 30, &bases), None);
+}
+
+#[test]
+fn the_view_follows_copy_mode_and_the_alternate_screen() {
+    use crate::terminal_links::{Bases, Link, PaneMode};
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let number = |link: Option<Link>| match link {
+        Some(Link::Url(url)) => url.rsplit('/').next().unwrap().parse::<i64>().unwrap(),
+        other => panic!("not a URL: {other:?}"),
+    };
+
+    // 40 numbered lines on a 10-row screen leave plenty of history.
+    let id = link_session(
+        &fixture,
+        &fixture.root,
+        "i=1; while [ $i -le 40 ]; do echo https://scroll.example/$i; i=$((i+1)); done; sleep 60",
+    );
+    let live = link_view_showing(&fixture, &id, "https://scroll.example/40");
+    let cwd = live.cwd.clone();
+    let bases = Bases {
+        cwd: &cwd,
+        root: None,
+        home: None,
+    };
+    assert_eq!(live.mode, PaneMode::Live);
+    assert_eq!(live.scroll, 0);
+    // The cursor waits on the last row, so the lines fill the 9 above it.
+    let top = number(live.link_at(0, 12, &bases));
+    assert_eq!(number(live.link_at(8, 12, &bases)), top + 8);
+    assert_eq!(live.link_at(9, 12, &bases), None);
+
+    // Scrolled back 5 lines the same cells show lines 5 earlier, and the wheel's copy mode is
+    // what the pointer is over.
+    let pane = format!("{id}:0.0");
+    fixture
+        .manager
+        .tmux_checked(&["copy-mode", "-t", &pane])
+        .unwrap();
+    fixture
+        .manager
+        .tmux_checked(&["send-keys", "-t", &pane, "-X", "-N", "5", "scroll-up"])
+        .unwrap();
+    let scrolled =
+        crate::terminal_links::PaneView::parse(&fixture.manager.capture_link_view(&id).unwrap())
+            .unwrap();
+    assert_eq!(scrolled.mode, PaneMode::Scrolled);
+    assert_eq!(scrolled.scroll, 5);
+    assert_eq!(number(scrolled.link_at(0, 12, &bases)), top - 5);
+    assert_eq!(number(scrolled.link_at(9, 12, &bases)), top + 4);
+    assert_eq!(number(scrolled.link_at(8, 12, &bases)), top + 3);
+
+    // A full-screen program draws on the alternate screen, which has no history.
+    let id = link_session(
+        &fixture,
+        &fixture.root,
+        "printf '\\033[?1049h\\033[Hhttps://alt.example/1'; sleep 60",
+    );
+    let alternate = link_view_showing(&fixture, &id, "https://alt.example/1");
+    assert!(alternate.alternate);
+    assert_eq!(
+        alternate.link_at(0, 14, &bases),
+        Some(Link::Url("https://alt.example/1".to_owned()))
+    );
+}
+
+/// Run a tmux client on a pseudo-terminal of its own and collect what it writes to it for a
+/// while: the bytes Ghostty would be given.
+#[cfg(unix)]
+fn client_output(manager: &SessionManager, id: &str, until: &[u8]) -> Vec<u8> {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::process::Stdio;
+    let mut master = 0;
+    let mut slave = 0;
+    let mut size = libc::winsize {
+        ws_row: 10,
+        ws_col: 40,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: both descriptors are new and owned from here on.
+    let (master, slave) = unsafe {
+        assert_eq!(
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            ),
+            0
+        );
+        (File::from_raw_fd(master), OwnedFd::from_raw_fd(slave))
+    };
+    let mut command = manager.tmux_client();
+    command
+        .args(["attach-session", "-t", id])
+        .env("TERM", "xterm-256color")
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave));
+    let mut child = command.spawn().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut reader = master;
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while let Ok(read) = reader.read(&mut buffer) {
+            if read == 0 || sender.send(buffer[..read].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut output = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < deadline {
+        if let Ok(chunk) = receiver.recv_timeout(Duration::from_millis(100)) {
+            output.extend(chunk);
+        }
+        if output.windows(until.len()).any(|window| window == until) {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    output
+}
+
+#[cfg(unix)]
+#[test]
+fn hyperlinks_pass_through_tmux_once_the_server_allows_them() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // The way Claude Code and Codex print a link: OSC 8, the text, OSC 8 closed.
+    let printed =
+        "printf '\\033]8;;https://example.com/x\\033\\\\link\\033]8;;\\033\\\\ done\\n'; sleep 60";
+    let hyperlink = b"\x1b]8;";
+
+    let features = |fixture: &Fixture| {
+        fixture
+            .manager
+            .tmux_text(&["show-options", "-s", "terminal-features"])
+            .unwrap()
+    };
+
+    // As tmux 3.6 ships, the escape is dropped on the way to the terminal. (A tmux that already
+    // passes hyperlinks has nothing to show here.)
+    let session = link_session(&fixture, &fixture.root, printed);
+    fixture
+        .manager
+        .tmux_checked(&["set-option", "-t", &session, "mouse", "on"])
+        .unwrap();
+    if !features(&fixture).contains("hyperlinks") {
+        let output = client_output(&fixture.manager, &session, b"link done");
+        assert!(output.windows(9).any(|window| window == b"link done"));
+        assert!(!output.windows(4).any(|window| window == hyperlink));
+    }
+
+    // After the attach step configures the session, a new client is given it.
+    fixture.manager.configure_scrolling(&session).unwrap();
+    let output = client_output(&fixture.manager, &session, b"https://example.com/x");
+    let text = String::from_utf8_lossy(&output).into_owned();
+    // tmux opens the link, positions the cursor, writes the text, and closes it.
+    assert!(
+        text.contains("\u{1b}]8;id=") && text.contains(";https://example.com/x\u{1b}\\"),
+        "{text:?}"
+    );
+    assert!(text.contains("link\u{1b}]8;;\u{1b}\\ done"), "{text:?}");
+
+    // Attaching again and again replaces the entry; it does not add one per attach.
+    let once = features(&fixture);
+    for _ in 0..3 {
+        fixture.manager.configure_scrolling(&session).unwrap();
+    }
+    assert_eq!(features(&fixture), once);
+    assert!(once.contains("hyperlinks"), "{once}");
+    // The entries tmux ships with are untouched.
+    assert!(once.contains("xterm*:clipboard"), "{once}");
+}
+
+#[test]
+fn a_hyperlinks_target_is_read_back_from_tmux() {
+    use crate::terminal_links::{Bases, Link, ResolvedPath};
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    fs::create_dir_all(fixture.root.join("src")).unwrap();
+    fs::write(fixture.root.join("src/a.rs"), "fn a() {}\n").unwrap();
+    // What Claude Code and Codex print for a Markdown link and for a file: OSC 8, the words, OSC 8
+    // closed. The words say nothing about where the link goes.
+    let id = link_session(
+        &fixture,
+        &fixture.root,
+        &format!(
+            "printf 'read \\033]8;;https://example.com/docs\\033\\\\the guide\\033]8;;\\033\\\\ or \
+             \\033]8;;file://localhost{}/src/a.rs#L5\\033\\\\this file\\033]8;;\\033\\\\ now\\n'; \
+             sleep 60",
+            fixture.root.display()
+        ),
+    );
+    let view = link_view_showing(&fixture, &id, "this file");
+    let bases = Bases {
+        cwd: &view.cwd,
+        root: None,
+        home: None,
+    };
+    // "read the guide or this file now": the guide is cells 5 to 13, the file 18 to 26.
+    assert_eq!(
+        view.link_at(0, 8, &bases),
+        Some(Link::Url("https://example.com/docs".to_owned()))
+    );
+    assert_eq!(
+        view.link_at(0, 20, &bases),
+        Some(Link::Path(ResolvedPath {
+            path: fixture.root.join("src/a.rs"),
+            line: Some(5),
+            col: None,
+            is_dir: false,
+        }))
+    );
+    // The words between them, and after, are words.
+    assert_eq!(view.link_at(0, 15, &bases), None);
+    assert_eq!(view.link_at(0, 30, &bases), None);
+}
+
+#[test]
+fn a_wide_character_at_the_end_of_a_row_does_not_stop_the_join() {
+    use crate::terminal_links::{Bases, Link};
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    // 39 letters, then a double-width character that cannot start in the last column: it moves to
+    // the next row and leaves a blank cell, which the joined capture omits.
+    let id = link_session(
+        &fixture,
+        &fixture.root,
+        &format!(
+            "printf 'https://example.com/{}\\n'; printf '{}\u{4f60} end\\n'; sleep 60",
+            "a".repeat(50),
+            "a".repeat(39)
+        ),
+    );
+    let view = link_view_showing(&fixture, &id, "end");
+    let bases = Bases {
+        cwd: &view.cwd,
+        root: None,
+        home: None,
+    };
+    // A 70-character address over two rows is joined as ever, from either row.
+    let address = format!("https://example.com/{}", "a".repeat(50));
+    assert_eq!(view.link_at(0, 5, &bases), Some(Link::Url(address.clone())));
+    assert_eq!(view.link_at(1, 5, &bases), Some(Link::Url(address)));
+    // The next line is joined too: one logical line of the letters, the character and the word.
+    let text = view.logical_text(2, 3).expect("a line under the letters");
+    assert_eq!(text, format!("{}\u{4f60} end", "a".repeat(39)));
+}

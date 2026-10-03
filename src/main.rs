@@ -40,6 +40,7 @@ mod sgr;
 mod status_bar;
 mod store;
 mod terminal_lifecycle;
+mod terminal_links;
 mod theme;
 mod tooltip;
 mod ui_text;
@@ -446,6 +447,8 @@ struct Workspace {
     resizing: Option<SplitResize>,
     tab_dragging: bool,
     terminal_snapshots: BTreeMap<TabId, Arc<gpui::RenderImage>>,
+    /// ⌘-clicking URLs and files in local terminals.
+    terminal_links: terminal_links::LinkState,
     /// The pending pass that releases hidden terminals; replaced whenever the set
     /// of hidden tabs changes.
     terminal_release: Option<gpui::Task<()>>,
@@ -1000,6 +1003,7 @@ impl Workspace {
             resizing: None,
             tab_dragging: false,
             terminal_snapshots: BTreeMap::new(),
+            terminal_links: terminal_links::LinkState::default(),
             terminal_release: None,
             attach_retry: None,
             search_focused: false,
@@ -1889,7 +1893,7 @@ impl Workspace {
                     cx.defer(move |app| {
                         app.with_window(entity_id, |window, app| {
                             let _ = view.update(app, |workspace, cx| {
-                                workspace.open_file_editor(root, path, identity, window, cx);
+                                workspace.open_file_editor(root, path, identity, None, window, cx);
                             });
                         });
                     });
@@ -1903,7 +1907,9 @@ impl Workspace {
                     workspace.notice = Some(format!("Copied {}", path.display()));
                     cx.notify();
                 }
-                FileExplorerEvent::Selected => workspace.reveal_preview(cx),
+                FileExplorerEvent::Selected => workspace.reveal_preview(false, cx),
+                FileExplorerEvent::Revealed => workspace.reveal_preview(true, cx),
+                FileExplorerEvent::NotListed(path) => workspace.open_unlisted(path.clone(), cx),
             })
             .detach();
             self.file_preview = Some(cx.new(|cx| FilePreview::new(panel.clone(), cx)));
@@ -1923,15 +1929,17 @@ impl Workspace {
         }
     }
 
+    /// Open `path` in a Vim tab, at `line` if one is given.
     fn open_file_editor(
         &mut self,
         root: ExplorerRoot,
         path: PathBuf,
         identity: file_preview::FileIdentity,
+        line: Option<u32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = self.open_file_editor_inner(root, path, identity, window, cx) {
+        if let Err(error) = self.open_file_editor_inner(root, path, identity, line, window, cx) {
             self.notice = Some(error);
             cx.notify();
         }
@@ -1942,6 +1950,7 @@ impl Workspace {
         root: ExplorerRoot,
         path: PathBuf,
         identity: file_preview::FileIdentity,
+        line: Option<u32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
@@ -1969,9 +1978,12 @@ impl Workspace {
                 self.select_tab(pane_id, tab_id, window, cx);
             } else {
                 let pane_id = self.editor_pane(cx)?;
-                self.attach_session(pane_id, shell, window, cx)?;
+                self.attach_session(pane_id, shell.clone(), window, cx)?;
                 self.focus_active(window, cx);
                 self.save_layout();
+            }
+            if let Some(line) = line {
+                self.jump_editor_to_line(shell.id, line);
             }
             return Ok(());
         }
@@ -1981,6 +1993,7 @@ impl Workspace {
             root.path,
             path,
             identity,
+            line,
         )?;
         let pane_id = self.editor_pane(cx)?;
         self.attach_session(pane_id, shell, window, cx)?;
@@ -1990,6 +2003,23 @@ impl Workspace {
         self.focus_active(window, cx);
         self.save_layout();
         Ok(())
+    }
+
+    /// Take a Vim that is already open to `line`: leave whatever mode it is in, then `:LINE`.
+    /// The keys go in from a worker, because a key that follows text is sent after a pause.
+    fn jump_editor_to_line(&self, shell_id: String, line: u32) {
+        use session_keys::{Item, Key};
+        let sessions = self.sessions.clone();
+        std::thread::spawn(move || {
+            let _ = sessions.send_keys(
+                &shell_id,
+                &[
+                    Item::Key(Key::Escape),
+                    Item::Text(format!(":{line}")),
+                    Item::Key(Key::Enter),
+                ],
+            );
+        });
     }
 
     fn editor_pane(&mut self, cx: &mut Context<Self>) -> Result<PaneId, String> {
@@ -5041,10 +5071,11 @@ impl Workspace {
         self.open_panel(PanelKind::Preview, pane_id, window, cx);
     }
 
-    /// A file was selected in the explorer: show its preview, if the user wants that. The
-    /// keys stay where they are, in the tree, so the arrow keys keep moving the selection
-    /// while the preview follows it.
-    fn reveal_preview(&mut self, cx: &mut Context<Self>) {
+    /// A file was selected in the explorer: show its preview, if the user wants that, or
+    /// whatever they want when `asked` (the selection was a link they clicked). The keys stay
+    /// where they are, in the tree, so the arrow keys keep moving the selection while the
+    /// preview follows it.
+    fn reveal_preview(&mut self, asked: bool, cx: &mut Context<Self>) {
         // Focus mode shows one pane; rearranging the others behind it would be unseen.
         let Some(explorer) = self.explorer_pane() else {
             return;
@@ -5062,7 +5093,7 @@ impl Workspace {
         let locked = |id: PaneId| self.pane_is_locked(id);
         let shows_shell = |id: PaneId| self.pane_shows_shell(id);
         let reveal = self.layout.plan_preview_reveal(
-            cx.global::<Settings>().open_preview_on_select,
+            asked || cx.global::<Settings>().open_preview_on_select,
             existing,
             self.pane_area,
             explorer,
@@ -5990,7 +6021,16 @@ impl Workspace {
                         None => div().size_full().bg(rgb(colors.bg)).into_any_element(),
                     }
                 } else if let Some(terminal) = terminal {
-                    terminal.clone().into_any_element()
+                    match pane.tabs.get(pane.active) {
+                        // The links read the screen from this shell's tmux session.
+                        Some(tab) if tab.shell_id().is_some() => self.terminal_link_layer(
+                            pane_id,
+                            tab.id,
+                            terminal.clone().into_any_element(),
+                            cx,
+                        ),
+                        _ => terminal.clone().into_any_element(),
+                    }
                 } else {
                     // The terminal attaches during the frame this tab is shown in; this
                     // is what a tab shows if that failed. tmux redraws the screen on
@@ -7371,6 +7411,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_orchestrator_action))
             .on_action(cx.listener(Self::open_project_orchestrator_action))
             .on_key_down(cx.listener(Self::search_key_down))
+            .on_modifiers_changed(cx.listener(
+                |workspace, event: &gpui::ModifiersChangedEvent, window, cx| {
+                    workspace.terminal_link_modifiers(event.modifiers, window, cx);
+                },
+            ))
             .on_mouse_move(
                 cx.listener(|workspace, event: &gpui::MouseMoveEvent, _, cx| {
                     workspace.resize_at(event.position, cx)

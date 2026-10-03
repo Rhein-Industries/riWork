@@ -357,9 +357,42 @@ pub fn read_ghostty_font_size() -> Result<f32, String> {
     native::read_font_size(None)
 }
 
+/// How Ghostty's `window-padding-balance` spreads the space around the cell grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaddingBalance {
+    False,
+    True,
+    Equal,
+}
+
+/// The padding settings that decide where Ghostty puts its grid in a terminal, in points: the
+/// start (left, top) and end (right, bottom) of each axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GhosttyPadding {
+    pub x: (u32, u32),
+    pub y: (u32, u32),
+    pub balance: PaddingBalance,
+}
+
+impl GhosttyPadding {
+    /// What Ghostty uses when its configuration says nothing.
+    pub const DEFAULT: Self = Self {
+        x: (2, 2),
+        y: (2, 2),
+        balance: PaddingBalance::False,
+    };
+}
+
+/// Ghostty's padding settings, read from the same default files and includes as the stamp, with
+/// the last value winning. Ghostty's C configuration API does not return these two (they are
+/// not a plain number), so they are read from the text.
+pub fn read_ghostty_padding() -> GhosttyPadding {
+    config_files::padding()
+}
+
 #[cfg(unix)]
 mod config_files {
-    use super::{FileStamp, GhosttyConfigStamp};
+    use super::{FileStamp, GhosttyConfigStamp, GhosttyPadding, PaddingBalance};
     use std::{
         collections::{HashSet, VecDeque},
         env, fs,
@@ -426,7 +459,10 @@ mod config_files {
             }
         }
 
-        pub(super) fn stamp(&self) -> GhosttyConfigStamp {
+        /// Visit the `key = value` entries of the default config files and of the files they
+        /// include, in the order Ghostty reads them, so that a later value wins. `config-file`
+        /// lines are followed, not visited. Returns the files read.
+        fn walk(&self, mut visit: impl FnMut(&str, &str)) -> Vec<PathBuf> {
             let mut queue: VecDeque<PathBuf> = self
                 .config_dirs
                 .iter()
@@ -434,7 +470,6 @@ mod config_files {
                 .collect();
             let mut seen = HashSet::new();
             let mut files = Vec::new();
-            let mut themes = Vec::new();
             while let Some(path) = queue.pop_front() {
                 if files.len() >= MAX_FILES || !seen.insert(path.clone()) {
                     continue;
@@ -444,21 +479,30 @@ mod config_files {
                     continue;
                 };
                 for (key, value) in entries(&text) {
-                    match key {
-                        "config-file" => {
-                            let value = value.strip_prefix('?').unwrap_or(value).trim_matches('"');
-                            if let Some(include) = (!value.is_empty())
-                                .then(|| self.resolve(value, path.parent()))
-                                .flatten()
-                            {
-                                queue.push_back(include);
-                            }
+                    if key == "config-file" {
+                        let value = value.strip_prefix('?').unwrap_or(value).trim_matches('"');
+                        if let Some(include) = (!value.is_empty())
+                            .then(|| self.resolve(value, path.parent()))
+                            .flatten()
+                        {
+                            queue.push_back(include);
                         }
-                        "theme" => themes.extend(theme_names(value)),
-                        _ => {}
+                    } else {
+                        visit(key, value);
                     }
                 }
             }
+            files
+        }
+
+        pub(super) fn stamp(&self) -> GhosttyConfigStamp {
+            let mut themes = Vec::new();
+            let mut files = self.walk(|key, value| {
+                if key == "theme" {
+                    themes.extend(theme_names(value));
+                }
+            });
+            let mut seen: HashSet<PathBuf> = files.iter().cloned().collect();
             let theme_dirs = self.theme_dirs();
             for name in themes.into_iter().take(MAX_FILES) {
                 // A theme is a name searched in the theme folders, or a path.
@@ -483,10 +527,32 @@ mod config_files {
                     .collect(),
             )
         }
+
+        pub(super) fn padding(&self) -> GhosttyPadding {
+            let mut padding = GhosttyPadding::DEFAULT;
+            self.walk(|key, value| match key {
+                "window-padding-x" => padding.x = parse_padding(value).unwrap_or(padding.x),
+                "window-padding-y" => padding.y = parse_padding(value).unwrap_or(padding.y),
+                "window-padding-balance" => {
+                    padding.balance = match value {
+                        "true" => PaddingBalance::True,
+                        "equal" => PaddingBalance::Equal,
+                        "false" => PaddingBalance::False,
+                        _ => padding.balance,
+                    }
+                }
+                _ => {}
+            });
+            padding
+        }
     }
 
     pub(super) fn stamp() -> GhosttyConfigStamp {
         Locations::from_env().stamp()
+    }
+
+    pub(super) fn padding() -> GhosttyPadding {
+        Locations::from_env().padding()
     }
 
     fn stamp_file(path: &Path) -> Option<FileStamp> {
@@ -518,6 +584,15 @@ mod config_files {
             let (key, value) = line.split_once('=')?;
             Some((key.trim(), value.trim().trim_matches('"')))
         })
+    }
+
+    /// `window-padding-x`'s value: one number for both sides, or `start,end`, in points.
+    fn parse_padding(value: &str) -> Option<(u32, u32)> {
+        let number = |text: &str| text.trim().parse::<u32>().ok();
+        match value.split_once(',') {
+            Some((start, end)) => Some((number(start)?, number(end)?)),
+            None => number(value).map(|both| (both, both)),
+        }
     }
 
     /// Both variants of a paired `light:name,dark:name` value count.
@@ -631,6 +706,39 @@ mod config_files {
         }
 
         #[test]
+        fn padding_is_ghosttys_default_until_the_configuration_says_otherwise() {
+            let fixture = Fixture::new();
+            let locations = fixture.locations();
+            assert_eq!(locations.padding(), GhosttyPadding::DEFAULT);
+
+            // One number sets both sides; two set start and end; an include is read after the
+            // file that names it, so its value wins.
+            fixture.write(
+                "xdg/ghostty/config",
+                "window-padding-x = 10\nwindow-padding-y = 4, 6\nwindow-padding-balance = true\n\
+                 config-file = more.conf\n",
+            );
+            fixture.write("xdg/ghostty/more.conf", "window-padding-x = 8,12\n");
+            assert_eq!(
+                locations.padding(),
+                GhosttyPadding {
+                    x: (8, 12),
+                    y: (4, 6),
+                    balance: PaddingBalance::True,
+                }
+            );
+
+            // A value Ghostty would reject leaves the earlier one in place.
+            fixture.write(
+                "xdg/ghostty/more.conf",
+                "window-padding-x = wide\nwindow-padding-balance = equal\n",
+            );
+            let padding = locations.padding();
+            assert_eq!(padding.x, (10, 10));
+            assert_eq!(padding.balance, PaddingBalance::Equal);
+        }
+
+        #[test]
         fn theme_values_cover_pairs_quotes_and_paths() {
             assert_eq!(theme_names("night"), ["night"]);
             assert_eq!(
@@ -654,10 +762,14 @@ mod config_files {
 
 #[cfg(not(unix))]
 mod config_files {
-    use super::GhosttyConfigStamp;
+    use super::{GhosttyConfigStamp, GhosttyPadding};
 
     pub(super) fn stamp() -> GhosttyConfigStamp {
         GhosttyConfigStamp::default()
+    }
+
+    pub(super) fn padding() -> GhosttyPadding {
+        GhosttyPadding::DEFAULT
     }
 }
 
