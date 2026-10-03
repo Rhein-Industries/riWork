@@ -869,6 +869,49 @@ impl Layout {
     }
 }
 
+/// The panels of the left navigation pane, in tab order. A new project's navigation pane holds
+/// them, and so does the default layout's.
+pub const NAVIGATION_PANELS: [PanelKind; 5] = [
+    PanelKind::Projects,
+    PanelKind::Files,
+    PanelKind::Worktrees,
+    PanelKind::Tasks,
+    PanelKind::Shells,
+];
+
+/// The share of the window's width the navigation pane starts with.
+pub const NAVIGATION_RATIO: f32 = 0.27;
+
+impl Layout {
+    /// The tree of a navigation pane: `navigation` to the left of `rest`, at the width a new
+    /// project's navigation pane starts with.
+    pub fn navigation_beside(navigation: PaneId, rest: Self) -> Self {
+        Self::Split {
+            axis: Axis::SideBySide,
+            ratio: NAVIGATION_RATIO,
+            first: Box::new(Self::Pane(navigation)),
+            second: Box::new(rest),
+        }
+    }
+
+    /// The two panes of a tree that is exactly one pane to the left of another, whatever their
+    /// widths: `(left, right)`.
+    pub fn two_panes_side_by_side(&self) -> Option<(PaneId, PaneId)> {
+        match self {
+            Self::Split {
+                axis: Axis::SideBySide,
+                first,
+                second,
+                ..
+            } => match (first.as_ref(), second.as_ref()) {
+                (Self::Pane(left), Self::Pane(right)) => Some((*left, *right)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelKind {
@@ -3254,6 +3297,103 @@ mod tests {
         assert_eq!(carried.main_pane, Some(4));
         // A destination with no choice has none after the carry either.
         let carried = saved_layout().carry_locked_regions_from(&previous).unwrap();
+        assert_eq!(carried.main_pane, None);
+    }
+
+    #[test]
+    fn a_navigation_pane_is_the_five_panels_in_a_fixed_order_at_a_fixed_width() {
+        assert_eq!(
+            NAVIGATION_PANELS,
+            [
+                PanelKind::Projects,
+                PanelKind::Files,
+                PanelKind::Worktrees,
+                PanelKind::Tasks,
+                PanelKind::Shells
+            ]
+        );
+        let layout = Layout::navigation_beside(7, Layout::Pane(9));
+        assert_eq!(layout.pane_ids(), [7, 9]);
+        assert_eq!(layout.ratio_at(&[]), Some(NAVIGATION_RATIO));
+        assert_eq!(layout.two_panes_side_by_side(), Some((7, 9)));
+
+        // Around a whole tree, as for a new project, the tree is the right side of one split.
+        let mut tree = Layout::Pane(2);
+        assert!(tree.split(2, Axis::Stacked, 3));
+        let wrapped = Layout::navigation_beside(1, tree.clone());
+        assert_eq!(wrapped.pane_ids(), [1, 2, 3]);
+        assert_eq!(wrapped.two_panes_side_by_side(), None);
+
+        // Only exactly two panes, one left of the other, make the pair.
+        assert_eq!(tree.two_panes_side_by_side(), None);
+        assert_eq!(Layout::Pane(1).two_panes_side_by_side(), None);
+        let mut three = layout.clone();
+        assert!(three.split(9, Axis::SideBySide, 10));
+        assert_eq!(three.two_panes_side_by_side(), None);
+        // Whatever the width, which the user may have dragged.
+        let mut dragged = layout;
+        assert!(dragged.set_ratio(&[], 0.4));
+        assert_eq!(dragged.two_panes_side_by_side(), Some((7, 9)));
+    }
+
+    /// A project's default layout as the window saves it: the locked navigation pane 1 with the
+    /// five panels, and the unlocked main pane 2.
+    fn default_layout_of(main_tabs: Vec<SavedTab>, selected: usize) -> ProjectLayout {
+        let mut saved = saved_layout();
+        saved.layout = Layout::navigation_beside(1, Layout::Pane(2));
+        saved.panes = BTreeMap::from([
+            (1, pane(NAVIGATION_PANELS.map(panel).to_vec(), 0)),
+            (2, pane(main_tabs, selected)),
+        ]);
+        saved.active_pane = 2;
+        saved.locked_panes = Some(HashSet::from([1]));
+        saved.main_pane = Some(2);
+        saved.panels_initialized = true;
+        saved.normalize().unwrap();
+        saved
+    }
+
+    #[test]
+    fn the_default_layout_is_saved_per_project_and_its_navigation_travels_with_a_project_switch() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let previous = default_layout_of(
+            vec![shell("first-a"), panel(PanelKind::Usage), shell("first-b")],
+            2,
+        );
+        store.save("project-a", &previous).unwrap();
+        let restored = store.load("project-a").unwrap().unwrap();
+        assert_eq!(restored, previous);
+        assert_eq!(restored.effective_locked_panes(), HashSet::from([1]));
+        assert_eq!(restored.main_pane, Some(2));
+        assert_eq!(restored.panes[&1].tabs, NAVIGATION_PANELS.map(panel));
+        assert_eq!(
+            restored.panes[&2].active_tab_key.as_deref(),
+            Some("shell:first-b")
+        );
+
+        // Another project keeps its own arrangement to the right of the navigation. The locked
+        // pane keeps its tabs, its selection and its width; the unlocked tabs stay with the
+        // project they belong to.
+        let carried = saved_layout().carry_locked_regions_from(&restored).unwrap();
+        assert_eq!(carried.layout.first_pane(), 1);
+        assert_eq!(carried.layout.ratio_at(&[]), Some(NAVIGATION_RATIO));
+        assert_eq!(carried.panes[&1], restored.panes[&1]);
+        assert_eq!(carried.locked_panes, Some(HashSet::from([1])));
+        assert_eq!(carried.effective_locked_panes(), HashSet::from([1]));
+        let others: Vec<_> = carried
+            .panes
+            .iter()
+            .filter(|(id, _)| **id != 1)
+            .flat_map(|(_, pane)| &pane.tabs)
+            .cloned()
+            .collect();
+        for expected in ["shell-a", "shell-b", "shell-c"] {
+            assert!(others.contains(&shell(expected)), "{expected} was lost");
+        }
+        assert!(!others.contains(&shell("first-a")));
+        assert!(!others.contains(&panel(PanelKind::Usage)));
+        // The project had no main pane of its own, and the first project's belongs to it.
         assert_eq!(carried.main_pane, None);
     }
 

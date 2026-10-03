@@ -20,6 +20,8 @@ pub enum Icon {
     Main,
     /// A tick: the menu row beside it is on.
     Check,
+    /// A window with a navigation strip down its left side: the layout menu.
+    Layout,
     /// The symbol a built-in panel tab shows instead of its label.
     Panel(PanelKind),
     /// The symbol a toolbar button shows instead of its label.
@@ -145,6 +147,7 @@ pub fn icon(kind: Icon, color: u32) -> AnyElement {
                 }
                 Icon::Main => star_glyph(&mut path),
                 Icon::Check => check_glyph(&mut path),
+                Icon::Layout => layout_glyph(&mut path),
                 Icon::Panel(panel) => panel_glyph(&mut path, panel),
                 Icon::Action(action) => action_glyph(&mut path, action),
             }
@@ -176,6 +179,18 @@ fn check_glyph(path: &mut PathBuilder) {
     path.move_to(point(px(2.5), px(7.5)));
     path.line_to(point(px(5.5), px(11.0)));
     path.line_to(point(px(11.5), px(3.0)));
+}
+
+/// A window whose left strip holds three short rows, like a list of navigation panels, beside
+/// the open area for everything else, which has a bar along its top.
+fn layout_glyph(path: &mut PathBuilder) {
+    rectangle(path, 1.5, 2.0, 12.5, 12.0);
+    line(path, (5.8, 2.0), (5.8, 12.0));
+    // A bar over the open area, which is what the strip is not.
+    line(path, (5.8, 5.2), (12.5, 5.2));
+    for y in [4.6, 7.0, 9.4] {
+        line(path, (3.0, y), (4.3, y));
+    }
 }
 
 /// One distinct, simple symbol per built-in panel, in the same 14 px box.
@@ -572,6 +587,20 @@ mod tests {
                 "the star reads as {panel:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_layout_glyph_stays_inside_the_icon_box_and_reads_as_none_of_the_panels() {
+        let layout = shape("layout", layout_glyph);
+        for panel in PANELS {
+            let panel_shape = shape(&format!("{panel:?}"), |path| panel_glyph(path, panel));
+            assert_ne!(layout.vertices, panel_shape.vertices);
+            assert!(
+                difference(&layout, &panel_shape) >= 0.3,
+                "the layout glyph reads as {panel:?}"
+            );
+        }
+        assert_ne!(layout.vertices, shape("star", star_glyph).vertices);
     }
 
     #[test]
