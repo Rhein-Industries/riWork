@@ -6215,7 +6215,9 @@ impl Workspace {
                         .absolute()
                         .top(ui_text::space(PANE_HEADER_HEIGHT) + px(2.0))
                         .right(px(6.0))
-                        .w(px(ui_text::space_f32(248.0).min((pane_width - 12.0).max(0.0))))
+                        .w(px(
+                            ui_text::space_f32(248.0).min((pane_width - 12.0).max(0.0))
+                        ))
                         .max_h(gpui::relative(0.9))
                         .overflow_y_scroll()
                         .bg(rgb(colors.panel_active))
@@ -6402,7 +6404,11 @@ impl Workspace {
                     .flex()
                     .flex_shrink_0()
                     .max_w(gpui::relative(
-                        if settings.visible_items(StatusSide::Right).is_empty() { 1.0 } else { 0.4 },
+                        if settings.visible_items(StatusSide::Right).is_empty() {
+                            1.0
+                        } else {
+                            0.4
+                        },
                     ))
                     .min_w_0()
                     .items_center()
@@ -6769,15 +6775,20 @@ impl Workspace {
                         .border_t_1()
                         .border_color(rgb(colors.divider))
                         .child(title)
-                        .child(div().mt(ui_text::space(6.0)).text_color(rgb(colors.muted)).child(
-                            if entry.is_some_and(|entry| entry.pending) {
-                                "Reading account usage…".to_owned()
-                            } else {
-                                entry
-                                    .and_then(|entry| entry.codex_error.clone())
-                                    .unwrap_or_else(|| "Account usage is unavailable".to_owned())
-                            },
-                        ))
+                        .child(
+                            div()
+                                .mt(ui_text::space(6.0))
+                                .text_color(rgb(colors.muted))
+                                .child(if entry.is_some_and(|entry| entry.pending) {
+                                    "Reading account usage…".to_owned()
+                                } else {
+                                    entry
+                                        .and_then(|entry| entry.codex_error.clone())
+                                        .unwrap_or_else(|| {
+                                            "Account usage is unavailable".to_owned()
+                                        })
+                                }),
+                        )
                         .into_any_element(),
                 );
             }
@@ -8053,16 +8064,20 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
                         ),
                 )
                 .child(
-                    div().mt(ui_text::space(5.0)).h(ui_text::space(3.0)).bg(rgb(colors.divider)).child(
-                        div()
-                            .h_full()
-                            .w(gpui::relative((remaining / 100.0) as f32))
-                            .bg(rgb(if remaining < 15.0 {
-                                colors.magenta
-                            } else {
-                                colors.cyan
-                            })),
-                    ),
+                    div()
+                        .mt(ui_text::space(5.0))
+                        .h(ui_text::space(3.0))
+                        .bg(rgb(colors.divider))
+                        .child(
+                            div()
+                                .h_full()
+                                .w(gpui::relative((remaining / 100.0) as f32))
+                                .bg(rgb(if remaining < 15.0 {
+                                    colors.magenta
+                                } else {
+                                    colors.cyan
+                                })),
+                        ),
                 )
                 .into_any_element()
         })

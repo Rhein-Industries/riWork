@@ -256,7 +256,10 @@ fn sync(cx: &mut App) {
 /// was not matching, since another process may have turned matching on.
 fn ghostty_font_size_now(cx: &mut App) -> f32 {
     let stamp = theme::ghostty_config_stamp();
-    if let Some(font) = cx.try_global::<TerminalFontSize>().filter(|font| font.stamp == stamp) {
+    if let Some(font) = cx
+        .try_global::<TerminalFontSize>()
+        .filter(|font| font.stamp == stamp)
+    {
         return font.size;
     }
     let size = theme::read_ghostty_font_size().unwrap_or_else(|error| {
@@ -342,8 +345,14 @@ mod tests {
         assert_eq!(TextPoints::new(100.0).points(), MAX_POINTS);
         assert_eq!(TextPoints::new(f32::INFINITY), TextPoints::DEFAULT);
         assert_eq!(serde_json::to_string(&TextPoints::new(12.0)).unwrap(), "12");
-        assert_eq!(serde_json::to_string(&TextPoints::new(12.5)).unwrap(), "12.5");
-        assert_eq!(serde_json::from_str::<TextPoints>("3").unwrap().points(), MIN_POINTS);
+        assert_eq!(
+            serde_json::to_string(&TextPoints::new(12.5)).unwrap(),
+            "12.5"
+        );
+        assert_eq!(
+            serde_json::from_str::<TextPoints>("3").unwrap().points(),
+            MIN_POINTS
+        );
         assert!(serde_json::from_str::<TextPoints>(r#""big""#).is_err());
     }
 
@@ -371,7 +380,9 @@ mod tests {
         let store = SettingsStore::open(&dir).unwrap();
         // This process still holds 11 pt while another one saved 15 pt.
         let cached = Settings::default();
-        store.update(|settings| settings.ui_text_size = TextPoints::new(15.0)).unwrap();
+        store
+            .update(|settings| settings.ui_text_size = TextPoints::new(15.0))
+            .unwrap();
         assert_eq!(effective_points(&cached, None), 11.0);
         let saved = store
             .update(|settings| SizeChange::Bigger.apply(settings, 13.0))
@@ -383,7 +394,9 @@ mod tests {
             .unwrap();
         assert_eq!(saved.ui_text_size.points(), 17.0);
         // Another process turned matching on: the step starts from Ghostty's size.
-        store.update(|settings| settings.ui_text_matches_terminal = true).unwrap();
+        store
+            .update(|settings| settings.ui_text_matches_terminal = true)
+            .unwrap();
         let saved = store
             .update(|settings| SizeChange::Smaller.apply(settings, 20.0))
             .unwrap();
@@ -406,7 +419,11 @@ mod tests {
             ("=", false),
             ("cmd-1", false),
         ] {
-            assert_eq!(is_size_keystroke(&Keystroke::parse(text).unwrap()), expected, "{text}");
+            assert_eq!(
+                is_size_keystroke(&Keystroke::parse(text).unwrap()),
+                expected,
+                "{text}"
+            );
         }
     }
 

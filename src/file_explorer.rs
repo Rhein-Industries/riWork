@@ -1781,7 +1781,10 @@ impl FileExplorer {
             .text_color(rgb(color));
         let button = match face {
             Face::Text(label) => {
-                let button = button.px(ui_text::space(7.0)).py(ui_text::space(5.0)).child(label.to_owned());
+                let button = button
+                    .px(ui_text::space(7.0))
+                    .py(ui_text::space(5.0))
+                    .child(label.to_owned());
                 match explanation {
                     Some(text) => button.child(tooltip::anchor(text, Look::Control)),
                     None => button,

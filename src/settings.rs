@@ -634,7 +634,8 @@ fn theme_columns(layout: SettingsLayout, width: f32) -> usize {
     if layout == SettingsLayout::Narrow {
         return 1;
     }
-    let fit = (card_inner_width(layout, width) + ROW_GAP) / (ui_text::space_f32(THEME_CELL_MIN_WIDTH) + ROW_GAP);
+    let fit = (card_inner_width(layout, width) + ROW_GAP)
+        / (ui_text::space_f32(THEME_CELL_MIN_WIDTH) + ROW_GAP);
     (fit as usize).clamp(2, 3)
 }
 
@@ -2189,50 +2190,54 @@ impl SettingsPanel {
         let shown = ui_text::current_points(cx);
         let matching = settings.ui_text_matches_terminal;
         let value_color = if matching { colors.muted } else { colors.cyan };
-        let button = |id: &'static str, label: &'static str, change: SizeChange, cx: &mut Context<Self>| {
-            let limit = match change {
-                SizeChange::Bigger => shown >= ui_text::MAX_POINTS,
-                SizeChange::Smaller => shown <= ui_text::MIN_POINTS,
-                SizeChange::Reset => shown == ui_text::DEFAULT_POINTS && !matching,
+        let button =
+            |id: &'static str, label: &'static str, change: SizeChange, cx: &mut Context<Self>| {
+                let limit = match change {
+                    SizeChange::Bigger => shown >= ui_text::MAX_POINTS,
+                    SizeChange::Smaller => shown <= ui_text::MIN_POINTS,
+                    SizeChange::Reset => shown == ui_text::DEFAULT_POINTS && !matching,
+                };
+                let active = !matching && !limit;
+                div()
+                    .id(id)
+                    .flex_none()
+                    .min_w(ui_text::space(26.0))
+                    .px(ui_text::space(6.0))
+                    .py(ui_text::space(4.0))
+                    .border_1()
+                    .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                    .bg(rgb(colors.panel_active))
+                    .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+                    .text_size(ui_text::text(10.0))
+                    .text_center()
+                    .cursor_pointer()
+                    .hover(|style| style.border_color(rgb(colors.cyan)))
+                    .child(label)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
+                    )
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
+                        view.change_text_size(change, cx);
+                    }))
             };
-            let active = !matching && !limit;
-            div()
-                .id(id)
-                .flex_none()
-                .min_w(ui_text::space(26.0))
-                .px(ui_text::space(6.0))
-                .py(ui_text::space(4.0))
-                .border_1()
-                .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-                .bg(rgb(colors.panel_active))
-                .text_color(rgb(if active { colors.cyan } else { colors.muted }))
-                .text_size(ui_text::text(10.0))
-                .text_center()
-                .cursor_pointer()
-                .hover(|style| style.border_color(rgb(colors.cyan)))
-                .child(label)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    cx.stop_propagation();
-                    view.change_text_size(change, cx);
-                }))
-        };
         let description = match ui_text::terminal_font_size(cx).filter(|_| matching) {
-            Some(size) => format!("Panels, tabs, menus and status bar. Matches Ghostty's font-size = {size}."),
+            Some(size) => {
+                format!("Panels, tabs, menus and status bar. Matches Ghostty's font-size = {size}.")
+            }
             None => "Panels, tabs, menus and status bar.".to_owned(),
         };
         // Each shortcut is one unbreakable item: wrapping inside the text broke
         // lines between "⌘" and "−".
         let shortcut = |key: &'static str, label: &'static str| {
-            div()
-                .flex_none()
-                .whitespace_nowrap()
-                .child(div().flex().gap(ui_text::space(4.0))
+            div().flex_none().whitespace_nowrap().child(
+                div()
+                    .flex()
+                    .gap(ui_text::space(4.0))
                     .child(div().text_color(rgb(colors.text)).child(key))
-                    .child(label))
+                    .child(label),
+            )
         };
         let shortcuts = div()
             .flex()
@@ -2243,21 +2248,34 @@ impl SettingsPanel {
             .child(shortcut("⌘+", "bigger"))
             .child(shortcut("⌘−", "smaller"))
             .child(shortcut("⌘0", "reset"))
-            .child(div().flex_none().whitespace_nowrap().child("outside a terminal"));
+            .child(
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .child("outside a terminal"),
+            );
         let match_button = div()
             .id("ui-text-match")
             .flex_none()
             .px(ui_text::space(6.0))
             .py(ui_text::space(4.0))
             .border_1()
-            .border_color(rgb(if matching { colors.cyan } else { colors.divider }))
+            .border_color(rgb(if matching {
+                colors.cyan
+            } else {
+                colors.divider
+            }))
             .bg(rgb(colors.panel_active))
             .text_color(rgb(if matching { colors.cyan } else { colors.muted }))
             .text_size(ui_text::text(10.0))
             .text_center()
             .cursor_pointer()
             .hover(|style| style.border_color(rgb(colors.cyan)))
-            .child(if matching { "MATCH TERMINAL · ON" } else { "MATCH TERMINAL · OFF" })
+            .child(if matching {
+                "MATCH TERMINAL · ON"
+            } else {
+                "MATCH TERMINAL · OFF"
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
@@ -2281,7 +2299,12 @@ impl SettingsPanel {
             .focus_visible(|style| style.border_color(rgb(colors.cyan)))
             .child(
                 row_text()
-                    .child(div().text_size(ui_text::text(12.0)).text_color(rgb(colors.text)).child("Text size"))
+                    .child(
+                        div()
+                            .text_size(ui_text::text(12.0))
+                            .text_color(rgb(colors.text))
+                            .child("Text size"),
+                    )
                     .child(
                         div()
                             .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
@@ -2756,7 +2779,10 @@ mod tests {
         let loaded = store.load().unwrap();
         assert_eq!(loaded.ui_text_size, TextPoints::DEFAULT);
         assert!(!loaded.ui_text_matches_terminal);
-        assert_eq!(fs::read_to_string(dir.join("settings.json")).unwrap(), older);
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.json")).unwrap(),
+            older
+        );
 
         // A size change steps from the stored 11 pt, writes both keys in points and
         // leaves the neighbours alone.
