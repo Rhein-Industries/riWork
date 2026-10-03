@@ -350,6 +350,13 @@ pub fn read_ghostty_theme() -> Result<(TerminalTheme, Option<String>), String> {
     native::read()
 }
 
+/// Ghostty's effective `font-size`, through the same loader as the colors: the
+/// default config files, their `config-file` includes, last value wins, and
+/// Ghostty's built-in default when none sets it. Same threading rule as colors.
+pub fn read_ghostty_font_size() -> Result<f32, String> {
+    native::read_font_size(None)
+}
+
 #[cfg(unix)]
 mod config_files {
     use super::{FileStamp, GhosttyConfigStamp};
@@ -780,19 +787,13 @@ mod native {
         read_config(None)
     }
 
-    pub(super) fn read_config(
-        path: Option<&std::path::Path>,
-    ) -> Result<(TerminalTheme, Option<String>), String> {
+    /// The default config files, or `path`, with their `config-file` includes.
+    fn load(path: Option<&std::path::Path>) -> Result<Config, String> {
         initialize();
         let config = Config(unsafe { ghostty_config_new() });
         if config.0.is_null() {
             return Err("Could not load Ghostty configuration".to_owned());
         }
-        let mut background = Rgb::default();
-        let mut foreground = Rgb::default();
-        // ghostty_config_palette_s contains 256 RGB colors, not sixteen. Giving
-        // config_get a sixteen-entry buffer would write beyond its bounds.
-        let mut palette = [Rgb::default(); 256];
         unsafe {
             if let Some(path) = path {
                 use std::os::unix::ffi::OsStrExt;
@@ -804,6 +805,33 @@ mod native {
             }
             ghostty_config_load_recursive_files(config.0);
             ghostty_config_finalize(config.0);
+        }
+        Ok(config)
+    }
+
+    /// The effective `font-size` in points: the last value set, or Ghostty's own default.
+    pub(super) fn read_font_size(path: Option<&std::path::Path>) -> Result<f32, String> {
+        let config = load(path)?;
+        let mut size = 0.0_f32;
+        // `font-size` is an f32 in Config.zig, which c_get writes as one.
+        if !unsafe {
+            ghostty_config_get(config.0, (&mut size as *mut f32).cast(), c"font-size".as_ptr(), 9)
+        } {
+            return Err("Ghostty did not provide its font size".to_owned());
+        }
+        Ok(size)
+    }
+
+    pub(super) fn read_config(
+        path: Option<&std::path::Path>,
+    ) -> Result<(TerminalTheme, Option<String>), String> {
+        let config = load(path)?;
+        let mut background = Rgb::default();
+        let mut foreground = Rgb::default();
+        // ghostty_config_palette_s contains 256 RGB colors, not sixteen. Giving
+        // config_get a sixteen-entry buffer would write beyond its bounds.
+        let mut palette = [Rgb::default(); 256];
+        unsafe {
             if !ghostty_config_get(
                 config.0,
                 (&mut background as *mut Rgb).cast(),
@@ -888,6 +916,31 @@ mod native_tests {
         assert_ne!(first, second);
         std::fs::remove_dir_all(directory).unwrap();
     }
+
+    #[test]
+    fn native_font_size_follows_includes_and_falls_back_to_ghosttys_default() {
+        let directory =
+            std::env::temp_dir().join(format!("riwork-font-size-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config = directory.join("config.ghostty");
+        let include = directory.join("included.ghostty");
+        std::fs::write(&config, "background = #000000\n").unwrap();
+        assert_eq!(
+            native::read_font_size(Some(&config)).unwrap(),
+            crate::ui_text::GHOSTTY_DEFAULT_FONT_SIZE
+        );
+        // Includes load after the file naming them, so the include's value wins.
+        std::fs::write(&include, "font-size = 15.5\n").unwrap();
+        std::fs::write(
+            &config,
+            format!("font-size = 11\nconfig-file = {}\n", include.display()),
+        )
+        .unwrap();
+        assert_eq!(native::read_font_size(Some(&config)).unwrap(), 15.5);
+        std::fs::write(&config, "font-size = 11\nfont-size = 17\n").unwrap();
+        assert_eq!(native::read_font_size(Some(&config)).unwrap(), 17.0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -895,6 +948,9 @@ mod native {
     use super::*;
     pub fn read() -> Result<(TerminalTheme, Option<String>), String> {
         Err("Following Ghostty is unavailable on this platform".to_owned())
+    }
+    pub(super) fn read_font_size(_: Option<&std::path::Path>) -> Result<f32, String> {
+        Err("Reading Ghostty's font size is unavailable on this platform".to_owned())
     }
 }
 

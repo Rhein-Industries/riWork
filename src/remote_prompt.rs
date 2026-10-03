@@ -13,7 +13,7 @@ use std::{
 use gpui::{
     AnyElement, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle,
     IntoElement, KeyDownEvent, MouseButton, Pixels, Point, Render, UTF16Selection, Window, div,
-    prelude::*, px, rgb,
+    prelude::*, rgb,
 };
 
 use crate::{
@@ -21,7 +21,7 @@ use crate::{
     remote_hosts::{PairRequest, PairingLink},
     remote_service::Backend,
     remote_tree::validate_project_name,
-    theme, utf16_to_byte,
+    theme, ui_text, utf16_to_byte,
 };
 
 /// What the modal is for.
@@ -430,8 +430,8 @@ impl RemotePrompt {
         let disabled = self.busy.is_some();
         div()
             .id(id)
-            .px(px(12.0))
-            .py(px(8.0))
+            .px(ui_text::space(12.0))
+            .py(ui_text::space(8.0))
             .cursor_pointer()
             .border_1()
             .border_color(rgb(if focused {
@@ -491,10 +491,10 @@ impl Render for RemotePrompt {
                     .id(("remote-prompt-field", index))
                     .flex()
                     .flex_col()
-                    .gap(px(4.0))
+                    .gap(ui_text::space(4.0))
                     .child(
                         div()
-                            .text_size(px(9.0))
+                            .text_size(ui_text::text(9.0))
                             .text_color(rgb(colors.muted))
                             .child(field.label),
                     )
@@ -518,7 +518,7 @@ impl Render for RemotePrompt {
             .collect::<Vec<_>>();
         let result = self.link.as_ref().map(|link| {
             div()
-                .p(px(10.0))
+                .p(ui_text::space(10.0))
                 .bg(rgb(colors.bg))
                 .border_1()
                 .border_color(rgb(colors.divider))
@@ -541,25 +541,25 @@ impl Render for RemotePrompt {
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation())
-            .w(px(480.0))
+            .w(ui_text::space(480.0))
             .max_w_full()
             .max_h(gpui::relative(0.9))
             .overflow_y_scroll()
-            .p(px(18.0))
+            .p(ui_text::space(18.0))
             .flex()
             .flex_col()
-            .gap(px(14.0))
+            .gap(ui_text::space(14.0))
             .font_family("Menlo")
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.magenta))
             .text_color(rgb(colors.text))
-            .text_size(px(11.0))
+            .text_size(ui_text::text(11.0))
             .child(div().text_color(rgb(colors.cyan)).child(self.title()))
             .child(
                 div()
                     .text_color(rgb(colors.muted))
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .child(self.description()),
             )
             .children(fields)
@@ -577,7 +577,7 @@ impl Render for RemotePrompt {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(10.0))
+                    .gap(ui_text::space(10.0))
                     .child(self.button(
                         "remote-prompt-first",
                         first,

@@ -24,6 +24,7 @@ use crate::{
     store::{State, TaskStatus},
     theme::{self, Palette},
     tooltip::{self, Look},
+    ui_text,
 };
 
 #[derive(Clone)]
@@ -201,16 +202,16 @@ impl Render for DraggedProjectItem {
         div()
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .px(px(10.0))
-            .py(px(6.0))
-            .max_w(px(280.0))
+            .gap(ui_text::space(6.0))
+            .px(ui_text::space(10.0))
+            .py(ui_text::space(6.0))
+            .max_w(ui_text::space(280.0))
             .bg(rgb(colors.panel_active))
             .border_1()
             .border_color(rgb(colors.cyan))
             .text_color(rgb(colors.text))
             .font_family("Menlo")
-            .text_size(px(11.0))
+            .text_size(ui_text::text(11.0))
             .child(match self.kind {
                 ProjectDragKind::Project(_) => "◇",
                 ProjectDragKind::Folder(_) => "▱",
@@ -584,9 +585,9 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                         rows.push(
                             div()
                                 .pl(px(project_indent(depth)))
-                                .pr(px(8.0))
-                                .py(px(6.0))
-                                .text_size(px(10.0))
+                                .pr(ui_text::space(8.0))
+                                .py(ui_text::space(6.0))
+                                .text_size(ui_text::text(10.0))
                                 .text_color(rgb(colors.muted))
                                 .child("Drop projects here")
                                 .into_any_element(),
@@ -613,7 +614,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                         let title = div()
                             .flex()
                             .items_center()
-                            .gap(px(4.0))
+                            .gap(ui_text::space(4.0))
                             .child(div().flex_1().min_w_0().child(line(
                                 project.name.clone(),
                                 colors.text,
@@ -793,7 +794,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     vec![
                         div()
                             .flex()
-                            .gap(px(6.0))
+                            .gap(ui_text::space(6.0))
                             .child(div().text_color(rgb(color)).child(mark))
                             .child(line(task.title.clone(), colors.text, 11.0))
                             .into_any_element(),
@@ -846,7 +847,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             .flex()
                             .items_center()
                             .justify_between()
-                            .gap(px(6.0))
+                            .gap(ui_text::space(6.0))
                             .child(line(
                                 format!("{} · {label}", short_id(&shell.id)),
                                 colors.text,
@@ -895,7 +896,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
     if rows.is_empty() {
         rows.push(
             div()
-                .p(px(10.0))
+                .p(ui_text::space(10.0))
                 .text_color(rgb(colors.muted))
                 .child(if query.is_empty() {
                     format!("NO {}", name.to_uppercase())
@@ -939,10 +940,10 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
         .min_w_0()
         .min_h_0()
         .bg(rgb(colors.panel))
-        .text_size(px(11.0))
+        .text_size(ui_text::text(11.0))
         .child(
             div()
-                .h(px(30.0))
+                .h(ui_text::space(30.0))
                 .flex_none()
                 .flex()
                 .border_b_1()
@@ -960,7 +961,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .px(px(8.0))
+                        .px(ui_text::space(8.0))
                         .flex()
                         .items_center()
                         .text_color(rgb(if data.search_focused {
@@ -1014,10 +1015,10 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(6.0))
-                .px(px(8.0))
-                .py(px(4.0))
-                .text_size(px(10.0))
+                .gap(ui_text::space(6.0))
+                .px(ui_text::space(8.0))
+                .py(ui_text::space(4.0))
+                .text_size(ui_text::text(10.0))
                 .text_color(rgb(colors.muted))
                 .child(
                     div()
@@ -1132,12 +1133,12 @@ fn project_header_button<V: 'static>(
         .map(|button| {
             if as_icon {
                 button
-                    .w(px(28.0))
+                    .w(ui_text::space(28.0))
                     .justify_center()
                     .child(icons::icon(Icon::Action(glyph), color))
                     .child(tooltip::anchor(tooltip, Look::Control))
             } else {
-                button.px(px(pad)).child(label)
+                button.px(ui_text::space(pad)).child(label)
             }
         })
         .on_click(cx.listener(move |view, _, window, cx| {
@@ -1159,17 +1160,17 @@ fn project_sort_controls<V: 'static>(
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(2.0))
-        .text_size(px(9.0))
+        .gap(ui_text::space(2.0))
+        .text_size(ui_text::text(9.0))
         .child(
             div()
                 .id("project-sort-selector")
                 .relative()
                 .flex()
                 .items_center()
-                .gap(px(5.0))
-                .px(px(5.0))
-                .h(px(20.0))
+                .gap(ui_text::space(5.0))
+                .px(ui_text::space(5.0))
+                .h(ui_text::space(20.0))
                 .cursor_pointer()
                 .bg(rgb(if open {
                     colors.panel_active
@@ -1208,8 +1209,8 @@ fn project_sort_controls<V: 'static>(
                 .flex()
                 .items_center()
                 .justify_center()
-                .w(px(22.0))
-                .h(px(20.0))
+                .w(ui_text::space(22.0))
+                .h(ui_text::space(20.0))
                 .cursor_pointer()
                 .text_color(rgb(colors.cyan))
                 .hover(|style| style.bg(rgb(colors.panel_active)))
@@ -1240,17 +1241,17 @@ fn project_sort_menu<V: 'static>(
     div()
         .id("project-sort-menu")
         .absolute()
-        .top(px(56.0))
+        .top(ui_text::space(56.0))
         .right(px(8.0))
-        .w(px(220.0))
+        .w(ui_text::space(220.0))
         .max_w(gpui::relative(0.9))
         .bottom(px(8.0))
-        .max_h(px(128.0))
+        .max_h(ui_text::space(128.0))
         .overflow_y_scroll()
         .bg(rgb(colors.panel_active))
         .border_1()
         .border_color(rgb(colors.magenta))
-        .p(px(3.0))
+        .p(ui_text::space(3.0))
         .occlude()
         .on_mouse_down_out(
             cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
@@ -1280,17 +1281,17 @@ fn project_sort_menu<V: 'static>(
                     .id(format!("project-sort-{}", by.label()))
                     .flex()
                     .items_center()
-                    .gap(px(7.0))
-                    .px(px(8.0))
-                    .py(px(7.0))
+                    .gap(ui_text::space(7.0))
+                    .px(ui_text::space(8.0))
+                    .py(ui_text::space(7.0))
                     .cursor_pointer()
-                    .text_size(px(10.0))
+                    .text_size(ui_text::text(10.0))
                     .text_color(rgb(if selected { colors.cyan } else { colors.text }))
                     .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan)))
                     .child(
                         div()
                             .flex_none()
-                            .w(px(12.0))
+                            .w(ui_text::space(12.0))
                             .child(if selected { "✓" } else { "" }),
                     )
                     .child(div().flex_1().min_w_0().text_ellipsis().child(by.label()))
@@ -1318,8 +1319,8 @@ fn project_control<V: 'static>(
         .flex()
         .items_center()
         .justify_center()
-        .w(px(20.0))
-        .h(px(18.0))
+        .w(ui_text::space(20.0))
+        .h(ui_text::space(18.0))
         .text_color(rgb(colors.cyan))
         .cursor_pointer()
         .hover(|style| {
@@ -1351,8 +1352,8 @@ fn project_notification_control<V: 'static>(
         .flex()
         .items_center()
         .justify_center()
-        .w(px(20.0))
-        .h(px(18.0))
+        .w(ui_text::space(20.0))
+        .h(ui_text::space(18.0))
         .cursor_pointer()
         .hover(|style| style.bg(rgb(colors.divider)))
         .child(icons::icon(
@@ -1394,27 +1395,27 @@ fn task_detail(
         .id("task-detail")
         .flex_none()
         .min_h_0()
-        .max_h(px(200.0))
+        .max_h(ui_text::space(200.0))
         .overflow_y_scroll()
         .border_t_1()
         .border_color(rgb(colors.divider))
-        .p(px(8.0))
+        .p(ui_text::space(8.0))
         .child(div().text_color(rgb(colors.gold)).child("TASK DETAIL"))
         .child(
             div()
-                .pt(px(5.0))
+                .pt(ui_text::space(5.0))
                 .text_color(rgb(colors.text))
                 .child(title.to_owned()),
         )
         .child(
             div()
-                .pt(px(4.0))
+                .pt(ui_text::space(4.0))
                 .text_color(rgb(color))
                 .child(format!("{} · @ {worktree}", status.as_str())),
         )
         .child(
             div()
-                .pt(px(6.0))
+                .pt(ui_text::space(6.0))
                 .text_color(rgb(colors.muted))
                 .child(if details.is_empty() {
                     "No details".to_owned()
@@ -1472,13 +1473,13 @@ fn push_remote_folder<V: 'static>(
             )
             .children(folder.creating.then(|| {
                 div()
-                    .text_size(px(9.0))
+                    .text_size(ui_text::text(9.0))
                     .text_color(rgb(colors.muted))
                     .child("creating…")
             }))
             .child(
                 div()
-                    .text_size(px(9.0))
+                    .text_size(ui_text::text(9.0))
                     .text_color(rgb(colors.muted))
                     .child(format!("{:02}", folder.count)),
             )
@@ -1519,9 +1520,9 @@ fn push_remote_folder<V: 'static>(
         rows.push(
             div()
                 .pl(px(project_indent(1)))
-                .pr(px(8.0))
-                .py(px(5.0))
-                .text_size(px(10.0))
+                .pr(ui_text::space(8.0))
+                .py(ui_text::space(5.0))
+                .text_size(ui_text::text(10.0))
                 .text_color(rgb(if offline { colors.gold } else { colors.muted }))
                 .child(note.clone())
                 .into_any_element(),
@@ -1552,7 +1553,7 @@ fn remote_project_row<V: 'static>(
             div()
                 .flex()
                 .items_center()
-                .gap(px(4.0))
+                .gap(ui_text::space(4.0))
                 .child(div().flex_1().min_w_0().child(line(
                     project.name.clone(),
                     colors.text,
@@ -1581,18 +1582,18 @@ fn failure_row<V: 'static>(
         .id(id.clone())
         .flex()
         .items_start()
-        .gap(px(6.0))
+        .gap(ui_text::space(6.0))
         .pl(px(project_indent(depth)))
-        .pr(px(8.0))
-        .py(px(4.0))
-        .text_size(px(10.0))
+        .pr(ui_text::space(8.0))
+        .py(ui_text::space(4.0))
+        .text_size(ui_text::text(10.0))
         .text_color(rgb(colors.gold))
         .child(div().flex_1().min_w_0().child(message.to_owned()))
         .child(
             div()
                 .id(format!("{id}-dismiss"))
                 .flex_none()
-                .px(px(4.0))
+                .px(ui_text::space(4.0))
                 .cursor_pointer()
                 .text_color(rgb(colors.muted))
                 .hover(|style| style.text_color(rgb(colors.text)))
@@ -1634,9 +1635,9 @@ fn listing_note<V: 'static, T>(
     };
     rows.push(
         div()
-            .px(px(8.0))
-            .py(px(3.0))
-            .text_size(px(10.0))
+            .px(ui_text::space(8.0))
+            .py(ui_text::space(3.0))
+            .text_size(ui_text::text(10.0))
             .text_color(rgb(color))
             .child(text)
             .into_any_element(),
@@ -1666,9 +1667,9 @@ fn push_remote_panel<V: 'static>(
     let colors = theme::palette(cx);
     let note = |text: String, color: u32| {
         div()
-            .px(px(8.0))
-            .py(px(3.0))
-            .text_size(px(10.0))
+            .px(ui_text::space(8.0))
+            .py(ui_text::space(3.0))
+            .text_size(ui_text::text(10.0))
             .text_color(rgb(color))
             .child(text)
             .into_any_element()
@@ -1766,7 +1767,7 @@ fn push_remote_panel<V: 'static>(
                         vec![
                             div()
                                 .flex()
-                                .gap(px(6.0))
+                                .gap(ui_text::space(6.0))
                                 .child(div().text_color(rgb(color)).child(mark))
                                 .child(line(task.title.clone(), colors.text, 11.0))
                                 .into_any_element(),
@@ -1829,7 +1830,7 @@ fn push_remote_panel<V: 'static>(
                                 .flex()
                                 .items_center()
                                 .justify_between()
-                                .gap(px(6.0))
+                                .gap(ui_text::space(6.0))
                                 .child(line(
                                     format!("{} · {label}", short_id(&shell.id)),
                                     colors.text,
@@ -1919,19 +1920,19 @@ pub fn unavailable<V: 'static>(kind: PanelKind, host: &str, cx: &mut Context<V>)
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(6.0))
-        .p(px(16.0))
+        .gap(ui_text::space(6.0))
+        .p(ui_text::space(16.0))
         .bg(rgb(colors.panel))
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(ui_text::text(11.0))
                 .text_color(rgb(colors.text))
                 .child(format!("Not available for a project on {host}")),
         )
         .child(
             div()
-                .max_w(px(360.0))
-                .text_size(px(10.0))
+                .max_w(ui_text::space(360.0))
+                .text_size(ui_text::text(10.0))
                 .text_color(rgb(colors.muted))
                 .child(format!(
                     "{what} works with this Mac's own projects. Select one of them to use it."
@@ -1951,12 +1952,12 @@ fn folder_bar(id: String, depth: usize, colors: Palette) -> Stateful<Div> {
         .id(id)
         .flex()
         .items_center()
-        .gap(px(5.0))
+        .gap(ui_text::space(5.0))
         .min_w_0()
-        .h(px(27.0))
+        .h(ui_text::space(27.0))
         .pl(px(project_indent(depth)))
-        .pr(px(8.0))
-        .mt(px(3.0))
+        .pr(ui_text::space(8.0))
+        .mt(ui_text::space(3.0))
         .border_b_1()
         .border_color(rgb(colors.divider))
         .bg(rgb(colors.panel_active))
@@ -2015,7 +2016,7 @@ fn folder_header<V: 'static>(
     )
     .child(
         div()
-            .text_size(px(9.0))
+            .text_size(ui_text::text(9.0))
             .text_color(rgb(colors.muted))
             .child(format!("{count:02}")),
     )
@@ -2139,11 +2140,11 @@ fn project_row<V: 'static>(
         .id(format!("project-{id}"))
         .flex()
         .flex_col()
-        .gap(px(3.0))
+        .gap(ui_text::space(3.0))
         .min_w_0()
         .pl(px(project_indent(depth)))
-        .pr(px(8.0))
-        .py(px(6.0))
+        .pr(ui_text::space(8.0))
+        .py(ui_text::space(6.0))
         .border_l_1()
         .border_color(rgb(if selected { colors.cyan } else { colors.panel }))
         .bg(rgb(if selected {
@@ -2183,10 +2184,10 @@ fn row<V: 'static>(
         .id(id)
         .flex()
         .flex_col()
-        .gap(px(3.0))
+        .gap(ui_text::space(3.0))
         .min_w_0()
-        .px(px(8.0))
-        .py(px(6.0))
+        .px(ui_text::space(8.0))
+        .py(ui_text::space(6.0))
         .border_l_1()
         .border_color(rgb(if selected { accent } else { colors.panel }))
         .bg(rgb(if selected {
@@ -2207,7 +2208,7 @@ fn line(text: String, color: u32, size: f32) -> AnyElement {
         .min_w_0()
         .overflow_hidden()
         .text_ellipsis()
-        .text_size(px(size))
+        .text_size(ui_text::text(size))
         .text_color(rgb(color))
         .child(text)
         .into_any_element()
