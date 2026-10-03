@@ -251,7 +251,7 @@ same UUID/window/pane/PID and completes crash recovery within the 15-second boun
 Input deduplication: UUIDs are unique per device and logical operation. Desktop
 persists (device ID, request ID, canonical request digest, state/result) **before** sending
 input and retains it across reconnect/restart. Retry same UUID + same request
-returns cached response; changed contents fail `request_conflict`. Pending/uncertain
+returns the cached response (its `id` and `result`, or its error; `server_ms` is the retry's own, see "Link extension"); changed contents fail `request_conflict`. Pending/uncertain
 outcome returns `outcome_unknown`, never re-sends automatically. CLI failures after
 attempting submission also return `outcome_unknown`. Clients must retain pending
 UUID/line and warn on unknown outcomes, never generate a fresh UUID to auto-retry.
@@ -641,7 +641,7 @@ Additive and compatible, like the extensions before it: one field on every respo
 
 Why. A page of history costs the phone `round trip + what the desktop does (the CLI starting, tmux capturing, the filter) + transfer`, and only the last term says how fast the link is. The desktop's term is 50 to 300 ms and grows with the page and the load of the machine, so a fast link looked slow. And terminal text with SGR escapes is highly repetitive: it deflates 3 to 15 times, which turns a 3 MB history into a few hundred KB.
 
-**`server_ms`.** Every response, error responses included, carries `"server_ms": N` (a non-negative integer, milliseconds) as a top-level field next to `ok` and `id`, never inside `result`. It is the time the connector had the request: from the moment its frame was decrypted until the reply was ready to be sealed. That includes waiting for a slot (see Concurrency), the CLI and tmux, a long poll's wait (so an `unchanged` answer to `wait_ms: 8000` carries about 8000) and the time spent deflating the body; it does not include sealing or writing the socket, a few hundred microseconds. The phone takes it out of the time it measured between sending a request and receiving the whole reply: what is left is the network's, and for a small reply that is the round trip, which makes every key acknowledgement and every `unchanged` answer a clean sample of it. Clients that do not know the field ignore it. The connector writes it last, so a deflated reply can pay for its own compression: the body is deflated and flushed to a byte boundary, the clock is read, and the closing field is deflated onto the same stream.
+**`server_ms`.** Every response, error responses included, carries `"server_ms": N` (a non-negative integer, milliseconds) as a top-level field next to `ok` and `id`, never inside `result`. It is the time the connector had the request: from the moment its frame was decrypted until the reply was ready to be sealed. That includes waiting for a slot (see Concurrency), the CLI and tmux, a long poll's wait (so an `unchanged` answer to `wait_ms: 8000` carries about 8000) and the time spent deflating the body; it does not include sealing or writing the socket, a few hundred microseconds. The phone takes it out of the time it measured between sending a request and receiving the whole reply: what is left is the network's, and for a small reply that is the round trip, which makes every key acknowledgement and every `unchanged` answer a clean sample of it. A reply that is answered from a ledger is still a new reply to a new request and carries its own `server_ms`, a few milliseconds, not the original's: the figure is only useful for subtracting from the round trip the phone just measured, and the original's would be wrong for that. A retried `shell.input` is answered with exactly the first answer's `id` and `result` (or error) and nothing else differs but that figure. Clients that do not know the field ignore it. The connector writes it last, so a deflated reply can pay for its own compression: the body is deflated and flushed to a byte boundary, the clock is read, and the closing field is deflated onto the same stream.
 
 **`ready` announces what this desktop does.** The first encrypted frame gains `features`, an object an older phone does not read (it checks `type`, `desktop_id` and `device_id` only):
 
@@ -1095,8 +1095,9 @@ them strictly never sees a wrong type. The iOS side is built against this text.
   a run of Claude's status line (which Claude does around each message and not on a timer)
   both count as life, are what turn an interrupted turn into `waiting`. A single tool call
   that is silent for over 10 minutes is read the same way until its next message. The
-  `SubagentStop` with no start that Claude sends a few seconds after a reply (it ends the
-  prompt suggestion) does not reopen a finished turn.
+  `SubagentStop` with no start that Claude sends a few seconds after some replies (empty
+  `agent_type`, carrying the finished turn's own prompt) does not reopen a finished turn,
+  for the scheduler either.
 - `activity_since_unix` (integer, Unix seconds): when `activity` began, from the rollout
   record for Codex and the hook's arrival for Claude. Absent when the source records no
   time (and for `unknown` and `exited`).

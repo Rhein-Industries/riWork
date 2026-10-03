@@ -1153,15 +1153,24 @@ fn claude_shell_foreground_and_stale_completion_defer_until_a_real_stop() {
     // Claude exited: the same pane, pid and hook cursor, but a shell draws `❯`.
     f.set_foreground("-zsh");
     deferred(1000, "shell in the foreground");
-    // A subagent finished, so the main agent is mid-turn even if its
-    // UserPromptSubmit was missed; the earlier completion is withdrawn.
+    // A subagent finished in a turn whose UserPromptSubmit was missed (its stop
+    // names a prompt the cursor never saw begin), so the main agent is mid-turn
+    // and the earlier completion is withdrawn. This needs no SubagentStart, so it
+    // also holds for a Claude launched before that hook was registered.
     f.set_foreground("2.1.284");
     f.claude_hook(
         &session.id,
-        serde_json::json!({"session_id":provider,"hook_event_name":"SubagentStop",
-            "agent_id":"subagent-1","agent_transcript_path":"/subagent/transcript"}),
+        serde_json::json!({"session_id":provider,"prompt_id":"missed-turn",
+            "hook_event_name":"SubagentStop","agent_id":"subagent-1",
+            "agent_transcript_path":"/subagent/transcript"}),
     );
     deferred(1015, "subagent activity");
+    // The next turn that the hooks do see ends normally.
+    f.claude_hook(
+        &session.id,
+        claude_event("UserPromptSubmit", &provider, &turn),
+    );
+    deferred(1020, "a turn is open");
     f.claude_hook(&session.id, claude_event("Stop", &provider, &turn));
     f.f.store.tick(1030).unwrap();
     assert_eq!(f.f.row().last_run.unwrap().outcome, Outcome::Submitted);
@@ -1169,6 +1178,103 @@ fn claude_shell_foreground_and_stale_completion_defer_until_a_real_stop() {
         fs::read_to_string(&received).unwrap(),
         "literal Claude gate check\n"
     );
+}
+
+#[test]
+fn a_stray_subagent_stop_after_a_reply_does_not_stop_a_schedule() {
+    let mut f = RealFixture::new();
+    let session = f.add_claude_worker();
+    let (provider, turn) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    // A reply, and the SubagentStop Claude 2.1.288 sends 3 to 5 seconds after some of
+    // them (a tool-using one included): no SubagentStart came before it, its
+    // `agent_type` is empty and it carries the finished turn's own prompt. It says
+    // nothing about a running turn.
+    f.claude_hook(
+        &session.id,
+        claude_event("UserPromptSubmit", &provider, &turn),
+    );
+    f.claude_hook(&session.id, claude_event("Stop", &provider, &turn));
+    f.claude_hook(
+        &session.id,
+        serde_json::json!({"session_id":provider,"prompt_id":turn,"hook_event_name":"SubagentStop",
+            "agent_id":"prompt-suggestion","agent_type":"",
+            "agent_transcript_path":"/subagent/transcript"}),
+    );
+    let target = Target::bind(f.scopes().remove(2), &f.state, &f.sessions, &session.id).unwrap();
+    f.f.store
+        .save(
+            None,
+            "Claude stray stop".into(),
+            "sent after a stray subagent stop".into(),
+            target,
+            Timing::Once { at: 1000 },
+            999,
+        )
+        .unwrap();
+    f.wait_for_prompt(&session.id, "❯");
+    let received = f.f.home.join(format!("received-{}", session.id));
+    f.f.store.tick(1000).unwrap();
+    let run = f.f.row().last_run.unwrap();
+    assert_eq!(run.outcome, Outcome::Submitted, "{}", run.message);
+    assert_eq!(
+        fs::read_to_string(&received).unwrap(),
+        "sent after a stray subagent stop\n"
+    );
+}
+
+#[test]
+fn a_real_subagent_start_and_stop_pair_in_an_unseen_turn_withdraws_the_completion() {
+    let mut f = RealFixture::new();
+    let session = f.add_claude_worker();
+    let (provider, turn) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    f.claude_hook(
+        &session.id,
+        claude_event("UserPromptSubmit", &provider, &turn),
+    );
+    f.claude_hook(&session.id, claude_event("Stop", &provider, &turn));
+    let target = Target::bind(f.scopes().remove(2), &f.state, &f.sessions, &session.id).unwrap();
+    f.f.store
+        .save(
+            None,
+            "Claude real pair".into(),
+            "never sent while a subagent turn is open".into(),
+            target,
+            Timing::Once { at: 1000 },
+            999,
+        )
+        .unwrap();
+    f.wait_for_prompt(&session.id, "❯");
+    let received = f.f.home.join(format!("received-{}", session.id));
+    let subagent = |event: &str| {
+        serde_json::json!({"session_id":provider,"prompt_id":"missed-turn",
+            "hook_event_name":event,"agent_id":"agent-1","agent_type":"general-purpose"})
+    };
+    // The start of a subagent in a turn the hooks never announced reopens the
+    // turn at once, and its stop leaves it open: only a Stop completes a turn.
+    f.claude_hook(&session.id, subagent("SubagentStart"));
+    f.f.store.tick(1000).unwrap();
+    let run = f.f.row().last_run.unwrap();
+    assert_eq!(run.outcome, Outcome::Deferred, "{}", run.message);
+    assert!(
+        !received.exists(),
+        "input was delivered into a running turn"
+    );
+    f.claude_hook(&session.id, subagent("SubagentStop"));
+    f.f.store.tick(1015).unwrap();
+    let run = f.f.row().last_run.unwrap();
+    assert_eq!(run.outcome, Outcome::Deferred, "{}", run.message);
+    assert!(
+        !received.exists(),
+        "input was delivered into a running turn"
+    );
+    // The turn after it, announced normally, completes and admits the prompt.
+    f.claude_hook(
+        &session.id,
+        claude_event("UserPromptSubmit", &provider, &turn),
+    );
+    f.claude_hook(&session.id, claude_event("Stop", &provider, &turn));
+    f.f.store.tick(1030).unwrap();
+    assert_eq!(f.f.row().last_run.unwrap().outcome, Outcome::Submitted);
 }
 
 #[test]

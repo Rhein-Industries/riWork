@@ -196,6 +196,25 @@ async fn rpc(ws: &mut Socket, s: &mut Session, r: &Value) -> Result<Value> {
     ensure!(response["id"] == r["id"], "request correlation");
     Ok(response)
 }
+/// A retried input is answered from the outcome ledger: the same `id` and `result` (or error)
+/// as the first answer. `server_ms` is each answer's own, since it is the time the connector had
+/// *that* request (docs/remote-protocol.md, "Link extension"): the replay is a new request on a
+/// new envelope, answered in a few milliseconds instead of however long typing took. Both must
+/// carry it, as every response does, and nothing else may differ.
+fn assert_replayed(replay: &Value, original: &Value) {
+    for (name, response) in [("replay", replay), ("original", original)] {
+        assert!(
+            response["server_ms"].is_u64(),
+            "the {name} has no server_ms: {response}"
+        );
+    }
+    let strip = |response: &Value| {
+        let mut response = response.clone();
+        response.as_object_mut().unwrap().remove("server_ms");
+        response
+    };
+    assert_eq!(strip(replay), strip(original));
+}
 async fn call(ws: &mut Socket, s: &mut Session, method: &str, params: Value) -> Result<Value> {
     rpc(ws, s, &request(&Uuid::new_v4().to_string(), method, params)).await
 }
@@ -345,7 +364,7 @@ async fn real_relay_connector_persistent_shell_retry_restart_and_revocation() ->
     let outcome = rpc(&mut ws, &mut session, &input).await?;
     assert_eq!(outcome["result"]["status"], "sent");
     marker_count(&marker, 1).await?;
-    assert_eq!(rpc(&mut ws, &mut session, &input).await?, outcome);
+    assert_replayed(&rpc(&mut ws, &mut session, &input).await?, &outcome);
     marker_count(&marker, 1).await?;
     let conflicting = request(
         &input_id,
@@ -371,7 +390,7 @@ async fn real_relay_connector_persistent_shell_retry_restart_and_revocation() ->
     f.start_connector().await?;
     let (mut ws, mut fresh) = mobile(&pair).await?;
     assert_ne!(fresh.id, session.id);
-    assert_eq!(rpc(&mut ws, &mut fresh, &input).await?, outcome);
+    assert_replayed(&rpc(&mut ws, &mut fresh, &input).await?, &outcome);
     marker_count(&marker, 1).await?;
     let v = call(
         &mut ws,
@@ -626,7 +645,7 @@ async fn mobile_viewport_ownership_restoration_and_long_turns_across_devices() -
     );
     let first = rpc(&mut wa, &mut sa, &input).await?;
     assert_eq!(first["ok"], true);
-    assert_eq!(rpc(&mut wa, &mut sa, &input).await?, first);
+    assert_replayed(&rpc(&mut wa, &mut sa, &input).await?, &first);
     let turns = harness(&capture, 1).await?;
     assert_eq!(turns["turns"], json!([long]));
     assert_eq!(turns["enters"], 1);
@@ -697,7 +716,7 @@ async fn mobile_viewport_ownership_restoration_and_long_turns_across_devices() -
     assert_eq!(cells(&f, &shell, 120, 40).await?, original);
     let (mut wa, mut fresh) = mobile(&a).await?;
     assert_ne!(fresh.id, sa.id);
-    assert_eq!(rpc(&mut wa, &mut fresh, &input).await?, first);
+    assert_replayed(&rpc(&mut wa, &mut fresh, &input).await?, &first);
     assert_eq!(
         call(&mut wa, &mut fresh, "shell.resize", size.clone()).await?["ok"],
         true
@@ -853,7 +872,7 @@ async fn return_only_and_long_inputs_are_serialized_in_disposable_cli_session() 
     let response = rpc(&mut wa, &mut sa, &empty).await?;
     assert_eq!(response["result"]["status"], "sent");
     marker_count(&prompts, 4).await?;
-    assert_eq!(rpc(&mut wa, &mut sa, &empty).await?, response);
+    assert_replayed(&rpc(&mut wa, &mut sa, &empty).await?, &response);
     marker_count(&prompts, 4).await?;
     let device_output = f.temp.path().join("paired-device-lines");
     let text_a = "a".repeat(3500);

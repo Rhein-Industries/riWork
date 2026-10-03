@@ -129,13 +129,6 @@ struct ClaudeTurnCursor {
     session_id: String,
     turn_id: String,
     completed: bool,
-    /// The turn's Stop arrived. `completed` is withdrawn by a SubagentStop, so
-    /// that a prompt is never typed into a turn that may be running; this stays
-    /// until the next turn starts, because Claude ends the prompt suggestion it
-    /// makes after a reply with a SubagentStop of its own (no SubagentStart came
-    /// before it), which says nothing about the turn.
-    #[serde(default, skip_serializing_if = "is_false")]
-    ended: bool,
     /// Unix seconds at which the current phase began: the turn's start, its
     /// Stop, or the session's start. Zero in a cursor an older build wrote.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -154,10 +147,6 @@ struct ClaudeTurnCursor {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -193,7 +182,6 @@ impl ClaudeTurnCursor {
             session_id: session_id.to_owned(),
             turn_id,
             completed,
-            ended: completed,
             since_unix: now,
             seen_unix: now,
             paused_unix: 0,
@@ -223,19 +211,13 @@ impl ClaudeTurnCursor {
                 return None;
             }
             "SubagentStop" => {
-                // A subagent just finished, so this session's main agent is
-                // mid-turn even if its UserPromptSubmit was missed. Drop any stale
-                // completion; the turn's own Stop completes it again. Never complete.
+                // A stop that counts as subagent activity proves the main agent is
+                // mid-turn, so a completion left from an earlier turn is withdrawn
+                // (the turn's own Stop completes it again). One that does not is
+                // ignored. A stop never completes a turn.
                 if self.session_id == input.session_id {
-                    self.completed = false;
-                    // One that names a prompt the cursor never saw begin belongs to
-                    // a turn whose UserPromptSubmit was missed: it is running.
-                    if input
-                        .prompt_id
-                        .as_deref()
-                        .is_some_and(|turn| turn != self.turn_id)
-                    {
-                        self.ended = false;
+                    if self.stop_counts_as_activity(input) {
+                        self.reopen(now);
                     }
                     if let Some(agent) = agent {
                         self.subagents.retain(|running| running.id != agent);
@@ -353,14 +335,13 @@ impl ClaudeTurnCursor {
         }
         let last_sign = self.seen_unix.max(status_line.unwrap_or(0));
         let quiet = last_sign > 0 && now.saturating_sub(last_sign) > TURN_QUIET_SECS;
-        let finished = self.completed || self.ended;
-        let turn_open = !finished && !self.turn_id.is_empty();
+        let turn_open = !self.completed && !self.turn_id.is_empty();
         let turn_working = turn_open && self.paused_unix == 0 && !quiet;
         let (activity, since) = if turn_working {
             (AgentActivity::Working, self.since_unix)
         } else if subagents.working > 0 {
             (AgentActivity::Working, subagents_since)
-        } else if finished {
+        } else if self.completed {
             (AgentActivity::Done, self.since_unix)
         } else if self.paused_unix > 0 {
             (AgentActivity::Waiting, self.paused_unix)
@@ -387,9 +368,49 @@ impl ClaudeTurnCursor {
             .retain(|running| now.saturating_sub(running.started_unix) < SUBAGENT_STALE_SECS);
     }
 
+    /// The hook names a prompt the cursor never saw begin: the UserPromptSubmit
+    /// of a turn that is running was missed.
+    fn names_unseen_turn(&self, input: &ClaudeHookInput) -> bool {
+        input
+            .prompt_id
+            .as_deref()
+            .is_some_and(|turn| turn != self.turn_id)
+    }
+
+    /// Whether a subagent hook shows that the main agent is mid-turn. This is the
+    /// one rule behind both what the app shows and whether a scheduled prompt may
+    /// be sent, so the two cannot disagree.
+    ///
+    /// A SubagentStop counts when its `agent_id` pairs with a SubagentStart seen
+    /// for this conversation, or when it names a prompt the cursor never saw begin.
+    /// The second needs no SubagentStart, so it also holds for a Claude launched
+    /// before that hook was registered, which can only ever send unpaired stops.
+    /// A stop that is neither does not count. Claude 2.1.288 sends one, or two,
+    /// 3 to 5 seconds after some replies (tool-using or not): no start came
+    /// before it, its `agent_type` is empty and it carries the finished turn's
+    /// own prompt, so it says nothing about whether a turn is running. (Likely
+    /// the end of the prompt suggestion Claude makes after a reply; that is a
+    /// guess, the rule rests only on what the hook carries.)
+    fn stop_counts_as_activity(&self, input: &ClaudeHookInput) -> bool {
+        let paired = input
+            .agent_id
+            .as_ref()
+            .and_then(Text::get)
+            .is_some_and(|agent| self.subagents.iter().any(|running| running.id == agent));
+        paired || self.names_unseen_turn(input)
+    }
+
+    /// Withdraws a completion because a turn is running again.
+    fn reopen(&mut self, now: u64) {
+        if self.completed {
+            self.completed = false;
+            self.since_unix = now;
+        }
+    }
+
     /// A subagent of this conversation's current turn began. One that starts
-    /// after the turn's Stop belongs to no turn Claude is working on (it is the
-    /// prompt suggestion that follows a reply, for one) and is not counted.
+    /// after the turn's Stop belongs to no turn Claude is working on and is not
+    /// counted, unless it names a prompt the cursor never saw begin.
     fn subagent_started(&mut self, input: &ClaudeHookInput, now: u64) {
         let Some(id) = input
             .agent_id
@@ -399,17 +420,16 @@ impl ClaudeTurnCursor {
         else {
             return;
         };
-        let newer_turn = input
-            .prompt_id
-            .as_deref()
-            .is_some_and(|turn| turn != self.turn_id);
-        if self.session_id != input.session_id || ((self.completed || self.ended) && !newer_turn) {
+        if self.session_id != input.session_id {
             return;
         }
-        if newer_turn {
-            // The start names a turn the cursor never saw begin, so its
-            // UserPromptSubmit was missed and that turn is running.
-            self.ended = false;
+        if self.completed {
+            // After the turn's Stop a start belongs to no turn Claude is working
+            // on, unless it names a prompt the cursor never saw begin.
+            if !self.names_unseen_turn(input) {
+                return;
+            }
+            self.reopen(now);
         }
         let kind = input
             .agent_type
@@ -851,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_stop_withdraws_a_stale_completion_and_never_completes() {
+    fn only_a_subagent_stop_that_counts_withdraws_a_completion_and_none_completes() {
         let mut cursor = ClaudeTurnCursor::default();
         cursor.observe(&hook("UserPromptSubmit", "session-a", Some("prompt-a")));
         assert!(
@@ -859,12 +879,27 @@ mod tests {
                 .observe(&hook("Stop", "session-a", Some("prompt-a")))
                 .is_some()
         );
+        // The stop of a subagent nothing started, naming the finished turn's own
+        // prompt (as Claude 2.1.288 sends after some replies), says nothing about
+        // a running turn.
         let mut subagent = hook("SubagentStop", "session-a", Some("prompt-a"));
         subagent.agent_id = serde_json::from_str("\"subagent\"").ok();
         subagent.agent_transcript_path = serde_json::from_str("\"/private/agent.jsonl\"").ok();
         assert!(cursor.observe(&subagent).is_none());
+        assert_eq!(completed(&cursor), ("session-a".into(), true));
+        // The same with no prompt named at all.
+        subagent.prompt_id = None;
+        cursor.observe(&subagent);
+        assert_eq!(completed(&cursor), ("session-a".into(), true));
+        // A stop that names a prompt the cursor never saw begin proves a running
+        // turn whose UserPromptSubmit was missed, with no start needed (a Claude
+        // launched before SubagentStart was registered sends only this kind).
+        subagent.prompt_id = Some("prompt-b".into());
+        assert!(cursor.observe(&subagent).is_none());
         assert_eq!(completed(&cursor), ("session-a".into(), false));
-        // Another session's subagent says nothing about this cursor.
+        // Another session's subagent says nothing about this cursor, named
+        // prompt or not.
+        cursor.observe(&hook("UserPromptSubmit", "session-a", Some("prompt-a")));
         cursor.observe(&hook("Stop", "session-a", Some("prompt-a")));
         subagent.session_id = "session-z".into();
         cursor.observe(&subagent);
@@ -1116,7 +1151,8 @@ mod tests {
         let mut cursor = ClaudeTurnCursor::default();
         open_turn(&mut cursor, 100);
         cursor.observe_at(&hook("Stop", "session-a", Some("prompt-a")), 110);
-        // The prompt suggestion that follows a reply belongs to the finished turn.
+        // A start after the Stop that names the finished turn's own prompt belongs
+        // to no running turn.
         cursor.observe_at(
             &subagent_hook(
                 "SubagentStart",
@@ -1597,9 +1633,10 @@ mod tests {
     }
 
     #[test]
-    fn the_stray_subagent_stop_after_a_reply_does_not_reopen_a_finished_turn() {
-        // Claude 2.1.288 ends the prompt suggestion it makes after a tool-using reply
-        // with a SubagentStop that had no SubagentStart, a few seconds after the Stop.
+    fn the_stray_subagent_stop_after_a_reply_leaves_the_turn_completed_for_the_scheduler() {
+        // After some replies, tool-using or not, Claude 2.1.288 sends a SubagentStop
+        // that had no SubagentStart (empty `agent_type`), 3 to 5 seconds after the Stop,
+        // sometimes two of them, each carrying the finished turn's own prompt.
         let mut cursor = ClaudeTurnCursor::default();
         open_turn(&mut cursor, 100);
         assert!(
@@ -1615,25 +1652,44 @@ mod tests {
             Some(""),
         );
         assert!(cursor.observe_at(&suggestion, 154).is_none());
-        // The scheduler still treats the completion as withdrawn, as it always has ...
-        assert!(!cursor.completed);
-        // ... but the turn is over, and stays over for the display, however long.
+        let second = subagent_hook(
+            "SubagentStop",
+            "session-a",
+            Some("prompt-a"),
+            "suggest-too",
+            Some(""),
+        );
+        assert!(cursor.observe_at(&second, 156).is_none());
+        // The scheduler's view and the display's are one cursor: still completed.
+        assert!(cursor.completed);
+        assert_eq!(completed(&cursor), ("session-a".into(), true));
         let state = cursor.state(154 + 3_600, None);
         assert_eq!(
             (state.activity, state.since_unix),
             (AgentActivity::Done, Some(150))
         );
-        // A SubagentStop that names a prompt the cursor never saw means that turn runs.
-        let newer = subagent_hook(
+        // A real pair under an open turn the cursor never saw begin (its
+        // UserPromptSubmit was missed) does withdraw it, from the start on.
+        let start = subagent_hook(
+            "SubagentStart",
+            "session-a",
+            Some("prompt-new"),
+            "agent-1",
+            Some("Plan"),
+        );
+        cursor.observe_at(&start, 200);
+        assert!(!cursor.completed);
+        assert_eq!(cursor.state(201, None).activity, AgentActivity::Working);
+        let stop = subagent_hook(
             "SubagentStop",
             "session-a",
             Some("prompt-new"),
             "agent-1",
             Some("Plan"),
         );
-        cursor.observe_at(&newer, 200);
-        assert_eq!(cursor.state(201, None).activity, AgentActivity::Working);
-        // The next real turn ends the same way, and the suggestion after it changes nothing.
+        cursor.observe_at(&stop, 210);
+        assert!(!cursor.completed, "a pair never completes a turn");
+        // A new real turn ends the same way, and the suggestion after it changes nothing.
         cursor.observe_at(
             &hook("UserPromptSubmit", "session-a", Some("prompt-b")),
             300,
@@ -1650,11 +1706,41 @@ mod tests {
             ),
             324,
         );
+        assert!(cursor.completed);
         assert_eq!(cursor.state(325, None).activity, AgentActivity::Done);
-        // The flag survives the file, and a cursor from an older build without it still reads.
-        let saved: ClaudeTurnCursor =
-            serde_json::from_str(&serde_json::to_string(&cursor).unwrap()).unwrap();
-        assert!(saved.ended);
-        assert_eq!(saved.state(325, None).activity, AgentActivity::Done);
+    }
+
+    #[test]
+    fn a_paired_subagent_stop_in_an_open_turn_keeps_it_open_and_old_cursors_still_read() {
+        // A real subagent inside a turn: its start and stop leave the turn open.
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 100);
+        for event in ["SubagentStart", "SubagentStop"] {
+            cursor.observe_at(
+                &subagent_hook(
+                    event,
+                    "session-a",
+                    Some("prompt-a"),
+                    "agent-1",
+                    Some("Plan"),
+                ),
+                110,
+            );
+        }
+        assert_eq!(completed(&cursor), ("session-a".into(), false));
+        assert!(cursor.subagents.is_empty());
+        // The turn's Stop then completes it once.
+        assert!(
+            cursor
+                .observe_at(&hook("Stop", "session-a", Some("prompt-a")), 120)
+                .is_some()
+        );
+        assert_eq!(completed(&cursor), ("session-a".into(), true));
+        // A cursor written by the previous build (which kept an `ended` flag) reads.
+        let old: ClaudeTurnCursor = serde_json::from_str(
+            r#"{"session_id":"session-a","turn_id":"prompt-a","completed":true,"ended":true,"since_unix":9}"#,
+        )
+        .unwrap();
+        assert_eq!(old.state(10, None).activity, AgentActivity::Done);
     }
 }
