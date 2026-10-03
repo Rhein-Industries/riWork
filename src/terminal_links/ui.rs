@@ -694,13 +694,14 @@ impl Workspace {
                 "Selected {} in Files. Leave focus mode to see it.",
                 short_name(&path)
             ));
-        } else if self.explorer_pane().is_none() {
-            // Files is not open anywhere, so there is nothing to put the preview beside.
-            self.open_preview(window, cx);
         }
+        // Where the Preview goes is settled when the file is selected (`FileExplorerEvent::
+        // Revealed`), which may be after listings arrive: beside the work, never over the
+        // terminal that was clicked, and without taking the keys from it.
     }
 
-    /// Show a folder of the project in Files.
+    /// Show a folder of the project in Files, in a pane beside the work like the Preview: the
+    /// terminal that was clicked stays on screen and keeps the keys.
     fn reveal_folder(
         &mut self,
         root: PathBuf,
@@ -708,6 +709,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.ensure_layout(window, cx) {
+            return;
+        }
         self.ensure_file_explorer(cx);
         let Some(explorer) = self.file_explorer.clone() else {
             return;
@@ -718,8 +722,14 @@ impl Workspace {
             self.notice = Some(error);
             return;
         }
-        let pane = self.active_pane;
-        self.open_panel(PanelKind::Files, pane, window, cx);
+        if self.focus_mode {
+            self.notice = Some(format!(
+                "Selected {} in Files. Leave focus mode to see it.",
+                short_name(&path)
+            ));
+        } else {
+            self.reveal_panel_for_link(PanelKind::Files, cx);
+        }
     }
 }
 
