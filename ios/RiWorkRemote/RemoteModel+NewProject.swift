@@ -38,7 +38,7 @@ extension RemoteModel {
         guard generation == token, state == .connected else { return nil }
         let project = reply.project
         if !projects.contains(where: { $0.id == project.id }) { projects.append(project) }
-        // Just made: counts as just edited until the desktop has a figure for it, so it is not sorted behind the dated projects.
+        // Just made: counts as just active until the desktop has a figure for it, so it is not sorted behind the projects with activity.
         touchedProjects[project.id] = project.created_at
         onCreated(project)
         await refreshProjectsQuietly()

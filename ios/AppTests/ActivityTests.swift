@@ -73,8 +73,8 @@ actor ActivityTransport: RemoteTransport {
 
     /// A project id the desktop would send: a full UUID, written here as one letter ("a" is aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa).
     private func uid(_ letter: String) -> String { letter.count == 1 ? "\(String(repeating: letter, count: 8))-\(String(repeating: letter, count: 4))-4\(String(repeating: letter, count: 3))-8\(String(repeating: letter, count: 3))-\(String(repeating: letter, count: 12))" : letter }
-    private func project(_ id: String, _ name: String, created: Int, edited: Int? = nil, agents: String? = nil) -> String {
-        "{\"id\":\"\(uid(id))\",\"name\":\"\(name)\",\"root\":\"/\(name)\",\"created_at\":\(created)\(edited.map { ",\"last_edited_unix\":\($0)" } ?? "")\(agents.map { ",\"agents\":\($0)" } ?? "")}"
+    private func project(_ id: String, _ name: String, created: Int, edited: Int? = nil, active: Int? = nil, agents: String? = nil) -> String {
+        "{\"id\":\"\(uid(id))\",\"name\":\"\(name)\",\"root\":\"/\(name)\",\"created_at\":\(created)\(edited.map { ",\"last_edited_unix\":\($0)" } ?? "")\(active.map { ",\"last_activity_unix\":\($0)" } ?? "")\(agents.map { ",\"agents\":\($0)" } ?? "")}"
     }
     private func shell(_ id: String, harness: String = "claude", at: Int = 1, extra: String = "") -> String {
         "{\"id\":\"\(id)\",\"project_id\":\"\(fixture)\",\"worktree_id\":null,\"kind\":\"project\",\"cwd\":\"/fixture\",\"harness\":\"\(harness)\",\"alive\":true,\"created_at_unix\":\(at)\(extra.isEmpty ? "" : ","+extra)}"
@@ -119,21 +119,34 @@ actor ActivityTransport: RemoteTransport {
     // MARK: The project order
 
     func testTheOrderIsRecentFirstAndFollowsTheChoice() async throws {
-        let list = "[\(project("a", "Alpha", created: 10, edited: 100)),\(project("b", "bravo", created: 30, edited: 300)),\(project("c", "Charlie", created: 20)),\(project("d", "Delta", created: 40, edited: 200))]"
+        let list = "[\(project("a", "Alpha", created: 10, edited: 100)),\(project("b", "bravo", created: 30, edited: 300)),\(project("c", "Charlie", created: 20)),\(project("d", "Delta", created: 40, edited: 200, active: 50)),\(project("e", "Echo", created: 5, active: 70))]"
         let rig = try await connected(projects: list)
         let model = rig.model
         XCTAssertEqual(model.projectSort, .recent)
-        XCTAssertEqual(ids(model), ["b", "d", "a", "c"], "edited newest first, then the one without an edit time")
+        XCTAssertEqual(ids(model), ["e", "d", "b", "a", "c"], "terminal activity newest first, then edited newest first, then the one with neither")
         model.setProjectSort(.name)
-        XCTAssertEqual(ids(model), ["a", "b", "c", "d"])
+        XCTAssertEqual(ids(model), ["a", "b", "c", "d", "e"])
         model.setProjectSort(.dateAdded)
-        XCTAssertEqual(ids(model), ["d", "b", "c", "a"])
+        XCTAssertEqual(ids(model), ["d", "b", "c", "a", "e"])
         model.cycleProjectSort()
         XCTAssertEqual(model.projectSort, .recent)
         model.cycleProjectSort()
         XCTAssertEqual(model.projectSort, .name)
         // The list the desktop sent is untouched; only the order shown differs.
-        XCTAssertEqual(model.projects.map { String($0.id.prefix(1)) }, ["a", "b", "c", "d"])
+        XCTAssertEqual(model.projects.map { String($0.id.prefix(1)) }, ["a", "b", "c", "d", "e"])
+        await model.disconnect()
+    }
+    func testTheOrderFollowsTerminalActivityAsTheListIsReadAgain() async throws {
+        let rig = try await connected(projects: "[\(project("a", "Alpha", created: 1, edited: 900, active: 100)),\(project("b", "Beta", created: 2, edited: 800, active: 50)),\(project("c", "Gamma", created: 3, edited: 950))]")
+        let model = rig.model
+        XCTAssertEqual(ids(model), ["a", "b", "c"], "Gamma was edited last, but nothing of it is running")
+        let watching = Task { await model.keepFresh(.projects) }
+        // Beta's terminal prints: it moves to the top without any refresh. A project whose last shell closed loses its figure and
+        // drops behind the ones that have one.
+        await rig.transport.setProjects("[\(project("a", "Alpha", created: 1, edited: 900)),\(project("b", "Beta", created: 2, edited: 800, active: 200)),\(project("c", "Gamma", created: 3, edited: 950))]")
+        await eventually("the new order reaches the list") { ids(model) == ["b", "c", "a"] }
+        watching.cancel()
+        await watching.value
         await model.disconnect()
     }
     func testTheChoiceIsRememberedAcrossLaunches() async throws {
@@ -162,19 +175,20 @@ actor ActivityTransport: RemoteTransport {
         await rig.model.disconnect()
     }
     func testAProjectMadeOnThePhoneLandsWhereTheOrderPutsIt() async throws {
-        let list = "[\(project("a", "Alpha", created: 10, edited: 4_000)),\(project("e", "Mike", created: 20, edited: 3_000))]"
+        let list = "[\(project("a", "Alpha", created: 10, edited: 4_000)),\(project("e", "Mike", created: 20, edited: 3_000)),\(project("g", "Golf", created: 30, active: 3_500))]"
         let rig = try await connected(projects: list)
         let model = rig.model
         let failure = await model.createProject(try NewProjectRequest(name: "Beta", git: true))
         XCTAssertNil(failure)
         let made = try XCTUnwrap(model.projects.first { $0.name == "Beta" })
         XCTAssertNil(made.last_edited_unix, "the desktop has no edit time for it yet")
-        // Recent: it was just made, so it is on top and not behind every dated project.
+        XCTAssertNil(made.last_activity_unix, "and nothing of it has run yet")
+        // Recent: it was just made, so it is on top and not behind every project with activity.
         XCTAssertEqual(model.sortedProjects.first?.id, made.id)
-        XCTAssertEqual(ids(model).dropFirst().map { $0 }, ["a", "e"])
-        // Name: alphabetically, between Alpha and Mike.
+        XCTAssertEqual(ids(model).dropFirst().map { $0 }, ["g", "a", "e"])
+        // Name: alphabetically, between Alpha and Golf.
         model.setProjectSort(.name)
-        XCTAssertEqual(model.sortedProjects.map(\.name), ["Alpha", "Beta", "Mike"])
+        XCTAssertEqual(model.sortedProjects.map(\.name), ["Alpha", "Beta", "Golf", "Mike"])
         // Date added: newest.
         model.setProjectSort(.dateAdded)
         XCTAssertEqual(model.sortedProjects.first?.id, made.id)

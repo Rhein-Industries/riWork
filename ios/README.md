@@ -131,17 +131,23 @@ the warning. Acknowledgement does not submit or retry anything.
 keyboard steps through the same three orders. ⌘O is live only while the list is the screen on top, like ⌘⇧N, and nothing else uses it
 (⌘K, ⌘, ⌘N, ⌘⇧N, ⌘/, the Clicks template's ⌘ and ⌘⇧ letters and iOS's own ⌘H, ⌘Space and ⌘Tab are taken). The choice is kept in
 UserDefaults (`riwork.projectSort`), **Recent** the first time (`Core/ProjectSort.swift`, unit tested):
-- **Recent**, the desktop's "Last edited": `last_edited_unix` of `projects.list`, newest first. Projects without one (an older desktop, or
-  not worked out yet; zero counts as none) follow the dated ones, newest `created_at` first.
+- **Recent**, latest shell activity: `last_activity_unix` of `projects.list`, the second one of the project's terminals (its orchestrator
+  included) last printed something, newest first. It is not the desktop's "Last edited" order, which follows file edits: a Codex or
+  Claude that is busy without writing a file counts here. Projects without it follow, in three steps, each after every project of the
+  one before: those with a `last_edited_unix`, newest edit first; those with only a `created_at`, newest first; the rest. So a project
+  with no live terminal sorts after every project that has activity, however lately its files changed, and a desktop that sends no
+  `last_activity_unix` (an older one) gives the order Recent had before: edits, then date added. Zero counts as none.
 - **Name**: A to Z without regard to case. **Date added**: `created_at`, newest first, a project without one last.
 - Ties are broken by name without regard to case, then as written, then id, the desktop's own rule (`src/project_sort.rs`), so the order
   never flickers and matches the Mac's. The search takes projects out of this order and never reorders the rest.
-- A project made from the phone counts as just edited until the desktop sends its own `last_edited_unix` (this connection only), so it
-  is at the top of Recent and not behind every dated project; under Name and Date added it is where those orders put it.
+- A project made from the phone counts as just active until the desktop sends a later `last_activity_unix` of its own (this connection
+  only), so it is at the top of Recent and not behind every project with activity; under Name and Date added it is where those orders
+  put it.
 
-**Activity.** A desktop that reports it adds optional fields to the lists the phone already reads: `last_edited_unix` and
-`agents` {`working`, `waiting`} to `projects.list`, and `activity` (`working|waiting|done|unknown|exited`), `activity_since_unix` and
-`subagents_working` to `shells.list` and `orchestrators.list`. An older desktop sends none of them and the app looks as it did. They are
+**Activity.** A desktop that reports it adds optional fields to the lists the phone already reads: `last_edited_unix`,
+`last_activity_unix` and `agents` {`working`, `waiting`} to `projects.list`, and `activity` (`working|waiting|done|unknown|exited`),
+`activity_since_unix` and `subagents_working` to `shells.list` and `orchestrators.list` (which also carry a `last_activity_unix` of their
+own that the phone does not read: the project's figure is the newest of them). An older desktop sends none of them and the app looks as it did. They are
 read leniently (`Core/AgentActivity.swift`, unit tested): a missing field, a word the phone does not know (it is `unknown`), another
 type, a negative or fractional count or a time of zero is ignored on its own and never fails the list. A terminal that is no longer alive
 counts as exited whatever it last said.

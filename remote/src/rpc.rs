@@ -271,7 +271,9 @@ fn project(v: Value, fields: &[&str]) -> Value {
 /// these strictly. The older fields are passed on as they are.
 fn additive_shape_ok(field: &str, value: &Value) -> bool {
     match field {
-        "last_edited_unix" | "activity_since_unix" | "subagents_working" => value.is_u64(),
+        "last_edited_unix" | "last_activity_unix" | "activity_since_unix" | "subagents_working" => {
+            value.is_u64()
+        }
         "activity" => value.as_str().is_some_and(|activity| {
             matches!(
                 activity,
@@ -302,15 +304,18 @@ fn additive_shape_ok(field: &str, value: &Value) -> bool {
     }
 }
 /// What the phone may know of a project, in `projects.list` and in `project.create`.
-/// `last_edited_unix` (when the desktop last saw a file of the project change) and
-/// `agents` (the project's agents by state) only appear once the desktop app has
-/// published them; see "Activity and recency extension" in docs/remote-protocol.md.
+/// `last_edited_unix` (when the desktop last saw a file of the project change) only
+/// appears once the desktop app has published it. `last_activity_unix` (when one of
+/// its shells last had output) and `agents` (the project's agents by state) are the
+/// CLI's own, from tmux and the agents' files. See "Activity and recency extension" in
+/// docs/remote-protocol.md.
 const PROJECT_FIELDS: &[&str] = &[
     "id",
     "name",
     "root",
     "created_at",
     "last_edited_unix",
+    "last_activity_unix",
     "agents",
 ];
 const SESSION_FIELDS: &[&str] = &[
@@ -322,6 +327,7 @@ const SESSION_FIELDS: &[&str] = &[
     "harness",
     "alive",
     "created_at_unix",
+    "last_activity_unix",
     "activity",
     "activity_since_unix",
     "subagents_working",

@@ -2,17 +2,65 @@ import XCTest
 @testable import RiWorkCore
 
 final class ProjectSortTests: XCTestCase {
-    private func project(_ id: String, _ name: String, created: UInt64 = 1, edited: UInt64? = nil) throws -> RemoteProject {
+    private func project(_ id: String, _ name: String, created: UInt64 = 1, edited: UInt64? = nil, active: UInt64? = nil) throws -> RemoteProject {
         let editedField = edited.map { ",\"last_edited_unix\":\($0)" } ?? ""
-        return try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(id)\",\"name\":\"\(name)\",\"root\":\"/\(id)\",\"created_at\":\(created)\(editedField)}".utf8))
+        let activeField = active.map { ",\"last_activity_unix\":\($0)" } ?? ""
+        return try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(id)\",\"name\":\"\(name)\",\"root\":\"/\(id)\",\"created_at\":\(created)\(editedField)\(activeField)}".utf8))
     }
     private func order(_ projects: [RemoteProject], _ sort: ProjectSort, touched: [String: UInt64] = [:]) -> [String] {
         ProjectSorting.sorted(projects, by: sort, touched: touched).map(\.id)
     }
 
-    // MARK: Recent
+    // MARK: Recent: terminal activity
 
-    func testRecentIsNewestEditFirst() throws {
+    func testRecentIsLatestTerminalActivityFirst() throws {
+        let list = [try project("a", "Alpha", created: 50, active: 100), try project("b", "Beta", created: 10, active: 300), try project("c", "Gamma", created: 90, active: 200)]
+        XCTAssertEqual(order(list, .recent), ["b", "c", "a"])
+        // The order of the input does not matter.
+        XCTAssertEqual(order(list.reversed(), .recent), ["b", "c", "a"])
+    }
+    func testActivityOutranksFileEditsWhateverTheTimes() throws {
+        // Alpha's files changed a minute ago but no terminal of it printed since last week; Beta has no live terminal at all.
+        let list = [try project("a", "Alpha", created: 1, edited: 9_000, active: 100),
+                    try project("b", "Beta", created: 2, edited: 9_500),
+                    try project("c", "Gamma", created: 3, active: 50)]
+        XCTAssertEqual(order(list, .recent), ["a", "c", "b"], "projects with no shells follow those with activity")
+        // Edits do not move a project among the active ones.
+        let edited = [try project("a", "Alpha", edited: 1, active: 200), try project("b", "Beta", edited: 9_000, active: 100)]
+        XCTAssertEqual(order(edited, .recent), ["a", "b"])
+    }
+    func testRecentFallsBackFromActivityToEditsToDateAddedToNothing() throws {
+        let list = [try project("n", "None", created: 0),
+                    try project("d", "Dated", created: 700),
+                    try project("e", "Edited", created: 1, edited: 40),
+                    try project("f", "Fresher", created: 2, edited: 60),
+                    try project("a", "Active", created: 3, active: 5),
+                    try project("w", "Woven", created: 4, edited: 90, active: 4),
+                    try project("o", "Older", created: 800)]
+        // Active (5 before 4), then edited (60, 40), then added (800, 700), then nothing.
+        XCTAssertEqual(order(list, .recent), ["a", "w", "f", "e", "o", "d", "n"])
+        XCTAssertEqual(order(list.reversed(), .recent), ["a", "w", "f", "e", "o", "d", "n"])
+    }
+    func testAnActivityTimeOfZeroIsNoActivityTime() throws {
+        let zero = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"z\",\"name\":\"Zed\",\"root\":\"/z\",\"created_at\":900,\"last_edited_unix\":30,\"last_activity_unix\":0}".utf8))
+        let list = [zero, try project("b", "Beta", created: 1, active: 5), try project("c", "Gamma", created: 1, edited: 20)]
+        XCTAssertEqual(order(list, .recent), ["b", "z", "c"], "zero activity falls back to the edit time")
+    }
+    func testActivityTiesFallBackToNameThenId() throws {
+        let list = [try project("3", "beta", active: 10), try project("2", "Alpha", active: 10), try project("1", "alpha", active: 10), try project("4", "Beta", active: 10),
+                    try project("6", "same", active: 10), try project("5", "same", active: 10), try project("7", "later", active: 11)]
+        XCTAssertEqual(order(list, .recent), ["7", "2", "1", "4", "3", "5", "6"])
+    }
+    func testTheOtherOrdersIgnoreActivity() throws {
+        let list = [try project("a", "Bravo", created: 10, active: 900), try project("b", "Alpha", created: 30), try project("c", "Charlie", created: 20, edited: 5, active: 1)]
+        XCTAssertEqual(order(list, .recent), ["a", "c", "b"])
+        XCTAssertEqual(order(list, .name), ["b", "a", "c"])
+        XCTAssertEqual(order(list, .dateAdded), ["b", "c", "a"])
+    }
+
+    // MARK: Recent: file edits, for a desktop that reports no activity
+
+    func testWithoutActivityRecentIsNewestEditFirst() throws {
         let list = [try project("a", "Alpha", created: 50, edited: 100), try project("b", "Beta", created: 10, edited: 300), try project("c", "Gamma", created: 90, edited: 200)]
         XCTAssertEqual(order(list, .recent), ["b", "c", "a"])
         // The order of the input does not matter.
@@ -51,13 +99,18 @@ final class ProjectSortTests: XCTestCase {
     }
     func testAProjectJustMadeHereIsAtTheTopUntilTheDesktopHasAFigureForIt() throws {
         let list = [try project("a", "Alpha", created: 10, edited: 5_000), try project("b", "Beta", created: 20, edited: 4_000), try project("new", "Fresh", created: 6_000)]
-        XCTAssertEqual(order(list, .recent), ["a", "b", "new"], "undated, and so after the dated ones, as far as the desktop says")
+        XCTAssertEqual(order(list, .recent), ["a", "b", "new"], "no figure but the date added, and so after the edited ones, as far as the desktop says")
         XCTAssertEqual(order(list, .recent, touched: ["new": 6_000]), ["new", "a", "b"])
-        // Edited since by someone else: the later of the two times counts.
+        // It counts as active, so it is ahead of projects that were only edited, however late.
         let edited = [try project("a", "Alpha", created: 10, edited: 9_000), try project("new", "Fresh", created: 6_000, edited: 4_000)]
-        XCTAssertEqual(order(edited, .recent, touched: ["new": 6_000]), ["a", "new"])
-        let editedLater = [try project("a", "Alpha", created: 10, edited: 5_000), try project("new", "Fresh", created: 6_000, edited: 8_000)]
-        XCTAssertEqual(order(editedLater, .recent, touched: ["new": 6_000]), ["new", "a"])
+        XCTAssertEqual(order(edited, .recent, touched: ["new": 6_000]), ["new", "a"])
+        // Among the projects with activity the later time wins: the desktop's own figure for it, or its neighbour's.
+        let active = [try project("a", "Alpha", created: 10, active: 9_000), try project("new", "Fresh", created: 6_000, edited: 4_000)]
+        XCTAssertEqual(order(active, .recent, touched: ["new": 6_000]), ["a", "new"])
+        let activeLater = [try project("a", "Alpha", created: 10, active: 5_000), try project("new", "Fresh", created: 6_000, active: 8_000)]
+        XCTAssertEqual(order(activeLater, .recent, touched: ["new": 6_000]), ["new", "a"])
+        let activeEarlier = [try project("a", "Alpha", created: 10, active: 5_500), try project("new", "Fresh", created: 6_000, active: 5_000)]
+        XCTAssertEqual(order(activeEarlier, .recent, touched: ["new": 6_000]), ["new", "a"], "the later of its two times counts")
         // Other orders ignore it.
         XCTAssertEqual(order(list, .name, touched: ["new": 6_000]), ["a", "b", "new"])
         XCTAssertEqual(order(list, .dateAdded, touched: ["new": 6_000]), ["new", "b", "a"])
@@ -104,7 +157,8 @@ final class ProjectSortTests: XCTestCase {
         var list: [RemoteProject] = []
         for n in 0..<12 {
             let edited: UInt64? = n % 2 == 0 ? UInt64(n % 5) : nil
-            list.append(try project("p\(n)", names[n % 3], created: UInt64(n % 4), edited: edited))
+            let active: UInt64? = n % 3 == 0 ? UInt64(n % 4) : nil
+            list.append(try project("p\(n)", names[n % 3], created: UInt64(n % 4), edited: edited, active: active))
         }
         for sort in ProjectSort.allCases {
             let expected = order(list, sort)
@@ -113,7 +167,7 @@ final class ProjectSortTests: XCTestCase {
         }
     }
     func testNothingIsLostOrInvented() throws {
-        let list = [try project("a", "A", edited: 3), try project("b", "B"), try project("c", "C", created: 0)]
+        let list = [try project("a", "A", edited: 3), try project("b", "B", active: 2), try project("c", "C", created: 0)]
         for sort in ProjectSort.allCases { XCTAssertEqual(Set(order(list, sort)), ["a", "b", "c"]) }
         XCTAssertTrue(ProjectSorting.sorted([], by: .recent).isEmpty)
     }

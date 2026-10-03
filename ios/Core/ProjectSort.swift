@@ -1,9 +1,10 @@
 import Foundation
 
 /// How the project list is ordered. The desktop has more (and a direction); the phone keeps the three a thumb needs, each in the
-/// direction the desktop starts with (`src/project_sort.rs`: Last edited and Date added newest first, Name A to Z).
+/// direction the desktop starts with (`src/project_sort.rs`: Date added newest first, Name A to Z). Its Recent is not the desktop's
+/// "Last edited": it follows when a project's terminals were last active, and falls back to the file edits the desktop sorts by.
 public enum ProjectSort: String, CaseIterable, Sendable, Identifiable {
-    /// The desktop's "Last edited".
+    /// Latest terminal activity, then latest file edit.
     case recent
     case name
     case dateAdded
@@ -44,14 +45,17 @@ public enum ProjectSort: String, CaseIterable, Sendable, Identifiable {
 
 public enum ProjectSorting {
     /// `projects` in the order `sort` asks for. Rules, all of them ending in the same tie-break so the order never flickers:
-    /// - `recent`: projects with a `last_edited_unix`, newest first; then those without (an older desktop, or not worked out yet)
-    ///   by `created_at`, newest first. A figure of zero is no figure.
+    /// - `recent`, in four steps, each step after every project of the one before it: projects with a `last_activity_unix` (one of
+    ///   their terminals printed lately), newest first; then those with only a `last_edited_unix`, newest first; then those with
+    ///   only a `created_at`, newest first; then the rest. A project with no live terminal has no activity, so it follows every
+    ///   project that has some, however recently its files changed. A figure of zero is no figure, and an older desktop, which has
+    ///   no `last_activity_unix`, gets the last three steps: the order Recent had before.
     /// - `dateAdded`: `created_at`, newest first; a project without one last.
     /// - `name`: A to Z, ignoring case.
     /// - Ties: name without regard to case, then as written, then id (the desktop's rule, so both sides list the same order).
     ///
-    /// `touched` is for a project this phone just made: its id with the desktop's `created_at`. Until the desktop has a figure of its
-    /// own for it, that counts as an edit, so a new project is at the top of `recent` and not behind every project that has a date.
+    /// `touched` is for a project this phone just made: its id with the desktop's `created_at`. That counts as activity, so a new
+    /// project is at the top of `recent` and not behind every project that has some; a later `last_activity_unix` of its own wins.
     public static func sorted(_ projects: [RemoteProject], by sort: ProjectSort, touched: [String: UInt64] = [:]) -> [RemoteProject] {
         order(projects, by: sort, touched: touched)
     }
@@ -71,9 +75,10 @@ public enum ProjectSorting {
                 if let added = known(project.created_at) { return (0, added) }
                 return (1, 0)
             case .recent:
-                if let edited = known(max(project.last_edited_unix ?? 0, touched[project.id] ?? 0)) { return (0, edited) }
-                if let added = known(project.created_at) { return (1, added) }
-                return (2, 0)
+                if let active = known(max(project.last_activity_unix ?? 0, touched[project.id] ?? 0)) { return (0, active) }
+                if let edited = known(project.last_edited_unix) { return (1, edited) }
+                if let added = known(project.created_at) { return (2, added) }
+                return (3, 0)
             }
         }
         func byName(_ a: RemoteProject, _ b: RemoteProject) -> Bool? {

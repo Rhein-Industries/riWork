@@ -1,6 +1,7 @@
 //! The activity and recency fields of `projects.list`, `shells.list` and
 //! `orchestrators.list` (docs/remote-protocol.md, "Activity and recency
-//! extension"): which fields the phone is shown, that an older CLI which has
+//! extension"), including `last_activity_unix` on projects and shells: which
+//! fields the phone is shown, that an older CLI which has
 //! none of them still answers exactly as before, and that a field in the wrong
 //! shape is left out instead of passed on. Against a stub CLI that prints the
 //! JSON in `projects.json`, `shells.json` and `orchestrators.json`.
@@ -133,6 +134,7 @@ async fn projects_list_passes_on_recency_and_agent_counts() {
     let id = new_uuid();
     let mut listed = project(&id);
     listed["last_edited_unix"] = json!(1790000500u64);
+    listed["last_activity_unix"] = json!(1790000900u64);
     listed["agents"] = json!({"working": 2, "waiting": 1, "done": 3});
     f.says("projects.json", json!([listed]));
     let result = f.call("projects.list", json!({})).await;
@@ -144,6 +146,7 @@ async fn projects_list_passes_on_recency_and_agent_counts() {
             "root": "/Users/me/code/app",
             "created_at": 1790000000u64,
             "last_edited_unix": 1790000500u64,
+            "last_activity_unix": 1790000900u64,
             "agents": {"working": 2, "waiting": 1, "done": 3}
         }])
     );
@@ -190,6 +193,7 @@ async fn shells_and_orchestrators_pass_on_activity_and_subagents() {
     let f = Fixture::new();
     let (id, shell) = (new_uuid(), new_uuid());
     let mut working = session(&shell, &id);
+    working["last_activity_unix"] = json!(1790000800u64);
     working["activity"] = json!("working");
     working["activity_since_unix"] = json!(1790000100u64);
     working["subagents_working"] = json!(2);
@@ -206,15 +210,21 @@ async fn shells_and_orchestrators_pass_on_activity_and_subagents() {
             "id": shell, "project_id": id, "worktree_id": null, "kind": "project",
             "cwd": "/Users/me/code/app", "harness": "claude", "alive": true,
             "created_at_unix": 1790000000u64,
+            "last_activity_unix": 1790000800u64,
             "activity": "working", "activity_since_unix": 1790000100u64,
             "subagents_working": 2, "subagent_kinds": ["general-purpose", "Explore"]
         })
     );
     assert_eq!(shells["shells"][1]["activity"], "exited");
     assert!(shells["shells"][1].get("subagents_working").is_none());
+    assert!(shells["shells"][1].get("last_activity_unix").is_none());
     let orchestrators = f.call("orchestrators.list", json!({})).await;
     assert_eq!(orchestrators["orchestrators"][0]["activity"], "working");
     assert_eq!(orchestrators["orchestrators"][0]["subagents_working"], 2);
+    assert_eq!(
+        orchestrators["orchestrators"][0]["last_activity_unix"],
+        1790000800u64
+    );
     for private in PRIVATE {
         assert!(
             !shells.to_string().contains(private) && !orchestrators.to_string().contains(private),
@@ -236,6 +246,11 @@ async fn a_field_in_the_wrong_shape_is_left_out_and_the_rest_stays() {
     let f = Fixture::new();
     let (id, shell) = (new_uuid(), new_uuid());
     let wrong_sessions = [
+        ("last_activity_unix", json!("1790000800")),
+        ("last_activity_unix", json!(-1)),
+        ("last_activity_unix", json!(1.5)),
+        ("last_activity_unix", json!(null)),
+        ("last_activity_unix", json!([1790000800u64])),
         ("activity", json!("busy")),
         ("activity", json!("Working")),
         ("activity", json!(true)),
@@ -272,6 +287,11 @@ async fn a_field_in_the_wrong_shape_is_left_out_and_the_rest_stays() {
         ("last_edited_unix", json!(-5)),
         ("last_edited_unix", json!(1.5)),
         ("last_edited_unix", json!(null)),
+        ("last_activity_unix", json!("1790000900")),
+        ("last_activity_unix", json!(-5)),
+        ("last_activity_unix", json!(1.5)),
+        ("last_activity_unix", json!(null)),
+        ("last_activity_unix", json!({"at": 1790000900u64})),
         ("agents", json!(3)),
         ("agents", json!([1, 2])),
         ("agents", json!({})),
@@ -302,9 +322,19 @@ async fn one_wrong_field_does_not_take_a_correct_one_with_it() {
     let id = new_uuid();
     let mut one = project(&id);
     one["last_edited_unix"] = json!(1790000500u64);
+    one["last_activity_unix"] = json!("recently");
     one["agents"] = json!({"working": "many", "waiting": 0});
     f.says("projects.json", json!([one]));
     let projects = f.call("projects.list", json!({})).await;
     assert_eq!(projects["projects"][0]["last_edited_unix"], 1790000500u64);
+    assert!(projects["projects"][0].get("last_activity_unix").is_none());
     assert!(projects["projects"][0].get("agents").is_none());
+    // And the other way round: a good activity time survives a bad edit time.
+    let mut other = project(&id);
+    other["last_edited_unix"] = json!(-1);
+    other["last_activity_unix"] = json!(1790000900u64);
+    f.says("projects.json", json!([other]));
+    let projects = f.call("projects.list", json!({})).await;
+    assert!(projects["projects"][0].get("last_edited_unix").is_none());
+    assert_eq!(projects["projects"][0]["last_activity_unix"], 1790000900u64);
 }

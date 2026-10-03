@@ -1108,16 +1108,19 @@ fn project_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             ensure_empty(&args)?;
             let state = store.snapshot()?;
             if json {
-                // Agent counts need the shell list, which needs tmux; without
-                // it the projects are listed without them.
+                // Agent counts and shell activity need the shell list, which
+                // needs tmux; without it the projects are listed without them.
                 let home = crate::paths::riwork_home()?;
-                let shells = SessionManager::at(home.clone())
-                    .and_then(|manager| manager.list())
-                    .ok();
+                let (shells, activity) = SessionManager::at(home.clone())
+                    .and_then(|manager| manager.list_with_activity())
+                    .map_or((None, Default::default()), |(shells, activity)| {
+                        (Some(shells), activity)
+                    });
                 print_json(&crate::cli_agents::project_entries(
                     &home,
                     &state.projects,
                     shells.as_deref(),
+                    &activity,
                 ))?;
             } else {
                 for project in &state.projects {
@@ -1591,8 +1594,8 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                     state.active_project_id.clone()
                 }
             };
-            let shells: Vec<_> = manager
-                .list()?
+            let (listed, activity) = manager.list_with_activity()?;
+            let shells: Vec<_> = listed
                 .into_iter()
                 .filter(|shell| {
                     shell.kind == ShellKind::Project
@@ -1605,6 +1608,7 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 print_json(&crate::cli_agents::shell_entries(
                     manager.state_home(),
                     &shells,
+                    &activity,
                 ))?;
             } else {
                 for shell in &shells {
@@ -1834,8 +1838,8 @@ fn orchestrator_command(mut args: Vec<String>, json: bool) -> Result<(), String>
         }
         "list" => {
             ensure_empty(&args)?;
-            let shells: Vec<_> = manager
-                .list()?
+            let (listed, activity) = manager.list_with_activity()?;
+            let shells: Vec<_> = listed
                 .into_iter()
                 .filter(|shell| {
                     shell.kind == ShellKind::Orchestrator
@@ -1848,6 +1852,7 @@ fn orchestrator_command(mut args: Vec<String>, json: bool) -> Result<(), String>
                 print_json(&crate::cli_agents::shell_entries(
                     manager.state_home(),
                     &shells,
+                    &activity,
                 ))?;
             } else {
                 for shell in &shells {

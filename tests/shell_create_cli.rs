@@ -228,7 +228,10 @@ fn create_prints_the_session_that_shell_list_shows_for_a_project_or_a_worktree()
             .iter()
             .find(|entry| entry["id"] == created["id"])
             .unwrap_or_else(|| panic!("{created} is not listed: {listed}"));
-        assert_eq!(entry, created);
+        // `shell create` prints what it just made; the list adds when tmux last saw output.
+        let mut entry = entry.clone();
+        entry.as_object_mut().unwrap().remove("last_activity_unix");
+        assert_eq!(&entry, created);
     }
 
     // Both together are allowed when they agree.
@@ -481,6 +484,7 @@ fn an_agent_is_restricted_unless_unrestricted_is_asked_for() {
             "activity_since_unix",
             "subagents_working",
             "subagent_kinds",
+            "last_activity_unix",
         ] {
             entry.as_object_mut().unwrap().remove(additive);
         }

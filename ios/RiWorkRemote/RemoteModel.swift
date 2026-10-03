@@ -22,8 +22,8 @@ enum ConnectionState: Equatable {
     var projects: [RemoteProject] = []
     /// How the project list is ordered (Recent unless the person chose otherwise); remembered in UserDefaults.
     var projectSort = ProjectSort.standard
-    /// Projects this phone created during this connection, with the desktop's `created_at`: they count as just edited until the
-    /// desktop has a figure of its own, so a new project is not sorted behind the dated ones (see `ProjectSorting.sorted`).
+    /// Projects this phone created during this connection, with the desktop's `created_at`: they count as just active until the
+    /// desktop has a figure of its own, so a new project is not sorted behind the ones with activity (see `ProjectSorting.sorted`).
     var touchedProjects: [String: UInt64] = [:]
     var worktrees: [RemoteWorktree] = []
     var shells: [RemoteSession] = []

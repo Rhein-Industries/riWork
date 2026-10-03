@@ -504,15 +504,33 @@ impl SessionManager {
     /// only while Codex can still be running in it (see
     /// `hide_exited_plain_codex`); `get` returns the saved identity as is.
     pub fn list(&self) -> Result<Vec<ShellSession>, String> {
-        let mut sessions = self.list_saved()?;
+        Ok(self.list_with_activity()?.0)
+    }
+
+    /// `list`, and with it when tmux last saw output in each live session. Both
+    /// come out of the one `tmux list-sessions` that finds the live sessions, so
+    /// asking costs nothing more. It is a separate answer, not a field of
+    /// `ShellSession`, because it moves whenever a shell prints and a window
+    /// redraws when the sessions it holds differ (`refresh_sessions`).
+    pub fn list_with_activity(&self) -> Result<(Vec<ShellSession>, SessionActivity), String> {
+        let (mut sessions, activity) = self.list_saved_with_activity()?;
         self.hide_exited_plain_codex(&mut sessions);
-        Ok(sessions)
+        Ok((sessions, activity))
     }
 
     fn list_saved(&self) -> Result<Vec<ShellSession>, String> {
+        Ok(self.list_saved_with_activity()?.0)
+    }
+
+    fn list_saved_with_activity(&self) -> Result<(Vec<ShellSession>, SessionActivity), String> {
         let sessions = self.read_registry()?.sessions;
-        let live = self.live_session_names()?;
-        Ok(self.with_liveness(sessions, |id| live.contains(id)))
+        let live = self.live_session_activity()?;
+        let sessions = self.with_liveness(sessions, |id| live.contains_key(id));
+        let activity = sessions
+            .iter()
+            .filter_map(|session| Some((session.id.clone(), (*live.get(&session.id)?)?)))
+            .collect();
+        Ok((sessions, activity))
     }
 
     /// `sessions` marked alive when `is_live` says so. A Vim session that tmux
@@ -2018,17 +2036,30 @@ impl SessionManager {
     }
 
     fn live_session_names(&self) -> Result<HashSet<String>, String> {
-        let output = self.tmux_command(&["list-sessions", "-F", "#{session_name}"])?;
+        Ok(self.live_session_activity()?.into_keys().collect())
+    }
+
+    /// The sessions the server has, each with the Unix second its window last
+    /// had output, or `None` when tmux gave no time. One `list-sessions` answers
+    /// both. `#{window_activity}` is the session's current window, which is its
+    /// only one: RiWork never makes another. It moves when the pane prints,
+    /// which covers an agent working with no client attached and text sent by
+    /// `shell send`, `shell keys` or the phone, once the shell echoes it.
+    /// `#{session_activity}` is not used: tmux moves it for what an attached
+    /// client does (attaching, detaching, a key, the pointer, focus) and never
+    /// for output or `send-keys`, so a working agent nobody looks at would read
+    /// as idle and a hovering pointer as work.
+    fn live_session_activity(&self) -> Result<HashMap<String, Option<u64>>, String> {
+        let output = self.tmux_command(&["list-sessions", "-F", SESSION_ACTIVITY_FORMAT])?;
         if !output.status.success() {
             if no_tmux_server(&output) {
-                return Ok(HashSet::new());
+                return Ok(HashMap::new());
             }
             return Err(tmux_error(&output));
         }
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::to_owned)
-            .collect())
+        Ok(parse_session_activity(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     fn kill_tmux_session(&self, id: &str) -> Result<(), String> {
@@ -3286,6 +3317,29 @@ fn codex_activity_arguments_at(
             serde_json::to_string(&command).expect("serializing argv cannot fail")
         ),
     ]
+}
+
+/// The columns `live_session_activity` asks for.
+const SESSION_ACTIVITY_FORMAT: &str = "#{session_name}\t#{window_activity}";
+
+/// When tmux last saw output in each live shell, in Unix seconds, by shell id.
+/// A session whose time tmux did not give is left out.
+pub type SessionActivity = BTreeMap<String, u64>;
+
+/// `SESSION_ACTIVITY_FORMAT` lines. A line without a time (or with zero) is a
+/// live session of unknown activity, so a tmux that answers with names only
+/// still says which sessions exist.
+fn parse_session_activity(output: &str) -> HashMap<String, Option<u64>> {
+    output
+        .lines()
+        .map(|line| match line.split_once('\t') {
+            Some((name, time)) => (
+                name.to_owned(),
+                time.trim().parse().ok().filter(|time| *time > 0),
+            ),
+            None => (line.to_owned(), None),
+        })
+        .collect()
 }
 
 /// The columns of `PaneTable`. The directory comes last because it may hold a
@@ -5316,6 +5370,23 @@ mod tests {
             HashSet::from([alpha.to_owned()])
         );
         assert!(PaneTable::parse("").sessions().is_empty());
+    }
+
+    #[test]
+    fn session_activity_reads_the_time_after_the_name() {
+        let alpha = "00000000-0000-4000-8000-000000000020";
+        let beta = "00000000-0000-4000-8000-000000000021";
+        let activity = parse_session_activity(&format!(
+            "{alpha}\t1791000000\n{beta}\t0\nbare\nspaced\t 1791000001 \nbad\tsoon\nneg\t-5\n"
+        ));
+        assert_eq!(activity[alpha], Some(1_791_000_000));
+        // Zero, nothing and nonsense are a live session of unknown activity.
+        for unknown in [beta, "bare", "bad", "neg"] {
+            assert_eq!(activity[unknown], None, "{unknown}");
+        }
+        assert_eq!(activity["spaced"], Some(1_791_000_001));
+        assert_eq!(activity.len(), 6);
+        assert!(parse_session_activity("").is_empty());
     }
 
     struct AccountFixture(PathBuf);
