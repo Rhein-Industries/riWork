@@ -44,7 +44,7 @@ enum TerminalFont {
 /// It also owns the keyboard shortcuts: ⌘K opens the hotkey menu (⌘, the hotkey settings, ⌘/ the hotkey help), a hotkey with a shortcut
 /// runs on it, and while the menu is open every key goes to the menu instead of the shell. The help is not modal: it lists the
 /// shortcuts and every key and chord keeps working under it.
-@MainActor final class KeyCaptureView: UIView, UIKeyInput {
+@MainActor final class KeyCaptureView: UIView, UITextInput {
     /// Returns false when the input was refused (buffer full).
     var onItems: (([KeyItem]) -> Bool)?
     var onActiveChange: ((Bool) -> Void)?
@@ -126,6 +126,67 @@ enum TerminalFont {
         guard !items.isEmpty else { return }
         _ = onItems?(items)
     }
+
+    // MARK: UITextInput
+    // The software keyboard repeats a held delete key only for a `UITextInput` with text before the caret: a bare `UIKeyInput`
+    // gets one `deleteBackward` per press. So the view shows the keyboard a document of one space with the caret after it, and
+    // nothing ever changes it. Every delete, held or not, still arrives as one `deleteBackward` (the keyboard selects the space
+    // first; that selection is ignored), and text still arrives through `insertText`.
+    private final class Position: UITextPosition {
+        let offset: Int
+        init(_ offset: Int) { self.offset = offset }
+    }
+    private final class Range: UITextRange {
+        let from: Int, to: Int
+        init(_ a: Int, _ b: Int) { from = min(a, b); to = max(a, b) }
+        override var start: UITextPosition { Position(from) }
+        override var end: UITextPosition { Position(to) }
+        override var isEmpty: Bool { from == to }
+    }
+    private static let document = " "
+    private static let length = (document as NSString).length
+    private static func offset(_ position: UITextPosition) -> Int { min(max((position as? Position)?.offset ?? length, 0), length) }
+
+    func text(in range: UITextRange) -> String? {
+        let from = Self.offset(range.start), to = Self.offset(range.end)
+        return (Self.document as NSString).substring(with: NSRange(location: from, length: to - from))
+    }
+    /// Only the system's own edits come here (autocorrection and the rest are off): new text is typed text, nothing is replaced.
+    func replace(_ range: UITextRange, withText text: String) { if !text.isEmpty { insertText(text) } }
+    var selectedTextRange: UITextRange? { get { Range(Self.length, Self.length) } set {} }
+    // No marked text: what is typed goes to the shell as it is typed.
+    var markedTextRange: UITextRange? { nil }
+    var markedTextStyle: [NSAttributedString.Key: Any]? { get { nil } set {} }
+    func setMarkedText(_ markedText: String?, selectedRange: NSRange) {}
+    func unmarkText() {}
+    var beginningOfDocument: UITextPosition { Position(0) }
+    var endOfDocument: UITextPosition { Position(Self.length) }
+    func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? { Range(Self.offset(fromPosition), Self.offset(toPosition)) }
+    func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+        let moved = Self.offset(position) + offset
+        return (0...Self.length).contains(moved) ? Position(moved) : nil
+    }
+    func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
+        self.position(from: position, offset: direction == .left || direction == .up ? -offset : offset)
+    }
+    func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
+        let a = Self.offset(position), b = Self.offset(other)
+        return a < b ? .orderedAscending : a > b ? .orderedDescending : .orderedSame
+    }
+    func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int { Self.offset(toPosition) - Self.offset(from) }
+    weak var inputDelegate: UITextInputDelegate?
+    lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+    func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? { direction == .left || direction == .up ? range.start : range.end }
+    func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? { Range(Self.offset(position), Self.offset(position)) }
+    func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection { .leftToRight }
+    func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {}
+    // Nothing is drawn: no caret, no selection, no rectangles for the system to put a menu or a loupe on.
+    func firstRect(for range: UITextRange) -> CGRect { .zero }
+    func caretRect(for position: UITextPosition) -> CGRect { .zero }
+    func selectionRects(for range: UITextRange) -> [UITextSelectionRect] { [] }
+    func closestPosition(to point: CGPoint) -> UITextPosition? { endOfDocument }
+    func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? { range.end }
+    func characterRange(at point: CGPoint) -> UITextRange? { nil }
 
     // MARK: Paste
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {

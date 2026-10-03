@@ -114,6 +114,22 @@ import RiWorkCore
         try fire("[", .control)
         XCTAssertEqual(got.items.last, .key(.escape), "Ctrl-[ is Escape")
     }
+    func testTheKeyboardAlwaysSeesTextBeforeTheCaretSoAHeldDeleteRepeats() throws {
+        let (view, got) = makeView()
+        let caret = try XCTUnwrap(view.selectedTextRange)
+        XCTAssertTrue(caret.isEmpty)
+        let before = try XCTUnwrap(view.position(from: caret.start, offset: -1), "no text before the caret: the delete key would not repeat")
+        XCTAssertEqual(view.text(in: try XCTUnwrap(view.textRange(from: before, to: caret.start))), " ")
+        XCTAssertNil(view.markedTextRange)
+        for _ in 0..<3 {
+            // What the keyboard does on each repeat: select the character before the caret, then delete.
+            view.selectedTextRange = view.textRange(from: before, to: caret.start)
+            view.deleteBackward()
+        }
+        view.insertText("x")
+        XCTAssertEqual(got.items, [.key(.backspace), .key(.backspace), .key(.backspace), .text("x")], "one backspace per repeat")
+        XCTAssertEqual(view.text(in: try XCTUnwrap(view.textRange(from: view.beginningOfDocument, to: view.endOfDocument))), " ", "the document never changes")
+    }
     func testARefusedKeystrokeDoesNotBreakTheView() {
         let (view, got) = makeView(accept: false)
         view.insertText("x")
