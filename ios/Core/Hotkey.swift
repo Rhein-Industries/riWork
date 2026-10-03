@@ -117,7 +117,10 @@ public struct Hotkey: Sendable, Hashable, Identifiable {
         }
         var chord: KeyChord?
         if case .object = json["chord"] {
-            do { chord = try KeyChord(json: json["chord"]) } catch { throw HotkeyError.invalidChord("That shortcut cannot be used.") }
+            do { chord = try KeyChord(json: json["chord"]) }
+            // A shortcut the app has taken for itself since (⌘/ opened the help in a later version): the hotkey stays, without it.
+            catch ChordError.reserved { chord = nil }
+            catch { throw HotkeyError.invalidChord("That shortcut cannot be used.") }
         }
         var onBar = true
         if case .bool(let flag) = json["bar"] { onBar = flag }

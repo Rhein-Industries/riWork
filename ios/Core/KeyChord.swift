@@ -171,15 +171,17 @@ public struct KeyChord: Sendable, Hashable {
     }
     public var isTap: Bool { HIDKey.isModifier(keyCode) }
 
-    /// The reserved chords: ⌘K opens the hotkey menu and ⌘, the hotkey settings. They are always there.
+    /// The reserved chords: ⌘K opens the hotkey menu, ⌘, the hotkey settings and ⌘/ the hotkey help. They are always there.
     public static let paletteDefault = KeyChord(keyCode: HIDKey.k, modifiers: .command)
     public static let settingsDefault = KeyChord(keyCode: 0x36, modifiers: .command)
+    public static let helpDefault = KeyChord(keyCode: 0x38, modifiers: .command)
 
     public func validate() throws {
         guard HIDKey.valid.contains(keyCode) else { throw ChordError.unknownKey }
         if isTap { return }
         if self == Self.paletteDefault { throw ChordError.reserved("⌘K") }
         if self == Self.settingsDefault { throw ChordError.reserved("⌘,") }
+        if self == Self.helpDefault { throw ChordError.reserved("⌘/") }
         if HIDKey.isTyping(keyCode), modifiers.isDisjoint(with: [.control, .alt, .command]) { throw ChordError.needsModifier }
     }
     public var isValid: Bool { (try? validate()) != nil }

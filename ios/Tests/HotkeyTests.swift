@@ -281,9 +281,25 @@ final class HotkeyChordTests: XCTestCase {
             guard case HotkeyError.invalidChord = error else { return XCTFail("\(error)") }
         }
         XCTAssertThrowsError(try hotkey(chord: .paletteDefault).validate(), "⌘K opens the menu")
+        XCTAssertThrowsError(try hotkey(chord: .settingsDefault).validate(), "⌘, opens the settings")
+        XCTAssertThrowsError(try hotkey(chord: .helpDefault).validate(), "⌘/ opens the help") { error in
+            guard case HotkeyError.invalidChord(let reason) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(reason, "⌘/ is reserved.")
+        }
         let stored = "{\"id\":\"a\",\"label\":\"x\",\"steps\":[{\"key\":\"Tab\"}],\"chord\":{\"code\":4,\"mods\":0}}"
         XCTAssertThrowsError(try Hotkey(json: try JSONDecoder().decode(JSONValue.self, from: Data(stored.utf8))))
         XCTAssertEqual(HotkeyLibrary(encoded: "{\"v\":1,\"hotkeys\":[\(stored)]}").hotkeys, [], "dropped on load like any other bad entry")
+    }
+    func testAHotkeyThatHadTheShortcutTheHelpTookKeepsEverythingButTheShortcut() throws {
+        // Stored by a version before ⌘/ was the help: the hotkey must not be lost with the shortcut.
+        let stored = "{\"id\":\"a\",\"label\":\"Slash\",\"steps\":[{\"key\":\"Tab\"}],\"chord\":{\"code\":56,\"mods\":8},\"bar\":false}"
+        let kept = try Hotkey(json: try JSONDecoder().decode(JSONValue.self, from: Data(stored.utf8)))
+        XCTAssertEqual(kept.label, "Slash"); XCTAssertEqual(kept.steps, [.key(.tab)]); XCTAssertFalse(kept.showsOnBar)
+        XCTAssertNil(kept.chord)
+        let library = HotkeyLibrary(encoded: "{\"v\":1,\"hotkeys\":[\(stored)]}")
+        XCTAssertEqual(library.hotkeys.map(\.label), ["Slash"])
+        XCTAssertNil(library.hotkeys[0].chord)
+        XCTAssertNil(library.hotkey(for: .helpDefault))
     }
     func testTwoHotkeysCannotShareAShortcutAddingOrEditing() throws {
         var library = HotkeyLibrary()

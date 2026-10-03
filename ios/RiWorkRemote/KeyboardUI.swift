@@ -311,6 +311,89 @@ struct HotkeyPaletteView: View {
     }
 }
 
+// MARK: - The hotkey help
+
+/// The hotkey help over the terminal (⌘/, or the key bar's ? button): every hotkey with its shortcut and what it sends, in two groups
+/// (with a shortcut, without one), then the app's own shortcuts. It is a reference to look at while typing: it takes no keyboard, so
+/// every key and chord goes on working under it. Tapping a row sends that hotkey. A list that does not fit scrolls by touch.
+struct HotkeyHelpView: View {
+    @Environment(\.desktopStyle) private var style
+    let controller: HelpController
+
+    var body: some View {
+        if let help = controller.state {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "questionmark.circle").foregroundStyle(style.magenta).accessibilityHidden(true)
+                    Text("Hotkeys").font(style.mono(13, bold: true, relativeTo: .body))
+                    Spacer(minLength: 4)
+                    Text("press a shortcut · ⌘/ ⎋ close").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7)
+                    Button("Close hotkey help", systemImage: "xmark") { controller.close() }.labelStyle(.iconOnly)
+                }
+                .padding(.leading, 10).frame(minHeight: style.pt(40))
+                DesktopRule()
+                // The whole list when it fits, a scrolling one when it does not.
+                ViewThatFits(in: .vertical) {
+                    content(help)
+                    ScrollView { content(help) }
+                }
+                .frame(maxHeight: style.pt(28) * 15)
+            }
+            .background(style.panel, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(style.divider, lineWidth: 1))
+            .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+            .padding(.horizontal, 10).padding(.top, 8).frame(maxWidth: 520)
+            .accessibilityElement(children: .contain).accessibilityLabel("Hotkey help")
+            .transition(.opacity)
+        }
+    }
+
+    private func content(_ help: HotkeyHelp) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !help.withShortcut.isEmpty { section("WITH A SHORTCUT", help.withShortcut) }
+            if !help.withoutShortcut.isEmpty { section("NO SHORTCUT", help.withoutShortcut) }
+            heading("APP")
+            ForEach(help.appShortcuts) { shortcut in
+                HStack(spacing: 8) {
+                    Text(shortcut.keys).font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent).lineLimit(1)
+                    Text(shortcut.title).font(style.mono(12, relativeTo: .body)).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10).frame(minHeight: style.pt(26))
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .padding(.bottom, 4)
+    }
+    private func heading(_ title: String) -> some View {
+        Text(title).font(style.mono(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.muted)
+            .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 2).accessibilityAddTraits(.isHeader)
+    }
+    private func section(_ title: String, _ rows: [HotkeyHelp.Row]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            heading(title)
+            // As many columns as fit: two on an iPhone.
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: style.pt(172)), spacing: 0, alignment: .leading)], spacing: 0) {
+                ForEach(rows) { cell($0) }
+            }
+        }
+    }
+    private func cell(_ row: HotkeyHelp.Row) -> some View {
+        HStack(spacing: 6) {
+            Text(row.shortcut ?? "—").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(row.shortcut == nil ? style.muted : style.accent)
+                .lineLimit(1).frame(minWidth: style.pt(36), alignment: .leading)
+            Text(row.label).font(style.mono(12, bold: true, relativeTo: .body)).foregroundStyle(style.magenta).lineLimit(1).layoutPriority(1)
+            Text(row.sends).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10).frame(maxWidth: .infinity, minHeight: style.pt(28), alignment: .leading)
+        .contentShape(Rectangle()).onTapGesture { controller.fire(row.hotkey) }
+        .accessibilityElement(children: .ignore).accessibilityAddTraits(.isButton)
+        .accessibilityLabel("\(row.label), \(row.shortcut.map { "shortcut \($0)" } ?? "no shortcut"), sends \(row.sends)")
+        .accessibilityHint("Sends it")
+    }
+}
+
 // MARK: - The key readout
 
 /// The last key event the app received: its HID usage, modifiers and characters. It settles what a key, such as the Clicks

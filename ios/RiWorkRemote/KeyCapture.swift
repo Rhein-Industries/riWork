@@ -41,8 +41,9 @@ enum TerminalFont {
 /// A view that becomes first responder to bring up the keyboard, and turns everything typed into `KeyItem`s.
 /// It draws nothing: the terminal's own screen shows what the shell echoes.
 ///
-/// It also owns the keyboard shortcuts: ⌘K opens the hotkey menu (and ⌘, the hotkey settings), a hotkey with a shortcut runs on it,
-/// and while the menu is open every key goes to the menu instead of the shell.
+/// It also owns the keyboard shortcuts: ⌘K opens the hotkey menu (⌘, the hotkey settings, ⌘/ the hotkey help), a hotkey with a shortcut
+/// runs on it, and while the menu is open every key goes to the menu instead of the shell. The help is not modal: it lists the
+/// shortcuts and every key and chord keeps working under it.
 @MainActor final class KeyCaptureView: UIView, UIKeyInput {
     /// Returns false when the input was refused (buffer full).
     var onItems: (([KeyItem]) -> Bool)?
@@ -58,6 +59,8 @@ enum TerminalFont {
     private(set) var shortcuts = ShortcutMap(hotkeys: [])
     /// The hotkey menu, drawn by SwiftUI and driven from here.
     var palette = PaletteController() { didSet { palette.onOutcome = { [weak self] in self?.paletteOutcome($0) } } }
+    /// The hotkey help (⌘/), drawn by SwiftUI. It never takes the keyboard from this view.
+    var help = HelpController() { didSet { help.onFire = { [weak self] in self?.helpFire($0) } } }
     var onEditHotkeys: (() -> Void)?
     var onNewHotkey: (() -> Void)?
     var onEditHotkey: ((Hotkey) -> Void)?
@@ -87,6 +90,7 @@ enum TerminalFont {
         isAccessibilityElement = false
         bar.onAction = { [weak self] in self?.barAction($0) }
         palette.onOutcome = { [weak self] in self?.paletteOutcome($0) }
+        help.onFire = { [weak self] in self?.helpFire($0) }
     }
     required init?(coder: NSCoder) { fatalError("KeyCaptureView is created in code") }
 
@@ -103,7 +107,7 @@ enum TerminalFont {
     }
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        if resigned { mapper.disarmModifiers(); palette.close(); tapDetector.reset(); onActiveChange?(false) }
+        if resigned { mapper.disarmModifiers(); palette.close(); help.close(); tapDetector.reset(); onActiveChange?(false) }
         return resigned
     }
 
@@ -155,6 +159,7 @@ enum TerminalFont {
         case .hotkey(let id): if let hotkey = (Hotkey.builtIn + hotkeys).first(where: { $0.id == id }) { emit(mapper.run(hotkey)) }
         case .editHotkeys: onEditHotkeys?()
         case .palette: togglePalette()
+        case .help: toggleHelp()
         }
     }
 
@@ -194,8 +199,18 @@ enum TerminalFont {
         // A sheet or alert over the terminal: the menu would open out of sight.
         guard window?.rootViewController?.presentedViewController == nil else { return }
         mapper.disarmModifiers()
+        help.close()
         palette.open(hotkeys: hotkeys)
     }
+    /// ⌘/ or the key bar's ? button. The help does not take the keyboard, so there is nothing to give back when it closes.
+    func toggleHelp() {
+        if help.isOpen { help.close(); return }
+        guard window?.rootViewController?.presentedViewController == nil else { return }
+        palette.close()
+        help.open(hotkeys: hotkeys, shortcuts: shortcutSettings)
+    }
+    /// A tap on a row of the help: the same as its chord. The help stays up.
+    private func helpFire(_ hotkey: Hotkey) { emit(mapper.run(hotkey)) }
     /// Typed text goes to the filter; Return chooses, Tab moves on (a software keyboard has no key commands for them).
     private func paletteText(_ text: String) {
         var run = ""
@@ -224,7 +239,8 @@ enum TerminalFont {
     private func perform(_ action: ShortcutAction) {
         switch action {
         case .openPalette: togglePalette()
-        case .openSettings: palette.close(); onEditHotkeys?()
+        case .openSettings: palette.close(); help.close(); onEditHotkeys?()
+        case .openHelp: toggleHelp()
         case .hotkey(let hotkey):
             if palette.isOpen {
                 if hotkey.items.count == 1, case .key(let key) = hotkey.items[0], let move = Self.paletteMove(for: key) { movePalette(move) }
@@ -296,6 +312,7 @@ enum TerminalFont {
         for value in 97...122 { list.append(Self.command(String(UnicodeScalar(UInt8(value))), .control)) }
         list.append(Self.command("k", .command, "Hotkey menu"))
         list.append(Self.command(",", .command, "Hotkey settings"))
+        list.append(Self.command("/", .command, "Hotkey help"))
         // Inside the menu: Shift-Return edits the chosen hotkey (outside it, Shift-Return is Enter).
         list.append(Self.command("\r", .shift))
         return list
@@ -307,13 +324,15 @@ enum TerminalFont {
         // The system's Cancel (a keyboard without Esc has no other way to put the menu away).
         Self.command(".", .command, "Close the hotkey menu"),
     ]
-    /// Commands for the shortcuts of hotkeys and the menu: the keys a `UIKeyCommand` can name, with priority over the system.
+    /// The same for the help: ⌘. closes it (Esc does too, and is a command already). Claimed only while it is open.
+    private lazy var helpCommands: [UIKeyCommand] = [Self.command(".", .command, "Close the hotkey help")]
+    /// Commands for the shortcuts of hotkeys, the menu and the help: the keys a `UIKeyCommand` can name, with priority over the system.
     private var chordCommands: [UIKeyCommand] = []
-    override var keyCommands: [UIKeyCommand]? { commands + (palette.isOpen ? paletteCommands : []) + chordCommands }
+    override var keyCommands: [UIKeyCommand]? { commands + (palette.isOpen ? paletteCommands : []) + (help.isOpen ? helpCommands : []) + chordCommands }
 
     private func refreshShortcuts() {
         shortcuts = ShortcutMap(hotkeys: hotkeys, settings: shortcutSettings)
-        var seen = Set((commands + paletteCommands).map { "\($0.input ?? "")|\($0.modifierFlags.rawValue)" })
+        var seen = Set((commands + paletteCommands + helpCommands).map { "\($0.input ?? "")|\($0.modifierFlags.rawValue)" })
         chordCommands = shortcuts.chords.compactMap { chord in
             guard !chord.isTap, let input = Self.commandInput(forKeyCode: chord.keyCode) else { return nil }
             let flags = Self.flags(chord.modifiers)
@@ -331,6 +350,8 @@ enum TerminalFont {
         onKeyEvent?(KeyEventRecord(phase: .command, keyCode: code, modifiers: Self.modifiers(flags), rawModifiers: Int(flags.rawValue), characters: input, charactersIgnoringModifiers: input))
         // A shortcut of the person's comes before the built-in meaning of the same keys (Ctrl-E, say).
         if let code, let action = shortcuts.action(for: KeyChord(keyCode: code, modifiers: Self.modifiers(flags))) { perform(action); return }
+        // The help closes on Esc and ⌘.; every other key (arrows included) is the shell's as ever.
+        if help.isOpen, (input == UIKeyCommand.inputEscape && flags.isEmpty) || (input == "." && flags == .command) { help.close(); return }
         let named = Self.namedCommands.first { $0.input == input && $0.flags == flags }?.key
         let control: TerminalKey? = flags == .control ? input.unicodeScalars.first.flatMap { input.unicodeScalars.count == 1 ? TerminalKey.control(forLetter: Character($0)) : nil } : nil
         if palette.isOpen {
@@ -485,6 +506,7 @@ struct KeyCapture: UIViewRepresentable {
     var hotkeys: [Hotkey] = []
     var shortcuts = ShortcutSettings()
     var palette: PaletteController?
+    var help: HelpController?
     var onEditHotkeys: () -> Void = {}
     var onNewHotkey: () -> Void = {}
     var onEditHotkey: (Hotkey) -> Void = { _ in }
@@ -508,6 +530,7 @@ struct KeyCapture: UIViewRepresentable {
         // A bar that is on screen tells iOS its new height; the keyboard is asked to lay it out again.
         if view.bar.style.scale != previousScale, view.isFirstResponder { view.reloadInputViews() }
         if let palette, view.palette !== palette { view.palette = palette }
+        if let help, view.help !== help { view.help = help }
         view.hotkeys = hotkeys
         view.shortcutSettings = shortcuts
         view.onEditHotkeys = onEditHotkeys

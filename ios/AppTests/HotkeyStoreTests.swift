@@ -111,6 +111,17 @@ import RiWorkCore
         defaults.set("garbage", forKey: HotkeyStore.shortcutsKey)
         XCTAssertEqual(HotkeyStore(defaults: defaults).shortcuts.paletteChords, [], "unreadable shortcuts are none")
     }
+    func testInstallingTheTemplateLeavesOutWhatWouldBeShadowedByTheMenuOrTheHelp() throws {
+        let store = HotkeyStore(defaults: scratchDefaults())
+        try store.addHelpChord(chord("e"))
+        try store.addPaletteChord(chord("t"))
+        let result = store.install(.clicks)
+        XCTAssertEqual(result.added.count, HotkeyTemplate.clicks.hotkeys.count - 2)
+        XCTAssertEqual(result.skipped.map(\.reason), [.shortcutTaken(by: "the hotkey help"), .shortcutTaken(by: "the hotkey menu")])
+        XCTAssertEqual(store.shortcutMap.action(for: chord("e")), .openHelp)
+        XCTAssertEqual(store.shortcutMap.action(for: chord("t")), .openPalette)
+        XCTAssertFalse(store.custom.contains { $0.chord == chord("e") || $0.chord == chord("t") })
+    }
     func testInstallingTheClicksTemplateKeepsWhatThePersonHadAndPersists() throws {
         let defaults = scratchDefaults()
         let store = HotkeyStore(defaults: defaults)

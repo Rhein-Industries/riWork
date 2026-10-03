@@ -68,7 +68,7 @@ final class KeyChordTests: XCTestCase {
             XCTAssertThrowsError(try KeyChord(keyCode: code, modifiers: .shift).validate(), "shift alone only changes the letter") { XCTAssertEqual($0 as? ChordError, .needsModifier) }
             for modifier: ChordModifiers in [.control, .alt, .command] {
                 let chord = KeyChord(keyCode: code, modifiers: modifier)
-                if chord == .paletteDefault { continue }
+                if chord == .paletteDefault || chord == .helpDefault { continue }
                 XCTAssertNoThrow(try chord.validate(), "\(chord.title)")
             }
         }
@@ -87,6 +87,19 @@ final class KeyChordTests: XCTestCase {
         XCTAssertThrowsError(try KeyChord.settingsDefault.validate()) { XCTAssertEqual($0 as? ChordError, .reserved("⌘,")) }
         XCTAssertNoThrow(try KeyChord(keyCode: HIDKey.k, modifiers: [.command, .shift]).validate())
         XCTAssertFalse(KeyChord.paletteDefault.isValid)
+    }
+    func testTheHelpShortcutIsCommandSlashAndReservedLikeTheOthers() {
+        XCTAssertEqual(KeyChord.helpDefault, KeyChord(keyCode: 0x38, modifiers: .command))
+        XCTAssertEqual(KeyChord.helpDefault.title, "⌘/")
+        XCTAssertEqual(HIDKey.character(for: KeyChord.helpDefault.keyCode), "/", "the usage a UIKeyCommand for ⌘/ comes back as")
+        XCTAssertThrowsError(try KeyChord.helpDefault.validate()) { XCTAssertEqual($0 as? ChordError, .reserved("⌘/")) }
+        XCTAssertFalse(KeyChord.helpDefault.isValid)
+        XCTAssertThrowsError(try KeyChord(json: KeyChord.helpDefault.json), "and not accepted from storage as a chord either")
+        for other: ChordModifiers in [.control, .alt, [.command, .shift], [.command, .alt]] {
+            XCTAssertNoThrow(try KeyChord(keyCode: 0x38, modifiers: other).validate(), "only ⌘/ itself is taken, not every / chord")
+        }
+        let all: Set<KeyChord> = [.paletteDefault, .settingsDefault, .helpDefault]
+        XCTAssertEqual(all.count, 3, "three different chords")
     }
     func testAChordRoundTripsThroughJSONAndStrictlyRejectsTheRest() throws {
         let chord = KeyChord(keyCode: HIDKey.e, modifiers: [.command, .shift])
@@ -178,6 +191,60 @@ final class KeyChordTests: XCTestCase {
         XCTAssertTrue(map.hasTapChords)
         XCTAssertFalse(ShortcutMap(hotkeys: [esc]).hasTapChords)
         XCTAssertEqual(Set(ShortcutMap(hotkeys: [esc], settings: ShortcutSettings(paletteChords: [tap])).chords), [esc.chord!, tap])
+    }
+    func testTheHelpShortcutsAreFoundLikeTheMenuOnes() {
+        let help = KeyChord(keyCode: HIDKey.code(forCharacter: "j")!, modifiers: .command)
+        let tap = KeyChord(keyCode: HIDKey.rightControl)
+        let map = ShortcutMap(hotkeys: [], settings: ShortcutSettings(helpChords: [help, tap]))
+        XCTAssertEqual(map.action(for: .helpDefault), .openHelp, "⌘/ is always there")
+        XCTAssertEqual(map.action(for: help), .openHelp)
+        XCTAssertEqual(map.action(for: tap), .openHelp)
+        XCTAssertEqual(map.action(for: .paletteDefault), .openPalette, "and the menu is still ⌘K")
+        XCTAssertEqual(ShortcutMap(hotkeys: []).action(for: .helpDefault), .openHelp, "with no settings at all")
+        XCTAssertTrue(map.hasTapChords, "a tap on a modifier that opens the help is worth watching for")
+        XCTAssertFalse(ShortcutMap(hotkeys: [], settings: ShortcutSettings(helpChords: [help])).hasTapChords)
+        XCTAssertEqual(Set(map.chords), [help, tap], "the extra ones get key commands; the fixed ones have their own")
+    }
+    func testAHelpShortcutIsValidatedAndNeverSharedWithTheMenuOrAHotkey() throws {
+        var settings = ShortcutSettings()
+        let chord = KeyChord(keyCode: HIDKey.e, modifiers: .command)
+        let esc = Hotkey(id: "e", label: "Esc", steps: [.key(.escape)], chord: chord)
+        XCTAssertThrowsError(try settings.addHelpChord(chord, library: HotkeyLibrary(hotkeys: [esc]))) { XCTAssertEqual($0 as? HotkeyError, .chordInUse("Esc")) }
+        XCTAssertThrowsError(try settings.addHelpChord(KeyChord(keyCode: HIDKey.a)), "a bare letter")
+        XCTAssertThrowsError(try settings.addHelpChord(.helpDefault), "⌘/ is always there")
+        XCTAssertThrowsError(try settings.addHelpChord(.paletteDefault), "⌘K is the menu's")
+        XCTAssertThrowsError(try settings.addHelpChord(.settingsDefault), "⌘, is the settings'")
+        try settings.addHelpChord(KeyChord(keyCode: HIDKey.rightControl))
+        try settings.addHelpChord(KeyChord(keyCode: HIDKey.rightControl))
+        XCTAssertEqual(settings.helpChords, [KeyChord(keyCode: HIDKey.rightControl)], "no repeats")
+        XCTAssertThrowsError(try settings.addPaletteChord(KeyChord(keyCode: HIDKey.rightControl))) { XCTAssertEqual($0 as? HotkeyError, .chordInUse("the hotkey help")) }
+        try settings.addPaletteChord(KeyChord(keyCode: HIDKey.leftControl))
+        XCTAssertThrowsError(try settings.addHelpChord(KeyChord(keyCode: HIDKey.leftControl))) { XCTAssertEqual($0 as? HotkeyError, .chordInUse("the hotkey menu")) }
+        XCTAssertEqual(settings.paletteChords, [KeyChord(keyCode: HIDKey.leftControl)])
+        settings.removeHelpChord(KeyChord(keyCode: HIDKey.rightControl))
+        XCTAssertEqual(settings.helpChords, [])
+    }
+    func testAtMostAFewHelpShortcutsAreKeptAndTheyAreStoredStrictly() throws {
+        var settings = ShortcutSettings()
+        for code in 0xE0...0xE7 {
+            do { try settings.addHelpChord(KeyChord(keyCode: code)) } catch { XCTAssertEqual(settings.helpChords.count, ShortcutSettings.maxHelpChords) }
+        }
+        XCTAssertEqual(settings.helpChords.count, ShortcutSettings.maxHelpChords)
+        XCTAssertEqual(ShortcutSettings(helpChords: (0xE0...0xE7).map { KeyChord(keyCode: $0) }).helpChords.count, ShortcutSettings.maxHelpChords)
+        XCTAssertEqual(ShortcutSettings(encoded: settings.encoded), settings, "round trip")
+        let both = ShortcutSettings(paletteChords: [KeyChord(keyCode: HIDKey.leftControl)], helpChords: [KeyChord(keyCode: HIDKey.leftControl), KeyChord(keyCode: HIDKey.rightControl), .helpDefault, KeyChord(keyCode: HIDKey.a)])
+        XCTAssertEqual(both.paletteChords, [KeyChord(keyCode: HIDKey.leftControl)])
+        XCTAssertEqual(both.helpChords, [KeyChord(keyCode: HIDKey.rightControl)], "one chord opens one thing; reserved and unusable chords are dropped")
+        XCTAssertEqual(ShortcutSettings(encoded: both.encoded), both)
+    }
+    func testWhatWasStoredBeforeTheHelpExistedReadsAndWritesAsBefore() {
+        let old = "{\"v\":1,\"palette\":[{\"code\":224,\"mods\":0}]}"
+        let loaded = ShortcutSettings(encoded: old)
+        XCTAssertEqual(loaded.paletteChords, [KeyChord(keyCode: HIDKey.leftControl)])
+        XCTAssertEqual(loaded.helpChords, [])
+        XCTAssertFalse(loaded.encoded.contains("help"), "nothing new is written until there is something to write")
+        XCTAssertEqual(ShortcutSettings(encoded: "{\"v\":1,\"palette\":[],\"help\":[{\"code\":4,\"mods\":0},{\"code\":229,\"mods\":0}]}").helpChords,
+                       [KeyChord(keyCode: HIDKey.rightShift)], "a bad help entry is dropped like a bad menu one")
     }
     func testAMenuShortcutCannotShadowAHotkeyAndIsStoredStrictly() throws {
         var settings = ShortcutSettings()
