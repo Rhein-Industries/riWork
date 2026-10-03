@@ -494,7 +494,8 @@ pub enum PreviewPlacement {
     Tab { pane: PaneId, activate: bool },
 }
 
-/// The window's tab for a panel (Preview, or Files), if it has one.
+/// The window's tab for a panel (Preview, or Files), if it has one. The main pane's rules use
+/// it for any tab that a click brings up (see `reuse_open_tab`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PreviewTab {
     pub pane: PaneId,
@@ -518,6 +519,13 @@ pub enum PreviewReveal {
     /// Bring the Preview tab of this pane forward.
     Activate(PaneId),
     Open(PreviewPlacement),
+    /// Take the tab out of pane `from` and into the main pane `to`, where it becomes the
+    /// selected tab if `activate`.
+    Move {
+        from: PaneId,
+        to: PaneId,
+        activate: bool,
+    },
 }
 
 /// How a pane of `extent` can be split for the preview: side by side when it is wide enough,
@@ -763,6 +771,104 @@ impl Layout {
     }
 }
 
+/// What a click that brings up a tab which is already open does, when the window has a main
+/// pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenTabReuse {
+    /// Select it where it is.
+    InPlace,
+    /// Move it into the main pane and select it there.
+    IntoMain,
+}
+
+/// Where a shell, an agent, an orchestrator or an editor that is already open is brought up
+/// when the window has the main pane `main`. It is never opened twice. It is selected where it
+/// is when
+///
+/// - it is in the main pane, or
+/// - it is already the selected tab of its pane, so it is on screen and nothing is hidden, or
+/// - its pane is locked: a lock keeps the tabs where they are, so a click never takes one out, or
+/// - the tab in front in its pane is not a terminal, so selecting it hides nothing being read.
+///
+/// Otherwise it is behind a terminal in an unlocked pane, and moves into the main pane.
+pub fn reuse_open_tab(main: PaneId, tab: PreviewTab, pane_locked: bool) -> OpenTabReuse {
+    if tab.pane == main || tab.shown || pane_locked || !tab.behind_shell {
+        OpenTabReuse::InPlace
+    } else {
+        OpenTabReuse::IntoMain
+    }
+}
+
+/// What choosing a file, or clicking a link, does about a panel (the Preview, or Files for a
+/// folder) when the window has the main pane `main`. The panel goes there as a tab and is
+/// selected, and no pane is split. `keep_on_screen` lists the panes whose selected tab must stay
+/// in front: the one with the tree on screen, which a Preview would hide, and for a link the pane
+/// clicked in, whose terminal keeps the keys. Where the main pane is one of them the tab waits
+/// unselected in the strip.
+///
+/// A panel that is already open is reused. It is left alone when it is on screen. In the main
+/// pane it is brought forward. In another pane it is brought forward there if that hides no
+/// terminal and no `keep_on_screen` tab, else it moves into the main pane. Unlike a shell it
+/// leaves a locked pane too: bringing it forward there would cover the tree, or a terminal.
+pub fn plan_main_reveal(
+    main: PaneId,
+    existing: Option<PreviewTab>,
+    keep_on_screen: &[PaneId],
+) -> PreviewReveal {
+    let activate = !keep_on_screen.contains(&main);
+    match existing {
+        Some(tab) if tab.shown => PreviewReveal::Leave,
+        Some(tab) if tab.pane == main => {
+            if activate {
+                PreviewReveal::Activate(main)
+            } else {
+                PreviewReveal::Leave
+            }
+        }
+        Some(tab) if !tab.behind_shell && !keep_on_screen.contains(&tab.pane) => {
+            PreviewReveal::Activate(tab.pane)
+        }
+        Some(tab) => PreviewReveal::Move {
+            from: tab.pane,
+            to: main,
+            activate,
+        },
+        None => PreviewReveal::Open(PreviewPlacement::Tab {
+            pane: main,
+            activate,
+        }),
+    }
+}
+
+impl Layout {
+    /// The panes a gather empties into the main pane `main`, in layout order: every pane that
+    /// is neither the main pane nor locked.
+    pub fn gather_sources(&self, main: PaneId, locked: &dyn Fn(PaneId) -> bool) -> Vec<PaneId> {
+        self.pane_ids()
+            .into_iter()
+            .filter(|id| *id != main && !locked(*id))
+            .collect()
+    }
+
+    /// Whether removing `target` would give its space to a sibling that holds a locked pane.
+    /// The sibling grows to fill it, and so does every pane in it, so a locked pane in it would
+    /// no longer keep its size.
+    pub fn removal_resizes_locked(&self, target: PaneId, locked: &dyn Fn(PaneId) -> bool) -> bool {
+        match self {
+            Self::Pane(_) => false,
+            Self::Split { first, second, .. } => match (first.as_ref(), second.as_ref()) {
+                (Self::Pane(id), sibling) | (sibling, Self::Pane(id)) if *id == target => {
+                    sibling.pane_ids().into_iter().any(locked)
+                }
+                _ => {
+                    first.removal_resizes_locked(target, locked)
+                        || second.removal_resizes_locked(target, locked)
+                }
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelKind {
@@ -868,6 +974,11 @@ pub struct ProjectLayout {
     pub sidebar_visible: bool,
     #[serde(default)]
     pub window_size: Option<WindowSize>,
+    /// The pane that new tabs, clicked shells and opened previews go to; at most one per
+    /// layout. It is written only when set, so a layout without one is saved exactly as
+    /// before, and a build that predates it reads the rest of the layout and ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_pane: Option<PaneId>,
 }
 
 /// The normal window's content size, independent of terminal rows and columns.
@@ -1067,10 +1178,21 @@ impl ProjectLayout {
                 })
                 .unwrap_or(layout.first_pane())
         };
+        // A locked pane the user made the main pane stays the main pane wherever it goes. Else
+        // the project's own main pane stays one, under the id its pane was given.
+        let main_pane = previous
+            .main_pane
+            .filter(|id| locked.contains(id))
+            .or_else(|| {
+                destination
+                    .main_pane
+                    .and_then(|id| mapping.get(&id).copied())
+            });
         let mut result = destination;
         result.layout = layout;
         result.panes = panes;
         result.active_pane = active_pane;
+        result.main_pane = main_pane;
         result.locked_panes = previous.locked_panes;
         result.panels_initialized = result.panels_initialized || previous.panels_initialized;
         result.sidebar_visible = previous.sidebar_visible;
@@ -1097,6 +1219,7 @@ impl ProjectLayout {
         if let Some(locked) = &mut self.locked_panes {
             locked.retain(|id| pane_ids.contains(id));
         }
+        self.main_pane = self.main_pane.filter(|id| pane_ids.contains(id));
 
         let mut shell_ids = HashSet::new();
         let mut panel_kinds = HashSet::new();
@@ -1780,6 +1903,7 @@ mod tests {
                 width: 1440.0,
                 height: 900.0,
             }),
+            main_pane: None,
         };
         saved.normalize().unwrap();
         saved
@@ -2918,6 +3042,219 @@ mod tests {
             .key(),
             "panel:preview"
         );
+    }
+
+    #[test]
+    fn the_main_pane_is_kept_per_project_and_comes_back_with_its_layout() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let mut first = saved_layout();
+        first.main_pane = Some(8);
+        let mut second = saved_layout();
+        second.main_pane = Some(15);
+        store.save("project-a", &first).unwrap();
+        store.save("project-b", &second).unwrap();
+        store.save("project-c", &saved_layout()).unwrap();
+        let main_of = |id: &str| store.load(id).unwrap().unwrap().main_pane;
+        assert_eq!(main_of("project-a"), Some(8));
+        assert_eq!(main_of("project-b"), Some(15));
+        assert_eq!(main_of("project-c"), None);
+        assert_eq!(store.load("project-a").unwrap(), Some(first.clone()));
+
+        // Choosing another pane, and then none, is saved; with none the key leaves the file.
+        first.main_pane = Some(4);
+        store.save("project-a", &first).unwrap();
+        assert_eq!(main_of("project-a"), Some(4));
+        first.main_pane = None;
+        store.save("project-a", &first).unwrap();
+        assert_eq!(main_of("project-a"), None);
+        let file = directory.read_value();
+        assert!(file["projects"]["project-a"].get("main_pane").is_none());
+        assert_eq!(file["projects"]["project-b"]["main_pane"], 15);
+    }
+
+    #[test]
+    fn a_main_pane_that_is_not_in_the_layout_is_dropped_and_there_is_never_more_than_one() {
+        let mut layout = saved_layout();
+        layout.main_pane = Some(99);
+        layout.normalize().unwrap();
+        assert_eq!(layout.main_pane, None);
+        // One value: choosing a pane replaces the previous choice, it cannot add to it.
+        layout.main_pane = Some(8);
+        layout.main_pane = Some(15);
+        layout.normalize().unwrap();
+        assert_eq!(layout.main_pane, Some(15));
+
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        layout.main_pane = Some(99);
+        store.save("project-a", &layout).unwrap();
+        assert_eq!(store.load("project-a").unwrap().unwrap().main_pane, None);
+        assert!(
+            directory.read_value()["projects"]["project-a"]
+                .get("main_pane")
+                .is_none()
+        );
+    }
+
+    /// `ProjectLayout` as the builds before the main pane read it. They have no
+    /// `deny_unknown_fields` anywhere, which is what lets them open a newer layout.
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct LayoutBeforeTheMainPane {
+        layout: Layout,
+        #[serde(default)]
+        panes: BTreeMap<PaneId, SavedPane>,
+        active_pane: PaneId,
+        #[serde(default)]
+        locked_panes: Option<HashSet<PaneId>>,
+        #[serde(default)]
+        panels_initialized: bool,
+        #[serde(default)]
+        detached_shell_ids: HashSet<String>,
+        #[serde(default)]
+        selected_worktree_id: Option<String>,
+        #[serde(default)]
+        selected_task_id: Option<String>,
+        #[serde(default = "sidebar_visible_default")]
+        sidebar_visible: bool,
+        #[serde(default)]
+        window_size: Option<WindowSize>,
+    }
+
+    #[test]
+    fn a_build_that_predates_the_main_pane_still_opens_a_layout_that_has_one() {
+        let mut layout = saved_layout();
+        layout.main_pane = Some(8);
+        let stored = serde_json::to_value(&layout).unwrap();
+        // It is one more key of the project's entry, and nothing else changed.
+        assert_eq!(stored["main_pane"], 8);
+        let mut without = stored.clone();
+        without.as_object_mut().unwrap().remove("main_pane");
+        let mut plain = saved_layout();
+        plain.main_pane = None;
+        assert_eq!(without, serde_json::to_value(&plain).unwrap());
+
+        // The previous build reads the entry as it did before, so it does not fall back to a
+        // default layout for the project.
+        let older = LayoutBeforeTheMainPane::deserialize(&stored).expect("an older build reads it");
+        assert_eq!(older.layout, layout.layout);
+        assert_eq!(older.panes, layout.panes);
+        assert_eq!(older.active_pane, layout.active_pane);
+
+        // And through this build's own reader, which is the code that older build ran: a field
+        // it does not know leaves the entry a readable layout, not an unreadable one.
+        let mut future = stored.clone();
+        future["pane_notes"] = serde_json::json!({"8": "kept"});
+        let SavedEntry::Layout { layout: parsed, .. } = SavedEntry::parse(future) else {
+            panic!("an unknown field made the layout unreadable");
+        };
+        assert_eq!(parsed.main_pane, Some(8));
+        assert_eq!(parsed.panes, layout.panes);
+
+        // Saved by that older build the entry has no main pane, and loads without one.
+        let directory = TestDirectory::new();
+        directory.write(
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "projects": {"after-an-older-build": without},
+            }))
+            .unwrap(),
+        );
+        let reloaded = directory
+            .store()
+            .load("after-an-older-build")
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.main_pane, None);
+        assert_eq!(reloaded.panes, layout.panes);
+    }
+
+    #[test]
+    fn a_layout_without_a_main_pane_is_written_as_it_always_was() {
+        use std::os::unix::fs::MetadataExt;
+
+        let stored = serde_json::to_value(saved_layout()).unwrap();
+        assert!(stored.get("main_pane").is_none());
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        store.save("project-a", &saved_layout()).unwrap();
+        assert!(
+            !fs::read_to_string(directory.file())
+                .unwrap()
+                .contains("main_pane")
+        );
+
+        // Saving what is there writes nothing, with a main pane or without one.
+        let inode = fs::metadata(directory.file()).unwrap().ino();
+        store.save("project-a", &saved_layout()).unwrap();
+        assert_eq!(fs::metadata(directory.file()).unwrap().ino(), inode);
+        let mut with_main = saved_layout();
+        with_main.main_pane = Some(8);
+        store.save("project-b", &with_main).unwrap();
+        let inode = fs::metadata(directory.file()).unwrap().ino();
+        store.save("project-b", &with_main).unwrap();
+        assert_eq!(fs::metadata(directory.file()).unwrap().ino(), inode);
+        // Choosing a main pane is a change of the layout like any other, and is written.
+        with_main.main_pane = Some(15);
+        store.save("project-b", &with_main).unwrap();
+        assert_ne!(fs::metadata(directory.file()).unwrap().ino(), inode);
+    }
+
+    #[test]
+    fn a_locked_main_pane_stays_the_main_pane_when_the_project_changes() {
+        // previous: locked navigation pane 4 | (8 over 15), as in the carry test above.
+        let mut previous = saved_layout();
+        previous.panes.insert(
+            4,
+            pane(vec![panel(PanelKind::Projects), shell("global")], 0),
+        );
+        previous.active_pane = 4;
+
+        // The user made the locked pane the main pane: it stays one, and wins over a pane the
+        // destination project had chosen, since a layout has only one.
+        let mut locked_main = previous.clone();
+        locked_main.main_pane = Some(4);
+        let mut destination = saved_layout();
+        destination
+            .panes
+            .insert(8, pane(vec![shell("destination-b")], 0));
+        destination.main_pane = Some(8);
+        let carried = destination.carry_locked_regions_from(&locked_main).unwrap();
+        assert_eq!(carried.main_pane, Some(4));
+        assert!(carried.effective_locked_panes().contains(&4));
+
+        // Not locked, the previous project's main pane does not follow the window: each project
+        // keeps its own, wherever its pane is numbered now.
+        let mut unlocked_main = previous.clone();
+        unlocked_main.main_pane = Some(8);
+        let carried = destination
+            .carry_locked_regions_from(&unlocked_main)
+            .unwrap();
+        let main = carried.main_pane.expect("the destination's own choice");
+        assert_eq!(carried.panes[&main].tabs, [shell("destination-b")]);
+        assert_ne!(carried.panes[&main], previous.panes[&4]);
+
+        // The destination's pane 4 collides with the locked pane 4 and is given another id; its
+        // choice follows it there.
+        let mut destination = saved_layout();
+        destination
+            .panes
+            .insert(4, pane(vec![shell("destination-a")], 0));
+        destination.main_pane = Some(4);
+        let carried = destination.carry_locked_regions_from(&previous).unwrap();
+        let main = carried.main_pane.expect("the destination's own choice");
+        assert_ne!(main, 4);
+        assert_eq!(carried.panes[&main].tabs, [shell("destination-a")]);
+
+        // Nothing locked: the destination is used as it is.
+        let mut open = previous.clone();
+        open.locked_panes = Some(HashSet::new());
+        let carried = destination.carry_locked_regions_from(&open).unwrap();
+        assert_eq!(carried.main_pane, Some(4));
+        // A destination with no choice has none after the carry either.
+        let carried = saved_layout().carry_locked_regions_from(&previous).unwrap();
+        assert_eq!(carried.main_pane, None);
     }
 
     #[test]
@@ -4103,5 +4440,240 @@ mod preview_placement_tests {
         assert_eq!(extents[&2], area(750.0, 700.0));
         let degenerate = layout.pane_extents(area(2.0, 700.0));
         assert!(degenerate.values().all(|extent| extent.width >= 0.0));
+    }
+}
+
+#[cfg(test)]
+mod main_pane_tests {
+    use super::*;
+
+    fn tab(pane: PaneId, shown: bool, behind_shell: bool) -> PreviewTab {
+        PreviewTab {
+            pane,
+            shown,
+            behind_shell,
+        }
+    }
+
+    fn open(pane: PaneId, activate: bool) -> PreviewReveal {
+        PreviewReveal::Open(PreviewPlacement::Tab { pane, activate })
+    }
+
+    #[test]
+    fn a_panel_with_no_tab_yet_is_added_to_the_main_pane_and_selected() {
+        // A file chosen in a tree in pane 1, or a link clicked in pane 3: main is pane 2.
+        assert_eq!(plan_main_reveal(2, None, &[1]), open(2, true));
+        assert_eq!(plan_main_reveal(2, None, &[3]), open(2, true));
+        assert_eq!(plan_main_reveal(2, None, &[3, 1]), open(2, true));
+        assert_eq!(plan_main_reveal(2, None, &[]), open(2, true));
+        // It never splits anything: the only placement is a tab.
+        assert!(matches!(
+            plan_main_reveal(2, None, &[1]),
+            PreviewReveal::Open(PreviewPlacement::Tab { .. })
+        ));
+    }
+
+    #[test]
+    fn the_main_pane_does_not_cover_the_tree_being_navigated_or_the_terminal_clicked() {
+        // The tree is a tab of the main pane itself, or the link was clicked in a terminal that
+        // is in it: the tab waits, unselected, in the strip, and what is shown stays.
+        assert_eq!(plan_main_reveal(2, None, &[2]), open(2, false));
+        assert_eq!(plan_main_reveal(2, None, &[3, 2]), open(2, false));
+        // Already there behind it: left alone, not brought forward over it.
+        assert_eq!(
+            plan_main_reveal(2, Some(tab(2, false, true)), &[2]),
+            PreviewReveal::Leave
+        );
+        // Anywhere else it is brought forward in the main pane, even over a terminal there:
+        // the main pane is where what was opened shows.
+        assert_eq!(
+            plan_main_reveal(2, Some(tab(2, false, true)), &[1]),
+            PreviewReveal::Activate(2)
+        );
+        assert_eq!(
+            plan_main_reveal(2, Some(tab(2, false, false)), &[]),
+            PreviewReveal::Activate(2)
+        );
+    }
+
+    #[test]
+    fn a_panel_that_is_on_screen_is_left_wherever_it_is() {
+        for pane in [1, 2, 3] {
+            assert_eq!(
+                plan_main_reveal(2, Some(tab(pane, true, false)), &[1]),
+                PreviewReveal::Leave
+            );
+        }
+    }
+
+    #[test]
+    fn a_panel_in_another_pane_stays_unless_bringing_it_forward_hides_a_terminal_or_the_tree() {
+        // Behind another panel in an ordinary pane: brought forward there, and not copied.
+        assert_eq!(
+            plan_main_reveal(2, Some(tab(3, false, false)), &[1]),
+            PreviewReveal::Activate(3)
+        );
+        // Behind a terminal: it moves into the main pane instead of covering the terminal.
+        assert_eq!(
+            plan_main_reveal(2, Some(tab(3, false, true)), &[1]),
+            PreviewReveal::Move {
+                from: 3,
+                to: 2,
+                activate: true
+            }
+        );
+        // Behind the tree, in the pane the tree is in, or behind the terminal clicked.
+        assert_eq!(
+            plan_main_reveal(2, Some(tab(1, false, false)), &[1]),
+            PreviewReveal::Move {
+                from: 1,
+                to: 2,
+                activate: true
+            }
+        );
+        assert_eq!(
+            plan_main_reveal(2, Some(tab(3, false, true)), &[3]),
+            PreviewReveal::Move {
+                from: 3,
+                to: 2,
+                activate: true
+            }
+        );
+        // A link clicked in pane 3 while the tree is on screen in pane 1: a Preview behind the
+        // tree is not brought forward over it, whoever clicked.
+        assert_eq!(
+            plan_main_reveal(2, Some(tab(1, false, false)), &[3, 1]),
+            PreviewReveal::Move {
+                from: 1,
+                to: 2,
+                activate: true
+            }
+        );
+        // And in the main pane: the Preview waits beside a tree it would hide.
+        assert_eq!(
+            plan_main_reveal(2, Some(tab(3, false, true)), &[3, 2]),
+            PreviewReveal::Move {
+                from: 3,
+                to: 2,
+                activate: false
+            }
+        );
+    }
+
+    #[test]
+    fn an_open_shell_is_selected_where_it_is_or_moves_into_the_main_pane() {
+        use OpenTabReuse::{InPlace, IntoMain};
+        // Behind a terminal in an unlocked pane: the only case that moves.
+        assert_eq!(reuse_open_tab(2, tab(3, false, true), false), IntoMain);
+        // In the main pane, on screen, in a locked pane, or behind something that is not a
+        // terminal: selected where it is.
+        assert_eq!(reuse_open_tab(2, tab(2, false, true), false), InPlace);
+        assert_eq!(reuse_open_tab(2, tab(3, true, true), false), InPlace);
+        assert_eq!(reuse_open_tab(2, tab(3, false, true), true), InPlace);
+        assert_eq!(reuse_open_tab(2, tab(3, false, false), false), InPlace);
+        assert_eq!(reuse_open_tab(2, tab(3, false, false), true), InPlace);
+    }
+
+    fn side(ratio: f32, first: Layout, second: Layout) -> Layout {
+        Layout::Split {
+            axis: Axis::SideBySide,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    fn stack(ratio: f32, first: Layout, second: Layout) -> Layout {
+        Layout::Split {
+            axis: Axis::Stacked,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    fn pane(id: PaneId) -> Layout {
+        Layout::Pane(id)
+    }
+
+    #[test]
+    fn a_gather_empties_the_unlocked_panes_but_the_main_one_in_layout_order() {
+        // nav 1 (locked) | main 2 | (3 over 4), and 5 locked below.
+        let layout = stack(
+            0.8,
+            side(
+                0.2,
+                pane(1),
+                side(0.5, pane(2), stack(0.5, pane(3), pane(4))),
+            ),
+            pane(5),
+        );
+        let locked = |id| id == 1 || id == 5;
+        assert_eq!(layout.gather_sources(2, &locked), [3, 4]);
+        assert_eq!(layout.gather_sources(4, &locked), [2, 3]);
+        // Nothing is locked and the main pane is alone: nothing to gather.
+        assert!(pane(1).gather_sources(1, &|_| false).is_empty());
+        // The main pane may itself be locked; the others are still gathered into it.
+        assert_eq!(layout.gather_sources(1, &locked), [2, 3, 4]);
+    }
+
+    #[test]
+    fn removing_a_pane_resizes_a_locked_one_exactly_when_it_is_in_the_sibling_that_takes_the_space()
+    {
+        let area = Extent {
+            width: 1600.0,
+            height: 1000.0,
+        };
+        let layouts = [
+            // The default shape: nav 1 | (main 2 over 3), and the others to its right.
+            side(0.27, pane(1), stack(0.6, pane(2), pane(3))),
+            side(
+                0.27,
+                pane(1),
+                side(0.5, pane(2), side(0.5, pane(3), pane(4))),
+            ),
+            // A locked pane beside the pane that goes, or inside the pane that takes its place.
+            side(0.27, stack(0.5, pane(1), pane(3)), pane(2)),
+            stack(0.8, side(0.27, pane(1), pane(2)), pane(3)),
+            side(0.3, pane(3), side(0.27, pane(1), pane(2))),
+            // Two locked panes.
+            stack(
+                0.7,
+                side(0.2, pane(1), pane(2)),
+                side(0.3, pane(4), pane(3)),
+            ),
+            stack(
+                0.7,
+                side(0.2, pane(1), pane(2)),
+                side(0.3, pane(3), pane(4)),
+            ),
+        ];
+        for layout in layouts {
+            for locked_set in [vec![1], vec![1, 4]] {
+                let locked = |id| locked_set.contains(&id);
+                for target in layout.pane_ids() {
+                    if locked(target) {
+                        continue;
+                    }
+                    let after = layout.clone().without(target).unwrap();
+                    let before_sizes = layout.pane_extents(area);
+                    let after_sizes = after.pane_extents(area);
+                    let resized =
+                        layout
+                            .pane_ids()
+                            .into_iter()
+                            .filter(|id| locked(*id))
+                            .any(|id| {
+                                let (a, b) = (before_sizes[&id], after_sizes[&id]);
+                                (a.width - b.width).abs() > 0.5 || (a.height - b.height).abs() > 0.5
+                            });
+                    assert_eq!(
+                        layout.removal_resizes_locked(target, &locked),
+                        resized,
+                        "removing {target} from {layout:?} with {locked_set:?} locked"
+                    );
+                }
+            }
+        }
     }
 }
