@@ -166,7 +166,7 @@ failed close puts you back where you were; "already gone" counts as closed; a lo
 **＋ on the project list creates a project on the desktop** (`project.create`; see the "Project creation extension" in
 `docs/remote-protocol.md`), or **⌘⇧N** from a hardware keyboard while the list is the screen on top. There is a "New project" button in
 the empty list too. ⌘N is "New terminal" on the terminal screen, so ⌘⇧N is the same thing for a project; it is registered only on the
-project list, where the terminal's key view (and with it ⌘K, ⌘, and ⌘. of the hotkey menu, a person's hotkey shortcuts and the Clicks
+project list, where the terminal's key view (and with it ⌘K, ⌘, ⌘/ and ⌘. of the hotkey menu and help, a person's hotkey shortcuts and the Clicks
 template's ⌘ and ⌘⇧ letters, none of which is N) is not on screen, so it collides with nothing. The sheet is a medium-height sheet:
 
 - **Name.** A text field that has the keyboard the moment the sheet is up, with autocorrection, smart punctuation, autocapitalization
@@ -214,7 +214,7 @@ prediction off; return key "return"). A key bar sits on the keyboard, always 44 
 puts it: on top of the software keyboard, or alone at the bottom edge when a hardware keyboard is attached. It
 scrolls sideways: Esc, Tab, a sticky Ctrl (armed until the next letter, sent as `C-<letter>`), a sticky Alt (Meta,
 sent as `Escape` followed by the next key or text, readline style), arrows, Shift-Tab, Home, End, PgUp, PgDn, Delete,
-Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held) and Paste, then a ⌘ button that opens the hotkey menu and the hotkeys (those that
+Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held) and Paste, then a ⌘ button that opens the hotkey menu, a ? button that opens the hotkey help and the hotkeys (those that
 want a button), then the
 symbols that are awkward on the iOS keyboard (`` | / \ ~ - _ ` * & $ > < { } [ ] ; : ' " ``), then a "+" that opens the
 hotkey editor. Hide keyboard stays at the right end. The ends of the row are padded so the first and last key clear
@@ -248,9 +248,22 @@ rows are your hotkeys, the built-in ones, plain keys (Esc, Tab, arrows, Page Up/
 is one navigation key stands in for that key: with the Clicks template ⌘S moves down and ⌘W up, as they do in the shell. Focus stays on
 the shell throughout (the menu is driven by its own keyboard), and works with the software keyboard and by touch too.
 
+**Hotkey help.** ⌘/ (or the key bar's ? button) opens a cheat sheet over the terminal: every hotkey with its shortcut (`⌘E`, or `—` when
+it has none), its name and what it sends, those with a shortcut first, then a small section with the app's own shortcuts (⌘K the menu, ⌘,
+the settings, ⌘N a new terminal, ⌘/ the help). It is for looking at on a keyboard without labels, the Clicks case say, before pressing the
+right chord, and it lists what the menu does: yours (an installed keyboard template included), then the built-in ones your hotkeys do not
+already send. It is not modal and never takes the keyboard (the capture view stays first responder), so typing, arrows, Tab and every
+chord work exactly as without it: pressing a hotkey's shortcut sends it and leaves the sheet up for the next one, and a tap on a row sends
+that hotkey too. ⌘/ again, Esc or ⌘. closes it (that Esc is not sent to the shell); opening the hotkey menu or the settings, a sheet, or
+the keyboard going away closes it too, and the menu and the help never show together. A list that does not fit scrolls by touch. ⌘/ is
+reserved like ⌘K and ⌘,: no hotkey can take it (a hotkey stored with it by an earlier version keeps everything but the shortcut), nothing
+in the template uses it, and no iOS system shortcut is known on it. More shortcuts for the help, or a tap on a lone modifier, are added in
+the hotkey editor (Keyboard → Hotkey help → Add a shortcut for the help…), learned by pressing the key like the menu's; a chord belongs to
+a hotkey, the menu or the help, never two of them. The rows are in `Core/HotkeyHelp.swift` (pure and tested).
+
 **Shortcuts.** A hotkey can have a shortcut that sends it without opening the menu. It is matched by the key's HID usage and the
 modifiers, not by the character, so ⌥E is still E. Typing keys need ⌃, ⌥ or ⌘ (a bare letter would stop typing); function keys,
-Page keys and the like may be bare; ⌘K and ⌘, are reserved. A modifier key pressed and let go on its own is a *tap* and can open the
+Page keys and the like may be bare; ⌘K, ⌘, and ⌘/ are reserved. A modifier key pressed and let go on its own is a *tap* and can open the
 menu. Keys a `UIKeyCommand` can name are registered with `wantsPriorityOverSystemBehavior`, since iOS keeps ⌘E, ⌘F, ⌘G … for itself;
 the rest (function keys, taps) are taken from the key presses. Hotkeys made for a shortcut only can stay off the key bar. Everything is in
 `Core/KeyChord.swift`, `Core/KeyShortcuts.swift`.
@@ -282,7 +295,7 @@ makes iOS act and sends the app no keys ([CrackBerry](https://crackberry.com/how
 The most likely story is a plain Control (usage 0xE0) or Tab (0x2B), which the readout will confirm. Practical consequences: with the
 Clicks Key set to **Ctrl**, Ctrl-letters (^C ^D ^Z ^R ^L …) work as on any keyboard, **Ctrl-[ is Esc**, and a tap on the Clicks Key alone
 opens the hotkey menu (the template binds a tap on either Control); set to Tab you have Tab but no Ctrl and need the ⌘⇧ shortcuts. The template
-is a starting point: use *Learn key* to move any shortcut. Sources: [Clicks for iPhone 17](https://www.clicks.tech/products/clicks-keyboard-for-iphone-17)
+is a starting point: use *Learn key* to move any shortcut, and ⌘/ (the hotkey help) lists them over the terminal when the case has no labels. Sources: [Clicks for iPhone 17](https://www.clicks.tech/products/clicks-keyboard-for-iphone-17)
 (USB-C), [Power Keyboard layout](https://learn.clicks.tech/knowledge-base/kb-power-keyboard-getting-started-get-to-know),
 [Power Keyboard shortcuts](https://learn.clicks.tech/knowledge-base/kb-power-keyboard-tips-iphone-keyboard-shortcuts),
 [iOS modifier remapping](https://www.macrumors.com/how-to/remap-modifier-keys-ipad-keyboard/).

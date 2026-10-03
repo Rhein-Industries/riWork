@@ -81,3 +81,19 @@ import RiWorkCore
         if outcome != .none { onOutcome?(outcome) }
     }
 }
+
+/// The open hotkey help (⌘/), if there is one. It is not modal: the capture view keeps the keyboard, so typing, arrows and chords go on
+/// working under it, and a chord or a tap on a row sends its hotkey and leaves the help up for the next one.
+@MainActor @Observable final class HelpController {
+    private(set) var state: HotkeyHelp?
+    var isOpen: Bool { state != nil }
+    /// A tap on a row; the capture view sends the hotkey.
+    @ObservationIgnored var onFire: ((Hotkey) -> Void)?
+
+    func open(hotkeys: [Hotkey], shortcuts: ShortcutSettings) { state = HotkeyHelp(hotkeys: hotkeys, shortcuts: shortcuts) }
+    func close() { state = nil }
+    func fire(_ hotkey: Hotkey) {
+        guard isOpen else { return }
+        onFire?(hotkey)
+    }
+}

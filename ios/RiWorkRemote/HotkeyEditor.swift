@@ -76,15 +76,23 @@ struct HotkeyEditorSheet: View {
     @State private var reordering = false
     @State private var selection: Row = .add
     @State private var notice: String?
-    @State private var learningMenuShortcut = false
+    @State private var learning: ShortcutTarget?
     @State private var learnProblem: String?
     @State private var testing = false
     /// The hotkey the form was last open for, so the list selects it again when the form closes.
     @State private var lastDraftID: String?
 
     /// The rows the keyboard walks through, top to bottom.
-    enum Row: Hashable { case hotkey(String), add, template(String), menuShortcut, tester }
-    private var rows: [Row] { store.custom.map { Row.hotkey($0.id) } + [.add] + HotkeyTemplate.all.map { Row.template($0.id) } + [.menuShortcut, .tester] }
+    enum Row: Hashable { case hotkey(String), add, template(String), menuShortcut, helpShortcut, tester }
+    private var rows: [Row] { store.custom.map { Row.hotkey($0.id) } + [.add] + HotkeyTemplate.all.map { Row.template($0.id) } + [.menuShortcut, .helpShortcut, .tester] }
+    /// What a learned shortcut opens: the hotkey menu (⌘K) or the hotkey help (⌘/).
+    enum ShortcutTarget {
+        case menu, help
+        var row: Row { self == .menu ? .menuShortcut : .helpShortcut }
+        var title: String { self == .menu ? "Hotkey menu" : "Hotkey help" }
+        var fixed: KeyChord { self == .menu ? .paletteDefault : .helpDefault }
+        var noun: String { self == .menu ? "menu" : "help" }
+    }
 
     init(store: HotkeyStore, keyboard: KeyboardPrefs, start: HotkeyEditorStart = .list) {
         self.store = store; self.keyboard = keyboard
@@ -117,9 +125,10 @@ struct HotkeyEditorSheet: View {
                         hint("Adds to your hotkeys; nothing of yours is removed or changed. The shortcuts need a hardware keyboard.")
                     }
                     Section("Keyboard") {
-                        menuShortcutRow.id(Row.menuShortcut)
+                        shortcutRow(.menu).id(Row.menuShortcut)
+                        shortcutRow(.help).id(Row.helpShortcut)
                         testerRow.id(Row.tester)
-                        hint("⌘K opens the hotkey menu from any shell. The tester shows what a key sends, for example the Clicks button.")
+                        hint("⌘K opens the hotkey menu from any shell, ⌘/ the hotkey help, which lists every hotkey with its shortcut. The tester shows what a key sends, for example the Clicks button.")
                     }
                     Section("Built in") {
                         ForEach(Hotkey.builtIn) { row($0, tint: style.muted) }.listRowBackground(style.background)
@@ -135,10 +144,10 @@ struct HotkeyEditorSheet: View {
         }
         .background(style.background).foregroundStyle(style.text)
         .font(style.mono(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
-        .background { KeyCommandHost(active: draft == nil && !learningMenuShortcut && !testing, actions: listActions) }
+        .background { KeyCommandHost(active: draft == nil && learning == nil && !testing, actions: listActions) }
         .background {
-            KeyLearnView(active: learningMenuShortcut || testing, onEvent: { keyboard.events.record($0) },
-                         onChord: learningMenuShortcut ? { learnMenuShortcut($0) } : nil, onCancel: { learningMenuShortcut = false; learnProblem = nil })
+            KeyLearnView(active: learning != nil || testing, onEvent: { keyboard.events.record($0) },
+                         onChord: learning != nil ? { learnShortcut($0) } : nil, onCancel: { learning = nil; learnProblem = nil })
         }
         .onChange(of: draft?.id) { _, id in if let id { lastDraftID = id } }
         .sheet(item: $draft, onDismiss: { if let id = lastDraftID, store.custom.contains(where: { $0.id == id }) { selection = .hotkey(id) } }) {
@@ -176,26 +185,28 @@ struct HotkeyEditorSheet: View {
         }
         .padding(.vertical, 4).contentShape(Rectangle()).listRowBackground(rowBackground(.template(template.id)))
     }
-    private var menuShortcutRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
+    /// The hotkey menu or the hotkey help: its fixed shortcut, the person's extra ones, and learning another.
+    private func shortcutRow(_ target: ShortcutTarget) -> some View {
+        let extra = target == .menu ? store.shortcuts.paletteChords : store.shortcuts.helpChords
+        return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text("Hotkey menu").font(style.mono(13, bold: true, relativeTo: .body))
+                Text(target.title).font(style.mono(13, bold: true, relativeTo: .body))
                 Spacer(minLength: 4)
-                ChordTag(chord: .paletteDefault)
-                ForEach(store.shortcuts.paletteChords, id: \.self) { chord in
-                    Button { store.removePaletteChord(chord) } label: { HStack(spacing: 3) { ChordTag(chord: chord); Image(systemName: "xmark.circle.fill").font(style.system(.caption)).foregroundStyle(style.muted) } }
+                ChordTag(chord: target.fixed)
+                ForEach(extra, id: \.self) { chord in
+                    Button { if target == .menu { store.removePaletteChord(chord) } else { store.removeHelpChord(chord) } } label: { HStack(spacing: 3) { ChordTag(chord: chord); Image(systemName: "xmark.circle.fill").font(style.system(.caption)).foregroundStyle(style.muted) } }
                         .buttonStyle(.plain).accessibilityLabel("Remove shortcut \(chord.title)")
                 }
             }
-            if learningMenuShortcut {
-                Label("Press the key or chord that should open the menu. Esc cancels.", systemImage: "keyboard").font(style.system(.caption)).foregroundStyle(style.accent)
+            if learning == target {
+                Label("Press the key or chord that should open the \(target.noun). Esc cancels.", systemImage: "keyboard").font(style.system(.caption)).foregroundStyle(style.accent)
                 lastEvent
             } else {
-                Button("Add a shortcut for the menu…", systemImage: "plus") { startLearningMenuShortcut() }.buttonStyle(DesktopButtonStyle(compact: true))
+                Button("Add a shortcut for the \(target.noun)…", systemImage: "plus") { startLearning(target) }.buttonStyle(DesktopButtonStyle(compact: true))
             }
-            if let learnProblem { Label(learnProblem, systemImage: "exclamationmark.circle").font(style.system(.caption)).foregroundStyle(style.warning) }
+            if let learnProblem, learning == target { Label(learnProblem, systemImage: "exclamationmark.circle").font(style.system(.caption)).foregroundStyle(style.warning) }
         }
-        .padding(.vertical, 4).contentShape(Rectangle()).listRowBackground(rowBackground(.menuShortcut))
+        .padding(.vertical, 4).contentShape(Rectangle()).listRowBackground(rowBackground(target.row))
     }
     private var testerRow: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -233,11 +244,12 @@ struct HotkeyEditorSheet: View {
         if result.skipped.contains(where: { $0.reason == .libraryFull }) { text += " The hotkey limit is \(HotkeyLibrary.maxHotkeys)." }
         notice = text
     }
-    private func startLearningMenuShortcut() { selection = .menuShortcut; learnProblem = nil; learningMenuShortcut = true }
-    private func learnMenuShortcut(_ chord: KeyChord) {
+    private func startLearning(_ target: ShortcutTarget) { selection = target.row; learnProblem = nil; learning = target }
+    private func learnShortcut(_ chord: KeyChord) {
+        guard let target = learning else { return }
         do {
-            try store.addPaletteChord(chord)
-            learningMenuShortcut = false; learnProblem = nil
+            if target == .menu { try store.addPaletteChord(chord) } else { try store.addHelpChord(chord) }
+            learning = nil; learnProblem = nil
         } catch { learnProblem = error.localizedDescription }
     }
 
@@ -269,7 +281,8 @@ struct HotkeyEditorSheet: View {
         case .hotkey(let id): if let hotkey = store.custom.first(where: { $0.id == id }) { draft = HotkeyDraft(hotkey) }
         case .add: if store.custom.count < HotkeyLibrary.maxHotkeys { draft = HotkeyDraft() }
         case .template(let id): if let template = HotkeyTemplate.all.first(where: { $0.id == id }) { install(template) }
-        case .menuShortcut: startLearningMenuShortcut()
+        case .menuShortcut: startLearning(.menu)
+        case .helpShortcut: startLearning(.help)
         case .tester: testing.toggle()
         }
     }
@@ -463,6 +476,7 @@ struct HotkeyForm: View {
                 try chord.validate()
                 if let owner = store.custom.first(where: { $0.id != draft.id && $0.chord == chord }) { throw HotkeyError.chordInUse(owner.label) }
                 if store.shortcuts.paletteChords.contains(chord) { throw HotkeyError.chordInUse("the hotkey menu") }
+                if store.shortcuts.helpChords.contains(chord) { throw HotkeyError.chordInUse("the hotkey help") }
                 draft.chord = chord; learnProblem = nil; mode = .none; focus = .name
             } catch { learnProblem = error.localizedDescription }
         case .recordKey:

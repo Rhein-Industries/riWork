@@ -46,13 +46,18 @@ public struct TemplateMerge: Sendable, Equatable {
 extension HotkeyLibrary {
     /// Adds the template's hotkeys that are not there yet. A hotkey is skipped when one with its id exists (installing twice changes
     /// nothing, and an edited copy is kept as edited), when the same steps already sit on the same shortcut, when the shortcut belongs
-    /// to another hotkey, or when the library is full. The person's hotkeys stay, in their order, and the new ones follow.
+    /// to another hotkey or to something that is not a hotkey (`taken` names the owner of each such shortcut: the extra ones that
+    /// open the hotkey menu and the hotkey help), or when the library is full. The person's hotkeys stay, in their order, and the new
+    /// ones follow.
     @discardableResult
-    public mutating func merge(_ template: HotkeyTemplate) -> TemplateMerge {
+    public mutating func merge(_ template: HotkeyTemplate, taken: [KeyChord: String] = [:]) -> TemplateMerge {
         var result = TemplateMerge()
         for hotkey in template.hotkeys {
             if hotkeys.contains(where: { $0.id == hotkey.id || ($0.items == hotkey.items && $0.chord == hotkey.chord) }) {
                 result.skipped.append(.init(hotkey: hotkey, reason: .alreadyThere)); continue
+            }
+            if let chord = hotkey.chord, let owner = taken[chord] {
+                result.skipped.append(.init(hotkey: hotkey, reason: .shortcutTaken(by: owner))); continue
             }
             do {
                 try add(hotkey)

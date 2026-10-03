@@ -484,6 +484,8 @@ struct SessionConsole: View {
     @State private var keyFocus = KeyFocus()
     /// The hotkey menu (⌘K) and the editor it leads to.
     @State private var palette = PaletteController()
+    /// The hotkey help (⌘/): a reference over the terminal that leaves the keyboard where it is.
+    @State private var help = HelpController()
     @State private var editor: HotkeyEditorStart?
     @Environment(\.scenePhase) private var scenePhase
     /// Live pinch scale. A GestureState resets by itself if the gesture is cancelled; the size is committed (and the
@@ -520,7 +522,7 @@ struct SessionConsole: View {
                         KeyCapture(focus: keyFocus, isEnabled: model.session?.alive == true,
                                    label: "Terminal input for \(model.session?.title ?? "session") \(model.session?.shortID ?? "")",
                                    hotkeys: model.hotkeys.custom,
-                                   shortcuts: model.hotkeys.shortcuts, palette: palette,
+                                   shortcuts: model.hotkeys.shortcuts, palette: palette, help: help,
                                    onEditHotkeys: { openEditor(.list) }, onNewHotkey: { openEditor(.new) }, onEditHotkey: { openEditor(.edit($0)) },
                                    onKeyEvent: { model.keyboard.events.record($0) },
                                    onItems: { model.type($0) == .accepted })
@@ -556,6 +558,7 @@ struct SessionConsole: View {
     /// Puts the keyboard away, shows the editor, and brings the keyboard back when it closes.
     private func openEditor(_ start: HotkeyEditorStart) {
         palette.close()
+        help.close()
         keyFocus.suspendForModal()
         editor = start
     }
@@ -591,6 +594,9 @@ struct SessionConsole: View {
         // The hotkey menu (⌘K, or the key bar's ⌘ button): typed into from the keyboard, tapped for touch.
         .overlay(alignment: .top) { HotkeyPaletteView(controller: palette) }
         .animation(.easeInOut(duration: 0.12), value: palette.isOpen)
+        // The hotkey help (⌘/, or the key bar's ?): shown in the same place, never together with the menu.
+        .overlay(alignment: .top) { HotkeyHelpView(controller: help) }
+        .animation(.easeInOut(duration: 0.12), value: help.isOpen)
         .overlay(alignment: .topTrailing) {
             if focused {
                 FocusControls(visible: controlsVisible, fontSize: model.terminalFontSize,

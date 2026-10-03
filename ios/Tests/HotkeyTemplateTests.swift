@@ -45,7 +45,7 @@ final class HotkeyTemplateTests: XCTestCase {
         }
     }
     func testNoShortcutTakesATypingKeyOrOneThatIOSKeepsForItself() {
-        let reserved: Set<KeyChord> = [.paletteDefault, .settingsDefault, chord("h"), KeyChord(keyCode: HIDKey.space, modifiers: .command), KeyChord(keyCode: HIDKey.tab, modifiers: .command)]
+        let reserved: Set<KeyChord> = [.paletteDefault, .settingsDefault, .helpDefault, chord("h"), KeyChord(keyCode: HIDKey.space, modifiers: .command), KeyChord(keyCode: HIDKey.tab, modifiers: .command)]
         for hotkey in HotkeyTemplate.clicks.hotkeys {
             let chord = hotkey.chord!
             XCTAssertTrue(chord.modifiers.contains(.command), "\(hotkey.label) sits on ⌘")
@@ -123,6 +123,16 @@ final class HotkeyTemplateTests: XCTestCase {
         XCTAssertEqual(library.hotkey(for: chord("e"))?.id, "mine")
         XCTAssertEqual(result.added.count, HotkeyTemplate.clicks.hotkeys.count - 1)
         XCTAssertEqual(result.summary, "Added 13 hotkeys, skipped 1 you already have.")
+    }
+    func testAShortcutThatOpensTheMenuOrTheHelpIsLeftToThemAndTheTemplateHotkeyIsSkipped() {
+        var library = HotkeyLibrary()
+        let result = library.merge(.clicks, taken: [chord("e"): "the hotkey help", chord("t", [.command, .shift]): "the hotkey menu"])
+        XCTAssertEqual(result.skipped.map(\.hotkey.id), ["template.clicks.esc", "template.clicks.btab"])
+        XCTAssertEqual(result.skipped.map(\.reason), [.shortcutTaken(by: "the hotkey help"), .shortcutTaken(by: "the hotkey menu")])
+        XCTAssertNil(library.hotkey(for: chord("e")), "nothing is shadowed by a hotkey that could never run")
+        XCTAssertEqual(library.hotkeys.count, HotkeyTemplate.clicks.hotkeys.count - 2)
+        var untouched = HotkeyLibrary()
+        XCTAssertEqual(untouched.merge(.clicks).added.count, HotkeyTemplate.clicks.hotkeys.count, "with nothing taken it is as it was")
     }
     func testAHotkeyOfTheirsWithTheSameStepsButNoShortcutDoesNotBlockTheShortcutVersion() throws {
         var library = HotkeyLibrary()

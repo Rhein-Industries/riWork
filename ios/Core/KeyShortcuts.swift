@@ -4,29 +4,50 @@ import Foundation
 public enum ShortcutAction: Sendable, Equatable {
     case openPalette
     case openSettings
+    case openHelp
     case hotkey(Hotkey)
 }
 
-/// The extra shortcuts that open the hotkey menu, besides ⌘K. Kept small, validated, and stored as JSON.
+/// The extra shortcuts that open the hotkey menu, besides ⌘K, and the hotkey help, besides ⌘/. Kept small, validated, and stored as
+/// JSON. A chord opens one or the other, never both, and never belongs to a hotkey.
 public struct ShortcutSettings: Sendable, Equatable {
     public static let maxPaletteChords = 4
+    public static let maxHelpChords = 4
     public private(set) var paletteChords: [KeyChord]
-    public init(paletteChords: [KeyChord] = []) { self.paletteChords = Array(Self.clean(paletteChords).prefix(Self.maxPaletteChords)) }
-
-    private static func clean(_ chords: [KeyChord]) -> [KeyChord] {
-        var seen = Set<KeyChord>()
-        return chords.filter { ($0.isTap || $0.isValid) && $0 != .paletteDefault && seen.insert($0).inserted }
+    public private(set) var helpChords: [KeyChord]
+    public init(paletteChords: [KeyChord] = [], helpChords: [KeyChord] = []) {
+        let palette = Array(Self.clean(paletteChords).prefix(Self.maxPaletteChords))
+        self.paletteChords = palette
+        self.helpChords = Array(Self.clean(helpChords).filter { !palette.contains($0) }.prefix(Self.maxHelpChords))
     }
 
-    /// Adds a chord. Throws when it is unusable or taken (by a hotkey, in `library`).
+    /// Usable and not repeated. The reserved chords (⌘K, ⌘, ⌘/) are not usable, so they are dropped here too.
+    private static func clean(_ chords: [KeyChord]) -> [KeyChord] {
+        var seen = Set<KeyChord>()
+        return chords.filter { ($0.isTap || $0.isValid) && seen.insert($0).inserted }
+    }
+
+    /// Adds a chord that opens the hotkey menu. Throws when it is unusable or taken (by a hotkey, in `library`, or by the help).
     public mutating func addPaletteChord(_ chord: KeyChord, library: HotkeyLibrary = HotkeyLibrary()) throws {
         try chord.validate()
         if let owner = library.hotkey(for: chord) { throw HotkeyError.chordInUse(owner.label) }
+        if helpChords.contains(chord) { throw HotkeyError.chordInUse("the hotkey help") }
         guard !paletteChords.contains(chord) else { return }
         guard paletteChords.count < Self.maxPaletteChords else { throw HotkeyError.tooManyHotkeys(Self.maxPaletteChords) }
         paletteChords.append(chord)
     }
     public mutating func removePaletteChord(_ chord: KeyChord) { paletteChords.removeAll { $0 == chord } }
+
+    /// Adds a chord that opens the hotkey help. Throws when it is unusable or taken (by a hotkey, in `library`, or by the menu).
+    public mutating func addHelpChord(_ chord: KeyChord, library: HotkeyLibrary = HotkeyLibrary()) throws {
+        try chord.validate()
+        if let owner = library.hotkey(for: chord) { throw HotkeyError.chordInUse(owner.label) }
+        if paletteChords.contains(chord) { throw HotkeyError.chordInUse("the hotkey menu") }
+        guard !helpChords.contains(chord) else { return }
+        guard helpChords.count < Self.maxHelpChords else { throw HotkeyError.tooManyHotkeys(Self.maxHelpChords) }
+        helpChords.append(chord)
+    }
+    public mutating func removeHelpChord(_ chord: KeyChord) { helpChords.removeAll { $0 == chord } }
 
     /// Adds a template's menu shortcuts that are free; returns those that were new.
     @discardableResult
@@ -38,24 +59,29 @@ public struct ShortcutSettings: Sendable, Equatable {
         return added
     }
 
+    /// The help chords are written only when there are some, so what was stored before the help existed reads and writes the same.
     public var encoded: String {
-        let value = JSONValue.object(["v": .number(1), "palette": .array(paletteChords.map(\.json))])
-        return (try? JSONEncoder().encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        var object: [String: JSONValue] = ["v": .number(1), "palette": .array(paletteChords.map(\.json))]
+        if !helpChords.isEmpty { object["help"] = .array(helpChords.map(\.json)) }
+        return (try? JSONEncoder().encode(JSONValue.object(object))).flatMap { String(data: $0, encoding: .utf8) } ?? ""
     }
     /// Never throws: whatever is unreadable is dropped.
     public init(encoded text: String?) {
         guard let text, let value = try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)), value["v"] == .number(1) else { self.init(); return }
-        self.init(paletteChords: value["palette"].array.compactMap { try? KeyChord(json: $0) })
+        self.init(paletteChords: value["palette"].array.compactMap { try? KeyChord(json: $0) },
+                  helpChords: value["help"].array.compactMap { try? KeyChord(json: $0) })
     }
 }
 
-/// Looks up the action for a chord a keyboard sent. ⌘K and ⌘, are fixed; then the menu shortcuts; then the hotkeys' own.
+/// Looks up the action for a chord a keyboard sent. ⌘K, ⌘, and ⌘/ are fixed; then the menu and help shortcuts; then the hotkeys' own.
 public struct ShortcutMap: Sendable, Equatable {
     private let paletteChords: Set<KeyChord>
+    private let helpChords: Set<KeyChord>
     private let hotkeys: [KeyChord: Hotkey]
 
     public init(hotkeys: [Hotkey], settings: ShortcutSettings = ShortcutSettings()) {
         paletteChords = Set(settings.paletteChords)
+        helpChords = Set(settings.helpChords)
         var map: [KeyChord: Hotkey] = [:]
         for hotkey in hotkeys { if let chord = hotkey.chord, map[chord] == nil { map[chord] = hotkey } }
         self.hotkeys = map
@@ -63,12 +89,13 @@ public struct ShortcutMap: Sendable, Equatable {
     public func action(for chord: KeyChord) -> ShortcutAction? {
         if chord == .paletteDefault || paletteChords.contains(chord) { return .openPalette }
         if chord == .settingsDefault { return .openSettings }
+        if chord == .helpDefault || helpChords.contains(chord) { return .openHelp }
         return hotkeys[chord].map(ShortcutAction.hotkey)
     }
     /// Whether a modifier key is the whole of some shortcut, so a press of it is worth watching for a tap.
-    public var hasTapChords: Bool { paletteChords.contains(where: \.isTap) || hotkeys.keys.contains(where: \.isTap) }
-    /// Every shortcut that is not a fixed one: the menu shortcuts and the hotkeys', in no particular order.
-    public var chords: [KeyChord] { Array(paletteChords) + Array(hotkeys.keys) }
+    public var hasTapChords: Bool { paletteChords.contains(where: \.isTap) || helpChords.contains(where: \.isTap) || hotkeys.keys.contains(where: \.isTap) }
+    /// Every shortcut that is not a fixed one: the menu and help shortcuts and the hotkeys', in no particular order.
+    public var chords: [KeyChord] { Array(paletteChords) + Array(helpChords) + Array(hotkeys.keys) }
 }
 
 /// What a key event looked like when it reached the app, for the debug readout and for learning a key.
