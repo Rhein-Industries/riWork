@@ -439,7 +439,16 @@ fn invalid_store_and_timing_fail_closed() {
 
 /// Actual tmux delivery, with a disposable deterministic harness and exact
 /// structured lifecycle fixtures. No authenticated Codex/Claude process runs.
+/// Stops the fixture's whole tmux server when dropped, even when setup panics
+/// before the fixture exists. Closing sessions one by one left servers running.
+struct ServerGuard(SessionManager);
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        self.0.kill_server();
+    }
+}
 struct RealFixture {
+    _server: ServerGuard,
     f: Fixture,
     sessions: SessionManager,
     state: State,
@@ -492,6 +501,7 @@ while True:
  else: buf+=b
 "#).unwrap();
         let sessions = SessionManager::at(f.home.clone()).unwrap();
+        let server = ServerGuard(SessionManager::at(f.home.clone()).unwrap());
         let command = format!("/usr/bin/python3 '{}'", script.display());
         let app = sessions
             .orchestrator_create(f.home.join("project"), Some(command.clone()))
@@ -541,6 +551,7 @@ while True:
             fake_lsof(&f.home, FAKE_LSOF),
         );
         let result = Self {
+            _server: server,
             f,
             sessions,
             state,
@@ -645,6 +656,20 @@ impl Drop for RealFixture {
             let _ = self.sessions.close(id);
         }
     }
+}
+#[test]
+fn a_real_fixture_leaves_no_tmux_server_behind() {
+    let f = RealFixture::new();
+    let probe = SessionManager::at(f.f.home.clone()).unwrap();
+    assert!(probe.server_running());
+    // The way servers leaked: closing the sessions one by one fails (here the
+    // registry is gone; a refused close or a panic halfway through setup does the
+    // same), and nothing else stops the server.
+    fs::remove_file(f.f.home.join("sessions.json")).unwrap();
+    drop(f);
+    let left = probe.server_running();
+    probe.kill_server();
+    assert!(!left, "the fixture's tmux server is still running");
 }
 #[test]
 fn real_tmux_dispatch_for_all_three_scopes_preserves_identity() {

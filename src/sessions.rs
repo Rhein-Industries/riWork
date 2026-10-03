@@ -2122,6 +2122,28 @@ impl SessionManager {
         run_bounded(command, input, TMUX_TIMEOUT, &tmux_label(args))
     }
 
+    /// Stop this manager's whole tmux server and remove its socket file, which tmux
+    /// leaves behind. Test cleanup: a fixture that only closes its sessions one by
+    /// one leaves the server running when a close is refused or setup panics halfway.
+    #[cfg(test)]
+    pub(crate) fn kill_server(&self) {
+        let socket = self
+            .tmux_text(&["display-message", "-p", "#{socket_path}"])
+            .ok()
+            .map(|path| PathBuf::from(path.trim()));
+        let _ = self.tmux_command(&["kill-server"]);
+        if let Some(socket) = socket.filter(|path| path.is_absolute()) {
+            let _ = fs::remove_file(socket);
+        }
+    }
+
+    /// Whether this manager's tmux server answers at all (tests).
+    #[cfg(test)]
+    pub(crate) fn server_running(&self) -> bool {
+        self.tmux_command(&["list-sessions"])
+            .is_ok_and(|output| output.status.success())
+    }
+
     /// A tmux client for this manager's server, before any command.
     fn tmux_client(&self) -> Command {
         let mut command = Command::new(&self.tmux);
