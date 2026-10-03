@@ -1272,8 +1272,21 @@ impl FileExplorer {
     }
 
     fn select_row(&mut self, row: Option<&TreeRow>, intent: Intent, cx: &mut Context<Self>) {
+        self.select_row_announcing(row, intent, true, cx);
+    }
+
+    /// Select a row. `announce` says whether choosing a file also tells the window to show its
+    /// preview as a click in the tree does (`Selected`); a link announces itself (`Revealed`)
+    /// because the tree it was chosen from may not be on screen.
+    fn select_row_announcing(
+        &mut self,
+        row: Option<&TreeRow>,
+        intent: Intent,
+        announce: bool,
+        cx: &mut Context<Self>,
+    ) {
         let path = row.map(|row| row.path.clone());
-        let reveals = reveals_preview(intent, row.map(|row| row.kind));
+        let reveals = announce && reveals_preview(intent, row.map(|row| row.kind));
         if self.selected == path {
             // Clicking the selected PDF is how its placeholder is dismissed.
             if intent == Intent::Explicit {
@@ -1478,7 +1491,7 @@ impl FileExplorer {
             })
             .map(|line| (row.path.clone(), line));
         self.highlight_line = None;
-        self.select_row(Some(row), Intent::Explicit, cx);
+        self.select_row_announcing(Some(row), Intent::Explicit, false, cx);
         // The file may already have been the selection, and shown.
         self.apply_pending_line(cx);
         if matches!(

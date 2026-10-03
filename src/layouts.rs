@@ -478,7 +478,8 @@ pub const PREVIEW_STACKED_RATIO: f32 = 0.5;
 /// at least 245 px of the narrowest side-by-side split and 275 px of the shortest stacked one.
 pub const PREVIEW_BESIDE_OTHER_RATIO: f32 = 0.6;
 
-/// Where a Preview tab goes when the window has none.
+/// Where a Preview tab goes when the window has none. Files, when a link asks for a folder, is
+/// placed the same way (see `Layout::beside_placement`), so these types serve both.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PreviewPlacement {
     /// A new pane split off `target`, holding the Preview tab. `target` keeps the first
@@ -493,7 +494,7 @@ pub enum PreviewPlacement {
     Tab { pane: PaneId, activate: bool },
 }
 
-/// The window's Preview tab, if it has one.
+/// The window's tab for a panel (Preview, or Files), if it has one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PreviewTab {
     pub pane: PaneId,
@@ -584,6 +585,57 @@ impl Layout {
         explorer: PaneId,
         facts: &PaneFacts,
     ) -> Option<PreviewPlacement> {
+        if !(facts.locked)(explorer)
+            && let Some(axis) = area
+                .map(|area| self.pane_extents(area))
+                .and_then(|extents| extents.get(&explorer).copied())
+                .and_then(preview_axis)
+        {
+            let ratio = match axis {
+                Axis::SideBySide => PREVIEW_SIDE_BY_SIDE_RATIO,
+                Axis::Stacked => PREVIEW_STACKED_RATIO,
+            };
+            return Some(PreviewPlacement::Split {
+                target: explorer,
+                axis,
+                ratio,
+            });
+        }
+        self.placement_beside_work(area, explorer, false, facts)
+    }
+
+    /// Where a panel goes when a click in pane `clicked` asks for it and there is no tree to
+    /// put it beside. The pane clicked in has a terminal on screen that must stay there, so:
+    ///
+    /// 1. The roomiest unlocked pane that is wide or tall enough is split, the clicked pane
+    ///    included. It keeps `PREVIEW_BESIDE_OTHER_RATIO` of the space and its selected tab,
+    ///    and the panel gets the new pane.
+    /// 2. Otherwise a tab, which resizes nothing: selected in the roomiest unlocked pane
+    ///    that is not showing a terminal, or else waiting, unselected, in another unlocked
+    ///    pane, then a locked one, then the clicked pane itself.
+    ///
+    /// Splitting shrinks the pane being split, so a locked pane is never split.
+    pub fn beside_placement(
+        &self,
+        area: Option<Extent>,
+        clicked: PaneId,
+        facts: &PaneFacts,
+    ) -> Option<PreviewPlacement> {
+        self.placement_beside_work(area, clicked, true, facts)
+    }
+
+    /// The part of the placement rules that puts a panel beside the work in the window rather
+    /// than beside the tree: split the roomiest unlocked pane that can be, else add a tab.
+    /// `anchor` is the explorer's pane or the pane clicked in. It is a candidate for the split
+    /// only when `anchor_may_split` (the explorer's own pane was tried first and failed), and
+    /// is where a waiting tab goes when no other pane can hold it.
+    fn placement_beside_work(
+        &self,
+        area: Option<Extent>,
+        anchor: PaneId,
+        anchor_may_split: bool,
+        facts: &PaneFacts,
+    ) -> Option<PreviewPlacement> {
         let extents = area.map(|area| self.pane_extents(area));
         let extent_of = |id: PaneId| {
             extents
@@ -603,28 +655,15 @@ impl Layout {
             best.map(|(id, _)| id)
         };
 
-        if !(facts.locked)(explorer)
-            && let Some(axis) = extent_of(explorer).and_then(preview_axis)
-        {
-            let ratio = match axis {
-                Axis::SideBySide => PREVIEW_SIDE_BY_SIDE_RATIO,
-                Axis::Stacked => PREVIEW_STACKED_RATIO,
-            };
-            return Some(PreviewPlacement::Split {
-                target: explorer,
-                axis,
-                ratio,
-            });
-        }
-
         let others: Vec<PaneId> = self
             .pane_ids()
             .into_iter()
-            .filter(|id| *id != explorer)
+            .filter(|id| *id != anchor)
             .collect();
-        let splittable: Vec<PaneId> = others
-            .iter()
-            .copied()
+        let splittable: Vec<PaneId> = self
+            .pane_ids()
+            .into_iter()
+            .filter(|id| *id != anchor || anchor_may_split)
             .filter(|id| !(facts.locked)(*id) && extent_of(*id).and_then(preview_axis).is_some())
             .collect();
         if let Some(target) = roomiest(&splittable)
@@ -664,7 +703,7 @@ impl Layout {
             roomiest(&unlocked)
         };
         waiting
-            .or_else(|| self.pane_ids().contains(&explorer).then_some(explorer))
+            .or_else(|| self.pane_ids().contains(&anchor).then_some(anchor))
             .map(|pane| PreviewPlacement::Tab {
                 pane,
                 activate: false,
@@ -695,6 +734,30 @@ impl Layout {
             Some(tab) => PreviewReveal::Activate(tab.pane),
             None => self
                 .preview_placement(area, explorer, facts)
+                .map_or(PreviewReveal::Leave, PreviewReveal::Open),
+        }
+    }
+
+    /// What a click on a link in pane `clicked` does about the panel it asks for (the Preview
+    /// of a file, or Files for a folder) when there is no visible tree to put it beside. The
+    /// click was a request, so the panel is made, or brought forward, whatever the preference
+    /// says; but never in front of a terminal, and above all never in front of the one
+    /// clicked: an existing tab is brought forward only where no terminal is selected, and
+    /// never in the clicked pane. The keys stay in the terminal either way.
+    pub fn plan_beside_reveal(
+        &self,
+        existing: Option<PreviewTab>,
+        area: Option<Extent>,
+        clicked: PaneId,
+        facts: &PaneFacts,
+    ) -> PreviewReveal {
+        match existing {
+            Some(tab) if tab.shown || tab.behind_shell || tab.pane == clicked => {
+                PreviewReveal::Leave
+            }
+            Some(tab) => PreviewReveal::Activate(tab.pane),
+            None => self
+                .beside_placement(area, clicked, facts)
                 .map_or(PreviewReveal::Leave, PreviewReveal::Open),
         }
     }
@@ -3452,6 +3515,46 @@ mod preview_placement_tests {
             )
         }
 
+        /// Where a panel asked for by a click in pane `clicked` goes, with no tree to go beside.
+        fn place_beside(
+            &self,
+            layout: &Layout,
+            area: Option<Extent>,
+            clicked: PaneId,
+        ) -> Option<PreviewPlacement> {
+            let locked = |id: PaneId| self.locked.contains(&id);
+            let shows_shell = |id: PaneId| self.shells.contains(&id);
+            layout.beside_placement(
+                area,
+                clicked,
+                &PaneFacts {
+                    locked: &locked,
+                    shows_shell: &shows_shell,
+                },
+            )
+        }
+
+        /// What a click in pane `clicked` does about a panel with no tree to go beside.
+        fn reveal_beside(
+            &self,
+            layout: &Layout,
+            existing: Option<PreviewTab>,
+            area: Option<Extent>,
+            clicked: PaneId,
+        ) -> PreviewReveal {
+            let locked = |id: PaneId| self.locked.contains(&id);
+            let shows_shell = |id: PaneId| self.shells.contains(&id);
+            layout.plan_beside_reveal(
+                existing,
+                area,
+                clicked,
+                &PaneFacts {
+                    locked: &locked,
+                    shows_shell: &shows_shell,
+                },
+            )
+        }
+
         fn reveal(
             &self,
             layout: &Layout,
@@ -3822,6 +3925,153 @@ mod preview_placement_tests {
             locked_preview.reveal(&layout, true, Some(open_tab()), size, 1),
             PreviewReveal::Activate(2)
         );
+    }
+
+    #[test]
+    fn a_link_click_with_no_tree_splits_the_clicked_pane_and_it_keeps_sixty_percent() {
+        // One wide terminal pane and nothing else: it is the only pane that can be split, and it
+        // is the one clicked in.
+        let layout = Layout::Pane(1);
+        let size = area(1400.0, 900.0);
+        let panes = Panes::new(&[], &[1]);
+        let placement = panes.place_beside(&layout, Some(size), 1);
+        let (target, axis, ratio) = split_for(placement);
+        assert_eq!((target, axis), (1, Axis::SideBySide));
+        assert_eq!(ratio, PREVIEW_BESIDE_OTHER_RATIO);
+        assert_eq!(
+            panes.reveal_beside(&layout, None, Some(size), 1),
+            PreviewReveal::Open(PreviewPlacement::Split {
+                target: 1,
+                axis: Axis::SideBySide,
+                ratio: PREVIEW_BESIDE_OTHER_RATIO,
+            })
+        );
+
+        // The terminal's pane is the larger side, with the share the Preview pane uses
+        // beside other work, and the new pane is usable.
+        let (before, after) = applied(&layout, size, placement);
+        let whole = before[&1].width - DIVIDER_THICKNESS;
+        assert!((after[&1].width - whole * PREVIEW_BESIDE_OTHER_RATIO).abs() < 0.01);
+        assert!(after[&1].width > after[&99].width && after[&99].width >= 245.0);
+        assert_eq!(after[&1].height, before[&1].height);
+
+        // A pane too narrow for that but tall enough is split below.
+        let tall = area(
+            PREVIEW_SIDE_BY_SIDE_MIN_WIDTH - 1.0,
+            PREVIEW_STACKED_MIN_HEIGHT,
+        );
+        let (target, axis, ratio) = split_for(panes.place_beside(&layout, Some(tall), 1));
+        assert_eq!(
+            (target, axis, ratio),
+            (1, Axis::Stacked, PREVIEW_BESIDE_OTHER_RATIO)
+        );
+    }
+
+    #[test]
+    fn the_roomiest_unlocked_pane_is_split_whether_or_not_it_is_the_one_clicked() {
+        // Navigation (1, locked) | terminals 2 and 3 side by side, 3 much wider.
+        let mut layout = navigation_and_main();
+        assert!(layout.split_with_ratio(2, Axis::SideBySide, 3, false, 0.2));
+        let size = area(2600.0, 900.0);
+        let extents = layout.pane_extents(size);
+        assert!(extents[&2].width < PREVIEW_SIDE_BY_SIDE_MIN_WIDTH);
+        assert!(extents[&3].width >= PREVIEW_SIDE_BY_SIDE_MIN_WIDTH);
+        let panes = Panes::new(&[1], &[2, 3]);
+        // Clicked in the small pane: the large one beside it is split, and the one clicked in
+        // is left alone.
+        let (target, _, _) = split_for(panes.place_beside(&layout, Some(size), 2));
+        assert_eq!(target, 3);
+        // Clicked in the large pane: that is the one split.
+        let (target, axis, ratio) = split_for(panes.place_beside(&layout, Some(size), 3));
+        assert_eq!(
+            (target, axis, ratio),
+            (3, Axis::SideBySide, PREVIEW_BESIDE_OTHER_RATIO)
+        );
+        // A locked pane is never split, even if it is the roomiest and the one clicked in.
+        let panes = Panes::new(&[1, 3], &[2, 3]);
+        assert!(!matches!(
+            panes.place_beside(&layout, Some(size), 3),
+            Some(PreviewPlacement::Split { target: 3, .. })
+        ));
+    }
+
+    #[test]
+    fn with_nothing_to_split_the_tab_prefers_a_pane_that_is_not_the_one_clicked() {
+        let mut layout = navigation_and_main();
+        assert!(layout.split_with_ratio(2, Axis::SideBySide, 3, false, 0.5));
+        let small = Some(area(1200.0, 400.0));
+        // Terminals in 2 and 3, which are both too small: it waits, unselected, in the other
+        // one, not behind the terminal that was clicked.
+        let panes = Panes::new(&[1], &[2, 3]);
+        assert_eq!(panes.place_beside(&layout, small, 2), tab(3, false));
+        assert_eq!(panes.place_beside(&layout, small, 3), tab(2, false));
+        // A pane that shows something else is where it can be selected, since the click asked
+        // for it; the clicked pane never counts, because it shows a terminal.
+        let panes = Panes::new(&[1], &[2]);
+        assert_eq!(panes.place_beside(&layout, small, 2), tab(3, true));
+        // Without sizes (before the first frame) nothing is split either.
+        let panes = Panes::new(&[1], &[2, 3]);
+        assert_eq!(panes.place_beside(&layout, None, 2), tab(3, false));
+    }
+
+    #[test]
+    fn with_everything_locked_a_link_click_adds_the_tab_unselected_behind_nothing_it_covers() {
+        // The default window with both panes locked: the terminal's pane cannot be split.
+        let layout = navigation_and_main();
+        let size = Some(area(1600.0, 900.0));
+        let panes = Panes::new(&[1, 2], &[2]);
+        // The navigation pane takes it as a tab that waits: the terminal clicked in stays.
+        assert_eq!(panes.place_beside(&layout, size, 2), tab(1, false));
+        // Clicked in a lone locked pane, the only place is that pane, unselected.
+        let alone = Layout::Pane(1);
+        let panes = Panes::new(&[1], &[1]);
+        assert_eq!(panes.place_beside(&alone, size, 1), tab(1, false));
+        // And in a lone pane too small to split.
+        let panes = Panes::new(&[], &[1]);
+        assert_eq!(
+            panes.place_beside(&alone, Some(area(500.0, 300.0)), 1),
+            tab(1, false)
+        );
+    }
+
+    #[test]
+    fn a_link_click_reuses_the_existing_tab_and_never_switches_away_from_the_terminal_clicked() {
+        let layout = navigation_and_main();
+        let size = Some(area(1600.0, 900.0));
+        let panes = Panes::new(&[1], &[2]);
+        let reveal = |existing| panes.reveal_beside(&layout, existing, size, 2);
+        let waiting = PreviewTab {
+            pane: 1,
+            shown: false,
+            behind_shell: false,
+        };
+        // Hidden in a pane that shows no terminal: brought forward there.
+        assert_eq!(reveal(Some(waiting)), PreviewReveal::Activate(1));
+        // Already showing: nothing to do, and nothing new is opened.
+        assert_eq!(
+            reveal(Some(PreviewTab {
+                shown: true,
+                ..waiting
+            })),
+            PreviewReveal::Leave
+        );
+        // Behind a terminal in another pane: left, so the terminal there stays.
+        assert_eq!(
+            reveal(Some(PreviewTab {
+                pane: 3,
+                behind_shell: true,
+                ..waiting
+            })),
+            PreviewReveal::Leave
+        );
+        // In the clicked pane itself: never selected over the terminal clicked in, even if
+        // the pane were showing something else.
+        assert_eq!(
+            reveal(Some(PreviewTab { pane: 2, ..waiting })),
+            PreviewReveal::Leave
+        );
+        // Without a tab, one is made where the rules say.
+        assert!(matches!(reveal(None), PreviewReveal::Open(_)));
     }
 
     #[test]

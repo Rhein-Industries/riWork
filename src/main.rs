@@ -315,6 +315,175 @@ struct Pane {
     active: usize,
 }
 
+/// Add a tab for `panel` to the pane. With `select` it becomes the pane's selected tab;
+/// without, the tab waits in the strip and what the pane shows is left as it is.
+fn push_panel_tab(pane: &mut Pane, id: TabId, title: &str, panel: PanelKind, select: bool) {
+    pane.tabs.push(Tab {
+        id,
+        title: title.to_owned(),
+        content: TabContent::Panel(panel),
+        hidden_since: None,
+    });
+    if select {
+        pane.active = pane.tabs.len() - 1;
+    }
+}
+
+/// Apply a placement for a panel to the window's panes: for a split, make the new pane and put
+/// it in the layout (the pane split keeps its tabs and its selected one); then add the panel's
+/// tab, selected in a new pane or where the placement says so. Returns the pane and whether the
+/// tab is its selected tab. Terminals are not told they were hidden; see `place_panel`.
+fn apply_panel_placement(
+    layout: &mut Layout,
+    panes: &mut BTreeMap<PaneId, Pane>,
+    next_pane_id: &mut PaneId,
+    next_tab_id: &mut TabId,
+    panel: PanelKind,
+    title: &str,
+    placement: PreviewPlacement,
+) -> Option<(PaneId, bool)> {
+    let (pane_id, select) = match placement {
+        PreviewPlacement::Tab { pane, activate } => (pane, activate),
+        PreviewPlacement::Split {
+            target,
+            axis,
+            ratio,
+        } => {
+            if !panes.contains_key(&target) {
+                return None;
+            }
+            let new_pane = *next_pane_id;
+            if !layout.split_with_ratio(target, axis, new_pane, false, ratio) {
+                return None;
+            }
+            *next_pane_id += 1;
+            panes.insert(
+                new_pane,
+                Pane {
+                    tabs: Vec::new(),
+                    active: 0,
+                },
+            );
+            (new_pane, true)
+        }
+    };
+    let pane = panes.get_mut(&pane_id)?;
+    let id = *next_tab_id;
+    *next_tab_id += 1;
+    push_panel_tab(pane, id, title, panel, select);
+    Some((pane_id, select))
+}
+
+/// Apply what the placement rules decided about a panel to the window's panes. The pane that
+/// changed, and whether its selected tab did (so that terminals in it must be told which tabs
+/// are hidden); `None` when nothing changed. A split also changes the layout.
+fn apply_panel_reveal_to_panes(
+    layout: &mut Layout,
+    panes: &mut BTreeMap<PaneId, Pane>,
+    next_pane_id: &mut PaneId,
+    next_tab_id: &mut TabId,
+    panel: PanelKind,
+    title: &str,
+    reveal: PreviewReveal,
+) -> Option<(PaneId, bool)> {
+    match reveal {
+        PreviewReveal::Leave => None,
+        PreviewReveal::Activate(pane_id) => {
+            select_panel_tab(panes.get_mut(&pane_id)?, panel).then_some((pane_id, true))
+        }
+        PreviewReveal::Open(placement) => apply_panel_placement(
+            layout,
+            panes,
+            next_pane_id,
+            next_tab_id,
+            panel,
+            title,
+            placement,
+        ),
+    }
+}
+
+/// The pane, tab and visibility of the tab for `kind` among `panes`, if there is one.
+fn panel_tab_in(panes: &BTreeMap<PaneId, Pane>, kind: PanelKind) -> Option<(PaneId, TabId, bool)> {
+    panes.iter().find_map(|(pane_id, pane)| {
+        pane.tabs
+            .iter()
+            .enumerate()
+            .find(|(_, tab)| tab.panel() == Some(kind))
+            .map(|(index, tab)| (*pane_id, tab.id, index == pane.active))
+    })
+}
+
+/// Whether the pane's selected tab is a terminal: a shell, an agent or an editor.
+fn pane_shows_shell_in(panes: &BTreeMap<PaneId, Pane>, pane_id: PaneId) -> bool {
+    panes
+        .get(&pane_id)
+        .and_then(|pane| pane.tabs.get(pane.active))
+        .is_some_and(Tab::is_terminal)
+}
+
+/// What a click on a link in pane `clicked` does about `panel`, the Preview or Files, when
+/// there is no tree on screen to put it beside. See `Layout::plan_beside_reveal`.
+fn plan_link_panel(
+    layout: &Layout,
+    panes: &BTreeMap<PaneId, Pane>,
+    area: Option<Extent>,
+    locked: &dyn Fn(PaneId) -> bool,
+    panel: PanelKind,
+    clicked: PaneId,
+) -> PreviewReveal {
+    let existing = panel_tab_in(panes, panel).map(|(pane, _, shown)| PreviewTab {
+        pane,
+        shown,
+        behind_shell: pane_shows_shell_in(panes, pane),
+    });
+    let shows_shell = |id: PaneId| pane_shows_shell_in(panes, id);
+    layout.plan_beside_reveal(
+        existing,
+        area,
+        clicked,
+        &PaneFacts {
+            locked,
+            shows_shell: &shows_shell,
+        },
+    )
+}
+
+/// The pane whose tree a file's preview goes beside when the file was selected. A link is
+/// clicked in a terminal; a tree that is a tab in that very pane is behind the terminal and not
+/// on screen, so there is none to go beside.
+fn tree_pane_for_reveal(explorer: Option<PaneId>, asked: bool, clicked: PaneId) -> Option<PaneId> {
+    explorer.filter(|pane| !asked || *pane != clicked)
+}
+
+/// Make the tab for `panel` the selected tab of its pane. Whether that changed anything.
+fn select_panel_tab(pane: &mut Pane, panel: PanelKind) -> bool {
+    match pane.tabs.iter().position(|tab| tab.panel() == Some(panel)) {
+        Some(index) if pane.active != index => {
+            pane.active = index;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// What the notice says when a click asked for a panel that is only in a tab strip, not on
+/// screen, so that the click does not seem to have done nothing. In the pane clicked in, the
+/// selected tab is the terminal.
+fn hidden_panel_notice(panel: PanelKind, in_clicked_pane: bool) -> String {
+    let title = Workspace::panel_title(panel);
+    let name: String = title
+        .chars()
+        .take(1)
+        .chain(title.chars().skip(1).flat_map(char::to_lowercase))
+        .collect();
+    if in_clicked_pane {
+        format!("{name} is in this pane's tab strip, behind the terminal.")
+    } else {
+        format!("{name} is in the tab strip of another pane.")
+    }
+}
+
 #[derive(Clone)]
 struct DraggedTab {
     pane_id: PaneId,
@@ -1618,15 +1787,7 @@ impl Workspace {
             }
             let id = self.next_tab_id;
             self.next_tab_id += 1;
-            pane.tabs.push(Tab {
-                id,
-                title: Self::panel_title(panel).to_owned(),
-                content: TabContent::Panel(panel),
-                hidden_since: None,
-            });
-            if select {
-                pane.active = pane.tabs.len() - 1;
-            }
+            push_panel_tab(pane, id, Self::panel_title(panel), panel, select);
         }
     }
 
@@ -5034,13 +5195,7 @@ impl Workspace {
 
     /// The pane, tab and visibility of the window's tab for `kind`, if it has one.
     fn panel_tab(&self, kind: PanelKind) -> Option<(PaneId, TabId, bool)> {
-        self.panes.iter().find_map(|(pane_id, pane)| {
-            pane.tabs
-                .iter()
-                .enumerate()
-                .find(|(_, tab)| tab.panel() == Some(kind))
-                .map(|(index, tab)| (*pane_id, tab.id, index == pane.active))
-        })
+        panel_tab_in(&self.panes, kind)
     }
 
     /// The pane the file explorer's tree is in, which is where its preview goes beside.
@@ -5071,7 +5226,8 @@ impl Workspace {
                     shows_shell: &shows_shell,
                 },
             );
-            if let Some(placed) = placement.and_then(|placement| self.place_preview(placement, cx))
+            if let Some(placed) =
+                placement.and_then(|placement| self.place_panel(PanelKind::Preview, placement, cx))
             {
                 pane_id = placed;
             }
@@ -5084,14 +5240,24 @@ impl Workspace {
     /// whatever they want when `asked` (the selection was a link they clicked). The keys stay
     /// where they are, in the tree, so the arrow keys keep moving the selection while the
     /// preview follows it.
+    ///
+    /// A link is clicked in a terminal, and the terminal keeps the keys and stays on screen. If
+    /// the tree is in some other pane the preview goes beside it as usual; if there is no tree
+    /// on screen, or it is a tab behind the terminal clicked, the preview goes beside the work
+    /// instead (see `Layout::beside_placement`).
     fn reveal_preview(&mut self, asked: bool, cx: &mut Context<Self>) {
         // Focus mode shows one pane; rearranging the others behind it would be unseen.
-        let Some(explorer) = self.explorer_pane() else {
-            return;
-        };
         if self.focus_mode || !self.layout_ready {
             return;
         }
+        let clicked = self.active_pane;
+        let explorer = tree_pane_for_reveal(self.explorer_pane(), asked, clicked);
+        let Some(explorer) = explorer else {
+            if asked {
+                self.reveal_panel_for_link(PanelKind::Preview, cx);
+            }
+            return;
+        };
         let existing = self
             .panel_tab(PanelKind::Preview)
             .map(|(pane, _, shown)| PreviewTab {
@@ -5111,91 +5277,88 @@ impl Workspace {
                 shows_shell: &shows_shell,
             },
         );
-        match reveal {
-            PreviewReveal::Leave => {}
-            PreviewReveal::Activate(pane_id) => self.show_preview_tab(pane_id, cx),
-            PreviewReveal::Open(placement) => {
-                self.place_preview(placement, cx);
-            }
+        self.apply_panel_reveal(PanelKind::Preview, reveal, cx);
+        if asked {
+            self.note_hidden_panel(PanelKind::Preview, clicked);
         }
     }
 
-    /// Whether the pane's selected tab is a terminal: a shell, an agent or an editor.
-    fn pane_shows_shell(&self, pane_id: PaneId) -> bool {
-        self.panes
-            .get(&pane_id)
-            .and_then(|pane| pane.tabs.get(pane.active))
-            .is_some_and(Tab::is_terminal)
+    /// Show `panel` (the Preview, or Files) for a link clicked in the active pane, beside the
+    /// work and never over it. The keys stay in the terminal that was clicked.
+    fn reveal_panel_for_link(&mut self, panel: PanelKind, cx: &mut Context<Self>) {
+        if self.focus_mode || !self.layout_ready {
+            return;
+        }
+        let clicked = self.active_pane;
+        let locked = |id: PaneId| self.pane_is_locked(id);
+        let reveal = plan_link_panel(
+            &self.layout,
+            &self.panes,
+            self.pane_area,
+            &locked,
+            panel,
+            clicked,
+        );
+        self.apply_panel_reveal(panel, reveal, cx);
+        self.note_hidden_panel(panel, clicked);
     }
 
-    /// Add the Preview tab as `placement` says. In a new pane or where the placement says to
-    /// select it, it becomes its pane's selected tab; otherwise it waits in the tab strip and
-    /// the pane keeps showing what it showed. Nothing else changes: the active pane and the
-    /// keys stay put.
-    fn place_preview(
+    /// Do what the placement rules decided about `panel`. Nothing else changes: the active
+    /// pane and the keys stay put. Returns the pane the panel's tab was added to or brought
+    /// forward in.
+    fn apply_panel_reveal(
         &mut self,
-        placement: PreviewPlacement,
+        panel: PanelKind,
+        reveal: PreviewReveal,
         cx: &mut Context<Self>,
     ) -> Option<PaneId> {
-        let mut select = true;
-        let pane_id = match placement {
-            PreviewPlacement::Tab { pane, activate } => {
-                select = activate;
-                pane
-            }
-            PreviewPlacement::Split {
-                target,
-                axis,
-                ratio,
-            } => {
-                let new_pane = self.next_pane_id;
-                if !self
-                    .layout
-                    .split_with_ratio(target, axis, new_pane, false, ratio)
-                {
-                    return None;
-                }
-                self.next_pane_id += 1;
-                self.panes.insert(
-                    new_pane,
-                    Pane {
-                        tabs: Vec::new(),
-                        active: 0,
-                    },
-                );
-                new_pane
-            }
-        };
-        if !self.panes.contains_key(&pane_id) {
-            return None;
+        if reveal != PreviewReveal::Leave && matches!(panel, PanelKind::Files | PanelKind::Preview)
+        {
+            self.ensure_file_explorer(cx);
         }
-        self.attach_panel_as(pane_id, PanelKind::Preview, select, cx);
+        let (pane_id, selected) = apply_panel_reveal_to_panes(
+            &mut self.layout,
+            &mut self.panes,
+            &mut self.next_pane_id,
+            &mut self.next_tab_id,
+            panel,
+            Self::panel_title(panel),
+            reveal,
+        )?;
+        if selected && let Some(pane) = self.panes.get(&pane_id) {
+            // The tab now selected shows; the ones it covers, terminals first, are hidden.
+            for (index, tab) in pane.tabs.iter().enumerate() {
+                tab.set_visible(index == pane.active, cx);
+            }
+        }
         self.save_layout();
         cx.notify();
         Some(pane_id)
     }
 
-    /// Make the Preview tab of `pane_id` that pane's selected tab without moving the keys.
-    fn show_preview_tab(&mut self, pane_id: PaneId, cx: &mut Context<Self>) {
-        let Some(pane) = self.panes.get_mut(&pane_id) else {
-            return;
-        };
-        let Some(index) = pane
-            .tabs
-            .iter()
-            .position(|tab| tab.panel() == Some(PanelKind::Preview))
-        else {
-            return;
-        };
-        if pane.active == index {
-            return;
+    /// A click asked for `panel` and it is in a tab strip with a terminal selected over it:
+    /// say so, or the click would seem to have done nothing.
+    fn note_hidden_panel(&mut self, panel: PanelKind, clicked: PaneId) {
+        if let Some((pane, _, false)) = self.panel_tab(panel) {
+            self.notice = Some(hidden_panel_notice(panel, pane == clicked));
         }
-        pane.active = index;
-        for (tab_index, tab) in pane.tabs.iter().enumerate() {
-            tab.set_visible(tab_index == index, cx);
-        }
-        self.save_layout();
-        cx.notify();
+    }
+
+    /// Whether the pane's selected tab is a terminal: a shell, an agent or an editor.
+    fn pane_shows_shell(&self, pane_id: PaneId) -> bool {
+        pane_shows_shell_in(&self.panes, pane_id)
+    }
+
+    /// Add a tab for `panel` as `placement` says: in a new pane or where the placement says to
+    /// select it, it becomes its pane's selected tab; otherwise it waits in the tab strip and
+    /// the pane keeps showing what it showed.
+    fn place_panel(
+        &mut self,
+        panel: PanelKind,
+        placement: PreviewPlacement,
+        cx: &mut Context<Self>,
+    ) -> Option<PaneId> {
+        self.apply_panel_reveal(panel, PreviewReveal::Open(placement), cx)
     }
 
     fn focus_search_action(
@@ -9466,5 +9629,346 @@ mod workspace_tab_tests {
             project_default_account_label(Some(&project), None, Some(&snapshot)),
             "DEFAULT (PROJECT) · Account unavailable"
         );
+    }
+}
+
+/// What a click on a link does to the window's panes when there is no tree on screen: the
+/// Preview or Files is put beside the work, and the terminal that was clicked stays on screen.
+#[cfg(test)]
+mod link_panel_tests {
+    use super::*;
+
+    fn shell(id: TabId) -> Tab {
+        Tab {
+            id,
+            title: "zsh".to_owned(),
+            content: TabContent::Shell {
+                shell_id: format!("shell-{id}"),
+                worktree_id: None,
+                terminal: None,
+                attach_error: None,
+                attach_failures: 0,
+            },
+            hidden_since: None,
+        }
+    }
+
+    fn panel(id: TabId, kind: PanelKind) -> Tab {
+        Tab {
+            id,
+            title: Workspace::panel_title(kind).to_owned(),
+            content: TabContent::Panel(kind),
+            hidden_since: None,
+        }
+    }
+
+    fn pane(tabs: Vec<Tab>, active: usize) -> Pane {
+        Pane { tabs, active }
+    }
+
+    /// A window's panes without the GPUI parts: what the placement rules read and change.
+    struct Window {
+        layout: Layout,
+        panes: BTreeMap<PaneId, Pane>,
+        next_pane_id: PaneId,
+        next_tab_id: TabId,
+        size: Extent,
+    }
+
+    impl Window {
+        fn new(layout: Layout, panes: Vec<(PaneId, Pane)>, size: (f32, f32)) -> Self {
+            let next_pane_id = panes.iter().map(|(id, _)| *id).max().unwrap_or(0) + 1;
+            let next_tab_id = panes
+                .iter()
+                .flat_map(|(_, pane)| pane.tabs.iter().map(|tab| tab.id))
+                .max()
+                .unwrap_or(0)
+                + 1;
+            Self {
+                layout,
+                panes: panes.into_iter().collect(),
+                next_pane_id,
+                next_tab_id,
+                size: Extent {
+                    width: size.0,
+                    height: size.1,
+                },
+            }
+        }
+
+        /// One terminal pane with two tabs, the second selected, as a window that has been used.
+        fn alone(size: (f32, f32)) -> Self {
+            Self::new(
+                Layout::Pane(1),
+                vec![(1, pane(vec![shell(1), shell(2)], 1))],
+                size,
+            )
+        }
+
+        /// A click on a link in pane `clicked`, as `Workspace::reveal_panel_for_link` handles it
+        /// but for the parts that need a window. The pane changed, and whether its selected tab did.
+        fn click(
+            &mut self,
+            kind: PanelKind,
+            clicked: PaneId,
+            locked: &[PaneId],
+        ) -> Option<(PaneId, bool)> {
+            let is_locked = |id: PaneId| locked.contains(&id);
+            let reveal = plan_link_panel(
+                &self.layout,
+                &self.panes,
+                Some(self.size),
+                &is_locked,
+                kind,
+                clicked,
+            );
+            apply_panel_reveal_to_panes(
+                &mut self.layout,
+                &mut self.panes,
+                &mut self.next_pane_id,
+                &mut self.next_tab_id,
+                kind,
+                Workspace::panel_title(kind),
+                reveal,
+            )
+        }
+
+        fn tab_ids(&self, pane: PaneId) -> Vec<TabId> {
+            self.panes[&pane].tabs.iter().map(|tab| tab.id).collect()
+        }
+
+        fn panels(&self, kind: PanelKind) -> usize {
+            self.panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .filter(|tab| tab.panel() == Some(kind))
+                .count()
+        }
+    }
+
+    #[test]
+    fn a_link_click_splits_the_only_terminal_pane_and_the_terminal_keeps_its_tab() {
+        for kind in [PanelKind::Preview, PanelKind::Files] {
+            let mut window = Window::alone((1400.0, 900.0));
+            let before = window.layout.pane_extents(window.size)[&1];
+            assert_eq!(window.click(kind, 1, &[]), Some((2, true)), "{kind:?}");
+
+            // The terminal pane is split, keeps 60% of its space, and keeps its tabs and the
+            // selected one; the keys were never moved off it.
+            let after = window.layout.pane_extents(window.size);
+            let whole = before.width - DIVIDER_THICKNESS;
+            assert!(
+                (after[&1].width - whole * layouts::PREVIEW_BESIDE_OTHER_RATIO).abs() < 0.01,
+                "{after:?}"
+            );
+            assert_eq!(after[&1].height, before.height);
+            assert!(after[&2].width > 245.0);
+            assert_eq!(window.tab_ids(1), [1, 2]);
+            assert_eq!(window.panes[&1].active, 1);
+            assert!(pane_shows_shell_in(&window.panes, 1));
+
+            // The new pane holds the panel, selected, and nothing else.
+            assert_eq!(window.tab_ids(2), [3]);
+            assert_eq!(panel_tab_in(&window.panes, kind), Some((2, 3, true)));
+            assert_eq!(window.panels(kind), 1);
+        }
+    }
+
+    #[test]
+    fn a_narrow_tall_terminal_pane_is_split_below() {
+        let mut window = Window::alone((layouts::PREVIEW_SIDE_BY_SIDE_MIN_WIDTH - 1.0, 900.0));
+        assert_eq!(window.click(PanelKind::Preview, 1, &[]), Some((2, true)));
+        let after = window.layout.pane_extents(window.size);
+        assert_eq!(after[&1].width, after[&2].width);
+        assert!(after[&1].height > after[&2].height);
+        assert_eq!(window.panes[&1].active, 1);
+    }
+
+    #[test]
+    fn with_everything_locked_the_panel_is_added_unselected_and_the_terminal_stays_shown() {
+        // The default window: a locked navigation pane (showing Projects) and a locked terminal
+        // pane, in a window big enough to split if nothing were locked.
+        let mut layout = Layout::Pane(1);
+        assert!(layout.split_with_ratio(1, Axis::SideBySide, 2, false, 0.27));
+        let navigation = pane(vec![panel(1, PanelKind::Projects)], 0);
+        let terminal = pane(vec![shell(2)], 0);
+        let mut window = Window::new(
+            layout,
+            vec![(1, navigation), (2, terminal)],
+            (1600.0, 900.0),
+        );
+        let extents = window.layout.pane_extents(window.size);
+
+        assert_eq!(
+            window.click(PanelKind::Preview, 2, &[1, 2]),
+            Some((1, false))
+        );
+        // No pane was made, the terminal is untouched, and the navigation pane still shows
+        // Projects: the Preview waits in its tab strip.
+        assert_eq!(window.layout.pane_extents(window.size), extents);
+        assert_eq!(window.tab_ids(2), [2]);
+        assert!(pane_shows_shell_in(&window.panes, 2));
+        assert_eq!(window.tab_ids(1), [1, 3]);
+        assert_eq!(window.panes[&1].active, 0);
+        assert_eq!(
+            panel_tab_in(&window.panes, PanelKind::Preview),
+            Some((1, 3, false))
+        );
+
+        // A lone locked terminal pane: the panel is a tab behind the terminal, still unselected.
+        let mut alone = Window::alone((1600.0, 900.0));
+        assert_eq!(alone.click(PanelKind::Files, 1, &[1]), Some((1, false)));
+        assert_eq!(alone.tab_ids(1), [1, 2, 3]);
+        assert_eq!(alone.panes[&1].active, 1);
+        assert!(pane_shows_shell_in(&alone.panes, 1));
+        assert_eq!(
+            panel_tab_in(&alone.panes, PanelKind::Files),
+            Some((1, 3, false))
+        );
+    }
+
+    #[test]
+    fn an_existing_tab_is_reused_and_never_brought_over_a_terminal() {
+        let mut window = Window::alone((1400.0, 900.0));
+        assert_eq!(window.click(PanelKind::Preview, 1, &[]), Some((2, true)));
+
+        // Clicking again while it is showing changes nothing, and makes no second one.
+        let panes_before = window.layout.pane_ids();
+        assert_eq!(window.click(PanelKind::Preview, 1, &[]), None);
+        assert_eq!(window.layout.pane_ids(), panes_before);
+        assert_eq!(window.panels(PanelKind::Preview), 1);
+
+        // Hidden behind another panel in its pane: brought forward there, not duplicated.
+        let preview_pane = window.panes.get_mut(&2).unwrap();
+        push_panel_tab(preview_pane, 10, "USAGE", PanelKind::Usage, true);
+        assert_eq!(
+            panel_tab_in(&window.panes, PanelKind::Preview),
+            Some((2, 3, false))
+        );
+        assert_eq!(window.click(PanelKind::Preview, 1, &[]), Some((2, true)));
+        assert_eq!(
+            panel_tab_in(&window.panes, PanelKind::Preview),
+            Some((2, 3, true))
+        );
+        assert_eq!(window.panels(PanelKind::Preview), 1);
+        assert_eq!(window.panes[&1].active, 1);
+
+        // Hidden behind a terminal: left there, so that the terminal stays on screen.
+        let behind = window.panes.get_mut(&2).unwrap();
+        behind.tabs.push(shell(12));
+        behind.active = behind.tabs.len() - 1;
+        assert_eq!(window.click(PanelKind::Preview, 1, &[]), None);
+        assert_eq!(
+            panel_tab_in(&window.panes, PanelKind::Preview),
+            Some((2, 3, false))
+        );
+        assert!(pane_shows_shell_in(&window.panes, 2));
+
+        // In the pane that was clicked, behind the terminal clicked in: left as well.
+        let mut window = Window::alone((1400.0, 900.0));
+        push_panel_tab(
+            window.panes.get_mut(&1).unwrap(),
+            5,
+            "PREVIEW",
+            PanelKind::Preview,
+            false,
+        );
+        assert_eq!(window.click(PanelKind::Preview, 1, &[]), None);
+        assert_eq!(window.panes[&1].active, 1);
+    }
+
+    #[test]
+    fn an_existing_files_tab_is_brought_forward_beside_a_terminal_not_over_it() {
+        // Files is a tab in a navigation pane behind Projects: a folder link selects it there.
+        let mut layout = Layout::Pane(1);
+        assert!(layout.split_with_ratio(1, Axis::SideBySide, 2, false, 0.27));
+        let navigation = pane(
+            vec![panel(1, PanelKind::Projects), panel(2, PanelKind::Files)],
+            0,
+        );
+        let mut window = Window::new(
+            layout,
+            vec![(1, navigation), (2, pane(vec![shell(3)], 0))],
+            (1600.0, 900.0),
+        );
+        assert_eq!(window.click(PanelKind::Files, 2, &[1, 2]), Some((1, true)));
+        assert_eq!(window.panes[&1].active, 1);
+        assert_eq!(window.panels(PanelKind::Files), 1);
+        assert!(pane_shows_shell_in(&window.panes, 2));
+
+        // Files is a tab in the terminal's own pane, behind the terminal: it stays there.
+        let mut window = Window::alone((1400.0, 900.0));
+        push_panel_tab(
+            window.panes.get_mut(&1).unwrap(),
+            5,
+            "FILES",
+            PanelKind::Files,
+            false,
+        );
+        assert_eq!(window.click(PanelKind::Files, 1, &[]), None);
+        assert_eq!(window.panels(PanelKind::Files), 1);
+    }
+
+    #[test]
+    fn a_tree_behind_the_terminal_clicked_is_not_a_tree_to_go_beside() {
+        // A file chosen in the tree has its preview beside the tree, wherever the tree is.
+        assert_eq!(tree_pane_for_reveal(Some(3), false, 3), Some(3));
+        assert_eq!(tree_pane_for_reveal(Some(3), false, 1), Some(3));
+        // A link is clicked in a terminal. A tree in another pane is on screen; one that is a tab
+        // in the clicked pane's own strip is behind the terminal, and the preview goes beside the
+        // terminal rather than shrinking it to the tree's narrow share.
+        assert_eq!(tree_pane_for_reveal(Some(3), true, 1), Some(3));
+        assert_eq!(tree_pane_for_reveal(Some(3), true, 3), None);
+        assert_eq!(tree_pane_for_reveal(None, true, 1), None);
+    }
+
+    #[test]
+    fn the_notice_says_where_a_hidden_panel_is() {
+        assert_eq!(
+            hidden_panel_notice(PanelKind::Preview, true),
+            "Preview is in this pane's tab strip, behind the terminal."
+        );
+        assert_eq!(
+            hidden_panel_notice(PanelKind::Files, false),
+            "Files is in the tab strip of another pane."
+        );
+    }
+
+    #[test]
+    fn a_placement_that_names_a_missing_pane_changes_nothing() {
+        let mut window = Window::alone((1400.0, 900.0));
+        let missing = PreviewPlacement::Split {
+            target: 9,
+            axis: Axis::SideBySide,
+            ratio: 0.6,
+        };
+        let result = apply_panel_placement(
+            &mut window.layout,
+            &mut window.panes,
+            &mut window.next_pane_id,
+            &mut window.next_tab_id,
+            PanelKind::Preview,
+            "PREVIEW",
+            missing,
+        );
+        assert_eq!(result, None);
+        let tab = PreviewPlacement::Tab {
+            pane: 9,
+            activate: true,
+        };
+        assert_eq!(
+            apply_panel_placement(
+                &mut window.layout,
+                &mut window.panes,
+                &mut window.next_pane_id,
+                &mut window.next_tab_id,
+                PanelKind::Preview,
+                "PREVIEW",
+                tab,
+            ),
+            None
+        );
+        assert_eq!(window.layout.pane_ids(), [1]);
+        assert_eq!(window.panels(PanelKind::Preview), 0);
     }
 }
