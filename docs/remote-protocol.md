@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-03: Additive activity and recency extension, no new method and no new error code: `projects.list` entries gain optional `last_edited_unix` (when the desktop app last saw a file of the project change, Unix seconds) and `agents` (`{"working":n,"waiting":n}` and additively `"done":n`: the project's agent shells by state), and `shells.list` / `orchestrators.list` entries gain optional `activity` (`working|waiting|done|unknown|exited`), `activity_since_unix`, `subagents_working` and additively `subagent_kinds`, so the phone can sort recent projects and show whether a Codex or Claude is working, with its subagents. See "Activity and recency extension" below. A field the desktop cannot supply is simply absent, so an older desktop or CLI answers exactly as before and an older phone ignores them; the connector checks each new field's shape and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-02: Additive desktop terminal extension, **protocol v2 only**: a second kind of paired device, a *desktop* (another Mac running RiWork, paired with `pair --protocol 2 --kind desktop`), may open terminal streams with `pty.open`, `pty.read`, `pty.write`, `pty.resize` and `pty.close`: a real tmux client on a pseudo-terminal of the host, whose raw bytes travel over those RPCs, so the other Mac shows the shell exactly as a Ghostty window here would. It adds `features.pty` to `ready` (only for desktop devices), two lanes (`Attach`, `Stream`), the error code `pty_limit`, and `riwork shell attach ID --exec` / `"shell_attach_exec": true` in `riwork capabilities --json` on the CLI side; see "Desktop terminal extension" below. A phone, and any v1 device, finds none of it: `pty.*` is `invalid_request` "unsupported RPC method" for them, as it is on a connector from before it, and no existing method, byte or fixture changes. A config that holds only phones is written byte for byte as before.
 - 2026-10-01: Additive project creation: `project.create` (make a new project, named by the phone, in the desktop's default projects folder, as a Git repository unless told otherwise), in the ordered lane and not cut short when the phone's session ends, and the error code `already_exists`; see "Project creation extension" below. The phone never names a path. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method".
 - 2026-10-01: Additive link extension: `server_ms` on every response (the desktop's own time, so the phone can tell the network's share of a round trip), `features` in the first encrypted frame (`ready`), the `link.configure` request, optionally deflated reply frames for a session that opted in (a marker byte inside the ciphertext; the envelope, AAD and fixtures are unchanged), larger limits that go with them (a reply may be up to 2 MiB of JSON if it fits one frame deflated; `shell.history` `lines` up to 5000), and `link.json` vectors; see "Link extension" below. Applies to v1 and v2 sessions. An older phone or desktop sees no difference: nothing is compressed until the phone asks, and only a desktop that announced the feature is asked.
@@ -168,12 +169,15 @@ unsolicited response except handshake `ready`.
 | `shell.close` | `{"shell_id":"UUID"}` (Terminal creation) | `{"shell_id":"UUID","status":"closed"}` |
 | `project.create` | `{"name":"My App"}` optionally `"git":false` (Project creation) | `{"project_id":"UUID","project":Project}` |
 
-Project fields: `id,name,root` strings; `created_at` Unix seconds number.
+Project fields: `id,name,root` strings; `created_at` Unix seconds number; and, optionally,
+`last_edited_unix` and `agents` (see "Activity and recency extension").
 Worktree: `id,project_id,branch,path` strings; `is_primary` boolean; `created_at`.
 Task: `id,project_id,title,details` strings; `status` `todo|in_progress|done`;
 `worktree_id` UUID or null; `created_at,updated_at` Unix seconds.
 Session: `id` UUID, `project_id,worktree_id` UUID or null, `kind` `project|orchestrator`,
-`cwd` string, `harness` `codex|claude|grok|null`, `alive` boolean, `created_at_unix` number.
+`cwd` string, `harness` `codex|claude|grok|null`, `alive` boolean, `created_at_unix` number; and,
+optionally, `activity`, `activity_since_unix`, `subagents_working` and `subagent_kinds` (see
+"Activity and recency extension").
 Clients tolerate additive result/entity fields but must reject unknown protocol
 versions. Lists expose existing CLI entities; output/input resolve a full shell
 UUID against existing project shells **and** orchestrators. Dead/missing sessions
@@ -1042,6 +1046,95 @@ The client runs with an **allowlisted environment** and nothing else: `PATH`, `H
 
 **Compatibility.** Nothing a phone or an older desktop sends or receives changes. An older connector answers `invalid_request` "unsupported RPC method" to `pty.*` and sends no `features.pty`, which is why a client reads `ready` first. The tests are `remote/tests/pty.rs` (a stand-in CLI whose `shell attach --exec` acts out a few lines of `sh`, through the RPC layer and through a real relay and connector) and the root crate's `tests/shell_attach_exec_cli.rs` (the CLI side, with a real tmux in a throwaway `RIWORK_HOME`).
 
+### Activity and recency extension (v1 and v2, 2026-10-03)
+
+Additive and compatible, like the extensions before it: optional fields on three
+existing results. No new method, error code or parameter; no change to the handshake,
+envelopes, fixtures or any existing field. It applies to protocol v1 and v2 sessions
+alike. A field the desktop cannot supply is left out, so every field below is optional
+for a client: an older desktop or `riwork` CLI answers byte for byte as before, and an
+older phone ignores what it does not know. The connector checks the shape of each new
+field before passing it on and leaves a malformed one out, so a client that decodes
+them strictly never sees a wrong type. The iOS side is built against this text.
+
+**`projects.list` entries** gain
+
+- `last_edited_unix` (integer, Unix seconds): when the desktop app last saw a file of
+  the project change. It is the figure behind the app's "Last edited" project sort: the
+  newest source-file modification time across the project's roots and registered
+  worktrees, ignoring what Git ignores and build and dependency directories. Absent when
+  the app has not published a date for the project (not scanned yet, no regular file,
+  or the app has never run on this data directory). Order by it descending to get "recent
+  projects"; a project without it follows those with it, as in the app (a client may fall
+  back to `created_at`). It is as fresh as the app's last scan: the app scans about
+  every 30 seconds while a window is showing, so it can lag by that much, and it does not
+  move while every window is hidden or the app is closed.
+- `agents` (object): `{"working":n,"waiting":n,"done":n}`, the project's agent shells by
+  `activity` (below), counting the project's own orchestrator and not the global one.
+  `working` and `waiting` are the pair a client needs for a badge; `done` is additional
+  and a client that decodes two keys ignores it. A shell whose activity is `unknown` or
+  `exited`, a plain shell and a Grok session are in none of them. Absent when the desktop
+  could not read its shell list (for example, tmux is not installed).
+
+**`shells.list` and `orchestrators.list` entries** gain, for a shell that runs an agent
+(a plain shell has none of these; a plain shell in which a bound Codex runs has them):
+
+- `activity` (string): `working`, `waiting`, `done`, `unknown` or `exited`.
+
+  | | Codex | Claude |
+  | --- | --- | --- |
+  | `working` | a turn is open in the shell's bound thread | a turn is open (`UserPromptSubmit` seen, no `Stop`) and was heard from in the last 10 minutes, or a subagent is running |
+  | `done` | its last turn completed | its last turn's `Stop` arrived |
+  | `waiting` | the session is idle: just started, or the turn was aborted | idle: just started and not yet prompted, or paused by a `Stop` that listed background work, or an open turn silent for over 10 minutes |
+  | `unknown` | no exact thread binding yet, or the rollout cannot be read | the hooks of its launch have said nothing (a Claude started before RiWork passed them) |
+  | `exited` | the shell's tmux session is gone | the same |
+
+  Grok has no activity tracking: a live Grok shell is always `unknown`. Claude sends no
+  hook when a turn is interrupted with Esc (verified with 2.1.288: no `Stop`, no
+  `SubagentStop`, no notification), so the 10 minutes of silence, where a hook event and
+  a run of Claude's status line (which Claude does around each message and not on a timer)
+  both count as life, are what turn an interrupted turn into `waiting`. A single tool call
+  that is silent for over 10 minutes is read the same way until its next message. The
+  `SubagentStop` with no start that Claude sends a few seconds after a reply (it ends the
+  prompt suggestion) does not reopen a finished turn.
+- `activity_since_unix` (integer, Unix seconds): when `activity` began, from the rollout
+  record for Codex and the hook's arrival for Claude. Absent when the source records no
+  time (and for `unknown` and `exited`).
+- `subagents_working` (integer): subagents running under the agent, only while it is
+  `working`; absent when there are none.
+  - Claude: a subagent counts from its `SubagentStart` to its `SubagentStop`, paired by
+    `agent_id`. The turn's `Stop` clears them all, and a `Stop` that lists
+    `background_tasks` corrects the list to the subagents it names as running. A subagent
+    that is never heard of again (an interrupted turn sends no `SubagentStop`) stops
+    counting 30 minutes after it started.
+  - Codex: a child thread, a rollout in the same session tree whose first record names the
+    shell's thread as its parent (`source.subagent.thread_spawn.parent_thread_id`), whose
+    turn is open and whose file was written within the last 30 minutes.
+- `subagent_kinds` (array of at most 4 distinct strings): their kinds, Claude's `agent_type`
+  (`general-purpose`, `Explore`) or Codex's `agent_role` (`explorer`, `worker`), in the
+  order they were found. Names only; what a subagent was asked to do is never kept. This
+  field is an addition to the pair of the interface agreed with the iOS worker; a client
+  may ignore it.
+
+**Where each figure is worked out.** Activity is read when the CLI is asked, in the CLI's
+own process, by the code the desktop window uses, from files on disk: Codex rollouts and
+the shell's thread binding, and the turn cursor the Claude hooks of the launch keep
+(identifiers only, never prompts or replies). It needs no window and no snapshot file, so
+it works with the app closed. A rollout over 1 MiB is read from its first record and its
+tail, and children are searched for only while the parent is working, so a list stays
+quick. Recency is the one figure only the app has (its scan and file-change events live
+in its process), so the app writes it to `project-recency.json` in `RIWORK_HOME` (mode
+600, replaced atomically, only when it changed), and `riwork project list --json` reads
+that file. The connector computes none of this: it runs `riwork project list --json`,
+`shell list --project ID --json` and `orchestrator list --json` and projects the fields
+above.
+
+**Compatibility.** Nothing a phone or an older desktop sends or receives changes. A
+client treats a missing field as "not known" and shows nothing for it. The tests are
+`remote/tests/activity_fields.rs` (a stub CLI: pass-through, absence and malformed
+fields) and the root crate's `tests/agent_activity_cli.rs` (the CLI side, with real hook
+events, Codex rollouts and tmux in a throwaway `RIWORK_HOME`).
+
 ## Fixtures and change log
 
 `remote/fixtures/v1.json` supplies deterministic PSK, UUIDs, nonces, proof MACs,
@@ -1151,6 +1244,17 @@ ready response. Values are test-only and must never provision production devices
   two-second refresh. A client that never calls the method is unaffected, and an older
   desktop answers `invalid_request` "unsupported RPC method". Needs the iOS worker's
   agreement; the iOS side implements the same text.
+
+- 2026-10-03: additive and backward compatible. Activity and recency. Optional
+  `last_edited_unix` and `agents` (`working`, `waiting` and additionally `done`) on
+  `projects.list` entries, and optional `activity` (`working|waiting|done|unknown|exited`),
+  `activity_since_unix`, `subagents_working` and, additionally, `subagent_kinds` on
+  `shells.list` and `orchestrators.list` entries. Activity is read by the CLI itself from
+  Codex rollouts and Claude hook cursors, subagents from Claude's `SubagentStart` /
+  `SubagentStop` and Codex child threads; recency is published by the desktop app to
+  `project-recency.json`. A field the desktop cannot supply is absent, the connector leaves
+  out one in the wrong shape, and a client that ignores them is unaffected. Needs the iOS
+  worker's agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

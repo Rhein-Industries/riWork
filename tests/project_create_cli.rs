@@ -217,8 +217,15 @@ fn a_project_is_made_in_the_default_folder_with_git_and_printed_as_the_list_show
     assert_eq!(created["root"], root.to_str().unwrap());
     assert!(created["created_at"].as_u64().unwrap() > 0);
     assert!(root.join(".git").is_dir(), "Git by default");
-    // It is the very entry `project list` shows.
-    assert_eq!(sandbox.projects_listed(), vec![created.clone()]);
+    // It is the very entry `project list` shows, which adds the optional recency and agent
+    // counts of the project (`last_edited_unix` and `agents`) that `project create` does not know.
+    let mut listed = sandbox.projects_listed();
+    for entry in &mut listed {
+        for additive in ["last_edited_unix", "agents"] {
+            entry.as_object_mut().unwrap().remove(additive);
+        }
+    }
+    assert_eq!(listed, vec![created.clone()]);
     // The fields the connector passes on are there; the others it leaves out.
     for field in ["id", "name", "root", "created_at"] {
         assert!(created.get(field).is_some(), "{field}");

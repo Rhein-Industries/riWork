@@ -3,6 +3,7 @@ mod agent_hooks;
 mod appearance_file;
 mod appearance_sync;
 mod cli;
+mod cli_agents;
 mod codex_accounts;
 mod cua;
 mod dock_menu;
@@ -20,6 +21,7 @@ mod project_creator;
 mod project_recency;
 mod project_settings;
 mod project_sort;
+mod recency_file;
 mod remote_cache;
 mod remote_cli;
 mod remote_hosts;
@@ -57,7 +59,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use activity::{ActivityTracker, AgentActivity};
+use activity::{ActivityTracker, AgentState};
 use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, DragMoveEvent, Entity, EntityInputHandler,
@@ -425,7 +427,7 @@ struct Workspace {
     metrics: BTreeMap<String, SessionMetrics>,
     session_refresh_pending: bool,
     session_refresh_generation: u64,
-    agent_activity: BTreeMap<String, AgentActivity>,
+    agent_activity: BTreeMap<String, AgentState>,
     activity_tracker: Option<ActivityTracker>,
     project_last_edits: BTreeMap<String, u64>,
     project_recency_pending: bool,
@@ -1136,7 +1138,7 @@ impl Workspace {
             let shells = self.shells.clone();
             let home = self.sessions.state_home().to_path_buf();
             let work = cx.background_executor().spawn(async move {
-                let activity = tracker.sample(&shells);
+                let activity = tracker.sample_states(&shells, activity::unix_now());
                 for completion in tracker.take_completions() {
                     if let Err(error) = notifications::record_completion(
                         &home,
@@ -1175,10 +1177,17 @@ impl Workspace {
         self.project_recency_sampled_at = Some(Instant::now());
         let state = self.state.clone();
         let sources = project_recency_sources(&state);
+        let home = self.sessions.state_home().to_path_buf();
         let work = cx.background_executor().spawn(async move {
             // One scan at a time for the whole process: the other windows read
             // what it leaves in the shared cache.
             let edits = project_recency::scan(&state);
+            // `riwork project list --json`, and so the phone, sort by these
+            // dates, and only this process knows them.
+            let known = state.projects.iter().map(|project| project.id.as_str());
+            if let Err(error) = recency_file::publish(&home, &edits, known, activity::unix_now()) {
+                eprintln!("riwork project recency: {error}");
+            }
             (sources, edits)
         });
         cx.spawn(async move |this, cx| {
@@ -5690,6 +5699,10 @@ impl Workspace {
                     .shell_id()
                     .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
                 let display_title = codex_tab_title(&tab.title, shell, &account_numbers);
+                let activity_hint = tab
+                    .shell_id()
+                    .and_then(|id| self.agent_activity.get(id))
+                    .and_then(AgentState::hint);
                 div()
                     .id(("tab", tab_id))
                     .flex()
@@ -5736,7 +5749,14 @@ impl Workspace {
                                 .child(div().text_color(rgb(colors.magenta)).child(mark.to_owned()))
                                 .child(rest.to_owned())
                                 .into_any_element(),
-                            None => display_title.clone().into_any_element(),
+                            // What the agent in the tab is doing, on hover.
+                            None => match activity_hint {
+                                Some(hint) => div()
+                                    .child(display_title.clone())
+                                    .child(tooltip::anchor(hint, Look::Pane))
+                                    .into_any_element(),
+                                None => display_title.clone().into_any_element(),
+                            },
                         },
                     })
                     .children(close_visible.then(|| {

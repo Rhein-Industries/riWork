@@ -1,4 +1,8 @@
-//! Claude completion hooks retain identifiers only, never prompts or replies.
+//! Claude hooks retain identifiers only, never prompts or replies. They keep
+//! one small cursor per shell: which conversation and turn the pane is in,
+//! whether the turn completed, since when, and which subagents have started
+//! and not yet stopped. `claude_state` turns the cursor into the activity the
+//! desktop and the phone show.
 
 use std::{
     fs,
@@ -11,16 +15,89 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use uuid::Uuid;
 
-use crate::sessions::{HarnessKind, SessionManager};
+use crate::{
+    activity::{AgentActivity, AgentState, SUBAGENT_STALE_SECS, Subagents, unix_now},
+    sessions::{HarnessKind, SessionManager},
+};
 
 /// Events RiWork hooks into every Claude launch, through per-invocation
 /// `--settings` only. Stop and UserPromptSubmit track the turn; SessionStart
-/// rebinds the identity after /clear or /resume; SubagentStop proves a turn is
-/// running when a UserPromptSubmit was missed.
-pub(crate) const CLAUDE_HOOK_EVENTS: [&str; 4] =
-    ["UserPromptSubmit", "Stop", "SessionStart", "SubagentStop"];
+/// rebinds the identity after /clear or /resume; SubagentStart and
+/// SubagentStop pair up by `agent_id` to count the subagents a turn is
+/// running, and SubagentStop also proves a turn is running when a
+/// UserPromptSubmit was missed.
+pub(crate) const CLAUDE_HOOK_EVENTS: [&str; 5] = [
+    "UserPromptSubmit",
+    "Stop",
+    "SessionStart",
+    "SubagentStart",
+    "SubagentStop",
+];
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_CURSOR_BYTES: u64 = 16 * 1024;
+/// Subagents remembered per shell. A cursor stays far below `MAX_CURSOR_BYTES`
+/// with this many, whatever their names.
+const MAX_SUBAGENTS: usize = 32;
+/// An open turn that has shown no sign of life for this long reads as waiting.
+/// Claude sends no hook when a turn is interrupted with Esc, and a subagent
+/// killed with it never sends its SubagentStop, so silence is the only evidence.
+/// A sign of life is a hook event or a refresh of the status line, which Claude
+/// runs after every message.
+const TURN_QUIET_SECS: u64 = 10 * 60;
+const MAX_SUBAGENT_ID_BYTES: usize = 64;
+const MAX_KIND_BYTES: usize = 40;
+
+/// A hook field that should be text. Anything else is tolerated and ignored,
+/// so a Claude version that changes a field cannot make every hook fail.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Text {
+    Text(String),
+    Other(IgnoredAny),
+}
+
+impl Text {
+    fn get(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+/// One entry of a Stop hook's `background_tasks`. Only these four fields are
+/// read: the entry's `description` is free text and is never looked at.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BackgroundTask {
+    Entry {
+        id: Option<String>,
+        #[serde(rename = "type")]
+        kind: Option<String>,
+        status: Option<String>,
+        agent_type: Option<String>,
+    },
+    Other(IgnoredAny),
+}
+
+impl BackgroundTask {
+    /// The id and kind of a subagent still running, if this entry is one.
+    fn running_subagent(&self) -> Option<(&str, Option<&str>)> {
+        match self {
+            Self::Entry {
+                id: Some(id),
+                kind: Some(kind),
+                status,
+                agent_type,
+            } if kind == "subagent"
+                && status.as_deref().is_none_or(|status| status == "running") =>
+            {
+                Some((id, agent_type.as_deref()))
+            }
+            _ => None,
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct ClaudeHookInput {
@@ -31,14 +108,18 @@ struct ClaudeHookInput {
     /// SessionStart only: startup, resume, clear or compact.
     #[serde(default)]
     source: Option<String>,
+    /// Present on events that fire inside a subagent, and on its start and stop.
     #[serde(default)]
-    agent_id: Option<IgnoredAny>,
+    agent_id: Option<Text>,
+    /// The kind of subagent: a name such as `general-purpose` or `Explore`.
+    #[serde(default)]
+    agent_type: Option<Text>,
     #[serde(default)]
     agent_transcript_path: Option<IgnoredAny>,
     #[serde(default)]
     stop_hook_active: bool,
     #[serde(default)]
-    background_tasks: Vec<IgnoredAny>,
+    background_tasks: Vec<BackgroundTask>,
     #[serde(default)]
     session_crons: Vec<IgnoredAny>,
 }
@@ -48,6 +129,44 @@ struct ClaudeTurnCursor {
     session_id: String,
     turn_id: String,
     completed: bool,
+    /// The turn's Stop arrived. `completed` is withdrawn by a SubagentStop, so
+    /// that a prompt is never typed into a turn that may be running; this stays
+    /// until the next turn starts, because Claude ends the prompt suggestion it
+    /// makes after a reply with a SubagentStop of its own (no SubagentStart came
+    /// before it), which says nothing about the turn.
+    #[serde(default, skip_serializing_if = "is_false")]
+    ended: bool,
+    /// Unix seconds at which the current phase began: the turn's start, its
+    /// Stop, or the session's start. Zero in a cursor an older build wrote.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    since_unix: u64,
+    /// Unix seconds of the last hook event this cursor took in.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    seen_unix: u64,
+    /// When a Stop that listed background work paused the turn without ending
+    /// it: Claude is back at its prompt, and will be woken when the work is done.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    paused_unix: u64,
+    /// Subagents started and not yet stopped, in start order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    subagents: Vec<RunningSubagent>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct RunningSubagent {
+    id: String,
+    /// `agent_type`, a name; absent when it was empty or not a plain name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    started_unix: u64,
 }
 
 fn valid_identifier(id: &str) -> bool {
@@ -58,8 +177,35 @@ fn valid_identifier(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_:".contains(&byte))
 }
 
+/// A subagent kind or role as it is shown: a short plain name.
+pub(crate) fn valid_kind(kind: &str) -> bool {
+    !kind.is_empty()
+        && kind.len() <= MAX_KIND_BYTES
+        && kind
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_:.".contains(&byte))
+}
+
 impl ClaudeTurnCursor {
+    /// A cursor for a conversation's new phase, with nothing running in it.
+    fn begin(session_id: &str, turn_id: String, completed: bool, now: u64) -> Self {
+        Self {
+            session_id: session_id.to_owned(),
+            turn_id,
+            completed,
+            ended: completed,
+            since_unix: now,
+            seen_unix: now,
+            paused_unix: 0,
+            subagents: Vec::new(),
+        }
+    }
+
     fn observe(&mut self, input: &ClaudeHookInput) -> Option<String> {
+        self.observe_at(input, unix_now())
+    }
+
+    fn observe_at(&mut self, input: &ClaudeHookInput, now: u64) -> Option<String> {
         if !valid_identifier(&input.session_id)
             || input
                 .prompt_id
@@ -68,14 +214,36 @@ impl ClaudeTurnCursor {
         {
             return None;
         }
-        if input.hook_event_name == "SubagentStop" {
-            // A subagent just finished, so this session's main agent is
-            // mid-turn even if its UserPromptSubmit was missed. Drop any stale
-            // completion; the turn's own Stop completes it again. Never complete.
-            if self.session_id == input.session_id {
-                self.completed = false;
+        self.expire(now);
+        self.seen_unix = now;
+        let agent = input.agent_id.as_ref().and_then(Text::get);
+        match input.hook_event_name.as_str() {
+            "SubagentStart" => {
+                self.subagent_started(input, now);
+                return None;
             }
-            return None;
+            "SubagentStop" => {
+                // A subagent just finished, so this session's main agent is
+                // mid-turn even if its UserPromptSubmit was missed. Drop any stale
+                // completion; the turn's own Stop completes it again. Never complete.
+                if self.session_id == input.session_id {
+                    self.completed = false;
+                    // One that names a prompt the cursor never saw begin belongs to
+                    // a turn whose UserPromptSubmit was missed: it is running.
+                    if input
+                        .prompt_id
+                        .as_deref()
+                        .is_some_and(|turn| turn != self.turn_id)
+                    {
+                        self.ended = false;
+                    }
+                    if let Some(agent) = agent {
+                        self.subagents.retain(|running| running.id != agent);
+                    }
+                }
+                return None;
+            }
+            _ => {}
         }
         if input.agent_id.is_some() || input.agent_transcript_path.is_some() {
             return None;
@@ -90,11 +258,7 @@ impl ClaudeTurnCursor {
                 if !(input.source.as_deref() == Some("compact")
                     && self.session_id == input.session_id)
                 {
-                    *self = Self {
-                        session_id: input.session_id.clone(),
-                        turn_id: String::new(),
-                        completed: false,
-                    };
+                    *self = Self::begin(&input.session_id, String::new(), false, now);
                 }
                 None
             }
@@ -104,20 +268,34 @@ impl ClaudeTurnCursor {
                     .clone()
                     .unwrap_or_else(|| Uuid::new_v4().to_string());
                 // Repeated delivery of a known prompt cannot reopen its Stop.
+                // A new turn starts without the previous one's subagents: they
+                // belong to it, and an interrupted turn never says they ended.
+                // A background subagent still running comes back at the next
+                // Stop, which lists it.
                 if self.session_id != input.session_id || self.turn_id != turn {
-                    *self = Self {
-                        session_id: input.session_id.clone(),
-                        turn_id: turn,
-                        completed: false,
-                    };
+                    *self = Self::begin(&input.session_id, turn, false, now);
                 }
                 None
             }
-            "Stop"
-                if !input.stop_hook_active
-                    && input.background_tasks.is_empty()
-                    && input.session_crons.is_empty() =>
-            {
+            "Stop" if !input.stop_hook_active => {
+                // Whatever the Stop lists as running is what runs, whether or
+                // not this Stop ends the turn.
+                if self.session_id == input.session_id {
+                    self.reconcile(&input.background_tasks, now);
+                }
+                if !input.background_tasks.is_empty() || !input.session_crons.is_empty() {
+                    // Claude is back at its prompt but the turn is not over: it
+                    // is paused until the background work wakes it.
+                    if self.session_id == input.session_id
+                        && input
+                            .prompt_id
+                            .as_ref()
+                            .is_none_or(|turn| self.turn_id.is_empty() || turn == &self.turn_id)
+                    {
+                        self.paused_unix = now;
+                    }
+                    return None;
+                }
                 // A rebound session (SessionStart) has no turn yet but still
                 // rejects a late Stop that belongs to the replaced session.
                 if (!self.session_id.is_empty() && self.session_id != input.session_id)
@@ -141,17 +319,140 @@ impl ClaudeTurnCursor {
                 if self.session_id == input.session_id && self.turn_id == turn && self.completed {
                     return None;
                 }
-                *self = Self {
-                    session_id: input.session_id.clone(),
-                    turn_id: turn.clone(),
-                    completed: true,
-                };
+                // The turn is over, and with it every subagent it started.
+                *self = Self::begin(&input.session_id, turn.clone(), true, now);
                 Some(
                     serde_json::to_string(&("claude", &input.session_id, turn))
                         .expect("identifiers serialize"),
                 )
             }
             _ => None,
+        }
+    }
+
+    /// The activity the cursor stands for. `status_line` is when Claude last
+    /// refreshed its status line, which it does after every message.
+    ///
+    /// - a turn that is open and has shown a sign of life lately, or a subagent
+    ///   that is running: working;
+    /// - a turn whose Stop arrived: done;
+    /// - otherwise waiting: a session that started and has not been prompted, a
+    ///   turn paused by a Stop that listed background work, or a turn that has
+    ///   gone quiet (see `TURN_QUIET_SECS`).
+    ///
+    /// Subagents are reported only while the pane is working, and not once they
+    /// are `SUBAGENT_STALE_SECS` old.
+    fn state(&self, now: u64, status_line: Option<u64>) -> AgentState {
+        let mut subagents = Subagents::default();
+        let mut subagents_since = u64::MAX;
+        for running in &self.subagents {
+            if now.saturating_sub(running.started_unix) < SUBAGENT_STALE_SECS {
+                subagents.add(running.kind.as_deref());
+                subagents_since = subagents_since.min(running.started_unix);
+            }
+        }
+        let last_sign = self.seen_unix.max(status_line.unwrap_or(0));
+        let quiet = last_sign > 0 && now.saturating_sub(last_sign) > TURN_QUIET_SECS;
+        let finished = self.completed || self.ended;
+        let turn_open = !finished && !self.turn_id.is_empty();
+        let turn_working = turn_open && self.paused_unix == 0 && !quiet;
+        let (activity, since) = if turn_working {
+            (AgentActivity::Working, self.since_unix)
+        } else if subagents.working > 0 {
+            (AgentActivity::Working, subagents_since)
+        } else if finished {
+            (AgentActivity::Done, self.since_unix)
+        } else if self.paused_unix > 0 {
+            (AgentActivity::Waiting, self.paused_unix)
+        } else if turn_open {
+            (AgentActivity::Waiting, last_sign)
+        } else {
+            (AgentActivity::Waiting, self.since_unix)
+        };
+        AgentState {
+            activity,
+            since_unix: (since > 0).then_some(since),
+            subagents: if activity == AgentActivity::Working {
+                subagents
+            } else {
+                Subagents::default()
+            },
+        }
+    }
+
+    /// Subagents that have gone unheard of for `SUBAGENT_STALE_SECS` are
+    /// dropped: an interrupted turn sends neither their SubagentStop nor a Stop.
+    fn expire(&mut self, now: u64) {
+        self.subagents
+            .retain(|running| now.saturating_sub(running.started_unix) < SUBAGENT_STALE_SECS);
+    }
+
+    /// A subagent of this conversation's current turn began. One that starts
+    /// after the turn's Stop belongs to no turn Claude is working on (it is the
+    /// prompt suggestion that follows a reply, for one) and is not counted.
+    fn subagent_started(&mut self, input: &ClaudeHookInput, now: u64) {
+        let Some(id) = input
+            .agent_id
+            .as_ref()
+            .and_then(Text::get)
+            .filter(|id| valid_identifier(id) && id.len() <= MAX_SUBAGENT_ID_BYTES)
+        else {
+            return;
+        };
+        let newer_turn = input
+            .prompt_id
+            .as_deref()
+            .is_some_and(|turn| turn != self.turn_id);
+        if self.session_id != input.session_id || ((self.completed || self.ended) && !newer_turn) {
+            return;
+        }
+        if newer_turn {
+            // The start names a turn the cursor never saw begin, so its
+            // UserPromptSubmit was missed and that turn is running.
+            self.ended = false;
+        }
+        let kind = input
+            .agent_type
+            .as_ref()
+            .and_then(Text::get)
+            .filter(|kind| valid_kind(kind))
+            .map(str::to_owned);
+        // SubagentStart repeats when a subagent is resumed, and a resumed
+        // subagent means the paused turn is working again.
+        self.paused_unix = 0;
+        self.subagents.retain(|running| running.id != id);
+        self.subagents.push(RunningSubagent {
+            id: id.to_owned(),
+            kind,
+            started_unix: now,
+        });
+        if self.subagents.len() > MAX_SUBAGENTS {
+            self.subagents.remove(0);
+        }
+    }
+
+    /// Makes the subagent list match a Stop's `background_tasks`, the parent
+    /// session's running work: a tracked subagent the list lacks has finished
+    /// (its SubagentStop was lost), and a listed one not tracked yet had its
+    /// SubagentStart missed. A foreground subagent cannot outlive its turn's Stop.
+    fn reconcile(&mut self, tasks: &[BackgroundTask], now: u64) {
+        let running: Vec<_> = tasks
+            .iter()
+            .filter_map(BackgroundTask::running_subagent)
+            .filter(|(id, _)| valid_identifier(id) && id.len() <= MAX_SUBAGENT_ID_BYTES)
+            .collect();
+        self.subagents
+            .retain(|known| running.iter().any(|(id, _)| *id == known.id));
+        for (id, kind) in running {
+            if self.subagents.len() < MAX_SUBAGENTS
+                && !self.subagents.iter().any(|known| known.id == id)
+            {
+                self.subagents.push(RunningSubagent {
+                    id: id.to_owned(),
+                    kind: kind.filter(|kind| valid_kind(kind)).map(str::to_owned),
+                    started_unix: now,
+                });
+            }
         }
     }
 }
@@ -218,8 +519,8 @@ pub fn record_claude_hook(home: &Path, shell_id: &str, input: &str) -> Result<()
     result
 }
 
-/// Structured Claude lifecycle gate; terminal prompt evidence is also required.
-pub(crate) fn schedule_state(home: &Path, shell_id: &str) -> Option<(String, Option<String>)> {
+/// The cursor a shell's hooks keep, if there is a usable one.
+fn read_cursor(home: &Path, shell_id: &str) -> Option<ClaudeTurnCursor> {
     let file = fs::File::open(
         home.join("agent-hooks/claude")
             .join(format!("{shell_id}.json")),
@@ -229,11 +530,28 @@ pub(crate) fn schedule_state(home: &Path, shell_id: &str) -> Option<(String, Opt
         return None;
     }
     let cursor: ClaudeTurnCursor = serde_json::from_reader(file.take(MAX_CURSOR_BYTES + 1)).ok()?;
-    if !valid_identifier(&cursor.session_id) {
-        return None;
-    }
+    valid_identifier(&cursor.session_id).then_some(cursor)
+}
+
+/// Structured Claude lifecycle gate; terminal prompt evidence is also required.
+pub(crate) fn schedule_state(home: &Path, shell_id: &str) -> Option<(String, Option<String>)> {
+    let cursor = read_cursor(home, shell_id)?;
     let token = (cursor.completed && valid_identifier(&cursor.turn_id)).then_some(cursor.turn_id);
     Some((cursor.session_id, token))
+}
+
+/// What the hooks say a live Claude pane is doing, or `None` when they have
+/// said nothing (a launch from before the hooks, or one that has not started
+/// its session yet). See `ClaudeTurnCursor::state`.
+pub(crate) fn claude_state(home: &Path, shell_id: &str, now: u64) -> Option<AgentState> {
+    let cursor = read_cursor(home, shell_id)?;
+    // The status line RiWork gives every launch writes its usage cache on each
+    // refresh, so the cache's time says when Claude last drew a message.
+    let status_line = crate::usage::read_claude_usage_at(home, shell_id)
+        .ok()
+        .flatten()
+        .map(|usage| usage.updated_at_unix);
+    Some(cursor.state(now, status_line))
 }
 
 fn private_file(path: &Path, create_new: bool) -> Result<fs::File, String> {
@@ -582,5 +900,761 @@ mod tests {
             schedule_state(&fixture.home, &fixture.shell_id),
             Some(("session-b".into(), None))
         );
+    }
+
+    fn subagent_hook(
+        event: &str,
+        session: &str,
+        prompt: Option<&str>,
+        agent: &str,
+        kind: Option<&str>,
+    ) -> ClaudeHookInput {
+        serde_json::from_value(serde_json::json!({
+            "hook_event_name":event,"session_id":session,"prompt_id":prompt,
+            "agent_id":agent,"agent_type":kind,
+            "prompt":"private user prompt","last_assistant_message":"private subagent reply"
+        }))
+        .unwrap()
+    }
+
+    fn stop_listing(session: &str, prompt: &str, tasks: serde_json::Value) -> ClaudeHookInput {
+        serde_json::from_value(serde_json::json!({
+            "hook_event_name":"Stop","session_id":session,"prompt_id":prompt,
+            "background_tasks":tasks,"last_assistant_message":"private reply"
+        }))
+        .unwrap()
+    }
+
+    fn working(cursor: &ClaudeTurnCursor, now: u64) -> (AgentActivity, usize, Vec<String>) {
+        let state = cursor.state(now, None);
+        (
+            state.activity,
+            state.subagents.working,
+            state.subagents.kinds,
+        )
+    }
+
+    fn open_turn(cursor: &mut ClaudeTurnCursor, now: u64) {
+        cursor.observe_at(
+            &hook("UserPromptSubmit", "session-a", Some("prompt-a")),
+            now,
+        );
+    }
+
+    #[test]
+    fn subagent_starts_and_stops_pair_by_agent_id_and_the_parents_stop_clears_the_rest() {
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 100);
+        for (agent, kind) in [("agent-1", "general-purpose"), ("agent-2", "Explore")] {
+            let start = subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-a"),
+                agent,
+                Some(kind),
+            );
+            assert!(cursor.observe_at(&start, 110).is_none());
+        }
+        assert_eq!(
+            working(&cursor, 120),
+            (
+                AgentActivity::Working,
+                2,
+                vec!["general-purpose".to_owned(), "Explore".to_owned()]
+            )
+        );
+        // The same subagent starting again (resumed) is still one.
+        let again = subagent_hook(
+            "SubagentStart",
+            "session-a",
+            Some("prompt-a"),
+            "agent-1",
+            Some("general-purpose"),
+        );
+        cursor.observe_at(&again, 125);
+        assert_eq!(working(&cursor, 126).1, 2);
+        // A stop pairs with its own start only; an unknown id changes nothing.
+        let stop = |agent: &str| {
+            subagent_hook(
+                "SubagentStop",
+                "session-a",
+                Some("prompt-a"),
+                agent,
+                Some("x"),
+            )
+        };
+        cursor.observe_at(&stop("agent-1"), 130);
+        assert_eq!(
+            working(&cursor, 131),
+            (AgentActivity::Working, 1, vec!["Explore".to_owned()])
+        );
+        cursor.observe_at(&stop("never-started"), 132);
+        assert_eq!(working(&cursor, 133).1, 1);
+        // A subagent of another conversation is not this one's.
+        cursor.observe_at(
+            &subagent_hook(
+                "SubagentStop",
+                "session-z",
+                Some("prompt-a"),
+                "agent-2",
+                None,
+            ),
+            134,
+        );
+        assert_eq!(working(&cursor, 135).1, 1);
+        // The turn's own Stop ends it, subagents included, whatever they sent.
+        assert!(
+            cursor
+                .observe_at(&hook("Stop", "session-a", Some("prompt-a")), 140)
+                .is_some()
+        );
+        assert_eq!(working(&cursor, 141), (AgentActivity::Done, 0, Vec::new()));
+        assert!(cursor.subagents.is_empty());
+    }
+
+    #[test]
+    fn a_subagent_that_never_stops_expires_and_an_interrupted_turn_goes_quiet() {
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 1_000);
+        cursor.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-a"),
+                "agent-1",
+                Some("Plan"),
+            ),
+            1_010,
+        );
+        let almost = 1_010 + SUBAGENT_STALE_SECS - 1;
+        assert_eq!(working(&cursor, almost).1, 1);
+        // Past the timeout it is no longer counted. Nothing has been heard of the
+        // turn for as long, so it reads as waiting: the interrupted case.
+        let expired = 1_010 + SUBAGENT_STALE_SECS;
+        assert_eq!(
+            working(&cursor, expired),
+            (AgentActivity::Waiting, 0, Vec::new())
+        );
+        // And the cursor stops carrying it the next time a hook arrives.
+        cursor.observe_at(&hook("SessionStart", "session-a", None), expired + 1);
+        assert!(cursor.subagents.is_empty());
+        let mut again = ClaudeTurnCursor::default();
+        open_turn(&mut again, 1_000);
+        again.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-a"),
+                "agent-1",
+                None,
+            ),
+            1_010,
+        );
+        again.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-a"),
+                "agent-2",
+                None,
+            ),
+            expired,
+        );
+        assert_eq!(
+            again.subagents.len(),
+            1,
+            "the old one is dropped when the next arrives"
+        );
+        assert_eq!(again.subagents[0].id, "agent-2");
+    }
+
+    #[test]
+    fn subagents_belong_to_a_turn_and_a_conversation() {
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 100);
+        let start = |agent: &str| {
+            subagent_hook("SubagentStart", "session-a", Some("prompt-a"), agent, None)
+        };
+        cursor.observe_at(&start("agent-1"), 110);
+        // The same prompt delivered again changes nothing.
+        open_turn(&mut cursor, 111);
+        assert_eq!(working(&cursor, 112).1, 1);
+        // A new prompt starts a turn without the old turn's subagents.
+        cursor.observe_at(
+            &hook("UserPromptSubmit", "session-a", Some("prompt-b")),
+            120,
+        );
+        assert_eq!(
+            working(&cursor, 121),
+            (AgentActivity::Working, 0, Vec::new())
+        );
+        // /clear and /resume rebind and forget them; a compaction keeps them.
+        cursor.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-b"),
+                "agent-2",
+                None,
+            ),
+            130,
+        );
+        cursor.observe_at(&session_start("session-a", "compact"), 131);
+        assert_eq!(working(&cursor, 132).1, 1);
+        cursor.observe_at(&session_start("session-b", "clear"), 133);
+        assert_eq!(
+            working(&cursor, 134),
+            (AgentActivity::Waiting, 0, Vec::new())
+        );
+        // A start for a conversation the cursor does not hold is ignored.
+        cursor.observe_at(&start("agent-3"), 135);
+        assert!(cursor.subagents.is_empty());
+    }
+
+    #[test]
+    fn a_subagent_after_the_turns_stop_is_not_counted_but_one_of_a_newer_turn_is() {
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 100);
+        cursor.observe_at(&hook("Stop", "session-a", Some("prompt-a")), 110);
+        // The prompt suggestion that follows a reply belongs to the finished turn.
+        cursor.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-a"),
+                "suggestion",
+                Some(""),
+            ),
+            111,
+        );
+        assert_eq!(working(&cursor, 112), (AgentActivity::Done, 0, Vec::new()));
+        // A start that names a prompt the cursor has not seen means the
+        // UserPromptSubmit was missed: that turn is running.
+        cursor.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-new"),
+                "agent-1",
+                Some("Plan"),
+            ),
+            113,
+        );
+        assert_eq!(
+            working(&cursor, 114),
+            (AgentActivity::Working, 1, vec!["Plan".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_stop_that_lists_background_work_keeps_the_turn_open_and_corrects_the_subagents() {
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 100);
+        for agent in ["agent-1", "agent-2"] {
+            cursor.observe_at(
+                &subagent_hook(
+                    "SubagentStart",
+                    "session-a",
+                    Some("prompt-a"),
+                    agent,
+                    Some("Plan"),
+                ),
+                110,
+            );
+        }
+        // agent-2 ended without its SubagentStop being seen; agent-3's start was
+        // missed; the shell task is not a subagent; a finished one is not running.
+        let stop = stop_listing(
+            "session-a",
+            "prompt-a",
+            serde_json::json!([
+                {"id":"agent-1","type":"subagent","status":"running","agent_type":"Plan","description":"private"},
+                {"id":"agent-3","type":"subagent","status":"running","agent_type":"Explore"},
+                {"id":"agent-4","type":"subagent","status":"completed"},
+                {"id":"shell-1","type":"shell","status":"running"},
+                {"type":"subagent"},
+                7,
+                {"id":5,"type":"subagent","status":"running"}
+            ]),
+        );
+        assert!(
+            cursor.observe_at(&stop, 200).is_none(),
+            "the turn is not over"
+        );
+        assert!(!cursor.completed);
+        let ids: Vec<_> = cursor.subagents.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["agent-1", "agent-3"]);
+        assert_eq!(
+            cursor.subagents[0].started_unix, 110,
+            "a known one keeps its start"
+        );
+        assert_eq!(
+            working(&cursor, 201),
+            (
+                AgentActivity::Working,
+                2,
+                vec!["Plan".to_owned(), "Explore".to_owned()]
+            )
+        );
+        // When the work ends the turn ends: a Stop that lists nothing completes it.
+        let done = cursor.observe_at(&hook("Stop", "session-a", Some("prompt-a")), 300);
+        assert!(done.is_some());
+        assert_eq!(working(&cursor, 301), (AgentActivity::Done, 0, Vec::new()));
+        // A Stop that is about another conversation corrects nothing.
+        let mut other = ClaudeTurnCursor::default();
+        open_turn(&mut other, 100);
+        other.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-a"),
+                "agent-1",
+                None,
+            ),
+            110,
+        );
+        other.observe_at(
+            &stop_listing("session-z", "prompt-z", serde_json::json!([])),
+            120,
+        );
+        assert_eq!(other.subagents.len(), 1);
+    }
+
+    #[test]
+    fn untrusted_subagent_fields_are_bounded_before_they_are_saved() {
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 100);
+        let start = |agent: &str, kind: &str| {
+            subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-a"),
+                agent,
+                Some(kind),
+            )
+        };
+        // Unusable ids are not stored; an unusable kind only loses its name.
+        for bad in [
+            "",
+            "has space",
+            "slash/id",
+            &"x".repeat(MAX_SUBAGENT_ID_BYTES + 1),
+        ] {
+            cursor.observe_at(&start(bad, "Plan"), 110);
+        }
+        assert!(cursor.subagents.is_empty());
+        for (index, kind) in ["", "two words", "../path", &"k".repeat(MAX_KIND_BYTES + 1)]
+            .iter()
+            .enumerate()
+        {
+            cursor.observe_at(&start(&format!("agent-{index}"), kind), 110);
+        }
+        assert_eq!(cursor.subagents.len(), 4);
+        assert!(cursor.subagents.iter().all(|s| s.kind.is_none()));
+        // Fields of another type are tolerated, not an error.
+        let odd: ClaudeHookInput = serde_json::from_value(serde_json::json!({
+            "hook_event_name":"SubagentStart","session_id":"session-a","prompt_id":"prompt-a",
+            "agent_id":12,"agent_type":["Plan"]
+        }))
+        .unwrap();
+        cursor.observe_at(&odd, 111);
+        assert_eq!(cursor.subagents.len(), 4);
+        // However many start, the cursor stays far below the size limit.
+        for index in 0..100 {
+            cursor.observe_at(
+                &start(
+                    &format!("{index:0>width$}", width = MAX_SUBAGENT_ID_BYTES),
+                    "k",
+                ),
+                112 + index,
+            );
+        }
+        assert_eq!(cursor.subagents.len(), MAX_SUBAGENTS);
+        assert_eq!(cursor.subagents.last().unwrap().started_unix, 211);
+        assert!(serde_json::to_vec(&cursor).unwrap().len() < MAX_CURSOR_BYTES as usize / 2);
+    }
+
+    #[test]
+    fn a_cursor_from_an_older_build_still_reads_and_still_schedules() {
+        let fixture = Fixture::new();
+        let dir = fixture.home.join("agent-hooks/claude");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.json", fixture.shell_id));
+        fs::write(
+            &path,
+            r#"{"session_id":"session-a","turn_id":"prompt-a","completed":true}"#,
+        )
+        .unwrap();
+        let state = claude_state(&fixture.home, &fixture.shell_id, 5_000).unwrap();
+        assert_eq!(
+            state,
+            AgentState {
+                activity: AgentActivity::Done,
+                since_unix: None,
+                subagents: Subagents::default(),
+            }
+        );
+        assert_eq!(
+            schedule_state(&fixture.home, &fixture.shell_id),
+            Some(("session-a".into(), Some("prompt-a".into())))
+        );
+        // A newer hook upgrades the file, and an older reader of it (the
+        // scheduler's, which knows no new field) is not disturbed by them.
+        fixture.record("UserPromptSubmit", "prompt-b").unwrap();
+        record_claude_hook(
+            &fixture.home,
+            &fixture.shell_id,
+            &serde_json::json!({
+                "hook_event_name":"SubagentStart","session_id":"session-a",
+                "prompt_id":"prompt-b","agent_id":"agent-1","agent_type":"Plan"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["subagents"][0]["id"], "agent-1");
+        assert_eq!(saved["subagents"][0]["kind"], "Plan");
+        assert!(saved["since_unix"].as_u64().unwrap() > 0);
+        assert_eq!(
+            schedule_state(&fixture.home, &fixture.shell_id),
+            Some(("session-a".into(), None))
+        );
+        let state = claude_state(&fixture.home, &fixture.shell_id, unix_now()).unwrap();
+        assert_eq!(state.activity, AgentActivity::Working);
+        assert_eq!(state.subagents.working, 1);
+        assert!(state.since_unix.is_some());
+    }
+
+    #[test]
+    fn subagent_hooks_keep_identifiers_only_and_the_activity_follows_the_files() {
+        let fixture = Fixture::new();
+        assert!(claude_state(&fixture.home, &fixture.shell_id, unix_now()).is_none());
+        let write = |payload: serde_json::Value| {
+            record_claude_hook(&fixture.home, &fixture.shell_id, &payload.to_string()).unwrap()
+        };
+        let state = || claude_state(&fixture.home, &fixture.shell_id, unix_now()).unwrap();
+        write(
+            serde_json::json!({"hook_event_name":"SessionStart","session_id":"session-a","source":"startup"}),
+        );
+        assert_eq!(state().activity, AgentActivity::Waiting);
+        fixture.record("UserPromptSubmit", "prompt-a").unwrap();
+        assert_eq!(state().activity, AgentActivity::Working);
+        write(serde_json::json!({
+            "hook_event_name":"SubagentStart","session_id":"session-a","prompt_id":"prompt-a",
+            "agent_id":"agent-1","agent_type":"general-purpose",
+            "transcript_path":"/private/transcript.jsonl","cwd":"/private/project"
+        }));
+        write(serde_json::json!({
+            "hook_event_name":"SubagentStop","session_id":"session-a","prompt_id":"prompt-a",
+            "agent_id":"agent-1","agent_type":"general-purpose","last_assistant_message":"private subagent reply",
+            "agent_transcript_path":"/private/agent.jsonl",
+            "background_tasks":[{"id":"agent-1","type":"subagent","status":"running","description":"private task"}]
+        }));
+        assert_eq!(state().subagents.working, 0);
+        write(serde_json::json!({
+            "hook_event_name":"SubagentStart","session_id":"session-a","prompt_id":"prompt-a",
+            "agent_id":"agent-2","agent_type":"Explore"
+        }));
+        let working = state();
+        assert_eq!(
+            (working.activity, working.subagents.working),
+            (AgentActivity::Working, 1)
+        );
+        write(serde_json::json!({
+            "hook_event_name":"Stop","session_id":"session-a","prompt_id":"prompt-a",
+            "last_assistant_message":"private reply","background_tasks":[],"session_crons":[]
+        }));
+        let done = state();
+        assert_eq!(
+            (done.activity, done.subagents.working),
+            (AgentActivity::Done, 0)
+        );
+        let path = fixture
+            .home
+            .join("agent-hooks/claude")
+            .join(format!("{}.json", fixture.shell_id));
+        let saved = fs::read_to_string(path).unwrap();
+        for private in ["private", "transcript", "/project"] {
+            assert!(!saved.contains(private), "{private}: {saved}");
+        }
+    }
+
+    #[test]
+    fn an_open_turn_that_goes_quiet_reads_as_waiting_unless_the_status_line_is_alive() {
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 1_000);
+        let state = |now: u64, status_line: Option<u64>| cursor.state(now, status_line);
+        // Claude is working: the turn is open and was heard from a moment ago.
+        assert_eq!(state(1_005, None).activity, AgentActivity::Working);
+        assert_eq!(state(1_005, None).since_unix, Some(1_000));
+        // The boundary: ten minutes of silence is still working, one second more is not.
+        assert_eq!(
+            state(1_000 + TURN_QUIET_SECS, None).activity,
+            AgentActivity::Working
+        );
+        let quiet = state(1_000 + TURN_QUIET_SECS + 1, None);
+        assert_eq!(quiet.activity, AgentActivity::Waiting);
+        assert_eq!(
+            quiet.since_unix,
+            Some(1_000),
+            "waiting since the last sign of life"
+        );
+        // A turn Esc interrupted sends nothing, ever.
+        assert_eq!(
+            state(1_000 + 6 * 3_600, None).activity,
+            AgentActivity::Waiting
+        );
+        // Claude drawing a message (the status line ran) is a sign of life, so a
+        // long turn that never speaks to a hook keeps working.
+        let alive = state(1_000 + 3_600, Some(1_000 + 3_600 - 30));
+        assert_eq!(alive.activity, AgentActivity::Working);
+        assert_eq!(alive.since_unix, Some(1_000));
+        // A status line that stopped long ago is no better than no sign.
+        assert_eq!(
+            state(1_000 + 3_600, Some(1_100)).activity,
+            AgentActivity::Waiting
+        );
+        // A finished turn is done however long ago, and a cursor from a build that
+        // kept no times never counts as quiet.
+        cursor.observe_at(&hook("Stop", "session-a", Some("prompt-a")), 1_100);
+        assert_eq!(
+            cursor.state(1_100 + 24 * 3_600, None).activity,
+            AgentActivity::Done
+        );
+        let old: ClaudeTurnCursor = serde_json::from_str(
+            r#"{"session_id":"session-a","turn_id":"prompt-a","completed":false}"#,
+        )
+        .unwrap();
+        assert_eq!(old.state(9_999_999, None).activity, AgentActivity::Working);
+    }
+
+    #[test]
+    fn a_stop_that_lists_background_work_pauses_the_turn_until_it_wakes() {
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 100);
+        // A background shell command keeps the turn open (no completion), but
+        // Claude is back at its prompt: waiting, not working.
+        let stop = stop_listing(
+            "session-a",
+            "prompt-a",
+            serde_json::json!([{"id":"shell-1","type":"shell","status":"running","description":"private"}]),
+        );
+        assert!(cursor.observe_at(&stop, 200).is_none());
+        let paused = cursor.state(201, None);
+        assert_eq!(paused.activity, AgentActivity::Waiting);
+        assert_eq!(paused.since_unix, Some(200));
+        // A subagent in the list is work in progress: working, and counted.
+        let stop = stop_listing(
+            "session-a",
+            "prompt-a",
+            serde_json::json!([{"id":"agent-1","type":"subagent","status":"running","agent_type":"Plan"}]),
+        );
+        cursor.observe_at(&stop, 210);
+        let state = cursor.state(211, None);
+        assert_eq!(state.activity, AgentActivity::Working);
+        assert_eq!(state.subagents.working, 1);
+        assert_eq!(state.since_unix, Some(210));
+        // The subagent ends: the turn is paused again until Claude is woken.
+        cursor.observe_at(
+            &subagent_hook(
+                "SubagentStop",
+                "session-a",
+                Some("prompt-a"),
+                "agent-1",
+                Some("Plan"),
+            ),
+            300,
+        );
+        assert_eq!(cursor.state(301, None).activity, AgentActivity::Waiting);
+        // The wake-up is a prompt of its own: a new turn, working, then done.
+        cursor.observe_at(
+            &hook("UserPromptSubmit", "session-a", Some("prompt-b")),
+            301,
+        );
+        assert_eq!(cursor.state(302, None).activity, AgentActivity::Working);
+        assert!(
+            cursor
+                .observe_at(&hook("Stop", "session-a", Some("prompt-b")), 310)
+                .is_some()
+        );
+        assert_eq!(cursor.state(311, None).activity, AgentActivity::Done);
+        // A subagent resumed under a paused turn makes it work again.
+        let mut resumed = ClaudeTurnCursor::default();
+        open_turn(&mut resumed, 100);
+        resumed.observe_at(
+            &stop_listing(
+                "session-a",
+                "prompt-a",
+                serde_json::json!([{"id":"s","type":"shell"}]),
+            ),
+            120,
+        );
+        assert_eq!(resumed.paused_unix, 120);
+        resumed.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-a"),
+                "agent-9",
+                None,
+            ),
+            150,
+        );
+        assert_eq!(resumed.paused_unix, 0);
+        assert_eq!(resumed.state(151, None).activity, AgentActivity::Working);
+        // A Stop of an older turn that lists work does not pause the current one.
+        let mut current = ClaudeTurnCursor::default();
+        open_turn(&mut current, 100);
+        current.observe_at(
+            &stop_listing(
+                "session-a",
+                "prompt-old",
+                serde_json::json!([{"id":"s","type":"shell"}]),
+            ),
+            120,
+        );
+        assert_eq!(current.paused_unix, 0);
+    }
+
+    #[test]
+    fn the_recorded_flow_of_an_interactive_background_subagent_reads_right_at_each_step() {
+        // The order of events Claude Code 2.1.288 sent for one backgrounded subagent in
+        // the terminal: the Stop comes while the subagent still runs, and the subagent's
+        // end is followed by a prompt of its own that Claude answers.
+        let mut cursor = ClaudeTurnCursor::default();
+        let at = |cursor: &ClaudeTurnCursor, now| {
+            let state = cursor.state(now, None);
+            (state.activity, state.subagents.working)
+        };
+        cursor.observe_at(&session_start("session-a", "startup"), 0);
+        assert_eq!(at(&cursor, 1), (AgentActivity::Waiting, 0));
+        open_turn(&mut cursor, 5);
+        assert_eq!(at(&cursor, 6), (AgentActivity::Working, 0));
+        cursor.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-a"),
+                "a591",
+                Some("general-purpose"),
+            ),
+            10,
+        );
+        assert_eq!(at(&cursor, 11), (AgentActivity::Working, 1));
+        cursor.observe_at(
+            &stop_listing(
+                "session-a",
+                "prompt-a",
+                serde_json::json!([{"id":"a591","type":"subagent","status":"running","agent_type":"general-purpose","description":"x"}]),
+            ),
+            12,
+        );
+        assert_eq!(
+            at(&cursor, 13),
+            (AgentActivity::Working, 1),
+            "the subagent is still running"
+        );
+        assert_eq!(at(&cursor, 100), (AgentActivity::Working, 1));
+        cursor.observe_at(
+            &subagent_hook(
+                "SubagentStop",
+                "session-a",
+                Some("prompt-a"),
+                "a591",
+                Some("general-purpose"),
+            ),
+            105,
+        );
+        cursor.observe_at(
+            &hook("UserPromptSubmit", "session-a", Some("prompt-b")),
+            105,
+        );
+        assert_eq!(at(&cursor, 106), (AgentActivity::Working, 0));
+        cursor.observe_at(
+            &stop_listing("session-a", "prompt-b", serde_json::json!([])),
+            107,
+        );
+        assert_eq!(at(&cursor, 108), (AgentActivity::Done, 0));
+        // Esc during a foreground subagent: it starts and nothing else ever arrives.
+        let mut interrupted = ClaudeTurnCursor::default();
+        interrupted.observe_at(
+            &hook("UserPromptSubmit", "session-a", Some("prompt-c")),
+            1_000,
+        );
+        interrupted.observe_at(
+            &subagent_hook(
+                "SubagentStart",
+                "session-a",
+                Some("prompt-c"),
+                "a6cd",
+                Some("general-purpose"),
+            ),
+            1_004,
+        );
+        assert_eq!(at(&interrupted, 1_010), (AgentActivity::Working, 1));
+        let later = 1_004 + SUBAGENT_STALE_SECS;
+        assert_eq!(at(&interrupted, later), (AgentActivity::Waiting, 0));
+    }
+
+    #[test]
+    fn the_stray_subagent_stop_after_a_reply_does_not_reopen_a_finished_turn() {
+        // Claude 2.1.288 ends the prompt suggestion it makes after a tool-using reply
+        // with a SubagentStop that had no SubagentStart, a few seconds after the Stop.
+        let mut cursor = ClaudeTurnCursor::default();
+        open_turn(&mut cursor, 100);
+        assert!(
+            cursor
+                .observe_at(&hook("Stop", "session-a", Some("prompt-a")), 150)
+                .is_some()
+        );
+        let suggestion = subagent_hook(
+            "SubagentStop",
+            "session-a",
+            Some("prompt-a"),
+            "suggest",
+            Some(""),
+        );
+        assert!(cursor.observe_at(&suggestion, 154).is_none());
+        // The scheduler still treats the completion as withdrawn, as it always has ...
+        assert!(!cursor.completed);
+        // ... but the turn is over, and stays over for the display, however long.
+        let state = cursor.state(154 + 3_600, None);
+        assert_eq!(
+            (state.activity, state.since_unix),
+            (AgentActivity::Done, Some(150))
+        );
+        // A SubagentStop that names a prompt the cursor never saw means that turn runs.
+        let newer = subagent_hook(
+            "SubagentStop",
+            "session-a",
+            Some("prompt-new"),
+            "agent-1",
+            Some("Plan"),
+        );
+        cursor.observe_at(&newer, 200);
+        assert_eq!(cursor.state(201, None).activity, AgentActivity::Working);
+        // The next real turn ends the same way, and the suggestion after it changes nothing.
+        cursor.observe_at(
+            &hook("UserPromptSubmit", "session-a", Some("prompt-b")),
+            300,
+        );
+        assert_eq!(cursor.state(301, None).activity, AgentActivity::Working);
+        cursor.observe_at(&hook("Stop", "session-a", Some("prompt-b")), 320);
+        cursor.observe_at(
+            &subagent_hook(
+                "SubagentStop",
+                "session-a",
+                Some("prompt-b"),
+                "suggest-2",
+                Some(""),
+            ),
+            324,
+        );
+        assert_eq!(cursor.state(325, None).activity, AgentActivity::Done);
+        // The flag survives the file, and a cursor from an older build without it still reads.
+        let saved: ClaudeTurnCursor =
+            serde_json::from_str(&serde_json::to_string(&cursor).unwrap()).unwrap();
+        assert!(saved.ended);
+        assert_eq!(saved.state(325, None).activity, AgentActivity::Done);
     }
 }

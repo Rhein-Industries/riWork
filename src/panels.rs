@@ -15,7 +15,7 @@ use gpui::{
 };
 
 use crate::{
-    activity::{ActivityCounts, AgentActivity},
+    activity::{ActivityCounts, AgentActivity, AgentState},
     icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
@@ -166,7 +166,7 @@ pub struct PanelData<'a> {
     pub shells: &'a [ShellSession],
     pub shell_cwds: &'a BTreeMap<String, PathBuf>,
     pub metrics: &'a BTreeMap<String, SessionMetrics>,
-    pub activity: &'a BTreeMap<String, AgentActivity>,
+    pub activity: &'a BTreeMap<String, AgentState>,
     pub query: &'a str,
     pub search_focused: bool,
     pub focus: FocusHandle,
@@ -663,7 +663,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                         "{}{worktrees} trees · {done}/{} tasks · {shells} live",
                                         activity
                                             .summary()
-                                            .map(|summary| format!("Codex {summary} · "))
+                                            .map(|summary| format!("Agents {summary} · "))
                                             .unwrap_or_default(),
                                         tasks.len()
                                     ),
@@ -754,7 +754,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                 "{}{done}/{} TASKS · {}",
                                 activity
                                     .summary()
-                                    .map(|summary| format!("Codex {summary} · "))
+                                    .map(|summary| format!("Agents {summary} · "))
                                     .unwrap_or_default(),
                                 tasks.len(),
                                 short_id(&worktree.id)
@@ -838,6 +838,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     continue;
                 }
                 let metrics = data.metrics.get(&shell.id).copied().unwrap_or_default();
+                let status = shell_status_label(shell.alive, data.activity.get(&shell.id));
                 rows.push(row(
                     format!("shell-{}", shell.id),
                     false,
@@ -861,7 +862,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                     } else {
                                         colors.magenta
                                     }))
-                                    .child(if shell.alive { "● LIVE" } else { "× EXITED" }),
+                                    .child(status),
                             )
                             .into_any_element(),
                         line(path.into_owned(), colors.muted, 10.0),
@@ -2225,6 +2226,28 @@ fn task_mark(status: TaskStatus, colors: Palette) -> (&'static str, u32) {
         TaskStatus::Todo => ("□", colors.muted),
         TaskStatus::InProgress => ("◧", colors.gold),
         TaskStatus::Done => ("■", colors.cyan),
+    }
+}
+
+/// The right-hand label of a shell row: whether it lives, and for an agent what
+/// it is doing, with the subagents it has running. "● LIVE" when the agent's
+/// state is not known, as for a plain shell.
+fn shell_status_label(alive: bool, state: Option<&AgentState>) -> String {
+    if !alive {
+        return "× EXITED".to_owned();
+    }
+    let Some(state) = state else {
+        return "● LIVE".to_owned();
+    };
+    let mark = match state.activity {
+        AgentActivity::Working => "● WORKING",
+        AgentActivity::Done => "✓ DONE",
+        AgentActivity::Waiting => "◌ WAITING",
+        AgentActivity::Unknown | AgentActivity::Exited => return "● LIVE".to_owned(),
+    };
+    match state.subagents.label() {
+        Some(subagents) => format!("{mark} · {}", subagents.to_uppercase()),
+        None => mark.to_owned(),
     }
 }
 

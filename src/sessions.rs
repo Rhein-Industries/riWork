@@ -6473,7 +6473,13 @@ mod tests {
             let settings: serde_json::Value =
                 serde_json::from_str(&arguments[settings_index + 1]).unwrap();
             assert_eq!(settings["statusLine"]["type"], "command");
-            for event in ["UserPromptSubmit", "Stop", "SessionStart", "SubagentStop"] {
+            for event in [
+                "UserPromptSubmit",
+                "Stop",
+                "SessionStart",
+                "SubagentStart",
+                "SubagentStop",
+            ] {
                 let hook = settings["hooks"][event][0]["hooks"][0].as_object().unwrap();
                 assert_eq!(hook["type"], "command");
                 assert_eq!(
