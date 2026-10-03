@@ -214,9 +214,9 @@ drives the real CLI with `RIWORK_TEST_CLI` the same way.
 recency and agent activity (the contract is in [remote-protocol.md](../docs/remote-protocol.md),
 "Activity and recency extension"). The connector computes none of it: the CLI answers
 `riwork project list --json`, `shell list --json` and `orchestrator list --json` with the optional
-`last_edited_unix` and `agents` (projects) and `activity`, `activity_since_unix`,
-`subagents_working` and `subagent_kinds` (shells), and `PROJECT_FIELDS` and `SESSION_FIELDS` in
-`src/rpc.rs` let them through. Unlike the older fields, each of these is checked for its shape
+`last_edited_unix`, `last_activity_unix` and `agents` (projects) and `last_activity_unix`,
+`activity`, `activity_since_unix`, `subagents_working` and `subagent_kinds` (shells), and
+`PROJECT_FIELDS` and `SESSION_FIELDS` in `src/rpc.rs` let them through. Unlike the older fields, each of these is checked for its shape
 before it is passed on (non-negative integers, the five activity words, `agents` with
 `working` and `waiting` and optionally `done`, at most eight short kind names), and one that
 fails is left out as if the CLI had not answered it, so a damaged or newer answer cannot reach a

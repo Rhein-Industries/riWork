@@ -808,6 +808,76 @@ fn a_connection_that_is_not_a_missing_server_is_an_error() {
     assert!(error.contains("File name too long"), "{error}");
 }
 
+/// `list_with_activity` says when tmux last saw output in each live session, out of the
+/// `list-sessions` that finds the live ones. Output moves it, text sent in included (the
+/// pane echoes it), and a session that prints nothing stays put. `session_activity` would
+/// not do: tmux moves that for what an attached client does and never for output.
+#[test]
+fn list_says_when_each_session_last_had_output() {
+    let Some(fixture) = Fixture::with_tmux() else {
+        return;
+    };
+    let busy = "00000000-0000-4000-8000-0000000000e1";
+    let quiet = "00000000-0000-4000-8000-0000000000e2";
+    let gone = "00000000-0000-4000-8000-0000000000e3";
+    for id in [busy, quiet] {
+        // `cat` on a terminal echoes what it is sent, as a shell at its prompt does.
+        fixture
+            .manager
+            .tmux_checked(&["new-session", "-d", "-s", id, "-x", "80", "-y", "24", "cat"])
+            .unwrap();
+    }
+    fixture.registry(vec![
+        shell(busy, None, None),
+        shell(quiet, None, None),
+        shell(gone, None, None),
+    ]);
+    let unix_now = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+    let before = unix_now();
+    let (listed, first) = fixture.manager.list_with_activity().unwrap();
+    let alive: Vec<_> = listed.iter().map(|session| session.alive).collect();
+    assert_eq!(alive, [true, true, false]);
+    // A new session counts as active when it was made; one tmux does not have has no time.
+    for id in [busy, quiet] {
+        let at = first[id];
+        assert!(at + 2 >= before && at <= unix_now() + 1, "{id}: {at}");
+    }
+    assert!(!first.contains_key(gone), "{first:?}");
+    // The sessions are what `list` says they are: asking for the times changes nothing else.
+    assert_eq!(fixture.manager.list().unwrap(), listed);
+
+    // tmux counts whole seconds. Let one pass, then make one session print.
+    std::thread::sleep(Duration::from_millis(1200));
+    fixture.manager.paste_and_submit(busy, "hello").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let second = loop {
+        let (_, second) = fixture.manager.list_with_activity().unwrap();
+        if second[busy] > first[busy] || Instant::now() >= deadline {
+            break second;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(second[busy] > first[busy], "{first:?} then {second:?}");
+    assert_eq!(second[quiet], first[quiet], "a quiet session did not move");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tmux_that_answers_with_names_only_still_lists_the_live_sessions() {
+    // An answer without times is what tmux gave before this field was asked for.
+    let id = "00000000-0000-4000-8000-0000000000e4";
+    let fixture = Fixture::with_live_sessions(&[id]);
+    fixture.registry(vec![shell(id, None, None)]);
+    let (listed, activity) = fixture.manager.list_with_activity().unwrap();
+    assert!(listed[0].alive);
+    assert!(activity.is_empty(), "{activity:?}");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_tmux_that_cannot_answer_does_not_make_a_session_dead() {

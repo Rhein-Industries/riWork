@@ -20,6 +20,7 @@ final class AgentActivityTests: XCTestCase {
     func testAProjectFromAnOlderDesktopHasNoActivity() throws {
         let old = try project()
         XCTAssertNil(old.last_edited_unix)
+        XCTAssertNil(old.last_activity_unix)
         XCTAssertNil(old.agents)
         XCTAssertEqual(old.created_at, 7)
     }
@@ -41,6 +42,27 @@ final class AgentActivityTests: XCTestCase {
         XCTAssertEqual(odd.name, "Alpha")
         XCTAssertEqual(odd.created_at, 7)
     }
+    func testAProjectReadsWhenItsTerminalsWereLastActive() throws {
+        let value = try project("\"last_edited_unix\":1790000123,\"last_activity_unix\":1790000456,\"agents\":{\"working\":0,\"waiting\":0}")
+        XCTAssertEqual(value.last_activity_unix, 1_790_000_456)
+        XCTAssertEqual(value.last_edited_unix, 1_790_000_123, "the two times are separate figures")
+        XCTAssertEqual(try project("\"last_activity_unix\":1790000456").last_edited_unix, nil)
+    }
+    func testABadActivityTimeIsIgnoredAndTheRestOfTheProjectStays() throws {
+        for bad in ["\"just now\"", "\"1790000000\"", "-5", "0", "true", "[1]", "{\"a\":1}", "null", "1e30", "1e400"] {
+            XCTAssertNil(try project("\"last_activity_unix\":\(bad)").last_activity_unix, bad)
+        }
+        XCTAssertEqual(try project("\"last_activity_unix\":1790000000.75").last_activity_unix, 1_790_000_000, "a fraction means the second it starts in")
+        // One bad figure leaves the others and the ordinary fields alone.
+        let odd = try project("\"last_edited_unix\":1790000123,\"last_activity_unix\":\"x\",\"agents\":{\"working\":1,\"waiting\":0}")
+        XCTAssertNil(odd.last_activity_unix)
+        XCTAssertEqual(odd.last_edited_unix, 1_790_000_123)
+        XCTAssertEqual(odd.agents, ProjectAgents(working: 1, waiting: 0))
+        XCTAssertEqual(odd.name, "Alpha")
+        let reversed = try project("\"last_edited_unix\":\"x\",\"last_activity_unix\":1790000456")
+        XCTAssertNil(reversed.last_edited_unix)
+        XCTAssertEqual(reversed.last_activity_unix, 1_790_000_456)
+    }
     func testBadAgentCountsAreIgnoredOneAtATime() throws {
         XCTAssertEqual(try project("\"agents\":{\"working\":3,\"waiting\":\"two\"}").agents, ProjectAgents(working: 3, waiting: 0))
         XCTAssertEqual(try project("\"agents\":{\"working\":-1,\"waiting\":2}").agents, ProjectAgents(working: 0, waiting: 2))
@@ -55,11 +77,12 @@ final class AgentActivityTests: XCTestCase {
     }
     func testAListWithOneOddEntryStillLoads() throws {
         let list = try decode([RemoteProject].self, """
-        [{"id":"a","name":"A","root":"/a","created_at":1,"last_edited_unix":10,"agents":{"working":1,"waiting":0}},
-         {"id":"b","name":"B","root":"/b","created_at":2,"last_edited_unix":"later","agents":"many"},
+        [{"id":"a","name":"A","root":"/a","created_at":1,"last_edited_unix":10,"last_activity_unix":20,"agents":{"working":1,"waiting":0}},
+         {"id":"b","name":"B","root":"/b","created_at":2,"last_edited_unix":"later","last_activity_unix":"soon","agents":"many"},
          {"id":"c","name":"C","root":"/c","created_at":3}]
         """)
         XCTAssertEqual(list.map(\.last_edited_unix), [10, nil, nil])
+        XCTAssertEqual(list.map(\.last_activity_unix), [20, nil, nil])
         XCTAssertEqual(list.map(\.agents), [ProjectAgents(working: 1, waiting: 0), nil, nil])
     }
     func testTheEntriesOwnFieldsAreStillRequired() {
@@ -68,8 +91,9 @@ final class AgentActivityTests: XCTestCase {
         XCTAssertThrowsError(try decode(RemoteSession.self, "{\"id\":\"a\",\"kind\":\"project\",\"cwd\":\"/a\",\"created_at_unix\":5,\"activity\":\"working\"}"))
     }
     func testAProjectSurvivesEncodingAndDecoding() throws {
-        let value = try project("\"last_edited_unix\":1790000123,\"agents\":{\"working\":2,\"waiting\":1}")
+        let value = try project("\"last_edited_unix\":1790000123,\"last_activity_unix\":1790000456,\"agents\":{\"working\":2,\"waiting\":1}")
         let back = try JSONDecoder().decode(RemoteProject.self, from: JSONEncoder().encode(value))
+        XCTAssertEqual(back.last_activity_unix, 1_790_000_456)
         XCTAssertEqual(back, value)
         let plain = try project()
         XCTAssertEqual(try JSONDecoder().decode(RemoteProject.self, from: JSONEncoder().encode(plain)), plain)

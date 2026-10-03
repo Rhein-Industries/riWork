@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-03: Additive, in the same "Activity and recency extension": `projects.list` entries gain optional `last_activity_unix` (Unix seconds: when the newest of the project's shells last had output) and `shells.list` / `orchestrators.list` entries gain optional `last_activity_unix` (when that shell last had output, from tmux), so the phone's "Recent" project order can follow shell activity instead of file edits. No new method and no new error code. A desktop that cannot supply it leaves it out, an older phone ignores it, and the connector checks it is a non-negative integer and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-03: Additive activity and recency extension, no new method and no new error code: `projects.list` entries gain optional `last_edited_unix` (when the desktop app last saw a file of the project change, Unix seconds) and `agents` (`{"working":n,"waiting":n}` and additively `"done":n`: the project's agent shells by state), and `shells.list` / `orchestrators.list` entries gain optional `activity` (`working|waiting|done|unknown|exited`), `activity_since_unix`, `subagents_working` and additively `subagent_kinds`, so the phone can sort recent projects and show whether a Codex or Claude is working, with its subagents. See "Activity and recency extension" below. A field the desktop cannot supply is simply absent, so an older desktop or CLI answers exactly as before and an older phone ignores them; the connector checks each new field's shape and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-02: Additive desktop terminal extension, **protocol v2 only**: a second kind of paired device, a *desktop* (another Mac running RiWork, paired with `pair --protocol 2 --kind desktop`), may open terminal streams with `pty.open`, `pty.read`, `pty.write`, `pty.resize` and `pty.close`: a real tmux client on a pseudo-terminal of the host, whose raw bytes travel over those RPCs, so the other Mac shows the shell exactly as a Ghostty window here would. It adds `features.pty` to `ready` (only for desktop devices), two lanes (`Attach`, `Stream`), the error code `pty_limit`, and `riwork shell attach ID --exec` / `"shell_attach_exec": true` in `riwork capabilities --json` on the CLI side; see "Desktop terminal extension" below. A phone, and any v1 device, finds none of it: `pty.*` is `invalid_request` "unsupported RPC method" for them, as it is on a connector from before it, and no existing method, byte or fixture changes. A config that holds only phones is written byte for byte as before.
 - 2026-10-01: Additive project creation: `project.create` (make a new project, named by the phone, in the desktop's default projects folder, as a Git repository unless told otherwise), in the ordered lane and not cut short when the phone's session ends, and the error code `already_exists`; see "Project creation extension" below. The phone never names a path. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method".
@@ -170,14 +171,14 @@ unsolicited response except handshake `ready`.
 | `project.create` | `{"name":"My App"}` optionally `"git":false` (Project creation) | `{"project_id":"UUID","project":Project}` |
 
 Project fields: `id,name,root` strings; `created_at` Unix seconds number; and, optionally,
-`last_edited_unix` and `agents` (see "Activity and recency extension").
+`last_edited_unix`, `last_activity_unix` and `agents` (see "Activity and recency extension").
 Worktree: `id,project_id,branch,path` strings; `is_primary` boolean; `created_at`.
 Task: `id,project_id,title,details` strings; `status` `todo|in_progress|done`;
 `worktree_id` UUID or null; `created_at,updated_at` Unix seconds.
 Session: `id` UUID, `project_id,worktree_id` UUID or null, `kind` `project|orchestrator`,
 `cwd` string, `harness` `codex|claude|grok|null`, `alive` boolean, `created_at_unix` number; and,
-optionally, `activity`, `activity_since_unix`, `subagents_working` and `subagent_kinds` (see
-"Activity and recency extension").
+optionally, `last_activity_unix`, `activity`, `activity_since_unix`, `subagents_working` and
+`subagent_kinds` (see "Activity and recency extension").
 Clients tolerate additive result/entity fields but must reject unknown protocol
 versions. Lists expose existing CLI entities; output/input resolve a full shell
 UUID against existing project shells **and** orchestrators. Dead/missing sessions
@@ -1069,6 +1070,18 @@ them strictly never sees a wrong type. The iOS side is built against this text.
   back to `created_at`). It is as fresh as the app's last scan: the app scans about
   every 30 seconds while a window is showing, so it can lag by that much, and it does not
   move while every window is hidden or the app is closed.
+- `last_activity_unix` (integer, Unix seconds): when one of the project's shells last had
+  output, the newest `last_activity_unix` (below) over its live shells, counting the
+  project's own orchestrator and not the global one. It answers "what was I last working
+  in", which file edits do not: a Codex or Claude that is busy but has written no file,
+  or a shell the phone typed into. Absent when the project has no live shell (none
+  started, or all ended: a shell that is gone has no time), when the desktop could not
+  read its shell list (for example, tmux is not installed), and from a desktop that
+  predates the field. To order "recent projects" a client sorts by it descending, then,
+  for the projects without it, by `last_edited_unix`, then `created_at`: a project with no
+  live shell follows every project that has activity, however lately its files changed.
+  The phone's Recent order does exactly this. It is read when the list is, so it is as
+  fresh as the last `projects.list`, and unlike `last_edited_unix` it needs no window.
 - `agents` (object): `{"working":n,"waiting":n,"done":n}`, the project's agent shells by
   `activity` (below), counting the project's own orchestrator and not the global one.
   `working` and `waiting` are the pair a client needs for a badge; `done` is additional
@@ -1098,6 +1111,21 @@ them strictly never sees a wrong type. The iOS side is built against this text.
   `SubagentStop` with no start that Claude sends a few seconds after some replies (empty
   `agent_type`, carrying the finished turn's own prompt) does not reopen a finished turn,
   for the scheduler either.
+- `last_activity_unix` (integer, Unix seconds): when tmux last saw output in the shell's
+  session, for every live shell, a plain one included (a new shell has the time it was
+  made). Absent for a shell that is gone, and from a desktop that predates it. It is
+  tmux's `window_activity`, which moves when the pane prints: an agent working, with no
+  window attached or with one, and text sent by `shell.input`, `shell.keys` or typed at
+  the Mac, once the shell echoes it. It deliberately is not tmux's `session_activity`,
+  which moves for what an attached client does (attaching, detaching, a key, the pointer,
+  focus) and never for output or `send-keys`, so a working agent nobody looks at would
+  read as idle and a pointer passing over a tab as work. Two things count that are not
+  work: a program that redraws when its window is resized (another client attaching with a
+  different size, or a phone's viewport lease) prints, and so does a shell that is merely
+  redrawing its prompt. The figure is output, not an agent's state: use `activity` for
+  that. It is read in the same `tmux list-sessions` that finds the live shells, so
+  asking for it costs nothing. `shell.create`'s answer does not carry it (the CLI does not
+  know it when it prints what it just made); the next list does.
 - `activity_since_unix` (integer, Unix seconds): when `activity` began, from the rollout
   record for Codex and the hook's arrival for Claude. Absent when the source records no
   time (and for `unknown` and `exited`).
@@ -1123,18 +1151,21 @@ the shell's thread binding, and the turn cursor the Claude hooks of the launch k
 (identifiers only, never prompts or replies). It needs no window and no snapshot file, so
 it works with the app closed. A rollout over 1 MiB is read from its first record and its
 tail, and children are searched for only while the parent is working, so a list stays
-quick. Recency is the one figure only the app has (its scan and file-change events live
-in its process), so the app writes it to `project-recency.json` in `RIWORK_HOME` (mode
-600, replaced atomically, only when it changed), and `riwork project list --json` reads
-that file. The connector computes none of this: it runs `riwork project list --json`,
-`shell list --project ID --json` and `orchestrator list --json` and projects the fields
-above.
+quick. `last_activity_unix` comes from tmux in the same call that tells which shells are
+alive (a project's is the newest of its shells). File-edit recency is the one figure
+only the app has (its scan and file-change events live in its process), so the app writes
+it to `project-recency.json` in `RIWORK_HOME` (mode 600, replaced atomically, only when it
+changed), and `riwork project list --json` reads that file. The connector computes none
+of this: it runs `riwork project list --json`, `shell list --project ID --json` and
+`orchestrator list --json` and projects the fields above.
 
 **Compatibility.** Nothing a phone or an older desktop sends or receives changes. A
 client treats a missing field as "not known" and shows nothing for it. The tests are
 `remote/tests/activity_fields.rs` (a stub CLI: pass-through, absence and malformed
 fields) and the root crate's `tests/agent_activity_cli.rs` (the CLI side, with real hook
-events, Codex rollouts and tmux in a throwaway `RIWORK_HOME`).
+events, Codex rollouts and tmux in a throwaway `RIWORK_HOME`; for `last_activity_unix`:
+that typing into a shell moves it and its project's, and that a project takes its newest
+shell and its own orchestrator and not the global one).
 
 ## Fixtures and change log
 
@@ -1256,6 +1287,17 @@ ready response. Values are test-only and must never provision production devices
   `project-recency.json`. A field the desktop cannot supply is absent, the connector leaves
   out one in the wrong shape, and a client that ignores them is unaffected. Needs the iOS
   worker's agreement; the iOS side implements the same text.
+
+- 2026-10-03: additive and backward compatible. Recent by shell activity. Optional
+  `last_activity_unix` (integer, Unix seconds) on `shells.list` and `orchestrators.list`
+  entries (when tmux last saw output in a live shell: its `window_activity`, read in the
+  `list-sessions` that finds the live shells, not `session_activity`, which ignores output)
+  and on `projects.list` entries (the newest of the project's live shells, its own
+  orchestrator included, the global one excluded). The phone's "Recent" project order uses
+  it, then `last_edited_unix`, then `created_at`, so a project with no live shell follows
+  the active ones. A field the desktop cannot supply is absent, the connector leaves out
+  one that is not a non-negative integer, and a client that ignores it is unaffected.
+  Needs the iOS worker's agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

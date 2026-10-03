@@ -2,7 +2,8 @@
 //! `riwork project list --json`, as the remote connector reads them for the phone
 //! (`remote/src/rpc.rs`, `SESSION_FIELDS` and `PROJECT_FIELDS`): `activity`,
 //! `activity_since_unix`, `subagents_working` and `subagent_kinds` per shell, and
-//! `last_edited_unix` and `agents` per project.
+//! `last_edited_unix`, `last_activity_unix` and `agents` per project, and `last_activity_unix`
+//! per shell (when tmux last saw output in it).
 //!
 //! Every child runs in a throwaway RIWORK_HOME and HOME with its own tmux server, and the
 //! agents are `sleep` processes dressed up as Claude and Codex by editing the registry. The
@@ -398,6 +399,12 @@ fn lists_report_what_each_agent_is_doing_and_the_projects_count_them() {
         let exited = entry(&list, &gone);
         assert_eq!(exited["activity"], "exited");
         assert_eq!(exited["alive"], false);
+        // tmux knows when a live shell last printed, whatever runs in it; a gone one has no time.
+        assert!(exited.get("last_activity_unix").is_none());
+        for live in [&claude, &claude_idle, &codex, &grok, &plain] {
+            let at = entry(&list, live)["last_activity_unix"].as_u64().unwrap();
+            assert!(at + 120 >= before && at <= now() + 1, "{live}: {at}");
+        }
     }
 
     // The turn ends: done, and the subagents go with it.
@@ -465,6 +472,9 @@ fn lists_report_what_each_agent_is_doing_and_the_projects_count_them() {
     };
     assert_eq!(find(&project)["last_edited_unix"], 1_790_000_123u64);
     assert!(find(&quiet_project).get("last_edited_unix").is_none());
+    // The shells are live, so the project has a time of its own; the one without shells has none.
+    assert!(find(&project)["last_activity_unix"].as_u64().is_some());
+    assert!(find(&quiet_project).get("last_activity_unix").is_none());
     // The project fields the phone relies on are unchanged.
     for key in ["id", "name", "root", "created_at"] {
         assert!(find(&project).get(key).is_some(), "{key}");
@@ -507,6 +517,152 @@ fn orchestrators_report_activity_too() {
     assert_eq!(listed[0]["kind"], "orchestrator");
     assert_eq!(listed[0]["activity"], "working", "{}", listed[0]);
     assert!(listed[0]["activity_since_unix"].as_u64().is_some());
+}
+
+/// The shell figure is tmux's own `window_activity`, so the text a phone sends moves it (the
+/// pane echoes what it is sent); the project figure is the newest of its shells.
+#[test]
+fn a_project_was_last_active_when_its_newest_shell_last_printed() {
+    let Some(tmux) = real_tmux() else {
+        eprintln!("skipped: tmux is not installed");
+        return;
+    };
+    let home = Home::new(&tmux);
+    let (app, other, quiet) = (
+        home.project("app"),
+        home.project("other"),
+        home.project("quiet"),
+    );
+    let started = now();
+    let older = home.shell(&app, None);
+    let newer = home.shell(&app, Some("claude"));
+    let elsewhere = home.shell(&other, None);
+    let time_of = |list: &[Value], id: &str| entry(list, id)["last_activity_unix"].as_u64();
+    let project_time = |id: &str| {
+        home.ok(&["project", "list", "--json"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()["last_activity_unix"]
+            .as_u64()
+    };
+
+    let list = home.shells(&["--all"]);
+    for id in [&older, &newer, &elsewhere] {
+        let at = time_of(&list, id).expect("a live shell has a time");
+        assert!(at + 2 >= started && at <= now() + 1, "{id}: {at}");
+    }
+    let elsewhere_at = time_of(&list, &elsewhere);
+    // A project is as active as its newest shell, and the figures are the ones `shell list` gave.
+    assert_eq!(
+        project_time(&app),
+        time_of(&list, &older).max(time_of(&list, &newer))
+    );
+    assert_eq!(project_time(&other), time_of(&list, &elsewhere));
+    // No shell, no figure.
+    assert!(
+        home.ok(&["project", "list", "--json"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == quiet.as_str())
+            .unwrap()
+            .get("last_activity_unix")
+            .is_none()
+    );
+
+    // tmux counts whole seconds. Text sent to the older shell is echoed by its terminal, and
+    // that is output: the shell, and with it the project, is now newer than anything else.
+    thread::sleep(Duration::from_millis(1200));
+    assert!(
+        home.run(&["shell", "send", &older, "typed on the phone"])
+            .status
+            .success()
+    );
+    let list = home.shells(&["--all"]);
+    let (after, before) = (
+        time_of(&list, &older).unwrap(),
+        time_of(&list, &newer).unwrap(),
+    );
+    assert!(
+        after > before,
+        "the shell that was typed into is newer: {after} vs {before}"
+    );
+    assert_eq!(
+        time_of(&list, &elsewhere),
+        elsewhere_at,
+        "a shell nobody typed into did not move"
+    );
+    assert_eq!(project_time(&app), Some(after));
+    // The same list for one project says the same.
+    let scoped = home.shells(&["--project", app.as_str()]);
+    assert_eq!(time_of(&scoped, &older), Some(after));
+    assert_eq!(scoped.len(), 2);
+
+    // A shell that is gone has no time, and its project follows the ones that are left.
+    home.kill_session(&older);
+    let list = home.shells(&["--all"]);
+    assert!(entry(&list, &older).get("last_activity_unix").is_none());
+    assert_eq!(project_time(&app), Some(before));
+}
+
+/// A project's own orchestrator counts for its project; the global orchestrator belongs to no
+/// project, however newly it printed.
+#[test]
+fn the_projects_orchestrator_counts_and_the_global_one_does_not() {
+    let Some(tmux) = real_tmux() else {
+        eprintln!("skipped: tmux is not installed");
+        return;
+    };
+    let home = Home::new(&tmux);
+    let (with_shell, only_orchestrator) =
+        (home.project("with-shell"), home.project("orchestrated"));
+    home.shell(&with_shell, None);
+    let created = home.ok(&[
+        "orchestrator",
+        "create",
+        "--project",
+        &only_orchestrator,
+        "--command",
+        "sleep 600",
+        "--json",
+    ]);
+    let project_orchestrator = created["id"].as_str().unwrap().to_owned();
+    thread::sleep(Duration::from_millis(1200));
+    let global = home.ok(&["orchestrator", "create", "--command", "sleep 600", "--json"]);
+    let global = global["id"].as_str().unwrap().to_owned();
+
+    let orchestrators = home.ok(&["orchestrator", "list", "--json"]);
+    let orchestrators = orchestrators.as_array().unwrap();
+    let time_of = |id: &str| {
+        entry(orchestrators, id)["last_activity_unix"]
+            .as_u64()
+            .unwrap()
+    };
+    assert!(time_of(&global) > time_of(&project_orchestrator));
+
+    let projects = home.ok(&["project", "list", "--json"]);
+    let figure = |id: &str| {
+        projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()["last_activity_unix"]
+            .as_u64()
+    };
+    assert_eq!(
+        figure(&only_orchestrator),
+        Some(time_of(&project_orchestrator))
+    );
+    for id in [&with_shell, &only_orchestrator] {
+        assert_ne!(
+            figure(id),
+            Some(time_of(&global)),
+            "the global orchestrator is nobody's"
+        );
+    }
 }
 
 #[test]

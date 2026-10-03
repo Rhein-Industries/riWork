@@ -7,12 +7,15 @@ public struct RemoteProject: Codable, Sendable, Identifiable, Hashable {
     public let created_at: UInt64
     /// Unix seconds of the newest source edit in the project, from a desktop that works it out. Nil when it does not, or has not yet.
     public let last_edited_unix: UInt64?
+    /// Unix seconds at which the newest of the project's terminals (its orchestrator included) last had output, from a desktop that
+    /// reports it. Nil when it does not, or when the project has no live terminal.
+    public let last_activity_unix: UInt64?
     /// The agents at work in the project's terminals. Nil from a desktop that does not count them.
     public let agents: ProjectAgents?
-    private enum CodingKeys: String, CodingKey { case id, name, root, created_at, last_edited_unix, agents }
+    private enum CodingKeys: String, CodingKey { case id, name, root, created_at, last_edited_unix, last_activity_unix, agents }
 }
 extension RemoteProject {
-    /// The four fields every desktop sends are required, as before. The two that came later are read leniently (`AgentActivity.swift`):
+    /// The four fields every desktop sends are required, as before. The three that came later are read leniently (`AgentActivity.swift`):
     /// whatever is wrong with them leaves them nil and the list intact.
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -21,6 +24,7 @@ extension RemoteProject {
         root = try c.decode(String.self, forKey: .root)
         created_at = try c.decode(UInt64.self, forKey: .created_at)
         last_edited_unix = LenientNumber.seconds(try? c.decode(JSONValue.self, forKey: .last_edited_unix))
+        last_activity_unix = LenientNumber.seconds(try? c.decode(JSONValue.self, forKey: .last_activity_unix))
         agents = ProjectAgents(wire: try? c.decode(JSONValue.self, forKey: .agents))
     }
 }

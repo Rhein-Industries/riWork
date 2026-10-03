@@ -164,11 +164,12 @@ document) is included too: it is independent of the crypto version and applies t
 sessions exactly as to v1. It makes a folder named by the phone, always in the desktop's default
 projects folder (the phone never sends a path), and never touches a folder or project that
 exists; like terminal creation it adds no authority a paired device lacks.
-The 2026-10-03 activity and recency extension (optional `last_edited_unix` and `agents` on
-`projects.list` entries, and `activity`, `activity_since_unix`, `subagents_working` and
-`subagent_kinds` on `shells.list` and `orchestrators.list` entries, in the same document)
-is likewise independent of the crypto version and applies to v2 sessions exactly as to v1.
-It is read-only, adds no method and discloses only the state of agents the device can
+The 2026-10-03 activity and recency extension (optional `last_edited_unix`,
+`last_activity_unix` and `agents` on `projects.list` entries, and `last_activity_unix`,
+`activity`, `activity_since_unix`, `subagents_working` and `subagent_kinds` on `shells.list`
+and `orchestrators.list` entries, in the same document) is likewise independent of the crypto
+version and applies to v2 sessions exactly as to v1. It is read-only, adds no method and
+discloses only the state of agents, and the time of their last output, that the device can
 already see and type into.
 
 ## Desktop devices (2026-10-02)
