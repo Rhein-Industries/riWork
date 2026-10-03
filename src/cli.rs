@@ -1108,7 +1108,17 @@ fn project_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             ensure_empty(&args)?;
             let state = store.snapshot()?;
             if json {
-                print_json(&state.projects)?;
+                // Agent counts need the shell list, which needs tmux; without
+                // it the projects are listed without them.
+                let home = crate::paths::riwork_home()?;
+                let shells = SessionManager::at(home.clone())
+                    .and_then(|manager| manager.list())
+                    .ok();
+                print_json(&crate::cli_agents::project_entries(
+                    &home,
+                    &state.projects,
+                    shells.as_deref(),
+                ))?;
             } else {
                 for project in &state.projects {
                     let active = if state.active_project_id.as_deref() == Some(&project.id) {
@@ -1592,7 +1602,10 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 })
                 .collect();
             if json {
-                print_json(&shells)?;
+                print_json(&crate::cli_agents::shell_entries(
+                    manager.state_home(),
+                    &shells,
+                ))?;
             } else {
                 for shell in &shells {
                     print_shell(shell);
@@ -1832,7 +1845,10 @@ fn orchestrator_command(mut args: Vec<String>, json: bool) -> Result<(), String>
                 })
                 .collect();
             if json {
-                print_json(&shells)?;
+                print_json(&crate::cli_agents::shell_entries(
+                    manager.state_home(),
+                    &shells,
+                ))?;
             } else {
                 for shell in &shells {
                     print_shell(shell);

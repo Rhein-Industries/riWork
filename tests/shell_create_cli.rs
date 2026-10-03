@@ -472,8 +472,19 @@ fn an_agent_is_restricted_unless_unrestricted_is_asked_for() {
             .contains("--dangerously-skip-permissions"),
         "{unrestricted}"
     );
-    // The same entries `shell list` gives the phone.
-    let listed = home.shells();
+    // The same entries `shell list` gives the phone, which adds the optional `activity` fields
+    // (`shell create` prints what it just made and does not know them).
+    let mut listed = home.shells();
+    for entry in &mut listed {
+        for additive in [
+            "activity",
+            "activity_since_unix",
+            "subagents_working",
+            "subagent_kinds",
+        ] {
+            entry.as_object_mut().unwrap().remove(additive);
+        }
+    }
     for created in [&restricted, &unrestricted] {
         assert!(
             listed.iter().any(|entry| entry == created),

@@ -210,6 +210,21 @@ is not idempotent and not deduplicated: a repeat answers `already_exists`. Its t
 and output the connector relies on (in a throwaway `HOME` and `RIWORK_HOME`), and an ignored test
 drives the real CLI with `RIWORK_TEST_CLI` the same way.
 
+`projects.list`, `shells.list` and `orchestrators.list` also carry what the desktop knows about
+recency and agent activity (the contract is in [remote-protocol.md](../docs/remote-protocol.md),
+"Activity and recency extension"). The connector computes none of it: the CLI answers
+`riwork project list --json`, `shell list --json` and `orchestrator list --json` with the optional
+`last_edited_unix` and `agents` (projects) and `activity`, `activity_since_unix`,
+`subagents_working` and `subagent_kinds` (shells), and `PROJECT_FIELDS` and `SESSION_FIELDS` in
+`src/rpc.rs` let them through. Unlike the older fields, each of these is checked for its shape
+before it is passed on (non-negative integers, the five activity words, `agents` with
+`working` and `waiting` and optionally `done`, at most eight short kind names), and one that
+fails is left out as if the CLI had not answered it, so a damaged or newer answer cannot reach a
+phone that decodes them strictly. An older CLI has none of them and the answers are byte for byte
+what they were. The tests are `tests/activity_fields.rs` (a stub CLI) and, in the root crate,
+`tests/agent_activity_cli.rs`, which pins the CLI side with real hook events, Codex rollouts and a
+real tmux in a throwaway `RIWORK_HOME`.
+
 ## Pairing another Mac (desktop devices)
 
 A second Mac running RiWork can show this Mac's shells as real terminals (the contract is

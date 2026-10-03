@@ -259,14 +259,60 @@ fn array(v: Value) -> std::result::Result<Vec<Value>, Fault> {
 fn project(v: Value, fields: &[&str]) -> Value {
     let mut m = serde_json::Map::new();
     for f in fields {
-        if let Some(x) = v.get(*f) {
+        if let Some(x) = v.get(*f).filter(|x| additive_shape_ok(f, x)) {
             m.insert((*f).into(), x.clone());
         }
     }
     Value::Object(m)
 }
+/// The additive fields (activity, recency) have a fixed shape for the phone. A
+/// CLI that answers one in another shape has it left out, as if it had not
+/// answered it, so a newer or damaged answer cannot reach a phone that decodes
+/// these strictly. The older fields are passed on as they are.
+fn additive_shape_ok(field: &str, value: &Value) -> bool {
+    match field {
+        "last_edited_unix" | "activity_since_unix" | "subagents_working" => value.is_u64(),
+        "activity" => value.as_str().is_some_and(|activity| {
+            matches!(
+                activity,
+                "working" | "waiting" | "done" | "unknown" | "exited"
+            )
+        }),
+        "agents" => value.as_object().is_some_and(|counts| {
+            counts.len() <= 3
+                && ["working", "waiting"]
+                    .iter()
+                    .all(|key| counts.get(*key).is_some_and(Value::is_u64))
+                && counts.iter().all(|(key, count)| {
+                    ["working", "waiting", "done"].contains(&key.as_str()) && count.is_u64()
+                })
+        }),
+        "subagent_kinds" => value.as_array().is_some_and(|kinds| {
+            kinds.len() <= 8
+                && kinds.iter().all(|kind| {
+                    kind.as_str().is_some_and(|kind| {
+                        (1..=40).contains(&kind.len())
+                            && kind
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"-_:.".contains(&b))
+                    })
+                })
+        }),
+        _ => true,
+    }
+}
 /// What the phone may know of a project, in `projects.list` and in `project.create`.
-const PROJECT_FIELDS: &[&str] = &["id", "name", "root", "created_at"];
+/// `last_edited_unix` (when the desktop last saw a file of the project change) and
+/// `agents` (the project's agents by state) only appear once the desktop app has
+/// published them; see "Activity and recency extension" in docs/remote-protocol.md.
+const PROJECT_FIELDS: &[&str] = &[
+    "id",
+    "name",
+    "root",
+    "created_at",
+    "last_edited_unix",
+    "agents",
+];
 const SESSION_FIELDS: &[&str] = &[
     "id",
     "project_id",
@@ -276,6 +322,10 @@ const SESSION_FIELDS: &[&str] = &[
     "harness",
     "alive",
     "created_at_unix",
+    "activity",
+    "activity_since_unix",
+    "subagents_working",
+    "subagent_kinds",
 ];
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
