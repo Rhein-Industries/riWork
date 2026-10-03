@@ -2310,7 +2310,10 @@ impl SettingsPanel {
                             .child(ui_text::label(shown)),
                     )
                     .child(button("ui-text-bigger", "+", SizeChange::Bigger, cx))
-                    .child(button("ui-text-reset", "RESET", SizeChange::Reset, cx))
+                    // RESET only when there is something to reset; Cmd+0 always works.
+                    .when(!matching && shown != ui_text::DEFAULT_POINTS, |controls| {
+                        controls.child(button("ui-text-reset", "RESET", SizeChange::Reset, cx))
+                    })
                     .child(match_button),
             )
             .on_mouse_down(
