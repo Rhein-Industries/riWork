@@ -125,6 +125,41 @@ and line before sending. An uncertain result blocks further submission and
 survives reconnect/app restart. Review the indicated session before acknowledging
 the warning. Acknowledgement does not submit or retry anything.
 
+### Project order and agent activity
+
+**Order.** The project list has a sort menu in the search row (shown when there are two or more projects), and **⌘O** on a hardware
+keyboard steps through the same three orders. ⌘O is live only while the list is the screen on top, like ⌘⇧N, and nothing else uses it
+(⌘K, ⌘, ⌘N, ⌘⇧N, ⌘/, the Clicks template's ⌘ and ⌘⇧ letters and iOS's own ⌘H, ⌘Space and ⌘Tab are taken). The choice is kept in
+UserDefaults (`riwork.projectSort`), **Recent** the first time (`Core/ProjectSort.swift`, unit tested):
+- **Recent**, the desktop's "Last edited": `last_edited_unix` of `projects.list`, newest first. Projects without one (an older desktop, or
+  not worked out yet; zero counts as none) follow the dated ones, newest `created_at` first.
+- **Name**: A to Z without regard to case. **Date added**: `created_at`, newest first, a project without one last.
+- Ties are broken by name without regard to case, then as written, then id, the desktop's own rule (`src/project_sort.rs`), so the order
+  never flickers and matches the Mac's. The search takes projects out of this order and never reorders the rest.
+- A project made from the phone counts as just edited until the desktop sends its own `last_edited_unix` (this connection only), so it
+  is at the top of Recent and not behind every dated project; under Name and Date added it is where those orders put it.
+
+**Activity.** A desktop that reports it adds optional fields to the lists the phone already reads: `last_edited_unix` and
+`agents` {`working`, `waiting`} to `projects.list`, and `activity` (`working|waiting|done|unknown|exited`), `activity_since_unix` and
+`subagents_working` to `shells.list` and `orchestrators.list`. An older desktop sends none of them and the app looks as it did. They are
+read leniently (`Core/AgentActivity.swift`, unit tested): a missing field, a word the phone does not know (it is `unknown`), another
+type, a negative or fractional count or a time of zero is ignored on its own and never fails the list. A terminal that is no longer alive
+counts as exited whatever it last said.
+- **Tabs.** Each tab shows its state beside its name: **working** is a pulsing dot in the accent color (still with Reduce Motion), with
+  **+N** beside it when `subagents_working` is N; **waiting** (needs a person) is a filled gold disc with an exclamation mark, and the
+  tab is underlined in gold until it is selected; **done** is a small muted check. Unknown and exited draw nothing. VoiceOver reads
+  "Claude worker, 44444444, Working, 2 subagents" (or "Waiting for input", "Done"); Session info adds the state and the time it began.
+- **Project rows.** A dot and a count for the agents working, a gold disc and a count for those waiting for input, nothing when there
+  are none. VoiceOver reads them as the row's value ("2 agents working, 1 waiting for input").
+- Shapes differ as well as colors; the colors are the synced desktop palette (accent, gold, muted), and sizes follow Dynamic Type and the
+  interface scale.
+- **Refresh.** The lists were only read on connect and on demand. While the project list is on screen `projects.list` is read again, and
+  while the tab strip is on screen (not in focus mode) `shells.list` and `orchestrators.list` are, every 4 s (`RemoteModel.keepFresh`,
+  started by the view's `.task`, so it ends with the view). Nothing is read when the link is down, the app is not active or a full
+  refresh is running, and a list read a moment ago (the connect, a manual refresh) is not read again at once. A read that fails is
+  skipped without a message; a list that did not change is not assigned. The selected tab is left alone: a terminal that went away is
+  still found by the live read, as before. A new terminal that appears on the desktop shows up in the strip within a few seconds.
+
 ### New terminal and close
 
 **＋ opens a terminal on the desktop** (`shell.create`, then `shell.close` for closing; see the "Terminal creation extension" in

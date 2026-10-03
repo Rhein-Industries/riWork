@@ -222,6 +222,7 @@ struct ProjectSelectionView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(style.muted)
                 TextField("Find a project", text: $search).textFieldStyle(.plain).autocorrectionDisabled()
                 if !search.isEmpty { Button("Clear filter", systemImage: "xmark") { search = "" }.labelStyle(.iconOnly) }
+                if model.projects.count > 1 { ProjectSortMenu(model: model) }
             }.padding(.horizontal, 12).frame(minHeight: style.pt(44))
             DesktopRule()
             if model.snapshotStale && !model.projects.isEmpty {
@@ -229,7 +230,7 @@ struct ProjectSelectionView: View {
                     .font(style.system(.caption)).foregroundStyle(style.warning).padding(8)
             }
             List {
-                ForEach(model.projects.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }) { project in
+                ForEach(model.visibleProjects(matching: search)) { project in
                     Button { onSelect(project) } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "folder").font(.system(size: style.pt(14))).foregroundStyle(style.accent)
@@ -238,9 +239,11 @@ struct ProjectSelectionView: View {
                                 Text(project.root).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
                             }
                             Spacer(minLength: 4)
+                            if let agents = project.agents, !agents.isIdle { ProjectAgentBadges(agents: agents) }
                             Image(systemName: "chevron.right").font(style.system(.caption)).foregroundStyle(style.muted)
                         }.frame(minHeight: style.pt(40)).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityHint("Open tabs for this project’s existing terminals")
+                        .accessibilityValue(project.agents?.spoken ?? "")
                         .listRowBackground(style.background).listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
                         .listRowSeparatorTint(style.divider)
                         .swipeActions(edge: .leading) {
@@ -261,6 +264,8 @@ struct ProjectSelectionView: View {
             }.listStyle(.plain).scrollContentBackground(.hidden).environment(\.defaultMinListRowHeight, style.pt(44))
                 .refreshable { await model.refresh() }
         }.background(style.background)
+            // Agent counts change while this list is looked at: read it again every few seconds, only while it is on screen.
+            .task { await model.keepFresh(.projects) }
             // ⌘⇧N. ⌘N is "New terminal" on the terminal screen, so this is the same thing for a project. It is registered only while
             // this list is the screen on top, and nothing on screen here claims it: the terminal's key view (KeyCapture) holds ⌘K and
             // ⌘, and, while the hotkey menu is open, ⌘N and ⌘. ; a person's hotkey shortcuts and the Clicks template (⌘ and ⌘⇧ with
@@ -272,6 +277,12 @@ struct ProjectSelectionView: View {
                         .disabled(!shortcutsActive || !model.canOpenNewProject)
                         .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
                 }
+                // ⌘O steps through the sort orders (Recent, Name, Date added). No other shortcut of the app uses it: ⌘K ⌘, ⌘N ⌘⇧N ⌘/ and
+                // the Clicks template's letters are taken, and like ⌘⇧N it is live only while this list is the screen on top.
+                Button("Next sort order") { model.cycleProjectSort() }
+                    .keyboardShortcut("o", modifiers: .command)
+                    .disabled(!shortcutsActive || model.projects.count < 2)
+                    .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
             }
     }
 }
@@ -302,7 +313,7 @@ struct TerminalTabsView: View {
                     Button("Focus mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.setFocusMode(true) }
                         .labelStyle(.iconOnly).disabled(model.sessionID == nil)
                     Button("Session info", systemImage: "info.circle") {
-                        if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind) }
+                        if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind, activity: session.activitySummary, since: session.activity_since_unix) }
                     }.labelStyle(.iconOnly).disabled(model.sessionID == nil)
                     Menu {
                         if UIDevice.current.userInterfaceIdiom == .pad { Toggle("Follow output", isOn: $followOutput) }
@@ -363,6 +374,8 @@ struct TerminalTabsView: View {
                 .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
         .task(id: project.id) { await model.chooseProject(project.id) }
+        // Each tab's state changes while the strip is looked at: read the tabs again every few seconds. Focus mode hides the strip.
+        .task(id: focused) { if !focused { await model.keepFresh(.sessions) } }
         .onAppear { model.setTerminalVisible(true); openRequestedNewTerminal() }
         .onDisappear { model.setTerminalVisible(false); if model.newTerminalRequestedProject == project.id { model.newTerminalRequestedProject = nil } }
         .onChange(of: model.newTerminalRequestedProject) { _, _ in openRequestedNewTerminal() }
@@ -392,19 +405,23 @@ struct TerminalTabsView: View {
                         Button { Task { await model.chooseSession(session) } } label: {
                             VStack(alignment: .leading, spacing: 1) {
                                 // Orchestrators carry the secondary accent, as they do on the desktop.
-                                Label { Text(session.title) } icon: {
-                                    Image(systemName: session.kind == "orchestrator" ? "point.3.connected.trianglepath.dotted" : "terminal")
-                                        .foregroundStyle(session.kind == "orchestrator" ? style.magenta : style.text)
-                                }.font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
+                                HStack(spacing: 6) {
+                                    Label { Text(session.title) } icon: {
+                                        Image(systemName: session.kind == "orchestrator" ? "point.3.connected.trianglepath.dotted" : "terminal")
+                                            .foregroundStyle(session.kind == "orchestrator" ? style.magenta : style.text)
+                                    }.font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
+                                    ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
+                                }
                                 Text(tabDetail(session)).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
                             }
                             .padding(.horizontal, 10).frame(minHeight: style.pt(36))
                             .background(model.sessionID == session.id ? style.active : style.panel)
                             .overlay(alignment: .trailing) { Rectangle().fill(style.divider).frame(width: 1) }
-                            .overlay(alignment: .bottom) { Rectangle().fill(model.sessionID == session.id ? style.accent : style.divider).frame(height: 1) }
+                            // The selected tab is underlined in the accent color; one that waits for a person, in gold.
+                            .overlay(alignment: .bottom) { Rectangle().fill(model.sessionID == session.id ? style.accent : (session.shownActivity == .waiting ? style.gold : style.divider)).frame(height: session.shownActivity == .waiting ? 2 : 1) }
                         }
                         .buttonStyle(.plain).id(session.id)
-                        .accessibilityLabel("\(session.title), \(session.shortID)")
+                        .accessibilityLabel(["\(session.title), \(session.shortID)", session.activitySummary].compactMap { $0 }.joined(separator: ", "))
                         .accessibilityAddTraits(model.sessionID == session.id ? .isSelected : [])
                         .contextMenu {
                             Button("New terminal", systemImage: "plus") { openNewTerminal() }
@@ -428,6 +445,9 @@ struct SessionInfo: Identifiable {
     let title: String
     let cwd: String
     let kind: String
+    /// What the agent was doing when the sheet opened ("Working, 2 subagents"), and since when (the desktop's Unix seconds).
+    var activity: String?
+    var since: UInt64?
 }
 
 private struct SessionInfoSheet: View {
@@ -441,6 +461,12 @@ private struct SessionInfoSheet: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(info.title).font(style.mono(14, bold: true, relativeTo: .headline))
                     Text(info.kind).font(style.system(.caption)).foregroundStyle(style.muted)
+                    if let activity = info.activity {
+                        HStack(spacing: 4) {
+                            Text(activity)
+                            if let since = info.since { Text("since").foregroundStyle(style.muted); Text(Date(timeIntervalSince1970: TimeInterval(since)), style: .time) }
+                        }.font(style.system(.footnote))
+                    }
                     DesktopRule()
                     Text("SESSION UUID").font(style.system(.caption)).foregroundStyle(style.muted)
                     Text(info.id).textSelection(.enabled).accessibilityLabel("Session UUID: \(info.id)")
