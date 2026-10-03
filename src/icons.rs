@@ -16,6 +16,10 @@ pub enum Icon {
     More,
     Bell,
     BellOff,
+    /// A star: the main pane, where new tabs and opened panels go.
+    Main,
+    /// A tick: the menu row beside it is on.
+    Check,
     /// The symbol a built-in panel tab shows instead of its label.
     Panel(PanelKind),
     /// The symbol a toolbar button shows instead of its label.
@@ -139,6 +143,8 @@ pub fn icon(kind: Icon, color: u32) -> AnyElement {
                         line(&mut path, (1.5, 1.5), (12.5, 12.5));
                     }
                 }
+                Icon::Main => star_glyph(&mut path),
+                Icon::Check => check_glyph(&mut path),
                 Icon::Panel(panel) => panel_glyph(&mut path, panel),
                 Icon::Action(action) => action_glyph(&mut path, action),
             }
@@ -152,6 +158,24 @@ pub fn icon(kind: Icon, color: u32) -> AnyElement {
     .size(px(14.0 * scale))
     .flex_shrink_0()
     .into_any_element()
+}
+
+/// A five-pointed star, point up.
+fn star_glyph(path: &mut PathBuilder) {
+    let points: Vec<(f32, f32)> = (0..10)
+        .map(|index| {
+            let angle = (-90.0_f32 + 36.0 * index as f32).to_radians();
+            let radius = if index % 2 == 0 { 4.9 } else { 2.2 };
+            (7.0 + radius * angle.cos(), 7.5 + radius * angle.sin())
+        })
+        .collect();
+    polygon(path, &points);
+}
+
+fn check_glyph(path: &mut PathBuilder) {
+    path.move_to(point(px(2.5), px(7.5)));
+    path.line_to(point(px(5.5), px(11.0)));
+    path.line_to(point(px(11.5), px(3.0)));
 }
 
 /// One distinct, simple symbol per built-in panel, in the same 14 px box.
@@ -533,6 +557,21 @@ mod tests {
             one += usize::from(a != b);
         }
         one as f32 / either as f32
+    }
+
+    #[test]
+    fn the_main_pane_star_and_the_tick_stay_inside_the_icon_box() {
+        // `shape` fails a glyph that leaves the box or is too small to read.
+        let star = shape("star", star_glyph);
+        let tick = shape("tick", check_glyph);
+        assert_ne!(star.vertices, tick.vertices);
+        for panel in PANELS {
+            let panel_shape = shape(&format!("{panel:?}"), |path| panel_glyph(path, panel));
+            assert!(
+                difference(&star, &panel_shape) >= 0.3,
+                "the star reads as {panel:?}"
+            );
+        }
     }
 
     #[test]

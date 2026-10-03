@@ -73,9 +73,9 @@ use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
 use icons::Icon;
 use layouts::{
-    Axis, DIVIDER_THICKNESS, Extent, Layout, LayoutStore, MIN_PANE_EXTENT, PaneFacts, PaneId,
-    PanelKind, PreviewPlacement, PreviewReveal, PreviewTab, ProjectLayout, SavedPane, SavedTab,
-    TabEdge, WindowSize,
+    Axis, DIVIDER_THICKNESS, Extent, Layout, LayoutStore, MIN_PANE_EXTENT, OpenTabReuse, PaneFacts,
+    PaneId, PanelKind, PreviewPlacement, PreviewReveal, PreviewTab, ProjectLayout, SavedPane,
+    SavedTab, TabEdge, WindowSize,
 };
 use panels::{PanelAction, PanelData};
 use project_creator::{ProjectCreationEvent, ProjectCreator};
@@ -119,6 +119,7 @@ actions!(
         OpenSchedules,
         OpenFiles,
         OpenPreview,
+        GatherTabs,
         BiggerText,
         SmallerText,
         ActualSizeText,
@@ -136,6 +137,8 @@ enum PaneMenuAction {
     View(PanelKind),
     Split(Axis),
     Close,
+    Main,
+    Gather,
     Lock,
     Focus,
 }
@@ -400,7 +403,128 @@ fn apply_panel_reveal_to_panes(
             title,
             placement,
         ),
+        PreviewReveal::Move { from, to, activate } => {
+            let tab_id = panes
+                .get(&from)?
+                .tabs
+                .iter()
+                .find(|tab| tab.panel() == Some(panel))?
+                .id;
+            move_tab_between_panes(panes, from, tab_id, to, activate).then_some((to, activate))
+        }
     }
+}
+
+/// Take the tab `tab_id` out of pane `from` and add it after the tabs of pane `to`, selected
+/// there if `select`. `from` keeps showing the tab it showed, or a neighbour if it showed this
+/// one. Whether the tab moved: it does not when a pane or the tab is missing.
+fn move_tab_between_panes(
+    panes: &mut BTreeMap<PaneId, Pane>,
+    from: PaneId,
+    tab_id: TabId,
+    to: PaneId,
+    select: bool,
+) -> bool {
+    if from == to || !panes.contains_key(&to) {
+        return false;
+    }
+    let Some(source) = panes.get_mut(&from) else {
+        return false;
+    };
+    let Some(index) = source.tabs.iter().position(|tab| tab.id == tab_id) else {
+        return false;
+    };
+    let shown = source.tabs.get(source.active).map(|tab| tab.id);
+    let tab = source.tabs.remove(index);
+    source.active = shown
+        .and_then(|id| source.tabs.iter().position(|tab| tab.id == id))
+        .unwrap_or_else(|| index.min(source.tabs.len().saturating_sub(1)));
+    let Some(destination) = panes.get_mut(&to) else {
+        return false;
+    };
+    destination.tabs.push(tab);
+    if select {
+        destination.active = destination.tabs.len() - 1;
+    }
+    true
+}
+
+/// The pane that takes the tabs of `closing` when it closes: the main pane. Not when `closing`
+/// is the main pane itself, whose tabs close with it as they always did, nor when it is
+/// locked, which nothing is taken from or added to by someone else's decision.
+fn aggregation_target(
+    main: Option<PaneId>,
+    closing: PaneId,
+    closing_locked: bool,
+) -> Option<PaneId> {
+    main.filter(|main| *main != closing && !closing_locked)
+}
+
+/// Take pane `closed` out of the panes. Its tabs move to the end of the pane `main`, when there
+/// is one to take them (see `aggregation_target`), in their order and without changing what
+/// that pane shows; otherwise they are returned, to be closed.
+fn close_pane_tabs(
+    panes: &mut BTreeMap<PaneId, Pane>,
+    closed: PaneId,
+    main: Option<PaneId>,
+) -> Vec<Tab> {
+    let Some(mut pane) = panes.remove(&closed) else {
+        return Vec::new();
+    };
+    match main.and_then(|main| panes.get_mut(&main)) {
+        Some(main) => {
+            main.tabs.append(&mut pane.tabs);
+            Vec::new()
+        }
+        None => pane.tabs,
+    }
+}
+
+/// What a gather did.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Gathered {
+    /// Tabs moved into the main pane.
+    moved: usize,
+    /// Panes that were emptied and removed.
+    removed: Vec<PaneId>,
+    /// Panes that were emptied and stay, because their space would have gone to a locked pane.
+    kept: usize,
+}
+
+/// Move every tab of every unlocked pane but `main` to the end of `main`, pane by pane in
+/// layout order and tab by tab, and remove the panes this empties. What `main` shows does not
+/// change. Locked panes are not touched: not their tabs, their selection or their place in the
+/// tree. A pane whose space would go to a sibling holding a locked pane stays, empty, so that
+/// the locked pane keeps its size.
+fn gather_panes(
+    layout: &mut Layout,
+    panes: &mut BTreeMap<PaneId, Pane>,
+    main: PaneId,
+    locked: &dyn Fn(PaneId) -> bool,
+) -> Gathered {
+    let mut gathered = Gathered::default();
+    if !panes.contains_key(&main) {
+        return gathered;
+    }
+    for source in layout.gather_sources(main, locked) {
+        let Some(from) = panes.get_mut(&source) else {
+            continue;
+        };
+        let mut tabs = std::mem::take(&mut from.tabs);
+        from.active = 0;
+        gathered.moved += tabs.len();
+        if let Some(main) = panes.get_mut(&main) {
+            main.tabs.append(&mut tabs);
+        }
+        if layout.removal_resizes_locked(source, locked) {
+            gathered.kept += 1;
+        } else if let Some(rest) = layout.clone().without(source) {
+            *layout = rest;
+            panes.remove(&source);
+            gathered.removed.push(source);
+        }
+    }
+    gathered
 }
 
 /// The pane, tab and visibility of the tab for `kind` among `panes`, if there is one.
@@ -447,6 +571,40 @@ fn plan_link_panel(
             shows_shell: &shows_shell,
         },
     )
+}
+
+/// The pane that takes what is opened (a new tab, a clicked shell, a preview) when the window has
+/// a main pane. In focus mode only one pane is on screen, and a tab sent to another would open
+/// out of sight, so everything stays where it is. A main pane that has gone counts for nothing.
+fn routing_target(
+    main: Option<PaneId>,
+    panes: &BTreeMap<PaneId, Pane>,
+    focus_mode: bool,
+) -> Option<PaneId> {
+    main.filter(|id| !focus_mode && panes.contains_key(id))
+}
+
+/// What choosing a file, or clicking a link in pane `clicked`, does about `panel` when the window
+/// has the main pane `main`. Two panes keep their selected tab in front: the pane clicked in,
+/// where the terminal keeps the keys, and, for the Preview, the pane with the tree on screen,
+/// which the Preview would hide (see `layouts::plan_main_reveal`).
+fn plan_main_panel(
+    panes: &BTreeMap<PaneId, Pane>,
+    main: PaneId,
+    panel: PanelKind,
+    clicked: Option<PaneId>,
+) -> PreviewReveal {
+    let existing = panel_tab_in(panes, panel).map(|(pane, _, shown)| PreviewTab {
+        pane,
+        shown,
+        behind_shell: pane_shows_shell_in(panes, pane),
+    });
+    let tree = match panel_tab_in(panes, PanelKind::Files) {
+        Some((pane, _, true)) if panel == PanelKind::Preview => Some(pane),
+        _ => None,
+    };
+    let keep: Vec<PaneId> = clicked.into_iter().chain(tree).collect();
+    layouts::plan_main_reveal(main, existing, &keep)
 }
 
 /// The pane whose tree a file's preview goes beside when the file was selected. A link is
@@ -556,6 +714,9 @@ struct Workspace {
     /// The Preview panel's view of `file_explorer`. Created and dropped with it.
     file_preview: Option<Entity<FilePreview>>,
     locked_panes: Option<HashSet<PaneId>>,
+    /// The pane new tabs, clicked shells and opened previews go to. Saved with the layout.
+    /// Read through `main_pane`, which ignores one whose pane has gone.
+    main_pane: Option<PaneId>,
     carry_layout: Option<ProjectLayout>,
     layout: Layout,
     layout_ready: bool,
@@ -1119,6 +1280,7 @@ impl Workspace {
             file_explorer: None,
             file_preview: None,
             locked_panes: None,
+            main_pane: None,
             carry_layout: None,
             layout: Layout::Pane(1),
             layout_ready: false,
@@ -2145,7 +2307,7 @@ impl Workspace {
                     .find(|tab| tab.shell_id() == Some(&shell.id))
                     .map(|tab| (*pane_id, tab.id))
             }) {
-                self.select_tab(pane_id, tab_id, window, cx);
+                self.bring_up_tab(pane_id, tab_id, window, cx);
             } else {
                 let pane_id = self.editor_pane(cx)?;
                 self.attach_session(pane_id, shell.clone(), window, cx)?;
@@ -2193,6 +2355,9 @@ impl Workspace {
     }
 
     fn editor_pane(&mut self, cx: &mut Context<Self>) -> Result<PaneId, String> {
+        if let Some(main) = self.routing_pane() {
+            return Ok(main);
+        }
         if let Some(pane_id) = self
             .panes
             .iter()
@@ -2378,6 +2543,7 @@ impl Workspace {
         dest.tabs.insert(index, tab);
         dest.active = index;
         if drag.pane_id != target
+            && self.main_pane != Some(drag.pane_id)
             && self
                 .panes
                 .get(&drag.pane_id)
@@ -2849,6 +3015,7 @@ impl Workspace {
             }
         }
         self.layout = Layout::Pane(1);
+        self.main_pane = None;
         self.panes.clear();
         self.tab_dragging = false;
         self.release_snapshots(cx);
@@ -2901,6 +3068,7 @@ impl Workspace {
                 sidebar_visible: true,
                 window_size: None,
                 locked_panes: None,
+                main_pane: None,
             });
             match destination.carry_locked_regions_from(previous) {
                 Ok(layout) => saved = Some(layout),
@@ -2959,15 +3127,26 @@ impl Workspace {
             );
         }
         self.next_pane_id = pane_ids.iter().copied().max().unwrap_or(1) + 1;
+        self.main_pane = saved
+            .as_ref()
+            .and_then(|saved| saved.main_pane)
+            .filter(|id| self.panes.contains_key(id));
         let active_pane = saved
             .as_ref()
             .map(|saved| saved.active_pane)
             .filter(|id| self.panes.contains_key(id))
             .unwrap_or_else(|| self.layout.first_pane());
         self.active_pane = active_pane;
-        let shell_pane = (!locked_ids.contains(&active_pane))
-            .then_some(active_pane)
-            .or_else(|| pane_ids.iter().copied().find(|id| !locked_ids.contains(id)));
+        // Shells a project had before it was opened join its main pane, unless that is a locked
+        // pane: nothing puts a shell into a locked pane that nobody asked for.
+        let shell_pane = self
+            .main_pane
+            .filter(|id| !locked_ids.contains(id))
+            .or_else(|| {
+                (!locked_ids.contains(&active_pane))
+                    .then_some(active_pane)
+                    .or_else(|| pane_ids.iter().copied().find(|id| !locked_ids.contains(id)))
+            });
         self.detached_shell_ids = saved
             .as_ref()
             .map(|saved| saved.detached_shell_ids.clone())
@@ -3139,6 +3318,7 @@ impl Workspace {
             panels_initialized: true,
             window_size: self.window_size,
             locked_panes: self.locked_panes.clone(),
+            main_pane: self.main_pane(),
         })
     }
 
@@ -3360,7 +3540,7 @@ impl Workspace {
                 .map(|tab| (*pane_id, tab.id))
         });
         if let Some((pane_id, tab_id)) = existing {
-            self.select_tab(pane_id, tab_id, window, cx);
+            self.bring_up_tab(pane_id, tab_id, window, cx);
         } else if let Some(shell_id) = self
             .shells
             .iter()
@@ -3425,7 +3605,7 @@ impl Workspace {
                         .map(|tab| (*pane_id, tab.id))
                 });
                 if let Some((pane_id, tab_id)) = found {
-                    self.select_tab(pane_id, tab_id, window, cx);
+                    self.bring_up_tab(pane_id, tab_id, window, cx);
                 }
             }
             remote_tree::WorktreeClick::Live(shell) => {
@@ -3493,7 +3673,7 @@ impl Workspace {
                 .map(|tab| (*pane_id, tab.id))
         });
         if let Some((pane_id, tab_id)) = existing {
-            self.select_tab(pane_id, tab_id, window, cx);
+            self.bring_up_tab(pane_id, tab_id, window, cx);
             return;
         }
         let Some(shell) = self
@@ -3524,11 +3704,11 @@ impl Workspace {
                 .find(|tab| tab.shell_id() == Some(shell_id))
                 .map(|tab| (*pane_id, tab.id))
         }) {
-            self.select_tab(pane_id, tab_id, window, cx);
+            self.bring_up_tab(pane_id, tab_id, window, cx);
             return;
         }
         self.detached_shell_ids.remove(shell_id);
-        if let Err(error) = self.attach_session(self.active_pane, shell, window, cx) {
+        if let Err(error) = self.attach_session(self.new_tab_pane(), shell, window, cx) {
             self.notice = Some(error);
         }
         self.save_layout();
@@ -3746,13 +3926,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let pane_id = self.active_pane;
+        let pane_id = self.new_tab_pane();
         self.open_remote_shell_in(pane_id, desktop_id, shell, window, cx);
     }
 
     /// `open_remote_shell` for a pane chosen earlier: a shell made on the host arrives some
     /// time after it was asked for, and opens where the person asked, as a local one made at
-    /// once would. If that pane has been closed meanwhile it opens in the active one.
+    /// once would. If that pane has been closed meanwhile it opens where a new tab does.
     fn open_remote_shell_in(
         &mut self,
         pane_id: PaneId,
@@ -3771,7 +3951,7 @@ impl Workspace {
                 .map(|tab| (*pane_id, tab.id))
         });
         if let Some((pane_id, tab_id)) = existing {
-            self.select_tab(pane_id, tab_id, window, cx);
+            self.bring_up_tab(pane_id, tab_id, window, cx);
             return;
         }
         if !shell.alive {
@@ -3788,7 +3968,7 @@ impl Workspace {
         let pane_id = if self.panes.contains_key(&pane_id) {
             pane_id
         } else {
-            self.active_pane
+            self.new_tab_pane()
         };
         let result = self
             .spawn_remote_terminal(&desktop_id, &shell.id, true, window, cx)
@@ -3865,8 +4045,8 @@ impl Workspace {
             return;
         }
         cx.notify();
-        // The shell opens in the pane that was selected when it was asked for.
-        let pane_id = self.active_pane;
+        // The shell opens in the pane new tabs open in when it was asked for.
+        let pane_id = self.new_tab_pane();
         // The worktree the person chose, if the host still lists it.
         let scope = match self.selected_worktree_id.clone().filter(|id| {
             cx.global::<RemoteState>()
@@ -4329,9 +4509,12 @@ impl Workspace {
         }
     }
 
-    /// The pane a terminal that appeared by itself joins: the active one, as
-    /// when a project is loaded, unless it is locked.
+    /// The pane a terminal that appeared by itself joins: the main pane, if there is one, else
+    /// the active one, as when a project is loaded, unless it is locked.
     fn adoption_pane(&self) -> Option<PaneId> {
+        if let Some(main) = self.main_pane().filter(|id| !self.pane_is_locked(*id)) {
+            return Some(main);
+        }
         std::iter::once(self.active_pane)
             .chain(self.layout.pane_ids())
             .find(|id| self.panes.contains_key(id) && !self.pane_is_locked(*id))
@@ -4551,7 +4734,7 @@ impl Workspace {
             self.create_remote_shell(NewShellKind::Shell, false, cx);
             return;
         }
-        if let Err(error) = self.spawn_tab(self.active_pane, window, cx) {
+        if let Err(error) = self.spawn_tab(self.new_tab_pane(), window, cx) {
             self.notice = Some(error);
             cx.notify();
         }
@@ -4767,14 +4950,15 @@ impl Workspace {
             self.detached_shell_ids.insert(shell_id.to_owned());
         }
         removed.set_visible(false, cx);
-        if pane.tabs.is_empty() {
+        // The main pane is where new tabs open, so it stays when its last tab closes.
+        if pane.tabs.is_empty() && self.main_pane != Some(pane_id) {
             self.remove_pane(pane_id, window, cx);
             return;
         }
         if index < pane.active {
             pane.active -= 1;
         } else if pane.active >= pane.tabs.len() {
-            pane.active = pane.tabs.len() - 1;
+            pane.active = pane.tabs.len().saturating_sub(1);
         }
         for (tab_index, tab) in pane.tabs.iter().enumerate() {
             tab.set_visible(tab_index == pane.active, cx);
@@ -4812,18 +4996,29 @@ impl Workspace {
             cx.notify();
             return;
         }
+        let was_locked = self.pane_is_locked(pane_id);
         if let Some(locked) = &mut self.locked_panes {
             locked.remove(&pane_id);
         }
         let was_active = self.active_pane == pane_id;
         let inheritor = pane_inheriting_space(&self.layout, pane_id);
-        if let Some(pane) = self.panes.remove(&pane_id) {
-            for tab in pane.tabs {
-                if let Some(shell_id) = tab.shell_id() {
-                    self.detached_shell_ids.insert(shell_id.to_owned());
-                }
-                tab.set_visible(false, cx);
+        // The tabs of a pane that closes move into the main pane, after its own, instead of
+        // closing with it. The main pane's own tabs close with it, as they always did, and a
+        // locked pane's are left alone.
+        let into_main = aggregation_target(self.main_pane(), pane_id, was_locked);
+        for tab in close_pane_tabs(&mut self.panes, pane_id, into_main) {
+            if let Some(shell_id) = tab.shell_id() {
+                self.detached_shell_ids.insert(shell_id.to_owned());
             }
+            tab.set_visible(false, cx);
+        }
+        if let Some(pane) = into_main.and_then(|main| self.panes.get(&main)) {
+            for (index, tab) in pane.tabs.iter().enumerate() {
+                tab.set_visible(index == pane.active, cx);
+            }
+        }
+        if self.main_pane == Some(pane_id) {
+            self.main_pane = None;
         }
         if self.tab_dragging {
             self.finish_tab_drag(cx);
@@ -4876,6 +5071,136 @@ impl Workspace {
         }
         self.save_layout();
         cx.notify();
+    }
+
+    /// The main pane, if the window has one.
+    fn main_pane(&self) -> Option<PaneId> {
+        self.main_pane.filter(|id| self.panes.contains_key(id))
+    }
+
+    /// The main pane while it takes what is opened.
+    fn routing_pane(&self) -> Option<PaneId> {
+        routing_target(self.main_pane, &self.panes, self.focus_mode)
+    }
+
+    /// The pane a new tab opens in: the main pane, else the selected one.
+    fn new_tab_pane(&self) -> PaneId {
+        self.routing_pane().unwrap_or(self.active_pane)
+    }
+
+    /// Make `pane_id` the main pane, or none if it already is. Another pane that was the main
+    /// pane stops being one: a layout has at most one. A locked pane may be the main pane when
+    /// the user says so; nothing makes it one on its own.
+    fn toggle_main_pane(&mut self, pane_id: PaneId, cx: &mut Context<Self>) {
+        if !self.panes.contains_key(&pane_id) {
+            return;
+        }
+        self.main_pane = (self.main_pane() != Some(pane_id)).then_some(pane_id);
+        // The hint to choose one is stale once there is one.
+        if self.notice.as_deref() == Some(NO_MAIN_PANE_HINT) {
+            self.notice = None;
+        }
+        self.save_layout();
+        cx.notify();
+    }
+
+    /// Bring up a tab that is already open, for a click on its shell, worktree or orchestrator.
+    /// With a main pane it is selected where it is, or moved into the main pane when it is
+    /// behind a terminal (see `layouts::reuse_open_tab`); without one it is selected where it is.
+    fn bring_up_tab(
+        &mut self,
+        pane_id: PaneId,
+        tab_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(main) = self.routing_pane()
+            && let Some(pane) = self.panes.get(&pane_id)
+            && let Some(index) = pane.tabs.iter().position(|tab| tab.id == tab_id)
+        {
+            let tab = PreviewTab {
+                pane: pane_id,
+                shown: pane.active == index,
+                behind_shell: pane_shows_shell_in(&self.panes, pane_id),
+            };
+            if layouts::reuse_open_tab(main, tab, self.pane_is_locked(pane_id))
+                == OpenTabReuse::IntoMain
+                && move_tab_between_panes(&mut self.panes, pane_id, tab_id, main, true)
+            {
+                self.show_pane_tabs(pane_id, cx);
+                self.select_tab(main, tab_id, window, cx);
+                return;
+            }
+        }
+        self.select_tab(pane_id, tab_id, window, cx);
+    }
+
+    /// A tab has left `pane_id` for the main pane. What the pane shows now is shown. It is never
+    /// left empty by this: only a tab that is not the pane's selected one moves.
+    fn show_pane_tabs(&self, pane_id: PaneId, cx: &mut Context<Self>) {
+        if let Some(pane) = self.panes.get(&pane_id) {
+            for (index, tab) in pane.tabs.iter().enumerate() {
+                tab.set_visible(index == pane.active, cx);
+            }
+        }
+    }
+
+    /// Move the tabs of every unlocked pane into the main pane and remove the panes that
+    /// empties. Shells keep running: a tab moves, it is not closed.
+    fn gather_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ensure_layout(window, cx) {
+            return;
+        }
+        self.panel_menu = None;
+        self.finish_tab_drag(cx);
+        let Some(main) = self.main_pane() else {
+            self.notice = Some(NO_MAIN_PANE_HINT.to_owned());
+            cx.notify();
+            return;
+        };
+        if self.focus_mode {
+            self.set_focus_mode(false, window, cx);
+        }
+        let locked: HashSet<PaneId> = self
+            .panes
+            .keys()
+            .copied()
+            .filter(|id| self.pane_is_locked(*id))
+            .collect();
+        let gathered = gather_panes(&mut self.layout, &mut self.panes, main, &|id| {
+            locked.contains(&id)
+        });
+        self.notice = Some(gather_notice(&gathered));
+        if gathered.moved > 0 || !gathered.removed.is_empty() {
+            // With no lock chosen yet, the first pane is locked while it holds a navigation panel.
+            // A gather can change which pane is first or what it holds, so pin the locks as they
+            // were if it would change them.
+            if self.locked_panes.is_none()
+                && self
+                    .panes
+                    .keys()
+                    .any(|id| self.pane_is_locked(*id) != locked.contains(id))
+            {
+                self.locked_panes = Some(locked.clone());
+            }
+            self.drop_target = None;
+            self.active_pane = main;
+            for pane in self.panes.values() {
+                for (index, tab) in pane.tabs.iter().enumerate() {
+                    tab.set_visible(index == pane.active, cx);
+                }
+            }
+            self.focus_active(window, cx);
+            self.save_layout();
+        }
+        cx.notify();
+    }
+
+    fn gather_tabs_action(&mut self, _: &GatherTabs, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
+        self.gather_tabs(window, cx);
     }
 
     /// Close a tab because the user asked to. A locked pane refuses; internal
@@ -5025,7 +5350,7 @@ impl Workspace {
                 harness,
                 unrestricted,
             )
-            .and_then(|shell| self.attach_session(self.active_pane, shell, window, cx));
+            .and_then(|shell| self.attach_session(self.new_tab_pane(), shell, window, cx));
         if let Err(error) = result {
             self.notice = Some(error);
         }
@@ -5213,6 +5538,17 @@ impl Workspace {
         }
         let mut pane_id = self.active_pane;
         if self.panel_tab(PanelKind::Preview).is_none()
+            && let Some(main) = self.routing_pane()
+        {
+            // A main pane takes the preview as a tab, whatever is beside it.
+            let placement = PreviewPlacement::Tab {
+                pane: main,
+                activate: true,
+            };
+            if let Some(placed) = self.place_panel(PanelKind::Preview, placement, cx) {
+                pane_id = placed;
+            }
+        } else if self.panel_tab(PanelKind::Preview).is_none()
             && !self.focus_mode
             && let Some(explorer) = self.explorer_pane()
         {
@@ -5251,6 +5587,23 @@ impl Workspace {
             return;
         }
         let clicked = self.active_pane;
+        if let Some(main) = self.main_pane() {
+            // The main pane takes the preview as a tab; no pane is split for it. It leaves the
+            // tree in front, and for a link the terminal clicked.
+            if asked || cx.global::<Settings>().open_preview_on_select {
+                let reveal = plan_main_panel(
+                    &self.panes,
+                    main,
+                    PanelKind::Preview,
+                    asked.then_some(clicked),
+                );
+                self.apply_panel_reveal(PanelKind::Preview, reveal, cx);
+                if asked {
+                    self.note_hidden_panel(PanelKind::Preview, clicked);
+                }
+            }
+            return;
+        }
         let explorer = tree_pane_for_reveal(self.explorer_pane(), asked, clicked);
         let Some(explorer) = explorer else {
             if asked {
@@ -5290,15 +5643,20 @@ impl Workspace {
             return;
         }
         let clicked = self.active_pane;
-        let locked = |id: PaneId| self.pane_is_locked(id);
-        let reveal = plan_link_panel(
-            &self.layout,
-            &self.panes,
-            self.pane_area,
-            &locked,
-            panel,
-            clicked,
-        );
+        let reveal = match self.main_pane() {
+            Some(main) => plan_main_panel(&self.panes, main, panel, Some(clicked)),
+            None => {
+                let locked = |id: PaneId| self.pane_is_locked(id);
+                plan_link_panel(
+                    &self.layout,
+                    &self.panes,
+                    self.pane_area,
+                    &locked,
+                    panel,
+                    clicked,
+                )
+            }
+        };
         self.apply_panel_reveal(panel, reveal, cx);
         self.note_hidden_panel(panel, clicked);
     }
@@ -5330,6 +5688,9 @@ impl Workspace {
             for (index, tab) in pane.tabs.iter().enumerate() {
                 tab.set_visible(index == pane.active, cx);
             }
+        }
+        if let PreviewReveal::Move { from, .. } = reveal {
+            self.show_pane_tabs(from, cx);
         }
         self.save_layout();
         cx.notify();
@@ -5527,8 +5888,8 @@ impl Workspace {
         }
         self.detached_shell_ids.remove(&shell.id);
         if let Some((pane_id, tab_id)) = existing {
-            self.select_tab(pane_id, tab_id, window, cx);
-        } else if let Err(error) = self.attach_session(self.active_pane, shell, window, cx) {
+            self.bring_up_tab(pane_id, tab_id, window, cx);
+        } else if let Err(error) = self.attach_session(self.new_tab_pane(), shell, window, cx) {
             self.notice = Some(error);
         } else {
             self.focus_active(window, cx);
@@ -5864,6 +6225,17 @@ impl Workspace {
         let show_lock = header_width >= ui_text::space_f32(108.0);
         let show_focus = header_width >= ui_text::space_f32(180.0);
         let pane_locked = self.pane_is_locked(pane_id);
+        let has_main = self.main_pane().is_some();
+        let is_main = self.main_pane() == Some(pane_id);
+        // The marker is an icon button like the others, or its word; a narrower pane leaves
+        // it to the menu's check mark.
+        let show_main = is_main
+            && header_width
+                >= ui_text::space_f32(if self.settings.panel_tab_icons {
+                    136.0
+                } else {
+                    152.0
+                });
         let account_numbers = codex_account_numbers(&self.shells);
         let tabs = pane
             .tabs
@@ -6062,6 +6434,7 @@ impl Workspace {
                     .flex()
                     .h_full()
                     .flex_none()
+                    .children(show_main.then(|| self.main_marker(pane_id, cx)))
                     .children(show_lock.then(|| {
                         self.pane_button(
                             pane_id,
@@ -6570,6 +6943,24 @@ impl Workspace {
                                 self.pane_menu_row(pane_id, label, shortcut, Some(icon), action, cx)
                             }),
                         )
+                        .child(self.pane_menu_row(
+                            pane_id,
+                            "Main pane",
+                            "",
+                            is_main.then_some(Icon::Check),
+                            PaneMenuAction::Main,
+                            cx,
+                        ))
+                        .children(has_main.then(|| {
+                            self.pane_menu_row(
+                                pane_id,
+                                "Gather tabs into main pane",
+                                "⌘⇧M",
+                                None,
+                                PaneMenuAction::Gather,
+                                cx,
+                            )
+                        }))
                         .children((!show_lock).then(|| {
                             self.pane_menu_row(
                                 pane_id,
@@ -7333,6 +7724,41 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The mark on the main pane's header: a star, or the word MAIN with icons off, in the colour
+    /// a pane lock has when it is on. Clicking it makes the pane an ordinary one again.
+    fn main_marker(&self, pane_id: PaneId, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
+        let marker = div()
+            .id(format!("pane-{pane_id}-main"))
+            .h_full()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(colors.divider)));
+        let marker = if self.settings.panel_tab_icons {
+            marker
+                .w(ui_text::space(28.0))
+                .child(icons::icon(Icon::Main, colors.cyan))
+        } else {
+            marker
+                .px(ui_text::space(6.0))
+                .text_size(ui_text::text(9.0))
+                .text_color(rgb(colors.cyan))
+                .child("MAIN")
+        };
+        marker
+            .child(tooltip::anchor(
+                "Main pane: new tabs, clicked shells and previews open here · click to unset",
+                Look::Pane,
+            ))
+            .on_click(cx.listener(move |workspace, _, _, cx| {
+                workspace.toggle_main_pane(pane_id, cx);
+            }))
+            .into_any_element()
+    }
+
     fn pane_menu_row(
         &self,
         pane_id: PaneId,
@@ -7358,7 +7784,16 @@ impl Workspace {
                 div()
                     .w(ui_text::space(14.0))
                     .flex_none()
-                    .children(icon.map(|icon| icons::icon(icon, colors.muted))),
+                    .children(icon.map(|icon| {
+                        icons::icon(
+                            icon,
+                            if matches!(icon, Icon::Check) {
+                                colors.cyan
+                            } else {
+                                colors.muted
+                            },
+                        )
+                    })),
             )
             .child(div().flex_1().min_w_0().text_ellipsis().child(label))
             .children((!shortcut.is_empty()).then(|| {
@@ -7384,6 +7819,11 @@ impl Workspace {
                     PaneMenuAction::View(kind) => workspace.open_panel(kind, pane_id, window, cx),
                     PaneMenuAction::Split(axis) => workspace.add_split(axis, window, cx),
                     PaneMenuAction::Close => workspace.close_pane_by_user(pane_id, window, cx),
+                    PaneMenuAction::Main => {
+                        workspace.toggle_main_pane(pane_id, cx);
+                        workspace.focus_active(window, cx);
+                    }
+                    PaneMenuAction::Gather => workspace.gather_tabs(window, cx),
                     PaneMenuAction::Lock => {
                         workspace.toggle_pane_lock(pane_id, cx);
                         workspace.focus_active(window, cx);
@@ -7589,6 +8029,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_schedules_action))
             .on_action(cx.listener(Self::open_files_action))
             .on_action(cx.listener(Self::open_preview_action))
+            .on_action(cx.listener(Self::gather_tabs_action))
             .on_action(cx.listener(Self::focus_search_action))
             .on_action(cx.listener(Self::toggle_focus_mode_action))
             .on_action(cx.listener(Self::open_orchestrator_action))
@@ -7769,6 +8210,25 @@ fn user_close_refusal(pane_locked: bool, close: UserClose) -> Option<&'static st
         UserClose::Pane => "Unlock the pane to close it",
     })
 }
+
+/// What a gather says it did.
+fn gather_notice(gathered: &Gathered) -> String {
+    let tabs = match gathered.moved {
+        0 => "No tabs to gather: every unlocked tab is in the main pane already".to_owned(),
+        1 => "Gathered 1 tab into the main pane".to_owned(),
+        count => format!("Gathered {count} tabs into the main pane"),
+    };
+    match gathered.kept {
+        0 => tabs,
+        1 => format!("{tabs}. An empty pane stays beside a locked one so that it keeps its size"),
+        count => format!(
+            "{tabs}. {count} empty panes stay beside locked ones so that they keep their size"
+        ),
+    }
+}
+
+/// Said when a gather is asked for and no pane is the main pane.
+const NO_MAIN_PANE_HINT: &str = "No main pane. Choose Main pane in a pane's … menu first";
 
 fn is_locked_close_hint(notice: &str) -> bool {
     [UserClose::Tab, UserClose::Pane]
@@ -8500,6 +8960,7 @@ fn main() {
             KeyBinding::new("cmd-shift-s", OpenSchedules, None),
             KeyBinding::new("cmd-shift-e", OpenFiles, None),
             KeyBinding::new("cmd-shift-p", OpenPreview, None),
+            KeyBinding::new("cmd-shift-m", GatherTabs, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-n", CreateProject, None),
             KeyBinding::new("cmd-t", NewTab, None),
@@ -8529,6 +8990,8 @@ fn main() {
             ]),
             // RiWork's own text; terminals zoom with the same keys while focused.
             Menu::new("View").items([
+                MenuItem::action("Gather Tabs into Main Pane", GatherTabs),
+                MenuItem::separator(),
                 MenuItem::action("Bigger Text", BiggerText),
                 MenuItem::action("Smaller Text", SmallerText),
                 MenuItem::action("Actual Size", ActualSizeText),
@@ -9970,5 +10433,642 @@ mod link_panel_tests {
         );
         assert_eq!(window.layout.pane_ids(), [1]);
         assert_eq!(window.panels(PanelKind::Preview), 0);
+    }
+}
+
+#[cfg(test)]
+mod main_pane_tests {
+    use super::*;
+
+    fn shell(id: TabId) -> Tab {
+        Tab {
+            id,
+            title: "zsh".to_owned(),
+            content: TabContent::Shell {
+                shell_id: format!("shell-{id}"),
+                worktree_id: None,
+                terminal: None,
+                attach_error: None,
+                attach_failures: 0,
+            },
+            hidden_since: None,
+        }
+    }
+
+    fn panel(id: TabId, kind: PanelKind) -> Tab {
+        Tab {
+            id,
+            title: Workspace::panel_title(kind).to_owned(),
+            content: TabContent::Panel(kind),
+            hidden_since: None,
+        }
+    }
+
+    fn pane(tabs: Vec<Tab>, active: usize) -> Pane {
+        Pane { tabs, active }
+    }
+
+    fn side(ratio: f32, first: Layout, second: Layout) -> Layout {
+        Layout::Split {
+            axis: Axis::SideBySide,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    fn stack(ratio: f32, first: Layout, second: Layout) -> Layout {
+        Layout::Split {
+            axis: Axis::Stacked,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    const AREA: Extent = Extent {
+        width: 1600.0,
+        height: 1000.0,
+    };
+
+    /// A window's panes without the GPUI parts, with its main pane and its locks.
+    struct Window {
+        layout: Layout,
+        panes: BTreeMap<PaneId, Pane>,
+        main: Option<PaneId>,
+        locked: Vec<PaneId>,
+        next_pane_id: PaneId,
+        next_tab_id: TabId,
+    }
+
+    impl Window {
+        fn new(
+            layout: Layout,
+            panes: Vec<(PaneId, Pane)>,
+            main: Option<PaneId>,
+            locked: &[PaneId],
+        ) -> Self {
+            let next_pane_id = panes.iter().map(|(id, _)| *id).max().unwrap_or(0) + 1;
+            let next_tab_id = panes
+                .iter()
+                .flat_map(|(_, pane)| pane.tabs.iter().map(|tab| tab.id))
+                .max()
+                .unwrap_or(0)
+                + 1;
+            Self {
+                layout,
+                panes: panes.into_iter().collect(),
+                main,
+                locked: locked.to_vec(),
+                next_pane_id,
+                next_tab_id,
+            }
+        }
+
+        /// The window the user described: a locked navigation pane (1) showing Files, the main
+        /// pane (2) with two shells, the second selected, and another pane (3) with a shell.
+        fn navigation_and_work() -> Self {
+            Self::new(
+                side(
+                    0.27,
+                    Layout::Pane(1),
+                    side(0.6, Layout::Pane(2), Layout::Pane(3)),
+                ),
+                vec![
+                    (
+                        1,
+                        pane(
+                            vec![
+                                panel(1, PanelKind::Projects),
+                                panel(2, PanelKind::Files),
+                                panel(3, PanelKind::Shells),
+                            ],
+                            1,
+                        ),
+                    ),
+                    (2, pane(vec![shell(4), shell(5)], 1)),
+                    (3, pane(vec![shell(6)], 0)),
+                ],
+                Some(2),
+                &[1],
+            )
+        }
+
+        fn is_locked(&self, id: PaneId) -> bool {
+            self.locked.contains(&id)
+        }
+
+        /// A file chosen in the tree (`asked` false), or a link clicked in pane `clicked`, as
+        /// `Workspace::reveal_preview` and `reveal_panel_for_link` handle it but for the parts
+        /// that need a window. The pane that changed, and whether its selected tab did.
+        fn reveal(
+            &mut self,
+            panel: PanelKind,
+            asked: bool,
+            clicked: PaneId,
+        ) -> Option<(PaneId, bool)> {
+            let main = self.main?;
+            let reveal = plan_main_panel(&self.panes, main, panel, asked.then_some(clicked));
+            apply_panel_reveal_to_panes(
+                &mut self.layout,
+                &mut self.panes,
+                &mut self.next_pane_id,
+                &mut self.next_tab_id,
+                panel,
+                Workspace::panel_title(panel),
+                reveal,
+            )
+        }
+
+        fn tab_ids(&self, pane: PaneId) -> Vec<TabId> {
+            self.panes[&pane].tabs.iter().map(|tab| tab.id).collect()
+        }
+
+        fn shown(&self, pane: PaneId) -> TabId {
+            let pane = &self.panes[&pane];
+            pane.tabs[pane.active].id
+        }
+
+        fn all_tab_ids(&self) -> BTreeSet<TabId> {
+            self.panes
+                .values()
+                .flat_map(|pane| pane.tabs.iter().map(|tab| tab.id))
+                .collect()
+        }
+
+        fn gather(&mut self) -> Gathered {
+            let locked = self.locked.clone();
+            gather_panes(
+                &mut self.layout,
+                &mut self.panes,
+                self.main.unwrap(),
+                &|id| locked.contains(&id),
+            )
+        }
+    }
+
+    #[test]
+    fn only_a_main_pane_that_exists_outside_focus_mode_takes_what_is_opened() {
+        let panes = BTreeMap::from([(1, pane(vec![], 0)), (2, pane(vec![], 0))]);
+        assert_eq!(routing_target(Some(2), &panes, false), Some(2));
+        // No main pane: nothing is routed, and new tabs go to the selected pane as before.
+        assert_eq!(routing_target(None, &panes, false), None);
+        // Focus mode shows one pane, and a tab sent to another would be out of sight.
+        assert_eq!(routing_target(Some(2), &panes, true), None);
+        // A main pane that has since been closed counts for nothing.
+        assert_eq!(routing_target(Some(9), &panes, false), None);
+    }
+
+    #[test]
+    fn a_file_chosen_in_the_tree_opens_the_preview_in_the_main_pane_and_splits_nothing() {
+        let mut window = Window::navigation_and_work();
+        let panes_before = window.layout.pane_ids();
+        let sizes_before = window.layout.pane_extents(AREA);
+
+        // The preview is a selected tab of the main pane, after its shells.
+        assert_eq!(window.reveal(PanelKind::Preview, false, 1), Some((2, true)));
+        assert_eq!(window.tab_ids(2), [4, 5, 7]);
+        assert_eq!(
+            panel_tab_in(&window.panes, PanelKind::Preview),
+            Some((2, 7, true))
+        );
+        // No pane was made or resized; the tree and the other pane are exactly as they were.
+        assert_eq!(window.layout.pane_ids(), panes_before);
+        assert_eq!(window.layout.pane_extents(AREA), sizes_before);
+        assert_eq!(window.tab_ids(1), [1, 2, 3]);
+        assert_eq!(window.shown(1), 2);
+        assert_eq!(window.tab_ids(3), [6]);
+
+        // The next file finds it on screen and leaves everything alone.
+        assert_eq!(window.reveal(PanelKind::Preview, false, 1), None);
+        assert_eq!(window.tab_ids(2), [4, 5, 7]);
+    }
+
+    #[test]
+    fn with_every_other_pane_locked_the_preview_still_opens_in_the_main_pane() {
+        // Two locked panes beside the main pane, in a window big enough to split anything:
+        // before, the preview would have had to be squeezed in; now it is a tab.
+        let layout = side(
+            0.2,
+            Layout::Pane(1),
+            stack(0.7, Layout::Pane(2), Layout::Pane(3)),
+        );
+        let mut window = Window::new(
+            layout,
+            vec![
+                (1, pane(vec![panel(1, PanelKind::Files)], 0)),
+                (2, pane(vec![shell(2)], 0)),
+                (3, pane(vec![shell(3), shell(4)], 1)),
+            ],
+            Some(2),
+            &[1, 3],
+        );
+        let sizes = window.layout.pane_extents(AREA);
+        assert_eq!(window.reveal(PanelKind::Preview, false, 1), Some((2, true)));
+        assert_eq!(window.layout.pane_extents(AREA), sizes);
+        assert_eq!(window.tab_ids(1), [1]);
+        assert_eq!(window.tab_ids(3), [3, 4]);
+        assert_eq!(window.tab_ids(2), [2, 5]);
+
+        // A locked pane may itself be the main pane, when the user chose that.
+        window.main = Some(3);
+        window.panes.get_mut(&2).unwrap().tabs.pop();
+        assert_eq!(window.reveal(PanelKind::Preview, false, 1), Some((3, true)));
+        assert_eq!(window.tab_ids(3), [3, 4, 6]);
+        assert_eq!(window.shown(3), 6);
+    }
+
+    #[test]
+    fn a_link_clicked_in_a_terminal_never_covers_that_terminal() {
+        // Clicked in the main pane's own terminal: the preview waits in its strip, and the
+        // terminal stays in front and keeps the keys.
+        let mut window = Window::navigation_and_work();
+        assert_eq!(window.reveal(PanelKind::Preview, true, 2), Some((2, false)));
+        assert_eq!(window.tab_ids(2), [4, 5, 7]);
+        assert_eq!(window.shown(2), 5);
+        assert_eq!(
+            panel_tab_in(&window.panes, PanelKind::Preview),
+            Some((2, 7, false))
+        );
+        // Clicking again leaves it there; it is not brought over the terminal.
+        assert_eq!(window.reveal(PanelKind::Preview, true, 2), None);
+        assert_eq!(window.shown(2), 5);
+
+        // Clicked in a terminal of another pane: the preview is the selected tab of the main
+        // pane, and the clicked terminal is where it was.
+        let mut window = Window::navigation_and_work();
+        assert_eq!(window.reveal(PanelKind::Preview, true, 3), Some((2, true)));
+        assert_eq!(window.shown(2), 7);
+        assert_eq!(window.tab_ids(3), [6]);
+        assert!(pane_shows_shell_in(&window.panes, 3));
+
+        // A folder link asks for Files the same way; with the tree already on screen in the
+        // locked pane nothing moves.
+        assert_eq!(window.reveal(PanelKind::Files, true, 3), None);
+        assert_eq!(window.tab_ids(1), [1, 2, 3]);
+    }
+
+    #[test]
+    fn a_preview_tab_that_is_open_is_reused_and_never_copied() {
+        // Hidden behind a terminal of another unlocked pane: it moves into the main pane,
+        // selected, and the pane it left keeps showing its terminal.
+        let mut window = Window::navigation_and_work();
+        window
+            .panes
+            .get_mut(&3)
+            .unwrap()
+            .tabs
+            .insert(0, panel(8, PanelKind::Preview));
+        window.panes.get_mut(&3).unwrap().active = 1;
+        assert_eq!(window.reveal(PanelKind::Preview, false, 1), Some((2, true)));
+        assert_eq!(window.tab_ids(2), [4, 5, 8]);
+        assert_eq!(window.shown(2), 8);
+        assert_eq!(window.tab_ids(3), [6]);
+        assert_eq!(window.shown(3), 6);
+        assert_eq!(
+            window
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .filter(|tab| tab.panel() == Some(PanelKind::Preview))
+                .count(),
+            1
+        );
+
+        // Behind the tree in the locked navigation pane: it leaves for the main pane, since
+        // bringing it forward there would hide the tree being navigated. The navigation pane
+        // keeps its other tabs and shows the tree.
+        let mut window = Window::navigation_and_work();
+        window
+            .panes
+            .get_mut(&1)
+            .unwrap()
+            .tabs
+            .push(panel(8, PanelKind::Preview));
+        assert_eq!(window.reveal(PanelKind::Preview, false, 1), Some((2, true)));
+        assert_eq!(window.tab_ids(1), [1, 2, 3]);
+        assert_eq!(window.shown(1), 2);
+        assert_eq!(window.tab_ids(2), [4, 5, 8]);
+        assert_eq!(window.shown(2), 8);
+
+        // Behind another panel in a pane that shows no terminal: brought forward where it is.
+        let mut window = Window::navigation_and_work();
+        window.panes.insert(
+            3,
+            pane(
+                vec![panel(8, PanelKind::Preview), panel(9, PanelKind::Usage)],
+                1,
+            ),
+        );
+        assert_eq!(window.reveal(PanelKind::Preview, false, 1), Some((3, true)));
+        assert_eq!(window.shown(3), 8);
+        assert_eq!(window.tab_ids(2), [4, 5]);
+
+        // Already in the main pane behind a shell: a file chosen brings it forward.
+        let mut window = Window::navigation_and_work();
+        window
+            .panes
+            .get_mut(&2)
+            .unwrap()
+            .tabs
+            .insert(0, panel(8, PanelKind::Preview));
+        window.panes.get_mut(&2).unwrap().active = 2;
+        assert_eq!(window.reveal(PanelKind::Preview, false, 1), Some((2, true)));
+        assert_eq!(window.shown(2), 8);
+    }
+
+    #[test]
+    fn a_link_clicked_elsewhere_does_not_bring_a_preview_over_the_tree_either() {
+        // The tree is on screen in the locked navigation pane with the Preview behind it. A
+        // link clicked in the terminal of pane 3 asks for the Preview: it moves into the main
+        // pane, where it is the selected tab, instead of replacing the tree.
+        let mut window = Window::navigation_and_work();
+        window
+            .panes
+            .get_mut(&1)
+            .unwrap()
+            .tabs
+            .push(panel(8, PanelKind::Preview));
+        assert_eq!(window.reveal(PanelKind::Preview, true, 3), Some((2, true)));
+        assert_eq!(window.tab_ids(1), [1, 2, 3]);
+        assert_eq!(window.shown(1), 2);
+        assert_eq!(window.tab_ids(2), [4, 5, 8]);
+        assert_eq!(window.shown(2), 8);
+
+        // Files itself is not kept back by the tree it is: a folder link brings it forward in
+        // its pane when that hides no terminal.
+        let mut window = Window::navigation_and_work();
+        window.panes.get_mut(&1).unwrap().active = 0;
+        assert_eq!(window.reveal(PanelKind::Files, true, 3), Some((1, true)));
+        assert_eq!(window.shown(1), 2);
+    }
+
+    #[test]
+    fn a_main_pane_that_holds_the_tree_keeps_it_in_front() {
+        // Files and the shells share the main pane. Choosing a file adds the preview behind the
+        // tree rather than hiding the tree being navigated.
+        let mut window = Window::new(
+            Layout::Pane(1),
+            vec![(1, pane(vec![shell(1), panel(2, PanelKind::Files)], 1))],
+            Some(1),
+            &[],
+        );
+        assert_eq!(
+            window.reveal(PanelKind::Preview, false, 1),
+            Some((1, false))
+        );
+        assert_eq!(window.tab_ids(1), [1, 2, 3]);
+        assert_eq!(window.shown(1), 2);
+    }
+
+    #[test]
+    fn a_tab_moves_between_panes_and_the_pane_it_left_keeps_what_it_showed() {
+        let mut window = Window::navigation_and_work();
+        window.panes.get_mut(&3).unwrap().tabs.push(shell(7));
+        window.panes.get_mut(&3).unwrap().tabs.push(shell(8));
+        window.panes.get_mut(&3).unwrap().active = 1;
+
+        // The tab shown leaves: a neighbour is shown; one that is not shown leaves unnoticed.
+        assert!(move_tab_between_panes(&mut window.panes, 3, 7, 2, true));
+        assert_eq!(window.tab_ids(3), [6, 8]);
+        assert_eq!(window.shown(3), 8);
+        assert_eq!(window.tab_ids(2), [4, 5, 7]);
+        assert_eq!(window.shown(2), 7);
+        assert!(move_tab_between_panes(&mut window.panes, 3, 6, 2, false));
+        assert_eq!(window.tab_ids(3), [8]);
+        assert_eq!(window.shown(3), 8);
+        assert_eq!(window.shown(2), 7);
+        assert_eq!(window.tab_ids(2), [4, 5, 7, 6]);
+
+        // Nothing moves for a missing pane or tab, or into the pane it is in.
+        assert!(!move_tab_between_panes(&mut window.panes, 3, 99, 2, true));
+        assert!(!move_tab_between_panes(&mut window.panes, 3, 8, 9, true));
+        assert!(!move_tab_between_panes(&mut window.panes, 9, 8, 2, true));
+        assert!(!move_tab_between_panes(&mut window.panes, 2, 4, 2, true));
+        assert_eq!(window.tab_ids(3), [8]);
+    }
+
+    #[test]
+    fn a_closed_pane_hands_its_tabs_to_the_main_pane_after_its_own() {
+        let mut window = Window::navigation_and_work();
+        window
+            .panes
+            .get_mut(&3)
+            .unwrap()
+            .tabs
+            .push(panel(7, PanelKind::Usage));
+        window.panes.get_mut(&3).unwrap().tabs.push(shell(8));
+
+        let target = aggregation_target(window.main, 3, window.is_locked(3));
+        assert_eq!(target, Some(2));
+        let closed = close_pane_tabs(&mut window.panes, 3, target);
+        // Nothing is closed: the tabs are in the main pane, in their order, behind its own,
+        // and the main pane shows what it showed.
+        assert!(closed.is_empty());
+        assert!(!window.panes.contains_key(&3));
+        assert_eq!(window.tab_ids(2), [4, 5, 6, 7, 8]);
+        assert_eq!(window.shown(2), 5);
+        // The shells in them are still tabs of the window: none was detached.
+        assert_eq!(
+            window.panes[&2]
+                .tabs
+                .iter()
+                .filter_map(Tab::shell_id)
+                .collect::<Vec<_>>(),
+            ["shell-4", "shell-5", "shell-6", "shell-8"]
+        );
+        // The locked pane was not touched.
+        assert_eq!(window.tab_ids(1), [1, 2, 3]);
+        assert_eq!(window.shown(1), 2);
+
+        // An empty main pane shows the first tab that arrives.
+        let mut window = Window::navigation_and_work();
+        window.panes.get_mut(&2).unwrap().tabs.clear();
+        window.panes.get_mut(&2).unwrap().active = 0;
+        assert!(close_pane_tabs(&mut window.panes, 3, Some(2)).is_empty());
+        assert_eq!(window.tab_ids(2), [6]);
+        assert_eq!(window.shown(2), 6);
+    }
+
+    #[test]
+    fn closing_the_main_pane_or_a_locked_one_or_having_no_main_pane_closes_the_tabs_as_before() {
+        // The main pane itself: its tabs are closed with it, and no pane takes them.
+        assert_eq!(aggregation_target(Some(2), 2, false), None);
+        let mut window = Window::navigation_and_work();
+        let closed = close_pane_tabs(&mut window.panes, 2, None);
+        assert_eq!(closed.iter().map(|tab| tab.id).collect::<Vec<_>>(), [4, 5]);
+        assert_eq!(window.tab_ids(3), [6]);
+        assert_eq!(window.tab_ids(1), [1, 2, 3]);
+
+        // A locked pane's tabs are not moved; no main pane means no one to take them.
+        assert_eq!(aggregation_target(Some(2), 1, true), None);
+        assert_eq!(aggregation_target(None, 3, false), None);
+        let mut window = Window::navigation_and_work();
+        let closed = close_pane_tabs(&mut window.panes, 3, None);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(window.tab_ids(2), [4, 5]);
+
+        // A main pane that has gone takes nothing either.
+        let mut window = Window::navigation_and_work();
+        let closed = close_pane_tabs(&mut window.panes, 3, Some(9));
+        assert_eq!(closed.len(), 1);
+    }
+
+    /// nav 1 (locked) | (main 2 | 3) over 4: the shape the status bar's layout makes, with
+    /// every other pane to the right of the navigation.
+    fn right_of_a_locked_navigation_pane() -> Window {
+        Window::new(
+            side(
+                0.27,
+                Layout::Pane(1),
+                stack(
+                    0.75,
+                    side(0.6, Layout::Pane(2), Layout::Pane(3)),
+                    Layout::Pane(4),
+                ),
+            ),
+            vec![
+                (
+                    1,
+                    pane(
+                        vec![
+                            panel(1, PanelKind::Projects),
+                            panel(2, PanelKind::Files),
+                            panel(3, PanelKind::Shells),
+                        ],
+                        2,
+                    ),
+                ),
+                (2, pane(vec![shell(4), shell(5)], 0)),
+                (3, pane(vec![shell(6), panel(7, PanelKind::Usage)], 1)),
+                (4, pane(vec![shell(8)], 0)),
+            ],
+            Some(2),
+            &[1],
+        )
+    }
+
+    #[test]
+    fn a_gather_moves_every_unlocked_tab_into_the_main_pane_and_leaves_the_locked_pane_alone() {
+        let mut window = right_of_a_locked_navigation_pane();
+        let tabs = window.all_tab_ids();
+        let navigation = window.layout.pane_extents(AREA)[&1];
+
+        let gathered = window.gather();
+        assert_eq!(
+            gathered,
+            Gathered {
+                moved: 3,
+                removed: vec![3, 4],
+                kept: 0
+            }
+        );
+        // The emptied panes are gone, from the layout and the panes.
+        assert_eq!(window.layout.pane_ids(), [1, 2]);
+        assert_eq!(window.panes.keys().copied().collect::<Vec<_>>(), [1, 2]);
+        // Tabs arrive pane by pane in layout order, each pane's in its own order, after the main
+        // pane's, and the main pane keeps showing what it showed.
+        assert_eq!(window.tab_ids(2), [4, 5, 6, 7, 8]);
+        assert_eq!(window.shown(2), 4);
+        // No tab was closed, lost or copied.
+        assert_eq!(window.all_tab_ids(), tabs);
+        // The locked pane has its tabs, its selection and its size.
+        assert_eq!(window.tab_ids(1), [1, 2, 3]);
+        assert_eq!(window.shown(1), 3);
+        assert_eq!(window.layout.pane_extents(AREA)[&1], navigation);
+        assert_eq!(window.layout.first_pane(), 1);
+
+        // A second gather has nothing left to do.
+        let again = window.gather();
+        assert_eq!(again, Gathered::default());
+        assert_eq!(window.tab_ids(2), [4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn a_gather_never_touches_any_locked_pane_among_several() {
+        // nav 1 | (main 2 | 3), with a locked pane 4 along the bottom and 5 beside the main one.
+        let mut window = Window::new(
+            stack(
+                0.8,
+                side(
+                    0.2,
+                    Layout::Pane(1),
+                    side(0.6, Layout::Pane(2), Layout::Pane(3)),
+                ),
+                side(0.5, Layout::Pane(4), Layout::Pane(5)),
+            ),
+            vec![
+                (1, pane(vec![panel(1, PanelKind::Files)], 0)),
+                (2, pane(vec![shell(2)], 0)),
+                (3, pane(vec![shell(3), shell(4)], 1)),
+                (4, pane(vec![shell(5), shell(6)], 1)),
+                (5, pane(vec![shell(7)], 0)),
+            ],
+            Some(2),
+            &[1, 4],
+        );
+        let sizes = window.layout.pane_extents(AREA);
+        let gathered = window.gather();
+
+        // Pane 5 sits beside locked pane 4: removing it would widen 4, so it is emptied and kept.
+        assert_eq!(
+            gathered,
+            Gathered {
+                moved: 3,
+                removed: vec![3],
+                kept: 1
+            }
+        );
+        assert_eq!(window.tab_ids(2), [2, 3, 4, 7]);
+        assert!(window.tab_ids(5).is_empty());
+        for locked in [1, 4] {
+            assert_eq!(window.layout.pane_extents(AREA)[&locked], sizes[&locked]);
+        }
+        assert_eq!(window.tab_ids(4), [5, 6]);
+        assert_eq!(window.shown(4), 6);
+        assert_eq!(window.tab_ids(1), [1]);
+    }
+
+    #[test]
+    fn a_gather_with_nothing_to_gather_changes_nothing() {
+        // Only the main pane and a locked one.
+        let mut window = Window::new(
+            side(0.27, Layout::Pane(1), Layout::Pane(2)),
+            vec![
+                (1, pane(vec![panel(1, PanelKind::Files)], 0)),
+                (2, pane(vec![shell(2)], 0)),
+            ],
+            Some(2),
+            &[1],
+        );
+        assert_eq!(window.gather(), Gathered::default());
+        assert_eq!(window.layout.pane_ids(), [1, 2]);
+
+        // A main pane that is not in the window gathers nothing and removes nothing.
+        let mut window = Window::navigation_and_work();
+        window.main = Some(9);
+        assert_eq!(window.gather(), Gathered::default());
+        assert_eq!(window.layout.pane_ids(), [1, 2, 3]);
+        assert_eq!(window.tab_ids(3), [6]);
+    }
+
+    #[test]
+    fn the_gather_says_what_it_did() {
+        let gathered = |moved, kept| Gathered {
+            moved,
+            removed: Vec::new(),
+            kept,
+        };
+        assert_eq!(
+            gather_notice(&gathered(3, 0)),
+            "Gathered 3 tabs into the main pane"
+        );
+        assert_eq!(
+            gather_notice(&gathered(1, 0)),
+            "Gathered 1 tab into the main pane"
+        );
+        assert!(gather_notice(&gathered(0, 0)).starts_with("No tabs to gather"));
+        assert!(gather_notice(&gathered(2, 1)).contains("An empty pane stays beside a locked one"));
+        assert!(gather_notice(&gathered(2, 2)).contains("2 empty panes stay"));
     }
 }
