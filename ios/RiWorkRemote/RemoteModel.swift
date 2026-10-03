@@ -20,6 +20,11 @@ enum ConnectionState: Equatable {
     var state: ConnectionState = .disconnected
     var error: String?
     var projects: [RemoteProject] = []
+    /// How the project list is ordered (Recent unless the person chose otherwise); remembered in UserDefaults.
+    var projectSort = ProjectSort.standard
+    /// Projects this phone created during this connection, with the desktop's `created_at`: they count as just edited until the
+    /// desktop has a figure of its own, so a new project is not sorted behind the dated ones (see `ProjectSorting.sorted`).
+    var touchedProjects: [String: UInt64] = [:]
     var worktrees: [RemoteWorktree] = []
     var shells: [RemoteSession] = []
     var orchestrators: [RemoteSession] = []
@@ -66,6 +71,11 @@ enum ConnectionState: Equatable {
     var closingTerminalID: String?
     /// The project list asks that project's terminal screen to open the "New terminal" sheet once it is up and loaded.
     var newTerminalRequestedProject: String?
+    // MARK: Agent activity and the project order (RemoteModel+Activity.swift)
+    /// How often the lists are read again while a view that shows agent activity is on screen.
+    @ObservationIgnored let activityRefreshInterval: Duration
+    /// When each list was last read, by a refresh of any kind, so a view that appears right after one does not read it again at once.
+    @ObservationIgnored var lastListRead: [ActivityScope: ContinuousClock.Instant] = [:]
     // MARK: Creating projects (pipeline in RemoteModel+NewProject.swift)
     /// Whether the desktop understands `project.create`. Learned from the first call, reset by every new connection.
     var projectCreation: ProjectCreationSupport = .unknown
@@ -223,7 +233,7 @@ enum ConnectionState: Equatable {
     /// The pane size the view reported; the grid is recomputed from it whenever layout, font or focus changes.
     @ObservationIgnored var terminalArea: CGSize?
     // The project whose worktrees and shells are current for this connection; a cancelled load leaves it unset.
-    @ObservationIgnored private var loadedProjectID: String?
+    @ObservationIgnored var loadedProjectID: String?
     // Per-session `lines` that fit the desktop's 128 KiB reply cap; wide grids or multibyte scrollback need fewer.
     @ObservationIgnored private var outputLines: [String: Int] = [:]
     private static let defaultOutputLines = 500, minimumOutputLines = 20
@@ -236,6 +246,7 @@ enum ConnectionState: Equatable {
     init(client: any RemoteTransport = RelayClient(), keychain: KeychainStore = KeychainStore(), pollInterval: Duration = .seconds(3),
          keyFlushInterval: Duration = .milliseconds(40), previewDelay: Duration = .milliseconds(300), reconnectBackoff: Duration = .seconds(1),
          defaults: UserDefaults = .standard, themeRefreshInterval: Duration = .seconds(60), themeMinimumGap: Duration = .seconds(5),
+         activityRefreshInterval: Duration = .seconds(4),
          cellMetrics: @escaping @MainActor (Double) -> (width: Double, height: Double) = { TerminalFont.cell(size: $0) },
          keepAwake: @escaping @MainActor (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 },
          liveWaitMilliseconds: Int = LiveSync.waitMilliseconds, linkWatcher: (any LinkWatching)? = nil, prefetch: Bool = true,
@@ -252,12 +263,14 @@ enum ConnectionState: Equatable {
         self.defaults = defaults
         self.themeRefreshInterval = themeRefreshInterval
         self.themeMinimumGap = themeMinimumGap
+        self.activityRefreshInterval = activityRefreshInterval
         self.theme = ThemeStore(defaults: defaults)
         self.hotkeys = HotkeyStore(defaults: defaults)
         self.keyboard = KeyboardPrefs(defaults: defaults, hardware: hardwareKeyboard)
         self.cellMetrics = cellMetrics
         self.keepAwake = keepAwake
         preferLineComposer = defaults.bool(forKey: Self.lineComposerKey)
+        projectSort = ProjectSort.stored(in: defaults)
         terminalFontSize = defaults.object(forKey: Self.fontSizeKey) == nil ? TerminalFontSize.standard : TerminalFontSize.clamped(defaults.double(forKey: Self.fontSizeKey))
         interfaceScale = defaults.object(forKey: Self.interfaceScaleKey) == nil ? InterfaceScale.standard : InterfaceScale.clamped(defaults.double(forKey: Self.interfaceScaleKey))
         showLatency = defaults.bool(forKey: Self.showLatencyKey)
@@ -523,7 +536,8 @@ enum ConnectionState: Equatable {
         if wantsConnection, state == .suspended { await connect() }
     }
     private func clearSnapshot() {
-        projects = []; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
+        projects = []; touchedProjects = [:]; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
+        lastListRead = [:]
         // Another desktop: nothing kept for the last one is of any use.
         terminalCache.removeAll()
     }
@@ -559,6 +573,7 @@ enum ConnectionState: Equatable {
         let early = try await chosenListing
         guard generation == token else { return }
         projects = listed; orchestrators = managers
+        noteListsRead()
         if projectID == nil, let first = listed.first { try updateDesktop { $0.selectedProjectID = first.id } }
         if let project = projectID {
             if project == chosen, let early { try await install(early, project: project, token: token) }
@@ -607,6 +622,7 @@ enum ConnectionState: Equatable {
     private func install(_ listing: ProjectListing, project id: String, token: UUID) async throws {
         guard generation == token, projectID == id else { return }
         worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
+        lastListRead[.sessions] = .now
         try reconcileSelectedSession()
         if sessionID == nil { try await synchronizeViewport(token: token) }
     }
