@@ -2126,6 +2126,11 @@ impl SessionManager {
     fn tmux_client(&self) -> Command {
         let mut command = Command::new(&self.tmux);
         command
+            // UTF-8 whatever the locale: without one (the connector's LaunchAgent sets
+            // none) tmux prints a tab inside a format as `_`, and every tab-separated
+            // answer read here (list-sessions, list-panes, the link view) would fail to
+            // parse, so live shells read as gone.
+            .arg("-u")
             .arg("-L")
             .arg(&self.socket_name)
             .arg("-f")
@@ -2385,6 +2390,21 @@ mod compat_tests {
         })
     }
 
+    #[test]
+    fn tmux_is_asked_for_utf8_whatever_the_locale() {
+        // The connector's LaunchAgent sets no locale. tmux then prints a tab inside a
+        // format as `_`, every tab-separated answer fails to parse, and live shells read
+        // as gone (the phone saw no shells). `-u` makes the answers the same everywhere.
+        let home = Home::new();
+        let manager = home.manager();
+        let command = manager.tmux_client();
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_owned()).collect();
+        assert_eq!(
+            args.first().map(|arg| arg.as_os_str()),
+            Some(std::ffi::OsStr::new("-u"))
+        );
+        assert!(args.iter().any(|arg| arg == "-L"));
+    }
     #[test]
     fn unparsed_entries_and_unknown_fields_survive_a_load_modify_save_cycle() {
         let home = Home::new();

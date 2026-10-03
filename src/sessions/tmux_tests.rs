@@ -390,7 +390,7 @@ fn list_hides_the_codex_label_of_a_plain_shell_that_is_back_at_its_prompt() {
         Fixture::script(
             &tmux,
             &format!(
-                "shift 4\ncase \"$1\" in\n  list-sessions) printf '{names}' ;;\n  show-options) echo /bin/sh ;;\n  list-panes) cat {} || exit 1 ;;\nesac",
+                "shift 5\ncase \"$1\" in\n  list-sessions) printf '{names}' ;;\n  show-options) echo /bin/sh ;;\n  list-panes) cat {} || exit 1 ;;\nesac",
                 quote_arg(&panes.to_string_lossy())
             ),
         );
