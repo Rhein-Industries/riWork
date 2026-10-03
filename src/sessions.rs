@@ -202,6 +202,7 @@ impl SessionManager {
         root: PathBuf,
         path: PathBuf,
         expected: crate::file_preview::FileIdentity,
+        line: Option<u32>,
     ) -> Result<ShellSession, String> {
         validate_uuid(&project_id)?;
         if let Some(id) = &worktree_id {
@@ -209,7 +210,7 @@ impl SessionManager {
         }
         let path = crate::file_preview::validated_editor_path(&root, &path, expected)?;
         let vim = find_vim().ok_or("Vim is required to edit files in RiWork.")?;
-        let command = editor_command(&vim, &path)?;
+        let command = editor_command(&vim, &path, line)?;
         self.create_inner(
             Some(project_id),
             worktree_id,
@@ -837,8 +838,11 @@ impl SessionManager {
         Ok(command)
     }
 
+    /// Mouse reporting and wheel scrolling for the shell's session, and hyperlinks for the server.
+    /// Done on every attach, so servers and sessions made by older builds catch up.
     fn configure_scrolling(&self, id: &str) -> Result<(), String> {
         self.tmux_checked(&["set-option", "-t", id, "mouse", "on"])?;
+        self.allow_hyperlinks();
         // RiWork owns this isolated tmux server. A pane on the main screen
         // (a shell, or an agent run inline) and an alternate-screen application
         // without mouse support both scroll through tmux's history.
@@ -855,6 +859,125 @@ impl SessionManager {
             "copy-mode -e; send-keys -M",
         ])?;
         Ok(())
+    }
+
+    /// Let OSC 8 hyperlinks through tmux to the terminal. Claude Code and Codex print their URLs
+    /// and file names that way, so that Ghostty can open them, but tmux drops them unless the
+    /// client's terminal is declared to support them. A client picks this up when it attaches.
+    ///
+    /// The fixed index makes a repeated call replace the entry, not add another. A tmux that does
+    /// not know the feature refuses it, and the only loss is the pass-through.
+    fn allow_hyperlinks(&self) {
+        let _ = self.tmux_command(&[
+            "set-option",
+            "-s",
+            "terminal-features[100]",
+            "xterm*:hyperlinks",
+        ]);
+    }
+
+    /// What clicking a link in the shell's terminal needs, in one tmux call: the pane's size,
+    /// scroll position, mode and working directory, the attached clients' sizes, and the screen
+    /// twice (every row at full width, and with wrapped rows joined) so that a link broken across
+    /// rows can be put back together, and a third time with its escape sequences, which is where
+    /// the target of an OSC 8 hyperlink is. A few rows beyond the screen come with it, because a
+    /// link can start above the first row.
+    ///
+    /// The screen is the one on display: the alternate screen of a full-screen program, or the
+    /// part of the scrollback copy mode is showing. See `terminal_links::PaneView::parse`.
+    pub fn capture_link_view(&self, id: &str) -> Result<crate::terminal_links::RawCapture, String> {
+        use crate::terminal_links::CONTEXT_ROWS;
+        validate_uuid(id)?;
+        // Empty outside a mode, so 0 there.
+        const SCROLL: &str = "#{?scroll_position,#{scroll_position},0}";
+        // Counted from the top of the live screen: history is negative. tmux clamps both ends.
+        let first = format!("-#{{e|+:{SCROLL},{CONTEXT_ROWS}}}");
+        let last = format!("#{{e|-:#{{e|+:#{{e|-:#{{pane_height}},1}},{CONTEXT_ROWS}}},{SCROLL}}}");
+        let header = format!(
+            "#{{pane_width}}\t#{{pane_height}}\t#{{history_size}}\t{SCROLL}\t#{{pane_mode}}\t\
+             #{{alternate_on}}\t#{{pane_current_path}}"
+        );
+        // Marks that screen text cannot contain by accident.
+        let nonce = Uuid::new_v4().simple().to_string();
+        let rows_mark = format!("riwork-rows-{nonce}");
+        let joined_mark = format!("riwork-joined-{nonce}");
+        let escaped_mark = format!("riwork-escaped-{nonce}");
+        let pane = pane_target(id);
+        let output = self.tmux_checked(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            &header,
+            ";",
+            "list-clients",
+            "-t",
+            id,
+            "-F",
+            "#{client_control_mode}\t#{client_readonly}\t#{client_width}\t#{client_height}\t#{client_activity}",
+            ";",
+            "display-message",
+            "-p",
+            &rows_mark,
+            ";",
+            "capture-pane",
+            "-p",
+            "-N",
+            "-t",
+            &pane,
+            "-S",
+            &first,
+            "-E",
+            &last,
+            ";",
+            "display-message",
+            "-p",
+            &joined_mark,
+            ";",
+            "capture-pane",
+            "-p",
+            "-J",
+            "-t",
+            &pane,
+            "-S",
+            &first,
+            "-E",
+            &last,
+            ";",
+            "display-message",
+            "-p",
+            &escaped_mark,
+            ";",
+            "capture-pane",
+            "-p",
+            "-e",
+            "-N",
+            "-t",
+            &pane,
+            "-S",
+            &first,
+            "-E",
+            &last,
+        ])?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let malformed = || "tmux answered the screen request in an unexpected shape".to_owned();
+        let (head, rest) = text
+            .split_once(&format!("{rows_mark}\n"))
+            .ok_or_else(malformed)?;
+        let (rows, rest) = rest
+            .split_once(&format!("{joined_mark}\n"))
+            .ok_or_else(malformed)?;
+        let (joined, escaped) = rest
+            .split_once(&format!("{escaped_mark}\n"))
+            .ok_or_else(malformed)?;
+        let (header, clients) = head.split_once('\n').unwrap_or((head, ""));
+        Ok(crate::terminal_links::RawCapture {
+            header: header.to_owned(),
+            clients: clients.to_owned(),
+            rows: rows.to_owned(),
+            joined: joined.to_owned(),
+            escaped: escaped.to_owned(),
+        })
     }
 
     /// Capture scrollback and the visible screen as plain text.
@@ -2453,14 +2576,24 @@ fn find_vim() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
-fn editor_command(vim: &Path, path: &Path) -> Result<String, String> {
+/// `exec vim [+LINE] -- FILE`. The line is a number Vim reads as its own argument, never text
+/// from the file name.
+fn editor_command(vim: &Path, path: &Path, line: Option<u32>) -> Result<String, String> {
     let vim = vim
         .to_str()
         .ok_or("The Vim executable path cannot be passed to the shell.")?;
     let path = path
         .to_str()
         .ok_or("This file name cannot be passed to Vim.")?;
-    Ok(format!("exec {} -- {}", quote_arg(vim), quote_arg(path)))
+    let line = line
+        .filter(|line| *line > 0)
+        .map(|line| format!(" +{line}"))
+        .unwrap_or_default();
+    Ok(format!(
+        "exec {}{line} -- {}",
+        quote_arg(vim),
+        quote_arg(path)
+    ))
 }
 
 fn selected_codex_binding(
@@ -5109,7 +5242,7 @@ mod tests {
         fs::set_permissions(&vim, fs::Permissions::from_mode(0o700)).unwrap();
         let result = Command::new("/bin/sh")
             .arg("-c")
-            .arg(editor_command(&vim, &file).unwrap())
+            .arg(editor_command(&vim, &file, None).unwrap())
             .current_dir(&directory)
             .env("CAPTURE", &capture)
             .status()
@@ -5121,6 +5254,25 @@ mod tests {
         );
         assert!(!directory.join("PWNED").exists());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_editor_opens_at_the_line_a_link_names() {
+        let vim = Path::new("/usr/bin/vim");
+        let file = Path::new("/p/a b.rs");
+        let command = |line| editor_command(vim, file, line).unwrap();
+        assert!(
+            command(Some(120)).contains(" +120 -- "),
+            "{}",
+            command(Some(120))
+        );
+        // Line 0 means no line; the file name still follows `--`, whatever it holds.
+        for plain in [command(None), command(Some(0))] {
+            assert!(!plain.contains('+'), "{plain}");
+            assert!(plain.contains(" -- "), "{plain}");
+        }
+        let hostile = editor_command(vim, Path::new("/p/+9 ; rm"), Some(3)).unwrap();
+        assert!(hostile.contains(" +3 -- "), "{hostile}");
     }
 
     #[test]

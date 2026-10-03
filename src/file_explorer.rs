@@ -17,7 +17,7 @@ use std::{
     path::{Component, Path, PathBuf},
     rc::Rc,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gpui::{
@@ -57,6 +57,12 @@ pub enum FileExplorerEvent {
     /// The user chose a file or link: with a click or the keyboard, not by the tree
     /// picking its first row. The window shows the preview if it is set to.
     Selected,
+    /// A file was selected for a link in a terminal. The window shows the preview even if it
+    /// is set not to open it for a plain selection: the link was asked for by name.
+    Revealed,
+    /// A path a terminal link named, inside the root and known to exist, is not in any listing:
+    /// it is past the cap on a folder's rows, or ignored.
+    NotListed(PathBuf),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -782,6 +788,82 @@ fn explicit_pdf_after(path: Option<&Path>, intent: Intent) -> Option<PathBuf> {
         .map(Path::to_owned)
 }
 
+/// The folders that have to be open for `path` to show in a tree rooted at `root`, outermost
+/// first, and whether the path is hidden (a dot name anywhere below the root). `None` for the
+/// root itself and for anything outside it.
+fn reveal_plan(root: &Path, path: &Path) -> Option<(Vec<PathBuf>, bool)> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut folders = Vec::new();
+    let mut current = root.to_owned();
+    let mut hidden = false;
+    let mut parts = relative.components().peekable();
+    parts.peek()?;
+    while let Some(part) = parts.next() {
+        let Component::Normal(name) = part else {
+            return None;
+        };
+        hidden |= name.to_string_lossy().starts_with('.');
+        current.push(name);
+        if parts.peek().is_some() {
+            folders.push(current.clone());
+        }
+    }
+    Some((folders, hidden))
+}
+
+/// What a line number asked for does to the preview that is showing, or will.
+#[derive(Debug, PartialEq, Eq)]
+enum LineOutcome {
+    /// The file is still loading.
+    Wait,
+    /// Scroll to this line (counted from 0).
+    Show { index: usize },
+    /// The file has fewer lines than that (or the preview stopped before it).
+    PastEnd { last: usize, truncated: bool },
+    /// This preview has no lines: a picture, a PDF, a message.
+    NoLines,
+    /// The preview failed; it says so itself.
+    Failed,
+}
+
+fn line_outcome(preview: &PreviewState, line: usize) -> LineOutcome {
+    match preview {
+        PreviewState::Empty | PreviewState::Loading => LineOutcome::Wait,
+        PreviewState::Error(_) => LineOutcome::Failed,
+        PreviewState::Ready(PreviewContent::Text {
+            lines, truncated, ..
+        }) => {
+            let last = lines.len().saturating_sub(1);
+            if line > lines.len() {
+                LineOutcome::PastEnd {
+                    last,
+                    truncated: *truncated,
+                }
+            } else {
+                LineOutcome::Show {
+                    index: line.saturating_sub(1),
+                }
+            }
+        }
+        PreviewState::PdfPending | PreviewState::Ready(_) => LineOutcome::NoLines,
+    }
+}
+
+/// A file or folder a terminal link asked the tree to select, waiting for the listings that
+/// show it.
+struct PendingReveal {
+    path: PathBuf,
+    line: Option<usize>,
+    /// Folders asked to list themselves for this; the file cannot be called missing before
+    /// they have answered.
+    awaiting: HashSet<PathBuf>,
+    started: Instant,
+}
+
+/// How long a terminal link may wait for the tree. A listing that never answers (the folder
+/// went away, or the tree was refreshed under it) must not select the file much later.
+const REVEAL_PATIENCE: Duration = Duration::from_secs(10);
+
 enum PreviewPlan {
     Show(PreviewState),
     Load,
@@ -813,7 +895,7 @@ fn plan_preview(
 
 /// Extensions macOS runs, mounts or installs when opened, whatever their
 /// permission bits say.
-const LAUNCHER_EXTENSIONS: &[&str] = &[
+pub(crate) const LAUNCHER_EXTENSIONS: &[&str] = &[
     "app", "command", "tool", "terminal", "workflow", "action", "scpt", "scptd", "pkg", "mpkg",
     "dmg", "jar", "prefpane", "saver", "webloc", "inetloc",
 ];
@@ -971,6 +1053,12 @@ pub struct FileExplorer {
     preview_focus: FocusHandle,
     generation: u64,
     next_request: u64,
+    /// A link in a terminal that the tree has not finished showing.
+    pending_reveal: Option<PendingReveal>,
+    /// The line of the selected file a link named, until the preview can scroll to it.
+    pending_line: Option<(PathBuf, usize)>,
+    /// The line the preview scrolled to for a link, marked until another file is shown.
+    highlight_line: Option<(PathBuf, usize)>,
 }
 
 #[derive(Clone)]
@@ -1029,6 +1117,9 @@ impl FileExplorer {
             preview_focus: cx.focus_handle(),
             generation: 0,
             next_request: 0,
+            pending_reveal: None,
+            pending_line: None,
+            highlight_line: None,
         }
     }
 
@@ -1045,6 +1136,9 @@ impl FileExplorer {
         self.generation = self.generation.wrapping_add(1);
         self.tree.clear();
         self.selected = None;
+        self.pending_reveal = None;
+        self.pending_line = None;
+        self.highlight_line = None;
         self.explicit_pdf = None;
         self.notice = None;
         self.preview_request = self.preview_request.wrapping_add(1);
@@ -1147,6 +1241,7 @@ impl FileExplorer {
                 }
                 explorer.ensure_selection(cx);
                 explorer.reload_preview_if_changed(&path, cx);
+                explorer.continue_reveal(Some(&path), cx);
                 if outcome.changed {
                     cx.notify();
                 }
@@ -1191,6 +1286,9 @@ impl FileExplorer {
             return;
         }
         self.notice = None;
+        if self.pending_line.as_ref().map(|(line_path, _)| line_path) != path.as_ref() {
+            self.pending_line = None;
+        }
         self.explicit_pdf = explicit_pdf_after(path.as_deref(), intent);
         self.selected = path;
         self.reload_preview(intent.delay(), cx);
@@ -1279,12 +1377,150 @@ impl FileExplorer {
     fn set_preview(&mut self, state: PreviewState, path: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.preview_path != path {
             self.preview_scroll = UniformListScrollHandle::new();
+            self.highlight_line = None;
         }
         self.preview_path = path;
         let old = std::mem::replace(&mut self.preview, state);
         if let Some(image) = old.render_image() {
             release_image(image.clone(), cx);
         }
+        self.apply_pending_line(cx);
+        cx.notify();
+    }
+
+    /// Select `path`, a file or folder under the root, the way a click would: open the folders
+    /// above it, clear a filter that would hide it, show hidden files if it is one, and select
+    /// it once the listings that hold it have arrived. A file named by a terminal link also
+    /// scrolls its preview to `line`. Folders listed long ago are listed again, because the
+    /// file may be one the agent just wrote.
+    pub fn reveal(
+        &mut self,
+        path: &Path,
+        line: Option<u32>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let root = self
+            .root
+            .as_ref()
+            .map(|root| root.path.clone())
+            .ok_or("No folder is open in Files.")?;
+        let (folders, hidden) = reveal_plan(&root, path)
+            .ok_or("That is not inside the folder Files shows.".to_owned())?;
+        if hidden {
+            self.show_hidden = true;
+        }
+        self.filter = FilterInput::default();
+        if self.mode == Mode::Search {
+            self.mode = Mode::Tree;
+        }
+        let mut awaiting = HashSet::new();
+        for folder in std::iter::once(root.clone()).chain(folders) {
+            if folder != root {
+                self.tree.expanded_mut().insert(folder.clone());
+            }
+            self.load(folder.clone(), cx);
+            awaiting.insert(folder);
+        }
+        self.pending_reveal = Some(PendingReveal {
+            path: path.to_owned(),
+            line: line.map(|line| line as usize),
+            awaiting,
+            started: Instant::now(),
+        });
+        self.continue_reveal(None, cx);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Try to finish a reveal: after it was asked for, and after each listing that arrives.
+    /// `listed` is the folder whose listing just arrived.
+    fn continue_reveal(&mut self, listed: Option<&Path>, cx: &mut Context<Self>) {
+        let Some(pending) = &mut self.pending_reveal else {
+            return;
+        };
+        if pending.started.elapsed() > REVEAL_PATIENCE {
+            self.pending_reveal = None;
+            return;
+        }
+        if let Some(listed) = listed {
+            pending.awaiting.remove(listed);
+        }
+        let target = pending.path.clone();
+        let rows = self.rows();
+        let found = rows
+            .iter()
+            .find(|row| matches!(row.kind, RowKind::Entry(_)) && row.path == target);
+        if let Some(row) = found {
+            let line = self.pending_reveal.take().and_then(|pending| pending.line);
+            self.select_for_link(row, line, cx);
+        } else if self
+            .pending_reveal
+            .as_ref()
+            .is_some_and(|pending| pending.awaiting.is_empty())
+        {
+            // Every folder above it has answered and it is not there: gone, or ignored.
+            self.pending_reveal = None;
+            cx.emit(FileExplorerEvent::NotListed(target));
+            cx.notify();
+        }
+    }
+
+    fn select_for_link(&mut self, row: &TreeRow, line: Option<usize>, cx: &mut Context<Self>) {
+        if let Some(index) = self.rows().iter().position(|other| other.path == row.path) {
+            self.scroll.scroll_to_item(index, ScrollStrategy::Center);
+        }
+        self.pending_line = line
+            .filter(|_| {
+                matches!(
+                    row.kind,
+                    RowKind::Entry(EntryKind::File | EntryKind::Symlink)
+                )
+            })
+            .map(|line| (row.path.clone(), line));
+        self.highlight_line = None;
+        self.select_row(Some(row), Intent::Explicit, cx);
+        // The file may already have been the selection, and shown.
+        self.apply_pending_line(cx);
+        if matches!(
+            row.kind,
+            RowKind::Entry(EntryKind::File | EntryKind::Symlink)
+        ) {
+            cx.emit(FileExplorerEvent::Revealed);
+        }
+    }
+
+    /// Scroll the preview to the line a link named, once the file is on screen.
+    fn apply_pending_line(&mut self, cx: &mut Context<Self>) {
+        let Some((path, line)) = self.pending_line.clone() else {
+            return;
+        };
+        if self.preview_path.as_ref() != Some(&path) {
+            return;
+        }
+        match line_outcome(&self.preview, line) {
+            LineOutcome::Wait => return,
+            LineOutcome::Show { index } => {
+                self.preview_scroll
+                    .scroll_to_item(index, ScrollStrategy::Center);
+                self.highlight_line = Some((path, index));
+            }
+            LineOutcome::PastEnd { last, truncated } => {
+                self.preview_scroll
+                    .scroll_to_item(last, ScrollStrategy::Center);
+                self.notice = Some(Notice::refusal(if truncated {
+                    format!("Line {line} is past the end of this preview, which stops early.")
+                } else {
+                    format!("Line {line} is past the end of this file.")
+                }));
+            }
+            LineOutcome::NoLines => {
+                self.notice = Some(Notice::refusal(format!(
+                    "Line {line} cannot be shown: this preview has no lines."
+                )));
+            }
+            LineOutcome::Failed => {}
+        }
+        self.pending_line = None;
         cx.notify();
     }
 
@@ -2070,6 +2306,13 @@ impl FileExplorer {
                 let muted = colors.muted;
                 let text = colors.text;
                 let markdown = *markdown;
+                // The line a terminal link named, while this file is the one on screen.
+                let marked = self
+                    .highlight_line
+                    .as_ref()
+                    .filter(|(path, _)| Some(path) == self.preview_path.as_ref())
+                    .map(|(_, index)| *index);
+                let marker = colors.panel_active;
                 div()
                     .flex_1()
                     .min_h_0()
@@ -2102,6 +2345,7 @@ impl FileExplorer {
                                         .flex()
                                         .items_center()
                                         .px(ui_text::space(10.0))
+                                        .when(marked == Some(index), |row| row.bg(rgb(marker)))
                                         .child(
                                             div()
                                                 .w(ui_text::space(42.0))
@@ -3261,6 +3505,90 @@ mod tests {
         let filtered = tree.rows(root, false, "main");
         assert!(entry_of(&filtered, &root.join("Paper.pdf")).is_none());
         assert!(entry_of(&filtered, &root.join("main.rs")).is_some());
+    }
+
+    #[test]
+    fn a_link_opens_the_folders_above_its_file() {
+        let root = Path::new("/w");
+        let folders = |paths: &[&str]| paths.iter().map(PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(
+            reveal_plan(root, Path::new("/w/src/a/b.rs")),
+            Some((folders(&["/w/src", "/w/src/a"]), false))
+        );
+        assert_eq!(
+            reveal_plan(root, Path::new("/w/a.rs")),
+            Some((Vec::new(), false))
+        );
+        // A folder is revealed the same way; its own row is not among the ones to open.
+        assert_eq!(
+            reveal_plan(root, Path::new("/w/src/a")),
+            Some((folders(&["/w/src"]), false))
+        );
+        // A dot name anywhere below the root hides the row until hidden files are shown.
+        assert_eq!(
+            reveal_plan(root, Path::new("/w/.github/ci.yml")),
+            Some((folders(&["/w/.github"]), true))
+        );
+        assert_eq!(
+            reveal_plan(root, Path::new("/w/src/.env")),
+            Some((folders(&["/w/src"]), true))
+        );
+        // The root itself, other places and escapes are not the tree's.
+        assert_eq!(reveal_plan(root, root), None);
+        assert_eq!(reveal_plan(root, Path::new("/other/a.rs")), None);
+        assert_eq!(reveal_plan(root, Path::new("/w/../other/a.rs")), None);
+    }
+
+    #[test]
+    fn a_line_scrolls_a_text_preview_and_says_when_it_cannot() {
+        let text = |lines: usize, truncated: bool| {
+            PreviewState::Ready(PreviewContent::Text {
+                lines: Arc::new((0..lines).map(|line| format!("line {line}")).collect()),
+                truncated,
+                markdown: false,
+            })
+        };
+        // Counted from 1 for people, from 0 for the list.
+        assert_eq!(
+            line_outcome(&text(3, false), 1),
+            LineOutcome::Show { index: 0 }
+        );
+        assert_eq!(
+            line_outcome(&text(3, false), 3),
+            LineOutcome::Show { index: 2 }
+        );
+        assert_eq!(
+            line_outcome(&text(3, false), 0),
+            LineOutcome::Show { index: 0 }
+        );
+        // Past the end: the last line is shown and the message says why it is not the one asked.
+        assert_eq!(
+            line_outcome(&text(3, false), 4),
+            LineOutcome::PastEnd {
+                last: 2,
+                truncated: false
+            }
+        );
+        assert_eq!(
+            line_outcome(&text(3, true), 9_000),
+            LineOutcome::PastEnd {
+                last: 2,
+                truncated: true
+            }
+        );
+        // Not here yet, not text, or not shown at all.
+        assert_eq!(line_outcome(&PreviewState::Loading, 5), LineOutcome::Wait);
+        assert_eq!(line_outcome(&PreviewState::Empty, 5), LineOutcome::Wait);
+        assert_eq!(
+            line_outcome(&PreviewState::PdfPending, 5),
+            LineOutcome::NoLines
+        );
+        let message = PreviewState::Ready(PreviewContent::Message("binary".into()));
+        assert_eq!(line_outcome(&message, 5), LineOutcome::NoLines);
+        assert_eq!(
+            line_outcome(&PreviewState::Error("gone".into()), 5),
+            LineOutcome::Failed
+        );
     }
 
     #[test]
