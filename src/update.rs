@@ -43,6 +43,8 @@ struct UpdateEnvironment {
     tool_path: std::ffi::OsString,
     verify_signature: bool,
     codesign_identity: Option<SigningIdentity>,
+    /// The Zig the Ghostty build is given (`None`: whatever `ZIG` or `PATH` says).
+    zig: Option<PathBuf>,
 }
 
 /// A code signing identity for the bundle: what `codesign --sign` is given,
@@ -145,6 +147,7 @@ pub fn build_update(source: &Path, profile: Option<&str>) -> Result<UpdateBuild,
             tool_path: update_tool_path()?,
             verify_signature: cfg!(target_os = "macos"),
             codesign_identity: update_signing_identity(),
+            zig: update_zig(),
         },
     )
 }
@@ -204,6 +207,10 @@ fn build_update_with(
         .args(["build", "--locked", "--bin", "riwork"])
         .env("CARGO_TARGET_DIR", &staged_target)
         .env("PATH", tool_path);
+    if let Some(zig) = &environment.zig {
+        build.env("ZIG", zig);
+        eprintln!("Using Zig at {}.", zig.display());
+    }
     if profile == "release" {
         build.arg("--release");
     }
@@ -481,6 +488,32 @@ fn pick_signing_identity(listing: &str) -> Option<SigningIdentity> {
                 .find(|identity| identity.name.starts_with(prefix))
                 .cloned()
         })
+}
+
+/// The Zig 0.16 toolchain kept under the RiWork data directory, for the
+/// Ghostty build, unless `ZIG` is set. Homebrew's Zig is often another version,
+/// which fails that build, and a toolchain unpacked under /tmp loses its
+/// standard library to the system's periodic cleanup.
+fn update_zig() -> Option<PathBuf> {
+    if env::var_os("ZIG").is_some_and(|zig| !zig.is_empty()) {
+        return None;
+    }
+    find_zig(&crate::paths::riwork_home().ok()?.join("toolchains"))
+}
+
+/// The newest `zig-0.16*/zig` in `toolchains` whose standard library is
+/// present.
+fn find_zig(toolchains: &Path) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = fs::read_dir(toolchains)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("zig-0.16"))
+        .map(|entry| entry.path())
+        .filter(|dir| dir.join("zig").is_file() && dir.join("lib/std/std.zig").is_file())
+        .map(|dir| dir.join("zig"))
+        .collect();
+    found.sort();
+    found.pop()
 }
 
 fn update_tool_path() -> Result<std::ffi::OsString, String> {
@@ -1003,6 +1036,30 @@ fn retain_previous(
 mod tests {
     use super::*;
     use std::time::SystemTime;
+
+    #[test]
+    fn the_kept_zig_toolchain_is_found_only_when_complete() {
+        let temporary = StagingDirectory::new(
+            env::temp_dir().join(format!("riwork-update-zig-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let toolchains = temporary.path.as_path();
+        assert_eq!(find_zig(toolchains), None, "nothing kept");
+        let broken = toolchains.join("zig-0.16.0");
+        fs::create_dir_all(broken.join("lib/std")).unwrap();
+        fs::write(broken.join("zig"), "").unwrap();
+        assert_eq!(
+            find_zig(toolchains),
+            None,
+            "a toolchain whose standard library was cleaned away is no use"
+        );
+        fs::write(broken.join("lib/std/std.zig"), "").unwrap();
+        let other = toolchains.join("zig-0.14.0");
+        fs::create_dir_all(other.join("lib/std")).unwrap();
+        fs::write(other.join("zig"), "").unwrap();
+        fs::write(other.join("lib/std/std.zig"), "").unwrap();
+        assert_eq!(find_zig(toolchains), Some(broken.join("zig")));
+    }
 
     #[test]
     fn a_certificate_is_preferred_to_an_ad_hoc_signature() {
@@ -1654,6 +1711,7 @@ mod tests {
                 tool_path,
                 verify_signature: false,
                 codesign_identity: None,
+                zig: None,
             },
         )
     }
