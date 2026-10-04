@@ -257,7 +257,7 @@ impl Appearance {
     /// What the phone companion mirrors, not yet stamped with a time.
     pub fn published(&self, force: bool) -> Published {
         let palette = self.palette;
-        Published::new(
+        let mut published = Published::new(
             is_dark(palette.bg),
             PaletteColors {
                 bg: Rgb(palette.bg),
@@ -275,7 +275,9 @@ impl Appearance {
                 foreground: Rgb(color_u32(theme.foreground)),
                 palette: theme.palette.map(|color| Rgb(color_u32(color))),
             }),
-        )
+        );
+        published.native = self.selected == ThemeChoice::Native;
+        published
     }
 }
 
@@ -1509,6 +1511,31 @@ mod tests {
                 appearance.published(true).palette
             );
         }
+    }
+
+    #[test]
+    fn only_native_tells_the_phone_to_draw_natively() {
+        for choice in ThemeChoice::ALL {
+            for dark in [false, true] {
+                let published = Appearance::resolve(choice, dark).published(false);
+                assert_eq!(
+                    published.native,
+                    choice == ThemeChoice::Native,
+                    "{choice:?}"
+                );
+            }
+        }
+        // Native's light and dark sides publish the mode with the flag.
+        assert!(
+            !Appearance::resolve(ThemeChoice::Native, false)
+                .published(true)
+                .dark
+        );
+        assert!(
+            Appearance::resolve(ThemeChoice::Native, true)
+                .published(true)
+                .dark
+        );
     }
 
     #[test]

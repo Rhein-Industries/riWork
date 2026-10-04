@@ -55,7 +55,7 @@ struct ChordTag: View {
     @Environment(\.desktopStyle) private var style
     let chord: KeyChord
     var body: some View {
-        Text(chord.title).font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+        Text(chord.title).font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .overlay(RoundedRectangle(cornerRadius: 3).stroke(style.divider, lineWidth: 1))
             .accessibilityLabel("Shortcut \(chord.title)")
@@ -103,7 +103,7 @@ struct HotkeyEditorSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: "HOTKEYS") {
+            WorkspaceBar(title: style.cased("Hotkeys")) {
                 if store.custom.count > 1 { Button(reordering ? "Finish" : "Reorder") { reordering.toggle() } }
                 Button("Done") { dismiss() }
             }
@@ -131,7 +131,7 @@ struct HotkeyEditorSheet: View {
                         hint("⌘K opens the hotkey menu from any shell, ⌘/ the hotkey help, which lists every hotkey with its shortcut. The tester shows what a key sends, for example the Clicks button.")
                     }
                     Section("Built in") {
-                        ForEach(Hotkey.builtIn) { row($0, tint: style.muted) }.listRowBackground(style.background)
+                        ForEach(Hotkey.builtIn) { row($0, tint: style.muted) }.listRowBackground(style.surface)
                     }
                     Section {
                         hint("A hotkey sends its steps to the terminal in order, like typing them. Text is typed as it is; use the Enter key step for a new line. A shortcut runs a hotkey without opening the menu.")
@@ -142,8 +142,8 @@ struct HotkeyEditorSheet: View {
                 .onChange(of: selection) { _, row in withAnimation(.easeInOut(duration: 0.15)) { proxy.scrollTo(row) } }
             }
         }
-        .background(style.background).foregroundStyle(style.text)
-        .font(style.mono(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
+        .desktopSheetSurface(style).foregroundStyle(style.text)
+        .font(style.face(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
         .background { KeyCommandHost(active: draft == nil && learning == nil && !testing, actions: listActions) }
         .background {
             KeyLearnView(active: learning != nil || testing, onEvent: { keyboard.events.record($0) },
@@ -153,19 +153,19 @@ struct HotkeyEditorSheet: View {
         .sheet(item: $draft, onDismiss: { if let id = lastDraftID, store.custom.contains(where: { $0.id == id }) { selection = .hotkey(id) } }) {
             HotkeyForm(store: store, keyboard: keyboard, draft: $0).desktopThemed(style)
         }
-        .presentationDetents([.medium, .large]).presentationCornerRadius(8)
+        .presentationDetents([.medium, .large])
     }
 
     // MARK: Rows
 
     private func hint(_ text: String) -> some View {
-        Text(text).font(style.system(.caption)).foregroundStyle(style.muted).listRowBackground(style.background)
+        Text(text).font(style.system(.caption)).foregroundStyle(style.muted).listRowBackground(style.surface)
     }
-    private func rowBackground(_ row: Row) -> Color { selection == row ? style.active : style.background }
+    private func rowBackground(_ row: Row) -> Color { selection == row ? style.active : style.surface }
     private func row(_ hotkey: Hotkey, tint: Color) -> some View {
         HStack(spacing: 10) {
-            Text(hotkey.label).font(style.mono(13, bold: true, relativeTo: .body)).foregroundStyle(tint).frame(minWidth: 64, alignment: .leading)
-            Text(hotkey.summary).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
+            Text(hotkey.label).font(style.face(13, bold: true, relativeTo: .body)).foregroundStyle(tint).frame(minWidth: 64, alignment: .leading)
+            Text(hotkey.summary).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
             Spacer(minLength: 0)
             if !hotkey.showsOnBar { Image(systemName: "eye.slash").font(style.system(.caption)).foregroundStyle(style.muted).accessibilityLabel("Not on the key bar") }
             if let chord = hotkey.chord { ChordTag(chord: chord) }
@@ -174,13 +174,13 @@ struct HotkeyEditorSheet: View {
     private func templateRow(_ template: HotkeyTemplate) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(template.name).font(style.mono(13, bold: true, relativeTo: .body))
+                Text(template.name).font(style.face(13, bold: true, relativeTo: .body))
                 Spacer(minLength: 4)
                 Button("Install") { selection = .template(template.id); install(template) }.buttonStyle(DesktopButtonStyle(prominent: true, compact: true))
             }
             Text(template.summary).font(style.system(.caption)).foregroundStyle(style.muted)
             Text(template.hotkeys.compactMap { hotkey in hotkey.chord.map { "\($0.title) \(hotkey.label)" } }.joined(separator: "  "))
-                .font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                .font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
             if let notice, selection == .template(template.id) { Text(notice).font(style.system(.caption)).foregroundStyle(style.accent) }
         }
         .padding(.vertical, 4).contentShape(Rectangle()).listRowBackground(rowBackground(.template(template.id)))
@@ -190,7 +190,7 @@ struct HotkeyEditorSheet: View {
         let extra = target == .menu ? store.shortcuts.paletteChords : store.shortcuts.helpChords
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text(target.title).font(style.mono(13, bold: true, relativeTo: .body))
+                Text(target.title).font(style.face(13, bold: true, relativeTo: .body))
                 Spacer(minLength: 4)
                 ChordTag(chord: target.fixed)
                 ForEach(extra, id: \.self) { chord in
@@ -211,7 +211,7 @@ struct HotkeyEditorSheet: View {
     private var testerRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("Key tester").font(style.mono(13, bold: true, relativeTo: .body))
+                Text("Key tester").font(style.face(13, bold: true, relativeTo: .body))
                 Spacer(minLength: 4)
                 Button(testing ? "Stop" : "Test keys") { selection = .tester; testing.toggle() }.buttonStyle(DesktopButtonStyle(prominent: testing, compact: true))
             }
@@ -227,7 +227,7 @@ struct HotkeyEditorSheet: View {
     @ViewBuilder private var lastEvent: some View {
         if let event = keyboard.events.last {
             VStack(alignment: .leading, spacing: 1) { ForEach(Array(event.lines.enumerated()), id: \.offset) { _, line in Text(line) } }
-                .font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.text).monospacedDigit()
+                .font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.text).monospacedDigit()
         } else {
             Text("No key yet").font(style.system(.caption)).foregroundStyle(style.muted)
         }
@@ -325,20 +325,20 @@ struct HotkeyForm: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: draft.isNew ? "NEW HOTKEY" : "EDIT HOTKEY") {
+            WorkspaceBar(title: style.cased(draft.isNew ? "New hotkey" : "Edit hotkey")) {
                 Button("Cancel") { dismiss() }
                 Button("Save") { save() }.disabled(draft.problem != nil)
             }
             List {
                 Section("Name on the key bar") {
                     field(.name, text: $draft.label, placeholder: "e.g. Clear", label: "Name", maxLength: Hotkey.maxLabelLength)
-                        .listRowBackground(style.background)
+                        .listRowBackground(style.surface)
                 }
                 Section("Steps, in order") {
                     ForEach($draft.steps) { $step in stepRow($step) }
                         .onDelete { draft.steps.remove(atOffsets: $0) }
                         .onMove { draft.steps.move(fromOffsets: $0, toOffset: $1) }
-                        .listRowBackground(style.background)
+                        .listRowBackground(style.surface)
                     HStack(spacing: 16) {
                         Button("Add text", systemImage: "textformat") { addTextStep() }
                         Menu {
@@ -353,10 +353,10 @@ struct HotkeyForm: View {
                         } label: { Label("Add key", systemImage: "command") }
                         Button(mode == .recordKey ? "Stop" : "Press a key", systemImage: "keyboard") { mode = mode == .recordKey ? .none : .recordKey; learnProblem = nil }
                         Spacer(minLength: 0)
-                    }.disabled(draft.steps.count >= Hotkey.maxSteps).listRowBackground(style.background)
+                    }.disabled(draft.steps.count >= Hotkey.maxSteps).listRowBackground(style.surface)
                     if mode == .recordKey {
                         Label("Press the key to add as a step (Esc is recorded too). ⌘. stops.", systemImage: "keyboard").font(style.system(.caption)).foregroundStyle(style.accent)
-                            .listRowBackground(style.background)
+                            .listRowBackground(style.surface)
                     }
                 }
                 Section {
@@ -369,24 +369,24 @@ struct HotkeyForm: View {
                     if mode == .shortcut {
                         Label("Press the key or chord. A lone modifier (Control, say) is a tap. Esc cancels.", systemImage: "keyboard").font(style.system(.caption)).foregroundStyle(style.accent)
                         if let event = keyboard.events.last {
-                            Text(event.summary).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                            Text(event.summary).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                         }
                     }
                     if let learnProblem { Label(learnProblem, systemImage: "exclamationmark.circle").font(style.system(.caption)).foregroundStyle(style.warning) }
                     Toggle("Show on the key bar", isOn: $draft.showsOnBar).frame(minHeight: style.pt(40))
                 } header: { Text("Shortcut") } footer: {
                     Text("Runs this hotkey from the keyboard without opening the menu. Use ⌘, Ctrl or Alt with a letter, or a function key.").font(style.system(.caption))
-                }.listRowBackground(style.background)
+                }.listRowBackground(style.surface)
                 Section("Sends") {
-                    Text(draft.hotkey.summary.isEmpty ? "Nothing yet" : draft.hotkey.summary).font(style.mono(12, relativeTo: .caption)).foregroundStyle(style.muted)
+                    Text(draft.hotkey.summary.isEmpty ? "Nothing yet" : draft.hotkey.summary).font(style.face(12, relativeTo: .caption)).foregroundStyle(style.muted)
                     if let problem = draft.problem, showsProblem {
                         Label(problem.localizedDescription, systemImage: "exclamationmark.circle").font(style.system(.caption)).foregroundStyle(style.warning)
                     }
                     if let failure { Label(failure, systemImage: "exclamationmark.circle").font(style.system(.caption)).foregroundStyle(style.error) }
-                }.listRowBackground(style.background)
+                }.listRowBackground(style.surface)
                 if !draft.isNew {
                     Section {
-                        Button("Delete this hotkey", systemImage: "trash", role: .destructive) { store.remove(id: draft.id); dismiss() }.listRowBackground(style.background)
+                        Button("Delete this hotkey", systemImage: "trash", role: .destructive) { store.remove(id: draft.id); dismiss() }.listRowBackground(style.surface)
                     }
                 }
             }
@@ -394,8 +394,8 @@ struct HotkeyForm: View {
             // Drag handles and delete controls stay visible: this list is only ever edited.
             .environment(\.editMode, .constant(.active))
         }
-        .background(style.background).foregroundStyle(style.text)
-        .font(style.mono(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
+        .desktopSheetSurface(style).foregroundStyle(style.text)
+        .font(style.face(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
         // Keys work even when no field has the keyboard (after a tap on a button, say).
         .background { KeyCommandHost(active: focus == nil && mode == .none, actions: formActions) }
         .background {
@@ -404,7 +404,7 @@ struct HotkeyForm: View {
                          onCancel: { if mode == .shortcut { mode = .none; focus = .name } })
         }
         .onAppear { if focus == nil { focus = .name } }
-        .presentationDetents([.large]).presentationCornerRadius(8)
+        .presentationDetents([.large])
     }
     /// The first thing a new form says is not a complaint.
     private var showsProblem: Bool { !(draft.isNew && draft.label.isEmpty && draft.steps.isEmpty) }

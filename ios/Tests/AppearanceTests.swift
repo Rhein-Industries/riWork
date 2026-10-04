@@ -12,6 +12,8 @@ private func terminalJSON(palette: [String] = ansi, background: String = "#0b0f1
 private func appearanceJSON(v: String = "1", updatedAt: String = "1790000000", dark: String = "true", palette: String = paletteJSON, terminal: String? = nil) -> String {
     "{\"v\":\(v),\"updated_at\":\(updatedAt),\"dark\":\(dark),\"palette\":\(palette)" + (terminal.map { ",\"terminal\":\($0)" } ?? "") + "}"
 }
+/// The document with `"native":<value>` added at the end.
+private func withNative(_ document: String, _ value: String) -> String { String(document.dropLast()) + ",\"native\":\(value)}" }
 private func parse(_ text: String) throws -> JSONValue { try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) }
 
 final class AppearanceTests: XCTestCase {
@@ -116,6 +118,29 @@ final class AppearanceTests: XCTestCase {
         XCTAssertFalse(a.sameLook(as: try appearance(appearanceJSON(dark: "false"))))
         XCTAssertFalse(a.sameLook(as: try appearance(appearanceJSON(palette: paletteJSON.replacingOccurrences(of: "#55e6dc", with: "#55e6dd")))))
         XCTAssertFalse(a.sameLook(as: try appearance(appearanceJSON(terminal: terminalJSON()))))
+    }
+    func testTheNativeFlagIsOptionalAndOffWhenMissing() throws {
+        // A desktop from before the flag, or one with another theme, sends none: the terminal look.
+        XCTAssertFalse(try appearance(appearanceJSON()).native)
+        let native = try appearance(withNative(appearanceJSON(terminal: terminalJSON()), "true"))
+        XCTAssertTrue(native.native)
+        XCTAssertFalse(try appearance(withNative(appearanceJSON(), "false")).native)
+        XCTAssertFalse(try appearance(withNative(appearanceJSON(), "null")).native)
+        for bad in ["\"true\"", "1", "{}", "[]"] { assertInvalid(withNative(appearanceJSON(), bad), field: "native", bad) }
+    }
+    func testTheNativeFlagIsKeptThroughStorageAndWrittenOnlyWhenSet() throws {
+        let native = try appearance(withNative(appearanceJSON(), "true"))
+        XCTAssertEqual(native.json["native"], .bool(true))
+        XCTAssertEqual(try DesktopAppearance(json: native.json), native)
+        XCTAssertEqual(try JSONDecoder().decode(DesktopAppearance.self, from: try JSONEncoder().encode(native)), native)
+        // Off, the stored shape is exactly what it was before the flag existed.
+        XCTAssertEqual(try appearance(appearanceJSON()).json["native"], .null)
+    }
+    func testSwitchingNativeIsANewLookEvenWithTheSameColors() throws {
+        let plain = try appearance(appearanceJSON(updatedAt: "100")), native = try appearance(withNative(appearanceJSON(updatedAt: "100"), "true"))
+        XCTAssertFalse(plain.sameLook(as: native))
+        XCTAssertFalse(native.sameLook(as: plain))
+        XCTAssertTrue(native.sameLook(as: try appearance(withNative(appearanceJSON(updatedAt: "200"), "true"))))
     }
     func testContrastRatioMatchesWCAG() {
         XCTAssertEqual(RGB(0x000000).contrast(with: RGB(0xffffff)), 21, accuracy: 0.001)

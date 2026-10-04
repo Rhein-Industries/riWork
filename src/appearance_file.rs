@@ -85,6 +85,16 @@ pub struct Published {
     /// Absent when the desktop could not read its terminal colors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalColors>,
+    /// The Native skin is selected, so the phone draws its interface the native
+    /// way too (system font, sentence case). Written only when true: a phone or
+    /// relay from before this field ignores it, and one that finds it missing
+    /// keeps the terminal look.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub native: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl Published {
@@ -96,6 +106,7 @@ impl Published {
             dark,
             palette,
             terminal,
+            native: false,
         }
     }
 
@@ -389,6 +400,11 @@ mod tests {
         );
         assert!(mutate(&|v| v["terminal"]["palette"][3] = json!("#12345")).is_err());
         assert!(mutate(&|v| v["terminal"]["palette"] = json!({})).is_err());
+        assert!(mutate(&|v| v["native"] = json!(true)).is_ok());
+        assert!(mutate(&|v| v["native"] = json!(false)).is_ok());
+        assert!(mutate(&|v| v["native"] = json!("yes")).is_err());
+        assert!(mutate(&|v| v["native"] = json!(1)).is_err());
+        assert!(mutate(&|v| v["native"] = Value::Null).is_err());
         for bytes in [
             &b""[..],
             b"{",
@@ -419,6 +435,34 @@ mod tests {
     }
 
     #[test]
+    fn the_native_flag_is_written_only_when_set() {
+        let mut published = snapshot(0x111111);
+        // Off, the document is exactly what it was before the flag existed.
+        let value = serde_json::to_value(&published).unwrap();
+        assert!(value.get("native").is_none(), "{value}");
+        assert!(!parse(&value).unwrap().native);
+        published.native = true;
+        let value = serde_json::to_value(&published).unwrap();
+        assert_eq!(value["native"], true);
+        let text = serde_json::to_string(&published).unwrap();
+        assert!(
+            text.find("\"terminal\"") < text.find("\"native\""),
+            "{text}"
+        );
+        assert_eq!(parse(&value).unwrap(), published);
+        // A desktop from before the flag, or with Native off, reads as not Native.
+        let mut old = document();
+        assert!(!parse(&old).unwrap().native);
+        old["native"] = json!(false);
+        assert_eq!(
+            serde_json::to_value(parse(&old).unwrap()).unwrap(),
+            document()
+        );
+        old["native"] = json!(true);
+        assert!(parse(&old).unwrap().native);
+    }
+
+    #[test]
     fn same_colors_ignores_only_the_time() {
         let first = snapshot(0x202020);
         let mut later = first.clone();
@@ -436,6 +480,10 @@ mod tests {
         assert!(!first.same_colors(&other));
         other = first.clone();
         other.palette.gold = Rgb(1);
+        assert!(!first.same_colors(&other));
+        // Switching Native on with the same colors is a change the phone must see.
+        other = first.clone();
+        other.native = true;
         assert!(!first.same_colors(&other));
     }
 

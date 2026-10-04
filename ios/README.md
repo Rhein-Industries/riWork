@@ -25,6 +25,11 @@ an unreadable palette (invalid hex, wrong count, `v` other than 1) is ignored. A
 3:1 contrast ratio falls back to the built-in pair for that element. Without a palette the built-in Gruvbox Light /
 RiWork colors apply.
 
+**Native.** A desktop using its Native skin also sends `"native": true` (left out otherwise, and by desktops from before
+the flag). The phone then sets its interface in SF Pro and sentence case, shows the key bar's named keys as SF Symbols,
+and on iOS 26 puts the workspace bar's controls, prominent buttons, the key bar and sheets on Liquid Glass; terminal text,
+typed keys and the command field stay in Menlo. Switching Native on or off is picked up like any color change.
+
 ## Open, build and install
 
 Open `ios/RiWorkRemote.xcodeproj` in Xcode 26, select `RiWorkRemote`, and choose an

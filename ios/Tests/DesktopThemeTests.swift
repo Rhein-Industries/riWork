@@ -42,6 +42,22 @@ final class DesktopThemeTests: XCTestCase {
         XCTAssertEqual(theme.warning, theme.gold, "gold is for warnings")
         XCTAssertTrue(theme.accent.isFixed && theme.background.isFixed, "the desktop's dark flag, not the phone's, picks the look")
     }
+    func testOnlyANativeDesktopMakesTheThemeNative() {
+        XCTAssertFalse(DesktopTheme.builtIn.native, "no desktop: the terminal look")
+        XCTAssertFalse(DesktopTheme.resolve(Self.appearance()).native, "a desktop without the flag: the terminal look")
+        // Native's own light and dark palettes (src/theme.rs NATIVE_LIGHT / NATIVE_DARK).
+        let light = Self.palette(bg: 0xffffff, panel: 0xf5f5f7, active: 0xe8e8ed, divider: 0xd2d2d7, cyan: 0x000000, magenta: 0x3a3a3c, gold: 0xb34000, text: 0x1d1d1f, muted: 0x636366)
+        let dark = Self.palette(bg: 0x000000, panel: 0x1c1c1e, active: 0x2c2c2e, divider: 0x3a3a3c, cyan: 0xffffff, magenta: 0xc7c7cc, gold: 0xff9f0a, text: 0xf5f5f7, muted: 0x98989d)
+        for (palette, isDark) in [(light, false), (dark, true)] {
+            let theme = DesktopTheme.resolve(DesktopAppearance(updatedAt: 1, dark: isDark, palette: palette, native: true))
+            XCTAssertTrue(theme.native)
+            XCTAssertEqual(theme.dark, isDark)
+            XCTAssertEqual(theme.background, ThemeColor(fixed: palette.bg), "Native's colors pass the contrast guard unchanged")
+            XCTAssertEqual(theme.accent, ThemeColor(fixed: palette.cyan))
+            XCTAssertEqual(theme.gold, ThemeColor(fixed: palette.gold))
+            XCTAssertEqual(theme.muted, ThemeColor(fixed: palette.muted))
+        }
+    }
     func testTerminalColorsAreUsedWhenPresentAndPaletteWhenNot() {
         let with = DesktopTheme.resolve(Self.appearance(terminal: Self.terminal(background: 0x101010, foreground: 0xeeeeee)))
         XCTAssertEqual(with.terminalBackground, ThemeColor(fixed: RGB(0x101010)))

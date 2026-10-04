@@ -106,7 +106,7 @@ struct NavTextField: UIViewRepresentable {
         let style = context.environment.desktopStyle
         if context.coordinator.appliedStyle != style || context.coordinator.appliedPlaceholder != placeholder {
             context.coordinator.appliedStyle = style; context.coordinator.appliedPlaceholder = placeholder
-            field.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: style.uiFont("Menlo", size: 13))
+            field.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: style.uiFace(size: 13))
             field.textColor = style.textUI
             field.tintColor = style.accentUI
             field.attributedPlaceholder = NSAttributedString(string: placeholder, attributes: [.foregroundColor: style.mutedUI])
@@ -255,7 +255,7 @@ struct HotkeyPaletteView: View {
                         .accessibilityLabel("Filter").accessibilityValue(state.query)
                     Button("Close hotkey menu", systemImage: "xmark") { controller.close() }.labelStyle(.iconOnly)
                 }
-                .font(style.mono(13, relativeTo: .body)).padding(.leading, 10).frame(minHeight: style.pt(40))
+                .font(style.face(13, relativeTo: .body)).padding(.leading, 10).frame(minHeight: style.pt(40))
                 DesktopRule()
                 if state.results.isEmpty {
                     Text("No hotkey matches “\(state.query)”").font(style.system(.footnote)).foregroundStyle(style.muted)
@@ -278,7 +278,7 @@ struct HotkeyPaletteView: View {
                 }
                 DesktopRule()
                 Text("⇥ ↑↓ move · ⏎ send · ⇧⏎ edit · ⌘N new · ⎋ ⌘K close")
-                    .font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7)
+                    .font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7)
                     .frame(maxWidth: .infinity, minHeight: style.pt(26))
             }
             .background(style.panel, in: RoundedRectangle(cornerRadius: 8))
@@ -297,11 +297,11 @@ struct HotkeyPaletteView: View {
         case .newHotkey, .configure: style.accent
         }
         return HStack(spacing: 8) {
-            Text(entry.title).font(style.mono(13, bold: true, relativeTo: .body)).foregroundStyle(tint).lineLimit(1)
-            Text(entry.detail).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
+            Text(entry.title).font(style.face(13, bold: true, relativeTo: .body)).foregroundStyle(tint).lineLimit(1)
+            Text(entry.detail).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
             Spacer(minLength: 4)
             if let shortcut = entry.shortcut {
-                Text(shortcut).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.accent)
+                Text(shortcut).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.accent)
                     .padding(.horizontal, 5).padding(.vertical, 1).overlay(RoundedRectangle(cornerRadius: 3).stroke(style.divider, lineWidth: 1))
             }
         }
@@ -325,9 +325,9 @@ struct HotkeyHelpView: View {
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
                     Image(systemName: "questionmark.circle").foregroundStyle(style.magenta).accessibilityHidden(true)
-                    Text("Hotkeys").font(style.mono(13, bold: true, relativeTo: .body))
+                    Text("Hotkeys").font(style.face(13, bold: true, relativeTo: .body))
                     Spacer(minLength: 4)
-                    Text("press a shortcut · ⌘/ ⎋ close").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7)
+                    Text("press a shortcut · ⌘/ ⎋ close").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7)
                     Button("Close hotkey help", systemImage: "xmark") { controller.close() }.labelStyle(.iconOnly)
                 }
                 .padding(.leading, 10).frame(minHeight: style.pt(40))
@@ -350,13 +350,13 @@ struct HotkeyHelpView: View {
 
     private func content(_ help: HotkeyHelp) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !help.withShortcut.isEmpty { section("WITH A SHORTCUT", help.withShortcut) }
-            if !help.withoutShortcut.isEmpty { section("NO SHORTCUT", help.withoutShortcut) }
-            heading("APP")
+            if !help.withShortcut.isEmpty { section(style.cased("With a shortcut"), help.withShortcut) }
+            if !help.withoutShortcut.isEmpty { section(style.cased("No shortcut"), help.withoutShortcut) }
+            heading(style.cased("App"))
             ForEach(help.appShortcuts) { shortcut in
                 HStack(spacing: 8) {
-                    Text(shortcut.keys).font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent).lineLimit(1)
-                    Text(shortcut.title).font(style.mono(12, relativeTo: .body)).lineLimit(1)
+                    Text(shortcut.keys).font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent).lineLimit(1)
+                    Text(shortcut.title).font(style.face(12, relativeTo: .body)).lineLimit(1)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 10).frame(minHeight: style.pt(26))
@@ -366,7 +366,7 @@ struct HotkeyHelpView: View {
         .padding(.bottom, 4)
     }
     private func heading(_ title: String) -> some View {
-        Text(title).font(style.mono(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.muted)
+        Text(title).font(style.face(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.muted)
             .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 2).accessibilityAddTraits(.isHeader)
     }
     private func section(_ title: String, _ rows: [HotkeyHelp.Row]) -> some View {
@@ -380,10 +380,10 @@ struct HotkeyHelpView: View {
     }
     private func cell(_ row: HotkeyHelp.Row) -> some View {
         HStack(spacing: 6) {
-            Text(row.shortcut ?? "—").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(row.shortcut == nil ? style.muted : style.accent)
+            Text(row.shortcut ?? "—").font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(row.shortcut == nil ? style.muted : style.accent)
                 .lineLimit(1).frame(minWidth: style.pt(36), alignment: .leading)
-            Text(row.label).font(style.mono(12, bold: true, relativeTo: .body)).foregroundStyle(style.magenta).lineLimit(1).layoutPriority(1)
-            Text(row.sends).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
+            Text(row.label).font(style.face(12, bold: true, relativeTo: .body)).foregroundStyle(style.magenta).lineLimit(1).layoutPriority(1)
+            Text(row.sends).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10).frame(maxWidth: .infinity, minHeight: style.pt(28), alignment: .leading)
@@ -410,7 +410,7 @@ struct KeyEventOverlay: View {
                 Text("Press a key on the keyboard").foregroundStyle(style.muted)
             }
         }
-        .font(style.mono(9, relativeTo: .caption2)).monospacedDigit().foregroundStyle(style.text)
+        .font(style.face(9, relativeTo: .caption2)).monospacedDigit().foregroundStyle(style.text)
         .padding(.horizontal, 6).padding(.vertical, 4)
         .background(style.panel.opacity(0.85), in: RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(style.divider, lineWidth: 1))
