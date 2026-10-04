@@ -36,10 +36,22 @@ import RiWorkCore
         XCTAssertTrue(met, what, file: file, line: line)
     }
 
+    /// How the desktop draws: the terminal look (no palette published), or its Native skin in light or dark.
+    enum Look: String, CaseIterable { case terminal, nativeLight = "native-light", nativeDark = "native-dark" }
+    /// Native's own palette and flag, as the desktop publishes them (src/theme.rs NATIVE_LIGHT / NATIVE_DARK).
+    private func appearance(_ look: Look) -> JSONValue? {
+        guard look != .terminal else { return nil }
+        let dark = look == .nativeDark
+        let colors = dark
+            ? ["bg": "#000000", "panel": "#1c1c1e", "panel_active": "#2c2c2e", "divider": "#3a3a3c", "cyan": "#ffffff", "magenta": "#c7c7cc", "gold": "#ff9f0a", "text": "#f5f5f7", "muted": "#98989d"]
+            : ["bg": "#ffffff", "panel": "#f5f5f7", "panel_active": "#e8e8ed", "divider": "#d2d2d7", "cyan": "#000000", "magenta": "#3a3a3c", "gold": "#b34000", "text": "#1d1d1f", "muted": "#636366"]
+        return .object(["v": .number(1), "updated_at": .number(1_790_000_000), "dark": .bool(dark), "native": .bool(true), "palette": .object(colors.mapValues { .string($0) })])
+    }
+
     private struct Rig {
         let model: RemoteModel, transport: ChatTransport, window: UIWindow, host: UIHostingController<AnyView>, keychain: KeychainStore
     }
-    private func makeRig(chats: [ChatInfo]? = nil, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874) async throws -> Rig {
+    private func makeRig(chats: [ChatInfo]? = nil, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal) async throws -> Rig {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show a chat in") }
         let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
         let pairing = try Pairing.parse("""
@@ -50,16 +62,18 @@ import RiWorkCore
         try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
         let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
         defaultsNames.append(suite)
-        let transport = ChatTransport(chats: chats ?? [chat()])
+        let transport = ChatTransport(chats: chats ?? [chat()], appearance: appearance(look))
         let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300, chatIdleInterval: .milliseconds(20),
                                 hardwareKeyboard: HardwareKeyboardMonitor(probe: { hardwareKeyboard }))
         await model.connect()
+        if look != .terminal { await eventually("the desktop's Native look is in") { model.theme.style.native } }
         let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
         let root = AnyView(TerminalTabsView(model: model, project: projectValue, onBack: {}).desktopThemed(model.theme.style))
         let host = UIHostingController(rootView: root)
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: width, height: height)
         window.rootViewController = host
+        if look != .terminal { window.overrideUserInterfaceStyle = look == .nativeDark ? .dark : .light }
         window.makeKeyAndVisible()
         windows.append(window)
         await eventually("the terminal is on screen") { !self.descendants(KeyCaptureView.self, in: host.view).isEmpty && model.terminalArea != nil }
@@ -312,32 +326,41 @@ import RiWorkCore
     private var mixed: [ChatInfo] {
         [chat(state: .running, mode: .autoEdit), ChatInfo(id: "cccccccc-2222-4222-8222-222222222222", provider: .codex, projectID: project, title: "Codex chat", createdAtUnix: 5, state: .waiting)]
     }
+    /// The picture's name in a look; the terminal look keeps the plain name.
+    private func named(_ name: String, _ look: Look) -> String { look == .terminal ? name : "\(name)-\(look.rawValue)" }
     func testTheScreenDrawsEveryKindOfItem() async throws {
-        // Tall enough to hold the whole transcript, so every row is drawn.
-        let rig = try await makeRig(chats: mixed, height: 2600)
-        await rig.transport.append(chatID, conversationEvents())
-        _ = try await openChat(rig)
-        await eventually("the transcript is in") { rig.model.conversation(self.chatID).transcript.items.count >= 11 }
-        try await Task.sleep(for: .milliseconds(800))
-        try snapshot(rig, name: "chat-transcript-collapsed")
-        rig.model.conversation(chatID).expanded.formUnion(["c1", "f1", "f1#src/main.rs", "t1", "r1"])
-        try await Task.sleep(for: .milliseconds(800))
-        try snapshot(rig, name: "chat-transcript-expanded")
-        await finish(rig)
+        for look in Look.allCases {
+            // Tall enough to hold the whole transcript, so every row is drawn.
+            let rig = try await makeRig(chats: mixed, height: 2600, look: look)
+            await rig.transport.append(chatID, conversationEvents())
+            _ = try await openChat(rig)
+            await eventually("the transcript is in") { rig.model.conversation(self.chatID).transcript.items.count >= 11 }
+            try await Task.sleep(for: .milliseconds(800))
+            try snapshot(rig, name: named("chat-transcript-collapsed", look))
+            rig.model.conversation(chatID).expanded.formUnion(["c1", "f1", "f1#src/main.rs", "t1", "r1"])
+            try await Task.sleep(for: .milliseconds(800))
+            try snapshot(rig, name: named("chat-transcript-expanded", look))
+            await finish(rig)
+        }
     }
     func testARequestAboveTheComposerDraws() async throws {
-        let rig = try await makeRig(chats: mixed)
-        await rig.transport.append(chatID, [.info(chat(state: .waiting, mode: .supervised)), .itemStarted(ChatItem(id: "c2", turnID: "t0", body: .command(command: "cargo test --all-features", cwd: nil, output: "", exitCode: nil))),
-            .state(.waiting), .approvalRequested(ChatApproval(requestID: "r1", itemID: "c2", kind: .command, title: "cargo test --all-features", detail: "Run the whole test suite in /fixture.", choices: [.accept, .acceptForSession, .decline, .cancel]))])
-        _ = try await openChat(rig)
-        let conversation = rig.model.conversation(chatID)
-        await eventually("the bar") { conversation.openApprovals.count == 1 }
-        try await Task.sleep(for: .milliseconds(500))
-        try snapshot(rig, name: "chat-approval")
-        await finish(rig)
+        for look in Look.allCases {
+            let rig = try await makeRig(chats: mixed, look: look)
+            await rig.transport.append(chatID, [.info(chat(state: .waiting, mode: .supervised)), .itemStarted(ChatItem(id: "c2", turnID: "t0", body: .command(command: "cargo test --all-features", cwd: nil, output: "", exitCode: nil))),
+                .state(.waiting), .approvalRequested(ChatApproval(requestID: "r1", itemID: "c2", kind: .command, title: "cargo test --all-features", detail: "Run the whole test suite in /fixture.", choices: [.accept, .acceptForSession, .decline, .cancel]))])
+            _ = try await openChat(rig)
+            let conversation = rig.model.conversation(chatID)
+            await eventually("the bar") { conversation.openApprovals.count == 1 }
+            try await Task.sleep(for: .milliseconds(500))
+            try snapshot(rig, name: named("chat-approval", look))
+            await finish(rig)
+        }
     }
     func testAQuestionAndTheStatusLinesDraw() async throws {
-        let rig = try await makeRig(chats: [chat(state: .failed("the process exited with status 1"))])
+        for look in Look.allCases { try await questionAndStatusLines(look) }
+    }
+    private func questionAndStatusLines(_ look: Look) async throws {
+        let rig = try await makeRig(chats: [chat(state: .failed("the process exited with status 1"))], look: look)
         await rig.transport.append(chatID, [
             .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("run the tests"))),
             .state(.failed("the process exited with status 1")),
@@ -346,7 +369,7 @@ import RiWorkCore
         _ = try await openChat(rig)
         await eventually("the question and the failure") { rig.model.conversation(self.chatID).openQuestions.count == 1 && rig.model.chatState(self.chat()) == .failed("the process exited with status 1") }
         try await Task.sleep(for: .milliseconds(400))
-        try snapshot(rig, name: "chat-question-failed")
+        try snapshot(rig, name: named("chat-question-failed", look))
         await finish(rig)
     }
     func testTheNewTerminalSheetOffersTheChatKinds() async throws {
