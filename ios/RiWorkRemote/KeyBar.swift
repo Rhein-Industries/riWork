@@ -266,8 +266,10 @@ private final class KeyScrollView: UIScrollView {
         hideDivider.backgroundColor = style.dividerUI
         for line in dividers { line.backgroundColor = style.dividerUI }
         // The row spans the bar, in focus mode too, and its ends are padded clear of the display corners.
-        stackLeading.constant = CGFloat(padding.left)
-        hideTrailing.constant = CGFloat(padding.right)
+        // On glass the end keys also keep clear of the capsule's rounded ends.
+        let capsuleInset: CGFloat = glassView == nil ? 0 : 12
+        stackLeading.constant = CGFloat(padding.left) + capsuleInset
+        hideTrailing.constant = CGFloat(padding.right) + capsuleInset
         for (action, button) in buttons {
             switch roles[action] ?? .plain {
             case .plain: button.configuration?.baseForegroundColor = style.textUI
