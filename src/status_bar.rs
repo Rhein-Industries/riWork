@@ -2,11 +2,12 @@
 
 use std::collections::HashSet;
 
-use gpui::{AnyElement, Context, IntoElement, Window, div, prelude::*, rgb};
+use gpui::{AnyElement, Context, FontWeight, IntoElement, Window, div, prelude::*, rgb};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
+    controls, icons,
     theme::{self, Palette},
     tooltip::{self, Look},
     ui_text,
@@ -319,9 +320,24 @@ pub fn render_settings<V: 'static>(
                         .bg(rgb(colors.panel_active))
                         .text_size(ui_text::text(11.0))
                         .text_color(rgb(colors.text))
-                        .hover(|style| style.bg(rgb(colors.divider)))
-                        .child(check_box(master_enabled, colors))
+                        .hover(move |style| {
+                            controls::hovered(style, controls::row_hover(false, colors), |style| {
+                                style.bg(rgb(colors.divider))
+                            })
+                        })
+                        .map(|row| {
+                            // Native: a row with a switch at its end, like the toggles above.
+                            controls::native(row, |row| {
+                                controls::row(row, false, colors).justify_between()
+                            })
+                        })
+                        .when(!ui_text::is_native(), |row| {
+                            row.child(check_box(master_enabled, colors))
+                        })
                         .child("Show status bar")
+                        .when(ui_text::is_native(), |row| {
+                            row.child(controls::switch(master_enabled, colors))
+                        })
                         .on_click(cx.listener(move |view, _, window, cx| {
                             let mut next = master_settings.clone();
                             next.enabled = !master_enabled;
@@ -340,10 +356,22 @@ pub fn render_settings<V: 'static>(
                         .border_color(rgb(colors.divider))
                         .text_size(ui_text::text(9.0))
                         .text_color(rgb(colors.cyan))
-                        .hover(|style| {
-                            style
-                                .bg(rgb(colors.panel_active))
-                                .border_color(rgb(colors.cyan))
+                        .hover(move |style| {
+                            controls::hovered(
+                                style,
+                                controls::Button::Secondary.hover(colors),
+                                |style| {
+                                    style
+                                        .bg(rgb(colors.panel_active))
+                                        .border_color(rgb(colors.cyan))
+                                },
+                            )
+                        })
+                        .map(|button| {
+                            controls::native(button, |button| {
+                                controls::button(button, controls::Button::Secondary, colors)
+                                    .text_size(ui_text::text(10.0))
+                            })
                         })
                         .child(ui_text::cased("Reset defaults"))
                         .on_click(cx.listener(move |view, _, window, cx| {
@@ -372,6 +400,14 @@ pub fn render_settings<V: 'static>(
                         } else {
                             colors.magenta
                         }))
+                        .map(|heading| {
+                            controls::native(heading, |heading| {
+                                heading
+                                    .px(ui_text::space(8.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(colors.muted))
+                            })
+                        })
                         .child(ui_text::cased(side.label())),
                 )
                 .children(items.iter().enumerate().map(|(index, item)| {
@@ -411,6 +447,7 @@ fn render_item<V: 'static>(
         .bg(rgb(colors.panel_active))
         .border_1()
         .border_color(rgb(colors.divider))
+        .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
         .child(
             div()
                 .id(format!("status-item-{}-visible", item.kind.key()))
@@ -457,7 +494,18 @@ fn render_item<V: 'static>(
                 } else {
                     colors.magenta
                 }))
-                .hover(|style| style.border_color(rgb(colors.cyan)))
+                .hover(move |style| {
+                    controls::hovered(style, controls::Button::Secondary.hover(colors), |style| {
+                        style.border_color(rgb(colors.cyan))
+                    })
+                })
+                .map(|button| {
+                    controls::native(button, |button| {
+                        controls::button(button, controls::Button::Secondary, colors)
+                            .px(ui_text::space(9.0))
+                            .py(ui_text::space(2.0))
+                    })
+                })
                 .child(ui_text::cased(item.side.label()))
                 .child(tooltip::anchor(
                     if item.side == StatusSide::Left {
@@ -521,7 +569,12 @@ fn move_button<V: 'static>(
                 .cursor_pointer()
                 .hover(|style| style.bg(rgb(colors.divider)))
         })
-        .child(if up { "↑" } else { "↓" })
+        .map(|button| controls::native(button, |button| button.rounded_full()))
+        .child(icons::mark(
+            if up { "↑" } else { "↓" },
+            10.0,
+            if enabled { colors.cyan } else { colors.muted },
+        ))
         .child(tooltip::anchor(
             if up {
                 "Move earlier on this side"
@@ -542,6 +595,23 @@ fn move_button<V: 'static>(
 }
 
 fn check_box(enabled: bool, colors: Palette) -> AnyElement {
+    if ui_text::is_native() {
+        // A rounded box, filled with the primary color and ticked when on.
+        return div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(ui_text::space(14.0))
+            .rounded(ui_text::space(4.0))
+            .border_1()
+            .border_color(rgb(if enabled { colors.cyan } else { colors.divider }))
+            .when(enabled, |check| check.bg(rgb(colors.cyan)))
+            .when(enabled, |check| {
+                check.child(icons::mark("✓", 8.0, colors.bg))
+            })
+            .into_any_element();
+    }
     div()
         .flex_none()
         .flex()

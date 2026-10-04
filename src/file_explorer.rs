@@ -2600,6 +2600,7 @@ impl FileExplorer {
                                     .text_ellipsis()
                                     .text_size(ui_text::text(9.0))
                                     .text_color(rgb(colors.muted))
+                                    .font_family(ui_text::ui_family())
                                     .child(
                                         if self.preview_loading
                                             && self.preview_path != self.selected

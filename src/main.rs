@@ -6545,7 +6545,25 @@ impl Workspace {
                     .id(format!("divider-{path:?}"))
                     .flex_none()
                     .bg(rgb(colors.divider))
-                    .hover(|style| style.bg(rgb(colors.cyan)))
+                    .hover(move |style| {
+                        controls::hovered(style, colors.divider, |style| style.bg(rgb(colors.cyan)))
+                    })
+                    // Native: a hairline in the middle of the grip, which fills on hover.
+                    .map(|divider| {
+                        controls::native(divider, |divider| {
+                            divider
+                                .bg(rgb(colors.panel))
+                                .flex()
+                                .justify_center()
+                                .items_center()
+                                .when(horizontal, |divider| {
+                                    divider.child(div().w(px(1.0)).h_full().bg(rgb(colors.divider)))
+                                })
+                                .when(!horizontal, |divider| {
+                                    divider.child(div().h(px(1.0)).w_full().bg(rgb(colors.divider)))
+                                })
+                        })
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |workspace, _, _, cx| {
