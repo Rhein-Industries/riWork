@@ -384,6 +384,20 @@ extension RemoteModel {
         conversation(chatID).notice = failure?.message
         return failure
     }
+    /// The desktop confirms the model through its info event; errors stay in the chat.
+    @discardableResult
+    func setChatModel(_ chatID: String, _ name: String) async -> ChatControlError? {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.utf8.count <= ChatLimits.modelBytes,
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            let failure = ChatControlError.failed("Enter a model name on one line, up to \(ChatLimits.modelBytes) bytes.")
+            conversation(chatID).notice = failure.message
+            return failure
+        }
+        let failure = await sendChatCommand(chatID, .configure(model: name))
+        conversation(chatID).notice = failure?.message
+        return failure
+    }
     /// Changes the approval mode. The picker shows the new mode at once and takes it back if the desktop refuses.
     @discardableResult
     func setChatMode(_ chatID: String, _ mode: ChatApprovalMode) async -> ChatControlError? {

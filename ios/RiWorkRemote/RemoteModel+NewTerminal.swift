@@ -201,6 +201,11 @@ struct NewTabProblem: Equatable {
         keyboardInUse = false; error = nil; chatError = nil; orchestratorError = nil
         form.select(targetAt: index); form.focus = .target
     }
+    func setOrchestratorMode(_ mode: NewOrchestratorMode) {
+        guard !busy else { return }
+        keyboardInUse = false; orchestratorError = nil
+        form.setOrchestratorMode(mode); form.focus = .orchestratorMode
+    }
     func setUnrestricted(_ on: Bool) {
         keyboardInUse = false
         form.setUnrestricted(on); form.focus = .unrestricted

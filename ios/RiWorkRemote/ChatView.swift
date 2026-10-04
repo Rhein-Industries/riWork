@@ -87,6 +87,9 @@ private struct ChatToolbar: View {
     let conversation: ChatConversation
     let state: ChatState
 
+    @State private var choosingModel = false
+    @State private var modelName = ""
+
     private var shownMode: ChatApprovalMode { conversation.pendingMode ?? chat.approvalMode }
     private func icon(_ mode: ChatApprovalMode) -> String {
         switch mode {
@@ -125,6 +128,11 @@ private struct ChatToolbar: View {
                 .disabled(!connected || state.isBusy || state == .starting)
                 .accessibilityHint("Summarizes the conversation to free up context")
                 Menu {
+                    Button("Change model", systemImage: "cpu") {
+                        modelName = chat.model ?? ""
+                        choosingModel = true
+                    }
+                    .disabled(!connected || state.isBusy || state == .starting)
                     Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }
                     Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }
                         .disabled(!connected || state == .stopped)
@@ -134,6 +142,18 @@ private struct ChatToolbar: View {
             }
             .buttonStyle(DesktopButtonStyle(compact: true))
             .padding(.horizontal, 4)
+            HStack {
+                Button {
+                    modelName = chat.model ?? ""
+                    choosingModel = true
+                } label: {
+                    Label(chat.model ?? "Provider default model", systemImage: "cpu")
+                        .font(style.mono(10, relativeTo: .caption2)).lineLimit(1)
+                }
+                .buttonStyle(.plain).disabled(!connected || state.isBusy || state == .starting)
+                .accessibilityLabel("Change model").accessibilityValue(chat.model ?? "Provider default")
+                Spacer(minLength: 0)
+            }.foregroundStyle(style.muted).padding(.horizontal, 12).padding(.bottom, 4)
             if let meter, let text = meter.text {
                 HStack(spacing: 8) {
                     if let fraction = meter.contextFraction { ContextBar(fraction: fraction) }
@@ -146,6 +166,15 @@ private struct ChatToolbar: View {
             DesktopRule()
         }
         .background(style.panel)
+        .alert("Chat model", isPresented: $choosingModel) {
+            TextField("Model name", text: $modelName).textInputAutocapitalization(.never).autocorrectionDisabled()
+            Button("Cancel", role: .cancel) {}
+            Button("Apply") {
+                Task { await model.setChatModel(chat.id, modelName) }
+            }.disabled(modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Enter a model name supported by \(chat.provider.title). It applies to the next message.")
+        }
     }
 }
 
@@ -159,6 +188,7 @@ private struct ContextBar: View {
                 Capsule().fill(fraction > 0.95 ? style.error : (fraction > 0.8 ? style.gold : style.accent)).frame(width: max(2, style.pt(56) * fraction), height: 4)
             }
             .accessibilityHidden(true)
+
     }
 }
 

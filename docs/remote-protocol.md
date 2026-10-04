@@ -1488,23 +1488,25 @@ method; it applies to protocol v1 and v2 sessions alike. A client that never cal
 is unaffected.
 
 **`orchestrator.create`** makes the orchestrator of the whole desktop or of one project, as
-`riwork orchestrator create [--project ID] --json` does, or hands back the one that is already
+`riwork orchestrator create [--project ID] [--mode terminal|chat] --json` does, or hands back the one that is already
 there. Params, an object with no other field and no null (`invalid_request` before anything
 runs):
 
 ```json
 {}
 {"project_id":"UUID"}
+{"project_id":"UUID","mode":"chat"}
 ```
 
 - No `project_id` is the global orchestrator. A `project_id` is a full lowercase canonical UUID
   and names that project's orchestrator. The project must exist under exactly that id (looked
   up as for `shell.create`, so a name or a prefix cannot stand in for it): an unknown one is
   `not_found` "project not found on the desktop" and nothing is made.
-- The phone does not choose how it runs. The person's "Orchestrator runs as" setting on the Mac
-  (Terminal or Chat, and the chat's provider) decides, and the connector passes no flag for it.
-  The phone reads `mode` of the result, and opens a terminal tab or a chat tab accordingly
-  ("Chat orchestrators").
+- Optional `mode` is exactly `terminal` or `chat`, passed to the CLI as `--mode`. An absent
+  mode uses the Mac's "Orchestrator runs as" setting. Chat uses the Mac's configured chat provider.
+  This only chooses how a new orchestrator starts; an existing one keeps its mode. No Mac setting
+  is changed. Older connectors reject a supplied mode with `invalid_request`; use the Mac setting
+  option or update the desktop. The phone opens the returned mode ("Chat orchestrators").
 
 Result `{"orchestrator":Session,"created":true}`. `orchestrator` is the entry as
 `orchestrators.list` shows it, `mode` and, for a chat, `chat_id` and `provider` included.

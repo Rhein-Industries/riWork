@@ -587,6 +587,19 @@ import RiWorkCore
         XCTAssertEqual(commands, [.object(["command": .string("answer"), "request_id": .string("q1"), "answers": .array([.array([.string("B")]), .array([.string("Ada")])])])])
         await rig.model.disconnect()
     }
+    func testModelChangeSendsOneConfigureAndInvalidNamesStayLocal() async throws {
+        let rig = try await connected()
+        let failure = await rig.model.setChatModel(chatID, "  custom-model  ")
+        XCTAssertNil(failure)
+        let commands = await rig.transport.commands()
+        XCTAssertEqual(commands, [.object(["command": .string("configure"), "model": .string("custom-model")])])
+        let invalid = await rig.model.setChatModel(chatID, "")
+        XCTAssertNotNil(invalid)
+        XCTAssertNotNil(rig.model.conversation(chatID).notice)
+        let after = await rig.transport.commands()
+        XCTAssertEqual(after.count, 1)
+        await rig.model.disconnect()
+    }
     func testModeInterruptCompactAndStopAreOneRequestEach() async throws {
         let rig = try await connected()
         let conversation = rig.model.conversation(chatID)

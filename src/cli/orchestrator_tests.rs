@@ -501,3 +501,31 @@ fn looking_at_orchestrators_never_starts_a_chat_host() {
     manager.kill_server();
     let _ = std::fs::remove_dir_all(home);
 }
+
+#[test]
+fn explicit_chat_overrides_terminal_setting_without_changing_it() {
+    let setup = Setup::new();
+    setup.choose_terminal();
+    let made = setup.json("create --mode chat");
+    assert_eq!(made["mode"], "chat");
+    assert_eq!(
+        crate::settings::orchestrator_runs(&setup.host.home),
+        crate::settings::OrchestratorRuns::Terminal
+    );
+    let again = setup.json("create --mode terminal");
+    assert_eq!(again["id"], made["id"]);
+    assert_eq!(again["created"], false);
+    assert_eq!(again["mode"], "chat");
+    assert!(
+        setup
+            .run("create --mode other")
+            .unwrap_err()
+            .contains("--mode must be")
+    );
+    assert!(
+        setup
+            .run("create --mode chat --command sleep")
+            .unwrap_err()
+            .contains("--command")
+    );
+}

@@ -236,7 +236,7 @@ final class NewOrchestratorTests: XCTestCase {
         var form = NewTerminalForm(targets: [target()], kind: .claudeChat, kinds: NewTerminalKind.offered(chats: true, orchestrators: true))
         form.handle(.down)
         XCTAssertEqual(form.kind, .projectOrchestrator)
-        XCTAssertEqual(form.fields, [.kind, .create], "no worktree to choose, no switch")
+        XCTAssertEqual(form.fields, [.kind, .orchestratorMode, .create], "no worktree to choose, no switch")
         form.handle(.down)
         XCTAssertEqual(form.kind, .globalOrchestrator)
         form.handle(.down)
@@ -246,6 +246,8 @@ final class NewOrchestratorTests: XCTestCase {
         XCTAssertEqual(form.kind, .globalOrchestrator)
         // The ring was on the worktree row: it goes to the kind when that row is gone.
         form.focus = .kind
+        form.handle(.tab)
+        XCTAssertEqual(form.focus, .orchestratorMode)
         form.handle(.tab)
         XCTAssertEqual(form.focus, .create)
         form.handle(.tab)
@@ -260,4 +262,31 @@ final class NewOrchestratorTests: XCTestCase {
         form.select(kind: .globalOrchestrator)
         XCTAssertEqual(form.focus, .kind)
     }
+    func testExplicitModeRoundTripsAndKeyboardSelectionReachesSubmission() throws {
+        for mode in [NewOrchestratorMode.chat, .terminal] {
+            let request = try NewOrchestratorRequest(projectID: project, mode: mode)
+            XCTAssertEqual(request.params["mode"], .string(mode.rawValue))
+            XCTAssertEqual(try NewOrchestratorRequest(params: request.params), request)
+        }
+        for bad in [JSONValue.null, .number(1), .string("desktop"), .string("Chat")] {
+            XCTAssertThrowsError(try NewOrchestratorRequest(params: ["mode": bad]))
+        }
+        var form = NewTerminalForm(targets: [], kind: .globalOrchestrator, kinds: NewTerminalKind.offered(chats: true, orchestrators: true))
+        form.handle(.tab)
+        form.handle(.down)
+        guard case .orchestrator(let request) = try form.submission() else { return XCTFail() }
+        XCTAssertEqual(request.mode, .chat)
+        XCTAssertNil(request.projectID)
+    }
+
+    func testNewChatCarriesTheChosenModel() throws {
+        var form = NewTerminalForm(targets: [target()], kind: .codexChat, kinds: NewTerminalKind.offered(chats: true, orchestrators: true))
+        form.chatModel = "  custom-model  "
+        guard case .chat(let request) = try form.submission() else { return XCTFail() }
+        XCTAssertEqual(request.model, "custom-model")
+        form.chatModel = "  "
+        guard case .chat(let defaultRequest) = try form.submission() else { return XCTFail() }
+        XCTAssertNil(defaultRequest.model)
+    }
+
 }

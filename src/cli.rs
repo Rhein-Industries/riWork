@@ -106,7 +106,7 @@ riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [
 riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
 riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
 riwork orchestrator [--project ID]       Show the selected orchestrator status
-riwork orchestrator create [--project ID | --cwd PATH] [--command CMD]   As Settings chose: terminal or chat
+riwork orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode terminal|chat]
 riwork orchestrator list [--project ID]   List global and project orchestrators, terminals and chats
 riwork orchestrator status|output|cwd|metrics|attach|close [--project ID]
 riwork orchestrator send [--project ID] TEXT   Send a line (a chat message) to the selected orchestrator
@@ -179,7 +179,9 @@ Orchestrator commands without --project use the global session; list shows all
 scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
 An orchestrator runs in a terminal or as a chat (a Codex or Claude chat of the chat
-host), as Settings > Agent sessions > Orchestrator runs as said when it was created.
+host), as Settings > Agent sessions > Orchestrator runs as said when it was created,
+unless create --mode terminal|chat overrides it for that creation. Chat uses the
+configured chat provider. The override does not change Settings.
 A scope has one orchestrator in either mode: create returns the one that exists,
 and create --json adds \"created\" (false for one that was there). list --json and
 status --json give every orchestrator a \"mode\" (\"terminal\" or \"chat\"); a chat
@@ -2157,8 +2159,22 @@ fn orchestrator_client_command(
         "create" | "start" => {
             let cwd = take_option(&mut args, "--cwd")?.map(PathBuf::from);
             let command = take_option(&mut args, "--command")?;
+            let mode = take_option(&mut args, "--mode")?;
+            let runs = match mode.as_deref() {
+                None => crate::settings::orchestrator_runs(host.home),
+                Some("terminal") => crate::settings::OrchestratorRuns::Terminal,
+                Some("chat") => {
+                    let settings = crate::settings::SettingsStore::open(host.home)
+                        .and_then(|store| store.load())
+                        .unwrap_or_default();
+                    crate::settings::OrchestratorRuns::Chat(settings.orchestrator_chat_provider)
+                }
+                Some(_) => return Err("--mode must be terminal or chat".into()),
+            };
+            if mode.as_deref() == Some("chat") && command.is_some() {
+                return Err("--command cannot be used with --mode chat".into());
+            }
             ensure_empty(&args)?;
-            let runs = crate::settings::orchestrator_runs(host.home);
             let (orchestrator, created) = if let Some(project) = project {
                 if cwd.is_some() {
                     return Err(

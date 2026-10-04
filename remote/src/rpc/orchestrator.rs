@@ -3,35 +3,49 @@
 //!
 //! It is `riwork orchestrator create [--project ID] --json`. Whether the orchestrator runs as
 //! a terminal or as a chat, and with which provider, is the desktop's own setting ("Orchestrator
-//! runs as"); the phone does not choose and the connector passes no flag for it. A scope that
+//! runs as") unless the phone supplies `mode` (chat or terminal). A scope that
 //! already has an orchestrator, in either mode, gets that one back instead of a second.
 use super::*;
 
-/// The params of `orchestrator.create`, strictly: an object with no field but an optional
-/// `project_id`, a full canonical UUID, before any CLI runs. `None` is the global orchestrator.
-pub(super) fn spec(params: &Value) -> std::result::Result<Option<String>, Fault> {
+/// Validated creation parameters. Omitting mode preserves the desktop setting.
+pub(super) struct Spec {
+    project: Option<String>,
+    mode: Option<String>,
+}
+
+pub(super) fn spec(params: &Value) -> std::result::Result<Spec, Fault> {
     let object = params
         .as_object()
         .ok_or_else(|| invalid("params must be an object"))?;
-    if let Some(unknown) = object.keys().find(|k| k.as_str() != "project_id") {
+    if let Some(unknown) = object
+        .keys()
+        .find(|k| !["project_id", "mode"].contains(&k.as_str()))
+    {
         return Err(invalid(format!("unknown field {unknown}")));
     }
-    match object.get("project_id") {
-        None => Ok(None),
+    let project = match object.get("project_id") {
+        None => None,
         Some(Value::String(project)) => {
             id(project)?;
-            Ok(Some(project.clone()))
+            Some(project.clone())
         }
-        Some(_) => Err(invalid("project_id must be a string")),
-    }
+        Some(_) => return Err(invalid("project_id must be a string")),
+    };
+    let mode = match object.get("mode") {
+        None => None,
+        Some(Value::String(mode)) if mode == "chat" || mode == "terminal" => Some(mode.clone()),
+        Some(_) => return Err(invalid("mode must be terminal or chat")),
+    };
+    Ok(Spec { project, mode })
 }
 
-/// The CLI's argv for a validated request. `--json` is added by `read`. Every value is its
-/// own argument; nothing here passes through a shell.
-fn args(project: Option<&str>) -> Vec<String> {
+fn args(spec: &Spec) -> Vec<String> {
     let mut args: Vec<String> = vec!["orchestrator".into(), "create".into()];
-    if let Some(project) = project {
-        args.extend(["--project".into(), project.into()]);
+    if let Some(project) = &spec.project {
+        args.extend(["--project".into(), project.clone()]);
+    }
+    if let Some(mode) = &spec.mode {
+        args.extend(["--mode".into(), mode.clone()]);
     }
     args
 }
@@ -110,10 +124,11 @@ impl Rpc {
     pub(super) async fn orchestrator_create(
         &self,
         device: &str,
-        project: Option<String>,
+        spec: Spec,
     ) -> std::result::Result<Value, Fault> {
+        let project = &spec.project;
         self.require_orchestrator_create().await?;
-        if let Some(project) = &project {
+        if let Some(project) = project {
             self.target_exists(&CreateTarget::Project(project.clone()), create_fault)
                 .await?;
         }
@@ -125,7 +140,7 @@ impl Rpc {
         // reason, so the CLI runs in a task that outlives the request: if the request is
         // dropped, only the answer is lost.
         let runner = self.detached();
-        let argv = args(project.as_deref());
+        let argv = args(&spec);
         let created = tokio::spawn(async move { runner.read_within(argv, CREATE_TIMEOUT).await })
             .await
             .map_err(|e| cli_fault(format!("creating the orchestrator was interrupted: {e}")))?

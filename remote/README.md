@@ -255,8 +255,7 @@ pins it against a stub CLI.
 
 `orchestrator.create` (`src/rpc/orchestrator.rs`) makes the global orchestrator or a project's, or
 returns the one that exists: `riwork orchestrator create [--project ID] --json`, which prints a list
-entry plus a boolean `created`. The connector passes no mode or provider (the desktop's "Orchestrator
-runs as" setting decides), looks the project up by exact id first like `shell.create`, runs in the
+entry plus a boolean `created`. The connector forwards optional `mode` as `--mode terminal|chat`; omitted mode uses the desktop's "Orchestrator runs as" setting, and its chat provider is retained, looks the project up by exact id first like `shell.create`, runs in the
 ordered lane with the CLI in a task of its own, and refuses a `created` that is not a boolean or an
 entry of another scope. `"orchestrator_create": true` in `riwork capabilities --json` decides
 `features.orchestrator_create` in `ready`; the same answer serves `features.chat`. The tests are

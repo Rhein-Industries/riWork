@@ -187,16 +187,17 @@ async fn parameters_are_validated_before_any_cli_runs() {
         json!("global"),
         json!(7),
         json!(true),
-        // Nothing but a project is a parameter: the Mac decides how it runs.
-        json!({"mode":"chat"}),
-        json!({"mode":"terminal"}),
+        // Only project and a valid optional mode are accepted.
+        json!({"mode":"other"}),
+        json!({"mode":null}),
+        json!({"mode":7}),
         json!({"provider":"codex"}),
         json!({"kind":"orchestrator"}),
         json!({"scope":"global"}),
         json!({"cwd":"/tmp"}),
         json!({"harness":"codex"}),
         json!({"unrestricted":true}),
-        json!({"project_id":p,"mode":"chat"}),
+        json!({"project_id":p,"mode":"Chat"}),
         json!({"project_id":p,"worktree_id":new_uuid()}),
         json!({"project_id":p,"json":true}),
         json!({"project_id":p,"owner":f.device}),
@@ -568,4 +569,31 @@ async fn a_yes_is_remembered_and_one_answer_serves_chats_and_orchestrators() {
         "{\"v\":1,\"orchestrator_create\":true,\"chat\":true}",
     );
     assert!(f.rpc.chat_supported().await);
+}
+
+#[tokio::test]
+async fn explicit_modes_are_forwarded_and_existing_orchestrators_keep_their_mode() {
+    for mode in ["chat", "terminal"] {
+        let f = Fixture::new();
+        f.cli_says(with_created(
+            chat(&new_uuid(), Some(&f.project)),
+            json!(false),
+        ));
+        let response = f.create(json!({"project_id":f.project,"mode":mode})).await;
+        assert_eq!(response["ok"], true, "{response}");
+        assert_eq!(response["result"]["created"], false);
+        assert_eq!(response["result"]["orchestrator"]["mode"], "chat");
+        assert_eq!(
+            f.calls_of("orchestrator", "create"),
+            [argv(&[
+                "orchestrator",
+                "create",
+                "--project",
+                &f.project,
+                "--mode",
+                mode,
+                "--json"
+            ])]
+        );
+    }
 }

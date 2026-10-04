@@ -2,7 +2,7 @@ import Foundation
 
 // Opening an orchestrator on the desktop: `orchestrator.create`.
 //
-// `orchestrator.create {project_id?}` starts the orchestrator of one project (`project_id` present) or the global one (absent) and
+// `orchestrator.create {project_id?, mode?}` starts the orchestrator of one project (`project_id` present) or the global one (absent) and
 // answers `{"orchestrator": <orchestrators.list entry>, "created": bool}`. When there already is one for that scope it is returned
 // unchanged and `created` is false: the phone never makes a second. The entry says how the Mac runs it (`mode`, `chat_id`,
 // `provider`; see `ProjectTabs.swift`), which decides whether the phone opens a chat or a terminal.
@@ -10,26 +10,48 @@ import Foundation
 // Like every other request that makes something, it is sent once and never retried by the app. Everything here is pure and `Sendable`;
 // the app owns the timing.
 
+public enum NewOrchestratorMode: String, Sendable, Equatable, CaseIterable, Identifiable {
+    case desktop, chat, terminal
+    public var id: String { rawValue }
+    public var title: String {
+        switch self { case .desktop: "Mac setting"; case .chat: "Chat"; case .terminal: "Terminal (CLI)" }
+    }
+}
+
 /// `orchestrator.create` parameters.
 public struct NewOrchestratorRequest: Sendable, Equatable {
     /// The project whose orchestrator it is; nil for the global one.
     public let projectID: String?
 
-    public init(projectID: String?) throws {
+    public let mode: NewOrchestratorMode
+
+    public init(projectID: String?, mode: NewOrchestratorMode = .desktop) throws {
         if let projectID { guard NewTerminalRequest.isCanonicalUUID(projectID) else { throw NewTerminalValidationError.invalidID } }
         self.projectID = projectID
+        self.mode = mode
     }
     public var isGlobal: Bool { projectID == nil }
 
-    /// The wire parameters: none for the global orchestrator.
-    public var params: [String: JSONValue] { projectID.map { ["project_id": .string($0)] } ?? [:] }
+    /// The wire parameters: omitted mode uses the Mac setting.
+    public var params: [String: JSONValue] {
+        var params = projectID.map { ["project_id": JSONValue.string($0)] } ?? [:]
+        if mode != .desktop { params["mode"] = .string(mode.rawValue) }
+        return params
+    }
 
     /// Reads wire parameters back through the same rules (the transport checks every request this way).
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["project_id"]) else { throw NewTerminalValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["project_id", "mode"]) else { throw NewTerminalValidationError.malformed }
+        let mode: NewOrchestratorMode
+        switch params["mode"] {
+        case nil: mode = .desktop
+        case .string("chat")?: mode = .chat
+        case .string("terminal")?: mode = .terminal
+        default: throw NewTerminalValidationError.malformed
+        }
         switch params["project_id"] {
-        case nil: try self.init(projectID: nil)
-        case .string(let id)?: try self.init(projectID: id)
+        case nil: try self.init(projectID: nil, mode: mode)
+        case .string(let id)?: try self.init(projectID: id, mode: mode)
         default: throw NewTerminalValidationError.invalidID
         }
     }

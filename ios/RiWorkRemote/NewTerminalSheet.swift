@@ -9,6 +9,7 @@ import RiWorkCore
 struct NewTerminalSheet: View {
     @Environment(\.desktopStyle) private var style
     @Bindable var sheet: NewTerminalSheetModel
+    @FocusState private var editingModel: Bool
     @State private var hardwareKeyboard = GCKeyboard.coalesced != nil
 
     private var showFocus: Bool { sheet.keyboardInUse }
@@ -22,7 +23,7 @@ struct NewTerminalSheet: View {
         }
         .desktopSheetSurface(style)
         .foregroundStyle(style.text).font(style.face(13, relativeTo: .body)).tint(style.accent)
-        .background { NewTerminalKeys(onKey: handle).frame(width: 1, height: 1).accessibilityHidden(true) }
+        .background { if !editingModel { NewTerminalKeys(onKey: handle).frame(width: 1, height: 1).accessibilityHidden(true) } }
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .onChange(of: sheet.model.worktrees) { _, _ in sheet.refreshTargets() }
         .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidConnect)) { _ in hardwareKeyboard = true }
@@ -38,6 +39,19 @@ struct NewTerminalSheet: View {
                 ForEach(sheet.form.kinds) { kindRow($0) }
             }
             .accessibilityElement(children: .contain).accessibilityLabel("Terminal kind")
+            if sheet.form.kind.isOrchestrator {
+                Picker("Orchestrator runs as", selection: Binding(get: { sheet.form.orchestratorMode }, set: { sheet.setOrchestratorMode($0) })) {
+                    ForEach(NewOrchestratorMode.allCases) { Text($0.title).tag($0) }
+                }
+                .padding(12).overlay { ring(.orchestratorMode) }.disabled(sheet.busy)
+                Text("Applies when starting a new orchestrator. An existing one opens in its current mode. Chat uses the Mac’s chat provider.")
+                    .font(style.system(.caption)).foregroundStyle(style.muted).padding(.horizontal, 12)
+            }
+            if sheet.form.kind.isChat {
+                TextField("Model (provider default)", text: $sheet.form.chatModel)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().focused($editingModel)
+                    .padding(12).disabled(sheet.busy).accessibilityLabel("Chat model")
+            }
             if sheet.form.kind.isAgent { unrestrictedRow }
             if let problem = sheet.problem { messageRow(problem) }
         }
