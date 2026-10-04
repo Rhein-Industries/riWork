@@ -7,6 +7,7 @@
 use super::model::{ChatCommand, ChatInfo, NewChat};
 use super::wire::{Envelope, Request, Response};
 use std::io::{BufRead, BufReader, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -125,6 +126,16 @@ impl Subscription {
         })
     }
 
+    /// A handle that ends this subscription from another thread, so a window
+    /// that closes its tab does not leave a thread blocked on a quiet chat.
+    pub fn closer(&self) -> Result<SubscriptionCloser, String> {
+        self.stream
+            .get_ref()
+            .try_clone()
+            .map(SubscriptionCloser)
+            .map_err(|error| error.to_string())
+    }
+
     /// The next event, or `None` when the connection ended.
     pub fn next_envelope(&mut self) -> Option<Result<Envelope, String>> {
         let mut line = String::new();
@@ -135,6 +146,16 @@ impl Subscription {
                     .map_err(|error| format!("chat host sent an unreadable event: {error}")),
             ),
         }
+    }
+}
+
+/// Ends a `Subscription` from another thread: its blocked `next_envelope`
+/// returns `None`.
+pub struct SubscriptionCloser(UnixStream);
+
+impl SubscriptionCloser {
+    pub fn close(&self) {
+        let _ = self.0.shutdown(Shutdown::Both);
     }
 }
 

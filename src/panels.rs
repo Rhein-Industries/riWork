@@ -15,7 +15,7 @@ use gpui::{
 };
 
 use crate::{
-    activity::{ActivityCounts, AgentActivity, AgentState},
+    activity::{ActivityCounts, AgentActivity, AgentState, ChatActivity},
     icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
@@ -167,6 +167,8 @@ pub struct PanelData<'a> {
     pub shell_cwds: &'a BTreeMap<String, PathBuf>,
     pub metrics: &'a BTreeMap<String, SessionMetrics>,
     pub activity: &'a BTreeMap<String, AgentState>,
+    /// The open chat tabs, counted among the agents beside the shells.
+    pub chats: &'a [ChatActivity],
     pub query: &'a str,
     pub search_focused: bool,
     pub focus: FocusHandle,
@@ -610,7 +612,8 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             })
                             .count();
                         let activity =
-                            ActivityCounts::for_project(&project.id, data.shells, data.activity);
+                            ActivityCounts::for_project(&project.id, data.shells, data.activity)
+                                .with_chats_in_project(&project.id, data.chats);
                         let title = div()
                             .flex()
                             .items_center()
@@ -726,7 +729,8 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     data.shells,
                     data.shell_cwds,
                     data.activity,
-                );
+                )
+                .with_chats_in_worktree(&worktree.id, data.chats);
                 rows.push(row(
                     format!("worktree-{}", worktree.id),
                     selected,

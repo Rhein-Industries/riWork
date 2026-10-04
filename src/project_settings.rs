@@ -46,7 +46,7 @@ impl Input {
         }
     }
 
-    fn cursor(&self) -> usize {
+    pub(crate) fn cursor(&self) -> usize {
         if self.reversed {
             self.selection.start
         } else {
@@ -59,14 +59,23 @@ impl Input {
     }
 
     pub(crate) fn replace(&mut self, range: Option<Range<usize>>, text: &str) {
+        self.splice(range, &single_line(text));
+    }
+
+    /// Like `replace`, for an input of several lines (the chat composer): line breaks
+    /// stay, every kind of them as `\n`.
+    pub(crate) fn replace_lines(&mut self, range: Option<Range<usize>>, text: &str) {
+        self.splice(range, &line_breaks_as_newlines(text));
+    }
+
+    fn splice(&mut self, range: Option<Range<usize>>, text: &str) {
         let range = range
             .map(|range| {
                 utf16_to_byte(&self.text, range.start)..utf16_to_byte(&self.text, range.end)
             })
             .or(self.marked.take())
             .unwrap_or_else(|| self.selection.clone());
-        let text = single_line(text);
-        self.text.replace_range(range.clone(), &text);
+        self.text.replace_range(range.clone(), text);
         let end = range.start + text.len();
         self.selection = end..end;
         self.reversed = false;
@@ -155,6 +164,26 @@ impl Input {
         }
         true
     }
+}
+
+/// Pasted or composed text for an input of several lines: `\r\n`, `\r` and the Unicode
+/// line separators become `\n`.
+fn line_breaks_as_newlines(text: &str) -> String {
+    let mut lines = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                lines.push('\n');
+            }
+            '\u{85}' | '\u{2028}' | '\u{2029}' => lines.push('\n'),
+            _ => lines.push(c),
+        }
+    }
+    lines
 }
 
 /// These inputs are single-line. A line break between pasted lines becomes one
@@ -1350,5 +1379,17 @@ mod tests {
         assert_eq!(status.message(), "Codex account saved");
         status.edited();
         assert_eq!(status.message(), SAVE_PROMPT);
+    }
+
+    #[test]
+    fn a_multi_line_input_keeps_its_line_breaks_where_a_single_line_one_folds_them() {
+        let mut lines = Input::new("a".into());
+        lines.replace_lines(None, "b\r\nc\rd\u{2028}e");
+        assert_eq!(lines.text, "ab\nc\nd\ne");
+        assert_eq!(lines.selection, 8..8);
+
+        let mut line = Input::new("a".into());
+        line.replace(None, "b\nc");
+        assert_eq!(line.text, "ab c");
     }
 }
