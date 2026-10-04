@@ -711,7 +711,7 @@ impl Render for ProjectSettingsPanel {
                 .cursor_pointer()
                 .border_1()
                 .border_color(rgb(if focused && self.active == Field::Folder(0) {
-                    colors.gold
+                    colors.focus
                 } else if self.folder_id.is_none() {
                     colors.cyan
                 } else {
@@ -746,7 +746,7 @@ impl Render for ProjectSettingsPanel {
                     .cursor_pointer()
                     .border_1()
                     .border_color(rgb(if focused && self.active == Field::Folder(index + 1) {
-                        colors.gold
+                        colors.focus
                     } else if selected {
                         colors.magenta
                     } else {
@@ -819,7 +819,7 @@ impl Render for ProjectSettingsPanel {
                     .cursor_pointer()
                     .border_1()
                     .border_color(rgb(if focused && self.active == Field::Account(index) {
-                        colors.gold
+                        colors.focus
                     } else if selected {
                         colors.cyan
                     } else {
@@ -858,7 +858,7 @@ impl Render for ProjectSettingsPanel {
             .id("project-settings-panel")
             .size_full().min_w_0().track_focus(&self.focus).key_context("ProjectSettings")
             .on_key_down(cx.listener(Self::key_down)).overflow_y_scroll()
-            .bg(rgb(colors.bg)).text_color(rgb(colors.text)).font_family("Menlo").text_size(ui_text::text(11.0))
+            .bg(rgb(colors.bg)).text_color(rgb(colors.text)).font_family(ui_text::ui_family()).text_size(ui_text::text(11.0))
             .p(ui_text::space(20.0))
             .child(
                 div().w_full().min_w_0().max_w(ui_text::space(760.0)).flex().flex_col().gap(ui_text::space(18.0))
@@ -894,7 +894,7 @@ impl Render for ProjectSettingsPanel {
                                     let subfolder = self.folder_id.is_some();
                                     let button = div().id("project-settings-create-folder").h(ui_text::space(34.0))
                                         .flex_none().flex().items_center().cursor_pointer().border_1()
-                                        .border_color(rgb(if focused && self.active == Field::AddFolder { colors.gold } else { colors.magenta }))
+                                        .border_color(rgb(if focused && self.active == Field::AddFolder { colors.focus } else { colors.magenta }))
                                         .text_color(rgb(colors.magenta));
                                     // Icons keep the button's size, colour and focus ring; the tooltip names it.
                                     let button = if icons::labels_as_icons(cx) {
@@ -920,7 +920,7 @@ impl Render for ProjectSettingsPanel {
                             .child(account_rows)
                             .child(div().id("project-codex-refresh").cursor_pointer()
                                 .text_size(ui_text::text(10.0))
-                                .text_color(rgb(if focused && self.active == Field::AccountRefresh { colors.gold } else { colors.cyan }))
+                                .text_color(rgb(if focused && self.active == Field::AccountRefresh { colors.focus } else { colors.cyan }))
                                 .child(if account_state.pending { "CHECKING ACCOUNTS…" } else { "REFRESH ACCOUNTS" })
                                 .on_click(cx.listener(|form, _, window, cx| {
                                     form.active = Field::AccountRefresh;
@@ -941,7 +941,7 @@ impl Render for ProjectSettingsPanel {
                                 .child(self.error.clone().unwrap_or_else(|| self.status.message().into())))
                             .child(div().id("project-settings-save").flex_none().px(ui_text::space(14.0)).py(ui_text::space(10.0)).cursor_pointer()
                                 .bg(rgb(colors.panel_active)).border_1()
-                                .border_color(rgb(if focused && self.active == Field::Save { colors.gold } else { colors.cyan }))
+                                .border_color(rgb(if focused && self.active == Field::Save { colors.focus } else { colors.cyan }))
                                 .text_color(rgb(colors.cyan)).child("SAVE PROJECT")
                                 .on_click(cx.listener(|form, _, window, cx| {
                                     form.active = Field::Save;
@@ -1121,7 +1121,7 @@ impl Render for FolderEditor {
             .flex()
             .flex_col()
             .gap(ui_text::space(14.0))
-            .font_family("Menlo")
+            .font_family(ui_text::ui_family())
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.magenta))
@@ -1186,7 +1186,7 @@ impl Render for FolderEditor {
                             .border_1()
                             .border_color(rgb(
                                 if self.active == 1 && self.focus.is_focused(window) {
-                                    colors.gold
+                                    colors.focus
                                 } else {
                                     colors.panel
                                 },
@@ -1207,7 +1207,7 @@ impl Render for FolderEditor {
                             .border_1()
                             .border_color(rgb(
                                 if self.active == 2 && self.focus.is_focused(window) {
-                                    colors.gold
+                                    colors.focus
                                 } else {
                                     colors.cyan
                                 },

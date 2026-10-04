@@ -2726,7 +2726,8 @@ mod tests {
     #[test]
     fn appearance_summary_names_mode_colors_and_terminal() {
         let mut published =
-            crate::theme::Appearance::resolve(crate::theme::ThemeChoice::RiWork).published(false);
+            crate::theme::Appearance::resolve(crate::theme::ThemeChoice::RiWork, false)
+                .published(false);
         published.updated_at = 1_790_000_000;
         assert_eq!(
             appearance_summary(&published),

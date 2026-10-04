@@ -492,7 +492,7 @@ impl SchedulePanel {
             .border_1()
             .border_color(rgb(
                 if self.active == index && self.focus.is_focused(window) {
-                    colors.gold
+                    colors.focus
                 } else if selected {
                     colors.cyan
                 } else {
@@ -896,7 +896,7 @@ impl Render for SchedulePanel {
             .p(ui_text::space(14.0))
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
-            .font_family("Menlo")
+            .font_family(ui_text::ui_family())
             .text_size(ui_text::text(11.0))
             .child(body)
     }

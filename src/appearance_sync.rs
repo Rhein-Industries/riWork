@@ -62,7 +62,7 @@ fn next_snapshot(
     if appearance.selected != settings.theme {
         return None;
     }
-    let snapshot = appearance.published(settings.use_riwork_colors);
+    let snapshot = appearance.published(settings.terminal_colors_forced());
     if last.is_some_and(|last| last.same_colors(&snapshot)) {
         return None;
     }
@@ -91,7 +91,7 @@ mod tests {
     }
 
     fn following_ghostty(theme: TerminalTheme) -> Appearance {
-        let mut appearance = Appearance::resolve(ThemeChoice::RiWork);
+        let mut appearance = Appearance::resolve(ThemeChoice::RiWork, false);
         appearance.selected = ThemeChoice::Ghostty;
         appearance.terminal = None;
         appearance.ghostty = Some(theme);
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn a_change_of_theme_option_or_ghostty_color_is_published_once() {
-        let riwork = Appearance::resolve(ThemeChoice::RiWork);
+        let riwork = Appearance::resolve(ThemeChoice::RiWork, false);
         let first = next_snapshot(&settings(ThemeChoice::RiWork, false), &riwork, None).unwrap();
         assert!(first.dark);
         // Nothing new: the same colors again, in any window.
@@ -115,7 +115,7 @@ mod tests {
         );
 
         // A theme choice, once its appearance is resolved.
-        let gruvbox = Appearance::resolve(ThemeChoice::GruvboxLight);
+        let gruvbox = Appearance::resolve(ThemeChoice::GruvboxLight, false);
         let light = next_snapshot(
             &settings(ThemeChoice::GruvboxLight, false),
             &gruvbox,
@@ -172,7 +172,7 @@ mod tests {
             (ThemeChoice::RiWork, false),
         ];
         for (index, (theme, option)) in steps.into_iter().enumerate() {
-            let appearance = Appearance::resolve(theme);
+            let appearance = Appearance::resolve(theme, false);
             if let Some(snapshot) =
                 next_snapshot(&settings(theme, option), &appearance, last.as_ref())
             {
@@ -189,7 +189,7 @@ mod tests {
         assert!(published.dark);
 
         // A second process starting on the same colors finds them published.
-        let again = Appearance::resolve(ThemeChoice::RiWork).published(false);
+        let again = Appearance::resolve(ThemeChoice::RiWork, false).published(false);
         assert!(!appearance_file::publish(&home, &again, 9_999).unwrap());
         assert_eq!(appearance_file::read(&home).unwrap().updated_at, 1_005);
         fs::remove_dir_all(home).unwrap();
