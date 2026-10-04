@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-05: Additive chat orchestrators and orchestrator creation, no new error code. `orchestrators.list` (and `shells.list`) entries gain optional `mode` (`terminal|chat`) and, for an orchestrator that runs as a chat, `chat_id` (equal to `id`) and `provider` (`codex|claude`), so the phone can open it as a chat tab with the existing `chats.list`, `chat.events` and `chat.command` methods; the `shell.*` methods on a chat orchestrator's id are `invalid_request`; see "Chat orchestrators" under "Chat extension" below. A desktop without chat orchestrators leaves the fields out and an older phone ignores them; the connector checks each field's shape, leaves a malformed one out, and passes `chat_id` and `provider` only for an entry whose `mode` is `chat`. A project's orchestrator that runs as a chat also counts in that project's `agents` and `last_activity_unix` of `projects.list`, as a terminal one does. One new method, `orchestrator.create` (`{}` or `{"project_id":"UUID"}`), makes the global or a project's orchestrator, in the mode the desktop's "Orchestrator runs as" setting says, or returns the one that exists (`created` false); it runs in the ordered lane and a creation is not cut short when the phone's session ends, and `features.orchestrator_create` in `ready` says the installed CLI has it; see "Orchestrator creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates `orchestrator.create` answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.orchestrator_create` out.
 - 2026-10-04: Additive chat extension: five methods that let the phone follow and drive the desktop's Codex and Claude chats (the chat host, `riwork chat ...`), `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop`, and `features.chat` in `ready`. `chat.events` is a long poll (`wait_ms` up to 25 000, counted with the waits of `shell.output`) that returns the events after a cursor, batched, in a page cut to fit one reply; `chat.create`, `chat.command` and `chat.stop` run in the ordered lane and a creation is not cut short when the phone's session ends. The chat JSON is the desktop's own (`src/chat/model.rs`); the phone decodes it leniently. No new error code. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.chat` out; see "Chat extension" below.
 - 2026-10-03: Additive, in the same "Activity and recency extension": `projects.list` entries gain optional `last_activity_unix` (Unix seconds: when the newest of the project's shells last had output) and `shells.list` / `orchestrators.list` entries gain optional `last_activity_unix` (when that shell last had output, from tmux), so the phone's "Recent" project order can follow shell activity instead of file edits. No new method and no new error code. A desktop that cannot supply it leaves it out, an older phone ignores it, and the connector checks it is a non-negative integer and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-03: Additive activity and recency extension, no new method and no new error code: `projects.list` entries gain optional `last_edited_unix` (when the desktop app last saw a file of the project change, Unix seconds) and `agents` (`{"working":n,"waiting":n}` and additively `"done":n`: the project's agent shells by state), and `shells.list` / `orchestrators.list` entries gain optional `activity` (`working|waiting|done|unknown|exited`), `activity_since_unix`, `subagents_working` and additively `subagent_kinds`, so the phone can sort recent projects and show whether a Codex or Claude is working, with its subagents. See "Activity and recency extension" below. A field the desktop cannot supply is simply absent, so an older desktop or CLI answers exactly as before and an older phone ignores them; the connector checks each new field's shape and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -25,7 +26,9 @@ make a project (`project.create`, "Project creation extension" below, only in th
 desktop's default projects folder), and its only way to change which terminals exist
 is `shell.create` and `shell.close` ("Terminal creation extension" below). Since
 2026-10-04 it can also start a chat with Codex or Claude in an existing project or
-worktree and talk to it (`chat.create`, `chat.command`, "Chat extension" below);
+worktree and talk to it (`chat.create`, `chat.command`, "Chat extension" below), and
+since 2026-10-05 it can make the global or a project's orchestrator
+(`orchestrator.create`, "Orchestrator creation extension" below);
 everything else works on existing sessions. That is an API-level limit only:
 `shell.input` reaches every live project shell and orchestrator, including
 unrestricted harness sessions and editor (Vim) tabs, so a paired device can run
@@ -160,7 +163,7 @@ unsolicited response except handshake `ready`.
 | `worktrees.list` | `{"project_id":"UUID"}` | `{"worktrees":[Worktree]}` |
 | `tasks.list` | `{"project_id":"UUID"}` optionally `"worktree_id":"UUID"` | `{"tasks":[Task]}` |
 | `shells.list` | `{"project_id":"UUID"}` | `{"shells":[Session]}` (existing project shells) |
-| `orchestrators.list` | `{}` | `{"orchestrators":[Session]}` (global + project) |
+| `orchestrators.list` | `{}` | `{"orchestrators":[Session]}` (global + project; each runs as a terminal or, since 2026-10-05, as a chat) |
 | `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200`, and additively `"styled":true`, `"if_changed":"HASH"`, `"wait_ms":5000` (see Live terminal) | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) and `"hash":"0123456789abcdef"`, `"history_size":4991,"alternate":false` (see Deep scrollback); or `{"shell_id":"UUID","unchanged":true,"hash":"0123456789abcdef","history_size":4991,"alternate":false}` (see Live terminal) |
 | `shell.history` | `{"shell_id":"UUID","end":0,"lines":200}` (`lines` 1 to 5000 since 2026-10-01, 1000 before) optionally `"styled":true` (see Deep scrollback, Link extension) | `{"shell_id":"UUID","output":"older lines","line_count":200,"history_size":4991,"complete":false}` |
 | `shell.input` | `{"shell_id":"UUID","line":"one physical line"}` | `{"shell_id":"UUID","status":"sent"}` |
@@ -172,6 +175,7 @@ unsolicited response except handshake `ready`.
 | `shell.create` | `{"worktree_id":"UUID"}` or `{"project_id":"UUID"}`, plus `"kind":"shell\|codex\|claude\|grok"` and optionally `"unrestricted":false`, `"command":"..."` (Terminal creation) | `{"shell_id":"UUID","shell":Session}` |
 | `shell.close` | `{"shell_id":"UUID"}` (Terminal creation) | `{"shell_id":"UUID","status":"closed"}` |
 | `project.create` | `{"name":"My App"}` optionally `"git":false` (Project creation) | `{"project_id":"UUID","project":Project}` |
+| `orchestrator.create` | `{}` or `{"project_id":"UUID"}` (Orchestrator creation) | `{"orchestrator":Session,"created":true}` |
 | `chats.list` | `{}` or `{"project_id":"UUID"}` (Chat) | `{"chats":[ChatInfo]}` |
 | `chat.create` | `{"provider":"codex\|claude","project_id":"UUID"}` or `"worktree_id":"UUID"` instead, optionally `"approval_mode"`, `"model"`, `"effort"`, `"title"` (Chat) | `{"chat":ChatInfo}` |
 | `chat.events` | `{"chat_id":"UUID","since":0,"wait_ms":25000}` optionally `"max_events":500` (Chat) | `{"chat_id":"UUID","events":[{"seq":1,"event":ChatEvent}],"next":1,"more":false}` |
@@ -186,12 +190,15 @@ Task: `id,project_id,title,details` strings; `status` `todo|in_progress|done`;
 Session: `id` UUID, `project_id,worktree_id` UUID or null, `kind` `project|orchestrator`,
 `cwd` string, `harness` `codex|claude|grok|null`, `alive` boolean, `created_at_unix` number; and,
 optionally, `last_activity_unix`, `activity`, `activity_since_unix`, `subagents_working` and
-`subagent_kinds` (see "Activity and recency extension").
+`subagent_kinds` (see "Activity and recency extension"), and `mode` `terminal|chat` and, for a
+session with `mode` `chat`, `chat_id` (a UUID, equal to `id`) and `provider` `codex|claude` (see
+"Chat orchestrators" under "Chat extension").
 Clients tolerate additive result/entity fields but must reject unknown protocol
 versions. Lists expose existing CLI entities; output/input resolve a full shell
-UUID against existing project shells **and** orchestrators. Dead/missing sessions
+UUID against existing project shells **and** orchestrators that run in a terminal (the id
+of one that runs as a chat is refused, "Chat orchestrators"). Dead/missing sessions
 fail clearly. No project default, tmux attachment or free-form CLI RPC, and no
-creation or close except `shell.create`, `shell.close`, `project.create`, `chat.create` and `chat.stop`. `shell.input` intentionally
+creation or close except `shell.create`, `shell.close`, `project.create`, `orchestrator.create`, `chat.create` and `chat.stop`. `shell.input` intentionally
 submits terminal input followed by Return and can run commands in the selected
 shell (an unrestricted harness, a Vim tab, a plain shell prompt); clients must show
 the selected shell before sending. CR, LF, NUL and other
@@ -1090,12 +1097,17 @@ them strictly never sees a wrong type. The iOS side is built against this text.
   live shell follows every project that has activity, however lately its files changed.
   The phone's Recent order does exactly this. It is read when the list is, so it is as
   fresh as the last `projects.list`, and unlike `last_edited_unix` it needs no window.
+  Since 2026-10-05 a project's orchestrator that runs as a chat counts as a terminal one
+  does: its chat's log growing is activity of the project.
 - `agents` (object): `{"working":n,"waiting":n,"done":n}`, the project's agent shells by
   `activity` (below), counting the project's own orchestrator and not the global one.
   `working` and `waiting` are the pair a client needs for a badge; `done` is additional
   and a client that decodes two keys ignores it. A shell whose activity is `unknown` or
   `exited`, a plain shell and a Grok session are in none of them. Absent when the desktop
   could not read its shell list (for example, tmux is not installed).
+  Since 2026-10-05 the project's orchestrator counts the same when it runs as a chat: a
+  chat that is running is `working`, one that waits for an approval or an answer is
+  `waiting`, and an idle one is `done`.
 
 **`shells.list` and `orchestrators.list` entries** gain, for a shell that runs an agent
 (a plain shell has none of these; a plain shell in which a bound Codex runs has them):
@@ -1206,7 +1218,8 @@ reason to fail a page.
 - `ChatInfo`: `id` (UUID), `provider` (`codex|claude`), `project_id` and `worktree_id`
   (UUID, either may be absent), `cwd`, `title`, `created_at_unix`, `approval_mode`
   (`supervised|auto_edit|full|plan`), `state`, and, when known, `provider_thread_id`,
-  `model`, `effort` and `codex_account_id`.
+  `model`, `effort`, `codex_account_id` and, for an orchestrator's chat, `orchestrator`
+  (see "Chat orchestrators").
 - `state` is `{"state":"starting|idle|running|waiting|stopped"}` or
   `{"state":"failed","message":"..."}`. `waiting` means a turn waits for an approval or an
   answer. `stopped` has no agent process: the next message resumes the chat. `failed`
@@ -1427,6 +1440,102 @@ An older connector answers `invalid_request` "unsupported RPC method" for all fi
 client then hides chats for that connection. A connector paired with an older `riwork`
 CLI leaves `features.chat` out.
 
+**Chat orchestrators (2026-10-05).** The global orchestrator and each project's orchestrator
+can run as a chat of the chat host instead of as a terminal. Additive: no new method, error
+code, envelope or fixture, for v1 and v2 sessions alike.
+
+- *Recognizing one.* Entries of `orchestrators.list` (and `shells.list`) gain optional
+  `mode`: `terminal` for the tmux orchestrator there has always been, `chat` for a chat
+  orchestrator. A `chat` entry also has `chat_id` (a UUID) and `provider` (`codex|claude`).
+  Its `id` **is** its `chat_id`, so the phone needs no mapping: it opens a chat tab on that
+  UUID and follows it with `chat.events` and `chat.command`, as for any chat. `alive` is true
+  while the chat exists, even with its agent stopped, because a message resumes it. An entry
+  without `mode` (an older desktop) is a terminal orchestrator.
+- *What the connector passes.* `mode` only as `terminal` or `chat`, `provider` only as `codex`
+  or `claude`, `chat_id` only as a full lowercase canonical UUID. Each is checked on its own
+  and a malformed one is left out, never failing the list; `chat_id` and `provider` are also
+  left out of an entry whose `mode` is not `chat`. The rest of what the CLI prints for an
+  entry (its `state`, `command`) does not reach the phone, as before.
+- *In `chats.list`.* A chat orchestrator is a chat, so `chats.list` (with or without a
+  project) lists it among the others. Its `ChatInfo` has the extra optional field
+  `orchestrator`, `{"scope":"global"}` or `{"scope":"project","project_id":"UUID"}`; ordinary
+  chats lack it. `ChatInfo` is decoded leniently, so a phone that does not know the field
+  ignores it. The global orchestrator's chat is `supervised` (its `approval_mode`) and a
+  project orchestrator's is `full`.
+- *Terminal methods refuse it.* `shell.output`, `shell.history`, `shell.input`,
+  `shell.keys`, `shell.resize` and `shell.resize.clear` on a chat orchestrator's id are
+  `invalid_request`, "this orchestrator runs as a chat; follow it with chat.events and send
+  with chat.command": a chat has no pane to read, type into or size, and nothing is typed.
+  The connector knows it from the `mode` in the orchestrator list. Where the `riwork` CLI
+  checks a shell itself (`verifies_shell`) the connector does not list sessions first, so for
+  `shell.output`, `shell.history` and `shell.keys` it looks only after that CLI has refused
+  the id as unknown. `shell.close` still refuses every orchestrator ("only a project
+  terminal can be closed"). A phone avoids the refusal by looking at `mode`.
+- *Closing.* `riwork orchestrator close` on the desktop ends a chat orchestrator by deleting
+  its chat. A phone with a tab on it then finds `chats.list` without the chat and
+  `chat.events` answering `not_found`, and closes the tab. The phone cannot close an
+  orchestrator itself (`chat.stop` stops the agent and keeps the chat).
+- *Older parts.* A connector from before this date passes none of the new fields, so the
+  phone cannot tell a chat orchestrator from a terminal one and the terminal methods on its
+  id fail (`not_found` or `cli_error`). The connector's tests are
+  `remote/tests/chat_orchestrator.rs`.
+
+### Orchestrator creation extension (v1 and v2, 2026-10-05)
+
+Additive and compatible, like the extensions before it: one new method and one new `ready`
+feature. No new error code and no change to the handshake, envelopes, fixtures or any existing
+method; it applies to protocol v1 and v2 sessions alike. A client that never calls the method
+is unaffected.
+
+**`orchestrator.create`** makes the orchestrator of the whole desktop or of one project, as
+`riwork orchestrator create [--project ID] --json` does, or hands back the one that is already
+there. Params, an object with no other field and no null (`invalid_request` before anything
+runs):
+
+```json
+{}
+{"project_id":"UUID"}
+```
+
+- No `project_id` is the global orchestrator. A `project_id` is a full lowercase canonical UUID
+  and names that project's orchestrator. The project must exist under exactly that id (looked
+  up as for `shell.create`, so a name or a prefix cannot stand in for it): an unknown one is
+  `not_found` "project not found on the desktop" and nothing is made.
+- The phone does not choose how it runs. The person's "Orchestrator runs as" setting on the Mac
+  (Terminal or Chat, and the chat's provider) decides, and the connector passes no flag for it.
+  The phone reads `mode` of the result, and opens a terminal tab or a chat tab accordingly
+  ("Chat orchestrators").
+
+Result `{"orchestrator":Session,"created":true}`. `orchestrator` is the entry as
+`orchestrators.list` shows it, `mode` and, for a chat, `chat_id` and `provider` included.
+`created` is `true` if this call made the orchestrator and `false` if the scope already had one,
+in either mode, which is then returned as it is: a scope never gets a second. The connector
+checks the answer before it reaches the phone: an entry of the scope asked for (a canonical
+`id`, `kind` `orchestrator`, a `project_id` equal to the one asked for, or null for the global
+one, and `cwd`, `alive` and `created_at_unix`) and a `created` that is a boolean, else
+`cli_error`; it never guesses a `created`. `created` is not a field of the entry.
+
+Errors: `invalid_request` and `not_found` as above; `harness_unavailable` when the agent the
+orchestrator runs is not installed (as for `shell.create`); `cli_error` for anything else,
+including a creation that took over the connector's 60 seconds ("creating the orchestrator took
+too long and was stopped; check the orchestrator list before trying again").
+
+Scheduling and retries. It runs in the ordered lane with `shell.create` and `project.create`,
+one at a time per device and in arrival order, and is not dropped half done when the phone's
+session ends: a CLI killed half way could leave an orchestrator nobody told the phone about, so
+it runs in a task that outlives the request and only the answer is lost. A client's timeout should be about
+90 seconds. The phone does not repeat it by itself, but a repeat does no harm, since the CLI
+finds the orchestrator the first one made (`created` false); a client that lost the answer reads
+`orchestrators.list`.
+
+**Feature detection.** `ready.features.orchestrator_create` is `true` when the installed `riwork`
+CLI reports `"orchestrator_create": true` in `riwork capabilities --json`. The connector asks as
+it asks for `features.chat` (one run of the CLI answers both questions) and remembers a yes.
+Without it the phone hides the control; the method itself answers `cli_error` "the installed
+riwork CLI cannot create orchestrators from the phone; update RiWork". A connector that predates
+the extension answers `invalid_request` "unsupported RPC method". The connector's tests are
+`remote/tests/orchestrator_create.rs` and `remote/tests/chat_link.rs`.
+
 ## Fixtures and change log
 
 `remote/fixtures/v1.json` supplies deterministic PSK, UUIDs, nonces, proof MACs,
@@ -1574,6 +1683,23 @@ ready response. Values are test-only and must never provision production devices
   state. No new error code. A client that never calls the methods is unaffected, and an
   older desktop answers `invalid_request` "unsupported RPC method". Needs the iOS worker's
   agreement; the iOS side implements the same text.
+
+- 2026-10-05: additive and backward compatible. Chat orchestrators. Optional `mode`
+  (`terminal|chat`) on `orchestrators.list` and `shells.list` entries and, for `mode` `chat`,
+  `chat_id` (a canonical lowercase UUID, equal to `id`) and `provider` (`codex|claude`); a
+  chat orchestrator is followed with the existing `chats.list`, `chat.events` and
+  `chat.command` (its `ChatInfo` carries an optional `orchestrator`, `{"scope":"global"}` or
+  `{"scope":"project","project_id":"UUID"}`). `shell.output`, `shell.history`, `shell.input`,
+  `shell.keys`, `shell.resize` and `shell.resize.clear` on its id are `invalid_request`. A
+  field the desktop cannot supply is absent, the connector leaves out one in the wrong shape
+  (and `chat_id` and `provider` from an entry whose `mode` is not `chat`), and a client that
+  ignores them is unaffected. Also `orchestrator.create` (`{}` or `{"project_id":"UUID"}`;
+  result `{"orchestrator":Session,"created":bool}`), which makes the global or a project's
+  orchestrator in the mode the desktop's setting says, or returns the existing one, in the
+  ordered lane and not cut short when the phone's session ends; `ready.features.
+  orchestrator_create` when the CLI says `"orchestrator_create": true` in `riwork capabilities
+  --json`. No new error code. Needs the iOS worker's agreement; the iOS side implements the same
+  text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

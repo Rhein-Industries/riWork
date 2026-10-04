@@ -17,6 +17,13 @@
 //! is closed with a `TurnCompleted` first, so no view shows a turn that cannot
 //! finish.
 //!
+//! **Orchestrators.** A chat created with an `orchestrator` scope is the global or
+//! a project's orchestrator (`orchestrators`). The host keeps at most one chat for
+//! each scope: `Create` for a scope that has one is refused with
+//! `ORCHESTRATOR_EXISTS` and the id of that chat, so racing creators end up with one
+//! chat and the loser knows it must not start it. Such a chat has the scope's
+//! project and no worktree.
+//!
 //! **Events.** One reader thread per driver appends what the driver sends to the
 //! log (the line number is the `seq`), and broadcasts it to the chat's
 //! subscribers. A driver's `Info` is merged into the host's own `ChatInfo` (the
@@ -35,7 +42,8 @@ use super::client;
 use super::driver::{Driver, DriverConfig, StartDriver};
 use super::log::{self, ChatLog};
 use super::model::{
-    ChatCommand, ChatEvent, ChatInfo, ChatState, Decision, NewChat, Provider, TurnOutcome,
+    ChatCommand, ChatEvent, ChatInfo, ChatState, Decision, NewChat, ORCHESTRATOR_EXISTS,
+    OrchestratorScope, Provider, TurnOutcome,
 };
 use super::wire::{Envelope, Request, Response};
 use fs2::FileExt;
@@ -563,6 +571,9 @@ struct Shared {
     providers: Providers,
     options: Options,
     chats: Mutex<HashMap<String, Arc<Chat>>>,
+    /// Held while an orchestrator chat is created, from the check that its scope
+    /// has none to the chat being listed, so two creators cannot both pass it.
+    orchestrator_creation: Mutex<()>,
     connections: AtomicUsize,
     /// When a client last connected or left, or a chat was last at work: what
     /// the idle timer counts from (a request is over long before it is polled).
@@ -692,6 +703,7 @@ impl Host {
             providers,
             options,
             chats: Mutex::new(chats),
+            orchestrator_creation: Mutex::new(()),
             connections: AtomicUsize::new(0),
             activity: Mutex::new(Instant::now()),
             quit: AtomicBool::new(false),
@@ -1114,6 +1126,23 @@ fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
     if shared.quit.load(Ordering::SeqCst) {
         return Err("the chat host is shutting down".into());
     }
+    // Held until the chat is listed: see `Shared::orchestrator_creation`.
+    let creation = match &new.orchestrator {
+        Some(scope) => {
+            check_orchestrator_scope(&new, scope)?;
+            let creation = lock(&shared.orchestrator_creation);
+            if let Some(existing) = shared
+                .all()
+                .iter()
+                .map(|chat| chat.info())
+                .find(|info| info.orchestrator.as_ref() == Some(scope))
+            {
+                return Err(format!("{ORCHESTRATOR_EXISTS} {}", existing.id));
+            }
+            Some(creation)
+        }
+        None => None,
+    };
     let account =
         (shared.providers.account)(&shared.home, new.provider, new.project_id.as_deref())?;
     let id = Uuid::new_v4().to_string();
@@ -1147,6 +1176,7 @@ fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
         approval_mode: new.approval_mode,
         codex_account_id: account,
         state: ChatState::Starting,
+        orchestrator: new.orchestrator,
     };
     let dir = log::chat_dir(&shared.home, &id).ok_or("invalid chat id")?;
     let log = ChatLog::create(&dir, &info)?;
@@ -1158,10 +1188,29 @@ fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
         inner: Mutex::new(inner),
     });
     lock(&shared.chats).insert(id, chat.clone());
+    drop(creation);
     // A driver that cannot start leaves the chat failed, not missing: its
     // message is in the chat, and the next message tries again.
     let _ = ensure_running(shared, &chat);
     Ok(chat.info())
+}
+
+/// An orchestrator chat belongs to its scope: the global orchestrator has no
+/// project or worktree, a project's has that project and no worktree.
+fn check_orchestrator_scope(new: &NewChat, scope: &OrchestratorScope) -> Result<(), String> {
+    let fits = new.worktree_id.is_none()
+        && match scope {
+            OrchestratorScope::Global => new.project_id.is_none(),
+            OrchestratorScope::Project { project_id } => {
+                new.project_id.as_deref() == Some(project_id.as_str())
+                    && Uuid::parse_str(project_id).is_ok_and(|uuid| uuid.to_string() == *project_id)
+            }
+        };
+    if fits {
+        Ok(())
+    } else {
+        Err("an orchestrator chat has the project of its scope and no worktree".into())
+    }
 }
 
 /// Reads every chat from disk. No provider is started: a chat that was running

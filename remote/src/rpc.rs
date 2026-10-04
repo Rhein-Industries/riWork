@@ -26,6 +26,7 @@ use tokio::{
 };
 
 mod chat;
+mod orchestrator;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -291,6 +292,10 @@ fn additive_shape_ok(field: &str, value: &Value) -> bool {
                     ["working", "waiting", "done"].contains(&key.as_str()) && count.is_u64()
                 })
         }),
+        // How a session runs. Only these two words are the phone's to act on.
+        "mode" => matches!(value.as_str(), Some("terminal" | "chat")),
+        "provider" => matches!(value.as_str(), Some("codex" | "claude")),
+        "chat_id" => value.as_str().is_some_and(|chat| uuid(chat).is_ok()),
         "subagent_kinds" => value.as_array().is_some_and(|kinds| {
             kinds.len() <= 8
                 && kinds.iter().all(|kind| {
@@ -338,7 +343,39 @@ const SESSION_FIELDS: &[&str] = &[
     "activity_since_unix",
     "subagents_working",
     "subagent_kinds",
+    "mode",
+    "chat_id",
+    "provider",
 ];
+/// A session as the phone may see it: `SESSION_FIELDS`, each checked on its own.
+/// `chat_id` and `provider` describe a chat, so they are passed on only for an
+/// entry whose own `mode` is `chat` (judged after its shape check: a `mode` that
+/// was left out as malformed makes the entry one without a chat). They are the
+/// only fields whose meaning depends on another field of the same entry.
+fn session_fields(v: Value) -> Value {
+    let mut session = project(v, SESSION_FIELDS);
+    if session.get("mode").and_then(Value::as_str) != Some("chat")
+        && let Some(map) = session.as_object_mut()
+    {
+        map.remove("chat_id");
+        map.remove("provider");
+    }
+    session
+}
+/// What a session the CLI listed with `mode` `chat` is: an orchestrator that runs
+/// as a chat of the chat host. Its `id` is the chat's, not a tmux shell's.
+fn runs_as_chat(session: &Value) -> bool {
+    session.get("mode").and_then(Value::as_str) == Some("chat")
+}
+/// The answer to every `shell.*` method that names a chat orchestrator. It is
+/// given before the CLI is asked to read or type into a shell that does not exist.
+fn chat_orchestrator_fault() -> Fault {
+    invalid(
+        "this orchestrator runs as a chat; follow it with chat.events and send with chat.command",
+    )
+}
+/// What `selected` and `Checked::explain` say of an id nobody knows.
+const SHELL_NOT_FOUND: &str = "existing shell ID not found";
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -558,7 +595,7 @@ fn create_result(spec: &CreateSpec, cli: &Value) -> Option<Value> {
     {
         return None;
     }
-    Some(json!({"shell_id": shell, "shell": project(cli.clone(), SESSION_FIELDS)}))
+    Some(json!({"shell_id": shell, "shell": session_fields(cli.clone())}))
 }
 /// What a failed `riwork shell close` says.
 fn close_fault(fault: Fault) -> Fault {
@@ -567,7 +604,7 @@ fn close_fault(fault: Fault) -> Fault {
         .strip_prefix("RiWork CLI failed: riwork: ")
         .is_some_and(|detail| detail.starts_with("unknown shell "));
     if unknown {
-        Fault::new("not_found", "existing shell ID not found")
+        Fault::new("not_found", SHELL_NOT_FOUND)
     } else {
         fault
     }
@@ -1020,7 +1057,7 @@ impl Checked {
             .strip_prefix("RiWork CLI failed: riwork: ")
             .unwrap_or(&fault.message);
         if said == format!("unknown shell {shell}") {
-            Fault::new("not_found", "existing shell ID not found")
+            Fault::new("not_found", SHELL_NOT_FOUND)
         } else if said == format!("shell {shell} has exited") {
             Fault::new("not_found", "selected shell is not alive")
         } else {
@@ -1042,7 +1079,10 @@ pub struct Rpc {
     attach_exec: AtomicBool,
     /// Whether the CLI said it has the chat commands (see `chat_supported`).
     chat: AtomicBool,
-    /// Held while the CLI is asked about chats, so that two askers at once run it once.
+    /// Whether the CLI said it can create orchestrators (see `orchestrator_create_supported`).
+    orchestrator_create: AtomicBool,
+    /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
+    /// once run it once.
     asking_chat: tokio::sync::Mutex<()>,
 }
 impl Rpc {
@@ -1055,6 +1095,7 @@ impl Rpc {
             cli_checks_shells: tokio::sync::OnceCell::new(),
             attach_exec: AtomicBool::new(false),
             chat: AtomicBool::new(false),
+            orchestrator_create: AtomicBool::new(false),
             asking_chat: tokio::sync::Mutex::new(()),
         }
     }
@@ -1177,12 +1218,34 @@ impl Rpc {
     async fn selected(&self, shell: &str) -> std::result::Result<(), Fault> {
         id(shell)?;
         let Some(s) = self.session(shell).await? else {
-            return Err(Fault::new("not_found", "existing shell ID not found"));
+            return Err(Fault::new("not_found", SHELL_NOT_FOUND));
         };
+        // Before `alive` and before any `riwork shell ...`: a chat has no pane.
+        if runs_as_chat(&s) {
+            return Err(chat_orchestrator_fault());
+        }
         if s.get("alive").and_then(Value::as_bool) != Some(true) {
             return Err(Fault::new("not_found", "selected shell is not alive"));
         }
         Ok(())
+    }
+    /// `checked.explain`, and, for a CLI that checked the shell itself and said it
+    /// is unknown, one more look at the sessions: a chat orchestrator is not in
+    /// the CLI's shell registry, so that is how it refuses one, and the phone
+    /// should be told what it is rather than that it does not exist. The lookup
+    /// is made only after such a refusal, so a call that works costs no more than
+    /// before, and one that fails any other way is returned as it is.
+    async fn explain(&self, checked: Checked, fault: Fault, shell: &str) -> Fault {
+        let fault = checked.explain(fault, shell);
+        if matches!(checked, Checked::ByCli)
+            && fault.code == "not_found"
+            && fault.message == SHELL_NOT_FOUND
+            && let Ok(Some(found)) = self.session(shell).await
+            && runs_as_chat(&found)
+        {
+            return chat_orchestrator_fault();
+        }
+        fault
     }
     /// Whether the installed CLI can become a tmux client in place
     /// (`shell attach ID --exec`, `riwork capabilities`). Only a yes is
@@ -1465,13 +1528,13 @@ impl Rpc {
                 let p: Project = params(r)?;
                 id(&p.project_id)?;
                 Ok(
-                    json!({"shells":array(self.read(&["shell","list","--project",&p.project_id]).await?)?.into_iter().map(|v|project(v,SESSION_FIELDS)).collect::<Vec<_>>()}),
+                    json!({"shells":array(self.read(&["shell","list","--project",&p.project_id]).await?)?.into_iter().map(session_fields).collect::<Vec<_>>()}),
                 )
             }
             "orchestrators.list" => {
                 let _: Empty = params(r)?;
                 Ok(
-                    json!({"orchestrators":array(self.read(&["orchestrator","list"]).await?)?.into_iter().map(|v|project(v,SESSION_FIELDS)).collect::<Vec<_>>()}),
+                    json!({"orchestrators":array(self.read(&["orchestrator","list"]).await?)?.into_iter().map(session_fields).collect::<Vec<_>>()}),
                 )
             }
             "shell.output" => {
@@ -1513,21 +1576,26 @@ impl Rpc {
                     args.push(wait_ms.to_string());
                     limit = cli_limit(wait_ms);
                 }
-                let v = self.read_capped(args, limit, reply_limit).await.map_err(|fault| {
-                    let fault = checked.explain(fault, &p.shell_id);
-                    // A CLI from before styled output and waiting refuses the flags.
-                    if fault.code == "cli_error"
-                        && fault.message.contains("Usage: riwork shell output")
-                        && (styled || p.if_changed.is_some())
-                    {
-                        Fault::new(
-                            "cli_error",
-                            "the installed riwork CLI does not support styled output or waiting for changes; update RiWork",
-                        )
-                    } else {
-                        fault
+                let v = match self.read_capped(args, limit, reply_limit).await {
+                    Ok(v) => v,
+                    Err(fault) => {
+                        let fault = self.explain(checked, fault, &p.shell_id).await;
+                        // A CLI from before styled output and waiting refuses the flags.
+                        return Err(
+                            if fault.code == "cli_error"
+                                && fault.message.contains("Usage: riwork shell output")
+                                && (styled || p.if_changed.is_some())
+                            {
+                                Fault::new(
+                                    "cli_error",
+                                    "the installed riwork CLI does not support styled output or waiting for changes; update RiWork",
+                                )
+                            } else {
+                                fault
+                            },
+                        );
                     }
-                })?;
+                };
                 let hash = v
                     .get("hash")
                     .and_then(Value::as_str)
@@ -1606,7 +1674,7 @@ impl Rpc {
                 let v = match self.read_capped(args, CLI_TIMEOUT, reply_limit).await {
                     Ok(v) => v,
                     Err(fault) => {
-                        let fault = history_fault(checked.explain(fault, &p.shell_id));
+                        let fault = history_fault(self.explain(checked, fault, &p.shell_id).await);
                         // An older CLI: remember what it takes, so the next page is not sent to it in vain.
                         if fault.code == "cli_error"
                             && let Some(limit) = cli_lines_limit(&fault.message)
@@ -1712,6 +1780,10 @@ impl Rpc {
             "project.create" => {
                 let spec = project_spec(&r.params)?;
                 self.create_project(device, spec).await
+            }
+            "orchestrator.create" => {
+                let project = orchestrator::spec(&r.params)?;
+                self.orchestrator_create(device, project).await
             }
             // Chats; see `chat`.
             "chats.list" => {
@@ -1888,7 +1960,7 @@ impl Rpc {
         let lock = self.input_lock(shell);
         let _guard = lock.lock().await;
         let Some(found) = self.session(shell).await? else {
-            return Err(Fault::new("not_found", "existing shell ID not found"));
+            return Err(Fault::new("not_found", SHELL_NOT_FOUND));
         };
         if found.get("kind").and_then(Value::as_str) != Some("project") {
             return Err(invalid("only a project terminal can be closed"));
@@ -2108,13 +2180,13 @@ impl Rpc {
             }
             Err(error) => {
                 let (fault, not_sent) = keys_fault(&error);
-                let fault = checked.explain(fault, &p.shell_id);
                 if not_sent {
                     // Nothing was typed: forget the batch so a retry can send it.
                     ledger.batches.pop();
                     let _ = private_write(&path, &ledger);
                 }
-                Err(fault)
+                // After the ledger is right again: this may ask the CLI twice more.
+                Err(self.explain(checked, fault, &p.shell_id).await)
             }
         }
     }
@@ -2171,6 +2243,44 @@ mod tests {
         assert_eq!(
             (big.code, big.message.as_str()),
             ("response_too_large", "x")
+        );
+    }
+
+    #[test]
+    fn a_created_shell_passes_on_its_mode_but_not_a_chat_it_does_not_have() {
+        let (project_id, shell) = (
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        let spec = CreateSpec {
+            target: CreateTarget::Project(project_id.clone()),
+            kind: CreateKind::Shell,
+            unrestricted: false,
+            command: None,
+        };
+        let mut cli = json!({
+            "id": shell, "project_id": project_id, "worktree_id": null, "kind": "project",
+            "cwd": "/work", "command": null, "harness": null, "alive": true,
+            "created_at_unix": 1790000000u64, "mode": "terminal"
+        });
+        let result = create_result(&spec, &cli).unwrap();
+        assert_eq!(result["shell"]["mode"], "terminal");
+        // The fields of a chat go with `mode` "chat" alone.
+        cli["chat_id"] = json!(shell);
+        cli["provider"] = json!("codex");
+        let shown = create_result(&spec, &cli).unwrap();
+        assert!(shown["shell"].get("chat_id").is_none());
+        assert!(shown["shell"].get("provider").is_none());
+        // An older CLI says none of it, and the result is what it was.
+        for field in ["mode", "chat_id", "provider"] {
+            cli.as_object_mut().unwrap().remove(field);
+        }
+        assert_eq!(
+            create_result(&spec, &cli).unwrap()["shell"],
+            json!({
+                "id": shell, "project_id": project_id, "worktree_id": null, "kind": "project",
+                "cwd": "/work", "harness": null, "alive": true, "created_at_unix": 1790000000u64
+            })
         );
     }
 

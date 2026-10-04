@@ -35,6 +35,7 @@ impl Fixture {
             codex_home: None,
             pane_identity: "fixture-pane".into(),
             provider_session: Uuid::new_v4().to_string(),
+            chat: None,
         }
     }
     fn add(&self, timing: Timing) -> Schedule {

@@ -205,8 +205,13 @@ async fn a_refusal_of_the_cli_reads_like_the_lookup_it_replaces() {
         assert_eq!(ledger["batches"], json!([]), "{ledger}");
         assert_eq!(f.keys(&f.shell).await["result"]["status"], "sent");
     }
-    // The lookup was made only where the CLI does not check.
-    assert_eq!(checking.calls_with("shell list"), 0);
+    // The lookup was made where the CLI does not check. Where it does, only an
+    // id it refused as unknown is looked up afterwards (to tell a chat
+    // orchestrator from an id nobody has: tests/chat_orchestrator.rs), once for
+    // each of the three refusals above and for nothing else: not for a shell
+    // that exists or one that has exited.
+    assert_eq!(checking.calls_with("shell list"), 3);
+    assert_eq!(checking.calls_with("orchestrator list"), 3);
     assert!(listing.calls_with("shell list") > 0);
 }
 

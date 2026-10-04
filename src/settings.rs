@@ -21,6 +21,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::{
+    chat::model::Provider,
     codex_accounts::{self, AccountsSnapshot},
     controls,
     cua::{CuaManager, CuaStatus},
@@ -127,6 +128,41 @@ fn run_cua_action(action: CuaAction, cx: &mut App) {
     .detach();
 }
 
+/// How an orchestrator created from now on runs: in a terminal tab, as it always
+/// has, or as a chat of the chat host.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestratorMode {
+    #[default]
+    Terminal,
+    Chat,
+}
+
+impl OrchestratorMode {
+    const ALL: [Self; 2] = [Self::Terminal, Self::Chat];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Terminal => "Terminal",
+            Self::Chat => "Chat",
+        }
+    }
+
+    fn other(self) -> Self {
+        match self {
+            Self::Terminal => Self::Chat,
+            Self::Chat => Self::Terminal,
+        }
+    }
+}
+
+/// What an orchestrator created now is: the mode and, for a chat, its agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OrchestratorRuns {
+    Terminal,
+    Chat(Provider),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
     pub schema_version: u32,
@@ -150,6 +186,11 @@ pub struct Settings {
     /// scroll locally. Off leaves every agent on its own default screen. A
     /// session that is already running keeps the mode it started in.
     pub agent_inline_mode: bool,
+    /// How orchestrators created from now on run. An orchestrator that exists
+    /// keeps its mode until it is closed and created again.
+    pub orchestrator_mode: OrchestratorMode,
+    /// The agent behind a chat orchestrator (`orchestrator_mode` is `chat`).
+    pub orchestrator_chat_provider: Provider,
     /// RiWork's own interface text in points of its panel list text, like
     /// Ghostty's `font-size`: 11 is the design size, from `ui_text::MIN_POINTS`
     /// to `MAX_POINTS`. Terminals keep Ghostty's size.
@@ -188,6 +229,8 @@ impl Default for Settings {
             selected_codex_account: None,
             status_bar: StatusBarSettings::default(),
             agent_inline_mode: true,
+            orchestrator_mode: OrchestratorMode::default(),
+            orchestrator_chat_provider: Provider::Codex,
             ui_text_size: TextPoints::DEFAULT,
             ui_text_matches_terminal: false,
             native_terminal_colors: true,
@@ -235,6 +278,16 @@ impl<'de> Deserialize<'de> for Settings {
                 &object,
                 "agent_inline_mode",
                 defaults.agent_inline_mode,
+            ),
+            orchestrator_mode: lenient_field(
+                &object,
+                "orchestrator_mode",
+                defaults.orchestrator_mode,
+            ),
+            orchestrator_chat_provider: lenient_field(
+                &object,
+                "orchestrator_chat_provider",
+                defaults.orchestrator_chat_provider,
             ),
             // A size out of range is pulled into it; anything but a number is the default.
             ui_text_size: lenient_field(&object, "ui_text_size", defaults.ui_text_size),
@@ -284,6 +337,20 @@ pub fn agent_inline_mode(home: &Path) -> bool {
         .map_or(Settings::default().agent_inline_mode, |settings| {
             settings.agent_inline_mode
         })
+}
+
+/// What an orchestrator created now runs as, read from the file of the state
+/// directory `home` each time, like `agent_inline_mode`: the CLI, the MCP tools
+/// and every window create orchestrators, and none of them holds a copy that
+/// another could outdate. A missing or unreadable file means a terminal.
+pub fn orchestrator_runs(home: &Path) -> OrchestratorRuns {
+    let settings = SettingsStore::open(home)
+        .and_then(|store| store.load())
+        .unwrap_or_default();
+    match settings.orchestrator_mode {
+        OrchestratorMode::Terminal => OrchestratorRuns::Terminal,
+        OrchestratorMode::Chat => OrchestratorRuns::Chat(settings.orchestrator_chat_provider),
+    }
 }
 
 #[derive(Clone)]
@@ -451,6 +518,20 @@ impl Toggle {
     }
 }
 
+fn provider_label(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Codex => "Codex",
+        Provider::Claude => "Claude",
+    }
+}
+
+fn other_provider(provider: Provider) -> Provider {
+    match provider {
+        Provider::Codex => Provider::Claude,
+        Provider::Claude => Provider::Codex,
+    }
+}
+
 /// The Text size row's MATCH TERMINAL control: interface text follows Ghostty's
 /// `font-size`, or goes back to the saved size.
 fn toggle_text_match(settings: &mut Settings) {
@@ -469,6 +550,8 @@ pub struct SettingsPanel {
     tab_icons_focus: FocusHandle,
     preview_focus: FocusHandle,
     inline_focus: FocusHandle,
+    orchestrator_mode_focus: FocusHandle,
+    orchestrator_provider_focus: FocusHandle,
     size_focus: FocusHandle,
     text_size_focus: FocusHandle,
     orca_preview_focus: FocusHandle,
@@ -623,7 +706,9 @@ impl Section {
             Self::Codex => "The account new Codex sessions start with.",
             Self::Appearance => "Choose a theme and text size, or sync with Ghostty.",
             Self::Files => "How the Files tree and its Preview pane open together.",
-            Self::Agents => "How new Codex, Grok, and Claude sessions use the terminal screen.",
+            Self::Agents => {
+                "How new Codex, Grok, and Claude sessions draw, and how orchestrators run."
+            }
             Self::Windows => "How project windows open.",
             Self::StatusBar => "Choose what appears, which side it sits on, and its order.",
             Self::Remote => {
@@ -954,6 +1039,8 @@ impl SettingsPanel {
             tab_icons_focus: cx.focus_handle(),
             preview_focus: cx.focus_handle(),
             inline_focus: cx.focus_handle(),
+            orchestrator_mode_focus: cx.focus_handle(),
+            orchestrator_provider_focus: cx.focus_handle(),
             size_focus: cx.focus_handle(),
             text_size_focus: cx.focus_handle(),
             orca_preview_focus: cx.focus_handle(),
@@ -1022,6 +1109,10 @@ impl SettingsPanel {
         handles.push(self.text_size_focus.clone());
         handles.push(self.preview_focus.clone());
         handles.push(self.inline_focus.clone());
+        handles.push(self.orchestrator_mode_focus.clone());
+        if settings.orchestrator_mode == OrchestratorMode::Chat {
+            handles.push(self.orchestrator_provider_focus.clone());
+        }
         handles.push(self.size_focus.clone());
         handles.push(self.remote_add_focus.clone());
         handles.push(self.remote_pair_focus.clone());
@@ -1342,6 +1433,21 @@ impl SettingsPanel {
                     self.change(|settings| Toggle::PreviewOnSelect.flip(settings), cx);
                 } else if self.inline_focus.is_focused(window) {
                     self.change(|settings| Toggle::AgentInline.flip(settings), cx);
+                } else if self.orchestrator_mode_focus.is_focused(window) {
+                    self.change(
+                        |settings| settings.orchestrator_mode = settings.orchestrator_mode.other(),
+                        cx,
+                    );
+                } else if settings.orchestrator_mode == OrchestratorMode::Chat
+                    && self.orchestrator_provider_focus.is_focused(window)
+                {
+                    self.change(
+                        |settings| {
+                            settings.orchestrator_chat_provider =
+                                other_provider(settings.orchestrator_chat_provider)
+                        },
+                        cx,
+                    );
                 } else if self.size_focus.is_focused(window) {
                     self.change(|settings| Toggle::WindowSize.flip(settings), cx);
                 } else if self.remote_add_focus.is_focused(window) {
@@ -2325,6 +2431,156 @@ impl SettingsPanel {
             .into_any_element()
     }
 
+    fn agents_section(&self, settings: &Settings, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
+        let chat = settings.orchestrator_mode == OrchestratorMode::Chat;
+        row_list()
+            .child(self.toggle_row(
+                Toggle::AgentInline,
+                "Keep agent transcripts in scrollback (inline mode)",
+                "New Codex, Grok, and Claude sessions draw on the terminal's main screen, so the whole conversation stays in the terminal's scrollback. You can scroll it locally, and the iOS app can download and scroll it without sending keys to the agent. Off runs them full screen. A session that is already running keeps its mode until it restarts.",
+                settings.agent_inline_mode,
+                cx,
+            ))
+            .child(self.choice_row(
+                "orchestrator-mode",
+                &self.orchestrator_mode_focus,
+                "Orchestrator runs as",
+                "Terminal runs the global and project orchestrators as Codex in a terminal tab. Chat runs them as a native chat tab that the iOS app can follow too.",
+                settings.orchestrator_mode,
+                OrchestratorMode::ALL.map(|mode| {
+                    (
+                        mode,
+                        mode.label(),
+                        match mode {
+                            OrchestratorMode::Terminal => "orchestrator-mode-terminal",
+                            OrchestratorMode::Chat => "orchestrator-mode-chat",
+                        },
+                    )
+                }),
+                |settings, mode| settings.orchestrator_mode = mode,
+                cx,
+            ))
+            .children(chat.then(|| {
+                self.choice_row(
+                    "orchestrator-provider",
+                    &self.orchestrator_provider_focus,
+                    "Chat provider",
+                    "The agent behind a chat orchestrator. Project orchestrators never ask before they act; the global orchestrator asks before running commands and editing files.",
+                    settings.orchestrator_chat_provider,
+                    [Provider::Codex, Provider::Claude].map(|provider| {
+                        (
+                            provider,
+                            provider_label(provider),
+                            match provider {
+                                Provider::Codex => "orchestrator-provider-codex",
+                                Provider::Claude => "orchestrator-provider-claude",
+                            },
+                        )
+                    }),
+                    |settings, provider| settings.orchestrator_chat_provider = provider,
+                    cx,
+                )
+            }))
+            .child(
+                div()
+                    .px(ui_text::space(ROW_PAD_X))
+                    .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child("Applies to orchestrators created from now on. An existing orchestrator keeps its mode until it is closed and created again."),
+            )
+            .into_any_element()
+    }
+
+    /// A row with one choice per value, as Native's Interface font: the row takes
+    /// focus like a toggle, and Enter or Space switches to the other value.
+    #[allow(clippy::too_many_arguments)]
+    fn choice_row<T: Copy + PartialEq + 'static>(
+        &self,
+        id: &'static str,
+        focus: &FocusHandle,
+        title: &'static str,
+        description: &'static str,
+        selected: T,
+        choices: [(T, &'static str, &'static str); 2],
+        apply: fn(&mut Settings, T),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = palette(cx);
+        let choice = |(value, label, choice_id): (T, &'static str, &'static str),
+                      cx: &mut Context<Self>| {
+            let active = value == selected;
+            let row_focus = focus.clone();
+            div()
+                .id(choice_id)
+                .flex_none()
+                .px(ui_text::space(8.0))
+                .py(ui_text::space(4.0))
+                .border_1()
+                .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                .bg(rgb(colors.panel_active))
+                .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+                .text_size(ui_text::text(10.0))
+                .hover(move |style| {
+                    controls::hovered(style, controls::segment_hover(active, colors), |style| {
+                        style.border_color(rgb(colors.cyan))
+                    })
+                })
+                .map(|choice| {
+                    controls::native(choice, |choice| controls::segment(choice, active, colors))
+                })
+                .child(label)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |_, _, window, cx| row_focus.focus(window, cx)),
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.change(|settings| apply(settings, value), cx);
+                }))
+        };
+        div()
+            .id(id)
+            .track_focus(focus)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(ui_text::space(12.0))
+            .px(ui_text::space(ROW_PAD_X))
+            .py(ui_text::space(ROW_PAD_Y))
+            .bg(rgb(colors.panel))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
+            .child(
+                row_text()
+                    .child(
+                        div()
+                            .text_size(ui_text::text(12.0))
+                            .text_color(rgb(colors.text))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            .child(description),
+                    ),
+            )
+            .child(
+                if ui_text::is_native() {
+                    controls::segments(colors)
+                } else {
+                    div().flex().flex_wrap().gap(ui_text::space(6.0))
+                }
+                .children(choices.map(|choice_value| choice(choice_value, cx))),
+            )
+            .into_any_element()
+    }
+
     fn appearance_section(
         &self,
         theme_columns: usize,
@@ -2683,13 +2939,7 @@ impl SettingsPanel {
                 settings.open_preview_on_select,
                 cx,
             ),
-            Section::Agents => self.toggle_row(
-                Toggle::AgentInline,
-                "Keep agent transcripts in scrollback (inline mode)",
-                "New Codex, Grok, and Claude sessions draw on the terminal's main screen, so the whole conversation stays in the terminal's scrollback. You can scroll it locally, and the iOS app can download and scroll it without sending keys to the agent. Off runs them full screen. A session that is already running keeps its mode until it restarts.",
-                settings.agent_inline_mode,
-                cx,
-            ),
+            Section::Agents => self.agents_section(settings, cx),
             Section::Windows => self.toggle_row(
                 Toggle::WindowSize,
                 "Remember project window size",
@@ -3157,6 +3407,86 @@ mod tests {
         // A damaged file does not decide how an agent draws.
         fs::write(dir.join("settings.json"), "{ not json").unwrap();
         assert!(agent_inline_mode(&dir));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn orchestrators_run_in_a_terminal_by_default_and_the_choice_survives_older_odd_and_unreadable_files()
+     {
+        let dir = env::temp_dir().join(format!("riwork-settings-orchestrator-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let document = |dir: &std::path::Path| -> Value {
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
+        };
+        let defaults = Settings::default();
+        assert_eq!(defaults.orchestrator_mode, OrchestratorMode::Terminal);
+        assert_eq!(defaults.orchestrator_chat_provider, Provider::Codex);
+        // No file yet: a terminal, and nothing is written.
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        assert!(!dir.join("settings.json").exists());
+
+        // A file from a build without the settings reads as the defaults and is
+        // not rewritten.
+        let older = r#"{"schema_version":1,"theme":"tokyo_night","future_setting":{"a":1}}"#;
+        fs::write(dir.join("settings.json"), older).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.orchestrator_mode, OrchestratorMode::Terminal);
+        assert_eq!(loaded.orchestrator_chat_provider, Provider::Codex);
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.json")).unwrap(),
+            older
+        );
+
+        // Choosing chat writes only its keys, and creation sees them at once.
+        store
+            .update(|settings| settings.orchestrator_mode = OrchestratorMode::Chat)
+            .unwrap();
+        let file = document(&dir);
+        assert_eq!(file["orchestrator_mode"], "chat");
+        assert_eq!(file["orchestrator_chat_provider"], "codex");
+        assert_eq!(file["theme"], "tokyo_night");
+        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        assert_eq!(
+            orchestrator_runs(&dir),
+            OrchestratorRuns::Chat(Provider::Codex)
+        );
+        store
+            .update(|settings| {
+                settings.orchestrator_chat_provider =
+                    other_provider(settings.orchestrator_chat_provider)
+            })
+            .unwrap();
+        assert_eq!(document(&dir)["orchestrator_chat_provider"], "claude");
+        assert_eq!(
+            orchestrator_runs(&dir),
+            OrchestratorRuns::Chat(Provider::Claude)
+        );
+        // The provider only matters for a chat.
+        store
+            .update(|settings| settings.orchestrator_mode = OrchestratorMode::Terminal)
+            .unwrap();
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+
+        // Values in a shape this build lacks read as the defaults and stay until
+        // changed.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"orchestrator_mode":"hologram","orchestrator_chat_provider":"gemini"}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.orchestrator_mode, OrchestratorMode::Terminal);
+        assert_eq!(loaded.orchestrator_chat_provider, Provider::Codex);
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert_eq!(document(&dir)["orchestrator_mode"], "hologram");
+        assert_eq!(document(&dir)["orchestrator_chat_provider"], "gemini");
+
+        // A damaged file never decides how an orchestrator runs.
+        fs::write(dir.join("settings.json"), "{ not json").unwrap();
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
         fs::remove_dir_all(dir).unwrap();
     }
 

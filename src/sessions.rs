@@ -387,6 +387,28 @@ impl SessionManager {
         Ok(session)
     }
 
+    /// Forgets the saved row of the scope's terminal orchestrator when its
+    /// session is gone, so that an orchestrator of another kind (a chat) can
+    /// take the scope. A live one stays where it is.
+    pub fn forget_dead_orchestrator(&self, project_id: Option<&str>) -> Result<(), String> {
+        let _lock = self.lock_registry()?;
+        let mut registry = self.read_registry()?;
+        let Some(existing) = registry
+            .sessions
+            .iter()
+            .find(|session| matches_orchestrator_scope(session, project_id))
+        else {
+            return Ok(());
+        };
+        if self.is_alive(&existing.id)? {
+            return Ok(());
+        }
+        registry
+            .sessions
+            .retain(|session| !matches_orchestrator_scope(session, project_id));
+        self.write_registry(&registry)
+    }
+
     pub fn orchestrator_get(&self) -> Result<Option<ShellSession>, String> {
         Ok(self
             .list_saved()?
@@ -411,7 +433,10 @@ impl SessionManager {
         self.orchestrator_skill_path_scoped(None)
     }
 
-    fn orchestrator_skill_path_scoped(&self, project_id: Option<&str>) -> Result<PathBuf, String> {
+    pub(crate) fn orchestrator_skill_path_scoped(
+        &self,
+        project_id: Option<&str>,
+    ) -> Result<PathBuf, String> {
         if let Some(project_id) = project_id {
             validate_uuid(project_id)?;
         }
@@ -3586,7 +3611,7 @@ fn panes_at_shell_prompt(
         .collect()
 }
 
-fn orchestrator_skill_version() -> String {
+pub(crate) fn orchestrator_skill_version() -> String {
     format!("{:016x}", stable_hash(ORCHESTRATOR_SKILL.as_bytes()))
 }
 
@@ -3594,7 +3619,8 @@ fn matches_orchestrator_scope(session: &ShellSession, project_id: Option<&str>) 
     session.kind == ShellKind::Orchestrator && session.project_id.as_deref() == project_id
 }
 
-fn orchestrator_context(home: &Path, project_id: Option<&str>) -> PathBuf {
+/// The folder an orchestrator works in, whatever it runs as.
+pub(crate) fn orchestrator_context(home: &Path, project_id: Option<&str>) -> PathBuf {
     match project_id {
         Some(project_id) => home.join("orchestrators/projects").join(project_id),
         None => home.join("orchestrator"),
@@ -3625,11 +3651,14 @@ fn without_project_environment(command: &str, shell: &Path) -> String {
     }
 }
 
+/// The message an orchestrator is started with (a terminal's launch command, a
+/// chat's first message) and that LOAD SKILL gives a running one.
+///
 /// `inline_skill` puts the whole skill in the message, which suits a message
-/// pasted into a running pane. A launch must not: the message travels in tmux's
-/// command line, which tmux limits to about 16 KB, and the skill is already
-/// installed at `skill_path` for the agent to read.
-fn orchestrator_prompt(
+/// pasted into a running pane or sent to a chat. A launch must not: the message
+/// travels in tmux's command line, which tmux limits to about 16 KB, and the
+/// skill is already installed at `skill_path` for the agent to read.
+pub(crate) fn orchestrator_prompt(
     skill_path: &Path,
     executable: &Path,
     project_id: Option<&str>,

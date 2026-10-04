@@ -73,6 +73,94 @@ fn creating_a_chat_saves_it_starts_its_driver_and_lists_it() {
     assert_eq!(mode(&dir.join("events.jsonl")), 0o600);
 }
 
+// ---- Orchestrator chats --------------------------------------------------------------
+
+const PROJECT: &str = "11111111-1111-4111-8111-111111111111";
+
+fn orchestrator_chat(host: &TestHost, scope: OrchestratorScope) -> NewChat {
+    let mut new = host.new_chat(Provider::Codex);
+    new.project_id = scope.project_id().map(str::to_owned);
+    new.orchestrator = Some(scope);
+    new
+}
+
+#[test]
+fn a_scope_has_one_orchestrator_chat_and_it_stays_one_across_a_restart() {
+    let mut host = TestHost::new();
+    let global = host
+        .client()
+        .create(orchestrator_chat(&host, OrchestratorScope::Global))
+        .unwrap();
+    assert_eq!(global.orchestrator, Some(OrchestratorScope::Global));
+    // On disk too, so the next host knows it.
+    let dir = host.home.join("chats").join(&global.id);
+    let saved: ChatInfo =
+        serde_json::from_str(&fs::read_to_string(dir.join("info.json")).unwrap()).unwrap();
+    assert_eq!(saved.orchestrator, Some(OrchestratorScope::Global));
+
+    // A second one for the scope is refused, naming the first.
+    let error = host
+        .client()
+        .create(orchestrator_chat(&host, OrchestratorScope::Global))
+        .unwrap_err();
+    assert_eq!(error, format!("{ORCHESTRATOR_EXISTS} {}", global.id));
+    // Another scope, and ordinary chats, are not in its way.
+    let scope = OrchestratorScope::Project {
+        project_id: PROJECT.into(),
+    };
+    let project = host
+        .client()
+        .create(orchestrator_chat(&host, scope.clone()))
+        .unwrap();
+    assert_eq!(project.project_id.as_deref(), Some(PROJECT));
+    host.create(Provider::Claude);
+    assert_eq!(host.client().list().unwrap().len(), 3);
+
+    host.restart(quick_options());
+    let error = host
+        .client()
+        .create(orchestrator_chat(&host, scope))
+        .unwrap_err();
+    assert_eq!(error, format!("{ORCHESTRATOR_EXISTS} {}", project.id));
+
+    // Deleting the chat frees the scope.
+    host.client().delete(&global.id).unwrap();
+    let again = host
+        .client()
+        .create(orchestrator_chat(&host, OrchestratorScope::Global))
+        .unwrap();
+    assert_ne!(again.id, global.id);
+}
+
+#[test]
+fn an_orchestrator_chat_has_the_project_of_its_scope_and_no_worktree() {
+    let host = TestHost::new();
+    let refused = |new: NewChat| {
+        let error = host.client().create(new).unwrap_err();
+        assert!(error.contains("project of its scope"), "{error}");
+    };
+    let mut global = orchestrator_chat(&host, OrchestratorScope::Global);
+    global.project_id = Some(PROJECT.into());
+    refused(global);
+    let scope = OrchestratorScope::Project {
+        project_id: PROJECT.into(),
+    };
+    let mut other = orchestrator_chat(&host, scope.clone());
+    other.project_id = Some("22222222-2222-4222-8222-222222222222".into());
+    refused(other);
+    let mut none = orchestrator_chat(&host, scope.clone());
+    none.project_id = None;
+    refused(none);
+    let mut worktree = orchestrator_chat(&host, scope);
+    worktree.worktree_id = Some("33333333-3333-4333-8333-333333333333".into());
+    refused(worktree);
+    let scope = OrchestratorScope::Project {
+        project_id: "not-a-uuid".into(),
+    };
+    refused(orchestrator_chat(&host, scope));
+    assert!(host.client().list().unwrap().is_empty());
+}
+
 #[test]
 fn a_chat_needs_a_real_working_directory_and_a_claude_chat_has_no_codex_account() {
     let host = TestHost::new();
@@ -622,6 +710,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         approval_mode: ApprovalMode::Supervised,
         codex_account_id: None,
         state: ChatState::Waiting,
+        orchestrator: None,
     };
     let dir = log::chat_dir(&home, &id).unwrap();
     let chat_log = ChatLog::create(&dir, &info).unwrap();
@@ -984,6 +1073,7 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
             approval_mode: ApprovalMode::Supervised,
             model: None,
             effort: None,
+            orchestrator: None,
         })
         .unwrap();
     busy.command(

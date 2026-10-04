@@ -36,6 +36,27 @@ pub enum ApprovalMode {
     Plan,
 }
 
+/// Which orchestrator a chat is. RiWork has one global orchestrator and one for
+/// each project; the host keeps at most one chat per scope, and the CLI, the MCP
+/// tools, the scheduler and the apps find an orchestrator in chat mode by this
+/// mark. A chat without it is an ordinary chat.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum OrchestratorScope {
+    Global,
+    Project { project_id: String },
+}
+
+impl OrchestratorScope {
+    /// The project of a project orchestrator; the global one has none.
+    pub fn project_id(&self) -> Option<&str> {
+        match self {
+            Self::Global => None,
+            Self::Project { project_id } => Some(project_id),
+        }
+    }
+}
+
 /// What a chat is doing as a whole.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -82,6 +103,10 @@ pub struct ChatInfo {
     pub codex_account_id: Option<String>,
     #[serde(default)]
     pub state: ChatState,
+    /// Set when the chat is the orchestrator of this scope. Chats and logs
+    /// written before orchestrators could be chats do not have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<OrchestratorScope>,
 }
 
 /// What a new chat starts with.
@@ -101,7 +126,16 @@ pub struct NewChat {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Makes the chat the orchestrator of this scope. The host refuses it when
+    /// the scope already has one (`ORCHESTRATOR_EXISTS`), and requires the
+    /// chat's project to be the scope's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<OrchestratorScope>,
 }
+
+/// The start of the error `Create` answers when the orchestrator of the scope
+/// already has a chat; the id of that chat follows it.
+pub const ORCHESTRATOR_EXISTS: &str = "orchestrator_exists:";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -567,6 +601,75 @@ mod tests {
         });
         assert_eq!(t.items[0].status, ItemStatus::Interrupted);
         assert!(t.approvals.is_empty() && t.turn_id.is_none());
+    }
+
+    #[test]
+    fn a_chat_written_before_orchestrators_could_be_chats_still_loads() {
+        // `info.json` and an `Info` event as an earlier build wrote them.
+        let old = r#"{"id":"c1","provider":"codex","cwd":"/work","title":"Codex chat",
+            "created_at_unix":5,"approval_mode":"full","state":{"state":"idle"}}"#;
+        let info: ChatInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(info.orchestrator, None);
+        assert_eq!(info.approval_mode, ApprovalMode::Full);
+        let event: ChatEvent =
+            serde_json::from_str(&format!(r#"{{"event":"info","info":{old}}}"#)).unwrap();
+        assert!(matches!(event, ChatEvent::Info { info } if info.orchestrator.is_none()));
+        let new: NewChat = serde_json::from_str(r#"{"provider":"claude","cwd":"/work"}"#).unwrap();
+        assert_eq!(new.orchestrator, None);
+
+        // An ordinary chat is written as it always was.
+        assert!(
+            !serde_json::to_string(&info)
+                .unwrap()
+                .contains("orchestrator")
+        );
+        assert!(
+            !serde_json::to_string(&new)
+                .unwrap()
+                .contains("orchestrator")
+        );
+    }
+
+    #[test]
+    fn an_orchestrator_chat_names_its_scope_in_info_and_in_the_request_that_makes_it() {
+        let project = OrchestratorScope::Project {
+            project_id: "11111111-1111-4111-8111-111111111111".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&OrchestratorScope::Global).unwrap(),
+            serde_json::json!({"scope": "global"})
+        );
+        assert_eq!(
+            serde_json::to_value(&project).unwrap(),
+            serde_json::json!({"scope": "project", "project_id": "11111111-1111-4111-8111-111111111111"})
+        );
+        assert_eq!(
+            project.project_id(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(OrchestratorScope::Global.project_id(), None);
+
+        let text = r#"{"id":"c1","provider":"claude","project_id":"11111111-1111-4111-8111-111111111111",
+            "cwd":"/work","title":"P","created_at_unix":5,
+            "orchestrator":{"scope":"project","project_id":"11111111-1111-4111-8111-111111111111"}}"#;
+        let info: ChatInfo = serde_json::from_str(text).unwrap();
+        assert_eq!(info.orchestrator, Some(project.clone()));
+        assert_eq!(
+            serde_json::from_str::<ChatInfo>(&serde_json::to_string(&info).unwrap()).unwrap(),
+            info
+        );
+        let new: NewChat = serde_json::from_str(
+            r#"{"provider":"codex","cwd":"/work","orchestrator":{"scope":"global"}}"#,
+        )
+        .unwrap();
+        assert_eq!(new.orchestrator, Some(OrchestratorScope::Global));
+        // A scope this build does not know is an error, not an ordinary chat.
+        assert!(
+            serde_json::from_str::<NewChat>(
+                r#"{"provider":"codex","cwd":"/work","orchestrator":{"scope":"galaxy"}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

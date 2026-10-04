@@ -154,6 +154,118 @@ pub fn replay(dir: &Path, since: u64, last: u64, out: &mut impl Write) -> io::Re
     out.flush()
 }
 
+// ---- Reading a chat's files without the host ----------------------------------------
+//
+// The files are the chat's public record (the README describes them), and the
+// host only ever appends whole lines to the log and replaces `info.json` atomically,
+// so a reader that never writes can look at a chat whether the host runs or not.
+
+/// The most of a log `read_transcript` reads: its end. A transcript is read to
+/// be shown, and the end of a chat is what is wanted of it.
+const TRANSCRIPT_TAIL: u64 = 32 << 20;
+
+/// The saved info of every chat, for a caller that finds no host running. A
+/// chat that cannot be read is left out. Nothing runs without a host, so a chat
+/// that was at work when its host ended is `Stopped` here, as the next host
+/// will make it.
+pub fn read_infos(home: &Path) -> Vec<ChatInfo> {
+    let Ok(entries) = fs::read_dir(chats_dir(home)) else {
+        return Vec::new();
+    };
+    let mut infos: Vec<ChatInfo> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let dir = chat_dir(home, &name)?;
+            let text = fs::read_to_string(dir.join(INFO)).ok()?;
+            let mut info: ChatInfo = serde_json::from_str(&text).ok()?;
+            if info.id != name {
+                return None;
+            }
+            if !matches!(
+                info.state,
+                super::model::ChatState::Stopped | super::model::ChatState::Failed { .. }
+            ) {
+                info.state = super::model::ChatState::Stopped;
+            }
+            Some(info)
+        })
+        .collect();
+    infos.sort_by(|a, b| (a.created_at_unix, &a.id).cmp(&(b.created_at_unix, &b.id)));
+    infos
+}
+
+/// The transcript the log of chat `id` builds, read from the end of the file.
+pub fn read_transcript(home: &Path, id: &str) -> Result<super::model::Transcript, String> {
+    let dir = chat_dir(home, id).ok_or("invalid chat id")?;
+    let path = dir.join(EVENTS);
+    let mut file =
+        File::open(&path).map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+    let length = file
+        .metadata()
+        .map_err(|error| format!("Cannot read {}: {error}", path.display()))?
+        .len();
+    let start = length.saturating_sub(TRANSCRIPT_TAIL);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let read = |error: io::Error| format!("Cannot read {}: {error}", path.display());
+    if start > 0 {
+        // The first line of the tail is cut in two.
+        reader.skip_until(b'\n').map_err(read)?;
+    }
+    let mut transcript = super::model::Transcript::default();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line).map_err(read)? == 0 {
+            break;
+        }
+        // A line the host is still writing has no newline yet.
+        if line.last() != Some(&b'\n') {
+            break;
+        }
+        if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
+            transcript.apply(&envelope.event);
+        }
+    }
+    Ok(transcript)
+}
+
+/// How long the log of chat `id` is, in bytes: a mark that `read_after` reads
+/// everything after.
+pub fn mark(home: &Path, id: &str) -> Result<u64, String> {
+    let dir = chat_dir(home, id).ok_or("invalid chat id")?;
+    let path = dir.join(EVENTS);
+    fs::metadata(&path)
+        .map(|meta| meta.len())
+        .map_err(|error| format!("Cannot read {}: {error}", path.display()))
+}
+
+/// The whole events appended to the log of chat `id` after `mark`, and the mark
+/// that follows the last of them.
+pub fn read_after(home: &Path, id: &str, mark: u64) -> Result<(Vec<Envelope>, u64), String> {
+    let dir = chat_dir(home, id).ok_or("invalid chat id")?;
+    let path = dir.join(EVENTS);
+    let fail = |error: io::Error| format!("Cannot read {}: {error}", path.display());
+    let mut file = File::open(&path).map_err(fail)?;
+    file.seek(SeekFrom::Start(mark)).map_err(fail)?;
+    let mut reader = BufReader::new(file);
+    let (mut envelopes, mut next) = (Vec::new(), mark);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line).map_err(fail)? == 0 || line.last() != Some(&b'\n') {
+            break;
+        }
+        next += line.len() as u64;
+        if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
+            envelopes.push(envelope);
+        }
+    }
+    Ok((envelopes, next))
+}
+
 /// Every event of the log, for a chat that has to be examined whole.
 pub fn read_envelopes(dir: &Path) -> io::Result<Vec<Envelope>> {
     let reader = BufReader::new(File::open(dir.join(EVENTS))?);
@@ -285,6 +397,7 @@ mod tests {
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
             state: ChatState::Starting,
+            orchestrator: None,
         }
     }
 
@@ -418,6 +531,57 @@ mod tests {
         assert!(nothing.is_empty());
         assert!(replay(&dir, 0, 6, &mut Vec::new()).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn user_line(seq: u64, text: &str) -> String {
+        let envelope = Envelope {
+            chat_id: "c".into(),
+            seq,
+            event: ChatEvent::ItemCompleted {
+                item: crate::chat::model::Item {
+                    id: format!("u{seq}"),
+                    turn_id: None,
+                    status: crate::chat::model::ItemStatus::Completed,
+                    body: crate::chat::model::ItemBody::UserMessage { text: text.into() },
+                },
+            },
+        };
+        format!("{}\n", serde_json::to_string(&envelope).unwrap())
+    }
+
+    #[test]
+    fn a_reader_follows_a_log_without_the_host_and_waits_for_a_line_that_is_not_whole() {
+        let home = scratch();
+        let mut chat = info(&home);
+        chat.id = Uuid::new_v4().to_string();
+        let dir = chat_dir(&home, &chat.id).unwrap();
+        let log = ChatLog::create(&dir, &chat).unwrap();
+        let mark = mark(&home, &chat.id).unwrap();
+        assert_eq!(mark, 0);
+        log.append(user_line(1, "one").as_bytes(), false).unwrap();
+        // The host is in the middle of writing the second line.
+        let second = user_line(2, "two");
+        let (head, tail) = second.as_bytes().split_at(second.len() / 2);
+        let mut events = OpenOptions::new()
+            .append(true)
+            .open(dir.join(EVENTS))
+            .unwrap();
+        events.write_all(head).unwrap();
+        let (found, next) = read_after(&home, &chat.id, mark).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(next, user_line(1, "one").len() as u64);
+        events.write_all(tail).unwrap();
+        let (found, after) = read_after(&home, &chat.id, next).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].seq, 2);
+        assert_eq!(after, (user_line(1, "one").len() + second.len()) as u64);
+        assert!(read_after(&home, &chat.id, after).unwrap().0.is_empty());
+        // The transcript is what the events build; an unfinished line is not in it.
+        events.write_all(b"{\"chat_id\":\"c\",\"seq\":3").unwrap();
+        let transcript = read_transcript(&home, &chat.id).unwrap();
+        assert_eq!(transcript.items.len(), 2);
+        assert!(read_transcript(&home, "../x").is_err());
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

@@ -236,6 +236,7 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         approval_mode: config.approval_mode,
         codex_account_id: None,
         state: ChatState::Idle,
+        orchestrator: None,
     }
 }
 
@@ -361,6 +362,7 @@ impl TestHost {
             approval_mode: ApprovalMode::Supervised,
             model: None,
             effort: None,
+            orchestrator: None,
         }
     }
 

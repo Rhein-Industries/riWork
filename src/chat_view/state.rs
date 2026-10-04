@@ -211,6 +211,7 @@ mod tests {
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
             state,
+            orchestrator: None,
         }
     }
 

@@ -1,5 +1,6 @@
 //! Durable, at-most-once scheduled prompt attempts. No harnesses are created here.
 use crate::{
+    chat::model::{ChatInfo, OrchestratorScope, Provider},
     sessions::{HarnessKind, SessionManager, ShellKind, ShellSession},
     store::{State, Store},
 };
@@ -45,6 +46,21 @@ impl Scope {
             }
         }
     }
+    /// Whether `chat` is the orchestrator this scope names: the app scope the
+    /// global one, a project scope that project's. Workers are never chats.
+    pub fn matches_chat(&self, state: &State, chat: &ChatInfo) -> bool {
+        match self {
+            Self::App => chat.orchestrator == Some(OrchestratorScope::Global),
+            Self::Project { project_id } => {
+                state.projects.iter().any(|p| &p.id == project_id)
+                    && chat.orchestrator
+                        == Some(OrchestratorScope::Project {
+                            project_id: project_id.clone(),
+                        })
+            }
+            Self::Workspace { .. } => false,
+        }
+    }
     pub fn matches(&self, state: &State, shell: &ShellSession) -> bool {
         match self {
             Self::App => {
@@ -83,6 +99,28 @@ pub struct Target {
     pub codex_home: Option<PathBuf>,
     pub pane_identity: String,
     pub provider_session: String,
+    /// Set when the target is an orchestrator that runs as a chat: `shell_id`
+    /// is then the chat's id, and a prompt is delivered through the chat host
+    /// (`schedule_chat`) instead of into a tmux pane. Such a target has no pane
+    /// or provider session to pin: its `pane_identity` and `provider_session`
+    /// are empty, and the chat's own identity is pinned instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<ChatTarget>,
+}
+/// What a chat target pins besides the chat's id (`shell_id`), creation time and
+/// agent (`harness`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatTarget {
+    /// The Codex account the chat was created under. It never changes, so a chat
+    /// under another account is another chat.
+    pub codex_account_id: Option<String>,
+}
+/// The harness a chat's agent is, for the targets and lists that name one.
+pub fn chat_harness(provider: Provider) -> HarnessKind {
+    match provider {
+        Provider::Codex => HarnessKind::Codex,
+        Provider::Claude => HarnessKind::Claude,
+    }
 }
 fn refuse_unschedulable(harness: HarnessKind) -> Result<(), String> {
     if harness.schedulable() {
@@ -123,10 +161,58 @@ impl Target {
             codex_home: shell.codex_home.clone(),
             pane_identity: sessions.schedule_pane_identity(id)?,
             provider_session: sessions.schedule_provider_identity(&shell)?,
+            chat: None,
+        })
+    }
+    /// Pins an orchestrator that runs as a chat. A chat is an orchestrator of
+    /// the scope for as long as it exists, so unlike a terminal it needs no
+    /// completed turn first.
+    pub fn bind_chat(scope: Scope, state: &State, chat: &ChatInfo) -> Result<Self, String> {
+        canonical_id(&chat.id)?;
+        if !scope.matches_chat(state, chat) {
+            return Err("Select an existing live session in this scope".into());
+        }
+        Ok(Self {
+            scope,
+            shell_id: chat.id.clone(),
+            created_at: chat.created_at_unix,
+            command: None,
+            harness: chat_harness(chat.provider),
+            codex_home: None,
+            pane_identity: String::new(),
+            provider_session: String::new(),
+            chat: Some(ChatTarget {
+                codex_account_id: chat.codex_account_id.clone(),
+            }),
+        })
+    }
+    /// The target `id` names: the orchestrator chat of that id among `chats`, or
+    /// else a terminal session.
+    pub fn bind_any(
+        scope: Scope,
+        state: &State,
+        sessions: &SessionManager,
+        chats: &[ChatInfo],
+        id: &str,
+    ) -> Result<Self, String> {
+        match chats.iter().find(|chat| chat.id == id) {
+            Some(chat) => Self::bind_chat(scope, state, chat),
+            None => Self::bind(scope, state, sessions, id),
+        }
+    }
+    /// Whether `chat` is still the chat this target was bound to.
+    pub fn matches_chat(&self, state: &State, chat: &ChatInfo) -> bool {
+        self.chat.as_ref().is_some_and(|pinned| {
+            pinned.codex_account_id == chat.codex_account_id
+                && self.shell_id == chat.id
+                && self.created_at == chat.created_at_unix
+                && self.harness == chat_harness(chat.provider)
+                && self.scope.matches_chat(state, chat)
         })
     }
     pub fn matches(&self, state: &State, shell: &ShellSession) -> bool {
-        self.shell_id == shell.id
+        self.chat.is_none()
+            && self.shell_id == shell.id
             && self.created_at == shell.created_at_unix
             && self.command == shell.command
             && Some(self.harness) == shell.harness
@@ -224,14 +310,45 @@ struct Ledger {
     #[serde(default)]
     consumed: Vec<(String, String)>,
 }
+/// Makes sure a chat host runs and returns its socket
+/// (`orchestrators::system_ensure`, or an in-process host's in a test).
+pub type ChatEnsure = fn(&Path) -> Result<PathBuf, String>;
+/// How delivery into an orchestrator that runs as a chat reaches the host and
+/// how long it waits to see the message in the chat's log.
+#[derive(Clone, Copy)]
+pub struct ChatDelivery {
+    pub ensure: ChatEnsure,
+    pub proof: crate::schedule_chat::Proof,
+}
 #[derive(Clone)]
 pub struct ScheduleStore {
     home: PathBuf,
+    chat: ChatDelivery,
 }
 impl ScheduleStore {
     pub fn at(home: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&home).map_err(|e| e.to_string())?;
-        Ok(Self { home })
+        Ok(Self {
+            home,
+            chat: ChatDelivery {
+                ensure: crate::orchestrators::system_ensure,
+                proof: crate::schedule_chat::Proof::DEFAULT,
+            },
+        })
+    }
+    /// The same store reaching chats another way (a test's in-process host).
+    #[cfg(test)]
+    pub fn with_chat(mut self, chat: ChatDelivery) -> Self {
+        self.chat = chat;
+        self
+    }
+    /// The orchestrators that run as chats, for binding a target. Looking starts
+    /// no host.
+    pub fn chat_orchestrators(&self) -> Vec<ChatInfo> {
+        crate::orchestrators::chat_orchestrators(&crate::orchestrators::ChatHost {
+            home: &self.home,
+            ensure: &self.chat.ensure,
+        })
     }
     fn lock(&self) -> Result<File, String> {
         private_file(&self.home.join("schedules.lock"), false)
@@ -418,6 +535,21 @@ impl ScheduleStore {
             .collect();
         trackers.retain(|id, _| ids.contains(id));
         self.tick_with(now, |target, prompt, claim| {
+            if target.chat.is_some() {
+                let state = Store::open(self.home.clone())?.snapshot()?;
+                let host = crate::orchestrators::ChatHost {
+                    home: &self.home,
+                    ensure: &self.chat.ensure,
+                };
+                return crate::schedule_chat::deliver(
+                    &host,
+                    self.chat.proof,
+                    target,
+                    &state,
+                    prompt,
+                    claim,
+                );
+            }
             let sessions = SessionManager::at(self.home.clone())?;
             let state = Store::open(self.home.clone())?.snapshot()?;
             let tracker = trackers

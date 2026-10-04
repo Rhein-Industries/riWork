@@ -18,6 +18,23 @@ pub fn socket_path(home: &Path) -> PathBuf {
     home.join("run").join("chat.sock")
 }
 
+/// Why a request failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallError {
+    /// The host read the request and said no, with this reason. It did nothing.
+    Refused(String),
+    /// The exchange broke (the connection, or what the host sent back): nobody
+    /// can tell whether the host acted on the request.
+    Broken(String),
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::Refused(message) | Self::Broken(message)) = self;
+        f.write_str(message)
+    }
+}
+
 /// A connection for requests. Cheap to open; open one per burst of requests.
 pub struct Client {
     stream: BufReader<UnixStream>,
@@ -36,33 +53,44 @@ impl Client {
     }
 
     fn call(&mut self, request: Request) -> Result<Option<serde_json::Value>, String> {
+        self.exchange(request).map_err(|error| match error {
+            CallError::Refused(message) | CallError::Broken(message) => message,
+        })
+    }
+
+    /// One request and its answer, telling a refusal from a broken exchange.
+    fn exchange(&mut self, request: Request) -> Result<Option<serde_json::Value>, CallError> {
+        let broken = |message: String| CallError::Broken(message);
         let id = request_id(&request).to_owned();
-        let mut line = serde_json::to_string(&request).map_err(|error| error.to_string())?;
+        let mut line =
+            serde_json::to_string(&request).map_err(|error| broken(error.to_string()))?;
         line.push('\n');
         self.stream
             .get_mut()
             .write_all(line.as_bytes())
-            .map_err(|error| format!("chat host: {error}"))?;
+            .map_err(|error| broken(format!("chat host: {error}")))?;
         let mut answer = String::new();
         if self
             .stream
             .read_line(&mut answer)
-            .map_err(|error| format!("chat host: {error}"))?
+            .map_err(|error| broken(format!("chat host: {error}")))?
             == 0
         {
-            return Err("chat host closed the connection".into());
+            return Err(broken("chat host closed the connection".into()));
         }
         let response: Response = serde_json::from_str(&answer)
-            .map_err(|error| format!("chat host answered something unreadable: {error}"))?;
+            .map_err(|error| broken(format!("chat host answered something unreadable: {error}")))?;
         if response.id != id {
-            return Err("chat host answered another request".into());
+            return Err(broken("chat host answered another request".into()));
         }
         if response.ok {
             Ok(response.result)
         } else {
-            Err(response
-                .error
-                .unwrap_or_else(|| "chat host refused the request".into()))
+            Err(CallError::Refused(
+                response
+                    .error
+                    .unwrap_or_else(|| "chat host refused the request".into()),
+            ))
         }
     }
 
@@ -77,6 +105,21 @@ impl Client {
 
     pub fn command(&mut self, chat_id: &str, command: ChatCommand) -> Result<(), String> {
         self.call(Request::Command {
+            id: new_id(),
+            chat_id: chat_id.into(),
+            command,
+        })
+        .map(drop)
+    }
+
+    /// `command`, for a caller that must know whether the host can have acted on
+    /// it: a refusal means it did not, a broken exchange leaves that open.
+    pub fn command_checked(
+        &mut self,
+        chat_id: &str,
+        command: ChatCommand,
+    ) -> Result<(), CallError> {
+        self.exchange(Request::Command {
             id: new_id(),
             chat_id: chat_id.into(),
             command,
@@ -268,6 +311,7 @@ mod tests {
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
             state: ChatState::Idle,
+            orchestrator: None,
         };
         let served = info.clone();
         let host = thread::spawn(move || {
@@ -311,6 +355,7 @@ mod tests {
                 approval_mode: ApprovalMode::Supervised,
                 model: None,
                 effort: None,
+                orchestrator: None,
             })
             .unwrap();
         assert_eq!(created, info);

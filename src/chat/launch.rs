@@ -3,7 +3,7 @@
 //! terminal launch of the same agent resolves them (`sessions::chat_launch`).
 
 use super::driver::DriverConfig;
-use super::model::{ChatInfo, Provider};
+use super::model::{ChatInfo, OrchestratorScope, Provider};
 use crate::sessions::{self, HarnessKind};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -85,6 +85,19 @@ fn assemble(
         // A stray key would silently switch the chat to API billing.
         env_remove.push("ANTHROPIC_API_KEY".into());
     }
+    // What a terminal orchestrator's session exports, for the skill that reads it.
+    match &info.orchestrator {
+        Some(OrchestratorScope::Global) => {
+            env.push(("RIWORK_ORCHESTRATOR_SCOPE".into(), "global".into()));
+            // The host may have started inside a project orchestrator.
+            env_remove.push("RIWORK_PROJECT_ID".into());
+        }
+        Some(OrchestratorScope::Project { project_id }) => {
+            env.push(("RIWORK_ORCHESTRATOR_SCOPE".into(), "project".into()));
+            env.push(("RIWORK_PROJECT_ID".into(), project_id.into()));
+        }
+        None => {}
+    }
     DriverConfig {
         provider: info.provider,
         program,
@@ -119,6 +132,7 @@ mod tests {
             approval_mode: ApprovalMode::AutoEdit,
             codex_account_id: None,
             state: ChatState::Stopped,
+            orchestrator: None,
         }
     }
 
@@ -172,6 +186,43 @@ mod tests {
         assert_eq!(claude.resume, None);
         for config in [&codex, &claude] {
             assert!(config.env_remove.contains(&"RIWORK_SHELL_ID".into()));
+            // An ordinary chat is not an orchestrator.
+            assert!(value(config, "RIWORK_ORCHESTRATOR_SCOPE").is_none());
         }
+    }
+
+    #[test]
+    fn an_orchestrator_chat_knows_its_scope_the_way_a_terminal_orchestrator_does() {
+        let configure = |scope: OrchestratorScope| {
+            let mut chat = info(Provider::Codex);
+            chat.orchestrator = Some(scope);
+            assemble(
+                &chat,
+                None,
+                "/bin/codex".into(),
+                Vec::new(),
+                "/shims".into(),
+                Path::new("/riwork"),
+                None,
+            )
+        };
+        let project = configure(OrchestratorScope::Project {
+            project_id: "11111111-1111-4111-8111-111111111111".into(),
+        });
+        assert_eq!(
+            value(&project, "RIWORK_ORCHESTRATOR_SCOPE").unwrap(),
+            "project"
+        );
+        assert_eq!(
+            value(&project, "RIWORK_PROJECT_ID").unwrap(),
+            "11111111-1111-4111-8111-111111111111"
+        );
+        let global = configure(OrchestratorScope::Global);
+        assert_eq!(
+            value(&global, "RIWORK_ORCHESTRATOR_SCOPE").unwrap(),
+            "global"
+        );
+        assert!(value(&global, "RIWORK_PROJECT_ID").is_none());
+        assert!(global.env_remove.contains(&"RIWORK_PROJECT_ID".into()));
     }
 }

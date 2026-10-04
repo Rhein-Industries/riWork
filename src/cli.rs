@@ -106,10 +106,10 @@ riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [
 riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
 riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
 riwork orchestrator [--project ID]       Show the selected orchestrator status
-riwork orchestrator create [--project ID | --cwd PATH] [--command CMD]
-riwork orchestrator list [--project ID]   List global and project orchestrators
+riwork orchestrator create [--project ID | --cwd PATH] [--command CMD]   As Settings chose: terminal or chat
+riwork orchestrator list [--project ID]   List global and project orchestrators, terminals and chats
 riwork orchestrator status|output|cwd|metrics|attach|close [--project ID]
-riwork orchestrator send [--project ID] TEXT   Send a line to the selected orchestrator
+riwork orchestrator send [--project ID] TEXT   Send a line (a chat message) to the selected orchestrator
 riwork orchestrator load-skill [--project ID]   Load its workspace skill
 riwork schedule list [--scope app|project|workspace] [--project UUID] [--worktree UUID]
 riwork schedule show SCHEDULE_UUID
@@ -143,7 +143,7 @@ returns at once for events that are already there. Pass `next` as --since to con
 strings cut. chat command takes one ChatCommand as JSON (send, interrupt, approve,
 answer, configure, compact, stop) and refuses unknown fields; errors that start with
 `invalid_request:` are about the command, anything else about the host or the chat.
-capabilities --json has \"chat\": true.
+capabilities --json has \"chat\": true and \"orchestrator_create\": true.
 worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
@@ -178,6 +178,19 @@ history_size gives an empty page. --styled filters like shell output --styled.
 Orchestrator commands without --project use the global session; list shows all
 scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
+An orchestrator runs in a terminal or as a chat (a Codex or Claude chat of the chat
+host), as Settings > Agent sessions > Orchestrator runs as said when it was created.
+A scope has one orchestrator in either mode: create returns the one that exists,
+and create --json adds \"created\" (false for one that was there). list --json and
+status --json give every orchestrator a \"mode\" (\"terminal\" or \"chat\"); a chat
+orchestrator's entry has the usual fields and \"chat_id\", \"provider\" and \"state\"
+(starting, idle, running, waiting, stopped or failed), and its \"id\" is its chat's
+id, which riwork chat events and riwork chat command take as well. For a chat,
+send is a chat message (a stopped chat is resumed), output --lines N is the
+conversation as plain text (messages whole, one line for each command, edit and
+tool call, and what waits for approval last), load-skill sends the whole skill as
+a message to an idle chat, cwd is its folder, and close ends the agent and deletes
+the chat; metrics and attach are for terminals only.
 Without PATH, project create requires --name and uses ~/Documents/riwork/NAME.
 Explicit project paths remain relative to the current directory when needed.
 project create --exclusive only ever makes something new: it fails with
@@ -197,7 +210,8 @@ Schedule management (add --json to any command for structured stdout):
 For project scope add --project PROJECT_UUID. For workspace scope add both
 --project PROJECT_UUID and --worktree WORKTREE_UUID. All UUIDs must be full,
 canonical values. Create binds an existing live Codex/Claude shell in that
-scope; edits keep its pinned identity. First run must be a future RFC 3339
+scope (an orchestrator that runs as a chat is bound by its chat id, which is its
+orchestrator id); edits keep its pinned identity. First run must be a future RFC 3339
 time with seconds and timezone, such as 2026-10-05T09:00:00+02:00. Recurrence
 is elapsed whole minutes from 5 to 525600; omit it for one run. Update needs
 a new future --at, retains recurrence unless changed, and may rearm a reviewed
@@ -782,13 +796,15 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "verifies_shell": true,
             "project_create_exclusive": true,
             "shell_attach_exec": true,
-            "chat": true
+            "chat": true,
+            "orchestrator_create": true
         }));
     }
     println!("verifies_shell yes");
     println!("project_create_exclusive yes");
     println!("shell_attach_exec yes");
     println!("chat yes");
+    println!("orchestrator_create yes");
     Ok(())
 }
 
@@ -1151,10 +1167,20 @@ fn project_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                     .map_or((None, Default::default()), |(shells, activity)| {
                         (Some(shells), activity)
                     });
+                // The chat orchestrators are read from the chat host if one runs, else
+                // from the saved chats: listing projects starts no host.
+                let chats = crate::orchestrators::project_facts(
+                    &home,
+                    &crate::orchestrators::chat_orchestrators(&crate::orchestrators::ChatHost {
+                        home: &home,
+                        ensure: &crate::orchestrators::system_ensure,
+                    }),
+                );
                 print_json(&crate::cli_agents::project_entries(
                     &home,
                     &state.projects,
                     shells.as_deref(),
+                    &chats,
                     &activity,
                 ))?;
             } else {
@@ -1900,6 +1926,7 @@ fn chat_client_command(
                 approval_mode,
                 model,
                 effort,
+                orchestrator: None,
             })?;
             if json {
                 // A chat whose provider did not start still exists, and the
@@ -2063,7 +2090,41 @@ fn json_text(value: &impl Serialize) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-fn orchestrator_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
+fn orchestrator_command(args: Vec<String>, json: bool) -> Result<(), String> {
+    let manager = SessionManager::open_default()?;
+    let home = manager.state_home().to_path_buf();
+    let host = crate::orchestrators::ChatHost {
+        home: &home,
+        ensure: &crate::orchestrators::system_ensure,
+    };
+    match orchestrator_client_command(&manager, &host, args, json)? {
+        OrchestratorOutput::Text(text) => print!("{text}"),
+        // The operations a terminal orchestrator shares with any shell.
+        OrchestratorOutput::Shell(shell_args) => shell_command(shell_args, json)?,
+    }
+    Ok(())
+}
+
+/// What an orchestrator command leaves to be done after it has looked at the
+/// orchestrator.
+#[derive(Debug, PartialEq, Eq)]
+enum OrchestratorOutput {
+    /// The text to print.
+    Text(String),
+    /// A terminal orchestrator's operation, which `shell` carries out.
+    Shell(Vec<String>),
+}
+
+/// The `orchestrator` commands, as the text they print. A scope's orchestrator
+/// is a terminal or a chat (`orchestrators`), and the same words work for both;
+/// what only a terminal has (`metrics`, `attach`) says so for a chat.
+fn orchestrator_client_command(
+    manager: &SessionManager,
+    host: &crate::orchestrators::ChatHost,
+    mut args: Vec<String>,
+    json: bool,
+) -> Result<OrchestratorOutput, String> {
+    use crate::orchestrators::{self, Orchestrator};
     let operation = if args.first().map(String::as_str) == Some("--project") {
         "show".to_owned()
     } else {
@@ -2073,20 +2134,16 @@ fn orchestrator_command(mut args: Vec<String>, json: bool) -> Result<(), String>
     if operation == "send" && args.is_empty() {
         return Err("Usage: riwork orchestrator send [--project ID] TEXT".to_owned());
     }
-    let manager = SessionManager::open_default()?;
     let project = selector
         .as_deref()
         .map(|selector| {
-            Store::open_default()?
+            Store::open(host.home)?
                 .snapshot()?
                 .project(selector)
                 .cloned()
         })
         .transpose()?;
-    let selected = |manager: &SessionManager| match &project {
-        Some(project) => manager.orchestrator_get_for_project(&project.id),
-        None => manager.orchestrator_get(),
-    };
+    let scope = orchestrators::scope_of(project.as_ref().map(|project| project.id.as_str()));
     let missing = match &project {
         Some(project) => format!(
             "No project orchestrator session. Run: riwork orchestrator create --project {}",
@@ -2094,82 +2151,218 @@ fn orchestrator_command(mut args: Vec<String>, json: bool) -> Result<(), String>
         ),
         None => "No global orchestrator session. Run: riwork orchestrator create".to_owned(),
     };
+    let text =
+        |text: String| -> Result<OrchestratorOutput, String> { Ok(OrchestratorOutput::Text(text)) };
     match operation.as_str() {
         "create" | "start" => {
             let cwd = take_option(&mut args, "--cwd")?.map(PathBuf::from);
             let command = take_option(&mut args, "--command")?;
             ensure_empty(&args)?;
-            let shell = if let Some(project) = project {
+            let runs = crate::settings::orchestrator_runs(host.home);
+            let (orchestrator, created) = if let Some(project) = project {
                 if cwd.is_some() {
                     return Err(
                         "Use either --project or --cwd for orchestrator creation".to_owned()
                     );
                 }
-                manager.orchestrator_create_for_project(project.id, project.root, command)?
+                orchestrators::create(
+                    manager,
+                    host,
+                    &scope,
+                    Some(project.root.clone()),
+                    project.root,
+                    command,
+                    runs,
+                )?
             } else {
                 let cwd = match cwd {
                     Some(cwd) => cwd,
                     None => env::current_dir().map_err(|error| error.to_string())?,
                 };
-                manager.orchestrator_create(cwd, command)?
+                orchestrators::create(manager, host, &scope, None, cwd, command, runs)?
             };
-            print_shell_result(&shell, json)?;
+            text(orchestrator_text(
+                host.home,
+                &orchestrator,
+                json,
+                Some(created),
+            )?)
         }
         "list" => {
             ensure_empty(&args)?;
             let (listed, activity) = manager.list_with_activity()?;
+            let in_scope = |project_id: Option<&str>| match &project {
+                Some(project) => project_id == Some(project.id.as_str()),
+                None => true,
+            };
             let shells: Vec<_> = listed
                 .into_iter()
                 .filter(|shell| {
-                    shell.kind == ShellKind::Orchestrator
-                        && project.as_ref().is_none_or(|project| {
-                            shell.project_id.as_deref() == Some(project.id.as_str())
-                        })
+                    shell.kind == ShellKind::Orchestrator && in_scope(shell.project_id.as_deref())
                 })
                 .collect();
+            let chats: Vec<_> = orchestrators::chat_orchestrators(host)
+                .into_iter()
+                .filter(|chat| in_scope(chat.project_id.as_deref()))
+                .collect();
             if json {
-                print_json(&crate::cli_agents::shell_entries(
+                let mut entries = crate::cli_agents::orchestrator_entries(
                     manager.state_home(),
                     &shells,
                     &activity,
-                ))?;
+                )
+                .into_iter()
+                .map(|entry| serde_json::to_value(entry).map_err(|error| error.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+                entries.extend(
+                    chats
+                        .iter()
+                        .map(|chat| orchestrators::chat_entry(host.home, chat)),
+                );
+                text(json_text(&entries)?)
             } else {
-                for shell in &shells {
-                    print_shell(shell);
-                }
+                text(
+                    shells
+                        .iter()
+                        .map(shell_line)
+                        .chain(chats.iter().map(orchestrators::chat_line))
+                        .collect(),
+                )
             }
         }
         "show" | "status" => {
             ensure_empty(&args)?;
-            let shell = selected(&manager)?;
-            if json {
-                print_json(&shell)?;
-            } else if let Some(shell) = shell {
-                print_shell(&shell);
-            } else {
-                println!("{missing}");
+            match orchestrators::find(manager, host, &scope)? {
+                Some(orchestrator) => {
+                    text(orchestrator_text(host.home, &orchestrator, json, None)?)
+                }
+                None if json => text(json_text(&serde_json::Value::Null)?),
+                None => text(format!("{missing}\n")),
             }
         }
         "load-skill" => {
             ensure_empty(&args)?;
-            let shell = selected(&manager)?.ok_or_else(|| missing.clone())?;
-            let shell = manager.load_orchestrator_skill(&shell.id)?;
-            print_shell_result(&shell, json)?;
+            let orchestrator =
+                orchestrators::find(manager, host, &scope)?.ok_or_else(|| missing.clone())?;
+            let orchestrator = match orchestrator {
+                Orchestrator::Terminal(shell) => {
+                    Orchestrator::Terminal(manager.load_orchestrator_skill(&shell.id)?)
+                }
+                Orchestrator::Chat(chat) => Orchestrator::Chat(orchestrators::load_chat_skill(
+                    manager,
+                    host,
+                    &chat,
+                    project.as_ref().map(|project| project.root.as_path()),
+                )?),
+            };
+            text(orchestrator_text(host.home, &orchestrator, json, None)?)
         }
         "output" | "send" | "close" | "cwd" | "metrics" | "attach" => {
-            let shell = selected(&manager)?.ok_or_else(|| missing.clone())?;
-            let mut shell_args = vec![operation];
-            shell_args.push(shell.id);
-            shell_args.extend(args);
-            shell_command(shell_args, json)?;
+            match orchestrators::find(manager, host, &scope)?.ok_or_else(|| missing.clone())? {
+                Orchestrator::Terminal(shell) => {
+                    let mut shell_args = vec![operation];
+                    shell_args.push(shell.id);
+                    shell_args.extend(args);
+                    Ok(OrchestratorOutput::Shell(shell_args))
+                }
+                Orchestrator::Chat(chat) => {
+                    chat_orchestrator_operation(host, &chat, &operation, args, json)
+                        .map(OrchestratorOutput::Text)
+                }
+            }
         }
-        _ => {
-            return Err(format!(
-                "Unknown orchestrator command '{operation}'\n{HELP}"
-            ));
-        }
+        _ => Err(format!(
+            "Unknown orchestrator command '{operation}'\n{HELP}"
+        )),
     }
-    Ok(())
+}
+
+/// What a command prints about an orchestrator: a terminal's session as ever
+/// (now with its `mode`), or a chat's entry. `created` is what `create --json`
+/// adds: whether the orchestrator was made now or was there already.
+fn orchestrator_text(
+    home: &Path,
+    orchestrator: &crate::orchestrators::Orchestrator,
+    json: bool,
+    created: Option<bool>,
+) -> Result<String, String> {
+    use crate::orchestrators::{self, Orchestrator};
+    if !json {
+        return Ok(match orchestrator {
+            Orchestrator::Terminal(shell) => shell_line(shell),
+            Orchestrator::Chat(chat) => orchestrators::chat_line(chat),
+        });
+    }
+    let mut value = orchestrators::entry(home, orchestrator);
+    if let Some(created) = created {
+        value["created"] = json!(created);
+    }
+    json_text(&value)
+}
+
+/// `output`, `send`, `close` and `cwd` for a chat orchestrator.
+fn chat_orchestrator_operation(
+    host: &crate::orchestrators::ChatHost,
+    chat: &crate::chat::model::ChatInfo,
+    operation: &str,
+    mut args: Vec<String>,
+    json: bool,
+) -> Result<String, String> {
+    use crate::orchestrators;
+    match operation {
+        "output" => {
+            let lines = take_option(&mut args, "--lines")?
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "--lines needs a positive integer".to_owned())
+                })
+                .transpose()?
+                .unwrap_or(200);
+            ensure_empty(&args)?;
+            let lines = orchestrators::output(host.home, chat, lines)?;
+            if json {
+                json_text(&json!({
+                    "id": chat.id,
+                    "mode": "chat",
+                    "chat_id": chat.id,
+                    "output": lines.join("\n"),
+                    "line_count": lines.len(),
+                }))
+            } else {
+                Ok(lines.iter().map(|line| format!("{line}\n")).collect())
+            }
+        }
+        "send" => {
+            let text = args.join(" ");
+            orchestrators::send(host, chat, &text)?;
+            if json {
+                json_text(&json!({ "id": chat.id, "sent": text }))
+            } else {
+                Ok(String::new())
+            }
+        }
+        "close" => {
+            orchestrators::close(host, chat)?;
+            if json {
+                json_text(&json!({ "id": chat.id, "closed": true }))
+            } else {
+                Ok(format!("Closed {}\n", chat.id))
+            }
+        }
+        "cwd" => {
+            ensure_empty(&args)?;
+            if json {
+                json_text(&json!({ "id": chat.id, "cwd": chat.cwd }))
+            } else {
+                Ok(format!("{}\n", chat.cwd.display()))
+            }
+        }
+        other => Err(format!(
+            "{other} is for terminal orchestrators; this one runs as a chat (open it as a chat tab, or use `riwork chat events {}`)",
+            chat.id
+        )),
+    }
 }
 
 fn take_orchestrator_project(
@@ -2467,6 +2660,9 @@ fn print_tasks(tasks: &[&Task], json: bool) -> Result<(), String> {
 }
 
 fn print_shell(shell: &ShellSession) {
+    print!("{}", shell_line(shell));
+}
+fn shell_line(shell: &ShellSession) -> String {
     let scope = shell
         .worktree_id
         .as_deref()
@@ -2478,14 +2674,14 @@ fn print_shell(shell: &ShellSession) {
                 .map(|id| format!("project {id}"))
         })
         .unwrap_or_else(|| "orchestrator".to_owned());
-    println!(
-        "{}  {:?}  {}  {}  {}",
+    format!(
+        "{}  {:?}  {}  {}  {}\n",
         shell.id,
         shell.kind,
         if shell.alive { "running" } else { "exited" },
         scope,
         shell.cwd.display()
-    );
+    )
 }
 
 fn print_shell_result(shell: &ShellSession, json: bool) -> Result<(), String> {
@@ -2812,6 +3008,8 @@ use chat_remote::{
 mod chat_remote_tests;
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod orchestrator_tests;
 
 #[cfg(test)]
 mod tests {
