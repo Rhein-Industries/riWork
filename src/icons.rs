@@ -121,6 +121,40 @@ impl Icon {
 /// Native draws the icon's SF Symbol in the same box, tinted alike; a symbol this
 /// macOS lacks falls back to the vector glyph.
 pub fn icon(kind: Icon, color: u32) -> AnyElement {
+    paint_icon(kind, color, None)
+}
+
+/// An icon on a bar or row of text designed at `text` px. Native draws its SF Symbol at
+/// that text's point size, as AppKit pairs a symbol with the label beside it, so it stands
+/// as tall as the words do, and in the text color its element has at that moment: a
+/// button that brightens its text on hover brightens the symbol with it. The colorful
+/// themes draw the same vector glyph in `color` as `icon` does.
+pub fn text_icon(kind: Icon, text: f32, color: u32) -> AnyElement {
+    paint_icon(kind, color, Some(text))
+}
+
+impl Icon {
+    /// The point size and weight of its symbol beside text of `points`. A tab's close mark
+    /// is a small, firmer cross, as Safari and Finder draw it; the wide symbols a step smaller.
+    fn text_symbol(self, points: f32) -> (f32, Weight) {
+        match self {
+            Self::Close => (points * 0.8, Weight::Medium),
+            Self::Focus | Self::SplitRight | Self::SplitDown | Self::Layout => {
+                (points * 0.92, Weight::Regular)
+            }
+            _ => (points, self.symbol_weight()),
+        }
+    }
+}
+
+/// The color text drawn here now would have, as a 0xRRGGBB value.
+fn text_color(window: &gpui::Window) -> u32 {
+    let color = gpui::Rgba::from(window.text_style().color);
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
+}
+
+fn paint_icon(kind: Icon, color: u32, text: Option<f32>) -> AnyElement {
     let scale = ui_text::scale();
     let native = ui_text::is_native();
     canvas(
@@ -128,15 +162,14 @@ pub fn icon(kind: Icon, color: u32) -> AnyElement {
         move |bounds, _, window, _| {
             if native {
                 let side = f32::from(bounds.size.width);
-                let points = kind.symbol_points(side);
-                if paint_symbol(
-                    kind.symbol(),
-                    points,
-                    kind.symbol_weight(),
-                    color,
-                    bounds,
-                    window,
-                ) {
+                let (points, weight, tint) = match text {
+                    Some(text) => {
+                        let (points, weight) = kind.text_symbol(text * scale);
+                        (points, weight, text_color(window))
+                    }
+                    None => (kind.symbol_points(side), kind.symbol_weight(), color),
+                };
+                if paint_symbol(kind.symbol(), points, weight, tint, bounds, window) {
                     return;
                 }
             }
@@ -259,14 +292,29 @@ fn paint_symbol(
     bounds: Bounds<gpui::Pixels>,
     window: &mut gpui::Window,
 ) -> bool {
-    let side = f32::from(bounds.size.width);
-    let key = symbols::Key::new(name, points, side, weight, color, window.scale_factor());
+    let scale = window.scale_factor();
+    let square = device_square(bounds, scale);
+    let side = f32::from(square.size.width);
+    let key = symbols::Key::new(name, points, side, weight, color, scale);
     let Some(image) = symbols::image(key) else {
         return false;
     };
-    let square = Bounds::new(bounds.origin, gpui::size(px(side), px(side)));
     let _ = window.paint_image(square, square, Corners::default(), image, 0, false);
     true
+}
+
+/// The square a symbol's bitmap is painted over: `bounds`' width rounded to whole device
+/// pixels and its origin moved onto a device pixel, both at the window's `scale`. GPUI rounds
+/// an image's edges to device pixels one by one, so a box at a fractional size or position
+/// would come out a pixel wider or narrower than its bitmap and be resampled, blurring it;
+/// this square maps the bitmap's pixels one to one onto the screen's.
+fn device_square(bounds: Bounds<gpui::Pixels>, scale: f32) -> Bounds<gpui::Pixels> {
+    let pixels = (f32::from(bounds.size.width) * scale).round().max(1.0);
+    let snap = |value: gpui::Pixels| px((f32::from(value) * scale).round() / scale);
+    Bounds::new(
+        point(snap(bounds.origin.x), snap(bounds.origin.y)),
+        gpui::size(px(pixels / scale), px(pixels / scale)),
+    )
 }
 
 /// The SF Symbol Native draws for a text mark that stands for a control: a row's
@@ -758,6 +806,40 @@ mod tests {
         assert_eq!(Icon::Lock.symbol(), "lock");
         assert_eq!(Icon::Unlock.symbol(), "lock.open");
         assert_eq!(Icon::BellOff.symbol(), "bell.slash");
+    }
+
+    /// A symbol's box at a fractional size and position, as the text scale lays it out, is
+    /// moved onto whole device pixels at 1x and 2x, so its bitmap is never resampled.
+    #[test]
+    fn symbol_boxes_sit_on_whole_device_pixels() {
+        for scale in [1.0_f32, 2.0] {
+            for (x, y, side) in [(10.3, 4.71, 16.52), (0.0, 0.0, 14.0), (203.49, 7.5, 11.8)] {
+                let bounds = Bounds::new(point(px(x), px(y)), gpui::size(px(side), px(side)));
+                let square = device_square(bounds, scale);
+                let whole = |value: gpui::Pixels| {
+                    let device = f32::from(value) * scale;
+                    (device - device.round()).abs() < 1e-3
+                };
+                assert!(
+                    whole(square.origin.x) && whole(square.origin.y),
+                    "{x},{y} at {scale}x"
+                );
+                assert!(whole(square.size.width), "{side} at {scale}x");
+                assert_eq!(square.size.width, square.size.height);
+                assert!((f32::from(square.size.width) - side).abs() <= 0.5 / scale);
+                assert!((f32::from(square.origin.x) - x).abs() <= 0.5 / scale);
+                // The bitmap has exactly as many pixels as the square covers.
+                let key = symbols::Key::new(
+                    "lock",
+                    11.0,
+                    f32::from(square.size.width),
+                    Weight::Regular,
+                    0,
+                    scale,
+                );
+                assert_eq!(key.pixels() as f32, f32::from(square.size.width) * scale);
+            }
+        }
     }
 
     /// Every symbol named exists on this Mac, so Native never falls back to a vector glyph.
