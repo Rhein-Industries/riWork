@@ -238,6 +238,9 @@ private final class KeyScrollView: UIScrollView {
             let state = latch(action)
             button.configuration?.baseForegroundColor = state == .locked ? style.backgroundUI : state == .once ? style.accentUI : style.textUI
             button.configuration?.background.backgroundColor = state == .locked ? style.accentUI : state == .once ? style.activeUI : .clear
+            // Inset from the bar's edges, so that on glass the highlight stays inside the capsule; round under Native, square-ish in the terminal look.
+            button.configuration?.background.backgroundInsets = NSDirectionalEdgeInsets(top: unit(6), leading: unit(1), bottom: unit(6), trailing: unit(1))
+            button.configuration?.background.cornerRadius = style.native ? unit(15) : unit(5)
             button.isSelected = state != .off
             button.accessibilityValue = state == .locked ? "locked" : state == .once ? "armed" : "not armed"
             button.accessibilityTraits = state == .off ? .button : [.button, .selected]
