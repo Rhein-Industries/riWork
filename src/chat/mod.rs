@@ -14,6 +14,8 @@
 //!   while app windows reload.
 //! - `host` is that process: it serves `wire`, keeps each chat's files (`log`)
 //!   and starts drivers with the configuration `launch` resolves.
+//! - `text` writes a transcript as plain text, for what reads a chat like a
+//!   terminal (`riwork orchestrator output`).
 
 // The contract lands before the host and the tabs that use it.
 #![allow(dead_code)]
@@ -25,10 +27,11 @@ pub mod codex;
 pub mod driver;
 pub mod host;
 mod launch;
-mod log;
+pub mod log;
 pub mod model;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]
 mod testkit;
+pub mod text;
 pub mod wire;

@@ -45,7 +45,8 @@ impl Drop for Rig {
 /// from before the question), `chat list` with no chats, `chat events` with the page in
 /// `events.json` after the seconds in `events.delay` (if that exists), `chat command` and
 /// `chat stop` with the chat they were given, and `chat new` after `create.delay` seconds,
-/// marking `create.ran`, with `create.json`.
+/// marking `create.ran`, with `create.json`. `orchestrator create` waits `orchestrator.delay`
+/// seconds if that exists, marks `orchestrator.ran` and prints `orchestrator.json`.
 fn stand_in_cli(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let cli = dir.join("canned-riwork");
@@ -56,7 +57,7 @@ echo "$*" >> "$D/calls.log"
 case "$1 $2" in
 'capabilities --json')
   if [ -e "$D/capabilities.unknown" ]; then echo "riwork: Unknown invocation 'capabilities'" >&2; exit 2; fi
-  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true}'; fi;;
+  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true}'; fi;;
 'project show') printf '{"id":"%s"}' "$3";;
 'chat list') echo '[]';;
 'chat events')
@@ -68,6 +69,10 @@ case "$1 $2" in
   if [ -e "$D/create.delay" ]; then sleep "$(cat "$D/create.delay")"; fi
   touch "$D/create.ran"
   cat "$D/create.json";;
+'orchestrator create')
+  if [ -e "$D/orchestrator.delay" ]; then sleep "$(cat "$D/orchestrator.delay")"; fi
+  touch "$D/orchestrator.ran"
+  cat "$D/orchestrator.json";;
 esac
 "#
     .replace("@DIR@", &dir.to_string_lossy());
@@ -320,6 +325,114 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
                 .contains("update RiWork")
         );
     }
+}
+
+#[tokio::test]
+async fn ready_announces_orchestrator_creation_when_the_cli_can_and_only_then() {
+    let rig = Rig::new().await;
+    let phone = Phone::connect(&rig.pairing).await;
+    assert_eq!(
+        phone.ready["features"]["orchestrator_create"], true,
+        "{}",
+        phone.ready
+    );
+    // The one question about chats and orchestrators is asked once, and believed.
+    assert_eq!(phone.ready["features"]["chat"], true);
+    assert_eq!(rig.calls("capabilities", "--json"), 1);
+    drop(phone);
+    let again = Phone::connect(&rig.pairing).await;
+    assert_eq!(again.ready["features"]["orchestrator_create"], true);
+    assert_eq!(rig.calls("capabilities", "--json"), 1);
+
+    // A CLI with chats but no orchestrator creation, one that says no, one that answers
+    // oddly, and one from before the question: no `orchestrator_create` in features, the
+    // rest as it was, and the method says why.
+    for answer in [
+        Some("{\"v\":1,\"chat\":true}"),
+        Some("{\"v\":1,\"chat\":true,\"orchestrator_create\":false}"),
+        Some("{\"v\":1,\"orchestrator_create\":\"true\"}"),
+        None,
+    ] {
+        let rig = Rig::with(|dir| match answer {
+            Some(text) => std::fs::write(dir.join("capabilities.out"), text).unwrap(),
+            None => std::fs::write(dir.join("capabilities.unknown"), "").unwrap(),
+        })
+        .await;
+        let mut phone = Phone::connect(&rig.pairing).await;
+        let features = phone.ready["features"].as_object().unwrap();
+        assert!(
+            !features.contains_key("orchestrator_create"),
+            "{answer:?}: {features:?}"
+        );
+        assert!(features.contains_key("deflate"), "{answer:?}");
+        assert_eq!(
+            features.contains_key("chat"),
+            answer.is_some_and(|text| text.contains("\"chat\":true")),
+            "{answer:?}"
+        );
+        let refused = phone.call("orchestrator.create", json!({})).await;
+        assert_eq!(refused.code(), "cli_error", "{answer:?}: {}", refused.value);
+        assert!(
+            refused.value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("update RiWork")
+        );
+        assert_eq!(rig.calls("orchestrator", "create"), 0, "{answer:?}");
+    }
+}
+
+#[tokio::test]
+async fn an_orchestrator_being_made_is_finished_when_the_phone_goes_away() {
+    let rig = Rig::new().await;
+    let entry = json!({
+        "id": rig.chat, "project_id": null, "worktree_id": null, "kind": "orchestrator",
+        "cwd": "/Users/me/orchestrator", "harness": "codex", "alive": true,
+        "created_at_unix": 1790000000u64, "mode": "chat", "chat_id": rig.chat,
+        "provider": "codex", "created": true
+    });
+    rig.canned("orchestrator.json", &entry);
+    std::fs::write(rig.dir.path().join("orchestrator.delay"), "1").unwrap();
+    let mut phone = Phone::connect(&rig.pairing).await;
+    phone.send("orchestrator.create", json!({})).await;
+    // Wait for the CLI to be running, then the phone leaves.
+    for _ in 0..200 {
+        if rig.calls("orchestrator", "create") > 0 {
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(rig.calls("orchestrator", "create"), 1);
+    drop(phone);
+    for _ in 0..200 {
+        if rig.dir.path().join("orchestrator.ran").exists() {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        rig.dir.path().join("orchestrator.ran").exists(),
+        "the CLI was cut short"
+    );
+    // A phone that comes back asks again and is handed the orchestrator that now exists,
+    // which the CLI says it did not make this time.
+    std::fs::write(
+        rig.dir.path().join("orchestrator.json"),
+        json!({
+            "id": rig.chat, "project_id": null, "worktree_id": null, "kind": "orchestrator",
+            "cwd": "/Users/me/orchestrator", "harness": "codex", "alive": true,
+            "created_at_unix": 1790000000u64, "mode": "chat", "chat_id": rig.chat,
+            "provider": "codex", "created": false
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut phone = Phone::connect(&rig.pairing).await;
+    let again = phone.call("orchestrator.create", json!({})).await;
+    assert_eq!(again.value["ok"], true, "{}", again.value);
+    assert_eq!(again.value["result"]["created"], false);
+    assert_eq!(again.value["result"]["orchestrator"]["id"], rig.chat);
+    assert_eq!(again.value["result"]["orchestrator"]["chat_id"], rig.chat);
 }
 
 #[tokio::test]

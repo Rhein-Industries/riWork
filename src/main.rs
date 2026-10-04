@@ -18,6 +18,7 @@ mod mcp;
 mod metal_layer;
 mod notifications;
 mod orca_import;
+mod orchestrators;
 mod panels;
 mod paths;
 mod project_creator;
@@ -32,6 +33,7 @@ mod remote_prompt;
 mod remote_service;
 mod remote_tree;
 mod runtime;
+mod schedule_chat;
 mod schedule_panel;
 mod schedule_service;
 mod schedules;
@@ -66,7 +68,7 @@ use std::{
 };
 
 use activity::{ActivityTracker, AgentActivity, AgentState, ChatActivity};
-use chat::model::{ApprovalMode, NewChat, Provider};
+use chat::model::{ApprovalMode, ChatInfo, NewChat, OrchestratorScope, Provider};
 use chat_view::{ChatView, ChatViewEvent, HostConfig};
 use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
 use gpui::{
@@ -84,6 +86,7 @@ use layouts::{
     OpenTabReuse, PaneFacts, PaneId, PanelKind, PreviewPlacement, PreviewReveal, PreviewTab,
     ProjectLayout, SavedPane, SavedTab, TabEdge, WindowSize,
 };
+use orchestrators::Orchestrator;
 use panels::{PanelAction, PanelData};
 use project_creator::{ProjectCreationEvent, ProjectCreator};
 use project_settings::{
@@ -305,6 +308,15 @@ impl Tab {
             TabContent::Panel(panel) => SavedTab::Panel { panel: *panel },
             TabContent::Chat { chat_id, .. } => saved_chat(chat_id)?,
         })
+    }
+
+    /// The host's id of the chat a chat tab follows; none for another tab and for a chat
+    /// the host is still making.
+    fn chat_id(&self) -> Option<&str> {
+        match &self.content {
+            TabContent::Chat { chat_id, .. } if !chat_id.is_empty() => Some(chat_id),
+            _ => None,
+        }
     }
 
     /// The view of a chat tab.
@@ -961,6 +973,7 @@ fn new_chat_request(
         },
         model: None,
         effort: None,
+        orchestrator: None,
     }
 }
 
@@ -1030,6 +1043,109 @@ fn new_tab_target(
     selected: PaneId,
 ) -> PaneId {
     routing_target(main, panes, focus_mode).unwrap_or(selected)
+}
+
+/// What the window says while G·ORCH or P·ORCH makes a chat orchestrator, which starts a chat
+/// host and an agent.
+const OPENING_ORCHESTRATOR: &str = "Opening the orchestrator…";
+
+/// What the bar over an orchestrator's tab offers to load the current skill into.
+enum SkillUpgrade {
+    /// A terminal orchestrator's session.
+    Terminal(String),
+    /// An orchestrator that runs as a chat.
+    Chat(Box<ChatInfo>),
+}
+
+/// The pane and tab of the open tab on chat `chat_id`, if there is one.
+fn chat_tab_in(panes: &BTreeMap<PaneId, Pane>, chat_id: &str) -> Option<(PaneId, TabId)> {
+    panes.iter().find_map(|(pane_id, pane)| {
+        pane.tabs
+            .iter()
+            .find(|tab| tab.chat_id() == Some(chat_id))
+            .map(|tab| (*pane_id, tab.id))
+    })
+}
+
+/// Where an open tab goes when a click on its shell, worktree or orchestrator brings it up:
+/// the pane that takes what is opened (`routing`) when the tab is behind a terminal in an
+/// unlocked pane, so that the terminal stays in front; otherwise nowhere, and it is selected
+/// where it is (see `layouts::reuse_open_tab`).
+fn bring_up_target(
+    panes: &BTreeMap<PaneId, Pane>,
+    routing: Option<PaneId>,
+    pane_id: PaneId,
+    tab_id: TabId,
+    pane_locked: bool,
+) -> Option<PaneId> {
+    let main = routing?;
+    let pane = panes.get(&pane_id)?;
+    let index = pane.tabs.iter().position(|tab| tab.id == tab_id)?;
+    let tab = PreviewTab {
+        pane: pane_id,
+        shown: pane.active == index,
+        behind_shell: pane_shows_shell_in(panes, pane_id),
+    };
+    (layouts::reuse_open_tab(main, tab, pane_locked) == OpenTabReuse::IntoMain).then_some(main)
+}
+
+/// What G·ORCH and P·ORCH do for an orchestrator that runs as a chat.
+#[derive(Debug, PartialEq, Eq)]
+enum ChatOrchestratorTab {
+    /// Its chat is open already, in `pane`: it is brought up as a clicked shell is, which
+    /// moves it to `into` when it is behind a terminal.
+    Reuse {
+        pane: PaneId,
+        tab: TabId,
+        into: Option<PaneId>,
+    },
+    /// Its chat is not open: a tab for it opens in `pane`, where any new tab opens.
+    Open { pane: PaneId },
+}
+
+/// The main-pane rules for an orchestrator in chat mode: a tab already open on its chat
+/// (`open`) is reused, never opened twice, and a new one opens where new tabs open.
+fn plan_orchestrator_chat(
+    open: Option<(PaneId, TabId)>,
+    panes: &BTreeMap<PaneId, Pane>,
+    main: Option<PaneId>,
+    focus_mode: bool,
+    selected: PaneId,
+    locked: &dyn Fn(PaneId) -> bool,
+) -> ChatOrchestratorTab {
+    match open {
+        Some((pane, tab)) => ChatOrchestratorTab::Reuse {
+            pane,
+            tab,
+            into: bring_up_target(
+                panes,
+                routing_target(main, panes, focus_mode),
+                pane,
+                tab,
+                locked(pane),
+            ),
+        },
+        None => ChatOrchestratorTab::Open {
+            pane: new_tab_target(main, panes, focus_mode, selected),
+        },
+    }
+}
+
+/// What a status bar item or a tab says of an orchestrator chat that is doing something: the
+/// agent marks the tabs of chats use. An orchestrator is told its start message at once, so
+/// an idle one has finished a turn.
+fn orchestrator_chat_activity(state: &chat::model::ChatState) -> Option<AgentActivity> {
+    ChatActivity::of_state(state, true)
+}
+
+/// The mark in front of G·ORCH or P·ORCH in the status bar.
+fn orchestrator_mark(activity: Option<AgentActivity>) -> &'static str {
+    match activity {
+        Some(AgentActivity::Working) => "● ",
+        Some(AgentActivity::Waiting) => "◌ ",
+        Some(AgentActivity::Done) => "✓ ",
+        _ => "",
+    }
 }
 
 /// What choosing a file, or clicking a link in pane `clicked`, does about `panel` when the window
@@ -1207,6 +1323,15 @@ struct Workspace {
     selected_task_id: Option<String>,
     detached_shell_ids: HashSet<String>,
     shells: Vec<ShellSession>,
+    /// The orchestrators that run as chats, as the chat host last said (or, while no host
+    /// runs, as the saved chats do): what the status bar items and the skill bar read, and
+    /// what G·ORCH and P·ORCH open without a trip to the host. `None` until the first look.
+    chat_orchestrators: Option<Vec<ChatInfo>>,
+    /// The chat orchestrators that have not been given the skill this build ships.
+    chat_skill_stale: HashSet<String>,
+    /// Scopes whose orchestrator is being found or made in the background; another click on
+    /// G·ORCH or P·ORCH waits for it.
+    orchestrators_starting: HashSet<OrchestratorScope>,
     shell_cwds: BTreeMap<String, PathBuf>,
     metrics: BTreeMap<String, SessionMetrics>,
     session_refresh_pending: bool,
@@ -1773,6 +1898,9 @@ impl Workspace {
             selected_task_id: None,
             detached_shell_ids: HashSet::new(),
             shells: Vec::new(),
+            chat_orchestrators: None,
+            chat_skill_stale: HashSet::new(),
+            orchestrators_starting: HashSet::new(),
             shell_cwds: BTreeMap::new(),
             metrics: BTreeMap::new(),
             session_refresh_pending: false,
@@ -4409,6 +4537,21 @@ impl Workspace {
             self.bring_up_tab(pane_id, tab_id, window, cx);
             return;
         }
+        if shell.chat {
+            // No terminal to attach to: the orchestrator is a chat of that Mac's chat host.
+            let host = cx
+                .global::<RemoteState>()
+                .tree()
+                .host_label(&desktop_id)
+                .unwrap_or("the host")
+                .to_owned();
+            self.notice = Some(format!(
+                "{} runs as a chat on {host}; chats run on that Mac. Open it there, or in the iOS app.",
+                shell.display()
+            ));
+            cx.notify();
+            return;
+        }
         if !shell.alive {
             let host = cx
                 .global::<RemoteState>()
@@ -4834,9 +4977,31 @@ impl Workspace {
         let sessions = self.sessions.clone();
         let work_project_id = project_id.clone();
         let want_metrics = self.window_visible && self.metrics_visible();
+        // With no host running nothing about the chats can change, so the saved chats are
+        // read once, not every tick.
+        let read_saved_chats = self.chat_orchestrators.is_none();
         let work = cx.background_executor().spawn(async move {
             // One tmux and `ps` sample serves every window for about a tick.
             let sample = sessions.sample(want_metrics)?;
+            let chats = {
+                let home = sessions.state_home();
+                let host = orchestrators::ChatHost {
+                    home,
+                    ensure: &orchestrators::system_ensure,
+                };
+                orchestrators::running_chat_orchestrators(&host)
+                    .or_else(|| {
+                        read_saved_chats.then(|| orchestrators::saved_chat_orchestrators(&host))
+                    })
+                    .map(|chats| {
+                        let stale = chats
+                            .iter()
+                            .filter(|chat| !orchestrators::chat_skill_is_current(home, chat))
+                            .map(|chat| chat.id.clone())
+                            .collect::<HashSet<_>>();
+                        (chats, stale)
+                    })
+            };
             let shells = sample.shells;
             let metrics = sample.metrics;
             let cwds = sample.directories;
@@ -4852,7 +5017,7 @@ impl Workspace {
                     }
                 }
             }
-            Ok::<_, String>((shells, metrics, cwds, claude_usage))
+            Ok::<_, String>((shells, metrics, cwds, claude_usage, chats))
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -4865,7 +5030,7 @@ impl Workspace {
                 {
                     return;
                 }
-                let Ok((shells, metrics, cwds, claude_usage)) = result else {
+                let Ok((shells, metrics, cwds, claude_usage, chats)) = result else {
                     return;
                 };
                 // Most ticks find everything as it was; the window is drawn again
@@ -4878,6 +5043,12 @@ impl Workspace {
                     || cwds
                         .as_ref()
                         .is_some_and(|cwds| workspace.shell_cwds != *cwds);
+                if let Some((chats, stale)) = chats {
+                    changed |= workspace.chat_orchestrators.as_ref() != Some(&chats)
+                        || workspace.chat_skill_stale != stale;
+                    workspace.chat_orchestrators = Some(chats);
+                    workspace.chat_skill_stale = stale;
+                }
                 workspace.shells = shells;
                 if let Some(metrics) = metrics {
                     workspace.metrics = metrics;
@@ -5585,23 +5756,31 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(main) = self.routing_pane()
-            && let Some(pane) = self.panes.get(&pane_id)
-            && let Some(index) = pane.tabs.iter().position(|tab| tab.id == tab_id)
+        let into = bring_up_target(
+            &self.panes,
+            self.routing_pane(),
+            pane_id,
+            tab_id,
+            self.pane_is_locked(pane_id),
+        );
+        self.show_open_tab(pane_id, tab_id, into, window, cx);
+    }
+
+    /// Select an open tab where it is, or, given the pane `into`, after moving it there.
+    fn show_open_tab(
+        &mut self,
+        pane_id: PaneId,
+        tab_id: TabId,
+        into: Option<PaneId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(main) = into
+            && move_tab_between_panes(&mut self.panes, pane_id, tab_id, main, true)
         {
-            let tab = PreviewTab {
-                pane: pane_id,
-                shown: pane.active == index,
-                behind_shell: pane_shows_shell_in(&self.panes, pane_id),
-            };
-            if layouts::reuse_open_tab(main, tab, self.pane_is_locked(pane_id))
-                == OpenTabReuse::IntoMain
-                && move_tab_between_panes(&mut self.panes, pane_id, tab_id, main, true)
-            {
-                self.show_pane_tabs(pane_id, cx);
-                self.select_tab(main, tab_id, window, cx);
-                return;
-            }
+            self.show_pane_tabs(pane_id, cx);
+            self.select_tab(main, tab_id, window, cx);
+            return;
         }
         self.select_tab(pane_id, tab_id, window, cx);
     }
@@ -6126,6 +6305,33 @@ impl Workspace {
         }
     }
 
+    /// What the orchestrator of `scope` is doing, if it runs as a chat: what its tab says
+    /// when the window has one open, else what the chat host last said of its state.
+    fn chat_orchestrator_activity(
+        &self,
+        scope: &OrchestratorScope,
+        cx: &App,
+    ) -> Option<AgentActivity> {
+        if self.is_remote() {
+            return None;
+        }
+        let chat = self
+            .chat_orchestrators
+            .as_ref()?
+            .iter()
+            .find(|chat| chat.orchestrator.as_ref() == Some(scope))?;
+        match self
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .find(|tab| tab.chat_id() == Some(chat.id.as_str()))
+            .and_then(Tab::chat)
+        {
+            Some(view) => view.read(cx).summary().activity,
+            None => orchestrator_chat_activity(&chat.state),
+        }
+    }
+
     /// What the open chat tabs say about their chats, for the counts of agents.
     fn chat_activity(&self, cx: &App) -> Vec<ChatActivity> {
         self.panes
@@ -6630,27 +6836,118 @@ impl Workspace {
             self.open_remote_orchestrator(project_id.is_some(), window, cx);
             return;
         }
-        let session = match project_id.as_deref() {
-            Some(id) => match self.state.project(id) {
-                Ok(project) => self.sessions.orchestrator_create_for_project(
-                    project.id.clone(),
-                    project.root.clone(),
-                    None,
-                ),
-                Err(error) => Err(error),
-            },
-            None => self.sessions.orchestrator_create(self.cwd.clone(), None),
-        };
-        let shell = match session {
-            Ok(shell) => shell,
-            Err(error) => {
+        let scope = orchestrators::scope_of(project_id.as_deref());
+        let root = match project_id.as_deref().map(|id| self.state.project(id)) {
+            Some(Ok(project)) => Some(project.root.clone()),
+            Some(Err(error)) => {
                 self.notice = Some(error);
                 cx.notify();
                 return;
             }
+            None => None,
         };
-        // A scope has one persistent session. Reopen its existing tab instead
-        // of creating another terminal view or a separate window.
+        // A scope has one persistent orchestrator, in a terminal or as a chat, as the
+        // setting said when it was made. Finding or making it can take a while (a chat
+        // host to start, an agent to start), so it happens off the window; a second click
+        // while it does waits for the first.
+        if !self.orchestrators_starting.insert(scope.clone()) {
+            return;
+        }
+        if self.settings.orchestrator_mode == settings::OrchestratorMode::Chat {
+            self.notice = Some(OPENING_ORCHESTRATOR.to_owned());
+        }
+        let sessions = self.sessions.clone();
+        let cwd = root.clone().unwrap_or_else(|| self.cwd.clone());
+        let wanted = scope.clone();
+        let work = cx.background_executor().spawn(async move {
+            let home = sessions.state_home().to_path_buf();
+            let host = orchestrators::ChatHost {
+                home: &home,
+                ensure: &orchestrators::system_ensure,
+            };
+            let runs = settings::orchestrator_runs(&home);
+            orchestrators::create(&sessions, &host, &wanted, root, cwd, None, runs)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = work.await;
+            let _ = this.update_in(cx, |workspace, window, cx| {
+                workspace.orchestrator_ready(scope, result, window, cx)
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// LOAD SKILL for an orchestrator that runs as a chat: the skill goes to the chat as a
+    /// message, off the window.
+    fn load_chat_orchestrator_skill(&mut self, chat: ChatInfo, cx: &mut Context<Self>) {
+        let sessions = self.sessions.clone();
+        let root = chat
+            .project_id
+            .as_deref()
+            .and_then(|id| self.state.project(id).ok())
+            .map(|project| project.root.clone());
+        let chat_id = chat.id.clone();
+        let work = cx.background_executor().spawn(async move {
+            let home = sessions.state_home().to_path_buf();
+            let host = orchestrators::ChatHost {
+                home: &home,
+                ensure: &orchestrators::system_ensure,
+            };
+            orchestrators::load_chat_skill(&sessions, &host, &chat, root.as_deref())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |workspace, cx| {
+                match result {
+                    Ok(_) => {
+                        workspace.notice = None;
+                        workspace.chat_skill_stale.remove(&chat_id);
+                    }
+                    Err(error) => workspace.notice = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The orchestrator a click on G·ORCH or P·ORCH asked for is there: show its tab.
+    fn orchestrator_ready(
+        &mut self,
+        scope: OrchestratorScope,
+        result: Result<(Orchestrator, bool), String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.orchestrators_starting.remove(&scope);
+        if self.notice.as_deref() == Some(OPENING_ORCHESTRATOR) {
+            self.notice = None;
+        }
+        match result {
+            Err(error) => self.notice = Some(error),
+            Ok((Orchestrator::Terminal(shell), _)) => {
+                self.show_orchestrator_shell(shell, window, cx)
+            }
+            Ok((Orchestrator::Chat(chat), _)) => {
+                let chats = self.chat_orchestrators.get_or_insert_with(Vec::new);
+                chats
+                    .retain(|known| known.id != chat.id && known.orchestrator != chat.orchestrator);
+                chats.push(chat.clone());
+                self.show_orchestrator_chat(chat, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Show the tab of a terminal orchestrator: reopen the one it has, or attach its
+    /// persistent session to the pane new tabs go to.
+    fn show_orchestrator_shell(
+        &mut self,
+        shell: ShellSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let existing = self.panes.iter().find_map(|(pane_id, pane)| {
             pane.tabs
                 .iter()
@@ -6667,6 +6964,45 @@ impl Workspace {
             self.notice = Some(error);
         } else {
             self.focus_active(window, cx);
+        }
+        self.save_layout();
+        cx.notify();
+    }
+
+    /// Show the tab of an orchestrator that runs as a chat: the tab already open on its chat,
+    /// brought up by the main-pane rules, or a new one where new tabs open.
+    fn show_orchestrator_chat(
+        &mut self,
+        chat: ChatInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let plan = plan_orchestrator_chat(
+            chat_tab_in(&self.panes, &chat.id),
+            &self.panes,
+            self.main_pane,
+            self.focus_mode,
+            self.active_pane,
+            &|pane| self.pane_is_locked(pane),
+        );
+        match plan {
+            ChatOrchestratorTab::Reuse { pane, tab, into } => {
+                self.show_open_tab(pane, tab, into, window, cx);
+            }
+            ChatOrchestratorTab::Open { pane } => {
+                let config = self.chat_config();
+                let chat_id = chat.id.clone();
+                let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, cx));
+                let mut tab = self.chat_tab(chat_id, view, window, cx);
+                if let Some(scope) = &chat.orchestrator {
+                    tab.title = orchestrators::tab_title(scope).to_owned();
+                }
+                if let Err(error) = self.place_new_tab(pane, tab, cx) {
+                    self.notice = Some(error);
+                } else {
+                    self.focus_active(window, cx);
+                }
+            }
         }
         self.save_layout();
         cx.notify();
@@ -7497,16 +7833,25 @@ impl Workspace {
                         cx,
                     )),
             );
-        let skill_upgrade = pane
-            .tabs
-            .get(pane.active)
+        let active_tab = pane.tabs.get(pane.active);
+        let skill_upgrade = active_tab
             .and_then(Tab::shell_id)
             .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
             .filter(|shell| {
                 shell.kind == ShellKind::Orchestrator
                     && !self.sessions.orchestrator_skill_is_current(shell)
             })
-            .map(|shell| shell.id.clone());
+            .map(|shell| SkillUpgrade::Terminal(shell.id.clone()))
+            .or_else(|| {
+                // An orchestrator that runs as a chat is told the skill in a message.
+                let id = active_tab.and_then(Tab::chat_id)?;
+                self.chat_orchestrators
+                    .as_ref()?
+                    .iter()
+                    .find(|chat| chat.id == id && self.chat_skill_stale.contains(id))
+                    .cloned()
+                    .map(|chat| SkillUpgrade::Chat(Box::new(chat)))
+            });
         let active_panel = match pane.tabs.get(pane.active).map(|tab| &tab.content) {
             Some(TabContent::Panel(panel)) => Some(*panel),
             _ => None,
@@ -7788,7 +8133,7 @@ impl Workspace {
             .min_h_0();
         let container = container
             .children((!self.focus_mode).then_some(header))
-            .children(skill_upgrade.filter(|_| !self.focus_mode).map(|shell_id| {
+            .children(skill_upgrade.filter(|_| !self.focus_mode).map(|upgrade| {
                 div()
                     .h(ui_text::space(23.0))
                     .flex_none()
@@ -7812,14 +8157,21 @@ impl Workspace {
                             }))
                             .child(ui_text::cased("Load skill"))
                             .on_click(cx.listener(move |workspace, _, _, cx| {
-                                match workspace.sessions.load_orchestrator_skill(&shell_id) {
-                                    Ok(_) => {
-                                        workspace.notice = None;
-                                        if let Ok(shells) = workspace.sessions.list() {
-                                            workspace.shells = shells;
+                                match &upgrade {
+                                    SkillUpgrade::Terminal(shell_id) => {
+                                        match workspace.sessions.load_orchestrator_skill(shell_id) {
+                                            Ok(_) => {
+                                                workspace.notice = None;
+                                                if let Ok(shells) = workspace.sessions.list() {
+                                                    workspace.shells = shells;
+                                                }
+                                            }
+                                            Err(error) => workspace.notice = Some(error),
                                         }
                                     }
-                                    Err(error) => workspace.notice = Some(error),
+                                    SkillUpgrade::Chat(chat) => {
+                                        workspace.load_chat_orchestrator_skill((**chat).clone(), cx)
+                                    }
                                 }
                                 cx.notify();
                             })),
@@ -8281,7 +8633,12 @@ impl Workspace {
                 .id("top-orchestrator")
                 .flex_none()
                 .text_color(rgb(status_accent(colors.magenta, colors)))
-                .child(ui_text::quiet("G·ORCH"))
+                .child(ui_text::quiet(format!(
+                    "{}G·ORCH",
+                    orchestrator_mark(
+                        self.chat_orchestrator_activity(&OrchestratorScope::Global, cx)
+                    )
+                )))
                 .on_click(
                     cx.listener(|workspace, _, window, cx| workspace.open_orchestrator(window, cx)),
                 )
@@ -8290,7 +8647,13 @@ impl Workspace {
                 .id("project-orchestrator")
                 .flex_none()
                 .text_color(rgb(status_accent(colors.cyan, colors)))
-                .child(ui_text::quiet("P·ORCH"))
+                .child(ui_text::quiet(format!(
+                    "{}P·ORCH",
+                    orchestrator_mark(self.chat_orchestrator_activity(
+                        &orchestrators::scope_of(Some(&self.project_id)),
+                        cx
+                    ))
+                )))
                 .on_click(cx.listener(|workspace, _, window, cx| {
                     workspace.open_scoped_orchestrator(
                         Some(workspace.project_id.clone()),
@@ -9814,12 +10177,7 @@ fn shells_to_adopt<'a>(
 }
 
 fn orchestrator_tab_title(shell: &ShellSession) -> String {
-    if shell.project_id.is_some() {
-        "P·ORCH · PROJECT"
-    } else {
-        "G·ORCH · GLOBAL"
-    }
-    .to_owned()
+    orchestrators::tab_title(&orchestrators::scope_of(shell.project_id.as_deref())).to_owned()
 }
 
 fn harness_name(harness: HarnessKind) -> &'static str {
@@ -12154,6 +12512,177 @@ mod main_pane_tests {
         assert_eq!(new_tab_target(None, &window.panes, false, 3), 3);
         // A locked pane may be the main pane when the user said so.
         assert_eq!(new_tab_target(Some(1), &window.panes, false, 3), 1);
+    }
+
+    #[test]
+    fn g_orch_opens_a_chat_orchestrator_where_new_tabs_open_and_never_twice() {
+        use ChatOrchestratorTab::Open;
+        let window = Window::navigation_and_work();
+        let plan = |open: Option<(PaneId, TabId)>, main: Option<PaneId>, focus: bool, selected| {
+            plan_orchestrator_chat(open, &window.panes, main, focus, selected, &|id| {
+                window.is_locked(id)
+            })
+        };
+        // Its chat is not open: a tab opens in the main pane whichever pane is selected,
+        // as any new tab does.
+        for selected in [1, 2, 3] {
+            assert_eq!(plan(None, window.main, false, selected), Open { pane: 2 });
+        }
+        // In focus mode only the selected pane is on screen; with no main pane there is
+        // nowhere else to go.
+        assert_eq!(plan(None, window.main, true, 3), Open { pane: 3 });
+        assert_eq!(plan(None, None, false, 3), Open { pane: 3 });
+        // Shells, panels and the like are not chat tabs.
+        assert_eq!(chat_tab_in(&window.panes, "chat-1"), None);
+    }
+
+    #[test]
+    fn an_open_chat_orchestrator_tab_comes_to_the_front_by_the_main_pane_rules() {
+        use ChatOrchestratorTab::Reuse;
+        // The plan reads the chat's tab by its id, so a shell's tab stands in for it here:
+        // pane 2 is the main pane, pane 3 holds a terminal with the chat's tab behind it,
+        // and the locked pane 1 holds one too.
+        let window = Window::new(
+            side(
+                0.3,
+                Layout::Pane(1),
+                side(0.5, Layout::Pane(2), Layout::Pane(3)),
+            ),
+            vec![
+                (1, pane(vec![shell(8), shell(7)], 0)),
+                (2, pane(vec![shell(4), shell(5)], 1)),
+                (3, pane(vec![shell(6), shell(9)], 0)),
+            ],
+            Some(2),
+            &[1],
+        );
+        let plan = |open: (PaneId, TabId), main: Option<PaneId>, focus: bool| {
+            plan_orchestrator_chat(Some(open), &window.panes, main, focus, 3, &|id| {
+                window.is_locked(id)
+            })
+        };
+        // In the main pane it is selected where it is, shown or not.
+        assert_eq!(
+            plan((2, 4), window.main, false),
+            Reuse {
+                pane: 2,
+                tab: 4,
+                into: None
+            }
+        );
+        // Behind a terminal in another pane it moves into the main pane, so that the
+        // terminal stays in front there.
+        assert_eq!(
+            plan((3, 9), window.main, false),
+            Reuse {
+                pane: 3,
+                tab: 9,
+                into: Some(2)
+            }
+        );
+        // On screen already, it stays.
+        assert_eq!(
+            plan((3, 6), window.main, false),
+            Reuse {
+                pane: 3,
+                tab: 6,
+                into: None
+            }
+        );
+        // A click never takes a tab out of a locked pane, even from behind a terminal.
+        assert_eq!(
+            plan((1, 7), window.main, false),
+            Reuse {
+                pane: 1,
+                tab: 7,
+                into: None
+            }
+        );
+        // With no main pane, or in focus mode, there is nowhere to move it to.
+        assert_eq!(
+            plan((3, 9), None, false),
+            Reuse {
+                pane: 3,
+                tab: 9,
+                into: None
+            }
+        );
+        assert_eq!(
+            plan((3, 9), window.main, true),
+            Reuse {
+                pane: 3,
+                tab: 9,
+                into: None
+            }
+        );
+        // The tab in front of it is not a terminal: nothing to keep in front.
+        let editor = Window::new(
+            Layout::Pane(3),
+            vec![(3, pane(vec![panel(1, PanelKind::Files), shell(9)], 0))],
+            Some(2),
+            &[],
+        );
+        assert_eq!(
+            plan_orchestrator_chat(Some((3, 9)), &editor.panes, Some(3), false, 3, &|_| false),
+            Reuse {
+                pane: 3,
+                tab: 9,
+                into: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_status_bar_marks_an_orchestrator_chat_by_what_its_agent_is_doing() {
+        use chat::model::ChatState;
+        let activity = orchestrator_chat_activity;
+        assert_eq!(activity(&ChatState::Running), Some(AgentActivity::Working));
+        assert_eq!(activity(&ChatState::Waiting), Some(AgentActivity::Waiting));
+        // An orchestrator is told its start message at once, so an idle one has finished a turn.
+        assert_eq!(activity(&ChatState::Idle), Some(AgentActivity::Done));
+        for quiet in [
+            ChatState::Starting,
+            ChatState::Stopped,
+            ChatState::Failed {
+                message: "gone".into(),
+            },
+        ] {
+            assert_eq!(activity(&quiet), None, "{quiet:?}");
+        }
+        assert_eq!(orchestrator_mark(Some(AgentActivity::Working)), "● ");
+        assert_eq!(orchestrator_mark(Some(AgentActivity::Waiting)), "◌ ");
+        assert_eq!(orchestrator_mark(Some(AgentActivity::Done)), "✓ ");
+        assert_eq!(orchestrator_mark(Some(AgentActivity::Unknown)), "");
+        assert_eq!(orchestrator_mark(None), "");
+    }
+
+    #[test]
+    fn a_chat_orchestrators_tab_says_it_is_the_global_or_the_project_orchestrator() {
+        let title = |scope| orchestrators::tab_title(&scope);
+        assert_eq!(title(OrchestratorScope::Global), "G·ORCH · GLOBAL");
+        assert_eq!(
+            title(orchestrators::scope_of(Some("p1"))),
+            "P·ORCH · PROJECT"
+        );
+        // Beside the agent's name, as chat tabs say it.
+        assert_eq!(
+            chat_tab_text(
+                Some(Provider::Codex),
+                title(OrchestratorScope::Global),
+                None,
+                false
+            ),
+            "Codex · G·ORCH · GLOBAL"
+        );
+        assert_eq!(
+            chat_tab_text(
+                Some(Provider::Claude),
+                title(orchestrators::scope_of(Some("p1"))),
+                Some(AgentActivity::Working),
+                true
+            ),
+            "● P·ORCH · PROJECT"
+        );
     }
 
     #[test]

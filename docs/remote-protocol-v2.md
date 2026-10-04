@@ -179,6 +179,14 @@ and its replies may be deflated like any other once the session opted in (the co
 the threat discussion applies). A chat's agent can run commands as the desktop user, as a terminal
 started with `shell.create` can, so, like terminal creation, it adds no authority a paired device
 lacks.
+The 2026-10-05 chat orchestrators (optional `mode`, and `chat_id` and `provider` for a chat, on
+`shells.list` and `orchestrators.list` entries, and `invalid_request` for the `shell.*` methods
+on a chat orchestrator's id, in the same document) and orchestrator creation (`orchestrator.create`
+and `features.orchestrator_create` on `ready`, in the same document) are likewise independent of
+the crypto version and apply to v2 sessions exactly as to v1. They add no authority a paired
+device lacks: a chat orchestrator is followed and driven with the chat methods of that extension,
+and making an orchestrator starts an agent as the desktop user, as `shell.create` and `chat.create`
+do.
 
 ## Desktop devices (2026-10-02)
 

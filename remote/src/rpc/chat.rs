@@ -665,14 +665,25 @@ impl Rpc {
     /// at the same time run the CLI once: the others wait for the answer, within their own
     /// `limit`.
     async fn chat_known(&self, limit: Duration) -> std::result::Result<bool, Fault> {
-        if self.chat.load(Ordering::Relaxed) {
+        self.capability_known(&self.chat, limit).await
+    }
+    /// Whether `flag`, one of the booleans of this `Rpc` that remember a yes from
+    /// `riwork capabilities --json`, is set, asking the CLI if it is not (see `chat_known`).
+    /// One answer sets every flag it says yes to, so the questions of a handshake cost one
+    /// run of the CLI between them.
+    pub(super) async fn capability_known(
+        &self,
+        flag: &AtomicBool,
+        limit: Duration,
+    ) -> std::result::Result<bool, Fault> {
+        if flag.load(Ordering::Relaxed) {
             return Ok(true);
         }
         let started = std::time::Instant::now();
         let Ok(_asking) = timeout(limit, self.asking_chat.lock()).await else {
             return Err(cli_fault("RiWork CLI timeout"));
         };
-        if self.chat.load(Ordering::Relaxed) {
+        if flag.load(Ordering::Relaxed) {
             return Ok(true);
         }
         let asked = self
@@ -681,19 +692,25 @@ impl Rpc {
                 limit.saturating_sub(started.elapsed()),
             )
             .await;
-        let yes = match asked {
+        match asked {
             Ok(data) => {
                 let reply = serde_json::from_slice::<Value>(&data).unwrap_or(Value::Null);
-                reply.get("v") == Some(&json!(1)) && reply.get("chat") == Some(&Value::Bool(true))
+                if reply.get("v") == Some(&json!(1)) {
+                    for (flag, name) in [
+                        (&self.chat, "chat"),
+                        (&self.orchestrator_create, "orchestrator_create"),
+                    ] {
+                        if reply.get(name) == Some(&Value::Bool(true)) {
+                            flag.store(true, Ordering::Relaxed);
+                        }
+                    }
+                }
+                Ok(flag.load(Ordering::Relaxed))
             }
             // It ran and refused the question: a CLI from before `capabilities`.
-            Err(e) if e.to_string().starts_with("RiWork CLI failed") => false,
-            Err(e) => return Err(cli_fault(e)),
-        };
-        if yes {
-            self.chat.store(true, Ordering::Relaxed);
+            Err(e) if e.to_string().starts_with("RiWork CLI failed") => Ok(false),
+            Err(e) => Err(cli_fault(e)),
         }
-        Ok(yes)
     }
     /// What `ready` announces as `features.chat`. The question is short: a CLI that does not
     /// answer within a few seconds does not delay the handshake any longer (the phone gives
@@ -721,7 +738,7 @@ impl Rpc {
     }
     /// The device may still act: it was authorized when the request started, and a request
     /// that waited in the ordered lane may have been revoked since.
-    fn still_authorized(&self, device: &str) -> std::result::Result<(), Fault> {
+    pub(super) fn still_authorized(&self, device: &str) -> std::result::Result<(), Fault> {
         if self.storage.authorized(device).map_err(cli_fault)? {
             Ok(())
         } else {
