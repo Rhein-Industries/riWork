@@ -338,3 +338,36 @@ async fn one_wrong_field_does_not_take_a_correct_one_with_it() {
     assert!(projects["projects"][0].get("last_edited_unix").is_none());
     assert_eq!(projects["projects"][0]["last_activity_unix"], 1790000900u64);
 }
+
+#[tokio::test]
+async fn a_shell_list_larger_than_one_reply_is_trimmed_to_what_the_phone_sees() {
+    // Launch commands (Claude's settings, hooks and prompts) made the CLI's own
+    // list far larger than one encrypted reply, and every lookup failed.
+    let f = Fixture::new();
+    let project_id = new_uuid();
+    let long_command = format!("claude --settings '{}'", "x".repeat(4096));
+    let shells: Vec<Value> = (0..80)
+        .map(|_| {
+            let mut shell = session(&new_uuid(), &project_id);
+            shell["command"] = json!(long_command);
+            shell
+        })
+        .collect();
+    let raw = Value::Array(shells).to_string();
+    assert!(
+        raw.len() > riwork_remote::MAX_PLAINTEXT * 2,
+        "{}",
+        raw.len()
+    );
+    f.says(
+        "shells.json",
+        Value::Array(serde_json::from_str::<Vec<Value>>(&raw).unwrap()),
+    );
+    let result = f
+        .call("shells.list", json!({"project_id": project_id}))
+        .await;
+    let listed = result["shells"].as_array().unwrap();
+    assert_eq!(listed.len(), 80);
+    assert!(listed.iter().all(|shell| shell.get("command").is_none()));
+    assert!(result.to_string().len() < riwork_remote::MAX_PLAINTEXT);
+}

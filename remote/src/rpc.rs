@@ -305,6 +305,10 @@ fn additive_shape_ok(field: &str, value: &Value) -> bool {
         _ => true,
     }
 }
+/// The most a list or lookup may print. Lists carry fields the phone never
+/// sees, such as each shell's launch command, so their raw output grows with
+/// the number of shells while the reply stays small.
+const MAX_LIST_OUTPUT: usize = 16 * 1024 * 1024;
 /// What the phone may know of a project, in `projects.list` and in `project.create`.
 /// `last_edited_unix` (when the desktop last saw a file of the project change) only
 /// appears once the desktop app has published it. `last_activity_unix` (when one of
@@ -1113,9 +1117,18 @@ impl Rpc {
         };
         timeout(limit, run).await.context("RiWork CLI timeout")?
     }
+    /// A list or lookup (projects, worktrees, shells, tasks, `show`). Its raw
+    /// output is read under `MAX_LIST_OUTPUT`, not the reply limit: what the
+    /// phone gets is projected to a few fields first (a shell's launch command
+    /// alone can be kilobytes), and the reply is held to the encrypted response
+    /// limit when it is sent.
     async fn read(&self, args: &[&str]) -> std::result::Result<Value, Fault> {
-        self.read_within(args.iter().map(|x| (*x).to_owned()).collect(), CLI_TIMEOUT)
-            .await
+        self.read_capped(
+            args.iter().map(|x| (*x).to_owned()).collect(),
+            CLI_TIMEOUT,
+            MAX_LIST_OUTPUT,
+        )
+        .await
     }
     async fn read_within(
         &self,
