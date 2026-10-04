@@ -181,6 +181,12 @@ const NATIVE_BAR_BUTTON_INSET: f32 = 3.0;
 const NATIVE_TAB_CLOSE: f32 = 16.0;
 /// The group a tab's hover reveals its close mark in.
 const TAB_GROUP: &str = "pane-tab";
+/// A Native symbol tab's width with its full padding.
+const NATIVE_ICON_TAB_FULL: f32 = 32.0;
+/// The narrowest a Native symbol tab gets while the bar still shows its focus and lock
+/// buttons: its symbols then sit about as far apart as the buttons' (`NATIVE_BAR_BUTTON`
+/// and its gap).
+const NATIVE_ICON_TAB_ROOMY: f32 = 22.0;
 /// The narrowest a Native symbol tab gets when even the symbols crowd the bar: its symbol
 /// with a point either side.
 const NATIVE_ICON_TAB_MIN: f32 = 16.0;
@@ -6727,21 +6733,24 @@ impl Workspace {
             .collect();
         // Native never cuts a tab off mid-word: when the words do not fit beside the pane's
         // buttons, its panels show their symbols instead, as Xcode's navigator bar does.
-        let buttons = [show_main, show_lock, show_focus, true]
-            .into_iter()
-            .filter(|shown| *shown)
-            .count() as f32;
         // What the bar keeps beside its tabs: the buttons, the drag handle and the window
         // drag space after the last tab.
-        let reserved = buttons * ui_text::space_f32(NATIVE_BAR_BUTTON)
-            + (buttons - 1.0) * ui_text::space_f32(NATIVE_BAR_BUTTON_GAP)
-            + 2.0 * ui_text::space_f32(NATIVE_BAR_BUTTON_INSET)
-            + if drag_handle { handle_width } else { 0.0 }
-            + if drag_room {
-                ui_text::space_f32(18.0)
-            } else {
-                0.0
-            };
+        let bar_reserved = |lock: bool, focus: bool| {
+            let buttons = [show_main, lock, focus, true]
+                .into_iter()
+                .filter(|shown| *shown)
+                .count() as f32;
+            buttons * ui_text::space_f32(NATIVE_BAR_BUTTON)
+                + (buttons - 1.0) * ui_text::space_f32(NATIVE_BAR_BUTTON_GAP)
+                + 2.0 * ui_text::space_f32(NATIVE_BAR_BUTTON_INSET)
+                + if drag_handle { handle_width } else { 0.0 }
+                + if drag_room {
+                    ui_text::space_f32(18.0)
+                } else {
+                    0.0
+                }
+        };
+        let reserved = bar_reserved(show_lock, show_focus);
         let compact_panels = native && !self.settings.panel_tab_icons && {
             let close = ui_text::space_f32(6.0 + NATIVE_TAB_CLOSE) - ui_text::space_f32(4.0);
             let words: f32 = titles
@@ -6760,17 +6769,23 @@ impl Workspace {
         };
         // Native's symbol tabs keep their padding while they fit and narrow alike, symbols
         // centered, as far as a crowded bar needs to keep the selected tab's X in view.
-        let icon_cell = {
-            let full = ui_text::space_f32(32.0);
-            let count = pane.tabs.len().max(1) as f32;
-            let close = if tab_can_close {
-                ui_text::space_f32(NATIVE_TAB_CLOSE + 4.0)
-            } else {
-                0.0
-            };
-            ((header_width - reserved - close) / count - 1.0)
-                .clamp(ui_text::space_f32(NATIVE_ICON_TAB_MIN), full)
+        // Before they get cramped the bar hands its focus button and then its lock to the
+        // pane menu, as a toolbar moves what does not fit into its overflow menu.
+        let symbol_tabs = native
+            && (self.settings.panel_tab_icons || compact_panels)
+            && pane.tabs.iter().any(|tab| tab.panel().is_some());
+        let close = if tab_can_close {
+            ui_text::space_f32(NATIVE_TAB_CLOSE + 4.0)
+        } else {
+            0.0
         };
+        let (show_lock, show_focus, icon_cell) = native_symbol_bar(
+            header_width - bar_reserved(false, false) - close,
+            ui_text::space_f32(NATIVE_BAR_BUTTON) + ui_text::space_f32(NATIVE_BAR_BUTTON_GAP),
+            pane.tabs.len(),
+            (show_lock, show_focus),
+            symbol_tabs,
+        );
         let tabs = pane
             .tabs
             .iter()
@@ -9129,6 +9144,40 @@ fn toolbar_hover(style: gpui::StyleRefinement, colors: Palette) -> gpui::StyleRe
     } else {
         style
     }
+}
+
+/// How a Native pane bar shares its room out among symbol tabs and its lock and focus
+/// buttons: `room` is what the tabs would have with neither button, `button` what each of
+/// them takes, and `shown` the buttons the pane is wide enough for. With `symbol_tabs`, the
+/// focus button and then the lock go to the pane menu while the tabs would otherwise be
+/// narrower than `NATIVE_ICON_TAB_ROOMY`. Returns the buttons shown, `(lock, focus)`, and
+/// the tabs' width beside their hairlines, never under `NATIVE_ICON_TAB_MIN` or over
+/// `NATIVE_ICON_TAB_FULL`.
+fn native_symbol_bar(
+    room: f32,
+    button: f32,
+    tabs: usize,
+    shown: (bool, bool),
+    symbol_tabs: bool,
+) -> (bool, bool, f32) {
+    let cell = |(lock, focus): (bool, bool)| {
+        let buttons = (lock as u8 + focus as u8) as f32;
+        (room - buttons * button) / tabs.max(1) as f32 - 1.0
+    };
+    let (lock, focus) = if symbol_tabs {
+        let roomy = ui_text::space_f32(NATIVE_ICON_TAB_ROOMY);
+        [shown, (shown.0, false), (false, false)]
+            .into_iter()
+            .find(|buttons| cell(*buttons) >= roomy)
+            .unwrap_or((false, false))
+    } else {
+        shown
+    };
+    let width = cell((lock, focus)).clamp(
+        ui_text::space_f32(NATIVE_ICON_TAB_MIN),
+        ui_text::space_f32(NATIVE_ICON_TAB_FULL),
+    );
+    (lock, focus, width)
 }
 
 /// How wide a Native tab's words are at the bar's text size, in the medium weight the
@@ -12832,6 +12881,73 @@ mod main_pane_tests {
         assert_eq!(
             DEFAULT_LAYOUT_PRESENT_HINT,
             "The default layout is already in place"
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_bar_tests {
+    use super::*;
+
+    /// What a Native navigation bar of five symbol tabs and no close marks shows when its
+    /// tabs have `room` with neither the lock nor the focus button.
+    fn navigation_bar(room: f32) -> (bool, bool, f32) {
+        let button =
+            ui_text::space_f32(NATIVE_BAR_BUTTON) + ui_text::space_f32(NATIVE_BAR_BUTTON_GAP);
+        native_symbol_bar(room, button, 5, (true, true), true)
+    }
+
+    #[test]
+    fn a_narrowing_bar_gives_up_its_focus_and_then_its_lock_before_cramping_its_symbol_tabs() {
+        let (full, roomy, min) = (
+            ui_text::space_f32(NATIVE_ICON_TAB_FULL),
+            ui_text::space_f32(NATIVE_ICON_TAB_ROOMY),
+            ui_text::space_f32(NATIVE_ICON_TAB_MIN),
+        );
+        let button =
+            ui_text::space_f32(NATIVE_BAR_BUTTON) + ui_text::space_f32(NATIVE_BAR_BUTTON_GAP);
+        // Room for both buttons and tabs at their full padding.
+        assert_eq!(
+            navigation_bar(5.0 * (full + 1.0) + 2.0 * button),
+            (true, true, full)
+        );
+        // Both buttons stay while the tabs keep at least the roomy width.
+        let both = 5.0 * (roomy + 1.0) + 2.0 * button;
+        assert_eq!(navigation_bar(both), (true, true, roomy));
+        // A point less and the focus button goes to the menu; the tabs widen with its room.
+        let (lock, focus, cell) = navigation_bar(both - 1.0);
+        assert!(lock && !focus && cell > roomy, "{cell}");
+        // Then the lock.
+        let one = 5.0 * (roomy + 1.0) + button;
+        assert!(navigation_bar(one).0);
+        let (lock, focus, cell) = navigation_bar(one - 1.0);
+        assert!(!lock && !focus && cell > roomy, "{cell}");
+        // With only the menu left the tabs narrow alike, never under the floor.
+        assert_eq!(navigation_bar(5.0 * (min + 4.0)).2, min + 3.0);
+        assert_eq!(navigation_bar(10.0), (false, false, min));
+    }
+
+    #[test]
+    fn a_bar_of_words_or_a_wide_pane_keeps_the_buttons_it_has_room_for() {
+        let button =
+            ui_text::space_f32(NATIVE_BAR_BUTTON) + ui_text::space_f32(NATIVE_BAR_BUTTON_GAP);
+        // Tabs with words narrow by their own rule, so the buttons are left as they are.
+        assert_eq!(
+            native_symbol_bar(40.0, button, 3, (true, false), false).0,
+            true
+        );
+        assert_eq!(
+            native_symbol_bar(40.0, button, 3, (true, true), false).1,
+            true
+        );
+        // A pane too narrow for a button never gains it.
+        assert_eq!(
+            native_symbol_bar(1000.0, button, 5, (false, false), true),
+            (false, false, ui_text::space_f32(NATIVE_ICON_TAB_FULL))
+        );
+        assert_eq!(
+            native_symbol_bar(1000.0, button, 5, (true, false), true).1,
+            false
         );
     }
 }
