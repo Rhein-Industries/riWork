@@ -1076,6 +1076,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                         div()
                             .id(format!("{name}-search"))
                             .relative()
+                            .cursor_text()
                             .flex_1()
                             .min_w_0()
                             .h_full()
@@ -1503,7 +1504,6 @@ fn project_header_button<V: 'static>(
         .flex()
         .items_center()
         .text_color(rgb(color))
-        .cursor_pointer()
         .hover(|style| style.bg(rgb(colors.panel_active)))
         .map(|button| {
             if as_icon {
@@ -1546,7 +1546,6 @@ fn project_sort_controls<V: 'static>(
                 .gap(ui_text::space(5.0))
                 .px(ui_text::space(5.0))
                 .h(ui_text::space(20.0))
-                .cursor_pointer()
                 .bg(rgb(if open {
                     colors.panel_active
                 } else {
@@ -1591,7 +1590,6 @@ fn project_sort_controls<V: 'static>(
                 .justify_center()
                 .w(ui_text::space(22.0))
                 .h(ui_text::space(20.0))
-                .cursor_pointer()
                 .text_color(rgb(colors.cyan))
                 .hover(move |style| {
                     let style = style.bg(rgb(colors.panel_active));
@@ -1730,7 +1728,6 @@ fn sort_menu_row<V: 'static>(
         .gap(ui_text::space(7.0))
         .px(ui_text::space(8.0))
         .py(ui_text::space(7.0))
-        .cursor_pointer()
         .text_size(ui_text::text(10.0))
         .text_color(rgb(if selected { colors.cyan } else { colors.text }))
         .hover(move |style| {
@@ -1777,7 +1774,6 @@ fn project_control<V: 'static>(
         .w(ui_text::space(20.0))
         .h(ui_text::space(18.0))
         .text_color(rgb(colors.cyan))
-        .cursor_pointer()
         .hover(move |style| {
             let style = style.bg(rgb(colors.divider));
             if ui_text::is_native() {
@@ -1821,7 +1817,6 @@ fn project_notification_control<V: 'static>(
         .justify_center()
         .w(ui_text::space(20.0))
         .h(ui_text::space(18.0))
-        .cursor_pointer()
         .hover(move |style| {
             let style = style.bg(rgb(colors.divider));
             if ui_text::is_native() {
@@ -1945,7 +1940,6 @@ fn push_remote_folder<V: 'static>(
     let hint = folder.link.map_or("Connecting…", Link::text);
     rows.push(
         folder_bar(format!("remote-folder-{}", folder.host), 0, colors)
-            .cursor_pointer()
             .child(if folder.collapsed { "▸" } else { "▾" })
             .child(
                 div()
@@ -2086,7 +2080,6 @@ fn failure_row<V: 'static>(
                 .id(format!("{id}-dismiss"))
                 .flex_none()
                 .px(ui_text::space(4.0))
-                .cursor_pointer()
                 .text_color(rgb(colors.muted))
                 .hover(|style| style.text_color(rgb(colors.text)))
                 .child("×")
@@ -2534,7 +2527,6 @@ fn folder_header<V: 'static>(
         depth,
         colors,
     )
-    .cursor_grab()
     .drag_over::<DraggedProjectItem>(move |style, drag, _, _| {
         if hover_context.accepts(drag, hover_destination.as_deref()) {
             style
@@ -2697,7 +2689,6 @@ fn project_row<V: 'static>(
             colors.panel
         }))
         .when(dimmed, |row| row.opacity(0.5))
-        .when(drag.is_none(), |row| row.cursor_pointer())
         .hover(move |element| {
             controls::hovered(element, controls::row_hover(selected, colors), |element| {
                 element.bg(rgb(colors.panel_active))
@@ -2714,7 +2705,7 @@ fn project_row<V: 'static>(
             on_action(view, action.clone(), window, cx);
         }))
         .when_some(drag, |row, drag| {
-            row.cursor_grab().on_drag(drag, move |drag, _, window, cx| {
+            row.on_drag(drag, move |drag, _, window, cx| {
                 drag_view.update(cx, |view, cx| {
                     drag_action(view, PanelAction::BeginProjectDrag, window, cx);
                 });

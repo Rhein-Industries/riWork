@@ -4182,7 +4182,6 @@ impl Workspace {
                 .border_1()
                 .border_color(rgb(colors.divider))
                 .text_color(rgb(colors.text))
-                .cursor_pointer()
                 .hover(|style| style.bg(rgb(colors.divider)))
                 .child(ui_text::cased("Reconnect"))
                 .on_click(cx.listener(move |workspace, _, window, cx| {
@@ -6856,7 +6855,6 @@ impl Workspace {
                     } else {
                         10.0
                     }))
-                    .cursor_grab()
                     .hover(move |style| {
                         if active && colors.plain_tabs {
                             style
@@ -6931,7 +6929,6 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .cursor_pointer()
                             .rounded(px(3.0))
                             .hover(move |style| {
                                 let style = style.bg(rgb(colors.divider));
@@ -7024,9 +7021,7 @@ impl Workspace {
                             .min_w(ui_text::space(18.0))
                             .h_full()
                             .when(window_drag_enabled, |space| {
-                                space
-                                    .cursor_grab()
-                                    .on_mouse_down(MouseButton::Left, start_window_drag)
+                                space.on_mouse_down(MouseButton::Left, start_window_drag)
                             }),
                     )
                     .on_drop(
@@ -7047,7 +7042,6 @@ impl Workspace {
                     .flex_none()
                     .w(px(handle_width))
                     .h_full()
-                    .cursor_grab()
                     .on_mouse_down(MouseButton::Left, start_window_drag)
             }))
             .child(
@@ -7421,7 +7415,6 @@ impl Workspace {
                             } else {
                                 colors.gold
                             }))
-                            .cursor_pointer()
                             .child(ui_text::cased("Load skill"))
                             .on_click(cx.listener(move |workspace, _, _, cx| {
                                 match workspace.sessions.load_orchestrator_skill(&shell_id) {
@@ -7724,7 +7717,6 @@ impl Workspace {
                     .text_ellipsis()
                     .overflow_hidden()
                     .text_color(rgb(colors.cyan))
-                    .cursor_pointer()
                     .child(name)
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         workspace.open_panel(
@@ -7762,7 +7754,6 @@ impl Workspace {
                     .font_family(ui_text::mono_family())
                     .text_ellipsis()
                     .overflow_hidden()
-                    .cursor_pointer()
                     .child(branch)
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         workspace.open_panel(
@@ -7813,7 +7804,6 @@ impl Workspace {
                     .min_w_0()
                     .text_ellipsis()
                     .overflow_hidden()
-                    .cursor_pointer()
                     .text_color(rgb(if counts.working > 0 {
                         colors.working
                     } else {
@@ -7874,8 +7864,7 @@ impl Workspace {
                     .font_family(ui_text::mono_family())
                     .text_color(rgb(status_accent(colors.cyan, colors)))
                     .when_some(id, |item, id| {
-                        item.cursor_pointer()
-                            .child(id.chars().take(8).collect::<String>())
+                        item.child(id.chars().take(8).collect::<String>())
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(id.clone()))
                             }))
@@ -7886,7 +7875,6 @@ impl Workspace {
                 .id("top-orchestrator")
                 .flex_none()
                 .text_color(rgb(status_accent(colors.magenta, colors)))
-                .cursor_pointer()
                 .child(ui_text::quiet("G·ORCH"))
                 .on_click(
                     cx.listener(|workspace, _, window, cx| workspace.open_orchestrator(window, cx)),
@@ -7896,7 +7884,6 @@ impl Workspace {
                 .id("project-orchestrator")
                 .flex_none()
                 .text_color(rgb(status_accent(colors.cyan, colors)))
-                .cursor_pointer()
                 .child(ui_text::quiet("P·ORCH"))
                 .on_click(cx.listener(|workspace, _, window, cx| {
                     workspace.open_scoped_orchestrator(
@@ -7926,7 +7913,6 @@ impl Workspace {
             .gap(ui_text::space(4.0))
             .px(ui_text::space(4.0))
             .py(ui_text::space(1.0))
-            .cursor_pointer()
             .text_color(rgb(color))
             .when(open, |item| item.bg(rgb(colors.panel_active)))
             .hover(|style| {
@@ -8043,7 +8029,7 @@ impl Workspace {
             .map(|item| controls::native(item, |item| controls::menu_row(item, colors)))
             .text_color(rgb(if enabled { colors.text } else { colors.muted }))
             .when(enabled, |item| {
-                item.cursor_pointer().hover(move |style| {
+                item.hover(move |style| {
                     controls::hovered(style, controls::menu_row_hover(colors), |style| {
                         style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
                     })
@@ -8131,7 +8117,6 @@ impl Workspace {
             .overflow_hidden()
             .text_ellipsis()
             .text_color(rgb(status_accent(colors.cyan, colors)))
-            .cursor_pointer()
             .child(ui_text::quiet(label))
             .on_click(cx.listener(|workspace, _, window, cx| {
                 workspace.open_panel(
@@ -8193,7 +8178,6 @@ impl Workspace {
             .overflow_hidden()
             .text_ellipsis()
             .text_color(rgb(status_accent(colors.cyan, colors)))
-            .cursor_pointer()
             .hover(|style| style.text_color(rgb(colors.magenta)))
             .child(ui_text::quiet(label))
             .on_click(cx.listener(|workspace, _, window, cx| {
@@ -8342,7 +8326,7 @@ impl Workspace {
             .child(div().h(ui_text::space(32.0)).flex_none().flex().items_center().px(ui_text::space(10.0)).justify_between()
                 .border_b_1().border_color(rgb(colors.divider))
                 .child(div().when(ui_text::is_native(), |title| title.font_weight(gpui::FontWeight::SEMIBOLD)).child(ui_text::cased("Account usage")))
-                .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan)).cursor_pointer()
+                .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan))
                     .child(ui_text::cased(if pending || self.grok_usage_pending { "Refreshing…" } else { "↻ Refresh" }))
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         workspace.refresh_usage(window, cx);
@@ -8471,9 +8455,7 @@ impl Workspace {
                     .items_center()
                     .gap(ui_text::space(12.0))
                     .when(show_window_controls, |space| {
-                        space
-                            .cursor_grab()
-                            .on_mouse_down(MouseButton::Left, start_window_drag)
+                        space.on_mouse_down(MouseButton::Left, start_window_drag)
                     })
                     .children((width >= 720.0).then(|| {
                         div()
@@ -8498,7 +8480,6 @@ impl Workspace {
                     .flex_none()
                     .px(ui_text::space(8.0))
                     .py(ui_text::space(5.0))
-                    .cursor_pointer()
                     .text_color(rgb(colors.muted))
                     .hover(|style| {
                         style
@@ -8526,7 +8507,6 @@ impl Workspace {
                     .border_color(rgb(colors.divider))
                     .bg(rgb(colors.panel_active))
                     .text_color(rgb(colors.cyan))
-                    .cursor_pointer()
                     .hover(|style| style.border_color(rgb(colors.cyan)))
                     .child(if width >= 600.0 {
                         "↙ RESTORE  ⌘⇧F"
@@ -8600,7 +8580,6 @@ impl Workspace {
             .flex_none()
             .items_center()
             .justify_center()
-            .cursor_pointer()
             .when(
                 key == "menu" && self.panel_menu == Some(pane_id),
                 |button| button.bg(rgb(colors.divider)),
@@ -8639,7 +8618,6 @@ impl Workspace {
             .flex_none()
             .items_center()
             .justify_center()
-            .cursor_pointer()
             .hover(move |style| toolbar_hover(style, colors))
             .map(|marker| controls::native(marker, |marker| toolbar_button(marker, colors.cyan)));
         // Native always shows the star, a symbol among the bar's other symbols.
@@ -8689,7 +8667,6 @@ impl Workspace {
             .py(ui_text::space(5.0))
             .text_size(ui_text::text(10.0))
             .text_color(rgb(colors.text))
-            .cursor_pointer()
             .hover(move |style| {
                 controls::hovered(style, controls::menu_row_hover(colors), |style| {
                     style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
@@ -8971,6 +8948,21 @@ impl Render for Workspace {
                 MouseButton::Left,
                 cx.listener(|workspace, _, window, cx| workspace.end_resize(window, cx)),
             )
+            // A divider keeps its resize cursor for the whole drag, as AppKit's split views
+            // do, even once the pointer runs ahead of it onto a pane.
+            .children(self.resizing.as_ref().map(|resize| {
+                let cursor = if resize.axis == Axis::SideBySide {
+                    gpui::CursorStyle::ResizeColumn
+                } else {
+                    gpui::CursorStyle::ResizeRow
+                };
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| window.set_window_cursor_style(cursor),
+                )
+                .absolute()
+                .size_0()
+            }))
             .size_full()
             .flex()
             .flex_col()

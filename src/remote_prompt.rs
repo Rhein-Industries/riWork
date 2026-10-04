@@ -434,7 +434,6 @@ impl RemotePrompt {
             .id(id)
             .px(ui_text::space(12.0))
             .py(ui_text::space(8.0))
-            .cursor_pointer()
             .border_1()
             .border_color(rgb(if focused {
                 colors.focus

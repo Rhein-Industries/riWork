@@ -577,6 +577,7 @@ impl ProjectCreator {
                         "project-name"
                     })
                     .relative()
+                    .cursor_text()
                     .h(ui_text::space(32.0))
                     .px(ui_text::space(8.0))
                     .flex()
@@ -690,7 +691,6 @@ impl Render for ProjectCreator {
                     .child(
                         div()
                             .id("cancel-project-x")
-                            .cursor_pointer()
                             .text_color(rgb(colors.muted))
                             .child("×")
                             .on_click(cx.listener(|form, _, _, cx| {
@@ -718,7 +718,6 @@ impl Render for ProjectCreator {
                             .px(ui_text::space(10.0))
                             .flex()
                             .items_center()
-                            .cursor_pointer()
                             .border_1()
                             .border_color(rgb(colors.divider))
                             .text_color(rgb(colors.cyan))
@@ -775,7 +774,6 @@ impl Render for ProjectCreator {
                     .flex()
                     .gap(ui_text::space(8.0))
                     .items_center()
-                    .cursor_pointer()
                     .text_color(rgb(colors.cyan))
                     .child(if self.init_git { "[✓]" } else { "[ ]" })
                     .child("Initialize Git  [CMD+G]")
@@ -812,7 +810,6 @@ impl Render for ProjectCreator {
                             .id("cancel-project")
                             .px(ui_text::space(12.0))
                             .py(ui_text::space(8.0))
-                            .cursor_pointer()
                             .text_color(rgb(colors.muted))
                             .child(ui_text::cased("Cancel"))
                             .on_click(cx.listener(|form, _, _, cx| {
@@ -826,7 +823,6 @@ impl Render for ProjectCreator {
                             .id("create-project")
                             .px(ui_text::space(12.0))
                             .py(ui_text::space(8.0))
-                            .cursor_pointer()
                             .bg(rgb(colors.panel_active))
                             .border_1()
                             .border_color(rgb(if ready { colors.cyan } else { colors.divider }))

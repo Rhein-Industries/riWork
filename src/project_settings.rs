@@ -227,6 +227,7 @@ pub(crate) fn input_content<T: EntityInputHandler>(
     }
     div()
         .relative()
+        .cursor_text()
         .h(ui_text::space(34.0))
         .px(ui_text::space(10.0))
         .flex()
@@ -733,7 +734,6 @@ impl Render for ProjectSettingsPanel {
                 .id("project-folder-unfiled")
                 .px(ui_text::space(10.0))
                 .py(ui_text::space(7.0))
-                .cursor_pointer()
                 .border_1()
                 .border_color(rgb(if focused && self.active == Field::Folder(0) {
                     colors.focus
@@ -776,7 +776,6 @@ impl Render for ProjectSettingsPanel {
                     .id(format!("project-folder-{}", folder.id))
                     .px(ui_text::space(10.0))
                     .py(ui_text::space(7.0))
-                    .cursor_pointer()
                     .border_1()
                     .border_color(rgb(if focused && self.active == Field::Folder(index + 1) {
                         colors.focus
@@ -858,7 +857,6 @@ impl Render for ProjectSettingsPanel {
                     .flex()
                     .items_center()
                     .gap(ui_text::space(7.0))
-                    .cursor_pointer()
                     .border_1()
                     .border_color(rgb(if focused && self.active == Field::Account(index) {
                         colors.focus
@@ -977,7 +975,6 @@ impl Render for ProjectSettingsPanel {
                             .flex_none()
                             .flex()
                             .items_center()
-                            .cursor_pointer()
                             .border_1()
                             .border_color(rgb(if ring { colors.focus } else { colors.magenta }))
                             .text_color(rgb(colors.magenta));
@@ -1028,7 +1025,7 @@ impl Render for ProjectSettingsPanel {
             .child(div().text_size(ui_text::text(10.0)).text_color(rgb(colors.muted))
                 .child("New Codex sessions use this choice. Running sessions keep their account. Selection saves immediately."))
             .child(account_rows)
-            .child(div().id("project-codex-refresh").cursor_pointer()
+            .child(div().id("project-codex-refresh")
                 .text_size(ui_text::text(10.0))
                 .text_color(rgb(if focused && self.active == Field::AccountRefresh { colors.focus } else { colors.cyan }))
                 .map(|button| crate::controls::native(button, |button| {
@@ -1086,7 +1083,6 @@ impl Render for ProjectSettingsPanel {
                     .flex_none()
                     .px(ui_text::space(14.0))
                     .py(ui_text::space(10.0))
-                    .cursor_pointer()
                     .bg(rgb(colors.panel_active))
                     .border_1()
                     .border_color(rgb(if save_ring { colors.focus } else { colors.cyan }))
@@ -1519,7 +1515,6 @@ impl Render for FolderEditor {
                             .id("cancel-virtual-folder")
                             .px(ui_text::space(12.0))
                             .py(ui_text::space(8.0))
-                            .cursor_pointer()
                             .border_1()
                             .border_color(rgb(
                                 if self.active == 1 && self.focus.is_focused(window) {
@@ -1539,7 +1534,6 @@ impl Render for FolderEditor {
                             .id("save-virtual-folder")
                             .px(ui_text::space(12.0))
                             .py(ui_text::space(8.0))
-                            .cursor_pointer()
                             .bg(rgb(colors.panel_active))
                             .border_1()
                             .border_color(rgb(

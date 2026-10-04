@@ -1144,7 +1144,7 @@ impl SettingsPanel {
                                 controls::native(row, |row| controls::row(row, active, colors))
                             })
                             .when(available, |row| {
-                                row.cursor_pointer().hover(move |style| {
+                                row.hover(move |style| {
                                     controls::hovered(
                                         style,
                                         controls::row_hover(active, colors),
@@ -1242,7 +1242,7 @@ impl SettingsPanel {
                     .child(
                         div().id("refresh-codex-accounts").track_focus(&self.account_refresh_focus)
                             .flex_none().px(ui_text::space(10.0)).py(ui_text::space(6.0)).self_start()
-                            .border_1().border_color(rgb(colors.divider)).cursor_pointer()
+                            .border_1().border_color(rgb(colors.divider))
                             .text_size(ui_text::text(10.0)).text_color(rgb(colors.cyan))
                             .hover(move |style| controls::hovered(style, controls::Button::Secondary.hover(colors), |style| style.bg(rgb(colors.panel_active))))
                             .focus_visible(|style| style.bg(rgb(colors.panel_active)).border_color(rgb(colors.cyan)))
@@ -1495,7 +1495,6 @@ impl SettingsPanel {
             } else {
                 colors.text
             }))
-            .cursor_pointer()
             .hover(move |style| {
                 controls::hovered(
                     style,
@@ -1759,7 +1758,6 @@ impl SettingsPanel {
             .bg(rgb(colors.panel))
             .text_size(ui_text::text(10.0))
             .text_color(rgb(accent))
-            .cursor_pointer()
             .hover(move |style| {
                 controls::hovered(style, controls::Button::Secondary.hover(colors), |style| {
                     style.bg(rgb(colors.panel_active))
@@ -1992,7 +1990,6 @@ impl SettingsPanel {
             } else {
                 colors.text
             }))
-            .cursor_pointer()
             .hover(move |style| {
                 controls::hovered(
                     style,
@@ -2150,7 +2147,6 @@ impl SettingsPanel {
             } else {
                 colors.divider
             }))
-            .cursor_pointer()
             .hover(move |style| {
                 controls::hovered(style, controls::row_hover(selected, colors), |style| {
                     style.bg(rgb(colors.panel_active))
@@ -2276,7 +2272,6 @@ impl SettingsPanel {
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.divider))
-            .cursor_pointer()
             .hover(move |style| {
                 controls::hovered(style, controls::row_hover(false, colors), |style| {
                     style.bg(rgb(colors.panel_active))
@@ -2397,7 +2392,6 @@ impl SettingsPanel {
                 .bg(rgb(colors.panel_active))
                 .text_color(rgb(if active { colors.cyan } else { colors.muted }))
                 .text_size(ui_text::text(10.0))
-                .cursor_pointer()
                 .hover(move |style| {
                     controls::hovered(style, controls::segment_hover(active, colors), |style| {
                         style.border_color(rgb(colors.cyan))
@@ -2499,7 +2493,6 @@ impl SettingsPanel {
                 .text_color(rgb(if active { colors.cyan } else { colors.muted }))
                 .text_size(ui_text::text(10.0))
                 .text_center()
-                .cursor_pointer()
                 .hover(move |style| {
                     controls::hovered(style, button_kind(false, !active).hover(colors), |style| {
                         style.border_color(rgb(colors.cyan))
@@ -2573,7 +2566,6 @@ impl SettingsPanel {
             .text_color(rgb(if matching { colors.cyan } else { colors.muted }))
             .text_size(ui_text::text(10.0))
             .text_center()
-            .cursor_pointer()
             .hover(move |style| {
                 if ui_text::is_native() {
                     style.text_color(rgb(colors.text))

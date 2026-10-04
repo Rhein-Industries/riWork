@@ -316,7 +316,6 @@ pub fn render_settings<V: 'static>(
                         .gap(ui_text::space(8.0))
                         .px(ui_text::space(8.0))
                         .py(ui_text::space(7.0))
-                        .cursor_pointer()
                         .bg(rgb(colors.panel_active))
                         .text_size(ui_text::text(11.0))
                         .text_color(rgb(colors.text))
@@ -351,7 +350,6 @@ pub fn render_settings<V: 'static>(
                         .flex()
                         .items_center()
                         .px(ui_text::space(8.0))
-                        .cursor_pointer()
                         .border_1()
                         .border_color(rgb(colors.divider))
                         .text_size(ui_text::text(9.0))
@@ -456,7 +454,6 @@ fn render_item<V: 'static>(
                 .min_w_0()
                 .items_center()
                 .gap(ui_text::space(8.0))
-                .cursor_pointer()
                 .hover(|style| style.text_color(rgb(colors.cyan)))
                 .child(check_box(item.enabled, colors))
                 .child(
@@ -487,7 +484,6 @@ fn render_item<V: 'static>(
                 .py(ui_text::space(4.0))
                 .border_1()
                 .border_color(rgb(colors.divider))
-                .cursor_pointer()
                 .text_size(ui_text::text(9.0))
                 .text_color(rgb(if item.side == StatusSide::Left {
                     colors.cyan
@@ -565,9 +561,7 @@ fn move_button<V: 'static>(
         .text_size(ui_text::text(11.0))
         .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
         .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(colors.divider)))
+            button.hover(|style| style.bg(rgb(colors.divider)))
         })
         .map(|button| controls::native(button, |button| button.rounded_full()))
         .child(icons::mark(
