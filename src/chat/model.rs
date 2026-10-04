@@ -1,0 +1,613 @@
+//! The provider-neutral chat vocabulary. Codex and Claude events are translated
+//! into these types by their drivers; the chat host stores and replays them;
+//! a chat tab folds them with `Transcript` and draws the result.
+//!
+//! Everything here is serialized on the host's socket and in its event logs, so
+//! names are part of the stored format: add variants and optional fields, never
+//! rename or repurpose them.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    Codex,
+    Claude,
+}
+
+/// How much the agent may do without asking.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// Ask before commands and edits. Codex: `untrusted` with a read-only
+    /// sandbox. Claude: `default`.
+    #[default]
+    Supervised,
+    /// Edit the workspace freely, ask for the rest. Codex: `on-request` with
+    /// `workspaceWrite`. Claude: `acceptEdits`.
+    AutoEdit,
+    /// Never ask. Codex: `never` with `dangerFullAccess`. Claude:
+    /// `bypassPermissions`. RiWork's "unrestricted" launches map here.
+    Full,
+    /// Plan first, change nothing. Codex: collaboration mode `plan`. Claude:
+    /// permission mode `plan`.
+    Plan,
+}
+
+/// What a chat is doing as a whole.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ChatState {
+    /// The provider process is starting or resuming.
+    #[default]
+    Starting,
+    /// Ready for a message.
+    Idle,
+    /// A turn is in progress.
+    Running,
+    /// A turn waits for an approval or an answer from the user.
+    Waiting,
+    /// No provider process; the next message resumes the chat.
+    Stopped,
+    /// The provider process failed; the next message tries to resume.
+    Failed { message: String },
+}
+
+/// One chat, as the host knows it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChatInfo {
+    /// RiWork's own id for the chat (a UUID), stable across resumes.
+    pub id: String,
+    pub provider: Provider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
+    pub cwd: PathBuf,
+    pub title: String,
+    pub created_at_unix: u64,
+    /// Codex thread id or Claude session id, once the provider has named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub approval_mode: ApprovalMode,
+    /// The Codex account (RiWork's account id) the chat runs under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_account_id: Option<String>,
+    #[serde(default)]
+    pub state: ChatState,
+}
+
+/// What a new chat starts with.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NewChat {
+    pub provider: Provider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
+    pub cwd: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub approval_mode: ApprovalMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemStatus {
+    #[default]
+    InProgress,
+    Completed,
+    Failed,
+    /// Refused at an approval prompt.
+    Declined,
+    Interrupted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    Add,
+    Modify,
+    Delete,
+    Rename,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileChange {
+    pub path: String,
+    pub kind: ChangeKind,
+    /// A unified diff when the provider gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Step {
+    pub text: String,
+    #[serde(default)]
+    pub status: StepStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+/// The content of one transcript item.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ItemBody {
+    UserMessage {
+        text: String,
+    },
+    /// Markdown.
+    AgentMessage {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    /// The agent's plan (Codex `turn/plan/updated`, Claude `ExitPlanMode`).
+    Plan {
+        #[serde(default)]
+        explanation: Option<String>,
+        steps: Vec<Step>,
+    },
+    /// A shell command (Codex `commandExecution`, Claude `Bash`).
+    Command {
+        command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default)]
+        output: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+    },
+    /// File edits (Codex `fileChange`, Claude `Edit`/`Write`/`MultiEdit`).
+    FileChange {
+        changes: Vec<FileChange>,
+    },
+    /// Any other tool: MCP calls, Claude's Read/Grep/WebFetch/Task, …
+    ToolCall {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
+        tool: String,
+        #[serde(default)]
+        input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
+    WebSearch {
+        query: String,
+    },
+    /// Claude `TodoWrite`.
+    Todo {
+        items: Vec<Step>,
+    },
+    /// The context was compacted here.
+    Compaction,
+    Notice {
+        level: NoticeLevel,
+        text: String,
+    },
+}
+
+/// One entry of the transcript.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Item {
+    /// Unique within the chat. Drivers use the provider's id when it has one.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub status: ItemStatus,
+    pub body: ItemBody,
+}
+
+/// Appended to an item while it streams.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "text", rename_all = "snake_case")]
+pub enum Delta {
+    /// More of an agent message's or reasoning item's text.
+    Text(String),
+    /// More of a command's output.
+    Output(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    Accept,
+    /// Accept this and the same kind of request for the rest of the session.
+    AcceptForSession,
+    Decline,
+    /// Decline and stop the turn.
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalKind {
+    Command,
+    FileChange,
+    Permissions,
+    /// Claude asks before a tool by name.
+    Tool,
+}
+
+/// A turn waits for the user to allow something.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Approval {
+    pub request_id: String,
+    /// The transcript item the request is about, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    pub kind: ApprovalKind,
+    /// One line: the command, the file, the tool.
+    pub title: String,
+    /// More detail: the reason, the input, a diff.
+    #[serde(default)]
+    pub detail: String,
+    /// The decisions the provider offers, in its order.
+    pub choices: Vec<Decision>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionPrompt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<QuestionOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+}
+
+/// A turn waits for the user to answer questions (Claude `AskUserQuestion`,
+/// Codex `item/tool/requestUserInput`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Question {
+    pub request_id: String,
+    pub questions: Vec<QuestionPrompt>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cached_input_tokens: u64,
+    /// The model's context window, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// Tokens of the window in use now, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_used: Option<u64>,
+    /// The provider's own estimate (Claude's `total_cost_usd`), never a bill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum TurnOutcome {
+    Completed,
+    Interrupted,
+    Failed { message: String },
+}
+
+/// Everything that happens in a chat, in order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum ChatEvent {
+    /// The chat's metadata changed (thread id learned, model or mode changed).
+    Info {
+        info: ChatInfo,
+    },
+    State {
+        state: ChatState,
+    },
+    TurnStarted {
+        turn_id: String,
+    },
+    TurnCompleted {
+        turn_id: String,
+        outcome: TurnOutcome,
+    },
+    ItemStarted {
+        item: Item,
+    },
+    ItemDelta {
+        item_id: String,
+        delta: Delta,
+    },
+    /// The item's final form; replaces what deltas built.
+    ItemCompleted {
+        item: Item,
+    },
+    ApprovalRequested {
+        approval: Approval,
+    },
+    ApprovalResolved {
+        request_id: String,
+        decision: Decision,
+    },
+    QuestionRequested {
+        question: Question,
+    },
+    QuestionResolved {
+        request_id: String,
+    },
+    Usage {
+        usage: Usage,
+    },
+}
+
+/// What the user asks of a chat.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum ChatCommand {
+    /// Send a message: start a turn, or steer the running one where the
+    /// provider allows it.
+    Send {
+        text: String,
+    },
+    Interrupt,
+    Approve {
+        request_id: String,
+        decision: Decision,
+    },
+    /// One entry per question, in order: the chosen labels, or free text.
+    Answer {
+        request_id: String,
+        answers: Vec<Vec<String>>,
+    },
+    Configure {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval_mode: Option<ApprovalMode>,
+    },
+    Compact,
+    /// Stop the provider process; the chat resumes with the next message.
+    Stop,
+}
+
+/// A chat's transcript as events build it: what a tab draws, and what the
+/// host replays to a tab that connects late.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Transcript {
+    pub info: Option<ChatInfo>,
+    pub state: ChatState,
+    pub items: Vec<Item>,
+    /// Requests still waiting for the user, in arrival order.
+    pub approvals: Vec<Approval>,
+    pub questions: Vec<Question>,
+    pub usage: Option<Usage>,
+    pub turn_id: Option<String>,
+    index: HashMap<String, usize>,
+}
+
+impl Transcript {
+    pub fn apply(&mut self, event: &ChatEvent) {
+        match event {
+            ChatEvent::Info { info } => {
+                self.state = info.state.clone();
+                self.info = Some(info.clone());
+            }
+            ChatEvent::State { state } => {
+                self.state = state.clone();
+                if let Some(info) = &mut self.info {
+                    info.state = state.clone();
+                }
+            }
+            ChatEvent::TurnStarted { turn_id } => self.turn_id = Some(turn_id.clone()),
+            ChatEvent::TurnCompleted { turn_id, outcome } => {
+                if self.turn_id.as_ref() == Some(turn_id) {
+                    self.turn_id = None;
+                }
+                // Whatever the provider left open in this turn is over now.
+                let closed = match outcome {
+                    TurnOutcome::Completed => ItemStatus::Completed,
+                    TurnOutcome::Interrupted => ItemStatus::Interrupted,
+                    TurnOutcome::Failed { .. } => ItemStatus::Failed,
+                };
+                for item in &mut self.items {
+                    if item.status == ItemStatus::InProgress
+                        && item.turn_id.as_ref().is_none_or(|id| id == turn_id)
+                    {
+                        item.status = closed;
+                    }
+                }
+                self.approvals.clear();
+                self.questions.clear();
+            }
+            ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
+                match self.index.get(&item.id) {
+                    Some(&at) => self.items[at] = item.clone(),
+                    None => {
+                        self.index.insert(item.id.clone(), self.items.len());
+                        self.items.push(item.clone());
+                    }
+                }
+            }
+            ChatEvent::ItemDelta { item_id, delta } => {
+                let Some(&at) = self.index.get(item_id) else {
+                    return;
+                };
+                match (&mut self.items[at].body, delta) {
+                    (ItemBody::AgentMessage { text }, Delta::Text(more))
+                    | (ItemBody::Reasoning { text }, Delta::Text(more)) => text.push_str(more),
+                    (ItemBody::Command { output, .. }, Delta::Output(more)) => {
+                        output.push_str(more)
+                    }
+                    _ => {}
+                }
+            }
+            ChatEvent::ApprovalRequested { approval } => {
+                self.approvals
+                    .retain(|a| a.request_id != approval.request_id);
+                self.approvals.push(approval.clone());
+            }
+            ChatEvent::ApprovalResolved { request_id, .. } => {
+                self.approvals.retain(|a| &a.request_id != request_id)
+            }
+            ChatEvent::QuestionRequested { question } => {
+                self.questions
+                    .retain(|q| q.request_id != question.request_id);
+                self.questions.push(question.clone());
+            }
+            ChatEvent::QuestionResolved { request_id } => {
+                self.questions.retain(|q| &q.request_id != request_id)
+            }
+            ChatEvent::Usage { usage } => self.usage = Some(usage.clone()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(id: &str, text: &str, status: ItemStatus) -> Item {
+        Item {
+            id: id.into(),
+            turn_id: Some("t1".into()),
+            status,
+            body: ItemBody::AgentMessage { text: text.into() },
+        }
+    }
+
+    #[test]
+    fn deltas_build_an_item_and_its_completion_replaces_it() {
+        let mut t = Transcript::default();
+        t.apply(&ChatEvent::TurnStarted {
+            turn_id: "t1".into(),
+        });
+        t.apply(&ChatEvent::ItemStarted {
+            item: agent("a", "", ItemStatus::InProgress),
+        });
+        for part in ["Hel", "lo"] {
+            t.apply(&ChatEvent::ItemDelta {
+                item_id: "a".into(),
+                delta: Delta::Text(part.into()),
+            });
+        }
+        assert_eq!(
+            t.items[0].body,
+            ItemBody::AgentMessage {
+                text: "Hello".into()
+            }
+        );
+        t.apply(&ChatEvent::ItemCompleted {
+            item: agent("a", "Hello!", ItemStatus::Completed),
+        });
+        assert_eq!(t.items.len(), 1);
+        assert_eq!(t.items[0], agent("a", "Hello!", ItemStatus::Completed));
+    }
+
+    #[test]
+    fn a_finished_turn_closes_what_it_left_open_and_its_requests() {
+        let mut t = Transcript::default();
+        t.apply(&ChatEvent::TurnStarted {
+            turn_id: "t1".into(),
+        });
+        t.apply(&ChatEvent::ItemStarted {
+            item: agent("a", "…", ItemStatus::InProgress),
+        });
+        t.apply(&ChatEvent::ApprovalRequested {
+            approval: Approval {
+                request_id: "r1".into(),
+                item_id: None,
+                kind: ApprovalKind::Command,
+                title: "rm -rf build".into(),
+                detail: String::new(),
+                choices: vec![Decision::Accept, Decision::Decline],
+            },
+        });
+        assert_eq!(t.approvals.len(), 1);
+        t.apply(&ChatEvent::TurnCompleted {
+            turn_id: "t1".into(),
+            outcome: TurnOutcome::Interrupted,
+        });
+        assert_eq!(t.items[0].status, ItemStatus::Interrupted);
+        assert!(t.approvals.is_empty() && t.turn_id.is_none());
+    }
+
+    #[test]
+    fn events_round_trip_through_json() {
+        let events = vec![
+            ChatEvent::ItemStarted {
+                item: Item {
+                    id: "c".into(),
+                    turn_id: None,
+                    status: ItemStatus::InProgress,
+                    body: ItemBody::Command {
+                        command: "ls".into(),
+                        cwd: None,
+                        output: String::new(),
+                        exit_code: None,
+                    },
+                },
+            },
+            ChatEvent::ItemDelta {
+                item_id: "c".into(),
+                delta: Delta::Output("a\n".into()),
+            },
+            ChatEvent::State {
+                state: ChatState::Failed {
+                    message: "gone".into(),
+                },
+            },
+        ];
+        for event in events {
+            let line = serde_json::to_string(&event).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ChatEvent>(&line).unwrap(),
+                event,
+                "{line}"
+            );
+        }
+        let command = ChatCommand::Approve {
+            request_id: "r".into(),
+            decision: Decision::AcceptForSession,
+        };
+        let line = serde_json::to_string(&command).unwrap();
+        assert_eq!(serde_json::from_str::<ChatCommand>(&line).unwrap(), command);
+    }
+}

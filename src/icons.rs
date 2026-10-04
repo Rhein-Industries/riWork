@@ -6,6 +6,7 @@ use gpui::{
 };
 
 use crate::{
+    chat::model::Provider,
     layouts::PanelKind,
     settings::Settings,
     symbols::{self, Weight},
@@ -34,6 +35,8 @@ pub enum Icon {
     Panel(PanelKind),
     /// The symbol a toolbar button shows instead of its label.
     Action(ActionGlyph),
+    /// The mark of the agent behind a chat tab, shown instead of its name.
+    Provider(Provider),
 }
 
 /// Text buttons that can be drawn as a glyph, with the label kept for the tooltip.
@@ -93,7 +96,15 @@ impl Icon {
                 ActionGlyph::Reveal => "folder",
                 ActionGlyph::OpenExternally => "arrow.up.forward.app",
             },
+            // An agent's mark is its own logo, which SF Symbols does not have: Native
+            // draws the same vector mark as the other themes.
+            Self::Provider(_) => "",
         }
+    }
+
+    /// Whether Native draws this icon as an SF Symbol rather than its vector glyph.
+    fn has_symbol(self) -> bool {
+        !matches!(self, Self::Provider(_))
     }
 
     /// A menu's tick is medium, as AppKit draws it; the rest are regular, like the text.
@@ -160,7 +171,7 @@ fn paint_icon(kind: Icon, color: u32, text: Option<f32>) -> AnyElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            if native {
+            if native && kind.has_symbol() {
                 let side = f32::from(bounds.size.width);
                 let (points, weight, tint) = match text {
                     Some(text) => {
@@ -269,6 +280,7 @@ fn paint_icon(kind: Icon, color: u32, text: Option<f32>) -> AnyElement {
                 Icon::Layout => layout_glyph(&mut path),
                 Icon::Panel(panel) => panel_glyph(&mut path, panel),
                 Icon::Action(action) => action_glyph(&mut path, action),
+                Icon::Provider(provider) => provider_glyph(&mut path, provider),
             }
             path.scale(scale);
             path.translate(bounds.origin);
@@ -424,6 +436,24 @@ fn layout_glyph(path: &mut PathBuilder) {
     line(path, (5.8, 5.2), (12.5, 5.2));
     for y in [4.6, 7.0, 9.4] {
         line(path, (3.0, y), (4.3, y));
+    }
+}
+
+/// Codex is a shell prompt, `>_`; Claude is a spark of four crossing strokes.
+fn provider_glyph(path: &mut PathBuilder, provider: Provider) {
+    match provider {
+        Provider::Codex => {
+            path.move_to(point(px(2.5), px(3.0)));
+            path.line_to(point(px(6.8), px(6.8)));
+            path.line_to(point(px(2.5), px(10.6)));
+            line(path, (8.0, 11.0), (12.5, 11.0));
+        }
+        Provider::Claude => {
+            line(path, (7.0, 1.5), (7.0, 12.5));
+            line(path, (1.5, 7.0), (12.5, 7.0));
+            line(path, (3.1, 3.1), (10.9, 10.9));
+            line(path, (10.9, 3.1), (3.1, 10.9));
+        }
     }
 }
 
@@ -949,6 +979,30 @@ mod tests {
         for (index, shape) in shapes.iter().enumerate() {
             for other in &shapes[index + 1..] {
                 assert_ne!(shape.vertices, other.vertices);
+            }
+        }
+    }
+
+    #[test]
+    fn each_agent_has_its_own_mark_that_reads_as_no_panel_and_no_action() {
+        let marks = [Provider::Codex, Provider::Claude].map(|provider| {
+            (
+                format!("{provider:?}"),
+                shape("mark", |path| provider_glyph(path, provider)),
+            )
+        });
+        assert_ne!(marks[0].1.vertices, marks[1].1.vertices);
+        assert!(difference(&marks[0].1, &marks[1].1) >= 0.3);
+        for (name, mark) in &marks {
+            for panel in PANELS {
+                let panel_shape = shape(&format!("{panel:?}"), |path| panel_glyph(path, panel));
+                let differs = difference(mark, &panel_shape);
+                assert!(differs >= 0.3, "{name} reads as {panel:?} ({differs:.2})");
+            }
+            for action in ACTIONS {
+                let action_shape = shape(&format!("{action:?}"), |path| action_glyph(path, action));
+                let differs = difference(mark, &action_shape);
+                assert!(differs >= 0.3, "{name} reads as {action:?} ({differs:.2})");
             }
         }
     }
