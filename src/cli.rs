@@ -97,9 +97,13 @@ riwork shell cwd|metrics|attach|close ID
 riwork shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux client of the shell (for remote terminals)
 riwork chat serve [--idle-seconds N]    Run the chat host in the foreground (exits after 15 idle minutes by default)
 riwork chat ensure                      Start the chat host if it is not running; print its socket
-riwork chat list [--json]               List Codex and Claude chats, running or not
+riwork chat list [--project ID] [--json]   List Codex and Claude chats, running or not
 riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
+                [--model NAME] [--effort LEVEL] [--title TEXT]
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
+riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
+                                        Read a chat's events after N, waiting up to M ms for the first
+riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
 riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD]
@@ -126,6 +130,20 @@ they outlive app windows; `chat ensure` starts it detached, and it exits after
 chat new defaults to the active project, like shell create, and starts the chat's
 provider at once; --mode is how much the agent may do without asking (supervised by
 default). A chat whose provider cannot start is kept as failed; chat send retries.
+chat new --json prints the chat as `chat list --json` shows it, also when its provider
+did not start (state failed); without --json that is an error. --model, --effort and
+--title (at most 100, 32 and 200 characters, no control characters) take their value
+as it is, also with `=`: --title=--draft.
+chat events --json prints one line, {\"chat_id\",\"events\":[{\"seq\",\"event\"}],\"next\",\"more\"}:
+the events with seq above --since (default 0), at most --max (500 by default, up to
+2000) and as many as fit --max-bytes (1 MiB by default, up to 2 MiB). With none yet it
+waits up to --wait-ms (up to 25000) for the first, then collects for 50 ms; it
+returns at once for events that are already there. Pass `next` as --since to continue;
+`more` says the page was cut short. An event too big for a page alone has its long
+strings cut. chat command takes one ChatCommand as JSON (send, interrupt, approve,
+answer, configure, compact, stop) and refuses unknown fields; errors that start with
+`invalid_request:` are about the command, anything else about the host or the chat.
+capabilities --json has \"chat\": true.
 worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
@@ -763,12 +781,14 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "v": 1,
             "verifies_shell": true,
             "project_create_exclusive": true,
-            "shell_attach_exec": true
+            "shell_attach_exec": true,
+            "chat": true
         }));
     }
     println!("verifies_shell yes");
     println!("project_create_exclusive yes");
     println!("shell_attach_exec yes");
+    println!("chat yes");
     Ok(())
 }
 
@@ -1801,7 +1821,10 @@ fn chat_client_command(
     json: bool,
     ensure: &dyn Fn(&Path) -> Result<PathBuf, String>,
 ) -> Result<String, String> {
-    use crate::chat::{client::Client, model::ChatCommand};
+    use crate::chat::{
+        client::{Client, Subscription},
+        model::ChatCommand,
+    };
     let operation = pop_command(&mut args, "list");
     match operation.as_str() {
         "ensure" => {
@@ -1814,8 +1837,23 @@ fn chat_client_command(
             }
         }
         "list" => {
+            let project = take_option(&mut args, "--project")?;
             ensure_empty(&args)?;
-            let chats = Client::connect(&ensure(home)?)?.list()?;
+            // An unknown project is refused before a host is started for it.
+            let project_id = match project {
+                Some(selector) => Some(
+                    Store::open(home)?
+                        .snapshot()?
+                        .project(&selector)?
+                        .id
+                        .clone(),
+                ),
+                None => None,
+            };
+            let mut chats = Client::connect(&ensure(home)?)?.list()?;
+            if let Some(project_id) = project_id {
+                chats.retain(|chat| chat.project_id.as_deref() == Some(project_id.as_str()));
+            }
             if json {
                 json_text(&chats)
             } else {
@@ -1823,6 +1861,17 @@ fn chat_client_command(
             }
         }
         "new" => {
+            // Free text first: a title may look like an option.
+            let model = take_verbatim_option(&mut args, "--model")?
+                .map(|model| model_setting("--model", model))
+                .transpose()?;
+            let effort = take_verbatim_option(&mut args, "--effort")?
+                .map(|effort| effort_setting("--effort", effort))
+                .transpose()?;
+            let title = match take_verbatim_option(&mut args, "--title")? {
+                Some(title) => title_setting("--title", title)?,
+                None => None,
+            };
             let provider = match take_option(&mut args, "--provider")?.as_deref() {
                 Some("codex") => crate::chat::model::Provider::Codex,
                 Some("claude") => crate::chat::model::Provider::Claude,
@@ -1846,21 +1895,81 @@ fn chat_client_command(
                 project_id: Some(project_id),
                 worktree_id,
                 cwd,
-                title: None,
+                title,
                 approval_mode,
-                model: None,
-                effort: None,
+                model,
+                effort,
             })?;
-            if let crate::chat::model::ChatState::Failed { message } = &chat.state {
-                return Err(format!(
+            if json {
+                // A chat whose provider did not start still exists, and the
+                // caller needs its id (the next message tries again): its
+                // state says what happened.
+                json_text(&chat)
+            } else if let crate::chat::model::ChatState::Failed { message } = &chat.state {
+                Err(format!(
                     "Chat {} was created, but its provider did not start: {message}",
                     chat.id
-                ));
-            }
-            if json {
-                json_text(&chat)
+                ))
             } else {
                 Ok(chat_line(&chat))
+            }
+        }
+        "events" => {
+            let started = std::time::Instant::now();
+            let options = parse_events_arguments(args)?;
+            let socket = ensure(home)?;
+            let id = resolve_chat(&mut Client::connect(&socket)?, &options.chat)?;
+            let mut subscription =
+                Subscription::open(&socket, &id, options.since).map_err(|error| {
+                    if error.contains("cannot continue after") {
+                        chat_remote::invalid(error)
+                    } else {
+                        error
+                    }
+                })?;
+            // The wait counts from the start of this process, so a host that
+            // took long to start does not stretch it.
+            let page = chat_remote::collect(
+                &mut subscription,
+                &chat_remote::Plan {
+                    chat_id: id,
+                    since: options.since,
+                    first_by: (started + options.wait)
+                        .max(std::time::Instant::now() + chat_remote::REPLAY_GRACE),
+                    max: options.max,
+                    max_bytes: options.max_bytes,
+                },
+            )?;
+            if json {
+                page.line()
+            } else {
+                page.event_lines()
+            }
+        }
+        "command" => {
+            let from_option = take_verbatim_option(&mut args, "--command-json")?;
+            // `-- JSON`: everything after the separator is the command.
+            let after_separator = args.iter().position(|arg| arg == "--").map(|at| {
+                let mut tail = args.split_off(at);
+                tail.remove(0);
+                tail
+            });
+            let text = match (from_option, after_separator) {
+                (Some(text), None) => text,
+                (None, Some(mut tail)) if tail.len() == 1 => tail.remove(0),
+                _ => return Err(chat_remote::COMMAND_USAGE.to_owned()),
+            };
+            let selector =
+                take_single(args, "chat command CHAT_ID (--command-json JSON | -- JSON)")?;
+            // Refused before a host is started for it.
+            let command = chat_remote::parse_command(&text)?;
+            let mut client = Client::connect(&ensure(home)?)?;
+            let id = resolve_chat(&mut client, &selector)?;
+            client.command(&id, command)?;
+            if json {
+                json_text(&json!({ "id": id, "status": "ok" }))
+            } else {
+                Ok(String::new())
             }
         }
         "send" => {
@@ -1893,11 +2002,14 @@ fn chat_client_command(
                 Ok(format!("Stopped {id}\n"))
             }
         }
-        _ => Err("Usage: riwork chat serve|ensure|list|new|send|stop (riwork help)".to_owned()),
+        _ => Err(
+            "Usage: riwork chat serve|ensure|list|new|events|command|send|stop (riwork help)"
+                .to_owned(),
+        ),
     }
 }
 
-const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]";
+const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--title TEXT]";
 
 /// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
 fn resolve_chat(
@@ -2690,6 +2802,13 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
     }
 }
 
+mod chat_remote;
+use chat_remote::{
+    effort_setting, model_setting, parse_events_arguments, take_verbatim_option, title_setting,
+};
+
+#[cfg(test)]
+mod chat_remote_tests;
 #[cfg(test)]
 mod chat_tests;
 
