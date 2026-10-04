@@ -466,6 +466,44 @@ fn closing_a_chat_keeps_its_history_and_the_next_message_resumes_its_thread() {
 }
 
 #[test]
+fn an_empty_configure_resumes_a_stopped_chat_and_other_configures_do_not() {
+    // A tab's Retry sends a Configure that changes nothing.
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    let mut client = host.client();
+    client.close(&chat.id).unwrap();
+    assert_eq!(host.info(&chat.id).state, ChatState::Stopped);
+    client
+        .command(
+            &chat.id,
+            ChatCommand::Configure {
+                model: Some("gpt-5".into()),
+                effort: None,
+                approval_mode: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        host.fake().starts.lock().unwrap().len(),
+        1,
+        "a real change starts nothing"
+    );
+    client
+        .command(
+            &chat.id,
+            ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+            },
+        )
+        .unwrap();
+    let starts = host.fake().starts.lock().unwrap().clone();
+    assert_eq!(starts.len(), 2, "the retry resumed the provider");
+    assert_eq!(starts[1].resume.as_deref(), Some("thread-1"));
+}
+
+#[test]
 fn closing_a_chat_in_the_middle_of_a_turn_ends_the_turn() {
     let host = TestHost::new();
     let chat = host.create(Provider::Claude);

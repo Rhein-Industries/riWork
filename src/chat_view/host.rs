@@ -11,21 +11,14 @@ use crate::chat::client::socket_path;
 use super::feed::Ensure;
 
 /// Make sure the chat host (`riwork chat serve`) is running for the data directory `home`,
-/// and return the socket it listens on.
-///
-/// Pending the host: this only checks that something listens. Once the host lands, the body
-/// becomes a call to `riwork chat ensure`, which starts it when it is not running; the
-/// callers (`HostConfig`) do not change.
+/// and return the socket it listens on. A host that answers is used as it is; otherwise
+/// `riwork chat ensure` starts one (detached, so it outlives this window).
 pub fn ensure_host(home: &Path) -> Result<PathBuf, String> {
     let socket = socket_path(home);
-    UnixStream::connect(&socket)
-        .map(|_| socket.clone())
-        .map_err(|error| {
-            format!(
-                "The chat host is not running ({}): {error}",
-                socket.display()
-            )
-        })
+    if UnixStream::connect(&socket).is_ok() {
+        return Ok(socket);
+    }
+    crate::chat::host::ensure_host(home)
 }
 
 /// How a chat tab reaches the host.

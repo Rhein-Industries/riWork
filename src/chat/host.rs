@@ -1478,7 +1478,16 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
         stop(chat);
         return Ok(());
     }
-    if matches!(command, ChatCommand::Send { .. } | ChatCommand::Compact) {
+    // A Configure that changes nothing is a tab's Retry: resume the provider.
+    let retry = matches!(
+        &command,
+        ChatCommand::Configure {
+            model: None,
+            effort: None,
+            approval_mode: None,
+        }
+    );
+    if retry || matches!(command, ChatCommand::Send { .. } | ChatCommand::Compact) {
         ensure_running(shared, chat)?;
     }
     let Some(driver) = live_driver(chat) else {
