@@ -2,12 +2,14 @@
 //! capturing the pane every 80 ms to find out.
 //!
 //! A tmux control-mode client attached to the shell's own session
-//! (`tmux -C attach-session -f read-only,ignore-size`) gets a line for every
+//! (`tmux -C attach-session -f ignore-size`) gets a line for every
 //! write the pane's program makes (`%output`), and for layout and mode changes.
 //! It is only an alarm: the waiting call still captures and hashes the pane
 //! itself, so what it answers is what it always answered. The client never
-//! sends a command, never sizes a window (`ignore-size`) and cannot change
-//! anything (`read-only`).
+//! sends a command and never sizes a window (`ignore-size`). It is not
+//! `read-only`: tmux runs a `send-keys` that names no client for the most
+//! recently active one, and refuses it when that client is read-only, so a
+//! watching phone would lock every key out of the shell it watches.
 //!
 //! A quiet pane then costs nothing: no process starts until something is
 //! written. A change in a pane that tmux announces nothing about (such as
@@ -141,7 +143,7 @@ impl PaneWatch {
         let mut child = command
             .args(["-C", "attach-session", "-t"])
             .arg(format!("={session}"))
-            .args(["-f", "read-only,ignore-size"])
+            .args(["-f", "ignore-size"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
