@@ -6687,6 +6687,12 @@ impl Workspace {
         } else {
             0.0
         };
+        let native = ui_text::is_native();
+        // Native's bar beside the window controls keeps no drag room after its tabs: the
+        // controls' area already drags the window, and the room only parted the tabs from
+        // the buttons.
+        let drag_room = !(native && control_inset > 0.0);
+        let drag_handle = drag_handle && drag_room;
         let header_width = pane_width - control_inset;
         let show_lock = header_width >= ui_text::space_f32(108.0);
         let show_focus = header_width >= ui_text::space_f32(180.0);
@@ -6703,7 +6709,6 @@ impl Workspace {
                     152.0
                 });
         let account_numbers = codex_account_numbers(&self.shells);
-        let native = ui_text::is_native();
         let tab_can_close = user_close_refusal(pane_locked, UserClose::Tab).is_none();
         // A panel's tab says its name as the theme writes labels; a saved layout keeps
         // whatever title the tab was created with.
@@ -6732,7 +6737,11 @@ impl Workspace {
             + (buttons - 1.0) * ui_text::space_f32(NATIVE_BAR_BUTTON_GAP)
             + 2.0 * ui_text::space_f32(NATIVE_BAR_BUTTON_INSET)
             + if drag_handle { handle_width } else { 0.0 }
-            + ui_text::space_f32(18.0);
+            + if drag_room {
+                ui_text::space_f32(18.0)
+            } else {
+                0.0
+            };
         let compact_panels = native && !self.settings.panel_tab_icons && {
             let close = ui_text::space_f32(6.0 + NATIVE_TAB_CLOSE) - ui_text::space_f32(4.0);
             let words: f32 = titles
@@ -7031,7 +7040,7 @@ impl Workspace {
                         div()
                             .id(("window-drag-space", pane_id))
                             .flex_1()
-                            .min_w(ui_text::space(18.0))
+                            .min_w(ui_text::space(if drag_room { 18.0 } else { 0.0 }))
                             .h_full()
                             .when(window_drag_enabled, |space| {
                                 space.on_mouse_down(MouseButton::Left, start_window_drag)
