@@ -1689,6 +1689,9 @@ impl Workspace {
         cx.observe_window_bounds(window, |workspace, window, cx| {
             // A hint stays where it opened, so a moved or resized window leaves it behind.
             tooltip::hide(cx);
+            // Moving to a display of another scale also lands here, before the
+            // terminals are resized for it.
+            metal_layer::sync_terminal_scale(window);
             workspace.remember_window_size(window, true, cx);
         })
         .detach();
