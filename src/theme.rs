@@ -1,6 +1,7 @@
 //! Application palettes and colors resolved by the same Ghostty library as terminals.
 
 use crate::appearance_file::{PaletteColors, Published, Rgb, TerminalColors};
+use crate::settings::Settings;
 use gpui::{App, Global};
 use gpui_libghostty::{TerminalColor, TerminalTheme};
 use serde::{Deserialize, Serialize};
@@ -240,6 +241,38 @@ pub fn palette(cx: &App) -> Palette {
         .map_or(Palette::RIWORK, |appearance| appearance.palette)
 }
 
+/// The colors for what a change added and what it removed, taken from the
+/// terminal's green and red so a diff reads as it does in the user's own tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffColors {
+    pub added: u32,
+    pub removed: u32,
+}
+
+impl DiffColors {
+    /// The green and red (ANSI 2 and 1) of `theme`, nudged until they read on
+    /// `background`.
+    pub fn from_terminal(theme: &TerminalTheme, background: u32) -> Self {
+        Self {
+            added: readable(color_u32(theme.palette[2]), background),
+            removed: readable(color_u32(theme.palette[1]), background),
+        }
+    }
+}
+
+/// The diff colors for the theme on screen, readable on the panels' highlight
+/// color. A configuration that gave no terminal colors falls back to RiWork's.
+pub fn diff_colors(cx: &App) -> DiffColors {
+    let use_riwork_colors = cx
+        .try_global::<Settings>()
+        .is_some_and(|settings| settings.use_riwork_colors);
+    let appearance = cx.try_global::<Appearance>();
+    let theme = appearance
+        .and_then(|appearance| appearance.shown_terminal(use_riwork_colors))
+        .unwrap_or_else(riwork_terminal_theme);
+    DiffColors::from_terminal(&theme, palette(cx).panel_active)
+}
+
 const fn color(value: u32) -> TerminalColor {
     TerminalColor::new((value >> 16) as u8, (value >> 8) as u8, value as u8)
 }
@@ -293,7 +326,8 @@ fn preset(choice: ThemeChoice) -> TerminalTheme {
     }
 }
 
-fn mix(first: u32, second: u32, amount: f64) -> u32 {
+/// `first` moved `amount` (0 to 1) of the way to `second`, channel by channel.
+pub fn mix(first: u32, second: u32, amount: f64) -> u32 {
     let mut result = 0;
     for shift in [16, 8, 0] {
         let first = f64::from((first >> shift) & 255);
@@ -1252,6 +1286,19 @@ mod tests {
         let gruvbox = Appearance::resolve(ThemeChoice::GruvboxLight);
         assert_eq!(gruvbox.terminal_override(false), gruvbox.terminal);
         assert_eq!(gruvbox.terminal_override(true), gruvbox.terminal);
+    }
+
+    #[test]
+    fn diff_colors_are_the_terminals_green_and_red_made_readable() {
+        let riwork = riwork_terminal_theme();
+        let colors = DiffColors::from_terminal(&riwork, 0x14212a);
+        assert_eq!(colors.added, 0x61d5ae);
+        assert_eq!(colors.removed, 0xf0738b);
+        // A light theme's pale green is darkened until it reads on the light panel.
+        let pale = terminal_theme(0xfbf1c7, 0x3c3836, [0xcccccc; 16]);
+        let colors = DiffColors::from_terminal(&pale, 0xfbf1c7);
+        assert!(contrast(colors.added, 0xfbf1c7) >= 4.5);
+        assert!(contrast(colors.removed, 0xfbf1c7) >= 4.5);
     }
 
     #[test]
