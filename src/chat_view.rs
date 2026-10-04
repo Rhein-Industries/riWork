@@ -957,7 +957,9 @@ impl Render for ChatView {
             .flex_col()
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
-            .font_family("Menlo")
+            // Menlo in the colorful themes; Native's interface face, with code, diffs and
+            // output set in `ui_text::code_family` where they are drawn.
+            .font_family(ui_text::ui_family())
             .text_size(ui_text::text(12.0))
             .track_focus(&self.focus)
             .key_context("ChatView")
