@@ -2456,7 +2456,7 @@ impl SettingsPanel {
                             .text_size(ui_text::text(10.0))
                             .text_center()
                             .text_color(rgb(value_color))
-                            .child(ui_text::label(shown)),
+                            .child(ui_text::label(ui_text::shown_points(settings, shown))),
                     )
                     .child(button("ui-text-bigger", "+", SizeChange::Bigger, cx))
                     // RESET only when there is something to reset; Cmd+0 always works.

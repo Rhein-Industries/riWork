@@ -80,17 +80,19 @@ impl Face {
         }
     }
 
-    /// How much larger than the design size this face draws. Sizes were designed
-    /// in Menlo, whose 11 px list text sits beside a 13 pt terminal. SF Pro is
-    /// narrower and has a smaller x-height at equal size, and macOS's own lists,
-    /// sidebars and menus use it at 13 pt, so the system face draws the 11 px
-    /// list text at 13 px, with tabs and captions growing alike. While the size
-    /// matches the terminal it is Ghostty's number as it is, like Menlo's.
-    pub fn factor(self, matching_terminal: bool) -> f32 {
+    /// How many points larger than the saved size this face draws. Sizes were
+    /// designed in Menlo, whose 11 px list text sits beside a 13 pt terminal. SF
+    /// Pro is narrower and has a smaller x-height at equal size, and macOS's own
+    /// lists, sidebars and menus use it at 13 pt, so the system face draws the
+    /// default 11 pt list text at 13 pt, with tabs and captions growing alike.
+    /// It is an offset, not a factor, so the size Settings shows (`shown_points`)
+    /// is the size drawn and still steps by whole points. While the size matches
+    /// the terminal it is Ghostty's number as it is, like Menlo's.
+    pub fn offset(self, matching_terminal: bool) -> f32 {
         match self {
-            Self::Menlo => 1.0,
-            Self::System | Self::SystemMono if matching_terminal => 1.0,
-            Self::System | Self::SystemMono => SYSTEM_BODY_POINTS / REFERENCE_SIZE,
+            Self::Menlo => 0.0,
+            Self::System | Self::SystemMono if matching_terminal => 0.0,
+            Self::System | Self::SystemMono => SYSTEM_BODY_POINTS - REFERENCE_SIZE,
         }
     }
 }
@@ -136,6 +138,28 @@ thread_local! {
 /// The face the interface is drawn in now.
 pub fn face() -> Face {
     FACE.with(Cell::get)
+}
+
+/// Whether the Native theme is what the interface is drawn in: it is the one
+/// theme with the system face. Render code that has no `cx` asks this.
+pub fn is_native() -> bool {
+    face() != Face::Menlo
+}
+
+/// A label as Native shows it: in sentence case, as it is written in the source.
+/// The colorful themes show every label in capitals, as RiWork always has.
+pub fn cased(text: impl Into<SharedString>) -> SharedString {
+    let text = text.into();
+    if is_native() {
+        text
+    } else {
+        text.to_uppercase().into()
+    }
+}
+
+/// The size Settings shows for the saved `points`: what the face draws.
+pub fn shown_points(settings: &Settings, points: f32) -> f32 {
+    points + Face::of(settings).offset(settings.ui_text_matches_terminal)
 }
 
 /// The font family of a window's or popup's root.
@@ -353,7 +377,7 @@ fn sync(cx: &mut App) {
     let settings = cx.global::<Settings>();
     let face = Face::of(settings);
     let scale =
-        current_points(cx) / REFERENCE_SIZE * face.factor(settings.ui_text_matches_terminal);
+        (current_points(cx) + face.offset(settings.ui_text_matches_terminal)) / REFERENCE_SIZE;
     let scale_moved = SCALE.with(|cell| cell.replace(scale)) != scale;
     let face_moved = FACE.with(|cell| cell.replace(face)) != face;
     if scale_moved || face_moved {
@@ -427,13 +451,15 @@ mod tests {
             let face = Face::of(&settings);
             if theme == ThemeChoice::Native {
                 assert_eq!(face, Face::SystemMono);
-                // The 11 px design text is drawn at macOS's 13 pt body size.
-                assert!((REFERENCE_SIZE * face.factor(false) - SYSTEM_BODY_POINTS).abs() < 1e-4);
+                // The default 11 pt is drawn, and shown, at macOS's 13 pt body size.
+                assert_eq!(DEFAULT_POINTS + face.offset(false), SYSTEM_BODY_POINTS);
+                assert_eq!(shown_points(&settings, 12.0), 14.0);
                 // Matching the terminal shows Ghostty's own number.
-                assert_eq!(face.factor(true), 1.0);
+                assert_eq!(face.offset(true), 0.0);
             } else {
                 assert_eq!(face, Face::Menlo, "{theme:?}");
-                assert_eq!(face.factor(false), 1.0);
+                assert_eq!(face.offset(false), 0.0);
+                assert_eq!(shown_points(&settings, 12.0), 12.0);
             }
         }
         settings.theme = ThemeChoice::Native;
@@ -443,6 +469,19 @@ mod tests {
         // Off the UI thread, and before `init`, the face is Menlo as it always was.
         assert_eq!(ui_family(), "Menlo");
         assert_eq!(mono_family(), "Menlo");
+    }
+
+    #[test]
+    fn labels_are_capitals_in_the_colorful_themes_and_as_written_in_native() {
+        assert!(!is_native());
+        assert_eq!(cased("Add host"), "ADD HOST");
+        assert_eq!(cased("+ Folder"), "+ FOLDER");
+        for face in [Face::System, Face::SystemMono] {
+            FACE.with(|cell| cell.set(face));
+            assert!(is_native());
+            assert_eq!(cased("Add host"), "Add host");
+        }
+        FACE.with(|cell| cell.set(Face::Menlo));
     }
 
     #[test]
