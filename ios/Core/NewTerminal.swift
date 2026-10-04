@@ -11,7 +11,14 @@ import Foundation
 public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiable {
     case shell, codex, claude, grok
     case codexChat = "codex_chat", claudeChat = "claude_chat"
+    /// The orchestrator of the project on screen, or the global one: opened (or started, if it is not there yet) by `orchestrator.create`,
+    /// neither `shell.create` nor `chat.create`. Whether it is a terminal or a chat is the Mac's setting.
+    case projectOrchestrator = "project_orchestrator", globalOrchestrator = "global_orchestrator"
     public var id: String { rawValue }
+    /// The kinds that make a tab of their own, a terminal or a chat. The orchestrators are not among them: there is one of each, and
+    /// asking for it again opens the one that is there (`orchestratorKinds`).
+    public static var allCases: [NewTerminalKind] { [.shell, .codex, .claude, .grok, .codexChat, .claudeChat] }
+    public static let orchestratorKinds: [NewTerminalKind] = [.projectOrchestrator, .globalOrchestrator]
     public var title: String {
         switch self {
         case .shell: "Shell"
@@ -20,10 +27,15 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
         case .grok: "Grok"
         case .codexChat: ChatProvider.codex.chatTitle
         case .claudeChat: ChatProvider.claude.chatTitle
+        case .projectOrchestrator: "Project orchestrator"
+        case .globalOrchestrator: "Global orchestrator"
         }
     }
-    /// Agents can be started without approval prompts; a plain shell cannot. For a chat that is its Full mode.
-    public var isAgent: Bool { self != .shell }
+    /// Agents can be started without approval prompts; a plain shell cannot. For a chat that is its Full mode. An orchestrator is
+    /// started the way the Mac is set to start it, and has no switch here.
+    public var isAgent: Bool { self != .shell && !isOrchestrator }
+    /// An orchestrator, which `orchestrator.create` opens.
+    public var isOrchestrator: Bool { self == .projectOrchestrator || self == .globalOrchestrator }
     /// A chat tab, which `chat.create` makes, as opposed to a terminal, which `shell.create` makes.
     public var chatProvider: ChatProvider? {
         switch self {
@@ -37,8 +49,10 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
     public static let standard = NewTerminalKind.shell
     /// What every desktop can open.
     public static let terminalKinds: [NewTerminalKind] = [.shell, .codex, .claude, .grok]
-    /// What the sheet offers: the chats only on a desktop that has them.
-    public static func offered(chats: Bool) -> [NewTerminalKind] { chats ? allCases : terminalKinds }
+    /// What the sheet offers: the chats only on a desktop that has them, the orchestrators only on one that opens them.
+    public static func offered(chats: Bool, orchestrators: Bool = false) -> [NewTerminalKind] {
+        (chats ? allCases : terminalKinds) + (orchestrators ? orchestratorKinds : [])
+    }
     /// The kind after `steps` rows down (negative: up) among `kinds`, wrapping at both ends.
     public func moved(by steps: Int, among kinds: [NewTerminalKind] = NewTerminalKind.terminalKinds) -> NewTerminalKind {
         guard !kinds.isEmpty else { return self }
@@ -62,6 +76,12 @@ public enum NewTerminalTarget: Sendable, Equatable, Hashable, Identifiable {
         switch self {
         case .project(let id, _): id
         case .worktree(_, let projectID, _, _, _): projectID
+        }
+    }
+    public var projectName: String {
+        switch self {
+        case .project(_, let name): name
+        case .worktree(_, _, let name, _, _): name
         }
     }
     public var worktreeID: String? { if case .worktree(let id, _, _, _, _) = self { id } else { nil } }
@@ -145,8 +165,8 @@ public struct NewTerminalRequest: Sendable, Equatable {
         switch target {
         case .project(let id), .worktree(let id): guard Self.isCanonicalUUID(id) else { throw NewTerminalValidationError.invalidID }
         }
-        // A chat is made by `chat.create`: `shell.create` has no such kind.
-        if kind.isChat { throw NewTerminalValidationError.unknownKind }
+        // A chat is made by `chat.create` and an orchestrator opened by `orchestrator.create`: `shell.create` has no such kind.
+        if kind.isChat || kind.isOrchestrator { throw NewTerminalValidationError.unknownKind }
         if unrestricted, !kind.isAgent { throw NewTerminalValidationError.unrestrictedNeedsAgent }
         if let command {
             guard kind == .shell else { throw NewTerminalValidationError.commandNeedsShell }
@@ -359,8 +379,9 @@ public struct NewTerminalForm: Equatable, Sendable {
     }
 
     public var target: NewTerminalTarget? { targets.indices.contains(targetIndex) ? targets[targetIndex] : nil }
-    /// The controls that can have focus now: the toggle only exists for agents.
-    public var fields: [Field] { Field.allCases.filter { $0 != .unrestricted || kind.isAgent } }
+    /// The controls that can have focus now: the toggle only exists for agents, and an orchestrator has no worktree to choose (it
+    /// belongs to the project, or to none).
+    public var fields: [Field] { Field.allCases.filter { ($0 != .unrestricted || kind.isAgent) && ($0 != .target || !kind.isOrchestrator) } }
 
     public mutating func select(kind: NewTerminalKind) {
         guard kind != self.kind, kinds.contains(kind) else { return }
@@ -400,9 +421,15 @@ public struct NewTerminalForm: Equatable, Sendable {
         return try NewTerminalRequest(target: target.requestTarget, kind: kind, unrestricted: unrestricted && kind.isAgent)
     }
 
-    /// What Create sends: `shell.create` for a terminal, `chat.create` for a chat. Unrestricted is a chat's Full mode; anything else
-    /// leaves the mode out, so the desktop's default (Supervised) applies.
+    /// What Create sends: `shell.create` for a terminal, `chat.create` for a chat, `orchestrator.create` for an orchestrator (the
+    /// project's, which is the project of what is chosen and not one of its worktrees, or the global one, which needs no choice).
+    /// Unrestricted is a chat's Full mode; anything else leaves the mode out, so the desktop's default (Supervised) applies.
     public func submission() throws -> NewTabRequest {
+        if kind == .globalOrchestrator { return .orchestrator(try NewOrchestratorRequest(projectID: nil)) }
+        if kind == .projectOrchestrator {
+            guard let target else { throw NewTerminalValidationError.needsOneTarget }
+            return .orchestrator(try NewOrchestratorRequest(projectID: target.projectID))
+        }
         guard let provider = kind.chatProvider else { return .terminal(try request()) }
         guard let target else { throw NewTerminalValidationError.needsOneTarget }
         return .chat(try ChatCreateRequest(provider: provider, target: target.requestTarget, approvalMode: unrestricted ? .full : nil))
@@ -413,4 +440,5 @@ public struct NewTerminalForm: Equatable, Sendable {
 public enum NewTabRequest: Sendable, Equatable {
     case terminal(NewTerminalRequest)
     case chat(ChatCreateRequest)
+    case orchestrator(NewOrchestratorRequest)
 }

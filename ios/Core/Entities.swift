@@ -62,11 +62,19 @@ public struct RemoteSession: Codable, Sendable, Identifiable, Hashable {
     public let activity_since_unix: UInt64?
     /// Subagents at work for this terminal's agent; zero when none, or not said.
     public let subagents_working: Int
+    /// How the desktop runs it: a terminal (also when the desktop does not say, or says a word this phone does not know) or a chat.
+    public let mode: SessionMode
+    /// The chat that is this entry, when it runs as one (`ProjectTabs.swift`: always use this for chat requests, never `id`).
+    public let chat_id: String?
+    /// Which agent the chat is.
+    public let provider: ChatProvider?
     private enum CodingKeys: String, CodingKey {
         case id, project_id, worktree_id, kind, cwd, harness, alive, created_at_unix, activity, activity_since_unix, subagents_working
+        case mode, chat_id, provider
     }
     public var title: String {
         if kind == "orchestrator" { return project_id == nil ? "Global orchestrator" : "Project orchestrator" }
+        if mode == .chat { return provider?.chatTitle ?? "Chat" }
         return harness.map { $0.capitalized + " worker" } ?? "Terminal"
     }
     public var shortID: String { String(id.prefix(8)) }
@@ -90,6 +98,15 @@ extension RemoteSession {
         activity = AgentActivity(wire: try? c.decode(JSONValue.self, forKey: .activity))
         activity_since_unix = LenientNumber.seconds(try? c.decode(JSONValue.self, forKey: .activity_since_unix))
         subagents_working = LenientNumber.count(try? c.decode(JSONValue.self, forKey: .subagents_working)) ?? 0
+        // The chat fields (`ProjectTabs.swift`) came later still: whatever is wrong with one leaves it unset, never the list.
+        mode = SessionMode(wire: try? c.decode(JSONValue.self, forKey: .mode))
+        chat_id = (try? c.decode(JSONValue.self, forKey: .chat_id)).flatMap(Self.chatID(wire:))
+        provider = (try? c.decode(JSONValue.self, forKey: .provider))?.string.flatMap { ChatProvider(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+    }
+    /// A chat id as the wire has it: a UUID, kept in the lowercase form every chat request needs. Anything else is no id.
+    static func chatID(wire value: JSONValue) -> String? {
+        guard let text = value.string, text.utf8.count == 36, let uuid = UUID(uuidString: text) else { return nil }
+        return uuid.uuidString.lowercased()
     }
 }
 

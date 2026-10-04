@@ -62,12 +62,34 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
 extension RemoteModel {
     /// The sheet may offer Codex chat and Claude chat: the desktop said it has them, and has not refused them since.
     var chatsOffered: Bool { chatSupport == .supported }
-    /// The chosen project's chats in tab order.
-    var projectChats: [ChatInfo] { ChatTabs.ordered(chats) }
-    /// The chat on screen, if one is.
-    var selectedChat: ChatInfo? { selectedChatID.flatMap { id in chats.first { $0.id == id } } }
+    /// The strip: every terminal, every chat and every orchestrator, which runs as one or the other (`ProjectTabs`). A chat is not a
+    /// terminal because it is an orchestrator: `mode` says, and the strip follows it.
+    var tabs: [ProjectTab] {
+        ProjectTabs.tabs(sessions: sessions, chats: chats, chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
+    }
+    /// The chosen project's own chats in tab order: those that are not an orchestrator's.
+    var projectChats: [ChatInfo] { tabs.compactMap { if case .chat(let info) = $0 { info } else { nil } } }
+    /// The chat on screen, if one is: a listed chat, or the chat (`chat_id`) of an orchestrator that runs as one.
+    var selectedChat: ChatInfo? {
+        guard let id = selectedChatID else { return nil }
+        return tabs.lazy.compactMap(\.chatInfo).first { $0.id == id }
+    }
     /// A chat is the screen on top of the tabs, so the terminal is not.
     var chatIsOnScreen: Bool { selectedChat != nil }
+    /// The orchestrator whose notice is on screen ("Update the Mac to open this orchestrator"), if one is.
+    var selectedBlocked: (session: RemoteSession, opening: SessionOpening)? {
+        guard let id = selectedBlockedID else { return nil }
+        for case .unavailable(let session, let opening) in tabs where session.id == id { return (session, opening) }
+        return nil
+    }
+    /// Something other than the terminal is the screen on top of the tabs: it is released (its long poll stops, its pinned size is
+    /// cleared) and its key view is not in the hierarchy.
+    var terminalCovered: Bool { selectedChat != nil || selectedBlocked != nil }
+    /// The orchestrator a chat is, when it is one: it is called by the orchestrator's name.
+    func orchestrator(ofChat id: String) -> RemoteSession? {
+        for case .orchestratorChat(let session, let info) in tabs where info.id == id { return session }
+        return nil
+    }
 
     /// What a chat's tab says it is doing: what the chat itself says while it is followed (a fresher word than the list's), otherwise
     /// what the list said.
@@ -99,11 +121,27 @@ extension RemoteModel {
 
     /// Puts a chat on screen. The terminal behind it is released by the screen, which stops showing it.
     func selectChat(_ id: String) {
-        guard chats.contains(where: { $0.id == id }) else { return }
+        guard tabs.contains(where: { $0.chatInfo?.id == id }) else { return }
         _ = conversation(id)
-        selectedChatID = id
+        selectedChatID = id; selectedBlockedID = nil
     }
     func deselectChat() { selectedChatID = nil }
+
+    /// Puts an orchestrator's tab on screen. One that runs as a chat opens that chat, by its `chat_id`; one the phone cannot open
+    /// shows why; a terminal is chosen the way it always was (`chooseSession`).
+    func chooseOrchestrator(_ tab: ProjectTab) {
+        switch tab {
+        case .orchestratorChat(_, let info): selectChat(info.id)
+        case .unavailable(let session, _): selectedChatID = nil; selectedBlockedID = session.id
+        case .terminal, .chat: break
+        }
+    }
+    /// A chat, or an orchestrator's notice, that is no longer in the strip (the desktop no longer lists it, or no longer runs it that
+    /// way) puts the terminals back.
+    func reconcileChatSelection() {
+        if selectedChatID != nil, selectedChat == nil { selectedChatID = nil }
+        if selectedBlockedID != nil, selectedBlocked == nil { selectedBlockedID = nil }
+    }
 
     // MARK: Listing
 
@@ -112,9 +150,9 @@ extension RemoteModel {
         guard projectID == project else { return }
         let ordered = listed
         if ordered != chats { chats = ordered }
-        if let selected = selectedChatID, !ordered.contains(where: { $0.id == selected }) { selectedChatID = nil }
-        // A chat the desktop no longer has is not held on to.
-        let known = Set(ordered.map(\.id))
+        reconcileChatSelection()
+        // A chat the desktop no longer has is not held on to (an orchestrator's chat is the orchestrator list's to keep).
+        let known = Set(ordered.map(\.id)).union(tabs.compactMap { $0.chatInfo?.id })
         for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true { chatConversations[id] = nil }
         lastListRead[.sessions] = .now
     }
