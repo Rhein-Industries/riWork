@@ -6,9 +6,11 @@ import Foundation
 // extension"), so a request that leaves the phone is one the desktop will not reject as malformed. Everything here is
 // pure and `Sendable`; the app owns the timing.
 
-/// What a new terminal runs: the Mac's default shell, or one of the agents RiWork launches.
+/// What a new terminal runs: the Mac's default shell, or one of the agents RiWork launches. Or, with the same sheet, a native chat with
+/// Codex or Claude (`chat.create`, not `shell.create`).
 public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiable {
     case shell, codex, claude, grok
+    case codexChat = "codex_chat", claudeChat = "claude_chat"
     public var id: String { rawValue }
     public var title: String {
         switch self {
@@ -16,17 +18,32 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
         case .codex: "Codex"
         case .claude: "Claude"
         case .grok: "Grok"
+        case .codexChat: ChatProvider.codex.chatTitle
+        case .claudeChat: ChatProvider.claude.chatTitle
         }
     }
-    /// Agents can be started without approval prompts; a plain shell cannot.
+    /// Agents can be started without approval prompts; a plain shell cannot. For a chat that is its Full mode.
     public var isAgent: Bool { self != .shell }
+    /// A chat tab, which `chat.create` makes, as opposed to a terminal, which `shell.create` makes.
+    public var chatProvider: ChatProvider? {
+        switch self {
+        case .codexChat: .codex
+        case .claudeChat: .claude
+        default: nil
+        }
+    }
+    public var isChat: Bool { chatProvider != nil }
     /// The first time, and whenever the remembered value is not one of ours.
     public static let standard = NewTerminalKind.shell
-    /// The kind after `steps` rows down (negative: up), wrapping at both ends.
-    public func moved(by steps: Int) -> NewTerminalKind {
-        let all = Self.allCases
-        let index = all.firstIndex(of: self) ?? 0
-        return all[((index + steps) % all.count + all.count) % all.count]
+    /// What every desktop can open.
+    public static let terminalKinds: [NewTerminalKind] = [.shell, .codex, .claude, .grok]
+    /// What the sheet offers: the chats only on a desktop that has them.
+    public static func offered(chats: Bool) -> [NewTerminalKind] { chats ? allCases : terminalKinds }
+    /// The kind after `steps` rows down (negative: up) among `kinds`, wrapping at both ends.
+    public func moved(by steps: Int, among kinds: [NewTerminalKind] = NewTerminalKind.terminalKinds) -> NewTerminalKind {
+        guard !kinds.isEmpty else { return self }
+        let index = kinds.firstIndex(of: self) ?? 0
+        return kinds[((index + steps) % kinds.count + kinds.count) % kinds.count]
     }
 }
 
@@ -128,6 +145,8 @@ public struct NewTerminalRequest: Sendable, Equatable {
         switch target {
         case .project(let id), .worktree(let id): guard Self.isCanonicalUUID(id) else { throw NewTerminalValidationError.invalidID }
         }
+        // A chat is made by `chat.create`: `shell.create` has no such kind.
+        if kind.isChat { throw NewTerminalValidationError.unknownKind }
         if unrestricted, !kind.isAgent { throw NewTerminalValidationError.unrestrictedNeedsAgent }
         if let command {
             guard kind == .shell else { throw NewTerminalValidationError.commandNeedsShell }
@@ -326,13 +345,17 @@ public struct NewTerminalForm: Equatable, Sendable {
     public var targets: [NewTerminalTarget]
     public private(set) var targetIndex: Int
     public private(set) var kind: NewTerminalKind
+    /// The kinds on offer, in the order of their rows: the chats only when the desktop has them.
+    public let kinds: [NewTerminalKind]
     public private(set) var unrestricted = false
     public var focus = Field.kind
 
-    public init(targets: [NewTerminalTarget], targetIndex: Int = 0, kind: NewTerminalKind = .standard) {
+    public init(targets: [NewTerminalTarget], targetIndex: Int = 0, kind: NewTerminalKind = .standard, kinds: [NewTerminalKind] = NewTerminalKind.terminalKinds) {
         self.targets = targets
         self.targetIndex = targets.isEmpty ? 0 : min(max(0, targetIndex), targets.count - 1)
-        self.kind = kind
+        self.kinds = kinds
+        // A kind remembered from a desktop that had chats, now on one that has not.
+        self.kind = kinds.contains(kind) ? kind : .standard
     }
 
     public var target: NewTerminalTarget? { targets.indices.contains(targetIndex) ? targets[targetIndex] : nil }
@@ -340,7 +363,7 @@ public struct NewTerminalForm: Equatable, Sendable {
     public var fields: [Field] { Field.allCases.filter { $0 != .unrestricted || kind.isAgent } }
 
     public mutating func select(kind: NewTerminalKind) {
-        guard kind != self.kind else { return }
+        guard kind != self.kind, kinds.contains(kind) else { return }
         self.kind = kind
         // Never carried over to another kind: it is chosen on purpose, each time.
         unrestricted = false
@@ -364,16 +387,30 @@ public struct NewTerminalForm: Equatable, Sendable {
         switch key {
         case .up, .down:
             let steps = key == .down ? 1 : -1
-            if focus == .target { moveTarget(by: steps) } else { select(kind: kind.moved(by: steps)); focus = .kind }
+            if focus == .target { moveTarget(by: steps) } else { select(kind: kind.moved(by: steps, among: kinds)); focus = .kind }
         case .left, .backTab: moveFocus(by: -1)
         case .right, .tab: moveFocus(by: 1)
         case .space: if focus == .unrestricted { setUnrestricted(!unrestricted) }
         }
     }
 
-    /// The request for what is chosen, or nil while there is no target.
+    /// The terminal request for what is chosen. Throws while there is no target, and for a chat kind (see `submission()`).
     public func request() throws -> NewTerminalRequest {
         guard let target else { throw NewTerminalValidationError.needsOneTarget }
         return try NewTerminalRequest(target: target.requestTarget, kind: kind, unrestricted: unrestricted && kind.isAgent)
     }
+
+    /// What Create sends: `shell.create` for a terminal, `chat.create` for a chat. Unrestricted is a chat's Full mode; anything else
+    /// leaves the mode out, so the desktop's default (Supervised) applies.
+    public func submission() throws -> NewTabRequest {
+        guard let provider = kind.chatProvider else { return .terminal(try request()) }
+        guard let target else { throw NewTerminalValidationError.needsOneTarget }
+        return .chat(try ChatCreateRequest(provider: provider, target: target.requestTarget, approvalMode: unrestricted ? .full : nil))
+    }
+}
+
+/// The one request behind a press of Create.
+public enum NewTabRequest: Sendable, Equatable {
+    case terminal(NewTerminalRequest)
+    case chat(ChatCreateRequest)
 }

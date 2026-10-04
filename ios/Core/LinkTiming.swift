@@ -46,6 +46,9 @@ public struct DesktopFeatures: Sendable, Equatable {
     public var maximumInflatedBytes = 0
     /// The most lines the desktop accepts in one `shell.history` page. 1000 until 2026-10-01, and so for a desktop that does not say.
     public var historyMaximumLines = HistoryLimits.legacyMaximumPageLines
+    /// The desktop has native chats and answers `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop` (`features.chat`).
+    /// Without it the phone does not offer chats.
+    public var chat = false
     public init() {}
     public init(ready: JSONValue) {
         let features = ready["features"]
@@ -58,6 +61,7 @@ public struct DesktopFeatures: Sendable, Equatable {
             minimumCompressBytes = count(.object(deflate)["min_bytes"]) ?? 2048
             maximumInflatedBytes = min(LinkFrame.maximumInflatedBytes, count(.object(deflate)["max_inflated"]) ?? LinkFrame.maximumInflatedBytes)
         }
+        if case .bool(true) = features["chat"] { chat = true }
         if let lines = count(features["history_max_lines"]), lines >= 1 {
             historyMaximumLines = max(HistoryLimits.legacyMaximumPageLines, min(HistoryLimits.maximumPageLines, lines))
         }

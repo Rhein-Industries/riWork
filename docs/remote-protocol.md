@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-04: Additive chat extension: five methods that let the phone follow and drive the desktop's Codex and Claude chats (the chat host, `riwork chat ...`), `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop`, and `features.chat` in `ready`. `chat.events` is a long poll (`wait_ms` up to 25 000, counted with the waits of `shell.output`) that returns the events after a cursor, batched, in a page cut to fit one reply; `chat.create`, `chat.command` and `chat.stop` run in the ordered lane and a creation is not cut short when the phone's session ends. The chat JSON is the desktop's own (`src/chat/model.rs`); the phone decodes it leniently. No new error code. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.chat` out; see "Chat extension" below.
 - 2026-10-03: Additive, in the same "Activity and recency extension": `projects.list` entries gain optional `last_activity_unix` (Unix seconds: when the newest of the project's shells last had output) and `shells.list` / `orchestrators.list` entries gain optional `last_activity_unix` (when that shell last had output, from tmux), so the phone's "Recent" project order can follow shell activity instead of file edits. No new method and no new error code. A desktop that cannot supply it leaves it out, an older phone ignores it, and the connector checks it is a non-negative integer and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-03: Additive activity and recency extension, no new method and no new error code: `projects.list` entries gain optional `last_edited_unix` (when the desktop app last saw a file of the project change, Unix seconds) and `agents` (`{"working":n,"waiting":n}` and additively `"done":n`: the project's agent shells by state), and `shells.list` / `orchestrators.list` entries gain optional `activity` (`working|waiting|done|unknown|exited`), `activity_since_unix`, `subagents_working` and additively `subagent_kinds`, so the phone can sort recent projects and show whether a Codex or Claude is working, with its subagents. See "Activity and recency extension" below. A field the desktop cannot supply is simply absent, so an older desktop or CLI answers exactly as before and an older phone ignores them; the connector checks each new field's shape and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-02: Additive desktop terminal extension, **protocol v2 only**: a second kind of paired device, a *desktop* (another Mac running RiWork, paired with `pair --protocol 2 --kind desktop`), may open terminal streams with `pty.open`, `pty.read`, `pty.write`, `pty.resize` and `pty.close`: a real tmux client on a pseudo-terminal of the host, whose raw bytes travel over those RPCs, so the other Mac shows the shell exactly as a Ghostty window here would. It adds `features.pty` to `ready` (only for desktop devices), two lanes (`Attach`, `Stream`), the error code `pty_limit`, and `riwork shell attach ID --exec` / `"shell_attach_exec": true` in `riwork capabilities --json` on the CLI side; see "Desktop terminal extension" below. A phone, and any v1 device, finds none of it: `pty.*` is `invalid_request` "unsupported RPC method" for them, as it is on a connector from before it, and no existing method, byte or fixture changes. A config that holds only phones is written byte for byte as before.
@@ -22,8 +23,10 @@ agreement with the iOS worker.
 v1 has no RPC that creates workers, schedules or tasks. Since 2026-10-01 it can
 make a project (`project.create`, "Project creation extension" below, only in the
 desktop's default projects folder), and its only way to change which terminals exist
-is `shell.create` and `shell.close` ("Terminal creation extension" below); everything
-else works on existing sessions. That is an API-level limit only:
+is `shell.create` and `shell.close` ("Terminal creation extension" below). Since
+2026-10-04 it can also start a chat with Codex or Claude in an existing project or
+worktree and talk to it (`chat.create`, `chat.command`, "Chat extension" below);
+everything else works on existing sessions. That is an API-level limit only:
 `shell.input` reaches every live project shell and orchestrator, including
 unrestricted harness sessions and editor (Vim) tabs, so a paired device can run
 arbitrary commands as the desktop user and can have a harness create anything it
@@ -169,6 +172,11 @@ unsolicited response except handshake `ready`.
 | `shell.create` | `{"worktree_id":"UUID"}` or `{"project_id":"UUID"}`, plus `"kind":"shell\|codex\|claude\|grok"` and optionally `"unrestricted":false`, `"command":"..."` (Terminal creation) | `{"shell_id":"UUID","shell":Session}` |
 | `shell.close` | `{"shell_id":"UUID"}` (Terminal creation) | `{"shell_id":"UUID","status":"closed"}` |
 | `project.create` | `{"name":"My App"}` optionally `"git":false` (Project creation) | `{"project_id":"UUID","project":Project}` |
+| `chats.list` | `{}` or `{"project_id":"UUID"}` (Chat) | `{"chats":[ChatInfo]}` |
+| `chat.create` | `{"provider":"codex\|claude","project_id":"UUID"}` or `"worktree_id":"UUID"` instead, optionally `"approval_mode"`, `"model"`, `"effort"`, `"title"` (Chat) | `{"chat":ChatInfo}` |
+| `chat.events` | `{"chat_id":"UUID","since":0,"wait_ms":25000}` optionally `"max_events":500` (Chat) | `{"chat_id":"UUID","events":[{"seq":1,"event":ChatEvent}],"next":1,"more":false}` |
+| `chat.command` | `{"chat_id":"UUID","command":ChatCommand}` (Chat) | `{"status":"ok"}` |
+| `chat.stop` | `{"chat_id":"UUID"}` (Chat) | `{"status":"stopped"}` |
 
 Project fields: `id,name,root` strings; `created_at` Unix seconds number; and, optionally,
 `last_edited_unix`, `last_activity_unix` and `agents` (see "Activity and recency extension").
@@ -183,7 +191,7 @@ Clients tolerate additive result/entity fields but must reject unknown protocol
 versions. Lists expose existing CLI entities; output/input resolve a full shell
 UUID against existing project shells **and** orchestrators. Dead/missing sessions
 fail clearly. No project default, tmux attachment or free-form CLI RPC, and no
-creation or close except `shell.create`, `shell.close` and `project.create`. `shell.input` intentionally
+creation or close except `shell.create`, `shell.close`, `project.create`, `chat.create` and `chat.stop`. `shell.input` intentionally
 submits terminal input followed by Return and can run commands in the selected
 shell (an unrestricted harness, a Vim tab, a plain shell prompt); clients must show
 the selected shell before sending. CR, LF, NUL and other
@@ -1167,6 +1175,258 @@ events, Codex rollouts and tmux in a throwaway `RIWORK_HOME`; for `last_activity
 that typing into a shell moves it and its project's, and that a project takes its newest
 shell and its own orchestrator and not the global one).
 
+### Chat extension (v1 and v2, 2026-10-04)
+
+Additive and compatible, like the extensions before it: five new methods and one new
+`ready` feature. No new error code and no change to the handshake, envelopes, fixtures
+or any existing method; it applies to protocol v1 and v2 sessions alike. A client that
+never calls the methods is unaffected. The iOS side is built against this text.
+
+A *chat* is a conversation with Codex or Claude that the desktop drives through the
+agent's structured interface instead of its terminal: the chat host (`riwork chat
+serve`, started on demand) owns the agent process, keeps every chat's events in a log
+and numbers them. The methods below are the same operations as `riwork chat list|new|
+events|command|stop`, which is how the connector runs them. A chat belongs to the
+desktop, not to the phone: the phone follows it, answers its approvals and may stop it,
+and a chat started on the desktop appears in `chats.list` like one started here.
+
+**Feature detection.** `ready.features.chat` is `true` when the installed `riwork` CLI
+reports `"chat": true` in `riwork capabilities --json`. The connector asks the CLI
+as it connects to the relay and again while a phone's handshake finishes (for at most 3
+seconds), until the CLI says yes, which it then remembers. Without it the phone hides chats. A connector that predates the extension answers every method below
+`invalid_request` "unsupported RPC method"; a connector with an older CLI leaves
+`features.chat` out and answers `cli_error` "the installed riwork CLI does not support
+chats; update RiWork".
+
+**The chat JSON** is the serde form of the desktop's `src/chat/model.rs`, passed on as
+the CLI prints it (the keys of an object come in no particular order). A client must
+decode it leniently: an unknown event, item type, state or field is skipped, never a
+reason to fail a page.
+
+- `ChatInfo`: `id` (UUID), `provider` (`codex|claude`), `project_id` and `worktree_id`
+  (UUID, either may be absent), `cwd`, `title`, `created_at_unix`, `approval_mode`
+  (`supervised|auto_edit|full|plan`), `state`, and, when known, `provider_thread_id`,
+  `model`, `effort` and `codex_account_id`.
+- `state` is `{"state":"starting|idle|running|waiting|stopped"}` or
+  `{"state":"failed","message":"..."}`. `waiting` means a turn waits for an approval or an
+  answer. `stopped` has no agent process: the next message resumes the chat. `failed`
+  means the agent could not start or died; the next message tries again.
+- `ChatEvent` has the tag `event`: `info` (`info`: a `ChatInfo`), `state` (`state`),
+  `turn_started` (`turn_id`), `turn_completed` (`turn_id`, `outcome`: `{"outcome":
+  "completed|interrupted"}` or `{"outcome":"failed","message"}`), `item_started` and
+  `item_completed` (`item`), `item_delta` (`item_id`, `delta`: `{"kind":"text|output",
+  "text"}`), `approval_requested` (`approval`), `approval_resolved` (`request_id`,
+  `decision`), `question_requested` (`question`), `question_resolved` (`request_id`) and
+  `usage` (`usage`). An `item_completed` replaces what the deltas of that item built.
+- An item is `{id, turn_id?, status, body}`, `status` `in_progress|completed|failed|
+  declined|interrupted`; `body` has the tag `type`: `user_message`, `agent_message`
+  (Markdown) and `reasoning` (`text`), `plan` (`explanation?`, `steps`), `command`
+  (`command`, `cwd?`, `output`, `exit_code?`), `file_change` (`changes`: `path`, `kind`
+  `add|modify|delete|rename`, `diff?`), `tool_call` (`server?`, `tool`, `input`,
+  `output?`), `web_search` (`query`), `todo` (`items`), `compaction` and `notice`
+  (`level` `info|warning|error`, `text`).
+- An approval is `{request_id, item_id?, kind: command|file_change|permissions|tool,
+  title, detail, choices}` with `choices` a list of decisions; a question is
+  `{request_id, questions: [{header?, question, options: [{label, description}],
+  multi_select}]}`. A decision is `accept`, `accept_for_session`, `decline` or `cancel`.
+- `Usage` is `{input_tokens, output_tokens, cached_input_tokens, context_window?,
+  context_used?, cost_usd?}`; `cost_usd` is the provider's own estimate, never a bill.
+
+**`chats.list`** answers `{"chats":[ChatInfo]}`, oldest first: every chat of the
+desktop, running or not, or, with `{"project_id":"UUID"}`, the chats of that project.
+An unknown project is `not_found`. The list is one reply: about 250 chats fit a session that
+does not compress and about 4 000 one that does; more is `response_too_large`, and the
+phone then asks for one project's chats.
+
+**`chat.create`** starts a chat in a project or worktree of the desktop, as `riwork chat
+new` does. Params (an object; unknown fields, nulls and wrong types fail
+`invalid_request` before anything runs):
+
+```json
+{"provider":"codex","project_id":"UUID"}
+{"provider":"claude","worktree_id":"UUID","approval_mode":"auto_edit","title":"Fix the build"}
+{"provider":"codex","project_id":"UUID","model":"gpt-5.5","effort":"high"}
+```
+
+- `provider` (required): `codex` or `claude`, spelled exactly.
+- Exactly one of `project_id` and `worktree_id`, a full lowercase canonical UUID, as for
+  `shell.create`. A `project_id` starts the chat in the project's root and primary
+  worktree, a `worktree_id` in that worktree.
+- `approval_mode` (optional, default `supervised`): how much the agent may do without
+  asking. `supervised` asks before commands and edits, `auto_edit` edits the workspace
+  freely and asks for the rest, `full` never asks (the agent's permission-bypass mode,
+  what "unrestricted" is for a terminal: a deliberate choice for the person to make) and
+  `plan` plans first and changes nothing. Written with an underscore, as in the chat
+  JSON.
+- `model` (at most 100 characters), `effort` (at most 32) and `title` (at most 200):
+  optional strings with no control character; one that is blank is the same as leaving
+  it out. A model and effort the provider does not know fail the chat's first turn, not
+  the creation. Without a title the chat is called "Codex chat" or "Claude chat".
+
+Result `{"chat":ChatInfo}`, with the state it has when the CLI returns: `idle` once the
+agent is up, or `starting`. **A chat whose agent could not be started is created all the
+same and is the answer**, with `{"state":"failed","message":"..."}` (for example `codex
+is not installed or is not on PATH`): the phone shows it and the next `Send` tries
+again, so a failed start does not invite a second creation. The connector checks that the
+chat is the one asked for (provider, project or worktree, mode, and model and effort when
+sent) and answers `cli_error` if not, after stopping that stray chat's agent.
+
+**`chat.events`** is how the phone follows a chat. Params (all but `max_events`
+required):
+
+```json
+{"chat_id":"UUID","since":0,"wait_ms":25000}
+{"chat_id":"UUID","since":412,"wait_ms":0,"max_events":200}
+```
+
+- Every event of a chat has a `seq`, 1-based and without gaps in the chat, in the order
+  the chat produced them. `since` is the last `seq` the phone has (0 for none) and the
+  call returns events with a greater `seq`, oldest first. A chat's whole history is
+  therefore `since` 0, then `next` of each page, and a phone that reconnects loses
+  nothing. (A page can skip an event that is too big to send at all, below, so a phone
+  does not insist on consecutive `seq`s within a page, only on rising ones.)
+- `wait_ms` (0 to 25 000): if the chat has events after `since` the call does not wait
+  for `wait_ms`: it returns them, after about 50 ms in which it collects what follows.
+  Otherwise it waits up to `wait_ms` for the first new event, then returns what arrived
+  within about 50 ms after it, so a message streaming in travels in a few pages and not
+  in one reply per token. A call that waits out `wait_ms` is not an error: an empty
+  `events` with `next` equal to `since` is a quiet chat.
+- `max_events` (1 to 2000, default 500) bounds the page.
+
+Result `{"chat_id":"UUID","events":[{"seq":413,"event":ChatEvent}],"next":413,"more":
+false}`. `next` is the `since` for the next call: the `seq` of the last event the page
+covers, which is its last entry unless a skipped event came after it (`since` for a page
+that covers nothing). `more` is `true` when the page was cut short by `max_events` or by
+the reply limit below and the chat has events after `next`: ask again at once, with
+whatever `wait_ms` (a call that finds events does not wait). `more` `false` does not
+promise that nothing is left (it is judged as the page is cut, within a couple of
+milliseconds): the next call, which waits, returns whatever there is. The phone asks again
+after each page.
+
+There is no way to cancel a wait. One the phone no longer needs holds its slot until it
+returns, at most `wait_ms`, and a device has two wait slots (shared with the waiting
+`shell.output`, below). A client therefore keeps a wait open for the chat on screen only,
+opens a chat (to catch up) with `wait_ms` 0, and uses shorter waits, ten seconds say, while
+the person moves between chats and terminals often.
+
+The reply fits one encrypted frame, by the same rule as `shell.history`: the JSON of a
+reply may be up to 2 MiB for a session that opted in to compression and 128 KiB
+otherwise, and it must fit one frame once deflated. The CLI is asked for a page of at
+most the reply limit less 1 KiB, and the connector then keeps the first events that fit
+a frame (it halves the page until the sealed reply fits) and sets `more` and `next`
+accordingly, so a reply is never `response_too_large` because of how many events there
+were. An event that is bigger than a frame by itself (a huge diff or command output; noise
+does not deflate) arrives with its long strings cut and `…` (U+2026) appended, so a phone can
+always go on past it; one that cannot be cut small enough is skipped, and `next` passes it.
+Events do not change after they are numbered, so a cut event is cut every time it is read.
+
+Errors: `invalid_request` for any validation failure, for a `since` after the chat's last
+event, and `unsupported RPC method`; `not_found` for an unknown chat; `cli_error` for
+anything else (the chat host cannot be started, a CLI page that does not match the request);
+`response_too_large` only from a CLI that prints a page bigger than it was asked for.
+The chat host is started if it is not running (it ends after fifteen idle minutes): a
+stopped chat's history can always be read.
+
+**`chat.command`** hands one command to a chat. Params `{"chat_id":"UUID","command":
+ChatCommand}`, where `command` is an object with the tag `command` and exactly the
+fields of its kind, none null and none unknown:
+
+| `command` | fields | does |
+| --- | --- | --- |
+| `send` | `text`: 1 to 65 536 bytes, not blank | starts a turn, or steers the running one where the provider allows it; a stopped chat is resumed first |
+| `interrupt` | | stops the turn that runs |
+| `approve` | `request_id` (1 to 200 bytes, one line), `decision` | answers an `approval_requested` |
+| `answer` | `request_id`, `answers`: 1 to 16 lists (one per question, in order) of at most 64 strings of at most 8 192 bytes, 65 536 bytes in all | answers a `question_requested`: the chosen labels, or free text |
+| `configure` | at least one of `model` (at most 100 characters), `effort` (at most 32), `approval_mode` | changes them for the next turns |
+| `compact` | | compacts the context |
+| `stop` | | stops the agent process, like `chat.stop` |
+
+Result `{"status":"ok"}`: the chat host accepted the command, which says nothing about
+how the agent takes it; the effect arrives as events. An approval or a question is
+answered once: answering it again, or after the turn ended, is a `cli_error` with the
+host's own words, which a client may show quietly. A command other than `send` to a
+stopped chat is a `cli_error` too ("the chat is stopped; send a message to resume
+it"). A `send` that has to start the agent again can take several seconds; if it cannot
+(the agent is not installed, an account is gone) the error is `harness_unavailable` for
+"... is not installed or is not on PATH" and the Cua driver, and `cli_error` otherwise.
+The connector gives the CLI 60 seconds, and a command that takes longer is a `cli_error`
+that says so (the command may have been taken: read the chat's events); a client's timeout
+should allow about 90.
+`invalid_request` and `not_found` as for the other methods.
+
+**`chat.stop`** stops the chat's agent process and keeps its history. Params
+`{"chat_id":"UUID"}`, result `{"status":"stopped"}`. A chat that is stopped, or a desktop
+with no chat host running (nothing runs), answers `stopped` too; an unknown chat is
+`not_found`, except that with no chat host running the connector cannot tell an unknown
+chat from a known one and answers `stopped`. The next `send` resumes the chat on the
+agent's own saved conversation.
+
+Security and validation. A chat's agent can run commands as the desktop user, as a
+terminal started with `shell.create` can, so this adds no authority a paired device
+lacks (`shell.input` already reaches every shell). It is still validated as strictly as
+the other methods:
+
+- Everything is checked before a CLI runs: object shape, unknown fields, nulls, types,
+  UUID form and every limit above. Ids are canonical UUIDs; a chat is never named by a
+  prefix, a title or a path.
+- The CLI is run with its argument vector built from validated values, one argument per
+  value (`chat new --provider P --project ID --mode M [--model=X] [--effort=X]
+  [--title=X] --json`, `chat events ID --since N --wait-ms N --max N --max-bytes N
+  --json`, `chat command ID --command-json JSON --json`, `chat stop ID --json`, `chat
+  list [--project ID] --json`). Nothing is concatenated into a shell string. Free text
+  uses the `--name=VALUE` form so that a value that begins with `-` stays a value, and a
+  command is rebuilt from the validated fields as one JSON argument, so nothing the
+  connector did not check can travel in it.
+- The project or worktree of `chat.create` (and the project of a filtered `chats.list`)
+  is looked up first (`riwork project show ID --json`, or `worktree show`), and its `id`
+  must equal the id sent: the CLI also resolves names and prefixes. An unknown id is
+  `not_found` and starts nothing. The phone never names a directory, so it cannot start a
+  chat anywhere that is not a registered project or worktree.
+- The device's authorization is checked when the request starts and, for the three that
+  change a chat, again just before the CLI that changes it runs (`chat.create` after the
+  look-up of its project), so a device revoked while queued does nothing.
+- The CLI's answers are checked before they reach the phone: a chat must be an object
+  with a canonical id, a known provider, a title, a directory, a creation time and a
+  state; a list of a project holds only that project's chats; a page of events holds
+  `{seq, event}` entries in rising order after `since`, at most `max_events`, with a
+  `next` that does not lie behind them; anything else is `cli_error`. What is inside a
+  chat or an event is the desktop's own and passes unchanged.
+
+Scheduling and retries. `chat.create`, `chat.command` and `chat.stop` run in the ordered
+lane with `shell.keys`, `shell.input`, `shell.resize`, `shell.resize.clear`,
+`shell.create`, `shell.close` and `project.create`: one at a time per device, in arrival
+order, and not dropped half done when the phone's session ends. Typing from the same
+device waits behind them, and a `send` that resumes a chat is the longest of them. A
+creation goes further: the chat host writes the chat down and then starts its agent, and
+a CLI killed in between would leave a chat nobody told the phone about, so the connector
+runs it in a task that outlives the request; when the connector ends the connection for
+any other reason (revocation, a relay error) the CLI is not killed, only the answer is
+lost. `chat.events` with a `wait_ms` above 0 is a long poll: it takes one of the three
+shared slots and one of the two wait slots, like a waiting `shell.output`, and is ended,
+with its CLI, when the session does. With `wait_ms` 0, and `chats.list`, it is a plain
+read. A client's timeout for `chat.events` should be `wait_ms` plus about 10 seconds
+(starting the chat host on demand is the rest), about 90 seconds for `chat.create` and
+`chat.command`, and about 30 for `chat.stop`.
+
+None of the three that change a chat is idempotent. A repeated `chat.create` starts
+another chat, whatever its request `id`, and a repeated `send` sends another message. A
+client that loses the answer (a timeout, a lost connection) cannot tell what happened and
+must not retry by itself: after a `chat.create` it lists the chats (`chats.list`) and
+lets the person decide; after a `send` it reads the chat's events, where the message is a
+`user_message` item if it arrived. An approval or an answer that is repeated is
+refused by the host, so that one is safe to ask again.
+
+On the desktop. The chats are the ones `riwork chat list` shows and the desktop app's
+chat tabs use: the same chat host, the same logs under `chats/` in the RiWork data
+directory. A message sent from the phone is a turn like one typed on the desktop; the
+phone's approvals answer the same prompts. The host is started on demand by the CLI the
+connector runs and exits by itself when idle, so a desktop with no chat at work runs
+none.
+
+An older connector answers `invalid_request` "unsupported RPC method" for all five; a
+client then hides chats for that connection. A connector paired with an older `riwork`
+CLI leaves `features.chat` out.
+
 ## Fixtures and change log
 
 `remote/fixtures/v1.json` supplies deterministic PSK, UUIDs, nonces, proof MACs,
@@ -1298,6 +1558,22 @@ ready response. Values are test-only and must never provision production devices
   the active ones. A field the desktop cannot supply is absent, the connector leaves out
   one that is not a non-negative integer, and a client that ignores it is unaffected.
   Needs the iOS worker's agreement; the iOS side implements the same text.
+
+- 2026-10-04: additive and backward compatible. Chat extension. `chats.list` (every chat,
+  or a project's), `chat.create` (`provider` `codex|claude`, `project_id` or
+  `worktree_id`, optional `approval_mode`, `model`, `effort`, `title`), `chat.events` (a
+  long poll: `chat_id`, `since`, `wait_ms` 0 to 25 000, optional `max_events` 1 to 2000;
+  answers events after the cursor with `next` and `more`, in a page cut to fit one reply),
+  `chat.command` (`send`, `interrupt`, `approve`, `answer`, `configure`, `compact`, `stop`)
+  and `chat.stop`; `ready.features.chat` when the CLI says `"chat": true` in `riwork
+  capabilities --json`. The chat JSON is the desktop's `src/chat/model.rs`. `chat.create`,
+  `chat.command` and `chat.stop` run in the ordered lane and are not cut short when the
+  phone's session ends (a creation's CLI also survives the connection being torn down);
+  a waiting `chat.events` takes a wait slot like a waiting `shell.output`. Creation is not
+  idempotent, and a chat whose agent could not start is created and returned in the failed
+  state. No new error code. A client that never calls the methods is unaffected, and an
+  older desktop answers `invalid_request` "unsupported RPC method". Needs the iOS worker's
+  agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

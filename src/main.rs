@@ -2,6 +2,8 @@ mod activity;
 mod agent_hooks;
 mod appearance_file;
 mod appearance_sync;
+mod chat;
+mod chat_view;
 mod cli;
 mod cli_agents;
 mod codex_accounts;
@@ -61,7 +63,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use activity::{ActivityTracker, AgentState};
+use activity::{ActivityTracker, AgentActivity, AgentState, ChatActivity};
+use chat::model::{ApprovalMode, NewChat, Provider};
+use chat_view::{ChatView, ChatViewEvent, HostConfig};
 use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, DragMoveEvent, Entity, EntityInputHandler,
@@ -113,6 +117,8 @@ actions!(
         OpenCodex,
         OpenClaude,
         OpenGrok,
+        OpenCodexChat,
+        OpenClaudeChat,
         CreateProject,
         ToggleFocusMode,
         OpenSettings,
@@ -136,6 +142,8 @@ type TabId = u64;
 enum PaneMenuAction {
     Shell,
     Harness(HarnessKind, bool),
+    /// A chat tab with the agent, unrestricted or not.
+    Chat(Provider, bool),
     Orchestrator(bool),
     View(PanelKind),
     Split(Axis),
@@ -214,6 +222,12 @@ enum TabContent {
         attach_failures: u8,
     },
     Panel(PanelKind),
+    /// A Codex or Claude chat, kept by the chat host. Closing the tab leaves the chat there.
+    /// `chat_id` is empty while the host is still making a chat that was just asked for.
+    Chat {
+        chat_id: String,
+        view: Entity<ChatView>,
+    },
 }
 
 /// The bookkeeping every terminal tab has, whatever it attaches to.
@@ -248,14 +262,16 @@ impl TabContent {
                 error: attach_error,
                 failures: attach_failures,
             }),
-            Self::Panel(_) => None,
+            Self::Panel(_) | Self::Chat { .. } => None,
         }
     }
 }
 
 impl Tab {
-    fn saved(&self) -> SavedTab {
-        match &self.content {
+    /// What a layout saves of the tab. Nothing for a chat the host is still making: it has
+    /// no id to find it by yet, and the layout is saved again once it has.
+    fn saved(&self) -> Option<SavedTab> {
+        Some(match &self.content {
             TabContent::Shell { shell_id, .. } => SavedTab::Shell {
                 shell_id: shell_id.clone(),
             },
@@ -268,6 +284,15 @@ impl Tab {
                 shell_id: shell_id.clone(),
             },
             TabContent::Panel(panel) => SavedTab::Panel { panel: *panel },
+            TabContent::Chat { chat_id, .. } => saved_chat(chat_id)?,
+        })
+    }
+
+    /// The view of a chat tab.
+    fn chat(&self) -> Option<&Entity<ChatView>> {
+        match &self.content {
+            TabContent::Chat { view, .. } => Some(view),
+            _ => None,
         }
     }
 
@@ -310,7 +335,7 @@ impl Tab {
             TabContent::Shell { terminal, .. } | TabContent::RemoteShell { terminal, .. } => {
                 terminal.as_ref()
             }
-            TabContent::Panel(_) => None,
+            TabContent::Panel(_) | TabContent::Chat { .. } => None,
         }
     }
 
@@ -569,8 +594,12 @@ fn saved_panes(panes: &BTreeMap<PaneId, Pane>) -> BTreeMap<PaneId, SavedPane> {
                         .tabs
                         .get(pane.active)
                         .and_then(|tab| tab.shell_id().map(str::to_owned)),
-                    tabs: pane.tabs.iter().map(Tab::saved).collect(),
-                    active_tab_key: pane.tabs.get(pane.active).map(|tab| tab.saved().key()),
+                    tabs: pane.tabs.iter().filter_map(Tab::saved).collect(),
+                    active_tab_key: pane
+                        .tabs
+                        .get(pane.active)
+                        .and_then(Tab::saved)
+                        .map(|saved| saved.key()),
                     tab_edge: TabEdge::Top,
                 },
             )
@@ -882,6 +911,86 @@ fn plan_link_panel(
     )
 }
 
+/// The saved form of a chat tab: none while the chat host is still making the chat, which has
+/// no id yet.
+fn saved_chat(chat_id: &str) -> Option<SavedTab> {
+    (!chat_id.is_empty()).then(|| SavedTab::Chat {
+        chat_id: chat_id.to_owned(),
+    })
+}
+
+/// What a new chat asks the chat host for: the worktree it works in, and, for an
+/// unrestricted one, never asking before it acts (as the terminal agents' unrestricted
+/// launches).
+fn new_chat_request(
+    provider: Provider,
+    unrestricted: bool,
+    project_id: &str,
+    worktree_id: Option<String>,
+    cwd: PathBuf,
+) -> NewChat {
+    NewChat {
+        provider,
+        project_id: Some(project_id.to_owned()),
+        worktree_id,
+        cwd,
+        title: None,
+        approval_mode: if unrestricted {
+            ApprovalMode::Full
+        } else {
+            ApprovalMode::Supervised
+        },
+        model: None,
+        effort: None,
+    }
+}
+
+/// The chat rows of the New Tab menu: label, shortcut, agent, unrestricted. Unrestricted
+/// ones have no shortcut, as the terminal agents' have none.
+const CHAT_MENU: [(&str, &str, Provider, bool); 4] = [
+    ("Codex chat", "⌘⌥⇧C", Provider::Codex, false),
+    ("Claude chat", "⌘⌥⇧L", Provider::Claude, false),
+    ("Codex chat · unrestricted", "", Provider::Codex, true),
+    ("Claude chat · unrestricted", "", Provider::Claude, true),
+];
+
+/// The text of a chat tab: what the chat is doing, the agent's name unless the tab shows
+/// its mark instead (`icon`), and the chat's title. A title that already starts with the
+/// agent's name is not prefixed with it again.
+fn chat_tab_text(
+    provider: Option<Provider>,
+    title: &str,
+    activity: Option<AgentActivity>,
+    icon: bool,
+) -> String {
+    let mark = match activity {
+        Some(AgentActivity::Working) => "● ",
+        Some(AgentActivity::Waiting) => "◌ ",
+        Some(AgentActivity::Done) => "✓ ",
+        _ => "",
+    };
+    let name = provider.map(|provider| match provider {
+        Provider::Codex => "Codex",
+        Provider::Claude => "Claude",
+    });
+    match name {
+        Some(name) if !icon && !title.starts_with(name) => format!("{mark}{name} · {title}"),
+        _ => format!("{mark}{title}"),
+    }
+}
+
+/// What a chat tab says on hover about its chat, such as "Working" or "Stopped".
+fn chat_tab_hint(summary: &chat_view::Summary) -> Option<String> {
+    use chat::model::ChatState;
+    match (&summary.state, summary.activity) {
+        (_, Some(activity)) => AgentState::plain(activity).hint(),
+        (ChatState::Failed { message }, None) => Some(format!("Failed · {message}")),
+        (ChatState::Stopped, None) => Some("Stopped · resumes when you send a message".to_owned()),
+        (ChatState::Starting, None) => Some("Starting".to_owned()),
+        (ChatState::Idle | ChatState::Running | ChatState::Waiting, None) => None,
+    }
+}
+
 /// The pane that takes what is opened (a new tab, a clicked shell, a preview) when the window has
 /// a main pane. In focus mode only one pane is on screen, and a tab sent to another would open
 /// out of sight, so everything stays where it is. A main pane that has gone counts for nothing.
@@ -891,6 +1000,17 @@ fn routing_target(
     focus_mode: bool,
 ) -> Option<PaneId> {
     main.filter(|id| !focus_mode && panes.contains_key(id))
+}
+
+/// The pane a new tab opens in: the one that takes what is opened, else the selected pane.
+/// Shells, agents and chats all open where this says.
+fn new_tab_target(
+    main: Option<PaneId>,
+    panes: &BTreeMap<PaneId, Pane>,
+    focus_mode: bool,
+    selected: PaneId,
+) -> PaneId {
+    routing_target(main, panes, focus_mode).unwrap_or(selected)
 }
 
 /// What choosing a file, or clicking a link in pane `clicked`, does about `panel` when the window
@@ -2156,7 +2276,7 @@ impl Workspace {
                             shell_id,
                             ..
                         } => AttachTarget::Remote(desktop_id.clone(), shell_id.clone()),
-                        TabContent::Panel(_) => continue,
+                        TabContent::Panel(_) | TabContent::Chat { .. } => continue,
                     };
                     let Some(AttachState { terminal, .. }) = tab.content.attach_state() else {
                         continue;
@@ -3412,7 +3532,9 @@ impl Workspace {
             .flat_map(|pane| {
                 pane.tabs.iter().filter_map(|tab| match tab {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
-                    SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => None,
+                    SavedTab::Panel { .. }
+                    | SavedTab::RemoteShell { .. }
+                    | SavedTab::Chat { .. } => None,
                 })
             })
             .collect();
@@ -3526,6 +3648,9 @@ impl Workspace {
                                 shell_id.clone(),
                                 cx,
                             ),
+                            SavedTab::Chat { chat_id } => {
+                                self.restore_chat_tab(*pane_id, chat_id.clone(), window, cx)
+                            }
                         }
                     }
                 }
@@ -3561,9 +3686,11 @@ impl Workspace {
                 .as_ref()
                 .and_then(|saved| saved.panes.get(pane_id))
                 .and_then(|pane| pane.active_tab_key.as_ref());
-            if let Some(index) =
-                selected.and_then(|key| pane.tabs.iter().position(|tab| &tab.saved().key() == key))
-            {
+            if let Some(index) = selected.and_then(|key| {
+                pane.tabs
+                    .iter()
+                    .position(|tab| tab.saved().is_some_and(|saved| &saved.key() == key))
+            }) {
                 pane.active = index;
             }
             for (index, tab) in pane.tabs.iter().enumerate() {
@@ -5148,6 +5275,17 @@ impl Workspace {
                 .update(cx, |panel, cx| panel.focus(window, cx));
             return;
         }
+        let chat_active = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .and_then(|tab| tab.chat().cloned());
+        if let Some(view) = chat_active {
+            self.search_focused = false;
+            self.search_marked = None;
+            view.update(cx, |view, cx| view.focus(window, cx));
+            return;
+        }
         // A tab that was released while hidden gets its terminal back here, before
         // it is asked to take the keys.
         if let Some(tab_id) = self
@@ -5387,7 +5525,12 @@ impl Workspace {
 
     /// The pane a new tab opens in: the main pane, else the selected one.
     fn new_tab_pane(&self) -> PaneId {
-        self.routing_pane().unwrap_or(self.active_pane)
+        new_tab_target(
+            self.main_pane,
+            &self.panes,
+            self.focus_mode,
+            self.active_pane,
+        )
     }
 
     /// Make `pane_id` the main pane, or none if it already is. Another pane that was the main
@@ -5786,6 +5929,185 @@ impl Workspace {
         self.save_layout();
         request_codex_usage(false, cx);
         cx.notify();
+    }
+
+    fn open_codex_chat_action(
+        &mut self,
+        _: &OpenCodexChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal_open() {
+            return;
+        }
+        self.add_chat(Provider::Codex, false, window, cx);
+    }
+
+    fn open_claude_chat_action(
+        &mut self,
+        _: &OpenClaudeChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal_open() {
+            return;
+        }
+        self.add_chat(Provider::Claude, false, window, cx);
+    }
+
+    /// Open a chat with `provider` in the pane new tabs go to, working in the selected
+    /// worktree. The chat host makes the chat; the tab is there at once and fills in.
+    fn add_chat(
+        &mut self,
+        provider: Provider,
+        unrestricted: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.ensure_layout(window, cx) {
+            return;
+        }
+        self.panel_menu = None;
+        self.finish_tab_drag(cx);
+        if self.is_remote() {
+            self.notice =
+                Some("Chats run on this Mac. Open a project here to start one.".to_owned());
+            cx.notify();
+            return;
+        }
+        let worktree_id = self.selected_worktree_id.clone();
+        let cwd = worktree_id
+            .as_ref()
+            .and_then(|id| {
+                self.state
+                    .worktrees
+                    .iter()
+                    .find(|worktree| &worktree.id == id)
+            })
+            .map(|worktree| worktree.path.clone())
+            .unwrap_or_else(|| self.cwd.clone());
+        let request = new_chat_request(provider, unrestricted, &self.project_id, worktree_id, cwd);
+        let config = self.chat_config();
+        let view = cx.new(|cx| ChatView::create(request, config, cx));
+        let tab = self.chat_tab(String::new(), view, window, cx);
+        if let Err(error) = self.place_new_tab(self.new_tab_pane(), tab, cx) {
+            self.notice = Some(error);
+        }
+        self.focus_active(window, cx);
+        self.save_layout();
+        cx.notify();
+    }
+
+    /// How a chat tab reaches the chat host of this Mac's RiWork data.
+    fn chat_config(&self) -> HostConfig {
+        HostConfig::for_home(self.sessions.state_home().to_path_buf())
+    }
+
+    /// Add the tab of a chat the host already has. Like a restored shell, it waits in its
+    /// pane; its view subscribes to the chat from the start.
+    fn restore_chat_tab(
+        &mut self,
+        pane_id: PaneId,
+        chat_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A layout saved while the host was still making the chat can carry no id.
+        if chat_id.is_empty() {
+            return;
+        }
+        let config = self.chat_config();
+        let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, cx));
+        let tab = self.chat_tab(chat_id, view, window, cx);
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
+            return;
+        };
+        pane.tabs.push(tab);
+        pane.active = pane.tabs.len() - 1;
+        self.active_pane = pane_id;
+    }
+
+    fn chat_tab(
+        &mut self,
+        chat_id: String,
+        view: Entity<ChatView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Tab {
+        let tab_id = self.next_tab_id;
+        self.next_tab_id += 1;
+        cx.subscribe_in(
+            &view,
+            window,
+            |workspace, view, event: &ChatViewEvent, window, cx| {
+                workspace.chat_event(view, event, window, cx)
+            },
+        )
+        .detach();
+        Tab {
+            id: tab_id,
+            title: "Chat".to_owned(),
+            content: TabContent::Chat { chat_id, view },
+            hidden_since: None,
+        }
+    }
+
+    fn chat_event(
+        &mut self,
+        view: &Entity<ChatView>,
+        event: &ChatViewEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let place = self.panes.iter().find_map(|(pane_id, pane)| {
+            pane.tabs
+                .iter()
+                .find(|tab| tab.chat() == Some(view))
+                .map(|tab| (*pane_id, tab.id))
+        });
+        match event {
+            ChatViewEvent::Changed => {
+                // The tab's own title is what the layout menu and a dragged tab name it by.
+                let title = view.read(cx).summary().title;
+                for pane in self.panes.values_mut() {
+                    for tab in &mut pane.tabs {
+                        if tab.chat() == Some(view) {
+                            tab.title = title.clone();
+                        }
+                    }
+                }
+                cx.notify();
+            }
+            ChatViewEvent::Created(id) => {
+                for pane in self.panes.values_mut() {
+                    for tab in &mut pane.tabs {
+                        if tab.chat() == Some(view)
+                            && let TabContent::Chat { chat_id, .. } = &mut tab.content
+                        {
+                            *chat_id = id.clone();
+                        }
+                    }
+                }
+                // The layout can name the tab now.
+                self.save_layout();
+                cx.notify();
+            }
+            ChatViewEvent::Close => {
+                if let Some((pane_id, tab_id)) = place {
+                    self.remove_tab(pane_id, tab_id, window, cx);
+                }
+            }
+        }
+    }
+
+    /// What the open chat tabs say about their chats, for the counts of agents.
+    fn chat_activity(&self, cx: &App) -> Vec<ChatActivity> {
+        self.panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .filter_map(Tab::chat)
+            .filter_map(|view| view.read(cx).summary().counted())
+            .collect()
     }
 
     fn toggle_panel_menu(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
@@ -6696,11 +7018,28 @@ impl Workspace {
                 let shell = tab
                     .shell_id()
                     .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
-                let display_title = codex_tab_title(&tab.title, shell, &account_numbers);
-                let activity_hint = tab
-                    .shell_id()
-                    .and_then(|id| self.agent_activity.get(id))
-                    .and_then(AgentState::hint);
+                let chat = tab.chat().map(|view| view.read(cx).summary());
+                let display_title = match &chat {
+                    Some(summary) => chat_tab_text(
+                        summary.provider,
+                        &summary.title,
+                        summary.activity,
+                        self.settings.panel_tab_icons,
+                    ),
+                    None => codex_tab_title(&tab.title, shell, &account_numbers),
+                };
+                let activity_hint = match &chat {
+                    Some(summary) => chat_tab_hint(summary),
+                    None => tab
+                        .shell_id()
+                        .and_then(|id| self.agent_activity.get(id))
+                        .and_then(AgentState::hint),
+                };
+                // The agent's mark, where the icons setting asks for icons over words.
+                let chat_mark = chat
+                    .as_ref()
+                    .and_then(|summary| summary.provider)
+                    .filter(|_| self.settings.panel_tab_icons);
                 div()
                     .id(("tab", tab_id))
                     .flex()
@@ -6748,13 +7087,25 @@ impl Workspace {
                                 .child(rest.to_owned())
                                 .into_any_element(),
                             // What the agent in the tab is doing, on hover.
-                            None => match activity_hint {
-                                Some(hint) => div()
-                                    .child(display_title.clone())
-                                    .child(tooltip::anchor(hint, Look::Pane))
-                                    .into_any_element(),
-                                None => display_title.clone().into_any_element(),
-                            },
+                            None => {
+                                let label = match chat_mark {
+                                    Some(provider) => div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(ui_text::space(5.0))
+                                        .child(icons::icon(Icon::Provider(provider), tab_color))
+                                        .child(display_title.clone())
+                                        .into_any_element(),
+                                    None => display_title.clone().into_any_element(),
+                                };
+                                match activity_hint {
+                                    Some(hint) => div()
+                                        .child(label)
+                                        .child(tooltip::anchor(hint, Look::Pane))
+                                        .into_any_element(),
+                                    None => label,
+                                }
+                            }
                         },
                     })
                     .children(close_visible.then(|| {
@@ -6950,6 +7301,7 @@ impl Workspace {
             .and_then(|_| remote_tree.selected_view(&self.project_id));
         // What a panel without an implementation for another Mac's project says instead.
         let remote_host_label = self.remote_host_name(cx);
+        let chats = self.chat_activity(cx);
         let content = match pane.tabs.get(pane.active).map(|tab| &tab.content) {
             Some(TabContent::RemoteShell {
                 desktop_id,
@@ -7036,6 +7388,7 @@ impl Workspace {
                         .into_any_element()
                 }
             }
+            Some(TabContent::Chat { view, .. }) => view.clone().into_any_element(),
             Some(TabContent::Panel(kind))
                 if remote_host_label.is_some()
                     && panels::remote_support(*kind) == panels::RemoteSupport::Unavailable =>
@@ -7079,6 +7432,7 @@ impl Workspace {
                     shell_cwds: &self.shell_cwds,
                     metrics: &self.metrics,
                     activity: &self.agent_activity,
+                    chats: &chats,
                     query: &self.search,
                     search_focused: self.search_focused && selected,
                     focus: self.focus.clone(),
@@ -7312,6 +7666,16 @@ impl Workspace {
                                 ),
                             ]
                             .into_iter()
+                            .chain(CHAT_MENU.iter().map(
+                                |&(label, shortcut, provider, unrestricted)| {
+                                    (
+                                        label,
+                                        shortcut,
+                                        None,
+                                        PaneMenuAction::Chat(provider, unrestricted),
+                                    )
+                                },
+                            ))
                             .map(|(label, shortcut, icon, action)| {
                                 self.pane_menu_row(pane_id, label, shortcut, icon, action, cx)
                             }),
@@ -7586,7 +7950,8 @@ impl Workspace {
                     &self.project_id,
                     &self.shells,
                     &self.agent_activity,
-                );
+                )
+                .with_chats_in_project(&self.project_id, &self.chat_activity(cx));
                 div()
                     .id("status-agent-activity")
                     .max_w(ui_text::space(250.0))
@@ -8424,6 +8789,9 @@ impl Workspace {
                     PaneMenuAction::Harness(kind, unrestricted) => {
                         workspace.add_harness(kind, unrestricted, window, cx);
                     }
+                    PaneMenuAction::Chat(provider, unrestricted) => {
+                        workspace.add_chat(provider, unrestricted, window, cx);
+                    }
                     PaneMenuAction::Orchestrator(project_scoped) => {
                         let project_id = project_scoped.then(|| workspace.project_id.clone());
                         workspace.open_scoped_orchestrator(project_id, window, cx);
@@ -8640,6 +9008,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_codex_action))
             .on_action(cx.listener(Self::open_claude_action))
             .on_action(cx.listener(Self::open_grok_action))
+            .on_action(cx.listener(Self::open_codex_chat_action))
+            .on_action(cx.listener(Self::open_claude_chat_action))
             .on_action(cx.listener(Self::split_right_action))
             .on_action(cx.listener(Self::split_down_action))
             .on_action(cx.listener(Self::close_tab_action))
@@ -9618,6 +9988,9 @@ fn main() {
             KeyBinding::new("cmd-shift-c", OpenCodex, None),
             KeyBinding::new("cmd-shift-l", OpenClaude, None),
             KeyBinding::new("cmd-shift-g", OpenGrok, None),
+            KeyBinding::new("cmd-alt-shift-c", OpenCodexChat, None),
+            KeyBinding::new("cmd-alt-shift-l", OpenClaudeChat, None),
+            KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
         ]);
         cx.set_menus([
             Menu::new("RiWork").items([
@@ -10023,12 +10396,12 @@ mod workspace_tab_tests {
         let tab = remote_tab(4, "host-1", "shell-9");
         assert_eq!(
             tab.saved(),
-            SavedTab::RemoteShell {
+            Some(SavedTab::RemoteShell {
                 desktop_id: "host-1".to_owned(),
                 shell_id: "shell-9".to_owned(),
-            }
+            })
         );
-        assert_eq!(tab.saved().key(), "remote:host-1:shell-9");
+        assert_eq!(tab.saved().unwrap().key(), "remote:host-1:shell-9");
         // It is a terminal, but never a local session: nothing that looks sessions up by
         // id, adopts, detaches or kills may see it.
         assert!(tab.is_terminal());
@@ -11260,6 +11633,25 @@ mod main_pane_tests {
     }
 
     #[test]
+    fn a_new_tab_opens_in_the_main_pane_whichever_pane_is_selected() {
+        // Shells, agents and chats (the New Tab menu and their shortcuts) all ask
+        // `new_tab_target`: the main pane, whatever pane is selected.
+        let window = Window::navigation_and_work();
+        for selected in [1, 2, 3] {
+            assert_eq!(
+                new_tab_target(window.main, &window.panes, false, selected),
+                2
+            );
+        }
+        // In focus mode only the selected pane is on screen, and with no main pane there is
+        // nowhere else to go.
+        assert_eq!(new_tab_target(window.main, &window.panes, true, 3), 3);
+        assert_eq!(new_tab_target(None, &window.panes, false, 3), 3);
+        // A locked pane may be the main pane when the user said so.
+        assert_eq!(new_tab_target(Some(1), &window.panes, false, 3), 1);
+    }
+
+    #[test]
     fn a_file_chosen_in_the_tree_opens_the_preview_in_the_main_pane_and_splits_nothing() {
         let mut window = Window::navigation_and_work();
         let panes_before = window.layout.pane_ids();
@@ -12390,5 +12782,222 @@ mod main_pane_tests {
             DEFAULT_LAYOUT_PRESENT_HINT,
             "The default layout is already in place"
         );
+    }
+}
+
+#[cfg(test)]
+mod chat_tab_tests {
+    use super::*;
+
+    #[test]
+    fn the_new_tab_menu_lists_both_agents_with_and_without_limits() {
+        assert_eq!(
+            CHAT_MENU.map(|(label, _, provider, unrestricted)| (label, provider, unrestricted)),
+            [
+                ("Codex chat", Provider::Codex, false),
+                ("Claude chat", Provider::Claude, false),
+                ("Codex chat · unrestricted", Provider::Codex, true),
+                ("Claude chat · unrestricted", Provider::Claude, true),
+            ]
+        );
+        // Like the terminal agents, only the plain entries have a shortcut.
+        let shortcuts = CHAT_MENU.map(|(_, shortcut, _, _)| shortcut);
+        assert_eq!(shortcuts, ["⌘⌥⇧C", "⌘⌥⇧L", "", ""]);
+    }
+
+    #[test]
+    fn a_chat_still_being_made_is_not_saved_and_one_with_an_id_is() {
+        assert_eq!(saved_chat(""), None);
+        assert_eq!(
+            saved_chat("0d3f"),
+            Some(SavedTab::Chat {
+                chat_id: "0d3f".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_new_chat_works_in_the_selected_worktree_and_unrestricted_never_asks() {
+        let request = new_chat_request(
+            Provider::Claude,
+            false,
+            "project-1",
+            Some("tree-2".to_owned()),
+            PathBuf::from("/work/app"),
+        );
+        assert_eq!(request.provider, Provider::Claude);
+        assert_eq!(request.project_id.as_deref(), Some("project-1"));
+        assert_eq!(request.worktree_id.as_deref(), Some("tree-2"));
+        assert_eq!(request.cwd, PathBuf::from("/work/app"));
+        assert_eq!(request.approval_mode, ApprovalMode::Supervised);
+        assert_eq!(
+            (request.title, request.model, request.effort),
+            (None, None, None)
+        );
+
+        let unrestricted = new_chat_request(
+            Provider::Codex,
+            true,
+            "project-1",
+            None,
+            PathBuf::from("/work"),
+        );
+        assert_eq!(unrestricted.approval_mode, ApprovalMode::Full);
+        assert_eq!(unrestricted.worktree_id, None);
+    }
+
+    /// Every key binding in this file as (keystroke in a fixed order, context).
+    fn bound_keys() -> Vec<(String, String)> {
+        let source = include_str!("main.rs");
+        let mut found = Vec::new();
+        for chunk in source.split("KeyBinding::new(\"").skip(1) {
+            let Some((keystroke, rest)) = chunk.split_once('"') else {
+                continue;
+            };
+            // `, Action, context)`: the context is what follows the second comma.
+            let context = rest.split(')').next().unwrap_or("").splitn(3, ',').nth(2);
+            let mut modifiers = Vec::new();
+            let mut key = keystroke;
+            while let Some((first, rest)) = key.split_once('-') {
+                if !["cmd", "shift", "alt", "ctrl", "fn"].contains(&first) || rest.is_empty() {
+                    break;
+                }
+                modifiers.push(first);
+                key = rest;
+            }
+            modifiers.sort_unstable();
+            found.push((
+                format!("{}-{key}", modifiers.join("-")),
+                context.unwrap_or("").trim().to_owned(),
+            ));
+        }
+        found
+    }
+
+    #[test]
+    fn no_key_is_bound_twice_and_the_chat_shortcuts_are_among_them() {
+        let keys = bound_keys();
+        assert!(keys.len() > 25, "the scan found {} bindings", keys.len());
+        let mut seen = HashSet::new();
+        for (keystroke, context) in &keys {
+            assert!(
+                seen.insert((keystroke.clone(), context.clone())),
+                "{keystroke} is bound twice"
+            );
+        }
+        for chat in ["alt-cmd-shift-c", "alt-cmd-shift-l"] {
+            assert!(
+                keys.iter().any(|(keystroke, _)| keystroke == chat),
+                "{chat}"
+            );
+        }
+        // The terminal agents' shortcuts stay as they were.
+        for terminal in [
+            "cmd-shift-c",
+            "cmd-shift-l",
+            "cmd-shift-g",
+            "cmd-shift-m",
+            "alt-cmd-l",
+        ] {
+            assert!(
+                keys.iter().any(|(keystroke, _)| keystroke == terminal),
+                "{terminal}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chat_tab_says_what_the_chat_is_doing_and_which_agent_it_is() {
+        let text = chat_tab_text;
+        let working = Some(AgentActivity::Working);
+        assert_eq!(
+            text(Some(Provider::Codex), "Fix the build", working, false),
+            "● Codex · Fix the build"
+        );
+        assert_eq!(
+            text(
+                Some(Provider::Claude),
+                "Fix the build",
+                Some(AgentActivity::Waiting),
+                false
+            ),
+            "◌ Claude · Fix the build"
+        );
+        assert_eq!(
+            text(
+                Some(Provider::Claude),
+                "Fix the build",
+                Some(AgentActivity::Done),
+                false
+            ),
+            "✓ Claude · Fix the build"
+        );
+        assert_eq!(
+            text(Some(Provider::Claude), "Fix the build", None, false),
+            "Claude · Fix the build"
+        );
+        // With icons the agent's mark is drawn in front instead of its name.
+        assert_eq!(
+            text(Some(Provider::Codex), "Fix the build", working, true),
+            "● Fix the build"
+        );
+        // A title that starts with the agent's name does not repeat it.
+        assert_eq!(
+            text(Some(Provider::Codex), "Codex chat", None, false),
+            "Codex chat"
+        );
+        // A chat that is being restored does not know its agent yet.
+        assert_eq!(text(None, "Chat", None, false), "Chat");
+        assert_eq!(
+            text(None, "Chat", Some(AgentActivity::Done), true),
+            "✓ Chat"
+        );
+        // A chat that is idle, or stopped, or has not begun has no mark.
+        assert_eq!(
+            text(
+                Some(Provider::Codex),
+                "t",
+                Some(AgentActivity::Unknown),
+                false
+            ),
+            "Codex · t"
+        );
+    }
+
+    #[test]
+    fn a_chat_tab_hint_follows_the_chat_state() {
+        use chat::model::ChatState;
+        let summary = |state: ChatState, activity| chat_view::Summary {
+            title: "t".to_owned(),
+            provider: Some(Provider::Codex),
+            project_id: None,
+            worktree_id: None,
+            state,
+            link: chat_view::Link::Live,
+            activity,
+        };
+        assert_eq!(
+            chat_tab_hint(&summary(ChatState::Running, Some(AgentActivity::Working))).as_deref(),
+            Some("Working")
+        );
+        assert_eq!(
+            chat_tab_hint(&summary(ChatState::Idle, Some(AgentActivity::Done))).as_deref(),
+            Some("Done")
+        );
+        assert_eq!(
+            chat_tab_hint(&summary(ChatState::Stopped, None)).as_deref(),
+            Some("Stopped · resumes when you send a message")
+        );
+        assert_eq!(
+            chat_tab_hint(&summary(
+                ChatState::Failed {
+                    message: "gone".into()
+                },
+                None
+            ))
+            .as_deref(),
+            Some("Failed · gone")
+        );
+        assert_eq!(chat_tab_hint(&summary(ChatState::Idle, None)), None);
     }
 }

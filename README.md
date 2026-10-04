@@ -291,6 +291,32 @@ riwork open /path/to/another/project
 
 Project windows and independently launched app processes keep their own selected project. Projects, tasks, the shell registry, and layouts share the RiWork data directory. Older and newer builds can share it after `riwork update` leaves an older window or `riwork` on `PATH`: a build keeps the fields and shell entries it does not understand, such as a session for a harness it predates, when it rewrites `state.json` or `sessions.json`; it hides those entries instead of failing. A store schema newer than the build is still refused. Closing a window preserves its shells. There is one persistent global orchestrator and one persistent orchestrator per project.
 
+## Chat host
+
+Codex and Claude chats talk to the agents through their structured interfaces, not their terminals. The agent processes behind them belong to the chat host, `riwork chat serve`, so a chat keeps working while app windows reload, update or quit. There is one host per RiWork data directory. It listens on `run/chat.sock` (mode 600, in a mode-700 directory, connections from other users are dropped), `run/chat.lock` keeps a second host out, and `run/chat.log` has its output. `riwork chat ensure` starts it detached if it is not running (several callers at once start one) and prints the socket. The host exits by itself after 15 minutes with no client connected and no chat starting, running or waiting for you (`chat serve --idle-seconds N` changes that); the next `ensure` starts it again.
+
+```sh
+riwork chat ensure
+riwork chat new --provider codex --worktree WORKTREE_ID --mode auto-edit
+riwork chat new --provider claude --project PROJECT_ID
+riwork chat new --provider codex --project PROJECT_ID --model MODEL --effort high --title "Fix the build"
+riwork chat list --project PROJECT_ID --json
+riwork chat send CHAT_ID "run the tests"
+riwork chat events CHAT_ID --since 0 --wait-ms 10000 --json
+riwork chat command CHAT_ID --command-json '{"command":"interrupt"}' --json
+riwork chat stop CHAT_ID
+```
+
+`--mode` is how much the agent may do without asking: `supervised` (the default; ask before commands and edits), `auto-edit` (edit the workspace, ask for the rest), `full` (never ask; what unrestricted launches use) or `plan` (plan first, change nothing). Like `shell create`, `chat new` starts in the given worktree, in the project's primary worktree, or else in the active project. Chat IDs are UUIDs; commands accept a unique prefix of at least eight characters.
+
+`chat new --json` prints the chat as `chat list --json` shows it, also when its provider did not start (its state is then `failed`, with the reason); without `--json` that is an error. `--model`, `--effort` and `--title` (at most 100, 32 and 200 characters, no control characters) take their value as it is, also with `=`, so a title may begin with `--`. `chat list --project` lists one project's chats.
+
+`chat events` and `chat command` are what the phone's remote connector runs for chats (see `docs/remote-protocol.md`, "Chat extension"), and work from a terminal too. `chat events CHAT_ID --since N --wait-ms M` reads the events after `seq` N and prints one compact JSON line, `{"chat_id","events":[{"seq","event"}],"next","more"}`. Events that are already there come at once; otherwise it waits up to M milliseconds (at most 25000) for the first one and then collects for another 50 ms. `--max` (500 by default, at most 2000) and `--max-bytes` (1 MiB by default, at most 2 MiB) cut the page; `more` says it was cut, and `next` is the `--since` for the next call. An event too big for a page alone has its long strings cut. `chat command CHAT_ID --command-json JSON` sends one command to the chat (`send`, `interrupt`, `approve`, `answer`, `configure`, `compact` or `stop`, in the JSON of the chat model) and refuses anything with a field it does not use; a refusal of the command starts with `invalid_request:`. `riwork capabilities --json` has `"chat": true` in a build that has all of this.
+
+Each chat is a directory, `chats/CHAT_ID/`, in the RiWork data directory: `info.json` (the chat's id, project, worktree, directory, title, mode, model, the provider's thread id and the Codex account it runs under, replaced atomically) and `events.jsonl` (everything that happened in it, one JSON object per line, appended as it happens; the line number is the event's `seq`). A client that opens a chat gets `events.jsonl` from the `seq` it last saw and then follows live events on the same connection, so a client that reconnects loses nothing; one that falls too far behind is disconnected and asks again from its last `seq`. The host starts no agent when it starts: every chat it loads is stopped, and the first message to one starts its agent again on the saved thread (Codex `thread/resume`, Claude `--resume`). A turn that a stop or a crash cut off is ended in the log (as interrupted) so no window waits for it. `chat stop` ends the agent and keeps the history; deleting a chat also removes its directory. If an agent cannot start (not installed, no Cua driver, a Codex account that is no longer available) the chat is kept as failed with the reason, and the next message tries again.
+
+Chats are started the way terminal launches are: the same `codex` and `claude` programs (found on the login shell's `PATH`), the same Cua.ai Driver MCP wiring (`mcp_servers.cua-driver` for Codex, `--mcp-config` for Claude), the Codex account of the project (or of the app) saved with the chat so a chat keeps its Codex home, and `ANTHROPIC_API_KEY` removed from Claude's environment so a stray key cannot switch it to API billing.
+
 ## Orchestrator
 
 The global orchestrator coordinates objectives and dependencies across projects. Each project's orchestrator manages its tasks, repositories, worktrees, and Codex, Claude, or Grok workers. They have separate persistent shells and ordinary workspace tabs; project orchestrators belong to their project and have no worktree, while the global orchestrator has neither project nor worktree ownership.
@@ -313,6 +339,14 @@ riwork orchestrator load-skill --project PROJECT_ID
 
 All orchestrator operations use the global scope when `--project` is omitted. `riwork orchestrator close` ends only the global session; `riwork orchestrator close --project PROJECT_ID` ends only that project's session. Worker shell lists exclude orchestrators. MCP orchestrator status/output tools accept an optional project selector.
 
+## Chat tabs
+
+**Codex chat** and **Claude chat** under **New Tab** in a pane's **…** actions menu open a native chat instead of the agent's terminal: Cmd+Option+Shift+C opens a Codex chat and Cmd+Option+Shift+L a Claude chat, in the selected worktree, in the main pane. The **· unrestricted** entries start the chat in Full mode, which never asks before it acts. A chat is driven through the agent's structured interface (`codex app-server`, Claude's stream-json mode) by the chat host, a background process (`riwork chat serve`) that owns the agent process and the chat's event log. A tab only follows the chat, so closing it, reloading the app or restarting the host does not end the chat: a restored layout reopens its chat tabs by id and rebuilds each transcript from the start of the log, and while the host is away a tab shows **Reconnecting…** and subscribes again from the last event it saw. A tab whose chat was deleted says so and offers **Close**.
+
+The tab is titled by the chat, with the agent's name or, with **Icons instead of labels** on, its mark (`>_` for Codex, a spark for Claude), and a working (●), waiting (◌) or done (✓) mark in front of the title, with the same hover hint that agents in terminals get. Open chats count among the agents in the status bar and in the project and worktree rows. Messages read as a conversation: your messages on the right, the agent's as Markdown (headings, lists, tables, quotes, links that open in the browser, code blocks with a **copy** button; **copy** on hover takes the whole message). Drag to select text within a paragraph, a table cell or a code block, double-click a word, triple-click the whole run, and Cmd+C copies it. The agent's thinking is folded under **Thinking…**. Commands, file changes (with an expandable diff, additions and removals tinted) and other tool calls are cards that open on click; long output keeps its last 200 lines. Plans and todo lists are checklists. The list follows new text until you scroll up, and **↓ latest** brings you back.
+
+When the agent asks to run a command, change files or use a tool, a bar above the message box names it and offers what the agent allows: **Allow**, **Allow for session**, **Deny**, **Stop**. With the message box empty, ⏎ allows, ⇧⏎ allows for the session and ⎋ denies; anything typed makes ⏎ a message again. Questions from the agent show their options as buttons beside a text field. In the message box ⏎ sends, also while a turn runs (the agent steers or queues it), ⇧⏎ starts a new line, and **Interrupt** or Cmd+. stops the turn. The toolbar sets the approval mode (Supervised, Auto-edit, Full, Plan), the model (a name, with opus, sonnet and haiku offered for Claude) and the effort, compacts the context, and shows how much of the context window is in use. Claude's own cost figure is shown as an estimate, never a bill. **⋯** has **Stop chat**, which ends the agent's process but keeps the chat (a stopped chat says it resumes when you send a message; a failed one offers **Retry**), and **Delete chat**.
+
 ## UI controls
 
 | Action | Shortcut |
@@ -333,6 +367,8 @@ All orchestrator operations use the global scope when `--project` is omitted. `r
 | Gather the tabs of unlocked panes into the main pane | Cmd+Shift+M |
 | Apply the default layout (locked navigation pane on the left, everything else in the main pane) | Cmd+Option+L |
 | Open Codex / Claude / Grok | Cmd+Shift+C / Cmd+Shift+L / Cmd+Shift+G |
+| Open a Codex / Claude chat | Cmd+Option+Shift+C / Cmd+Option+Shift+L |
+| Interrupt the turn of a chat | Cmd+. |
 | Bigger / smaller / actual-size app text (outside a terminal) | Cmd+= or Cmd++ / Cmd+- / Cmd+0 |
 | Open a URL or file in a terminal / open a file there in Vim | Cmd+click / Cmd+Shift+click |
 
