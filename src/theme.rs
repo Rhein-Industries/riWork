@@ -74,9 +74,9 @@ pub struct Palette {
     /// color (`gold`) in Native. Not published either.
     pub working: u32,
     /// How a pane's tabs show which one is selected: the colorful themes draw
-    /// terminal-style cells with a primary underline; Native draws a rounded,
-    /// raised segment in the content's own background, like a macOS tab bar.
-    pub pill_tabs: bool,
+    /// terminal-style cells with a primary underline; Native fills the selected
+    /// full-height cell with the content's own background, like a macOS tab bar.
+    pub plain_tabs: bool,
     /// Whether the window controls sit on a filled island. Native leaves them on
     /// the window's own surface, as a Mac app does; the space stays reserved.
     pub controls_island: bool,
@@ -95,7 +95,7 @@ impl Palette {
         muted: 0x708993,
         focus: 0xf4bf75,
         working: 0x55e6dc,
-        pill_tabs: false,
+        plain_tabs: false,
         controls_island: true,
     };
 
@@ -115,7 +115,7 @@ impl Palette {
         muted: 0x636366,
         focus: 0x000000,
         working: 0xb34000,
-        pill_tabs: true,
+        plain_tabs: true,
         controls_island: false,
     };
 
@@ -133,7 +133,7 @@ impl Palette {
         muted: 0x98989d,
         focus: 0xffffff,
         working: 0xff9f0a,
-        pill_tabs: true,
+        plain_tabs: true,
         controls_island: false,
     };
 
@@ -164,7 +164,7 @@ impl Palette {
             muted: readable(mix(bg, text, 0.58), panel_active),
             focus: gold,
             working: cyan,
-            pill_tabs: false,
+            plain_tabs: false,
             controls_island: true,
         }
     }
@@ -1424,7 +1424,7 @@ mod tests {
             assert_eq!(palette.focus, palette.cyan);
             // The one hue is the signal color, and it is what working agents wear.
             assert_eq!(palette.working, palette.gold);
-            assert!(palette.pill_tabs);
+            assert!(palette.plain_tabs);
             assert!(!palette.controls_island);
             for color in [
                 palette.bg,
@@ -1536,7 +1536,7 @@ mod tests {
             let palette = Appearance::resolve(choice, false).palette;
             assert_eq!(palette.focus, palette.gold, "{choice:?}");
             assert_eq!(palette.working, palette.cyan, "{choice:?}");
-            assert!(!palette.pill_tabs, "{choice:?}");
+            assert!(!palette.plain_tabs, "{choice:?}");
             assert!(palette.controls_island, "{choice:?}");
         }
     }
