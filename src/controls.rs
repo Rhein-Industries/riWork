@@ -335,9 +335,7 @@ pub fn toolbar_button(
         .rounded_full()
         .text_color(rgb(rest))
         .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
+            button.hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
         })
         .child(crate::icons::symbol(symbol, TOOLBAR_SYMBOL, None))
         .child(crate::tooltip::anchor(

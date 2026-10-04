@@ -2081,7 +2081,6 @@ impl FileExplorer {
             .flex()
             .items_center()
             .justify_center()
-            .cursor_pointer()
             .border_1()
             .border_color(rgb(if active { colors.focus } else { colors.divider }))
             .text_color(rgb(color));
@@ -2195,6 +2194,7 @@ impl FileExplorer {
         div()
             .id("file-explorer-filter")
             .relative()
+            .cursor_text()
             .h(ui_text::space(29.0))
             .px(ui_text::space(8.0))
             .flex()
@@ -2272,7 +2272,6 @@ impl FileExplorer {
             .flex()
             .items_center()
             .gap(ui_text::space(6.0))
-            .cursor_pointer()
             .bg(rgb(if selected {
                 colors.panel_active
             } else {
@@ -2402,7 +2401,6 @@ impl FileExplorer {
                         .border_1()
                         .border_color(rgb(colors.divider))
                         .text_color(rgb(colors.cyan))
-                        .cursor_pointer()
                         .child("PREVIEW PDF")
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.mode = Mode::Preview;
@@ -2565,7 +2563,6 @@ impl FileExplorer {
                                     } else {
                                         colors.muted
                                     }))
-                                    .cursor_pointer()
                                     .child(ui_text::quiet("‹ PREV"))
                                     .on_click(cx.listener(move |view, _, window, cx| {
                                         view.mode = Mode::Preview;
@@ -2588,7 +2585,6 @@ impl FileExplorer {
                                     } else {
                                         colors.muted
                                     }))
-                                    .cursor_pointer()
                                     .child(ui_text::quiet("NEXT ›"))
                                     .on_click(cx.listener(move |view, _, window, cx| {
                                         view.mode = Mode::Preview;
@@ -2784,7 +2780,6 @@ impl FileExplorer {
                     colors,
                 )
                 .py(ui_text::space(3.0))
-                .cursor_pointer()
                 .hover(move |style| style.bg(rgb(controls::Button::Secondary.hover(colors))))
                 .child("Preview PDF")
                 .on_click(cx.listener(|view, _, window, cx| {

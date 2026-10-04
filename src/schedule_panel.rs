@@ -500,7 +500,6 @@ impl SchedulePanel {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .cursor_pointer()
                 .hover(move |style| style.bg(rgb(kind.hover(colors))))
                 .when(focused, |button| button.border_color(rgb(colors.focus)))
                 .child(label)
@@ -514,7 +513,6 @@ impl SchedulePanel {
             .id(format!("schedule-control-{index}"))
             .px(ui_text::space(8.0))
             .py(ui_text::space(5.0))
-            .cursor_pointer()
             .border_1()
             .border_color(rgb(
                 if self.active == index && self.focus.is_focused(window) {
