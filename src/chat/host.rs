@@ -1232,6 +1232,8 @@ fn delete(shared: &Shared, chat_id: &str) -> Result<(), String> {
         inner.subscribers.clear();
     }
     lock(&shared.chats).remove(chat_id);
+    // Files a phone sent to this chat (see `upload_inbox`) go with it.
+    crate::upload_inbox::remove(&shared.home, chat_id);
     fs::remove_dir_all(&chat.dir)
         .map_err(|error| format!("Cannot remove {}: {error}", chat.dir.display()))
 }

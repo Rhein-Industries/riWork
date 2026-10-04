@@ -1565,6 +1565,63 @@ impl SessionManager {
         )
     }
 
+    /// Paste the paths of existing files into a live shell the way a drop of them on its terminal
+    /// does (`terminal_drop::path_input`, chosen by the program in front), without Return. Errors
+    /// that begin with a `session_keys` token happened before anything was pasted; any other error
+    /// may have pasted part of it. Used by `riwork shell paste` for files sent from a phone.
+    pub fn paste_files(&self, id: &str, paths: &[PathBuf]) -> Result<(), String> {
+        use crate::session_keys::{INPUT_UNAVAILABLE, INVALID_REQUEST, NOT_FOUND, NOT_SENT};
+        if paths.is_empty() {
+            return Err(format!("{INVALID_REQUEST}no file to paste"));
+        }
+        for path in paths {
+            if !path.is_absolute() || !fs::metadata(path).is_ok_and(|meta| meta.is_file()) {
+                return Err(format!(
+                    "{INVALID_REQUEST}not an existing file: {}",
+                    path.display()
+                ));
+            }
+        }
+        validate_uuid(id).map_err(|error| format!("{INVALID_REQUEST}{error}"))?;
+        self.require_live(id)
+            .map_err(|error| format!("{NOT_FOUND}{error}"))?;
+        // Only the status query runs before the first paste: an error before anything else
+        // reached tmux left the pane as it was.
+        let touched = std::cell::Cell::new(false);
+        let tmux = |args: &[&str]| {
+            if args.first() != Some(&"display-message") {
+                touched.set(true);
+            }
+            self.tmux_text(args)
+        };
+        let paths = paths.to_vec();
+        let harness = self.registered_session(id)?.harness;
+        crate::session_input::paste(
+            &self.home,
+            id,
+            |command, tty| {
+                let program = crate::terminal_drop::program(harness, command, || {
+                    crate::terminal_drop::foreground_names(tty)
+                });
+                crate::terminal_drop::path_input(program, &paths)
+            },
+            &tmux,
+            &|args, input| {
+                touched.set(true);
+                self.tmux_text_input(args, input)
+            },
+        )
+        .map_err(|error| {
+            if error == "terminal input is disabled for this pane" {
+                format!("{INPUT_UNAVAILABLE}{error}")
+            } else if !touched.get() {
+                format!("{NOT_SENT}{}", self.failure_reason(id, error))
+            } else {
+                error
+            }
+        })
+    }
+
     pub fn resize_viewport(
         &self,
         id: &str,
@@ -1715,7 +1772,10 @@ impl SessionManager {
             self.kill_tmux_session(id)?;
         }
         registry.sessions.retain(|session| session.id != id);
-        self.write_registry(&registry)
+        self.write_registry(&registry)?;
+        // Files a phone sent to this shell (see `upload_inbox`) go with it.
+        crate::upload_inbox::remove(&self.home, id);
+        Ok(())
     }
 
     fn create_inner(
