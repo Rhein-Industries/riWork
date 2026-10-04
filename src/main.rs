@@ -8176,7 +8176,8 @@ impl Workspace {
         cards.extend(self.render_grok_usage_cards(colors));
         div().size_full().flex().flex_col().min_h_0().bg(rgb(colors.panel))
             .child(div().h(ui_text::space(32.0)).flex_none().flex().items_center().px(ui_text::space(10.0)).justify_between()
-                .border_b_1().border_color(rgb(colors.divider)).child(ui_text::cased("Account usage"))
+                .border_b_1().border_color(rgb(colors.divider))
+                .child(div().when(ui_text::is_native(), |title| title.font_weight(gpui::FontWeight::SEMIBOLD)).child(ui_text::cased("Account usage")))
                 .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan)).cursor_pointer()
                     .child(ui_text::cased(if pending || self.grok_usage_pending { "Refreshing…" } else { "↻ Refresh" }))
                     .on_click(cx.listener(|workspace, _, window, cx| {

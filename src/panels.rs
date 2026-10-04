@@ -747,7 +747,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     selected,
                     colors.magenta,
                     vec![
-                        mono_line(
+                        title_line(
                             format!(
                                 "{} {}{}{}",
                                 if worktree.is_primary { "◆" } else { "◇" },
@@ -764,7 +764,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             11.0,
                         ),
                         mono_line(path.into_owned(), colors.muted, 10.0),
-                        line(
+                        quiet_line(
                             format!(
                                 "{}{done}/{} TASKS · {}",
                                 activity
@@ -1804,7 +1804,7 @@ fn push_remote_panel<V: 'static>(
                         selected,
                         colors.magenta,
                         vec![
-                            mono_line(
+                            title_line(
                                 format!(
                                     "{} {}",
                                     if worktree.primary { "◆" } else { "◇" },
@@ -1814,7 +1814,7 @@ fn push_remote_panel<V: 'static>(
                                 11.0,
                             ),
                             mono_line(worktree.path.clone(), colors.muted, 10.0),
-                            line(
+                            quiet_line(
                                 format!(
                                     "{done}/{} TASKS · {}",
                                     tasks.len(),
@@ -2377,6 +2377,21 @@ fn mono_line(text: String, color: u32, size: f32) -> AnyElement {
     line_box(text, color, size)
         .font_family(ui_text::mono_family())
         .into_any_element()
+}
+
+/// A row's title: in the interface face under Native, like a project's name, and in the
+/// colorful themes' monospace face elsewhere.
+fn title_line(text: String, color: u32, size: f32) -> AnyElement {
+    if ui_text::is_native() {
+        line(text, color, size)
+    } else {
+        mono_line(text, color, size)
+    }
+}
+
+/// A line of composed text with capitalized words, in the theme's case.
+fn quiet_line(text: String, color: u32, size: f32) -> AnyElement {
+    line(ui_text::quiet(text).to_string(), color, size)
 }
 
 fn line_box(text: String, color: u32, size: f32) -> Div {
