@@ -1,8 +1,16 @@
 //! Small vector controls that keep pane chrome consistent across fonts and themes.
 
-use gpui::{AnyElement, App, IntoElement, PathBuilder, canvas, point, prelude::*, px, rgb};
+use gpui::{
+    AnyElement, App, Bounds, Corners, IntoElement, PathBuilder, canvas, div, point, prelude::*, px,
+    rgb,
+};
 
-use crate::{layouts::PanelKind, settings::Settings, ui_text};
+use crate::{
+    layouts::PanelKind,
+    settings::Settings,
+    symbols::{self, Weight},
+    ui_text,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Icon {
@@ -47,13 +55,91 @@ pub fn labels_as_icons(cx: &App) -> bool {
         .is_some_and(|settings| settings.panel_tab_icons)
 }
 
+impl Icon {
+    /// The SF Symbol Native draws for this icon.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Lock => "lock",
+            Self::Unlock => "lock.open",
+            Self::Focus => "arrow.up.left.and.arrow.down.right",
+            Self::Add => "plus",
+            Self::SplitRight => "rectangle.split.2x1",
+            Self::SplitDown => "rectangle.split.1x2",
+            Self::Close => "xmark",
+            Self::More => "ellipsis",
+            Self::Bell => "bell",
+            Self::BellOff => "bell.slash",
+            Self::Main => "star",
+            Self::Check => "checkmark",
+            Self::Layout => "sidebar.left",
+            Self::Panel(panel) => match panel {
+                PanelKind::Projects => "rectangle.stack",
+                PanelKind::Worktrees => "arrow.triangle.branch",
+                PanelKind::Files => "folder",
+                PanelKind::Preview => "eye",
+                PanelKind::Tasks => "checklist",
+                PanelKind::Shells => "terminal",
+                PanelKind::Usage => "chart.bar",
+                PanelKind::Settings => "gearshape",
+                PanelKind::ProjectSettings => "slider.horizontal.3",
+                PanelKind::Schedules => "calendar",
+            },
+            Self::Action(action) => match action {
+                ActionGlyph::NewFolder => "folder.badge.plus",
+                ActionGlyph::NewProject => "plus.rectangle.on.folder",
+                ActionGlyph::EditInVim => "square.and.pencil",
+                ActionGlyph::CopyPath => "link",
+                ActionGlyph::CopyContents => "doc.on.doc",
+                ActionGlyph::Reveal => "folder",
+                ActionGlyph::OpenExternally => "arrow.up.forward.app",
+            },
+        }
+    }
+
+    /// A menu's tick is medium, as AppKit draws it; the rest are regular, like the text.
+    fn symbol_weight(self) -> Weight {
+        match self {
+            Self::Check => Weight::Medium,
+            _ => Weight::Regular,
+        }
+    }
+
+    /// The point size of its symbol in a box of `side` points. Symbols are drawn a little
+    /// under the size of the list text, as macOS's own toolbars and sidebars draw them;
+    /// the wide ones (the splits, the ellipsis) a step smaller so all read alike.
+    fn symbol_points(self, side: f32) -> f32 {
+        let points = side * 0.8;
+        match self {
+            Self::SplitRight | Self::SplitDown | Self::Layout | Self::Focus => points * 0.9,
+            _ => points,
+        }
+    }
+}
+
 /// Paint an icon in a 14 px box, drawn at the interface text scale so it stays in
 /// proportion with the text beside it. The caller owns its hit target and tooltip.
+/// Native draws the icon's SF Symbol in the same box, tinted alike; a symbol this
+/// macOS lacks falls back to the vector glyph.
 pub fn icon(kind: Icon, color: u32) -> AnyElement {
     let scale = ui_text::scale();
+    let native = ui_text::is_native();
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
+            if native {
+                let side = f32::from(bounds.size.width);
+                let points = kind.symbol_points(side);
+                if paint_symbol(
+                    kind.symbol(),
+                    points,
+                    kind.symbol_weight(),
+                    color,
+                    bounds,
+                    window,
+                ) {
+                    return;
+                }
+            }
             let mut path = if matches!(kind, Icon::More) {
                 PathBuilder::fill()
             } else {
@@ -159,6 +245,72 @@ pub fn icon(kind: Icon, color: u32) -> AnyElement {
         },
     )
     .size(px(14.0 * scale))
+    .flex_shrink_0()
+    .into_any_element()
+}
+
+/// Paint SF Symbol `name` centered in the square at `bounds`' origin. False when this
+/// macOS has no such symbol, so the caller can draw something else.
+fn paint_symbol(
+    name: &'static str,
+    points: f32,
+    weight: Weight,
+    color: u32,
+    bounds: Bounds<gpui::Pixels>,
+    window: &mut gpui::Window,
+) -> bool {
+    let side = f32::from(bounds.size.width);
+    let key = symbols::Key::new(name, points, side, weight, color, window.scale_factor());
+    let Some(image) = symbols::image(key) else {
+        return false;
+    };
+    let square = Bounds::new(bounds.origin, gpui::size(px(side), px(side)));
+    let _ = window.paint_image(square, square, Corners::default(), image, 0, false);
+    true
+}
+
+/// The SF Symbol Native draws for a text mark that stands for a control: a row's
+/// disclosure triangle, a sort arrow, a gear, a pencil. None keeps the mark as text.
+pub fn mark_symbol(mark: &str) -> Option<&'static str> {
+    Some(match mark {
+        "⚙" => "gearshape",
+        "↗" => "arrow.up.right",
+        "✎" => "pencil",
+        "×" => "xmark",
+        "+" => "plus",
+        "▸" => "chevron.right",
+        "▾" => "chevron.down",
+        "▴" => "chevron.up",
+        "↓" => "arrow.down",
+        "↑" => "arrow.up",
+        "✓" => "checkmark",
+        "⌕" => "magnifyingglass",
+        _ => return None,
+    })
+}
+
+/// A text mark used as a control, as the colorful themes show it; under Native, its SF
+/// Symbol in a box the size of the text at `size` px, so it sits in the line like the mark.
+/// Disclosure chevrons are drawn smaller and bolder, as in a Finder sidebar.
+pub fn mark(mark: &'static str, size: f32, color: u32) -> AnyElement {
+    let symbol = mark_symbol(mark).filter(|_| ui_text::is_native());
+    let Some(name) = symbol else {
+        return div().flex_none().child(mark).into_any_element();
+    };
+    let chevron = name.starts_with("chevron");
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let side = f32::from(bounds.size.width);
+            let (points, weight) = if chevron {
+                (side * 0.62, Weight::Medium)
+            } else {
+                (side * 0.8, Weight::Regular)
+            };
+            paint_symbol(name, points, weight, color, bounds, window);
+        },
+    )
+    .size(ui_text::text(size + 2.0))
     .flex_shrink_0()
     .into_any_element()
 }
@@ -572,6 +724,75 @@ mod tests {
             one += usize::from(a != b);
         }
         one as f32 / either as f32
+    }
+
+    #[test]
+    fn control_marks_map_to_symbols_and_text_stays_text() {
+        assert_eq!(mark_symbol("▸"), Some("chevron.right"));
+        assert_eq!(mark_symbol("⚙"), Some("gearshape"));
+        assert_eq!(mark_symbol("A1"), None);
+        for mark in ["⚙", "↗", "✎", "×", "+", "▸", "▾", "▴", "↓", "↑", "✓", "⌕"]
+        {
+            let name = mark_symbol(mark).unwrap();
+            let key = symbols::Key::new(name, 12.0, 14.0, Weight::Regular, 0, 2.0);
+            assert!(symbols::image(key).is_some(), "{mark}: {name}");
+        }
+    }
+
+    #[test]
+    fn every_panel_and_action_has_its_own_symbol() {
+        let panels: Vec<_> = PANELS
+            .iter()
+            .map(|panel| Icon::Panel(*panel).symbol())
+            .collect();
+        let actions: Vec<_> = ACTIONS
+            .iter()
+            .map(|action| Icon::Action(*action).symbol())
+            .collect();
+        for names in [&panels, &actions] {
+            let mut unique = names.to_vec();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique.len(), names.len(), "{names:?}");
+        }
+        assert_eq!(Icon::Lock.symbol(), "lock");
+        assert_eq!(Icon::Unlock.symbol(), "lock.open");
+        assert_eq!(Icon::BellOff.symbol(), "bell.slash");
+    }
+
+    /// Every symbol named exists on this Mac, so Native never falls back to a vector glyph.
+    #[test]
+    fn every_symbol_rasterizes() {
+        let fixed = [
+            Icon::Lock,
+            Icon::Unlock,
+            Icon::Focus,
+            Icon::Add,
+            Icon::SplitRight,
+            Icon::SplitDown,
+            Icon::Close,
+            Icon::More,
+            Icon::Bell,
+            Icon::BellOff,
+            Icon::Main,
+            Icon::Check,
+            Icon::Layout,
+        ];
+        let all = fixed
+            .into_iter()
+            .chain(PANELS.iter().map(|panel| Icon::Panel(*panel)))
+            .chain(ACTIONS.iter().map(|action| Icon::Action(*action)));
+        for icon in all {
+            let key = symbols::Key::new(
+                icon.symbol(),
+                icon.symbol_points(16.0),
+                16.0,
+                icon.symbol_weight(),
+                0,
+                2.0,
+            );
+            assert!(symbols::image(key).is_some(), "{icon:?}: {}", icon.symbol());
+        }
     }
 
     #[test]

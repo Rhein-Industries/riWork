@@ -437,7 +437,7 @@ fn preset(choice: ThemeChoice) -> TerminalTheme {
     }
 }
 
-fn mix(first: u32, second: u32, amount: f64) -> u32 {
+pub fn mix(first: u32, second: u32, amount: f64) -> u32 {
     let mut result = 0;
     for shift in [16, 8, 0] {
         let first = f64::from((first >> shift) & 255);
@@ -447,7 +447,7 @@ fn mix(first: u32, second: u32, amount: f64) -> u32 {
     result
 }
 
-fn luminance(color: u32) -> f64 {
+pub fn luminance(color: u32) -> f64 {
     let channel = |shift| {
         let value = f64::from((color >> shift) & 255u32) / 255.0;
         if value <= 0.04045 {

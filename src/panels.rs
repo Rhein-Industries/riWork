@@ -11,11 +11,13 @@ use std::{
 
 use gpui::{
     AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
-    IntoElement, MouseButton, Pixels, Render, Stateful, Window, canvas, div, prelude::*, px, rgb,
+    FontWeight, IntoElement, MouseButton, Pixels, Render, Stateful, Window, canvas, div,
+    prelude::*, px, rgb,
 };
 
 use crate::{
     activity::{ActivityCounts, AgentActivity, AgentState},
+    controls,
     icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
@@ -611,15 +613,18 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             .count();
                         let activity =
                             ActivityCounts::for_project(&project.id, data.shells, data.activity);
-                        let title = div()
+                        let selected = data.project_id == project.id;
+                        let controls = div()
                             .flex()
+                            .flex_none()
                             .items_center()
                             .gap(ui_text::space(4.0))
-                            .child(div().flex_1().min_w_0().child(line(
-                                project.name.clone(),
-                                colors.text,
-                                11.0,
-                            )))
+                            // Native shows a row's buttons only while it is pointed at or chosen.
+                            .when(ui_text::is_native() && !selected, |controls| {
+                                controls
+                                    .invisible()
+                                    .group_hover(PROJECT_ROW_GROUP, |style| style.visible())
+                            })
                             .child(project_notification_control(
                                 &project.id,
                                 project.notify_on_agent_done,
@@ -644,6 +649,16 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                 on_action.clone(),
                                 cx,
                             ));
+                        let title = div()
+                            .flex()
+                            .items_center()
+                            .gap(ui_text::space(4.0))
+                            .child(div().flex_1().min_w_0().child(line(
+                                project.name.clone(),
+                                colors.text,
+                                11.0,
+                            )))
+                            .child(controls);
                         rows.push(project_row(
                             &project.id,
                             Some(DraggedProjectItem {
@@ -652,7 +667,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                 state_home: data.state_home.to_path_buf(),
                             }),
                             ProjectRowLook {
-                                selected: data.project_id == project.id,
+                                selected,
                                 depth,
                                 dimmed: false,
                             },
@@ -839,7 +854,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 }
                 let metrics = data.metrics.get(&shell.id).copied().unwrap_or_default();
                 let agent = data.activity.get(&shell.id);
-                let status = shell_status_label(shell.alive, agent);
+                let status = ui_text::quiet(shell_status_label(shell.alive, agent)).to_string();
                 let working = agent.is_some_and(|state| state.activity == AgentActivity::Working);
                 rows.push(row(
                     format!("shell-{}", shell.id),
@@ -904,9 +919,9 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 .p(ui_text::space(10.0))
                 .text_color(rgb(colors.muted))
                 .child(if query.is_empty() {
-                    format!("NO {}", name.to_uppercase())
+                    ui_text::cased(format!("No {}", panel_noun(kind)))
                 } else {
-                    "NO MATCHES".to_owned()
+                    ui_text::cased("No matches")
                 })
                 .into_any_element(),
         );
@@ -937,120 +952,156 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
     let search_action = on_action.clone();
     let as_icons = icons::labels_as_icons(cx);
     let sort_selector_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
-    let mut panel = div()
-        .relative()
-        .flex()
-        .flex_col()
-        .size_full()
-        .min_w_0()
-        .min_h_0()
-        .bg(rgb(colors.panel))
-        .text_size(ui_text::text(11.0))
-        .child(
-            div()
-                .h(ui_text::space(30.0))
-                .flex_none()
-                .flex()
-                .border_b_1()
-                .border_color(rgb(if data.search_focused {
-                    colors.cyan
-                } else {
-                    colors.divider
-                }))
-                .overflow_hidden()
-                .child(div().flex_none().w(px((data.control_inset - 8.0).max(0.0))))
-                .child(
-                    div()
-                        .id(format!("{name}-search"))
-                        .relative()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .px(ui_text::space(8.0))
-                        .flex()
-                        .items_center()
-                        .text_color(rgb(if data.search_focused {
-                            colors.text
+    let mut panel =
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .bg(rgb(colors.panel))
+            .text_size(ui_text::text(11.0))
+            .child(
+                div()
+                    .h(ui_text::space(30.0))
+                    .flex_none()
+                    .flex()
+                    .border_b_1()
+                    .border_color(rgb(if data.search_focused {
+                        colors.cyan
+                    } else {
+                        colors.divider
+                    }))
+                    // Native's search field draws its own edge; the strip needs no rule.
+                    .when(ui_text::is_native(), |strip| strip.border_b_0())
+                    .overflow_hidden()
+                    .child(div().flex_none().w(px((data.control_inset - 8.0).max(0.0))))
+                    .child(
+                        div()
+                            .id(format!("{name}-search"))
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .px(ui_text::space(8.0))
+                            .flex()
+                            .items_center()
+                            .text_color(rgb(if data.search_focused {
+                                colors.text
+                            } else {
+                                colors.muted
+                            }))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .map(|search| {
+                                if !ui_text::is_native() {
+                                    return search.child(search_label);
+                                }
+                                // Native: a capsule search field, as in a Finder or Mail sidebar.
+                                search
+                                    .my(ui_text::space(4.0))
+                                    .mx(ui_text::space(6.0))
+                                    .h(ui_text::space(22.0))
+                                    .rounded_full()
+                                    .bg(rgb(colors.panel_active))
+                                    .gap(ui_text::space(5.0))
+                                    .child(icons::mark("⌕", 10.0, colors.muted))
+                                    .child(div().flex_1().min_w_0().text_ellipsis().child(
+                                        if data.query.is_empty() {
+                                            "Search".to_owned()
+                                        } else {
+                                            format!(
+                                                "{}{}",
+                                                data.query,
+                                                if data.search_focused { "▌" } else { "" }
+                                            )
+                                        },
+                                    ))
+                                    .when(data.query.is_empty(), |search| {
+                                        search.child(
+                                            div()
+                                                .flex_none()
+                                                .text_size(ui_text::text(9.0))
+                                                .text_color(rgb(colors.muted))
+                                                .child("⌘F"),
+                                        )
+                                    })
+                            })
+                            .children(search_input)
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                search_action(view, PanelAction::Search, window, cx);
+                            })),
+                    )
+                    .children((kind == PanelKind::Projects).then(|| {
+                        project_header_button(
+                            "new-project-folder",
+                            HeaderButton {
+                                label: "+ Folder",
+                                tooltip: "New folder",
+                                glyph: ActionGlyph::NewFolder,
+                                color: colors.magenta,
+                                pad: 6.0,
+                                action: PanelAction::CreateFolder,
+                            },
+                            as_icons,
+                            on_action.clone(),
+                            cx,
+                        )
+                    }))
+                    .children((kind == PanelKind::Projects).then(|| {
+                        project_header_button(
+                            "new-project",
+                            HeaderButton {
+                                label: "+ Project",
+                                tooltip: "New project",
+                                glyph: ActionGlyph::NewProject,
+                                color: colors.cyan,
+                                pad: 8.0,
+                                action: PanelAction::CreateProject,
+                            },
+                            as_icons,
+                            on_action.clone(),
+                            cx,
+                        )
+                    })),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(6.0))
+                    .px(ui_text::space(8.0))
+                    .py(ui_text::space(4.0))
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child(div().flex_1().min_w_0().text_ellipsis().child(
+                        if ui_text::is_native() {
+                            native_count(count, total, panel_noun(kind))
                         } else {
-                            colors.muted
-                        }))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(search_label)
-                        .children(search_input)
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            search_action(view, PanelAction::Search, window, cx);
-                        })),
-                )
-                .children((kind == PanelKind::Projects).then(|| {
-                    project_header_button(
-                        "new-project-folder",
-                        HeaderButton {
-                            label: "+ FOLDER",
-                            tooltip: "New folder",
-                            glyph: ActionGlyph::NewFolder,
-                            color: colors.magenta,
-                            pad: 6.0,
-                            action: PanelAction::CreateFolder,
+                            format!("{count:02} / {total:02} {}", name.to_uppercase())
                         },
-                        as_icons,
-                        on_action.clone(),
-                        cx,
-                    )
-                }))
-                .children((kind == PanelKind::Projects).then(|| {
-                    project_header_button(
-                        "new-project",
-                        HeaderButton {
-                            label: "+ PROJECT",
-                            tooltip: "New project",
-                            glyph: ActionGlyph::NewProject,
-                            color: colors.cyan,
-                            pad: 8.0,
-                            action: PanelAction::CreateProject,
-                        },
-                        as_icons,
-                        on_action.clone(),
-                        cx,
-                    )
-                })),
-        )
-        .child(
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(ui_text::space(6.0))
-                .px(ui_text::space(8.0))
-                .py(ui_text::space(4.0))
-                .text_size(ui_text::text(10.0))
-                .text_color(rgb(colors.muted))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_ellipsis()
-                        .child(format!("{count:02} / {total:02} {}", name.to_uppercase())),
-                )
-                .children((kind == PanelKind::Projects).then(|| {
-                    project_sort_controls(
-                        data.project_order,
-                        data.project_sort_menu_open,
-                        sort_selector_bounds.clone(),
-                        on_action.clone(),
-                        cx,
-                    )
-                })),
-        )
-        .child(
-            div()
-                .id(format!("{name}-rows"))
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .overflow_y_scroll()
-                .children(rows),
-        );
+                    ))
+                    .children((kind == PanelKind::Projects).then(|| {
+                        project_sort_controls(
+                            data.project_order,
+                            data.project_sort_menu_open,
+                            sort_selector_bounds.clone(),
+                            on_action.clone(),
+                            cx,
+                        )
+                    })),
+            )
+            .child(
+                div()
+                    .id(format!("{name}-rows"))
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(rows),
+            );
 
     if kind == PanelKind::Tasks {
         if let Some(remote) = data.selected_remote {
@@ -1136,6 +1187,16 @@ fn project_header_button<V: 'static>(
         .cursor_pointer()
         .hover(|style| style.bg(rgb(colors.panel_active)))
         .map(|button| {
+            controls::native(button, |button| {
+                button
+                    .h(ui_text::space(22.0))
+                    .my(ui_text::space(4.0))
+                    .mr(ui_text::space(4.0))
+                    .rounded_full()
+                    .text_color(rgb(colors.text))
+            })
+        })
+        .map(|button| {
             if as_icon {
                 button
                     .w(ui_text::space(28.0))
@@ -1143,7 +1204,7 @@ fn project_header_button<V: 'static>(
                     .child(icons::icon(Icon::Action(glyph), color))
                     .child(tooltip::anchor(tooltip, Look::Control))
             } else {
-                button.px(ui_text::space(pad)).child(label)
+                button.px(ui_text::space(pad)).child(ui_text::cased(label))
             }
         })
         .on_click(cx.listener(move |view, _, window, cx| {
@@ -1188,8 +1249,17 @@ fn project_sort_controls<V: 'static>(
                         .bg(rgb(colors.panel_active))
                         .text_color(rgb(colors.cyan))
                 })
+                .map(|control| {
+                    controls::native(control, |control| {
+                        control.rounded_full().px(ui_text::space(7.0))
+                    })
+                })
                 .child(order.by.label())
-                .child(if open { "▴" } else { "▾" })
+                .child(icons::mark(
+                    if open { "▴" } else { "▾" },
+                    8.0,
+                    if open { colors.cyan } else { colors.muted },
+                ))
                 .child(
                     canvas(
                         move |bounds, _, _| selector_bounds.set(bounds),
@@ -1219,7 +1289,12 @@ fn project_sort_controls<V: 'static>(
                 .cursor_pointer()
                 .text_color(rgb(colors.cyan))
                 .hover(|style| style.bg(rgb(colors.panel_active)))
-                .child(if order.descending { "↓" } else { "↑" })
+                .map(|control| controls::native(control, |control| control.rounded_full()))
+                .child(icons::mark(
+                    if order.descending { "↓" } else { "↑" },
+                    9.0,
+                    colors.cyan,
+                ))
                 .when(!open, |control| {
                     control.child(tooltip::anchor(order.direction_label(), Look::Control))
                 })
@@ -1333,7 +1408,8 @@ fn project_control<V: 'static>(
                 .bg(rgb(colors.divider))
                 .text_color(rgb(colors.magenta))
         })
-        .child(mark)
+        .map(|control| controls::native(control, |control| control.rounded(controls::radius(5.0))))
+        .child(icons::mark(mark, 10.0, colors.cyan))
         .child(tooltip::anchor(tooltip, Look::Control))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(move |view, _, window, cx| {
@@ -1405,7 +1481,14 @@ fn task_detail(
         .border_t_1()
         .border_color(rgb(colors.divider))
         .p(ui_text::space(8.0))
-        .child(div().text_color(rgb(colors.gold)).child("TASK DETAIL"))
+        .child(if ui_text::is_native() {
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(colors.muted))
+                .child("Task detail")
+        } else {
+            div().text_color(rgb(colors.gold)).child("TASK DETAIL")
+        })
         .child(
             div()
                 .pt(ui_text::space(5.0))
@@ -1621,7 +1704,7 @@ fn remote_worktree_label(remote: &SelectedView, id: Option<&str>) -> String {
             .find(|worktree| worktree.id == id)
     })
     .map_or_else(
-        || "UNASSIGNED".to_owned(),
+        || ui_text::cased("Unassigned").to_string(),
         |worktree| worktree.branch.clone(),
     )
 }
@@ -1849,7 +1932,11 @@ fn push_remote_panel<V: 'static>(
                                         } else {
                                             colors.magenta
                                         }))
-                                        .child(if shell.alive { "● LIVE" } else { "× EXITED" }),
+                                        .child(ui_text::quiet(if shell.alive {
+                                            "● LIVE"
+                                        } else {
+                                            "× EXITED"
+                                        })),
                                 )
                                 .into_any_element(),
                             mono_line(shell.cwd.clone(), colors.muted, 10.0),
@@ -1967,6 +2054,18 @@ fn folder_bar(id: String, depth: usize, colors: Palette) -> Stateful<Div> {
         .border_color(rgb(colors.divider))
         .bg(rgb(colors.panel_active))
         .text_color(rgb(colors.magenta))
+        // Native: a sidebar section heading, as Finder's, with no bar behind it.
+        .map(|bar| {
+            controls::native(bar, |bar| {
+                bar.mt(ui_text::space(8.0))
+                    .h(ui_text::space(22.0))
+                    .border_b_0()
+                    .bg(gpui::transparent_black())
+                    .text_color(rgb(colors.muted))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(ui_text::text(10.0))
+            })
+        })
 }
 
 fn folder_header<V: 'static>(
@@ -2010,7 +2109,11 @@ fn folder_header<V: 'static>(
             style
         }
     })
-    .child(if collapsed { "▸" } else { "▾" })
+    .child(icons::mark(
+        if collapsed { "▸" } else { "▾" },
+        9.0,
+        colors.muted,
+    ))
     .child(
         div()
             .flex_1()
@@ -2023,7 +2126,7 @@ fn folder_header<V: 'static>(
         div()
             .text_size(ui_text::text(9.0))
             .text_color(rgb(colors.muted))
-            .child(format!("{count:02}")),
+            .child(counter(count)),
     )
     .children(id.map(|id| {
         project_control(
@@ -2159,7 +2262,13 @@ fn project_row<V: 'static>(
         }))
         .when(dimmed, |row| row.opacity(0.5))
         .when(drag.is_none(), |row| row.cursor_pointer())
-        .hover(|element| element.bg(rgb(colors.panel_active)))
+        .hover(move |element| {
+            controls::hovered(element, controls::row_hover(selected, colors), |element| {
+                element.bg(rgb(colors.panel_active))
+            })
+        })
+        .group(PROJECT_ROW_GROUP)
+        .map(|row| controls::native(row, |row| sidebar_row(row, selected, colors)))
         .children(children)
         .on_click(cx.listener(move |view, _, window, cx| {
             on_action(view, action.clone(), window, cx);
@@ -2173,6 +2282,19 @@ fn project_row<V: 'static>(
             })
         })
         .into_any_element()
+}
+
+/// The group a project row's hover reveals its buttons in.
+const PROJECT_ROW_GROUP: &str = "project-row";
+
+/// Native's sidebar row: inset from the panel's edges and rounded, filled when chosen,
+/// with no bar along its side.
+fn sidebar_row(row: Stateful<Div>, selected: bool, colors: Palette) -> Stateful<Div> {
+    controls::row(row, selected, colors)
+        .mx(ui_text::space(6.0))
+        .border_l_0()
+        .border_0()
+        .rounded(controls::radius(8.0))
 }
 
 fn row<V: 'static>(
@@ -2200,12 +2322,49 @@ fn row<V: 'static>(
         } else {
             colors.panel
         }))
-        .hover(|element| element.bg(rgb(colors.panel_active)))
+        .hover(move |element| {
+            controls::hovered(element, controls::row_hover(selected, colors), |element| {
+                element.bg(rgb(colors.panel_active))
+            })
+        })
+        .map(|row| controls::native(row, |row| sidebar_row(row, selected, colors)))
         .children(children)
         .on_click(cx.listener(move |view, _, window, cx| {
             on_action(view, action.clone(), window, cx);
         }))
         .into_any_element()
+}
+
+/// What a panel lists, for its count and its empty state: "projects", "shells".
+fn panel_noun(kind: PanelKind) -> &'static str {
+    match kind {
+        PanelKind::ProjectSettings => "project settings",
+        kind => kind.name(),
+    }
+}
+
+/// A count as the colorful themes print it, two digits; Native prints the number.
+fn counter(count: usize) -> String {
+    if ui_text::is_native() {
+        count.to_string()
+    } else {
+        format!("{count:02}")
+    }
+}
+
+/// Native's panel count: "3 projects", or "2 of 3 projects" while a search hides some.
+fn native_count(count: usize, total: usize, noun: &str) -> String {
+    // "1 project", not "1 projects": every noun here is a plural in -s.
+    let noun = if total == 1 {
+        noun.strip_suffix('s').unwrap_or(noun)
+    } else {
+        noun
+    };
+    if count == total {
+        format!("{total} {noun}")
+    } else {
+        format!("{count} of {total} {noun}")
+    }
 }
 
 fn line(text: String, color: u32, size: f32) -> AnyElement {
