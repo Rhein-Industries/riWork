@@ -237,6 +237,11 @@ fn matrix() -> Vec<(String, bool)> {
             false,
         ),
         (mutate(&|v| v["terminal"]["palette"] = json!({})), false),
+        (mutate(&|v| v["native"] = json!(true)), true),
+        (mutate(&|v| v["native"] = json!(false)), true),
+        (mutate(&|v| v["native"] = json!("yes")), false),
+        (mutate(&|v| v["native"] = json!(1)), false),
+        (mutate(&|v| v["native"] = Value::Null), false),
     ];
     for bytes in ["", "{", "null", "[]", "\"{}\"", "{}", "\u{feff}{}"] {
         cases.push((bytes.to_owned(), false));
@@ -461,6 +466,15 @@ async fn what_the_desktop_writes_is_what_the_rpc_serves() {
     assert_eq!(result["palette"]["bg"], "#fbf1c7");
     assert_eq!(result["terminal"]["palette"][15], "#0a0b0f");
     assert_eq!(result["terminal"]["palette"].as_array().unwrap().len(), 16);
+
+    // No Native skin: no flag, as from a desktop that predates it.
+    assert!(result.get("native").is_none(), "{response}");
+
+    snapshot.native = true;
+    assert!(appearance_file::publish(home.path(), &snapshot, 1_790_000_002).unwrap());
+    f.publish(std::fs::read(home.path().join("appearance.json")).unwrap());
+    assert_eq!(f.get().await["result"]["native"], true);
+    snapshot.native = false;
 
     snapshot.terminal = None;
     assert!(appearance_file::publish(home.path(), &snapshot, 1_790_000_001).unwrap());

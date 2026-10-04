@@ -791,8 +791,9 @@ fn appearance_summary(published: &crate::appearance_file::Published) -> String {
     };
     [
         format!(
-            "Appearance: {} (updated {updated})",
-            if published.dark { "dark" } else { "light" }
+            "Appearance: {}{} (updated {updated})",
+            if published.dark { "dark" } else { "light" },
+            if published.native { ", Native" } else { "" }
         ),
         format!(
             "Palette:    bg {} panel {} panel_active {} divider {}",
@@ -2736,6 +2737,12 @@ mod tests {
              \x20           cyan #55e6dc magenta #ce78ef gold #f4bf75 text #d3e1e6 muted #708993\n\
              Terminal:   background #090d14 foreground #d3e1e6 and 16 palette colors\n"
         );
+        published.native = true;
+        assert!(
+            appearance_summary(&published)
+                .starts_with("Appearance: dark, Native (updated 2026-09-21 14:13:20 UTC)\n")
+        );
+        published.native = false;
         published.dark = false;
         published.terminal = None;
         published.updated_at = u64::MAX;

@@ -63,10 +63,19 @@ struct Document {
     palette: Palette,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terminal: Option<Terminal>,
+    /// The desktop uses its Native skin. Sent only when true, so an older phone
+    /// sees the same document as before.
+    #[serde(default, skip_serializing_if = "is_false")]
+    native: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// The document re-serialized in the contract's shape (lowercase colors, known
-/// fields only), or None when it is over 16 KiB or not a version 1 document.
+/// fields only, `native` only when true), or None when it is over 16 KiB or not
+/// a version 1 document.
 pub fn validate(bytes: &[u8]) -> Option<Value> {
     if bytes.len() > MAX_BYTES {
         return None;
