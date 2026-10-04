@@ -72,6 +72,8 @@ extension RemoteModel {
         if let listedChats { installChats(listedChats, project: project) }
         if let listedShells, listedShells != shells { shells = listedShells }
         if let listedManagers, listedManagers != orchestrators { orchestrators = listedManagers }
+        // An orchestrator that runs as a chat comes and goes with this list, and so does the chat it opened.
+        reconcileChatSelection()
         if listedShells != nil || listedManagers != nil { lastListRead[.sessions] = .now }
     }
 }

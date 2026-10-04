@@ -34,7 +34,7 @@ struct ChatScreen: View {
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state)
             ChatStatusLines(model: model, chat: info, conversation: conversation, state: state)
-            ChatTranscriptList(conversation: conversation, provider: chat.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached)
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached)
             if let approval = approvals.first {
                 ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2),
                                 busy: !connected || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
@@ -45,7 +45,7 @@ struct ChatScreen: View {
                 }
                 .id(question.requestID)
             }
-            ChatComposer(conversation: conversation, provider: chat.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
+            ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
                          send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } })
         }
         .background(style.background)

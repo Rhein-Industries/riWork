@@ -31,7 +31,7 @@ extension RemoteModel {
         let options = NewTerminalTargets.options(projectID: project, projects: projects, worktrees: worktrees)
         let viewed = session.flatMap { $0.project_id == project ? $0.worktree_id : nil }
         return NewTerminalForm(targets: options, targetIndex: NewTerminalTargets.preselected(in: options, selectedWorktreeID: viewed), kind: lastTerminalKind,
-                               kinds: NewTerminalKind.offered(chats: chatsOffered))
+                               kinds: NewTerminalKind.offered(chats: chatsOffered, orchestrators: orchestratorsOffered))
     }
 
     /// Opens a terminal and switches to it. Returns nil on success, otherwise why not. `onCreated` runs as soon as the desktop has
@@ -138,6 +138,7 @@ struct NewTabProblem: Equatable {
     let outcomeIsUncertain: Bool
     init(_ error: TerminalControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain }
     init(_ error: ChatControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain }
+    init(_ error: OrchestratorControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain }
 }
 
 @MainActor @Observable final class NewTerminalSheetModel: Identifiable {
@@ -146,6 +147,8 @@ struct NewTabProblem: Equatable {
     var error: TerminalControlError?
     /// The same for a chat, which has its own errors.
     var chatError: ChatControlError?
+    /// And for an orchestrator.
+    var orchestratorError: OrchestratorControlError?
     /// The focus ring shows only once a key was pressed; a finger does not need it.
     var keyboardInUse = false
     @ObservationIgnored let model: RemoteModel
@@ -162,33 +165,40 @@ struct NewTabProblem: Equatable {
         self.model = model
     }
 
-    var busy: Bool { submitting || model.creatingTerminal || model.creatingChat }
-    /// The desktop is too old for what is chosen: terminals (`shell.create`) or chats.
-    var unsupported: Bool { form.kind.isChat ? model.chatSupport == .unsupported : model.terminalControl == .unsupported }
-    var canCreate: Bool { !busy && !unsupported && model.state == .connected && form.target != nil }
+    var busy: Bool { submitting || model.creatingTerminal || model.creatingChat || model.creatingOrchestrator }
+    /// The desktop is too old for what is chosen: terminals (`shell.create`), chats or orchestrators.
+    var unsupported: Bool {
+        if form.kind.isOrchestrator { return model.orchestratorCreateSupport == .unsupported }
+        return form.kind.isChat ? model.chatSupport == .unsupported : model.terminalControl == .unsupported
+    }
+    var canCreate: Bool { !busy && !unsupported && model.state == .connected && (form.target != nil || form.kind == .globalOrchestrator) }
     /// The message shown inline: what the last attempt said, or that the desktop is too old.
-    var message: TerminalControlError? { unsupported && !form.kind.isChat ? .unsupported : (form.kind.isChat ? nil : error) }
-    /// The same, for either kind of request.
+    var message: TerminalControlError? { unsupported && !form.kind.isChat && !form.kind.isOrchestrator ? .unsupported : (form.kind.isChat || form.kind.isOrchestrator ? nil : error) }
+    /// The same, for any kind of request.
     var problem: NewTabProblem? {
+        if form.kind.isOrchestrator { return (unsupported ? OrchestratorControlError.unsupported : orchestratorError).map(NewTabProblem.init) }
         if form.kind.isChat { return (unsupported ? ChatControlError.unsupported : chatError).map(NewTabProblem.init) }
         return message.map(NewTabProblem.init)
     }
     /// What the Create button's hint says when it is off because the desktop is too old.
-    var unsupportedMessage: String { form.kind.isChat ? ChatControlError.unsupportedMessage : TerminalControlError.unsupportedMessage }
+    var unsupportedMessage: String {
+        if form.kind.isOrchestrator { return OrchestratorControlError.unsupportedMessage }
+        return form.kind.isChat ? ChatControlError.unsupportedMessage : TerminalControlError.unsupportedMessage
+    }
 
     /// A key from a hardware keyboard.
     func press(_ key: NewTerminalForm.Key) {
         keyboardInUse = true
-        if key != .space { error = nil; chatError = nil }
+        if key != .space { error = nil; chatError = nil; orchestratorError = nil }
         form.handle(key)
         if key == .space, form.focus == .create { create() }
     }
     func select(kind: NewTerminalKind) {
-        keyboardInUse = false; error = nil; chatError = nil
+        keyboardInUse = false; error = nil; chatError = nil; orchestratorError = nil
         form.select(kind: kind); form.focus = .kind
     }
     func select(targetAt index: Int) {
-        keyboardInUse = false; error = nil; chatError = nil
+        keyboardInUse = false; error = nil; chatError = nil; orchestratorError = nil
         form.select(targetAt: index); form.focus = .target
     }
     func setUnrestricted(_ on: Bool) {
@@ -204,19 +214,21 @@ struct NewTabProblem: Equatable {
     }
 
     /// Return, or the Create button. One request at a time; the sheet stays open when it fails. A chat is made by `chat.create`, a
-    /// terminal by `shell.create`; neither is ever sent twice.
+    /// terminal by `shell.create`, an orchestrator is opened by `orchestrator.create`; none is ever sent twice.
     func create() {
         guard !busy else { return }
         let submission: NewTabRequest
         do { submission = try form.submission() } catch {
-            if form.kind.isChat { chatError = .failed(error.localizedDescription) } else { self.error = .failed(error.localizedDescription) }
+            if form.kind.isOrchestrator { orchestratorError = .failed(error.localizedDescription) }
+            else if form.kind.isChat { chatError = .failed(error.localizedDescription) } else { self.error = .failed(error.localizedDescription) }
             return
         }
         guard !unsupported else {
-            if form.kind.isChat { chatError = .unsupported } else { error = .unsupported }
+            if form.kind.isOrchestrator { orchestratorError = .unsupported }
+            else if form.kind.isChat { chatError = .unsupported } else { error = .unsupported }
             return
         }
-        error = nil; chatError = nil; submitting = true
+        error = nil; chatError = nil; orchestratorError = nil; submitting = true
         // Unstructured on purpose: the sheet going away must not cancel a request that is already on the wire.
         switch submission {
         case .terminal(let request):
@@ -232,6 +244,13 @@ struct NewTabProblem: Equatable {
                 let failure = await model.createChat(request) { _ in self.dismiss() }
                 submitting = false
                 if let failure { chatError = failure } else { dismiss() }
+            }
+        case .orchestrator(let request):
+            pending = Task { [weak self] in
+                guard let self else { return }
+                let failure = await model.createOrchestrator(request) { _ in self.dismiss() }
+                submitting = false
+                if let failure { orchestratorError = failure } else { dismiss() }
             }
         }
     }
