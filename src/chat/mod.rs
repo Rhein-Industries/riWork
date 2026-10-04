@@ -5,7 +5,9 @@
 //!   is, the items of its transcript, the events that build it, and the commands
 //!   a user sends. `Transcript` folds events into what a tab draws.
 //! - `driver` is the seam between a chat and one provider process (`codex
-//!   app-server` over JSON-RPC, `claude` over stream-json).
+//!   app-server` over JSON-RPC, `claude` over stream-json). `codex` and
+//!   `claude` are the two drivers; `child` is what they share (the process in
+//!   its own group, a size-capped line reader).
 //! - `client` is the blocking client a window and the CLI use to reach it.
 //! - `wire` is the line protocol of the chat host (`riwork chat serve`), the
 //!   background process that owns the provider processes so chats keep running
@@ -14,7 +16,12 @@
 // The contract lands before the host and the tabs that use it.
 #![allow(dead_code)]
 
+pub mod child;
+pub mod claude;
 pub mod client;
+pub mod codex;
 pub mod driver;
 pub mod model;
+#[cfg(test)]
+mod testkit;
 pub mod wire;
