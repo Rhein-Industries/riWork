@@ -37,11 +37,18 @@ pub trait Driver: Send {
     fn command(&mut self, command: ChatCommand) -> Result<(), String>;
     /// The Codex thread id or Claude session id, once known.
     fn provider_thread_id(&self) -> Option<String>;
-    /// Stop the process (gracefully, then by force) and wait for it.
+    /// Stop the process (gracefully, then by force) and wait for it. Ends the
+    /// events with `State { Stopped }` (a chat that already failed stays
+    /// failed); a second call does nothing.
     fn shutdown(&mut self);
 }
 
 /// Start the provider process for `config`, sending its events to `events`
-/// until it exits. The first events are `State { Starting }` then, once the
-/// provider is ready, `Info` (with the thread id) and `State { Idle }`.
+/// until it exits. Blocks until the provider is ready (call it off the UI
+/// thread): the events so far are `State { Starting }` and `State { Idle }`,
+/// and `provider_thread_id()` is known. Drivers do not emit `Info`, since they
+/// know neither the chat's id nor its title; the host builds it from
+/// `provider_thread_id()`, which differs from `config.resume` when the
+/// provider had no such thread to resume. An error leaves no process behind,
+/// and the events end with `State { Failed }` carrying the same message.
 pub type StartDriver = fn(DriverConfig, Sender<ChatEvent>) -> Result<Box<dyn Driver>, String>;
