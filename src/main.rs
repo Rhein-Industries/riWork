@@ -41,6 +41,7 @@ mod settings;
 mod sgr;
 mod status_bar;
 mod store;
+mod symbols;
 mod terminal_lifecycle;
 mod terminal_links;
 mod theme;
