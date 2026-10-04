@@ -20,8 +20,6 @@ use crate::{
     ui_text,
 };
 
-/// A card's corner radius: Settings sections, dialogs and menus.
-pub const CARD_RADIUS: f32 = 14.0;
 /// A row inside a card, concentric with the card at its padding.
 pub const ROW_RADIUS: f32 = 10.0;
 /// A small field or swatch.
@@ -205,15 +203,25 @@ pub fn on_first_line(mark: impl IntoElement, line: f32) -> Div {
         .child(mark)
 }
 
-/// A card: a soft rounded surface without a border, set on a panel's grey as System
-/// Settings sets its groups: white in light mode, black in dark mode, so the grey controls
-/// inside keep their contrast in both.
+/// A group of a panel's form (a Settings section, a Usage account, a schedule): set on the
+/// panel's own page like the navigation lists, with no surface of its own, its text at
+/// `PANEL_INSET` and a hairline under it. The caller insets it by `LIST_MARGIN`, as it
+/// insets list rows, so the hairline stops short of the edges as a sidebar's separators do.
 pub fn card<E: Styled>(element: E, colors: Palette) -> E {
     element
-        .rounded(radius(CARD_RADIUS))
+        .rounded_none()
         .border_0()
-        .bg(rgb(colors.bg))
+        .border_b_1()
+        .border_color(rgb(colors.divider))
+        .bg(transparent_black())
+        .px(ui_text::space(PANEL_INSET - LIST_MARGIN))
+        .pt(ui_text::space(CARD_TOP))
+        .pb(ui_text::space(CARD_BOTTOM))
 }
+
+/// A group's space above its first line and below its last, before its hairline.
+const CARD_TOP: f32 = 10.0;
+const CARD_BOTTOM: f32 = 14.0;
 
 // Navigation panels.
 //

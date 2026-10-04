@@ -887,11 +887,7 @@ impl Render for SchedulePanel {
                 .py(ui_text::space(10.0))
                 .border_b_1()
                 .border_color(rgb(colors.divider))
-                .map(|item| {
-                    controls::native(item, |item| {
-                        controls::card(item, colors).p(ui_text::space(12.0))
-                    })
-                })
+                .map(|item| controls::native(item, |item| controls::card(item, colors)))
                 .child(
                     div()
                         .flex()

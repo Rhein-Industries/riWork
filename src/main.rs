@@ -8332,7 +8332,6 @@ impl Workspace {
                         .overflow_y_scroll()
                         .flex()
                         .flex_col()
-                        .gap(ui_text::space(8.0))
                         .pb(ui_text::space(controls::LIST_MARGIN))
                         .children(cards),
                 )
@@ -8422,8 +8421,8 @@ impl Workspace {
                 // Native: fine print under the cards, without a rule.
                 .when(ui_text::is_native(), |note| {
                     note.border_t_0()
-                        .px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN))
-                        .pt(ui_text::space(2.0))
+                        .px(ui_text::space(controls::PANEL_INSET))
+                        .pt(ui_text::space(8.0))
                 })
                 .text_color(rgb(colors.muted))
                 .text_size(ui_text::text(9.0))
@@ -9752,7 +9751,7 @@ fn render_grok_total(totals: &usage::GrokTotals, missing: usize, colors: Palette
         .into_any_element()
 }
 
-/// A Usage card: a ruled block in the colorful themes, a Native card otherwise, inset like
+/// A Usage card: a ruled block in the colorful themes, a Native group otherwise, inset like
 /// the navigation panels' rows.
 fn usage_card(card: Div, colors: Palette) -> Div {
     controls::native(card, |card| {
