@@ -6684,9 +6684,21 @@ impl Workspace {
                     (Some(_), false) => (0.0, 0.0, 0.0),
                 };
                 let tab_color = if active {
-                    if panel { colors.magenta } else { colors.text }
+                    if panel && !colors.pill_tabs {
+                        colors.magenta
+                    } else {
+                        colors.text
+                    }
                 } else {
                     colors.muted
+                };
+                // Native's selected tab is a raised segment: the content's own
+                // background, a hairline edge and medium weight, brightest in the
+                // selected pane. Other tabs are muted words on the bar.
+                let pill_fill = if selected {
+                    colors.bg
+                } else {
+                    colors.panel_active
                 };
                 let workspace = cx.entity();
                 let shell = tab
@@ -6706,18 +6718,47 @@ impl Workspace {
                     .pl(ui_text::space(pad_left))
                     .pr(ui_text::space(pad_right))
                     .gap(ui_text::space(gap))
-                    .border_r_1()
-                    .border_b_1()
-                    .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-                    .bg(rgb(if active {
-                        colors.panel_active
-                    } else {
-                        colors.panel
-                    }))
+                    .map(|style| {
+                        if !colors.pill_tabs {
+                            return style
+                                .border_r_1()
+                                .border_b_1()
+                                .border_color(rgb(if active {
+                                    colors.cyan
+                                } else {
+                                    colors.divider
+                                }))
+                                .bg(rgb(if active {
+                                    colors.panel_active
+                                } else {
+                                    colors.panel
+                                }));
+                        }
+                        let style = style
+                            .h(ui_text::space(PANE_HEADER_HEIGHT) - px(8.0))
+                            .my(px(4.0))
+                            .mx(px(2.0))
+                            .rounded(px(6.0))
+                            .border_1();
+                        if active {
+                            style
+                                .bg(rgb(pill_fill))
+                                .border_color(rgb(colors.divider))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                        } else {
+                            style.border_color(rgb(colors.panel))
+                        }
+                    })
                     .text_color(rgb(tab_color))
                     .text_size(ui_text::text(if panel { 9.0 } else { 10.0 }))
                     .cursor_grab()
-                    .hover(|style| style.bg(rgb(colors.panel_active)))
+                    .hover(move |style| {
+                        if active && colors.pill_tabs {
+                            style
+                        } else {
+                            style.bg(rgb(colors.panel_active))
+                        }
+                    })
                     .drag_over::<DraggedTab>(move |style, _, _, _| {
                         style.border_l_2().border_color(rgb(colors.cyan))
                     })
@@ -6809,7 +6850,8 @@ impl Workspace {
             .items_center()
             .bg(rgb(colors.panel))
             .border_b_1()
-            .border_color(rgb(if selected {
+            // Native marks the selected pane by its brighter tab, not by a line.
+            .border_color(rgb(if selected && !colors.pill_tabs {
                 colors.cyan
             } else {
                 colors.divider
