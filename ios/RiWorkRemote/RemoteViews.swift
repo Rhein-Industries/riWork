@@ -297,8 +297,12 @@ struct TerminalTabsView: View {
     @State private var followOutput = true
     @State private var newTerminal: NewTerminalSheetModel?
     @State private var closing: RemoteSession?
+    /// This screen is up (not covered by another one). The terminal is on it only while no chat is.
+    @State private var onScreen = false
+    /// Counts times the New terminal sheet went away: a chat on screen takes the keyboard back for its composer.
+    @State private var chatRefocus = 0
     private var openSessions: [RemoteSession] { model.openSessions }
-    private var focused: Bool { model.focusMode && model.sessionID != nil }
+    private var focused: Bool { model.focusMode && model.sessionID != nil && !model.chatIsOnScreen }
     var body: some View {
         let _ = Perf.count("body.TerminalTabsView")
         VStack(spacing: 0) {
@@ -311,27 +315,32 @@ struct TerminalTabsView: View {
                         .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
                         .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
                     Button("Focus mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.setFocusMode(true) }
-                        .labelStyle(.iconOnly).disabled(model.sessionID == nil)
+                        .labelStyle(.iconOnly).disabled(model.sessionID == nil || model.chatIsOnScreen)
                     Button("Session info", systemImage: "info.circle") {
-                        if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind, activity: session.activitySummary, since: session.activity_since_unix) }
-                    }.labelStyle(.iconOnly).disabled(model.sessionID == nil)
+                        if let chat = model.selectedChat {
+                            let info = model.chatConversations[chat.id]?.transcript.info ?? chat
+                            sessionInfo = SessionInfo(id: chat.id, title: ChatTabs.title(info), cwd: info.cwd, kind: "\(info.provider.chatTitle) · \(info.approvalMode.title)", activity: model.chatState(chat).spokenActivity, since: nil)
+                        } else if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind, activity: session.activitySummary, since: session.activity_since_unix) }
+                    }.labelStyle(.iconOnly).disabled(model.sessionID == nil && !model.chatIsOnScreen)
                     Menu {
-                        if UIDevice.current.userInterfaceIdiom == .pad { Toggle("Follow output", isOn: $followOutput) }
-                        else { Button("Jump to latest output", systemImage: "arrow.down.to.line") { model.jumpToLatest() } }
-                        Button("Display…", systemImage: "textformat.size") { showingDisplay = true }
-                        Menu("Text size · \(Int(model.terminalFontSize)) pt", systemImage: "textformat.size") {
-                            Button("Larger", systemImage: "plus") { model.stepTerminalFontSize(1) }.disabled(model.terminalFontSize >= TerminalFontSize.range.upperBound)
-                            Button("Smaller", systemImage: "minus") { model.stepTerminalFontSize(-1) }.disabled(model.terminalFontSize <= TerminalFontSize.range.lowerBound)
-                            Button("Reset to \(Int(TerminalFontSize.standard)) pt", systemImage: "arrow.counterclockwise") { model.setTerminalFontSize(TerminalFontSize.standard) }
+                        if !model.chatIsOnScreen {
+                            if UIDevice.current.userInterfaceIdiom == .pad { Toggle("Follow output", isOn: $followOutput) }
+                            else { Button("Jump to latest output", systemImage: "arrow.down.to.line") { model.jumpToLatest() } }
+                            Button("Display…", systemImage: "textformat.size") { showingDisplay = true }
+                            Menu("Text size · \(Int(model.terminalFontSize)) pt", systemImage: "textformat.size") {
+                                Button("Larger", systemImage: "plus") { model.stepTerminalFontSize(1) }.disabled(model.terminalFontSize >= TerminalFontSize.range.upperBound)
+                                Button("Smaller", systemImage: "minus") { model.stepTerminalFontSize(-1) }.disabled(model.terminalFontSize <= TerminalFontSize.range.lowerBound)
+                                Button("Reset to \(Int(TerminalFontSize.standard)) pt", systemImage: "arrow.counterclockwise") { model.setTerminalFontSize(TerminalFontSize.standard) }
+                            }
+                            if model.keysSupport != .unsupported {
+                                Toggle("Line composer instead of direct typing", isOn: Binding(get: { model.preferLineComposer }, set: { model.setPreferLineComposer($0) }))
+                            }
+                            // The screen and the last 500 lines of scrollback above it, not everything loaded.
+                            Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.screenTextForCopy }.disabled(!model.hasOutput)
+                            Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                         }
-                        if model.keysSupport != .unsupported {
-                            Toggle("Line composer instead of direct typing", isOn: Binding(get: { model.preferLineComposer }, set: { model.setPreferLineComposer($0) }))
-                        }
-                        // The screen and the last 500 lines of scrollback above it, not everything loaded.
-                        Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.screenTextForCopy }.disabled(!model.hasOutput)
-                        Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                         Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-                        if let session = model.session, model.canClose(session) {
+                        if !model.chatIsOnScreen, let session = model.session, model.canClose(session) {
                             Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
                         }
                         Divider()
@@ -339,9 +348,11 @@ struct TerminalTabsView: View {
                         else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
                     } label: { Label("Terminal tabs and connection", systemImage: "ellipsis") }.labelStyle(.iconOnly)
                 }
-                if !openSessions.isEmpty { tabStrip }
+                if !openSessions.isEmpty || !model.projectChats.isEmpty { tabStrip }
             }
-            if model.sessionID == nil && openSessions.isEmpty {
+            if let chat = model.selectedChat {
+                ChatScreen(model: model, chat: chat, refocus: chatRefocus)
+            } else if model.sessionID == nil && openSessions.isEmpty {
                 VStack {
                     VStack(alignment: .leading, spacing: 12) {
                         Label(style.cased("No open terminals"), systemImage: "terminal").font(style.face(14, bold: true, relativeTo: .headline))
@@ -360,7 +371,7 @@ struct TerminalTabsView: View {
         .onChange(of: model.focusMode) { _, _ in model.updateKeepAwake() }
         .sheet(item: $sessionInfo) { SessionInfoSheet(info: $0).desktopThemed(model.theme.style) }
         .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
-        .sheet(item: $newTerminal) { NewTerminalSheet(sheet: $0).desktopThemed(model.theme.style) }
+        .sheet(item: $newTerminal, onDismiss: { chatRefocus += 1 }) { NewTerminalSheet(sheet: $0).desktopThemed(model.theme.style) }
         .alert("Close terminal?", isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } }), presenting: closing) { session in
             Button("Close terminal", role: .destructive) { close(session) }
             Button("Cancel", role: .cancel) {}
@@ -376,12 +387,15 @@ struct TerminalTabsView: View {
         .task(id: project.id) { await model.chooseProject(project.id) }
         // Each tab's state changes while the strip is looked at: read the tabs again every few seconds. Focus mode hides the strip.
         .task(id: focused) { if !focused { await model.keepFresh(.sessions) } }
-        .onAppear { model.setTerminalVisible(true); openRequestedNewTerminal() }
-        .onDisappear { model.setTerminalVisible(false); if model.newTerminalRequestedProject == project.id { model.newTerminalRequestedProject = nil } }
+        // The terminal is released (its long poll, its pinned size) the moment a chat takes the screen, and picked up again when a terminal tab does.
+        .onAppear { onScreen = true; syncTerminalVisible(); openRequestedNewTerminal() }
+        .onDisappear { onScreen = false; syncTerminalVisible(); if model.newTerminalRequestedProject == project.id { model.newTerminalRequestedProject = nil } }
+        .onChange(of: model.selectedChatID) { _, _ in syncTerminalVisible() }
         .onChange(of: model.newTerminalRequestedProject) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.projectID) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.state) { _, _ in openRequestedNewTerminal() }
     }
+    private func syncTerminalVisible() { model.setTerminalVisible(onScreen && !model.chatIsOnScreen) }
     private func openNewTerminal() {
         guard newTerminal == nil, model.state == .connected, model.projectID == project.id, let sheet = NewTerminalSheetModel(model: model) else { return }
         let binding = $newTerminal
@@ -402,6 +416,7 @@ struct TerminalTabsView: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
                     ForEach(openSessions) { session in
+                        let selected = !model.chatIsOnScreen && model.sessionID == session.id
                         Button { Task { await model.chooseSession(session) } } label: {
                             VStack(alignment: .leading, spacing: 1) {
                                 // Orchestrators carry the secondary accent, as they do on the desktop.
@@ -414,21 +429,49 @@ struct TerminalTabsView: View {
                                 }
                                 Text(tabDetail(session)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
                             }
-                            .padding(.horizontal, 10).frame(minHeight: style.pt(36))
-                            .modifier(TabCell(selected: model.sessionID == session.id, waiting: session.shownActivity == .waiting))
+                            .tabChrome(selected: selected, waiting: session.shownActivity == .waiting)
                         }
                         .buttonStyle(.plain).id(session.id)
                         .accessibilityLabel(["\(session.title), \(session.shortID)", session.activitySummary].compactMap { $0 }.joined(separator: ", "))
-                        .accessibilityAddTraits(model.sessionID == session.id ? .isSelected : [])
+                        .accessibilityAddTraits(selected ? .isSelected : [])
                         .contextMenu {
                             Button("New terminal", systemImage: "plus") { openNewTerminal() }
                             if model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
                         }
                         .accessibilityAction(named: "Close terminal") { if model.canClose(session) { closing = session } }
                     }
+                    ForEach(model.projectChats) { chat in chatTab(chat) }
                 }
             }.scrollIndicators(.hidden)
-                .onChange(of: model.sessionID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+                .onChange(of: model.sessionID) { _, id in if let id, !model.chatIsOnScreen { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+                .onChange(of: model.selectedChatID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+        }
+    }
+    /// A chat's tab, beside the terminals': its provider's glyph, its name and the same activity indicator.
+    private func chatTab(_ chat: ChatInfo) -> some View {
+        let selected = model.selectedChatID == chat.id
+        let activity = model.chatActivity(chat)
+        let state = model.chatState(chat)
+        let branch = model.worktrees.first(where: { $0.id == chat.worktreeID })?.branch
+        return Button { model.selectChat(chat.id) } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Label { Text(ChatTabs.title(chat)) } icon: { Image(systemName: chat.provider.glyph).foregroundStyle(style.accent) }
+                        .font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
+                    ActivityIndicator(activity: activity)
+                    if case .failed = state { Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).foregroundStyle(style.error).accessibilityHidden(true) }
+                }
+                Text(ChatTabs.detail(chat, branch: branch)).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+            }
+            .tabChrome(selected: selected, waiting: activity == .waiting)
+            .opacity(state == .stopped && !selected ? 0.6 : 1)
+        }
+        .buttonStyle(.plain).id(chat.id)
+        .accessibilityLabel([ChatTabs.title(chat) + ", " + chat.provider.chatTitle, state.spokenCondition, activity.spoken()].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .contextMenu {
+            Button("New terminal", systemImage: "plus") { openNewTerminal() }
+            Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }.disabled(state == .stopped || model.state != .connected)
         }
     }
     private func tabDetail(_ session: RemoteSession) -> String {
@@ -437,29 +480,32 @@ struct TerminalTabsView: View {
     }
 }
 
-/// One cell of the tab strip.
+/// One cell of the tab strip, a terminal's or a chat's.
 /// - Terminal look: the selected tab is underlined in the accent color; one that waits for a person, in gold.
 /// - Native: the selected tab is filled with the content's own background, as on the desktop; only waiting keeps a mark, in the
 ///   signal color, and on glass the cells sit on the screen's surface with no rules between them.
-private struct TabCell: ViewModifier {
+private struct TabChrome: ViewModifier {
     @Environment(\.desktopStyle) private var style
     let selected: Bool
     let waiting: Bool
     func body(content: Content) -> some View {
+        let cell = content.padding(.horizontal, 10).frame(minHeight: style.pt(36))
         if style.native {
-            content
-                .background(selected ? (style.glass ? style.active : style.background) : (style.glass ? style.surface : style.panel),
-                            in: RoundedRectangle(cornerRadius: style.glass ? 10 : 0, style: .continuous))
+            cell
+                .background(selected ? (style.glass ? style.active : style.background) : (style.glass ? style.surface : style.panel))
                 .overlay(alignment: .bottom) { if waiting { Capsule().fill(style.gold).frame(height: 2).padding(.horizontal, 8) } }
                 .padding(.horizontal, style.glass ? 2 : 0)
                 .overlay(alignment: .trailing) { if !style.glass { Rectangle().fill(style.divider).frame(width: 1) } }
         } else {
-            content
+            cell
                 .background(selected ? style.active : style.panel)
                 .overlay(alignment: .trailing) { Rectangle().fill(style.divider).frame(width: 1) }
                 .overlay(alignment: .bottom) { Rectangle().fill(selected ? style.accent : (waiting ? style.gold : style.divider)).frame(height: waiting ? 2 : 1) }
         }
     }
+}
+private extension View {
+    func tabChrome(selected: Bool, waiting: Bool) -> some View { modifier(TabChrome(selected: selected, waiting: waiting)) }
 }
 
 struct SessionInfo: Identifiable {

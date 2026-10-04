@@ -2687,7 +2687,7 @@ fn editor_command(vim: &Path, path: &Path, line: Option<u32>) -> Result<String, 
     ))
 }
 
-fn selected_codex_binding(
+pub(crate) fn selected_codex_binding(
     home: &Path,
     project_id: Option<&str>,
 ) -> Result<crate::codex_accounts::CodexAccountBinding, String> {
@@ -2860,6 +2860,46 @@ fn harness_command(
     Ok(match codex_home.filter(|_| harness == HarnessKind::Codex) {
         Some(home) => with_codex_home(&command, home),
         None => command,
+    })
+}
+
+/// How a chat starts `harness`: the program, the Cua MCP wiring and the PATH
+/// that a terminal launch of it gets (`harness_command`), without a terminal.
+/// `codex_home` is the Codex account's home, for the Codex launch.
+pub(crate) struct ChatLaunch {
+    pub program: PathBuf,
+    /// Goes before the harness's own arguments.
+    pub arguments: Vec<String>,
+    /// RiWork's harness shims first, then the login shell's directories, so the
+    /// agent's own commands find what a terminal's would.
+    pub path: std::ffi::OsString,
+}
+
+pub(crate) fn chat_launch(
+    harness: HarnessKind,
+    state_home: &Path,
+    codex_home: Option<&Path>,
+) -> Result<ChatLaunch, String> {
+    let cua = crate::cua::CuaManager::at(state_home.to_path_buf())?;
+    cua.driver_path()?;
+    let state_home = state_home
+        .canonicalize()
+        .map_err(|error| format!("resolve RiWork state: {error}"))?;
+    let executable =
+        env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+    let shim_directory = cua.ensure_harness_shims(&executable)?;
+    let program =
+        find_harness_program(harness, &shim_directory).ok_or_else(|| harness_missing(harness))?;
+    let mut arguments = cua_harness_arguments(harness, &executable, &state_home);
+    if harness == HarnessKind::Codex
+        && let Some(home) = codex_home
+    {
+        arguments.extend(codex_account_environment_arguments(home));
+    }
+    Ok(ChatLaunch {
+        program,
+        arguments,
+        path: path_with_harness_shims(&shim_directory, login_shell_dirs())?,
     })
 }
 

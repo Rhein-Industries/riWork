@@ -53,6 +53,15 @@ pub struct ResolvedPath {
     pub is_dir: bool,
 }
 
+/// Whether a browser or mail program should be handed `url`. Text on a screen or in a chat
+/// message can say anything, so only `http`, `https` and `mailto` links are ever opened.
+pub fn is_openable_url(url: &str) -> bool {
+    let scheme = url.split(':').next().unwrap_or_default();
+    ["http", "https", "mailto"]
+        .iter()
+        .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+}
+
 /// How the modifier keys of a click ask for the link to be opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenMode {

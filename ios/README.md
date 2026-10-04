@@ -1,7 +1,7 @@
 # RiWork for iPhone and iPad
 
 Choose a paired RiWork desktop and project, then switch between tabs for its
-open terminals, or open a new shell or agent on the desktop with ＋. One terminal
+open terminals and chats, or open a new shell, agent or chat on the desktop with ＋. One terminal
 fills the screen at a time. The app never splits or replaces a desktop session; it
 creates one only when asked (＋ or ⌘N, then Create), and closes one only after a
 confirmation. It creates a project only when asked too (＋ or ⌘⇧N on the project list, then Create).
@@ -246,6 +246,49 @@ subclass whose `keyCommands` carry tab, shift-tab, ↑ ↓, escape, ⌘., ⌘↩
 Return into create; while the switch or Create has the ring a small invisible key view takes the keyboard instead (it is not a text
 input, so no software keyboard appears) and also owns space, return and ← →. The ring follows the form (`NewProjectForm`, pure and
 tested), and tapping any control moves it, so touch and keyboard agree.
+
+### Chats
+
+A desktop that says `ready.features.chat` (the `riwork` CLI reports `"chat": true`) has native **Codex chat** and **Claude chat** tabs, which drive the agents through their structured protocols instead of a terminal. The phone shows them in the project's tab strip, next to the shells, and talks to them with five additive RPCs (`chats.list`, `chat.create`, `chat.events`, `chat.command`, `chat.stop`; see the chat extension of `docs/remote-protocol.md`). A desktop without the feature is never asked: there are no chat tabs and the New terminal sheet offers its four kinds as before; one that refuses a chat request ("unsupported RPC method") is treated the same for the rest of the connection, and every new connection reads `features.chat` again.
+
+**Wire.** The JSON is the serde form of `src/chat/model.rs` (`Core/Chat.swift`): `ChatEvent` is tagged `event`, `ChatItemBody` `type`, `ChatState` `state`, `ChatDelta` `kind` (text under `text`), `ChatTurnOutcome` `outcome` and `ChatCommand` `command`; words are snake_case. It is read leniently: an event, an item or a delta the phone has never heard of is skipped (its sequence number still counts, so it is not asked for again) and never fails the page; an unknown word inside a known thing (an approval mode, a step status, a decision) is read as its nearest harmless meaning, because dropping the event would drop what it carries (a request that was answered). `Tests/Fixtures/chat-serde.json` is written by `scripts/gen-chat-fixtures.sh` from the real Rust types, so the decoder is tested against what the host sends and the encoder against what it accepts. `ChatTranscript.apply` is `Transcript::apply` line for line (`Core/ChatTranscript.swift`), with the same tests.
+
+**Tabs.** A chat's tab has its provider's glyph (Codex `</>`, Claude `✦`), its name and the same activity indicator as a terminal: starting or running is **working**, a chat that waits for an approval or an answer is **waiting** (gold, underlined in gold), the rest draw nothing; a failed chat has a red triangle and a stopped one is dimmed. A followed chat's own word (fresher) wins over the list's, which is read again every 4 s with the shells. Chats are never closed from the phone (there is no such RPC); "Stop agent" ends the agent's process and the next message starts it again. Choosing a chat tab takes the screen from the terminal: the terminal is released (its long poll stops and its pinned size is cleared) and the terminal's `KeyCapture`, with ⌘K ⌘, ⌘/, the hotkeys and the Clicks template, is not in the hierarchy at all.
+
+**New chat.** The New terminal sheet (＋ or ⌘N) gains **Codex chat** and **Claude chat** rows when the desktop has chats. **Unrestricted** is the chat's Full mode (`approval_mode: "full"`; off every time, as for agents); otherwise no mode is sent and the desktop's default (Supervised) applies. `chat.create` is sent **once**: a second tap or a held Return while it is on its way is ignored, and a lost answer (timeout, dropped link) is not asked again; the sheet says the chat "may or may not have been created", to check the tab list first, and the button reads "Try again". Request timeout: 90 s.
+
+**The screen** (`ChatView.swift`, under the tab strip):
+- A **toolbar**: the approval mode (Supervised, Auto-edit, Full, Plan; `chat.command` `configure`, shown at once and taken back if refused), Compact, a menu (jump to latest, stop agent, copy session id), and the **usage meter**: how full the context is as a thin bar (gold above 80 %, red above 95 %) and "42% of 200k", with Claude's cost as "≈ $0.42 (estimate)", never as a price.
+- **State lines**: no link ("Not connected" with Reconnect; the transcript is kept and reading carries on from where it was), Starting, Stopped ("Your next message starts it again"), Failed with **Retry** (which sends the last message again, only when asked, and only when there was one), a chat that is gone from the Mac, a transcript that cannot be read right now.
+- The **transcript**, newest at the bottom. It follows the bottom while a reply streams, unless the reader scrolled up (the terminal's `StickyBottom` rule); then a "↓ Latest · N new" pill takes the reader back. It is a `LazyVStack` of `Equatable` rows, so a message that streams rebuilds only itself; which cards are open is kept in the conversation, because rows come and go as the list scrolls.
+- **User messages** are accent blocks. **Agent messages** are markdown (`Core/ChatMarkdown.swift`, pure and tested): headings, paragraphs, lists (nested, ordered, task), quotes, tables and rules are laid out here, and the inline syntax is `AttributedString(markdown:)`; only `http` and `https` links stay links (agent text is untrusted). Text is selectable; **code blocks** scroll sideways and have **Copy**. Parsing is safe on a streamed prefix (a fence not yet closed is a code block still arriving).
+- **Reasoning** is one collapsed line. **Commands** show `$ command`, a status glyph and the exit code; opened, their working directory and the last 80 lines of output (and how many were left out), with Copy; a running command shows its last three lines without opening. **Edits** show the files with +/- counts; a file opens to a monospace **diff** (added green, removed red, hunk headers muted, from the synced terminal palette) of at most 2000 lines. **Tools** show `server · tool` and the most telling input; opened, the input and the result. **Plans** and **to-dos** are checklists. **Web searches**, the **compaction** divider and **notices** (info, warning, error) are single rows.
+- The **approval bar** is pinned above the composer: what is asked (the command, the files, the tool), details on demand, and the buttons the provider offers, in its order: **Allow**, **Allow for session**, **Deny**, **Stop** (Stop is the decision `cancel`: deny and end the turn). A button leaves the bar at once; if the desktop says the request was answered already, that is said quietly above the composer. A request whose answer was lost (timeout) comes back to the bar, and the events say what happened. VoiceOver announces a new request.
+- **Questions** (`AskUserQuestion`, `item/tool/requestUserInput`) are option buttons per question (one, or any for a multiple-choice one) with a field for an answer of your own; **Send answer** is on when every question has one (`ChatAnswerForm`, tested).
+- The **composer** is a multi-line text view that grows to six lines, with Send and, while a turn runs, **Interrupt**. What is typed is kept per chat; a message that did not go through comes back into the composer, and nothing sends a message twice by itself.
+
+**Keyboard** (a Clicks or any hardware keyboard; the composer takes the keyboard when the chat opens, by the same rule as the terminal, "Focus keyboard when a shell opens": with a hardware keyboard attached by default). Return and Shift-Return are `UIKeyCommand`s of the composer with priority over the system, and `ChatKeyRouter` (`Core/ChatPresentation.swift`, pure and tested) says what each means from what is on the screen now:
+
+| key | nothing waiting | a request waits and nothing is typed |
+|---|---|---|
+| ⏎ | send (nothing on an empty composer) | **Allow** |
+| ⇧⏎ | new line | **Allow for session** |
+| ⎋ | nothing | **Deny** (Stop if Deny is not offered) |
+| ⌘⌫ | the text view's own | **Deny**, for a keyboard without Escape (the Clicks keyboard has none) |
+| ⌘. | **Interrupt** while a turn runs, wherever the keyboard is (a SwiftUI shortcut on the screen) | the same |
+
+Typing anything gives ⏎ ⇧⏎ ⎋ ⌘⌫ back to the text; a decision the provider does not offer is never made on a key (⏎ does not pick Deny for you); while a word is being composed (marked text) the input method keeps Return. None of these is one the terminal uses: `ShortcutMap` has no action for any of them, and ⌘K ⌘, ⌘/ ⌘N ⌘⇧N ⌘O and the Clicks template's letters stay as they are (⌘N still opens the New terminal sheet from a chat).
+
+**Reading.** `RemoteModel.followChat` (`RemoteModel+Chat.swift`) runs in the chat screen's `.task`, so it lives exactly as long as the screen is up:
+- It asks `chat.events` with `since: next`, `wait_ms` 20000 (the desktop answers at once when there is something after `since`, else when something arrives, else after the wait), folds the events in (`ChatFeed.accept`, pure and tested: entries at or below what is held are ignored, so an answer that arrives twice changes nothing) and asks again at once. A page that was cut (`more`) is followed without waiting. A reply whose `next` is below the cursor means the log was replaced: everything held is dropped and it starts over from 0.
+- Only while connected, with the app active, and with the chat on screen. Leaving the screen cancels the request (only that request: the connection, its keys and the other requests are untouched). The desktop does not know and keeps the wait, so it keeps its slot: a device may have two requests waiting, shared with the terminal's own long poll, and a cancelled one is counted (`WaitSlots`) until its wait runs out; a poll that would be a third is a short read, followed by a pause of 300 ms.
+- After a dropped connection it idles (nothing is asked) and, once the connection is back, carries on from `next`: nothing is repeated and nothing is lost, because the host numbers events without gaps. After an error it waits 250 ms, doubling up to 2 s, and tells the person quietly ("Can't read this chat right now") until an answer comes. `not_found` ends it and reads the tab list again; "unsupported RPC method" ends it for the connection.
+- The request timeout is the wait plus 20 s. A timeout tears the whole connection down, so the slow requests have long ones: `chat.create` 90 s, `chat.command` 60 s (a message to a stopped chat resumes it first), `chat.stop` 30 s.
+- Up to 8 transcripts are kept in memory (the one on screen is never dropped), not on disk.
+
+**Commands** (`chat.command`) are sent once each and never retried by the phone. Send, Approve, Answer, Configure, Compact and Interrupt each have one request; the desktop answers an `Approve` or `Answer` once, and a repeat is an error shown quietly. A message longer than 64 KiB, or blank, is refused before it leaves the phone.
+
+**Look.** The synced desktop theme (accent for the user's blocks and the selection, gold for waiting and warnings, the terminal palette's green and red for diffs), Dynamic Type and the interface scale, VoiceOver labels and values on every card ("Command: ls, exit 2, failed", "Expanded"), Reduce Motion (the indicator stops pulsing and the list jumps without animating). Prose is the system face; code, commands and chrome are Menlo.
 
 ### Direct typing, focus mode and text size
 
@@ -542,6 +585,12 @@ caller: its already-sealed frame is still sent in order and its late response is
 relay's independently generated `remote/fixtures/v1.json`. Counter vectors above 0
 (`Tests/Fixtures/counter-vectors.json`) come from an independent RFC 8439 implementation,
 `scripts/gen-counter-vectors.py`, which first reproduces that fixture at counter 0.
+
+The chat fixture (`Tests/Fixtures/chat-serde.json`) is not hand-written: `scripts/gen-chat-fixtures.sh` serializes events, commands and chats with the
+real types of `src/chat/model.rs` (a throwaway crate; needs `cargo`), and the Core tests decode and re-encode every entry. Run it again when `model.rs`
+changes. The app tests drive the chat screen against a scripted desktop (`AppTests/ChatTransport.swift`: per-chat event logs, `chat.events` that waits
+like the real one, failures, a dropped link); with `TEST_RUNNER_RIWORK_CHAT_SNAPSHOTS=/some/dir` before `xcodebuild … test` the screen tests also leave
+pictures of the chat screens there.
 
 ```sh
 swift test --package-path ios

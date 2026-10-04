@@ -171,6 +171,14 @@ and `orchestrators.list` entries, in the same document) is likewise independent 
 version and applies to v2 sessions exactly as to v1. It is read-only, adds no method and
 discloses only the state of agents, and the time of their last output, that the device can
 already see and type into.
+The 2026-10-04 chat extension (`chats.list`, `chat.create`, `chat.events`, `chat.command` and
+`chat.stop`, and `features.chat` on `ready`, in the same document) is likewise independent of the
+crypto version and applies to v2 sessions exactly as to v1. It carries the desktop's chat JSON
+(messages, command output, diffs and approvals) inside the same sealed frames as everything else,
+and its replies may be deflated like any other once the session opted in (the compression note in
+the threat discussion applies). A chat's agent can run commands as the desktop user, as a terminal
+started with `shell.create` can, so, like terminal creation, it adds no authority a paired device
+lacks.
 
 ## Desktop devices (2026-10-02)
 

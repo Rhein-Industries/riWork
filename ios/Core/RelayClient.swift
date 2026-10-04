@@ -22,11 +22,16 @@ public enum RequestValidation {
         case "shell.create": required = ["kind"]; optional = ["project_id", "worktree_id", "unrestricted", "command"]
         case "shell.close": required = ["shell_id"]; optional = []
         case "project.create": required = ["name"]; optional = ["git"]
+        case "chats.list": required = []; optional = ["project_id"]
+        case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "title"]
+        case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events"]
+        case "chat.command": required = ["chat_id", "command"]; optional = []
+        case "chat.stop": required = ["chat_id"]; optional = []
         default: throw RemoteError.protocolViolation("Unsupported operation.")
         }
         let keys = Set(params.keys)
         guard required.isSubset(of: keys), keys.isSubset(of: required.union(optional)) else { throw RemoteError.protocolViolation("Invalid request parameters.") }
-        for key in ["project_id", "worktree_id", "shell_id", "batch"] where params[key] != nil { try uuid(params[key]?.string) }
+        for key in ["project_id", "worktree_id", "shell_id", "batch", "chat_id"] where params[key] != nil { try uuid(params[key]?.string) }
         if method == "shell.keys" {
             guard case .array(let raw)? = params["items"] else { throw RemoteError.protocolViolation("Missing key items.") }
             try KeyItem.validate(batch: try raw.map { try KeyItem(json: $0) })
@@ -50,6 +55,15 @@ public enum RequestValidation {
         if method == "project.create" {
             do { _ = try NewProjectRequest(params: params) } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
         }
+        do {
+            switch method {
+            case "chats.list": _ = try ChatListRequest(params: params)
+            case "chat.create": _ = try ChatCreateRequest(params: params)
+            case "chat.events": _ = try ChatEventsRequest(params: params)
+            case "chat.command": _ = try ChatCommandRequest(params: params)
+            default: break
+            }
+        } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
         if method == "shell.input" { guard let line = params["line"]?.string else { throw RemoteError.protocolViolation("Missing input.") }; try InputValidation.validate(line) }
         // `shell.history` has its own range (checked above); this one is the live read's.
         if let lines = params["lines"], method == "shell.output" { guard case .number(let value) = lines, value >= 1, value <= 2000, value.rounded() == value else { throw RemoteError.protocolViolation("Output lines must be 1–2000.") } }
@@ -115,6 +129,14 @@ public actor RelayClient: RemoteTransport {
         case "shell.close": return max(base, .seconds(30))
         // The desktop makes the folder, runs `git init` and registers it (the connector gives its CLI 60 s).
         case "project.create": return max(base, .seconds(90))
+        // A chat starts its agent (and the chat host, if it is not running yet); a message to a stopped chat resumes it first. Like
+        // `shell.create`, the answer can take a while, and a timeout here tears the whole connection down.
+        case "chat.create": return max(base, .seconds(90))
+        case "chat.command": return max(base, .seconds(60))
+        case "chat.stop": return max(base, .seconds(30))
+        case "chat.events":
+            if case .number(let wait)? = params["wait_ms"], wait.isFinite, wait > 0 { return max(base, ChatLimits.timeout(waitMilliseconds: Int(min(wait, Double(ChatLimits.maximumWaitMilliseconds))))) }
+            return base
         case "shell.output":
             if case .number(let wait)? = params["wait_ms"], wait.isFinite, wait > 0 { return max(base, LiveSync.timeout(waitMilliseconds: Int(min(wait, Double(LiveSync.maximumWaitMilliseconds))))) }
             return base

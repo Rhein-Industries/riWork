@@ -977,6 +977,11 @@ pub enum SavedTab {
         desktop_id: String,
         shell_id: String,
     },
+    /// A Codex or Claude chat, kept by the chat host (`riwork chat serve`). Closing the tab
+    /// leaves the chat there, and a restored layout subscribes to it again by this id.
+    Chat {
+        chat_id: String,
+    },
 }
 
 impl SavedTab {
@@ -988,6 +993,7 @@ impl SavedTab {
                 desktop_id,
                 shell_id,
             } => format!("remote:{desktop_id}:{shell_id}"),
+            Self::Chat { chat_id } => format!("chat:{chat_id}"),
         }
     }
 }
@@ -1159,7 +1165,9 @@ impl ProjectLayout {
             .flat_map(|pane| {
                 pane.tabs.iter().filter_map(|tab| match tab {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
-                    SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => None,
+                    SavedTab::Panel { .. }
+                    | SavedTab::RemoteShell { .. }
+                    | SavedTab::Chat { .. } => None,
                 })
             })
             .collect::<HashSet<_>>();
@@ -1283,6 +1291,7 @@ impl ProjectLayout {
         let mut shell_ids = HashSet::new();
         let mut panel_kinds = HashSet::new();
         let mut remote_shells = HashSet::new();
+        let mut chats = HashSet::new();
         for id in ordered_pane_ids {
             let pane = self.panes.entry(id).or_default();
             // Older layouts may have bottom strips; all current strips belong at the top.
@@ -1317,6 +1326,8 @@ impl ProjectLayout {
                         && !shell_id.is_empty()
                         && remote_shells.insert((desktop_id.clone(), shell_id.clone()))
                 }
+                // A chat shows in one tab; a tab that is still being created has no id yet.
+                SavedTab::Chat { chat_id } => !chat_id.is_empty() && chats.insert(chat_id.clone()),
             });
             if !pane
                 .active_tab_key
@@ -1330,7 +1341,9 @@ impl ProjectLayout {
                 .iter()
                 .filter_map(|tab| match tab {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
-                    SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => None,
+                    SavedTab::Panel { .. }
+                    | SavedTab::RemoteShell { .. }
+                    | SavedTab::Chat { .. } => None,
                 })
                 .collect();
             pane.active_shell_id = pane.tabs.iter().find_map(|tab| match tab {
@@ -1504,7 +1517,7 @@ fn sync_saved_pane(pane: &mut SavedPane) {
         .iter()
         .filter_map(|tab| match tab {
             SavedTab::Shell { shell_id } => Some(shell_id.clone()),
-            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => None,
+            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } | SavedTab::Chat { .. } => None,
         })
         .collect();
     pane.active_shell_id = pane.tabs.iter().find_map(|tab| match tab {
@@ -3034,6 +3047,152 @@ mod tests {
                 .unwrap()
                 .contains(&remote_json)
         );
+    }
+
+    fn chat(id: &str) -> SavedTab {
+        SavedTab::Chat { chat_id: id.into() }
+    }
+
+    #[test]
+    fn a_chat_tab_has_a_fixed_json_shape_and_key() {
+        let tab = chat("0d3f");
+        assert_eq!(tab.key(), "chat:0d3f");
+        let json = serde_json::json!({"kind": "chat", "chat_id": "0d3f"});
+        assert_eq!(serde_json::to_value(&tab).unwrap(), json);
+        assert_eq!(serde_json::from_value::<SavedTab>(json).unwrap(), tab);
+        assert_ne!(tab.key(), chat("0d40").key());
+    }
+
+    #[test]
+    fn chat_tabs_round_trip_beside_shells_and_are_not_shells() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let mut layout = saved_layout();
+        layout.panes.insert(
+            4,
+            pane(
+                vec![
+                    shell("shell-a"),
+                    chat("chat-1"),
+                    panel(PanelKind::Files),
+                    chat("chat-2"),
+                ],
+                1,
+            ),
+        );
+        layout.normalize().unwrap();
+        // A chat is kept by the chat host: nothing that looks sessions up by id may see it.
+        assert_eq!(layout.panes[&4].shell_ids, ["shell-a"]);
+        assert_eq!(layout.panes[&4].active_shell_id, None);
+        assert_eq!(
+            layout.panes[&4].active_tab_key.as_deref(),
+            Some("chat:chat-1")
+        );
+
+        store.save("project-a", &layout).unwrap();
+        let file = directory.read_value();
+        assert!(
+            file["projects"]["project-a"]["panes"]["4"]["tabs"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!({"kind": "chat", "chat_id": "chat-2"}))
+        );
+        assert_eq!(store.load("project-a").unwrap(), Some(layout));
+    }
+
+    #[test]
+    fn duplicate_or_unnamed_chat_tabs_are_dropped_by_normalization() {
+        let mut layout = saved_layout();
+        layout.panes.insert(
+            4,
+            pane(
+                vec![chat("chat-1"), chat("chat-1"), chat(""), chat("chat-2")],
+                0,
+            ),
+        );
+        // Another pane showing the same chat does not get it twice either.
+        layout.panes.get_mut(&8).unwrap().tabs.push(chat("chat-2"));
+        layout.normalize().unwrap();
+        assert_eq!(
+            layout.panes[&4]
+                .tabs
+                .iter()
+                .map(SavedTab::key)
+                .collect::<Vec<_>>(),
+            ["chat:chat-1", "chat:chat-2"]
+        );
+        assert!(
+            !layout.panes[&8]
+                .tabs
+                .iter()
+                .any(|tab| matches!(tab, SavedTab::Chat { .. }))
+        );
+    }
+
+    /// The tab kinds of a build before chats, as its `SavedTab` read them.
+    #[derive(Debug, PartialEq, Eq, Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum SavedTabBeforeChats {
+        Shell {
+            shell_id: String,
+        },
+        Panel {
+            panel: PanelKind,
+        },
+        RemoteShell {
+            desktop_id: String,
+            shell_id: String,
+        },
+    }
+
+    #[test]
+    fn a_build_that_predates_chat_tabs_skips_them_and_writes_them_back_verbatim() {
+        let chat_json = serde_json::json!({"kind": "chat", "chat_id": "chat-1"});
+        // To such a build the chat is a tab of an unknown kind, like any future one...
+        assert!(serde_json::from_value::<SavedTabBeforeChats>(chat_json.clone()).is_err());
+        assert!(
+            serde_json::from_value::<SavedTabBeforeChats>(serde_json::json!({
+                "kind": "shell",
+                "shell_id": "shell-a",
+            }))
+            .is_ok()
+        );
+        // ...so it sets the tab aside, loads the rest, and a save writes it back unchanged.
+        // Simulated here with the first kind this build does not know.
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let stored =
+            newer_layout(serde_json::json!({"kind": "chat_from_the_future", "chat_id": "chat-1"}));
+        directory.write(
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "projects": {"newer": stored},
+            }))
+            .unwrap(),
+        );
+        let mut loaded = store.load("newer").unwrap().unwrap();
+        loaded.selected_task_id = Some("another-task".to_owned());
+        store.save("newer", &loaded).unwrap();
+        let file = directory.read_value();
+        assert!(
+            file["projects"]["newer"]["panes"]["4"]["tabs"]
+                .as_array()
+                .unwrap()
+                .contains(
+                    &serde_json::json!({"kind": "chat_from_the_future", "chat_id": "chat-1"})
+                )
+        );
+
+        // This build reads the chat tab itself, beside one it does not know.
+        let mut raw = serde_json::to_value(saved_layout()).unwrap();
+        let tabs = raw["panes"]["4"]["tabs"].as_array_mut().unwrap();
+        tabs.push(chat_json.clone());
+        tabs.push(serde_json::json!({"kind": "browser", "url": "https://example.com"}));
+        let SavedEntry::Layout { layout, skipped } = SavedEntry::parse(raw) else {
+            panic!("a layout with a chat tab must stay readable");
+        };
+        assert!(layout.panes[&4].tabs.contains(&chat("chat-1")));
+        assert_eq!(skipped.len(), 1);
     }
 
     #[test]

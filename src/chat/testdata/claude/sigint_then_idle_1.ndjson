@@ -1,0 +1,11 @@
+# Modelled on the T3 Code recordings (MIT) tool_call_read_only_on_request, tool_call_denied_write and
+# claude_compact_after_peer_turn, the live claude 2.1.289 captures, and the SDK types; shortened, text invented.
+# SIGINT is ignored, the turn ends a little later and then the process goes
+{"type":"expect","frame":{"type":"control_request","request":{"subtype":"initialize"}},"reply":[{"type":"control_response","response":{"subtype":"success","request_id":"$request_id","response":{"commands":[],"models":[],"current_permission_mode":"default","capabilities":[]}}}]}
+{"type":"expect","frame":{"type":"user","message":{"role":"user","content":"Run for a while"}},"reply":[{"type":"system","subtype":"init","session_id":"sess-1","cwd":"/work","model":"claude-sonnet-4-6","permissionMode":"default","tools":[],"capabilities":["interrupt_receipt_v1"]},{"type":"system","subtype":"session_state_changed","state":"running","session_id":"sess-1"}]}
+{"type":"expect","frame":{"type":"control_request","request":{"subtype":"interrupt"}}}
+{"type":"ignore_signals"}
+{"type":"sleep","ms":500}
+{"type":"emit","frame":{"type":"result","subtype":"error_during_execution","is_error":true,"result":"","num_turns":1,"session_id":"sess-1","total_cost_usd":0.01,"usage":{"input_tokens":3,"cache_creation_input_tokens":100,"cache_read_input_tokens":900,"output_tokens":20,"iterations":[{"input_tokens":3,"output_tokens":20,"cache_read_input_tokens":900,"cache_creation_input_tokens":100}]},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":3,"outputTokens":20,"contextWindow":200000}}}}
+{"type":"emit","frame":{"type":"system","subtype":"session_state_changed","state":"idle","session_id":"sess-1"}}
+{"type":"exit","code":0}

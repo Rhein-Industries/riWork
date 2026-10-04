@@ -442,6 +442,13 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
     p.validate(device.allow_insecure_loopback)?;
     let (mut ws, online) =
         connect_registered(&p.relay_url, &p.route_id, "desktop", &device.desktop_token).await?;
+    // Whether the CLI has chats is learned while the phone is still on its way, so that `ready`
+    // does not wait for the first run of a CLI that was just updated. (Not before the relay
+    // has been reached: a connector that cannot reach it tries again every second.)
+    {
+        let rpc = rpc.clone();
+        tokio::spawn(async move { rpc.learn_chat().await });
+    }
     let identity = p.identity();
     let v1_secret = if p.v == 1 {
         Some(decode::<32>(&p.pairing_secret)?)
@@ -624,6 +631,10 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     // Only a device that may open streams is told they exist.
                     features["pty"] = pty::features();
                 }
+                // Chats exist when the installed CLI has them; an older phone ignores it.
+                if rpc.chat_supported().await {
+                    features["chat"] = json!(true);
+                }
                 let ready = json!({"v":1,"type":"ready","desktop_id":p.desktop_id,"device_id":p.device_id,"features":features});
                 let e = s.seal("d2c", &serde_json::to_vec(&ready)?)?;
                 send_json(&mut ws, &e).await?;
@@ -729,6 +740,10 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // The first run of a new executable can take seconds on a busy Mac, and `ready` asks
+        // the CLI about chats: run it once here, where nothing is timed, and forget the call.
+        let _ = std::process::Command::new(&cli).arg("warm").output();
+        std::fs::write(&log, "").unwrap();
         (cli, log)
     }
     /// Polls a condition instead of trusting a fixed sleep on a loaded machine.

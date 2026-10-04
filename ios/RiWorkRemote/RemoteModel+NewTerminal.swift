@@ -30,7 +30,8 @@ extension RemoteModel {
         guard let project = projectID else { return nil }
         let options = NewTerminalTargets.options(projectID: project, projects: projects, worktrees: worktrees)
         let viewed = session.flatMap { $0.project_id == project ? $0.worktree_id : nil }
-        return NewTerminalForm(targets: options, targetIndex: NewTerminalTargets.preselected(in: options, selectedWorktreeID: viewed), kind: lastTerminalKind)
+        return NewTerminalForm(targets: options, targetIndex: NewTerminalTargets.preselected(in: options, selectedWorktreeID: viewed), kind: lastTerminalKind,
+                               kinds: NewTerminalKind.offered(chats: chatsOffered))
     }
 
     /// Opens a terminal and switches to it. Returns nil on success, otherwise why not. `onCreated` runs as soon as the desktop has
@@ -131,10 +132,20 @@ extension RemoteModel {
 
 /// The "New terminal" sheet's state: the form, what went wrong, and whether a request is on its way. Touch and keyboard both go
 /// through here, so they cannot disagree.
+/// What the sheet says when a request did not go through: the words, and whether it may have happened anyway.
+struct NewTabProblem: Equatable {
+    let message: String
+    let outcomeIsUncertain: Bool
+    init(_ error: TerminalControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain }
+    init(_ error: ChatControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain }
+}
+
 @MainActor @Observable final class NewTerminalSheetModel: Identifiable {
     let id = UUID()
     var form: NewTerminalForm
     var error: TerminalControlError?
+    /// The same for a chat, which has its own errors.
+    var chatError: ChatControlError?
     /// The focus ring shows only once a key was pressed; a finger does not need it.
     var keyboardInUse = false
     @ObservationIgnored let model: RemoteModel
@@ -151,25 +162,33 @@ extension RemoteModel {
         self.model = model
     }
 
-    var busy: Bool { submitting || model.creatingTerminal }
-    var unsupported: Bool { model.terminalControl == .unsupported }
+    var busy: Bool { submitting || model.creatingTerminal || model.creatingChat }
+    /// The desktop is too old for what is chosen: terminals (`shell.create`) or chats.
+    var unsupported: Bool { form.kind.isChat ? model.chatSupport == .unsupported : model.terminalControl == .unsupported }
     var canCreate: Bool { !busy && !unsupported && model.state == .connected && form.target != nil }
     /// The message shown inline: what the last attempt said, or that the desktop is too old.
-    var message: TerminalControlError? { unsupported ? .unsupported : error }
+    var message: TerminalControlError? { unsupported && !form.kind.isChat ? .unsupported : (form.kind.isChat ? nil : error) }
+    /// The same, for either kind of request.
+    var problem: NewTabProblem? {
+        if form.kind.isChat { return (unsupported ? ChatControlError.unsupported : chatError).map(NewTabProblem.init) }
+        return message.map(NewTabProblem.init)
+    }
+    /// What the Create button's hint says when it is off because the desktop is too old.
+    var unsupportedMessage: String { form.kind.isChat ? ChatControlError.unsupportedMessage : TerminalControlError.unsupportedMessage }
 
     /// A key from a hardware keyboard.
     func press(_ key: NewTerminalForm.Key) {
         keyboardInUse = true
-        if key != .space { error = nil }
+        if key != .space { error = nil; chatError = nil }
         form.handle(key)
         if key == .space, form.focus == .create { create() }
     }
     func select(kind: NewTerminalKind) {
-        keyboardInUse = false; error = nil
+        keyboardInUse = false; error = nil; chatError = nil
         form.select(kind: kind); form.focus = .kind
     }
     func select(targetAt index: Int) {
-        keyboardInUse = false; error = nil
+        keyboardInUse = false; error = nil; chatError = nil
         form.select(targetAt: index); form.focus = .target
     }
     func setUnrestricted(_ on: Bool) {
@@ -184,19 +203,36 @@ extension RemoteModel {
         form.select(targetAt: fresh.targets.firstIndex { $0.id == chosen } ?? fresh.targetIndex)
     }
 
-    /// Return, or the Create button. One request at a time; the sheet stays open when it fails.
+    /// Return, or the Create button. One request at a time; the sheet stays open when it fails. A chat is made by `chat.create`, a
+    /// terminal by `shell.create`; neither is ever sent twice.
     func create() {
         guard !busy else { return }
-        guard !unsupported else { error = .unsupported; return }
-        let request: NewTerminalRequest
-        do { request = try form.request() } catch { self.error = .failed(error.localizedDescription); return }
-        error = nil; submitting = true
+        let submission: NewTabRequest
+        do { submission = try form.submission() } catch {
+            if form.kind.isChat { chatError = .failed(error.localizedDescription) } else { self.error = .failed(error.localizedDescription) }
+            return
+        }
+        guard !unsupported else {
+            if form.kind.isChat { chatError = .unsupported } else { error = .unsupported }
+            return
+        }
+        error = nil; chatError = nil; submitting = true
         // Unstructured on purpose: the sheet going away must not cancel a request that is already on the wire.
-        pending = Task { [weak self] in
-            guard let self else { return }
-            let failure = await model.createTerminal(request) { _ in self.dismiss() }
-            submitting = false
-            if let failure { error = failure } else { dismiss() }
+        switch submission {
+        case .terminal(let request):
+            pending = Task { [weak self] in
+                guard let self else { return }
+                let failure = await model.createTerminal(request) { _ in self.dismiss() }
+                submitting = false
+                if let failure { error = failure } else { dismiss() }
+            }
+        case .chat(let request):
+            pending = Task { [weak self] in
+                guard let self else { return }
+                let failure = await model.createChat(request) { _ in self.dismiss() }
+                submitting = false
+                if let failure { chatError = failure } else { dismiss() }
+            }
         }
     }
     func cancel() { dismiss() }

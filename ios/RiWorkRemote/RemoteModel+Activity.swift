@@ -65,8 +65,11 @@ extension RemoteModel {
         let token = generation
         async let workers = try? rpc("shells.list", ["project_id": .string(project)])["shells"].decode([RemoteSession].self)
         async let managers = try? rpc("orchestrators.list")["orchestrators"].decode([RemoteSession].self)
-        let (listedShells, listedManagers) = await (workers, managers)
+        // The chats are tabs in the same strip, and have states of their own.
+        async let talks = chatsOfProject(project)
+        let (listedShells, listedManagers, listedChats) = await (workers, managers, talks)
         guard generation == token, projectID == project, loadedProjectID == project, state == .connected else { return }
+        if let listedChats { installChats(listedChats, project: project) }
         if let listedShells, listedShells != shells { shells = listedShells }
         if let listedManagers, listedManagers != orchestrators { orchestrators = listedManagers }
         if listedShells != nil || listedManagers != nil { lastListRead[.sessions] = .now }
