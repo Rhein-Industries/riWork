@@ -63,6 +63,73 @@ pub fn submit_checked(
     result
 }
 
+/// What goes into a pane: a terminal paste of text, or one key by its tmux name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Input {
+    Paste(String),
+    Key(&'static str),
+}
+
+/// Give a shell's pane `input`, chosen from the name of the pane's foreground program and the
+/// pane's terminal device (`input(command, tty)`), as a
+/// terminal would: each paste bracketed when the program asked for bracketed paste, a key as
+/// typed, no Return. All of it goes in under the same input lock as `submit`. A pane in copy
+/// mode is taken out of it first, as a paste in Ghostty scrolls back to the prompt; a pane whose
+/// input is disabled is refused. Used for files dropped on a terminal and for ⌘V.
+pub fn paste(
+    home: &Path,
+    id: &str,
+    input: impl FnOnce(&str, &str) -> Vec<Input>,
+    t: &crate::session_viewport::Tmux<'_>,
+    load: &TmuxInput<'_>,
+) -> Result<(), String> {
+    let _lock = crate::session_viewport::lock(home, id, "input")?;
+    let pane = format!("{id}:0.0");
+    let status = t(&[
+        "display-message",
+        "-p",
+        "-t",
+        &pane,
+        "#{pane_in_mode}|#{pane_input_off}|#{pane_tty}|#{pane_current_command}",
+    ])?;
+    let mut fields = status.trim_end_matches('\n').splitn(4, '|');
+    let mut field = || fields.next().unwrap_or_default();
+    let (mode, off, tty, command) = (field(), field(), field(), field());
+    if off != "0" {
+        return Err("terminal input is disabled for this pane".into());
+    }
+    let input = input(command, tty);
+    if input
+        .iter()
+        .all(|input| matches!(input, Input::Paste(text) if text.is_empty()))
+    {
+        return Ok(());
+    }
+    if mode != "0" {
+        t(&["send-keys", "-t", &pane, "-X", "cancel"])?;
+    }
+    for input in input {
+        match input {
+            Input::Paste(text) if text.is_empty() => {}
+            Input::Paste(text) => {
+                let buffer = format!("riwork-input-{}", Uuid::new_v4());
+                let result = load(&["load-buffer", "-b", &buffer, "-"], text.as_bytes())
+                    // Without `-r` tmux turns line feeds into carriage returns, as a terminal
+                    // paste does.
+                    .and_then(|_| t(&["paste-buffer", "-p", "-d", "-b", &buffer, "-t", &pane]));
+                if let Err(error) = result {
+                    let _ = t(&["delete-buffer", "-b", &buffer]);
+                    return Err(error);
+                }
+            }
+            Input::Key(key) => {
+                t(&["send-keys", "-t", &pane, key])?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +276,132 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
         assert_eq!(error, "not idle");
         assert_eq!(tmux.subcommands(), ["display-message"]);
+    }
+
+    #[test]
+    fn paste_loads_on_stdin_and_pastes_bracketed_without_return() {
+        let text = "/tmp/a\\ b.png";
+        let tmux = Recorder::new("");
+        let home = home();
+        paste(
+            &home,
+            SHELL,
+            |_, _| vec![Input::Paste(text.into())],
+            &|args| tmux.run(args, None),
+            &|args, input| tmux.run(args, Some(input)),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(home);
+        assert_eq!(
+            tmux.subcommands(),
+            ["display-message", "load-buffer", "paste-buffer"]
+        );
+        assert_eq!(&*tmux.loaded.borrow(), text.as_bytes());
+        let calls = tmux.calls.borrow();
+        let buffer = &calls[1][2];
+        assert_eq!(
+            calls[2],
+            [
+                "paste-buffer",
+                "-p",
+                "-d",
+                "-b",
+                buffer,
+                "-t",
+                &format!("{SHELL}:0.0")
+            ]
+        );
+    }
+
+    /// A tmux that answers the status query with `answer` and records every call.
+    fn answering<'a>(
+        calls: &'a RefCell<Vec<Vec<String>>>,
+        answer: &'static str,
+    ) -> impl Fn(&[&str]) -> Result<String, String> + 'a {
+        move |args: &[&str]| {
+            calls
+                .borrow_mut()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            Ok(if args[0] == "display-message" {
+                answer.into()
+            } else {
+                String::new()
+            })
+        }
+    }
+
+    #[test]
+    fn paste_leaves_copy_mode_first_and_refuses_disabled_input() {
+        let calls = RefCell::new(Vec::new());
+        let home = home();
+        let in_mode = answering(&calls, "1|0|/dev/ttys001|zsh\n");
+        let x = |_: &str, _: &str| vec![Input::Paste("x".into())];
+        paste(&home, SHELL, x, &in_mode, &|args, _| in_mode(args)).unwrap();
+        let subcommands: Vec<String> = calls.borrow().iter().map(|c| c[0].clone()).collect();
+        assert_eq!(
+            subcommands,
+            [
+                "display-message",
+                "send-keys",
+                "load-buffer",
+                "paste-buffer"
+            ]
+        );
+        assert_eq!(calls.borrow()[1][3..], ["-X", "cancel"]);
+        calls.borrow_mut().clear();
+        let off = answering(&calls, "0|1|/dev/ttys001|zsh\n");
+        assert!(paste(&home, SHELL, x, &off, &|args, _| off(args)).is_err());
+        assert_eq!(calls.borrow().len(), 1);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn paste_chooses_by_the_foreground_program_and_sends_each_input_in_order() {
+        let calls = RefCell::new(Vec::new());
+        let home = home();
+        let tmux = answering(&calls, "0|0|/dev/ttys002|2.1.289\n");
+        let seen = RefCell::new(String::new());
+        paste(
+            &home,
+            SHELL,
+            |command, tty| {
+                *seen.borrow_mut() = format!("{command} {tty}");
+                vec![
+                    Input::Paste("a".into()),
+                    Input::Paste(String::new()),
+                    Input::Key("C-v"),
+                    Input::Paste("b".into()),
+                ]
+            },
+            &tmux,
+            &|args, _| tmux(args),
+        )
+        .unwrap();
+        assert_eq!(*seen.borrow(), "2.1.289 /dev/ttys002");
+        let subcommands: Vec<String> = calls.borrow().iter().map(|c| c[0].clone()).collect();
+        assert_eq!(
+            subcommands,
+            [
+                "display-message",
+                "load-buffer",
+                "paste-buffer",
+                "send-keys",
+                "load-buffer",
+                "paste-buffer"
+            ]
+        );
+        assert_eq!(
+            calls.borrow()[3][1..],
+            ["-t", &format!("{SHELL}:0.0"), "C-v"]
+        );
+        // Nothing to give: not even copy mode is left.
+        calls.borrow_mut().clear();
+        let in_mode = answering(&calls, "1|0|/dev/ttys001|zsh\n");
+        paste(&home, SHELL, |_, _| Vec::new(), &in_mode, &|args, _| {
+            in_mode(args)
+        })
+        .unwrap();
+        assert_eq!(calls.borrow().len(), 1);
+        let _ = std::fs::remove_dir_all(home);
     }
 }

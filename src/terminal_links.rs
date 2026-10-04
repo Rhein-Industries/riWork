@@ -17,6 +17,7 @@ use crate::theme::{GhosttyPadding, PaddingBalance};
 
 mod overlay;
 mod ui;
+pub use overlay::Overlay;
 pub use ui::LinkState;
 
 #[cfg(test)]

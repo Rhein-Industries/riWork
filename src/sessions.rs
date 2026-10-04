@@ -1548,6 +1548,23 @@ impl SessionManager {
         self.paste_and_submit(id, text)
     }
 
+    /// Give an existing shell pastes or keys without Return, chosen by `input` from the shell's
+    /// harness, the name of its pane's foreground program and the pane's terminal (see `session_input::paste`).
+    pub fn paste(
+        &self,
+        id: &str,
+        input: impl FnOnce(Option<HarnessKind>, &str, &str) -> Vec<crate::session_input::Input>,
+    ) -> Result<(), String> {
+        let harness = self.registered_session(id)?.harness;
+        crate::session_input::paste(
+            &self.home,
+            id,
+            |command, tty| input(harness, command, tty),
+            &|args| self.tmux_text(args),
+            &|args, input| self.tmux_text_input(args, input),
+        )
+    }
+
     pub fn resize_viewport(
         &self,
         id: &str,
