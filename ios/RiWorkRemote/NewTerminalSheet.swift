@@ -38,6 +38,7 @@ struct NewTerminalSheet: View {
                 ForEach(sheet.form.kinds) { kindRow($0) }
             }
             .accessibilityElement(children: .contain).accessibilityLabel("Terminal kind")
+            if sheet.form.kind.isChat { NewChatModelSection(sheet: sheet) }
             if sheet.form.kind.isAgent { unrestrictedRow }
             if let problem = sheet.problem { messageRow(problem) }
         }

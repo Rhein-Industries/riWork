@@ -441,6 +441,8 @@ final class NewTerminalTests: XCTestCase {
         form.handle(.down); XCTAssertEqual(form.kind, .claudeChat)
         form.handle(.down); XCTAssertEqual(form.kind, .shell, "wraps")
         form.handle(.up); XCTAssertEqual(form.kind, .claudeChat)
+        XCTAssertEqual(form.fields, [.target, .kind, .chatModel, .unrestricted, .create], "a chat has its model row between the kind and the toggle; a terminal has none")
+        form.select(kind: .grok)
         XCTAssertEqual(form.fields, [.target, .kind, .unrestricted, .create])
     }
 }

@@ -19,6 +19,7 @@ fn main() {
         provider_thread_id: Some("thread-1".into()),
         model: Some("gpt-5".into()),
         effort: Some("high".into()),
+        fast: true,
         approval_mode: ApprovalMode::AutoEdit,
         codex_account_id: Some("acct".into()),
         state: ChatState::Failed { message: "gone".into() },
@@ -34,10 +35,34 @@ fn main() {
         provider_thread_id: None,
         model: None,
         effort: None,
+        fast: false,
         approval_mode: ApprovalMode::default(),
         codex_account_id: None,
         state: ChatState::default(),
     };
+    // What a driver sends once after its handshake: a model with efforts and Fast, one with efforts only, and one with nothing to choose
+    // (only the id and the name are required, so the last is the shortest a model can be).
+    let model_options = vec![
+        ModelOption {
+            id: "gpt-5.5".into(),
+            name: "GPT-5.5".into(),
+            description: "Frontier model for coding and agents".into(),
+            efforts: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()],
+            default_effort: Some("medium".into()),
+            supports_fast: true,
+            is_default: true,
+        },
+        ModelOption {
+            id: "gpt-5.4-mini".into(),
+            name: "GPT-5.4 mini".into(),
+            description: "Faster, cheaper".into(),
+            efforts: vec!["low".into(), "medium".into(), "high".into()],
+            default_effort: Some("low".into()),
+            supports_fast: false,
+            is_default: false,
+        },
+        ModelOption { id: "bare".into(), name: "Bare".into(), ..ModelOption::default() },
+    ];
     let item = |id: &str, body: ItemBody, status: ItemStatus| Item { id: id.into(), turn_id: Some("t1".into()), status, body };
     let step = |text: &str, status: StepStatus| Step { text: text.into(), status };
     let events: Vec<ChatEvent> = vec![
@@ -88,6 +113,9 @@ fn main() {
         ChatEvent::Usage { usage: Usage { input_tokens: 1200, output_tokens: 300, cached_input_tokens: 100, context_window: Some(200000), context_used: Some(84000), cost_usd: Some(0.4234) } },
         ChatEvent::Usage { usage: Usage::default() },
         ChatEvent::Info { info: minimal.clone() },
+        ChatEvent::Models { models: model_options.clone() },
+        ChatEvent::Models { models: vec![model_options[2].clone()] },
+        ChatEvent::Models { models: Vec::new() },
     ];
     let commands: Vec<ChatCommand> = vec![
         ChatCommand::Send { text: "go".into() },
@@ -95,9 +123,12 @@ fn main() {
         ChatCommand::Approve { request_id: "r".into(), decision: Decision::AcceptForSession },
         ChatCommand::Approve { request_id: "r".into(), decision: Decision::Cancel },
         ChatCommand::Answer { request_id: "q".into(), answers: vec![vec!["A".into(), "B".into()], vec!["free".into()]] },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: Some(ApprovalMode::Plan) },
-        ChatCommand::Configure { model: Some("m".into()), effort: Some("high".into()), approval_mode: None },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: Some(ApprovalMode::Plan), fast: None },
+        ChatCommand::Configure { model: Some("m".into()), effort: Some("high".into()), approval_mode: None, fast: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(true) },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(false) },
+        ChatCommand::Configure { model: Some("gpt-5.5".into()), effort: Some("xhigh".into()), approval_mode: Some(ApprovalMode::Full), fast: Some(true) },
         ChatCommand::Compact,
         ChatCommand::Stop,
     ];
@@ -112,6 +143,7 @@ fn main() {
         "chats": [to_value(&info).unwrap(), to_value(&minimal).unwrap()],
         "modes": modes,
         "providers": providers,
+        "model_options": model_options.iter().map(|m| to_value(m).unwrap()).collect::<Vec<Value>>(),
     });
     println!("{}", serde_json::to_string_pretty(&doc).unwrap());
 }

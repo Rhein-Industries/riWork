@@ -157,7 +157,8 @@ struct NewTabProblem: Equatable {
     @ObservationIgnored private(set) var pending: Task<Void, Never>?
 
     init?(model: RemoteModel) {
-        guard let form = model.newTerminalForm() else { return nil }
+        guard var form = model.newTerminalForm() else { return nil }
+        form.chatChoices = model.rememberedChatChoices()
         self.form = form
         self.model = model
     }
@@ -227,6 +228,7 @@ struct NewTabProblem: Equatable {
                 if let failure { error = failure } else { dismiss() }
             }
         case .chat(let request):
+            model.rememberChatChoice(form.chatChoices[request.provider] ?? NewChatChoice(), for: request.provider)
             pending = Task { [weak self] in
                 guard let self else { return }
                 let failure = await model.createChat(request) { _ in self.dismiss() }

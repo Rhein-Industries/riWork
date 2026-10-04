@@ -6,6 +6,7 @@
       "created_at_unix": 1790000000,
       "cwd": "/Users/me/proj",
       "effort": "high",
+      "fast": true,
       "id": "11111111-1111-4111-8111-111111111111",
       "model": "gpt-5",
       "project_id": "22222222-2222-4222-8222-222222222222",
@@ -21,6 +22,7 @@
       "approval_mode": "supervised",
       "created_at_unix": 1,
       "cwd": "/c",
+      "fast": false,
       "id": "33333333-3333-4333-8333-333333333333",
       "provider": "claude",
       "state": {
@@ -74,6 +76,21 @@
       "command": "configure"
     },
     {
+      "command": "configure",
+      "fast": true
+    },
+    {
+      "command": "configure",
+      "fast": false
+    },
+    {
+      "approval_mode": "full",
+      "command": "configure",
+      "effort": "xhigh",
+      "fast": true,
+      "model": "gpt-5.5"
+    },
+    {
       "command": "compact"
     },
     {
@@ -89,6 +106,7 @@
         "created_at_unix": 1790000000,
         "cwd": "/Users/me/proj",
         "effort": "high",
+        "fast": true,
         "id": "11111111-1111-4111-8111-111111111111",
         "model": "gpt-5",
         "project_id": "22222222-2222-4222-8222-222222222222",
@@ -547,6 +565,7 @@
         "approval_mode": "supervised",
         "created_at_unix": 1,
         "cwd": "/c",
+        "fast": false,
         "id": "33333333-3333-4333-8333-333333333333",
         "provider": "claude",
         "state": {
@@ -555,9 +574,106 @@
         "title": "t",
         "worktree_id": "44444444-4444-4444-8444-444444444444"
       }
+    },
+    {
+      "event": "models",
+      "models": [
+        {
+          "default_effort": "medium",
+          "description": "Frontier model for coding and agents",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "id": "gpt-5.5",
+          "is_default": true,
+          "name": "GPT-5.5",
+          "supports_fast": true
+        },
+        {
+          "default_effort": "low",
+          "description": "Faster, cheaper",
+          "efforts": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "id": "gpt-5.4-mini",
+          "is_default": false,
+          "name": "GPT-5.4 mini",
+          "supports_fast": false
+        },
+        {
+          "default_effort": null,
+          "description": "",
+          "efforts": [],
+          "id": "bare",
+          "is_default": false,
+          "name": "Bare",
+          "supports_fast": false
+        }
+      ]
+    },
+    {
+      "event": "models",
+      "models": [
+        {
+          "default_effort": null,
+          "description": "",
+          "efforts": [],
+          "id": "bare",
+          "is_default": false,
+          "name": "Bare",
+          "supports_fast": false
+        }
+      ]
+    },
+    {
+      "event": "models",
+      "models": []
     }
   ],
   "generated_by": "ios/scripts/gen-chat-fixtures.sh from src/chat/model.rs; do not edit by hand",
+  "model_options": [
+    {
+      "default_effort": "medium",
+      "description": "Frontier model for coding and agents",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "id": "gpt-5.5",
+      "is_default": true,
+      "name": "GPT-5.5",
+      "supports_fast": true
+    },
+    {
+      "default_effort": "low",
+      "description": "Faster, cheaper",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "id": "gpt-5.4-mini",
+      "is_default": false,
+      "name": "GPT-5.4 mini",
+      "supports_fast": false
+    },
+    {
+      "default_effort": null,
+      "description": "",
+      "efforts": [],
+      "id": "bare",
+      "is_default": false,
+      "name": "Bare",
+      "supports_fast": false
+    }
+  ],
   "modes": [
     "supervised",
     "auto_edit",

@@ -23,7 +23,7 @@ public enum RequestValidation {
         case "shell.close": required = ["shell_id"]; optional = []
         case "project.create": required = ["name"]; optional = ["git"]
         case "chats.list": required = []; optional = ["project_id"]
-        case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "title"]
+        case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "title"]
         case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events"]
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
