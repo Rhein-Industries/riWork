@@ -1,0 +1,571 @@
+{
+  "chats": [
+    {
+      "approval_mode": "auto_edit",
+      "codex_account_id": "acct",
+      "created_at_unix": 1790000000,
+      "cwd": "/Users/me/proj",
+      "effort": "high",
+      "id": "11111111-1111-4111-8111-111111111111",
+      "model": "gpt-5",
+      "project_id": "22222222-2222-4222-8222-222222222222",
+      "provider": "codex",
+      "provider_thread_id": "thread-1",
+      "state": {
+        "message": "gone",
+        "state": "failed"
+      },
+      "title": "Codex chat"
+    },
+    {
+      "approval_mode": "supervised",
+      "created_at_unix": 1,
+      "cwd": "/c",
+      "id": "33333333-3333-4333-8333-333333333333",
+      "provider": "claude",
+      "state": {
+        "state": "starting"
+      },
+      "title": "t",
+      "worktree_id": "44444444-4444-4444-8444-444444444444"
+    }
+  ],
+  "commands": [
+    {
+      "command": "send",
+      "text": "go"
+    },
+    {
+      "command": "interrupt"
+    },
+    {
+      "command": "approve",
+      "decision": "accept_for_session",
+      "request_id": "r"
+    },
+    {
+      "command": "approve",
+      "decision": "cancel",
+      "request_id": "r"
+    },
+    {
+      "answers": [
+        [
+          "A",
+          "B"
+        ],
+        [
+          "free"
+        ]
+      ],
+      "command": "answer",
+      "request_id": "q"
+    },
+    {
+      "approval_mode": "plan",
+      "command": "configure"
+    },
+    {
+      "command": "configure",
+      "effort": "high",
+      "model": "m"
+    },
+    {
+      "command": "configure"
+    },
+    {
+      "command": "compact"
+    },
+    {
+      "command": "stop"
+    }
+  ],
+  "events": [
+    {
+      "event": "info",
+      "info": {
+        "approval_mode": "auto_edit",
+        "codex_account_id": "acct",
+        "created_at_unix": 1790000000,
+        "cwd": "/Users/me/proj",
+        "effort": "high",
+        "id": "11111111-1111-4111-8111-111111111111",
+        "model": "gpt-5",
+        "project_id": "22222222-2222-4222-8222-222222222222",
+        "provider": "codex",
+        "provider_thread_id": "thread-1",
+        "state": {
+          "message": "gone",
+          "state": "failed"
+        },
+        "title": "Codex chat"
+      }
+    },
+    {
+      "event": "state",
+      "state": {
+        "state": "starting"
+      }
+    },
+    {
+      "event": "state",
+      "state": {
+        "state": "idle"
+      }
+    },
+    {
+      "event": "state",
+      "state": {
+        "state": "running"
+      }
+    },
+    {
+      "event": "state",
+      "state": {
+        "state": "waiting"
+      }
+    },
+    {
+      "event": "state",
+      "state": {
+        "state": "stopped"
+      }
+    },
+    {
+      "event": "state",
+      "state": {
+        "message": "gone",
+        "state": "failed"
+      }
+    },
+    {
+      "event": "turn_started",
+      "turn_id": "t1"
+    },
+    {
+      "event": "turn_completed",
+      "outcome": {
+        "outcome": "completed"
+      },
+      "turn_id": "t1"
+    },
+    {
+      "event": "turn_completed",
+      "outcome": {
+        "outcome": "interrupted"
+      },
+      "turn_id": "t1"
+    },
+    {
+      "event": "turn_completed",
+      "outcome": {
+        "message": "boom",
+        "outcome": "failed"
+      },
+      "turn_id": "t1"
+    },
+    {
+      "event": "item_started",
+      "item": {
+        "body": {
+          "text": "hi",
+          "type": "user_message"
+        },
+        "id": "u",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_started",
+      "item": {
+        "body": {
+          "text": "",
+          "type": "agent_message"
+        },
+        "id": "a",
+        "status": "in_progress",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "delta": {
+        "kind": "text",
+        "text": "Hel"
+      },
+      "event": "item_delta",
+      "item_id": "a"
+    },
+    {
+      "delta": {
+        "kind": "output",
+        "text": "a\n"
+      },
+      "event": "item_delta",
+      "item_id": "c"
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "text": "thinking",
+          "type": "reasoning"
+        },
+        "id": "r",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "explanation": null,
+          "steps": [
+            {
+              "status": "in_progress",
+              "text": "one"
+            },
+            {
+              "status": "pending",
+              "text": "two"
+            },
+            {
+              "status": "completed",
+              "text": "three"
+            }
+          ],
+          "type": "plan"
+        },
+        "id": "p",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "explanation": "why",
+          "steps": [],
+          "type": "plan"
+        },
+        "id": "p2",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_started",
+      "item": {
+        "body": {
+          "command": "ls -la",
+          "cwd": "/tmp",
+          "output": "",
+          "type": "command"
+        },
+        "id": "c",
+        "status": "in_progress",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "command": "false",
+          "exit_code": 1,
+          "output": "x",
+          "type": "command"
+        },
+        "id": "c2",
+        "status": "failed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "changes": [
+            {
+              "diff": "@@ -1 +1 @@\n-a\n+b\n",
+              "kind": "modify",
+              "path": "src/a.rs"
+            },
+            {
+              "kind": "add",
+              "path": "new.txt"
+            },
+            {
+              "kind": "delete",
+              "path": "old.txt"
+            },
+            {
+              "kind": "rename",
+              "path": "moved.txt"
+            }
+          ],
+          "type": "file_change"
+        },
+        "id": "f",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "input": {
+            "label": "ok",
+            "x": 1,
+            "y": [
+              2,
+              3
+            ]
+          },
+          "output": "done",
+          "server": "cua",
+          "tool": "click",
+          "type": "tool_call"
+        },
+        "id": "t",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "input": null,
+          "tool": "Read",
+          "type": "tool_call"
+        },
+        "id": "t2",
+        "status": "declined",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "query": "rust serde",
+          "type": "web_search"
+        },
+        "id": "w",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "items": [
+            {
+              "status": "completed",
+              "text": "x"
+            },
+            {
+              "status": "pending",
+              "text": "y"
+            }
+          ],
+          "type": "todo"
+        },
+        "id": "d",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "type": "compaction"
+        },
+        "id": "k",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "level": "info",
+          "text": "fyi",
+          "type": "notice"
+        },
+        "id": "n1",
+        "status": "completed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "level": "warning",
+          "text": "careful",
+          "type": "notice"
+        },
+        "id": "n2",
+        "status": "interrupted",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "event": "item_completed",
+      "item": {
+        "body": {
+          "level": "error",
+          "text": "bad",
+          "type": "notice"
+        },
+        "id": "n3",
+        "status": "failed",
+        "turn_id": "t1"
+      }
+    },
+    {
+      "approval": {
+        "choices": [
+          "accept",
+          "accept_for_session",
+          "decline",
+          "cancel"
+        ],
+        "detail": "why",
+        "item_id": "c",
+        "kind": "command",
+        "request_id": "r1",
+        "title": "rm -rf build"
+      },
+      "event": "approval_requested"
+    },
+    {
+      "approval": {
+        "choices": [
+          "accept",
+          "decline"
+        ],
+        "detail": "",
+        "kind": "file_change",
+        "request_id": "r2",
+        "title": "a.rs"
+      },
+      "event": "approval_requested"
+    },
+    {
+      "approval": {
+        "choices": [
+          "accept"
+        ],
+        "detail": "",
+        "kind": "permissions",
+        "request_id": "r3",
+        "title": "network"
+      },
+      "event": "approval_requested"
+    },
+    {
+      "approval": {
+        "choices": [
+          "accept",
+          "decline"
+        ],
+        "detail": "",
+        "kind": "tool",
+        "request_id": "r4",
+        "title": "Bash"
+      },
+      "event": "approval_requested"
+    },
+    {
+      "decision": "accept_for_session",
+      "event": "approval_resolved",
+      "request_id": "r1"
+    },
+    {
+      "event": "question_requested",
+      "question": {
+        "questions": [
+          {
+            "header": "Pick",
+            "multi_select": true,
+            "options": [
+              {
+                "description": "first",
+                "label": "A"
+              },
+              {
+                "description": "",
+                "label": "B"
+              }
+            ],
+            "question": "Which?"
+          },
+          {
+            "multi_select": false,
+            "options": [],
+            "question": "Name?"
+          }
+        ],
+        "request_id": "q1"
+      }
+    },
+    {
+      "event": "question_resolved",
+      "request_id": "q1"
+    },
+    {
+      "event": "usage",
+      "usage": {
+        "cached_input_tokens": 100,
+        "context_used": 84000,
+        "context_window": 200000,
+        "cost_usd": 0.4234,
+        "input_tokens": 1200,
+        "output_tokens": 300
+      }
+    },
+    {
+      "event": "usage",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    {
+      "event": "info",
+      "info": {
+        "approval_mode": "supervised",
+        "created_at_unix": 1,
+        "cwd": "/c",
+        "id": "33333333-3333-4333-8333-333333333333",
+        "provider": "claude",
+        "state": {
+          "state": "starting"
+        },
+        "title": "t",
+        "worktree_id": "44444444-4444-4444-8444-444444444444"
+      }
+    }
+  ],
+  "generated_by": "ios/scripts/gen-chat-fixtures.sh from src/chat/model.rs; do not edit by hand",
+  "modes": [
+    "supervised",
+    "auto_edit",
+    "full",
+    "plan"
+  ],
+  "providers": [
+    "codex",
+    "claude"
+  ]
+}

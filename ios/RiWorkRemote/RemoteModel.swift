@@ -71,6 +71,20 @@ enum ConnectionState: Equatable {
     var closingTerminalID: String?
     /// The project list asks that project's terminal screen to open the "New terminal" sheet once it is up and loaded.
     var newTerminalRequestedProject: String?
+    // MARK: Chats (pipeline in RemoteModel+Chat.swift)
+    /// Whether the desktop has native chats. Read from `features.chat` when a connection begins, and reset by every new one.
+    var chatSupport: ChatSupport = .unknown
+    /// The chosen project's chats, from `chats.list`: tabs in the strip beside the terminals.
+    var chats: [ChatInfo] = []
+    /// The chat on screen; nil while a terminal is. Not remembered across launches.
+    var selectedChatID: String?
+    /// What has been read of the chats that were opened, by chat id.
+    var chatConversations: [String: ChatConversation] = [:]
+    /// A `chat.create` is on its way: a second one is refused until it answers.
+    var creatingChat = false
+    /// How long `chat.events` may hold a request back, and how long the follower rests while the link is down (tests make them short).
+    @ObservationIgnored let chatWaitMilliseconds: Int
+    @ObservationIgnored let chatIdleInterval: Duration
     // MARK: Agent activity and the project order (RemoteModel+Activity.swift)
     /// How often the lists are read again while a view that shows agent activity is on screen.
     @ObservationIgnored let activityRefreshInterval: Duration
@@ -255,7 +269,7 @@ enum ConnectionState: Equatable {
     init(client: any RemoteTransport = RelayClient(), keychain: KeychainStore = KeychainStore(), pollInterval: Duration = .seconds(3),
          keyFlushInterval: Duration = .milliseconds(40), previewDelay: Duration = .milliseconds(300), reconnectBackoff: Duration = .seconds(1),
          defaults: UserDefaults = .standard, themeRefreshInterval: Duration = .seconds(60), themeMinimumGap: Duration = .seconds(5),
-         activityRefreshInterval: Duration = .seconds(4),
+         activityRefreshInterval: Duration = .seconds(4), chatWaitMilliseconds: Int = ChatLimits.waitMilliseconds, chatIdleInterval: Duration = .seconds(1),
          cellMetrics: @escaping @MainActor (Double) -> (width: Double, height: Double) = { TerminalFont.cell(size: $0) },
          keepAwake: @escaping @MainActor (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 },
          liveWaitMilliseconds: Int = LiveSync.waitMilliseconds, linkWatcher: (any LinkWatching)? = nil, prefetch: Bool = true,
@@ -273,6 +287,8 @@ enum ConnectionState: Equatable {
         self.themeRefreshInterval = themeRefreshInterval
         self.themeMinimumGap = themeMinimumGap
         self.activityRefreshInterval = activityRefreshInterval
+        self.chatWaitMilliseconds = chatWaitMilliseconds
+        self.chatIdleInterval = chatIdleInterval
         self.theme = ThemeStore(defaults: defaults)
         self.hotkeys = HotkeyStore(defaults: defaults)
         self.keyboard = KeyboardPrefs(defaults: defaults, hardware: hardwareKeyboard)
@@ -471,6 +487,8 @@ enum ConnectionState: Equatable {
         terminalControl = .unknown
         // And for creating projects.
         projectCreation = .unknown
+        // And for chats (the desktop's `ready` says; what it answers confirms).
+        chatSupport = .unknown
         // And for waiting on changes: the first screen tells whether this desktop sends a `hash`.
         syncMode = .unknown; outputHash = nil; liveBackoff = LongPollBackoff(); waitSlots.reset(); outputExtensions = true; latency.reset()
         // And for paging history: the first page tells whether this desktop has `shell.history`.
@@ -546,6 +564,7 @@ enum ConnectionState: Equatable {
     }
     private func clearSnapshot() {
         projects = []; touchedProjects = [:]; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
+        chats = []; selectedChatID = nil; chatConversations = [:]
         lastListRead = [:]
         // Another desktop: nothing kept for the last one is of any use.
         terminalCache.removeAll()
@@ -607,6 +626,7 @@ enum ConnectionState: Equatable {
             }
             resetOutput(); draft = ""; deliveryNotice = nil
             worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
+            chats = []; selectedChatID = nil
             if state == .connected {
                 try await loadProject(id, token: generation)
                 await readOutput()
@@ -616,7 +636,7 @@ enum ConnectionState: Equatable {
     private func loadProject(_ id: String, token: UUID) async throws {
         try await install(try await fetchProject(id), project: id, token: token)
     }
-    private typealias ProjectListing = (worktrees: [RemoteWorktree], shells: [RemoteSession])
+    private typealias ProjectListing = (worktrees: [RemoteWorktree], shells: [RemoteSession], chats: [ChatInfo]?)
     private func fetchProject(ifChosen id: String?) async throws -> ProjectListing? {
         guard let id else { return nil }
         return try await fetchProject(id)
@@ -626,12 +646,15 @@ enum ConnectionState: Equatable {
         let params: [String: JSONValue] = ["project_id": .string(id)]
         async let trees = rpc("worktrees.list", params)
         async let workers = rpc("shells.list", params)
-        return (try await trees["worktrees"].decode([RemoteWorktree].self), try await workers["shells"].decode([RemoteSession].self))
+        // The desktop's chats come with them, when it has any; a chat list that cannot be read never fails the project.
+        async let talks = chatsOfProject(id)
+        return (try await trees["worktrees"].decode([RemoteWorktree].self), try await workers["shells"].decode([RemoteSession].self), await talks)
     }
     private func install(_ listing: ProjectListing, project id: String, token: UUID) async throws {
         guard generation == token, projectID == id else { return }
         worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
         lastListRead[.sessions] = .now
+        if let talks = listing.chats { installChats(talks, project: id) }
         try reconcileSelectedSession()
         if sessionID == nil { try await synchronizeViewport(token: token) }
     }
@@ -656,6 +679,8 @@ enum ConnectionState: Equatable {
     }
     func chooseSession(_ session: RemoteSession) async {
         guard openSessions.contains(where: { $0.id == session.id }) else { return }
+        // A terminal tab takes the screen back from a chat.
+        selectedChatID = nil
         do {
             try updateDesktop {
                 $0.selectedSessionID = session.id

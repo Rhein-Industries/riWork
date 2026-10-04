@@ -34,8 +34,8 @@ use gpui::{
 };
 
 use super::{
-    Bases, CellHint, Link, LinkRow, OpenMode, PaneView, ResolvedPath, Strip, open_mode,
-    open_refusal, overlay::Overlay, short_name, underline_strips, within,
+    Bases, CellHint, Link, LinkRow, OpenMode, PaneView, ResolvedPath, Strip, is_openable_url,
+    open_mode, open_refusal, overlay::Overlay, short_name, underline_strips, within,
 };
 use crate::{
     PaneId, TabId, Workspace, file_explorer_root, file_preview,
@@ -887,12 +887,7 @@ impl Workspace {
         match link {
             Link::Url(url) => {
                 // Only what a browser or a mail program handles; a screen can say anything.
-                let scheme = url
-                    .split(':')
-                    .next()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                if matches!(scheme.as_str(), "http" | "https" | "mailto") {
+                if is_openable_url(&url) {
                     cx.open_url(&url);
                 }
             }

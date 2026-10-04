@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize, de::IgnoredAny};
 use uuid::Uuid;
 
 use crate::{
+    chat::model::ChatState,
     sessions::{HarnessKind, ShellSession},
     store::State,
 };
@@ -241,6 +242,28 @@ impl ActivityCounts {
         counts
     }
 
+    /// These counts plus the chats of project `project_id`.
+    pub fn with_chats_in_project(mut self, project_id: &str, chats: &[ChatActivity]) -> Self {
+        for chat in chats
+            .iter()
+            .filter(|chat| chat.project_id.as_deref() == Some(project_id))
+        {
+            self.add(&AgentState::plain(chat.activity));
+        }
+        self
+    }
+
+    /// These counts plus the chats of worktree `worktree_id`.
+    pub fn with_chats_in_worktree(mut self, worktree_id: &str, chats: &[ChatActivity]) -> Self {
+        for chat in chats
+            .iter()
+            .filter(|chat| chat.worktree_id.as_deref() == Some(worktree_id))
+        {
+            self.add(&AgentState::plain(chat.activity));
+        }
+        self
+    }
+
     /// Unknown sessions stay neutral; plain shells never acquire a done label.
     /// Subagents follow the working count they belong to.
     pub fn summary(&self) -> Option<String> {
@@ -261,6 +284,34 @@ impl ActivityCounts {
             labels.push(format!("? {} unknown", self.unknown));
         }
         (!labels.is_empty()).then(|| labels.join(" · "))
+    }
+}
+
+/// What a chat tab says about its chat to the counts of its project and worktree. A chat
+/// is not a shell, so it is not found in a session list: the window hands these over from
+/// its open chat tabs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatActivity {
+    pub project_id: Option<String>,
+    pub worktree_id: Option<String>,
+    pub activity: AgentActivity,
+}
+
+impl ChatActivity {
+    /// The agent activity of a chat in `state`. A turn in progress is working and one that
+    /// waits for the user is waiting; an idle chat is done once it has finished a turn. A
+    /// chat that has done nothing yet, one that is starting, and one that is stopped or
+    /// failed say nothing: a stopped chat resumes with the next message.
+    pub fn of_state(state: &ChatState, turn_finished: bool) -> Option<AgentActivity> {
+        match state {
+            ChatState::Running => Some(AgentActivity::Working),
+            ChatState::Waiting => Some(AgentActivity::Waiting),
+            ChatState::Idle if turn_finished => Some(AgentActivity::Done),
+            ChatState::Idle
+            | ChatState::Starting
+            | ChatState::Stopped
+            | ChatState::Failed { .. } => None,
+        }
     }
 }
 
@@ -1912,6 +1963,52 @@ mod tests {
         );
         assert_eq!(ActivityCounts::default().summary(), None);
         assert_eq!(project.summary().as_deref(), Some("● 1 working · ✓ 1 done"));
+    }
+
+    #[test]
+    fn chats_count_as_agents_in_their_project_and_worktree() {
+        let chat = |project: &str, worktree: Option<&str>, activity| ChatActivity {
+            project_id: Some(project.into()),
+            worktree_id: worktree.map(str::to_owned),
+            activity,
+        };
+        let chats = [
+            chat("project-a", Some("root"), AgentActivity::Working),
+            chat("project-a", None, AgentActivity::Done),
+            chat("project-b", Some("foreign"), AgentActivity::Waiting),
+        ];
+        let project = ActivityCounts::default().with_chats_in_project("project-a", &chats);
+        assert_eq!((project.working, project.done, project.waiting), (1, 1, 0));
+        assert_eq!(project.summary().as_deref(), Some("● 1 working · ✓ 1 done"));
+        let worktree = ActivityCounts::default().with_chats_in_worktree("root", &chats);
+        assert_eq!((worktree.working, worktree.done), (1, 0));
+        // The chats add to what the project's shells already count.
+        let both = ActivityCounts {
+            working: 2,
+            ..ActivityCounts::default()
+        }
+        .with_chats_in_project("project-b", &chats);
+        assert_eq!((both.working, both.waiting), (2, 1));
+        assert_eq!(
+            ActivityCounts::default().with_chats_in_project("nobody", &chats),
+            ActivityCounts::default()
+        );
+    }
+
+    #[test]
+    fn a_chats_state_maps_to_the_agent_activity_terminals_report() {
+        let of = ChatActivity::of_state;
+        assert_eq!(of(&ChatState::Running, false), Some(AgentActivity::Working));
+        assert_eq!(of(&ChatState::Waiting, false), Some(AgentActivity::Waiting));
+        // Done is what an idle chat is after a turn; a fresh one has done nothing.
+        assert_eq!(of(&ChatState::Idle, true), Some(AgentActivity::Done));
+        assert_eq!(of(&ChatState::Idle, false), None);
+        assert_eq!(of(&ChatState::Starting, true), None);
+        assert_eq!(of(&ChatState::Stopped, true), None);
+        let failed = ChatState::Failed {
+            message: "gone".into(),
+        };
+        assert_eq!(of(&failed, true), None);
     }
 
     fn oversized_record_rollout(fixture: &Fixture, thread: &str) -> PathBuf {

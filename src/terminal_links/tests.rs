@@ -1379,3 +1379,26 @@ fn names_for_messages() {
     assert_eq!(short_name(Path::new("/a/b/c.rs")), "b/c.rs");
     assert_eq!(short_name(Path::new("/c.rs")), "c.rs");
 }
+
+#[test]
+fn only_web_and_mail_links_are_ever_opened() {
+    for url in [
+        "https://example.com/a?b=c",
+        "http://localhost:3000",
+        "HTTPS://EXAMPLE.COM",
+        "mailto:me@example.com",
+    ] {
+        assert!(is_openable_url(url), "{url}");
+    }
+    for url in [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "ssh://host",
+        "riwork://pair?v=2",
+        "/Users/me/file.txt",
+        "",
+        "httpx://example.com",
+    ] {
+        assert!(!is_openable_url(url), "{url}");
+    }
+}

@@ -95,6 +95,16 @@ riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
 riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
 riwork shell cwd|metrics|attach|close ID
 riwork shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux client of the shell (for remote terminals)
+riwork chat serve [--idle-seconds N]    Run the chat host in the foreground (exits after 15 idle minutes by default)
+riwork chat ensure                      Start the chat host if it is not running; print its socket
+riwork chat list [--project ID] [--json]   List Codex and Claude chats, running or not
+riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
+                [--model NAME] [--effort LEVEL] [--title TEXT]
+riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
+riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
+                                        Read a chat's events after N, waiting up to M ms for the first
+riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
+riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD]
 riwork orchestrator list [--project ID]   List global and project orchestrators
@@ -108,12 +118,32 @@ riwork schedule update SCHEDULE_UUID --revision N --scope SCOPE [--project UUID]
 riwork schedule pause|resume|delete SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID
 riwork schedule help                    Show schedule contract and examples
 
-Add --json to read commands for structured output. Project, worktree, and task
-IDs accept a unique UUID prefix of at least eight characters; shell IDs need
-their full UUID. Project, worktree, and task data lives in RIWORK_HOME
+Add --json to read commands for structured output. Project, worktree, task, and
+chat IDs accept a unique UUID prefix of at least eight characters; shell IDs
+need their full UUID. Project, worktree, and task data lives in RIWORK_HOME
 or ~/.local/share/riwork. Shell processes stay alive independently of the UI.
 Only no arguments or one existing project directory open the workspace; any
 other unknown command or option exits with an error.
+The chat host (`chat serve`) owns the Codex and Claude processes behind chats so
+they outlive app windows; `chat ensure` starts it detached, and it exits after
+15 minutes with no client and no chat at work. Chats are kept in RIWORK_HOME/chats.
+chat new defaults to the active project, like shell create, and starts the chat's
+provider at once; --mode is how much the agent may do without asking (supervised by
+default). A chat whose provider cannot start is kept as failed; chat send retries.
+chat new --json prints the chat as `chat list --json` shows it, also when its provider
+did not start (state failed); without --json that is an error. --model, --effort and
+--title (at most 100, 32 and 200 characters, no control characters) take their value
+as it is, also with `=`: --title=--draft.
+chat events --json prints one line, {\"chat_id\",\"events\":[{\"seq\",\"event\"}],\"next\",\"more\"}:
+the events with seq above --since (default 0), at most --max (500 by default, up to
+2000) and as many as fit --max-bytes (1 MiB by default, up to 2 MiB). With none yet it
+waits up to --wait-ms (up to 25000) for the first, then collects for 50 ms; it
+returns at once for events that are already there. Pass `next` as --since to continue;
+`more` says the page was cut short. An event too big for a page alone has its long
+strings cut. chat command takes one ChatCommand as JSON (send, interrupt, approve,
+answer, configure, compact, stop) and refuses unknown fields; errors that start with
+`invalid_request:` are about the command, anything else about the host or the chat.
+capabilities --json has \"chat\": true.
 worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
@@ -196,7 +226,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
     let mut args = args.to_vec();
     let literal_arguments = matches!(
         args.first().map(String::as_str),
-        Some("shell" | "orchestrator")
+        Some("shell" | "orchestrator" | "chat")
     ) && args.get(1).map(String::as_str) == Some("send")
         || args.first().map(String::as_str) == Some("cua")
             && args.get(1).map(String::as_str) == Some("harness")
@@ -231,6 +261,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "tasks"
             | "shell"
             | "orchestrator"
+            | "chat"
             | "schedule"
             | "search"
             | "usage"
@@ -321,6 +352,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         "task" | "tasks" => task_command(args, json)?,
         "shell" => shell_command(args, json)?,
         "orchestrator" => orchestrator_command(args, json)?,
+        "chat" => chat_command(args, json)?,
         "schedule" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
         "mcp" => {
@@ -749,12 +781,14 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "v": 1,
             "verifies_shell": true,
             "project_create_exclusive": true,
-            "shell_attach_exec": true
+            "shell_attach_exec": true,
+            "chat": true
         }));
     }
     println!("verifies_shell yes");
     println!("project_create_exclusive yes");
     println!("shell_attach_exec yes");
+    println!("chat yes");
     Ok(())
 }
 
@@ -1536,38 +1570,8 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 return Err("--unrestricted requires --harness".to_owned());
             }
             let state = Store::open_default()?.snapshot()?;
-            let (project_id, worktree_id, cwd) = if let Some(selector) = worktree {
-                // A named project scopes the selector, so a branch shared by
-                // many projects (`main`) is not ambiguous.
-                let worktree = match project.as_deref() {
-                    Some(project_selector) => {
-                        let selected = state.project(project_selector)?;
-                        let worktree = state.worktree_in_project(&selected.id, &selector)?;
-                        if selected.id != worktree.project_id {
-                            return Err("Worktree belongs to another project".to_owned());
-                        }
-                        worktree
-                    }
-                    None => state.worktree(&selector)?,
-                };
-                (
-                    worktree.project_id.clone(),
-                    Some(worktree.id.clone()),
-                    worktree.path.clone(),
-                )
-            } else {
-                let project_id = project_id(&state, project.as_deref())?;
-                let project = state.project(&project_id)?;
-                let primary = state
-                    .worktrees_for(&project_id)
-                    .into_iter()
-                    .find(|worktree| worktree.is_primary);
-                (
-                    project_id,
-                    primary.map(|worktree| worktree.id.clone()),
-                    project.root.clone(),
-                )
-            };
+            let (project_id, worktree_id, cwd) =
+                launch_scope(&state, project.as_deref(), worktree.as_deref())?;
             let shell = if let Some(harness) = harness {
                 manager.create_harness(project_id, worktree_id, cwd, harness, unrestricted)?
             } else {
@@ -1782,6 +1786,280 @@ fn exec_attach(manager: &SessionManager, id: &str, options: AttachOptions) -> Re
         let _ = (manager, id, options);
         Err("shell attach --exec needs a Unix system".to_owned())
     }
+}
+
+fn chat_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
+    let home = crate::paths::riwork_home()?;
+    if args.first().map(String::as_str) == Some("serve") {
+        args.remove(0);
+        let idle = match take_option(&mut args, "--idle-seconds")? {
+            Some(seconds) => seconds
+                .parse::<u64>()
+                .ok()
+                .filter(|seconds| *seconds > 0)
+                .map(std::time::Duration::from_secs)
+                .ok_or("--idle-seconds must be a whole number of seconds, at least 1")?,
+            None => crate::chat::host::DEFAULT_IDLE,
+        };
+        ensure_empty(&args)?;
+        return crate::chat::host::serve(&home, idle);
+    }
+    let ensure = |home: &Path| {
+        let executable =
+            env::current_exe().map_err(|error| format!("Cannot locate RiWork: {error}"))?;
+        crate::chat::host::ensure(home, &executable)
+    };
+    print!("{}", chat_client_command(&home, args, json, &ensure)?);
+    Ok(())
+}
+
+/// The chat commands that talk to the host, as the text they print. `ensure`
+/// starts the host and returns its socket.
+fn chat_client_command(
+    home: &Path,
+    mut args: Vec<String>,
+    json: bool,
+    ensure: &dyn Fn(&Path) -> Result<PathBuf, String>,
+) -> Result<String, String> {
+    use crate::chat::{
+        client::{Client, Subscription},
+        model::ChatCommand,
+    };
+    let operation = pop_command(&mut args, "list");
+    match operation.as_str() {
+        "ensure" => {
+            ensure_empty(&args)?;
+            let socket = ensure(home)?;
+            if json {
+                json_text(&json!({ "socket": socket }))
+            } else {
+                Ok(format!("{}\n", socket.display()))
+            }
+        }
+        "list" => {
+            let project = take_option(&mut args, "--project")?;
+            ensure_empty(&args)?;
+            // An unknown project is refused before a host is started for it.
+            let project_id = match project {
+                Some(selector) => Some(
+                    Store::open(home)?
+                        .snapshot()?
+                        .project(&selector)?
+                        .id
+                        .clone(),
+                ),
+                None => None,
+            };
+            let mut chats = Client::connect(&ensure(home)?)?.list()?;
+            if let Some(project_id) = project_id {
+                chats.retain(|chat| chat.project_id.as_deref() == Some(project_id.as_str()));
+            }
+            if json {
+                json_text(&chats)
+            } else {
+                Ok(chats.iter().map(chat_line).collect())
+            }
+        }
+        "new" => {
+            // Free text first: a title may look like an option.
+            let model = take_verbatim_option(&mut args, "--model")?
+                .map(|model| model_setting("--model", model))
+                .transpose()?;
+            let effort = take_verbatim_option(&mut args, "--effort")?
+                .map(|effort| effort_setting("--effort", effort))
+                .transpose()?;
+            let title = match take_verbatim_option(&mut args, "--title")? {
+                Some(title) => title_setting("--title", title)?,
+                None => None,
+            };
+            let provider = match take_option(&mut args, "--provider")?.as_deref() {
+                Some("codex") => crate::chat::model::Provider::Codex,
+                Some("claude") => crate::chat::model::Provider::Claude,
+                _ => return Err(CHAT_NEW_USAGE.to_owned()),
+            };
+            let project = take_option(&mut args, "--project")?;
+            let worktree = take_option(&mut args, "--worktree")?;
+            let approval_mode = match take_option(&mut args, "--mode")?.as_deref() {
+                None | Some("supervised") => crate::chat::model::ApprovalMode::Supervised,
+                Some("auto-edit") => crate::chat::model::ApprovalMode::AutoEdit,
+                Some("full") => crate::chat::model::ApprovalMode::Full,
+                Some("plan") => crate::chat::model::ApprovalMode::Plan,
+                Some(_) => return Err("--mode must be supervised, auto-edit, full, or plan".into()),
+            };
+            ensure_empty(&args)?;
+            let state = Store::open(home)?.snapshot()?;
+            let (project_id, worktree_id, cwd) =
+                launch_scope(&state, project.as_deref(), worktree.as_deref())?;
+            let chat = Client::connect(&ensure(home)?)?.create(crate::chat::model::NewChat {
+                provider,
+                project_id: Some(project_id),
+                worktree_id,
+                cwd,
+                title,
+                approval_mode,
+                model,
+                effort,
+            })?;
+            if json {
+                // A chat whose provider did not start still exists, and the
+                // caller needs its id (the next message tries again): its
+                // state says what happened.
+                json_text(&chat)
+            } else if let crate::chat::model::ChatState::Failed { message } = &chat.state {
+                Err(format!(
+                    "Chat {} was created, but its provider did not start: {message}",
+                    chat.id
+                ))
+            } else {
+                Ok(chat_line(&chat))
+            }
+        }
+        "events" => {
+            let started = std::time::Instant::now();
+            let options = parse_events_arguments(args)?;
+            let socket = ensure(home)?;
+            let id = resolve_chat(&mut Client::connect(&socket)?, &options.chat)?;
+            let mut subscription =
+                Subscription::open(&socket, &id, options.since).map_err(|error| {
+                    if error.contains("cannot continue after") {
+                        chat_remote::invalid(error)
+                    } else {
+                        error
+                    }
+                })?;
+            // The wait counts from the start of this process, so a host that
+            // took long to start does not stretch it.
+            let page = chat_remote::collect(
+                &mut subscription,
+                &chat_remote::Plan {
+                    chat_id: id,
+                    since: options.since,
+                    first_by: (started + options.wait)
+                        .max(std::time::Instant::now() + chat_remote::REPLAY_GRACE),
+                    max: options.max,
+                    max_bytes: options.max_bytes,
+                },
+            )?;
+            if json {
+                page.line()
+            } else {
+                page.event_lines()
+            }
+        }
+        "command" => {
+            let from_option = take_verbatim_option(&mut args, "--command-json")?;
+            // `-- JSON`: everything after the separator is the command.
+            let after_separator = args.iter().position(|arg| arg == "--").map(|at| {
+                let mut tail = args.split_off(at);
+                tail.remove(0);
+                tail
+            });
+            let text = match (from_option, after_separator) {
+                (Some(text), None) => text,
+                (None, Some(mut tail)) if tail.len() == 1 => tail.remove(0),
+                _ => return Err(chat_remote::COMMAND_USAGE.to_owned()),
+            };
+            let selector =
+                take_single(args, "chat command CHAT_ID (--command-json JSON | -- JSON)")?;
+            // Refused before a host is started for it.
+            let command = chat_remote::parse_command(&text)?;
+            let mut client = Client::connect(&ensure(home)?)?;
+            let id = resolve_chat(&mut client, &selector)?;
+            client.command(&id, command)?;
+            if json {
+                json_text(&json!({ "id": id, "status": "ok" }))
+            } else {
+                Ok(String::new())
+            }
+        }
+        "send" => {
+            if args.len() < 2 {
+                return Err("Usage: riwork chat send CHAT_ID TEXT".to_owned());
+            }
+            let selector = args.remove(0);
+            let text = args.join(" ");
+            let mut client = Client::connect(&ensure(home)?)?;
+            let id = resolve_chat(&mut client, &selector)?;
+            client.command(&id, ChatCommand::Send { text: text.clone() })?;
+            if json {
+                json_text(&json!({ "id": id, "sent": text }))
+            } else {
+                Ok(String::new())
+            }
+        }
+        "stop" => {
+            let selector = take_single(args, "chat stop CHAT_ID")?;
+            // Stopping needs a host that already runs: there is nothing to stop
+            // in one that is not.
+            let socket = crate::chat::client::socket_path(home);
+            let mut client = Client::connect(&socket)
+                .map_err(|_| "No chat host is running, so no chat is running".to_owned())?;
+            let id = resolve_chat(&mut client, &selector)?;
+            client.close(&id)?;
+            if json {
+                json_text(&json!({ "id": id, "state": "stopped" }))
+            } else {
+                Ok(format!("Stopped {id}\n"))
+            }
+        }
+        _ => Err(
+            "Usage: riwork chat serve|ensure|list|new|events|command|send|stop (riwork help)"
+                .to_owned(),
+        ),
+    }
+}
+
+const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--title TEXT]";
+
+/// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
+fn resolve_chat(
+    client: &mut crate::chat::client::Client,
+    selector: &str,
+) -> Result<String, String> {
+    let chats = client.list()?;
+    if let Some(chat) = chats.iter().find(|chat| chat.id == selector) {
+        return Ok(chat.id.clone());
+    }
+    if selector.len() < 8 {
+        return Err(format!(
+            "'{selector}' is not a chat; chat IDs need at least eight characters when shortened"
+        ));
+    }
+    let mut matching = chats.iter().filter(|chat| chat.id.starts_with(selector));
+    match (matching.next(), matching.next()) {
+        (Some(chat), None) => Ok(chat.id.clone()),
+        (None, _) => Err(format!("Unknown chat {selector}")),
+        _ => Err(format!("Chat ID prefix {selector} is ambiguous")),
+    }
+}
+
+fn chat_line(chat: &crate::chat::model::ChatInfo) -> String {
+    use crate::chat::model::{ChatState, Provider};
+    let state = match &chat.state {
+        ChatState::Starting => "starting".to_owned(),
+        ChatState::Idle => "idle".to_owned(),
+        ChatState::Running => "running".to_owned(),
+        ChatState::Waiting => "waiting".to_owned(),
+        ChatState::Stopped => "stopped".to_owned(),
+        ChatState::Failed { message } => format!("failed ({})", terminal_safe(message)),
+    };
+    format!(
+        "{}  {}  {}  {}  {}\n",
+        chat.id,
+        match chat.provider {
+            Provider::Codex => "codex",
+            Provider::Claude => "claude",
+        },
+        state,
+        terminal_safe(&chat.title),
+        chat.cwd.display()
+    )
+}
+
+fn json_text(value: &impl Serialize) -> Result<String, String> {
+    serde_json::to_string_pretty(value)
+        .map(|text| text + "\n")
+        .map_err(|error| error.to_string())
 }
 
 fn orchestrator_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
@@ -2218,6 +2496,46 @@ fn print_shell_result(shell: &ShellSession, json: bool) -> Result<(), String> {
     }
 }
 
+/// Where a new shell or chat starts: the project, the worktree and the
+/// directory that `--project` and `--worktree` name. A named project scopes the
+/// worktree selector, so a branch shared by many projects (`main`) is not
+/// ambiguous; with neither, the active project's primary worktree.
+fn launch_scope(
+    state: &State,
+    project: Option<&str>,
+    worktree: Option<&str>,
+) -> Result<(String, Option<String>, PathBuf), String> {
+    if let Some(selector) = worktree {
+        let worktree = match project {
+            Some(project_selector) => {
+                let selected = state.project(project_selector)?;
+                let worktree = state.worktree_in_project(&selected.id, selector)?;
+                if selected.id != worktree.project_id {
+                    return Err("Worktree belongs to another project".to_owned());
+                }
+                worktree
+            }
+            None => state.worktree(selector)?,
+        };
+        return Ok((
+            worktree.project_id.clone(),
+            Some(worktree.id.clone()),
+            worktree.path.clone(),
+        ));
+    }
+    let project_id = project_id(state, project)?;
+    let project = state.project(&project_id)?;
+    let primary = state
+        .worktrees_for(&project_id)
+        .into_iter()
+        .find(|worktree| worktree.is_primary);
+    Ok((
+        project_id,
+        primary.map(|worktree| worktree.id.clone()),
+        project.root.clone(),
+    ))
+}
+
 fn project_id(state: &State, selector: Option<&str>) -> Result<String, String> {
     match selector {
         Some(selector) => Ok(state.project(selector)?.id.clone()),
@@ -2483,6 +2801,16 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
         Err(format!("Unexpected arguments: {}", args.join(" ")))
     }
 }
+
+mod chat_remote;
+use chat_remote::{
+    effort_setting, model_setting, parse_events_arguments, take_verbatim_option, title_setting,
+};
+
+#[cfg(test)]
+mod chat_remote_tests;
+#[cfg(test)]
+mod chat_tests;
 
 #[cfg(test)]
 mod tests {

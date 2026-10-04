@@ -6,7 +6,8 @@
 //! shell and its geometry, and they must reach it in the order they were sent.
 //!
 //! - `Ordered`: `shell.keys`, `shell.input`, `shell.resize`,
-//!   `shell.resize.clear`, `shell.create`, `shell.close` and `project.create`.
+//!   `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`,
+//!   `chat.create`, `chat.command` and `chat.stop`.
 //!   One at a time, in arrival order. This is what keeps the batch ledger, the
 //!   viewport and the order of typed text intact. Creating and closing a
 //!   terminal, and creating a project, change what exists, and a request that
@@ -14,12 +15,15 @@
 //!   still listed, or a project folder made but not registered) is worse than a
 //!   slow one, so a session ending does not cut them short either; typing waits
 //!   behind them. (A creation also keeps its CLI alive when the connection
-//!   itself is torn down: see `Rpc::create` and `Rpc::create_project`.)
-//! - `LongPoll`: a `shell.output` that waits for a change. At most two.
-//! - `Read`: everything else, including a `shell.output` that does not wait and
-//!   `shell.history`, a page of scrollback that never waits. It changes
-//!   nothing, so it needs no order, and it takes one of the three shared
-//!   slots, never the `Ordered` one.
+//!   itself is torn down: see `Rpc::create`, `Rpc::create_project` and
+//!   `Rpc::chat_create`.) A message, an approval or a stop for a chat is typing
+//!   of a kind: it is carried out in the order it was sent.
+//! - `LongPoll`: a `shell.output` that waits for a change, and a `chat.events`
+//!   that waits for an event (any `wait_ms` above 0). At most two.
+//! - `Read`: everything else, including a `shell.output` that does not wait,
+//!   `shell.history`, a page of scrollback that never waits, `chats.list` and a
+//!   `chat.events` with `wait_ms` 0. It changes nothing, so it needs no order,
+//!   and it takes one of the three shared slots, never the `Ordered` one.
 //!
 //! At most four of those run at once: the one `Ordered` slot and three shared
 //! by `LongPoll` and `Read`. So a wait, or three, can never keep a typing
@@ -84,7 +88,7 @@ pub fn classify(request: &Value) -> Lane {
     match request.get("method").and_then(Value::as_str) {
         Some(
             "shell.keys" | "shell.input" | "shell.resize" | "shell.resize.clear" | "shell.create"
-            | "shell.close" | "project.create",
+            | "shell.close" | "project.create" | "chat.create" | "chat.command" | "chat.stop",
         ) => Lane::Ordered,
         Some("pty.open") => Lane::Attach,
         Some("pty.read") => Lane::Stream,
@@ -96,6 +100,16 @@ pub fn classify(request: &Value) -> Lane {
                     .and_then(|p| p.get("wait_ms"))
                     .and_then(Value::as_i64)
                     .is_some_and(|ms| ms > 0) =>
+        {
+            Lane::LongPoll
+        }
+        // A chat's events wait for the first one after `since`: like a waiting
+        // `shell.output`, but with no hash to compare, so `wait_ms` alone says it.
+        Some("chat.events")
+            if params
+                .and_then(|p| p.get("wait_ms"))
+                .and_then(Value::as_i64)
+                .is_some_and(|ms| ms > 0) =>
         {
             Lane::LongPoll
         }
@@ -270,6 +284,87 @@ mod tests {
     }
 
     #[test]
+    fn chat_changes_are_ordered_and_never_cut_short_and_chat_reads_are_shared() {
+        // Whatever the params look like, even none: validation answers it.
+        for method in ["chat.create", "chat.command", "chat.stop"] {
+            for params in [
+                json!({"chat_id":"c"}),
+                json!({"chat_id":"c","wait_ms":5000}),
+                json!(null),
+            ] {
+                let lane = classify(&request(method, params));
+                assert_eq!(lane, Lane::Ordered, "{method}");
+                assert!(!lane.cancellable(), "{method}");
+            }
+        }
+        // The list is a plain read.
+        for params in [json!({}), json!({"project_id":"p"}), json!(null)] {
+            assert_eq!(classify(&request("chats.list", params)), Lane::Read);
+        }
+        // Events wait only when asked to: any `wait_ms` above 0, no hash needed.
+        let events = |params| classify(&request("chat.events", params));
+        assert_eq!(
+            events(json!({"chat_id":"c","since":0,"wait_ms":1})),
+            Lane::LongPoll
+        );
+        assert_eq!(
+            events(json!({"chat_id":"c","since":9,"wait_ms":25000,"max_events":10})),
+            Lane::LongPoll
+        );
+        assert_eq!(
+            events(json!({"chat_id":"c","since":0,"wait_ms":0})),
+            Lane::Read
+        );
+        // Nonsense is a read: it fails validation at once.
+        for params in [
+            json!({"chat_id":"c","since":0}),
+            json!({"chat_id":"c","since":0,"wait_ms":-1}),
+            json!({"chat_id":"c","since":0,"wait_ms":"5000"}),
+            json!({"chat_id":"c","since":0,"wait_ms":5000.5}),
+            json!({"chat_id":"c","since":0,"wait_ms":null}),
+            json!(null),
+        ] {
+            assert_eq!(events(params.clone()), Lane::Read, "{params}");
+        }
+        assert!(Lane::LongPoll.cancellable());
+        // Only the exact names: look-alikes are plain reads.
+        for method in [
+            "chat",
+            "chats",
+            "chat.creates",
+            "Chat.stop",
+            "chat.stop.",
+            "chats.create",
+        ] {
+            assert_eq!(
+                classify(&request(method, json!({}))),
+                Lane::Read,
+                "{method}"
+            );
+        }
+        // A wait for events takes a poll slot, so two of them leave a slot for reads, and
+        // typing and a message for a chat queue behind each other in arrival order.
+        let mut lanes = Lanes::default();
+        for n in 0..3 {
+            lanes.push(Lane::LongPoll, n);
+        }
+        lanes.push(Lane::Ordered, 10);
+        lanes.push(Lane::Ordered, 11);
+        lanes.push(Lane::Read, 12);
+        assert_eq!(
+            start_all(&mut lanes),
+            vec![
+                (Lane::LongPoll, 0),
+                (Lane::LongPoll, 1),
+                (Lane::Ordered, 10),
+                (Lane::Read, 12)
+            ]
+        );
+        lanes.finished(Lane::Ordered);
+        assert_eq!(start_all(&mut lanes), vec![(Lane::Ordered, 11)]);
+    }
+
+    #[test]
     fn requests_are_classified_by_what_they_change_and_how_long_they_last() {
         let ordered = [
             "shell.keys",
@@ -279,6 +374,9 @@ mod tests {
             "shell.create",
             "shell.close",
             "project.create",
+            "chat.create",
+            "chat.command",
+            "chat.stop",
         ];
         for method in ordered {
             assert_eq!(
@@ -291,6 +389,7 @@ mod tests {
             "projects.list",
             "shells.list",
             "appearance.get",
+            "chats.list",
             "nope",
             "execute",
         ] {
