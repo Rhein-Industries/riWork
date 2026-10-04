@@ -746,6 +746,43 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     data.shell_cwds,
                     data.activity,
                 );
+                if ui_text::is_native() {
+                    let lines = native_worktree_lines(
+                        NativeWorktree {
+                            primary: worktree.is_primary,
+                            branch: &worktree.branch,
+                            repository: worktree
+                                .repository_root
+                                .as_ref()
+                                .and_then(|root| root.file_name())
+                                .map(|name| name.to_string_lossy().into_owned()),
+                            missing,
+                            path: path.into_owned(),
+                            counts: format!(
+                                "{}{done}/{} tasks",
+                                activity
+                                    .summary()
+                                    .map(|summary| format!("Agents {summary} · "))
+                                    .unwrap_or_default(),
+                                tasks.len(),
+                            ),
+                            id: short_id(&worktree.id),
+                            selected,
+                            working: activity.working > 0,
+                        },
+                        colors,
+                    );
+                    rows.push(row(
+                        format!("worktree-{}", worktree.id),
+                        selected,
+                        colors.magenta,
+                        lines,
+                        PanelAction::Worktree(worktree.id.clone()),
+                        on_action.clone(),
+                        cx,
+                    ));
+                    continue;
+                }
                 rows.push(row(
                     format!("worktree-{}", worktree.id),
                     selected,
@@ -860,6 +897,32 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 let agent = data.activity.get(&shell.id);
                 let status = ui_text::quiet(shell_status_label(shell.alive, agent)).to_string();
                 let working = agent.is_some_and(|state| state.activity == AgentActivity::Working);
+                if ui_text::is_native() {
+                    let lines = native_shell_lines(
+                        NativeShell {
+                            title: label.to_owned(),
+                            status: native_shell_status(shell.alive, agent),
+                            path: path.into_owned(),
+                            detail: format!(
+                                "CPU {:.1}% · RAM {} · {command}",
+                                metrics.cpu_percent,
+                                format_bytes(metrics.ram_bytes)
+                            ),
+                            id: short_id(&shell.id),
+                        },
+                        colors,
+                    );
+                    rows.push(row(
+                        format!("shell-{}", shell.id),
+                        false,
+                        colors.cyan,
+                        lines,
+                        PanelAction::Shell(shell.id.clone()),
+                        on_action.clone(),
+                        cx,
+                    ));
+                    continue;
+                }
                 rows.push(row(
                     format!("shell-{}", shell.id),
                     false,
@@ -2139,32 +2202,46 @@ fn push_remote_panel<V: 'static>(
                     .filter(|task| task.status == TaskStatus::Done)
                     .count();
                 let selected = data.selected_worktree_id == Some(worktree.id.as_str());
+                let lines = if ui_text::is_native() {
+                    native_worktree_lines(
+                        NativeWorktree {
+                            primary: worktree.primary,
+                            branch: &worktree.branch,
+                            repository: None,
+                            missing: false,
+                            path: worktree.path.clone(),
+                            counts: format!("{done}/{} tasks", tasks.len()),
+                            id: short_id(&worktree.id),
+                            selected,
+                            working: false,
+                        },
+                        colors,
+                    )
+                } else {
+                    vec![
+                        title_line(
+                            format!(
+                                "{} {}",
+                                if worktree.primary { "◆" } else { "◇" },
+                                worktree.branch
+                            ),
+                            if selected { colors.cyan } else { colors.text },
+                            11.0,
+                        ),
+                        mono_line(worktree.path.clone(), colors.muted, 10.0),
+                        quiet_line(
+                            format!("{done}/{} TASKS · {}", tasks.len(), short_id(&worktree.id)),
+                            colors.muted,
+                            10.0,
+                        ),
+                    ]
+                };
                 rows.push(dimmed_if(
                     row(
                         format!("remote-worktree-{}", worktree.id),
                         selected,
                         colors.magenta,
-                        vec![
-                            title_line(
-                                format!(
-                                    "{} {}",
-                                    if worktree.primary { "◆" } else { "◇" },
-                                    worktree.branch
-                                ),
-                                if selected { colors.cyan } else { colors.text },
-                                11.0,
-                            ),
-                            mono_line(worktree.path.clone(), colors.muted, 10.0),
-                            quiet_line(
-                                format!(
-                                    "{done}/{} TASKS · {}",
-                                    tasks.len(),
-                                    short_id(&worktree.id)
-                                ),
-                                colors.muted,
-                                10.0,
-                            ),
-                        ],
+                        lines,
                         PanelAction::Worktree(worktree.id.clone()),
                         on_action.clone(),
                         cx,
@@ -2249,49 +2326,63 @@ fn push_remote_panel<V: 'static>(
                 ]) {
                     continue;
                 }
+                let lines = if ui_text::is_native() {
+                    native_shell_lines(
+                        NativeShell {
+                            title: label.clone(),
+                            status: native_shell_status(shell.alive, None),
+                            path: shell.cwd.clone(),
+                            detail: command.to_owned(),
+                            id: short_id(&shell.id),
+                        },
+                        colors,
+                    )
+                } else {
+                    vec![
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(ui_text::space(6.0))
+                            .child(line(
+                                format!("{} · {label}", short_id(&shell.id)),
+                                colors.text,
+                                11.0,
+                            ))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(rgb(if shell.alive {
+                                        colors.cyan
+                                    } else {
+                                        colors.magenta
+                                    }))
+                                    .child(ui_text::quiet(if shell.alive {
+                                        "● LIVE"
+                                    } else {
+                                        "× EXITED"
+                                    })),
+                            )
+                            .into_any_element(),
+                        mono_line(shell.cwd.clone(), colors.muted, 10.0),
+                        mono_line(
+                            command.to_owned(),
+                            if shell.alive {
+                                colors.cyan
+                            } else {
+                                colors.muted
+                            },
+                            10.0,
+                        ),
+                        mono_line(shell.id.clone(), colors.muted, 10.0),
+                    ]
+                };
                 rows.push(dimmed_if(
                     row(
                         format!("remote-shell-{}", shell.id),
                         false,
                         colors.cyan,
-                        vec![
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .gap(ui_text::space(6.0))
-                                .child(line(
-                                    format!("{} · {label}", short_id(&shell.id)),
-                                    colors.text,
-                                    11.0,
-                                ))
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .text_color(rgb(if shell.alive {
-                                            colors.cyan
-                                        } else {
-                                            colors.magenta
-                                        }))
-                                        .child(ui_text::quiet(if shell.alive {
-                                            "● LIVE"
-                                        } else {
-                                            "× EXITED"
-                                        })),
-                                )
-                                .into_any_element(),
-                            mono_line(shell.cwd.clone(), colors.muted, 10.0),
-                            mono_line(
-                                command.to_owned(),
-                                if shell.alive {
-                                    colors.cyan
-                                } else {
-                                    colors.muted
-                                },
-                                10.0,
-                            ),
-                            mono_line(shell.id.clone(), colors.muted, 10.0),
-                        ],
+                        lines,
                         PanelAction::Remote(RemoteAction::OpenShell {
                             host: remote.host.clone(),
                             shell: shell.clone(),
@@ -2761,6 +2852,235 @@ fn line_box(text: String, color: u32, size: f32) -> Div {
         .text_size(ui_text::text(size))
         .text_color(rgb(color))
         .child(text)
+}
+
+/// What Native's worktree row shows.
+struct NativeWorktree<'a> {
+    primary: bool,
+    branch: &'a str,
+    repository: Option<String>,
+    missing: bool,
+    path: String,
+    /// The agents and tasks: "Agents 1 working · 2/3 tasks".
+    counts: String,
+    id: &'a str,
+    selected: bool,
+    working: bool,
+}
+
+/// The width a Native row's detail lines are indented by, so they line up with the
+/// title's words after its symbol.
+const NATIVE_ROW_SYMBOL: f32 = 10.0;
+const NATIVE_ROW_SYMBOL_GAP: f32 = 5.0;
+
+fn native_detail_indent() -> Pixels {
+    ui_text::space((NATIVE_ROW_SYMBOL * 1.3).max(14.0) + NATIVE_ROW_SYMBOL_GAP)
+}
+
+/// Native's worktree row, set like the other navigation lists: a branch symbol (a folder
+/// for the repository's own checkout) and the branch in the interface face, then the path
+/// and the counts, with the path and the short id in the monospace accent.
+fn native_worktree_lines(worktree: NativeWorktree<'_>, colors: Palette) -> Vec<AnyElement> {
+    let symbol = if worktree.primary {
+        "folder.fill"
+    } else {
+        "arrow.triangle.branch"
+    };
+    let title = div()
+        .flex()
+        .items_center()
+        .gap(ui_text::space(NATIVE_ROW_SYMBOL_GAP))
+        .min_w_0()
+        .child(icons::symbol(
+            symbol,
+            NATIVE_ROW_SYMBOL,
+            Some(if worktree.selected {
+                colors.cyan
+            } else {
+                colors.muted
+            }),
+        ))
+        .child(
+            div().flex_1().min_w_0().child(
+                line_box(
+                    worktree.branch.to_owned(),
+                    colors.text,
+                    controls::ROW_TITLE_TEXT,
+                )
+                .when(worktree.selected, |title| {
+                    title.font_weight(FontWeight::MEDIUM)
+                })
+                .children(worktree.repository.map(|repository| {
+                    div()
+                        .text_color(rgb(colors.muted))
+                        .child(format!(" · {repository}"))
+                }))
+                .flex(),
+            ),
+        )
+        .children(worktree.missing.then(|| {
+            div()
+                .flex_none()
+                .text_size(ui_text::text(controls::ROW_DETAIL_TEXT))
+                .text_color(rgb(colors.gold))
+                .child("Missing")
+        }));
+    let counts = div()
+        .flex()
+        .items_center()
+        .gap(ui_text::space(3.0))
+        .min_w_0()
+        .child(
+            line_box(
+                format!("{} ·", worktree.counts),
+                if worktree.working {
+                    colors.working
+                } else {
+                    colors.muted
+                },
+                controls::ROW_DETAIL_TEXT,
+            )
+            .flex_shrink(1.0),
+        )
+        .child(
+            line_box(
+                worktree.id.to_owned(),
+                colors.muted,
+                controls::ROW_DETAIL_TEXT,
+            )
+            .flex_none()
+            .font_family(ui_text::mono_family()),
+        );
+    vec![
+        title.into_any_element(),
+        native_details(vec![
+            mono_line(worktree.path, colors.muted, controls::ROW_DETAIL_TEXT),
+            counts.into_any_element(),
+        ]),
+    ]
+}
+
+/// A Native row's detail lines, lined up with the title's words after its symbol.
+fn native_details(lines: Vec<AnyElement>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(ui_text::space(2.0))
+        .min_w_0()
+        .pl(native_detail_indent())
+        .children(lines)
+        .into_any_element()
+}
+
+/// What Native's shell row shows.
+struct NativeShell<'a> {
+    /// The worktree's branch the shell is in.
+    title: String,
+    status: NativeShellStatus,
+    path: String,
+    /// "CPU 0.0% · RAM 6M · zsh", or the command alone.
+    detail: String,
+    id: &'a str,
+}
+
+/// A shell's state as Native words it: a small symbol and a muted word, orange only while
+/// an agent is working.
+struct NativeShellStatus {
+    symbol: &'static str,
+    points: f32,
+    text: String,
+    working: bool,
+}
+
+fn native_shell_status(alive: bool, state: Option<&AgentState>) -> NativeShellStatus {
+    let status = |symbol, points, text: &str, working| NativeShellStatus {
+        symbol,
+        points,
+        text: text.to_owned(),
+        working,
+    };
+    if !alive {
+        return status("xmark", 7.0, "Exited", false);
+    }
+    let Some(state) = state else {
+        return status("circle.fill", 6.0, "Live", false);
+    };
+    let mut status = match state.activity {
+        AgentActivity::Working => status("circle.fill", 6.0, "Working", true),
+        AgentActivity::Done => status("checkmark", 7.0, "Done", false),
+        AgentActivity::Waiting => status("circle", 6.0, "Waiting", false),
+        AgentActivity::Unknown | AgentActivity::Exited => {
+            return status("circle.fill", 6.0, "Live", false);
+        }
+    };
+    if let Some(subagents) = state.subagents.label() {
+        status.text = format!("{} · {subagents}", status.text);
+    }
+    status
+}
+
+/// Native's shell row: the shell's branch, its state on the right, then its folder and
+/// its load, with the folder and the short id in the monospace accent.
+fn native_shell_lines(shell: NativeShell<'_>, colors: Palette) -> Vec<AnyElement> {
+    let status_color = if shell.status.working {
+        colors.working
+    } else {
+        colors.muted
+    };
+    let title = div()
+        .flex()
+        .items_center()
+        .gap(ui_text::space(NATIVE_ROW_SYMBOL_GAP))
+        .min_w_0()
+        .child(icons::symbol(
+            "terminal",
+            NATIVE_ROW_SYMBOL,
+            Some(colors.muted),
+        ))
+        .child(div().flex_1().min_w_0().child(line(
+            shell.title,
+            colors.text,
+            controls::ROW_TITLE_TEXT,
+        )))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .text_size(ui_text::text(controls::ROW_DETAIL_TEXT))
+                .text_color(rgb(status_color))
+                .child(icons::symbol(
+                    shell.status.symbol,
+                    shell.status.points,
+                    Some(status_color),
+                ))
+                .child(shell.status.text),
+        );
+    let detail = div()
+        .flex()
+        .items_center()
+        .gap(ui_text::space(3.0))
+        .min_w_0()
+        .child(
+            line_box(
+                format!("{} ·", shell.detail),
+                colors.muted,
+                controls::ROW_DETAIL_TEXT,
+            )
+            .flex_shrink(1.0),
+        )
+        .child(
+            line_box(shell.id.to_owned(), colors.muted, controls::ROW_DETAIL_TEXT)
+                .flex_none()
+                .font_family(ui_text::mono_family()),
+        );
+    vec![
+        title.into_any_element(),
+        native_details(vec![
+            mono_line(shell.path, colors.muted, controls::ROW_DETAIL_TEXT),
+            detail.into_any_element(),
+        ]),
+    ]
 }
 
 fn worktree_label<'a>(state: &'a State, id: Option<&str>) -> &'a str {
