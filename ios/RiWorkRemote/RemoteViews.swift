@@ -448,8 +448,7 @@ private struct TabCell: ViewModifier {
     func body(content: Content) -> some View {
         if style.native {
             content
-                .background(selected ? (style.glass ? style.active : style.background) : (style.glass ? style.surface : style.panel),
-                            in: RoundedRectangle(cornerRadius: style.glass ? 10 : 0, style: .continuous))
+                .background(selected ? (style.glass ? style.active : style.background) : (style.glass ? style.surface : style.panel))
                 .overlay(alignment: .bottom) { if waiting { Capsule().fill(style.gold).frame(height: 2).padding(.horizontal, 8) } }
                 .padding(.horizontal, style.glass ? 2 : 0)
                 .overlay(alignment: .trailing) { if !style.glass { Rectangle().fill(style.divider).frame(width: 1) } }
