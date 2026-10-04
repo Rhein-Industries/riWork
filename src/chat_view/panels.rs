@@ -441,6 +441,18 @@ impl ChatView {
             }
             Menu::More => vec![
                 row(
+                    "hand-off-chat".into(),
+                    "Hand off…".into(),
+                    Some("Continues this conversation in a new shell or chat"),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.menu = None;
+                    view.hand_off(cx);
+                    cx.notify();
+                }))
+                .into_any_element(),
+                row(
                     "stop-chat".into(),
                     "Stop chat".into(),
                     Some("Ends the agent's process; the next message resumes it"),

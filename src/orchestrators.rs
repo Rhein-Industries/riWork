@@ -253,6 +253,7 @@ fn create_chat(
         approval_mode: approval_mode(scope),
         model: None,
         effort: None,
+        codex_account_id: None,
         orchestrator: Some(scope.clone()),
     });
     let info = match created {

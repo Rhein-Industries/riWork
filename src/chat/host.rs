@@ -85,14 +85,17 @@ const START_WAIT: Duration = Duration::from_secs(10);
 pub struct Providers {
     pub codex: StartDriver,
     pub claude: StartDriver,
-    /// The Codex account a new chat of this provider and project runs under.
+    /// The Codex account a new chat of this provider and project runs under,
+    /// or the one the chat asked for by name.
     pub account: AccountFor,
     /// How to start the provider process of a chat, resuming a thread if given.
     pub config: ConfigureDriver,
 }
 
-/// `(RIWORK_HOME, provider, project id)` to a Codex account id, if any.
-pub type AccountFor = fn(&Path, Provider, Option<&str>) -> Result<Option<String>, String>;
+/// `(RIWORK_HOME, provider, project id, the account asked for)` to a Codex
+/// account id, if any.
+pub type AccountFor =
+    fn(&Path, Provider, Option<&str>, Option<&str>) -> Result<Option<String>, String>;
 /// `(RIWORK_HOME, chat, thread to resume)` to the driver's configuration.
 pub type ConfigureDriver = fn(&Path, &ChatInfo, Option<String>) -> Result<DriverConfig, String>;
 
@@ -1143,8 +1146,12 @@ fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
         }
         None => None,
     };
-    let account =
-        (shared.providers.account)(&shared.home, new.provider, new.project_id.as_deref())?;
+    let account = (shared.providers.account)(
+        &shared.home,
+        new.provider,
+        new.project_id.as_deref(),
+        new.codex_account_id.as_deref(),
+    )?;
     let id = Uuid::new_v4().to_string();
     let title = new
         .title
@@ -1705,8 +1712,9 @@ fn spawn_host(exe: &Path, home: &Path, paths: &Paths) -> Result<std::process::Ch
         .args(["chat", "serve"])
         .env("RIWORK_HOME", home)
         // The host is nobody's terminal: it must not carry this one's pane or
-        // account into the chats it starts.
+        // account into the chats it starts, nor the chat that started it.
         .env_remove("RIWORK_SHELL_ID")
+        .env_remove("RIWORK_CHAT_ID")
         .stdin(Stdio::null())
         .stdout(Stdio::from(
             log.try_clone().map_err(|error| error.to_string())?,

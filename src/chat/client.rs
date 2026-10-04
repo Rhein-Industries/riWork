@@ -351,6 +351,7 @@ mod tests {
                 project_id: None,
                 worktree_id: None,
                 cwd: dir.clone(),
+                codex_account_id: None,
                 title: None,
                 approval_mode: ApprovalMode::Supervised,
                 model: None,

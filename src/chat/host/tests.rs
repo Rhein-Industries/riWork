@@ -162,6 +162,29 @@ fn an_orchestrator_chat_has_the_project_of_its_scope_and_no_worktree() {
 }
 
 #[test]
+fn a_chat_can_ask_for_its_codex_account_and_keeps_it() {
+    let host = TestHost::new();
+    let mut new = host.new_chat(Provider::Codex);
+    new.codex_account_id = Some("account-b".into());
+    let created = host.client().create(new).unwrap();
+    assert_eq!(created.codex_account_id.as_deref(), Some("account-b"));
+    // It is the chat's own from then on: on disk and in what the host lists.
+    let saved: ChatInfo = serde_json::from_str(
+        &fs::read_to_string(host.home.join("chats").join(&created.id).join("info.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved.codex_account_id.as_deref(), Some("account-b"));
+    // A chat that does not ask gets the project's.
+    let plain = host.create(Provider::Codex);
+    assert_eq!(plain.codex_account_id.as_deref(), Some("account-a"));
+    // The request travels as a field that older hosts and clients leave out.
+    let line = serde_json::to_string(&host.new_chat(Provider::Codex)).unwrap();
+    assert!(!line.contains("codex_account_id"), "{line}");
+    let old: NewChat = serde_json::from_str(&line).unwrap();
+    assert_eq!(old.codex_account_id, None);
+}
+
+#[test]
 fn a_chat_needs_a_real_working_directory_and_a_claude_chat_has_no_codex_account() {
     let host = TestHost::new();
     let mut new = host.new_chat(Provider::Claude);
@@ -1069,6 +1092,7 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
             project_id: None,
             worktree_id: None,
             cwd: home.join("work"),
+            codex_account_id: None,
             title: None,
             approval_mode: ApprovalMode::Supervised,
             model: None,

@@ -118,6 +118,11 @@ pub struct NewChat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
     pub cwd: PathBuf,
+    /// Run a Codex chat under this saved account (a RiWork account id, as
+    /// `ChatInfo::codex_account_id` keeps it) instead of the project's or the
+    /// app's selection. A Claude chat has no such account and is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default)]
