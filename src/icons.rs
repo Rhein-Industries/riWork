@@ -1,7 +1,8 @@
 //! Small vector controls that keep pane chrome consistent across fonts and themes.
 
 use gpui::{
-    AnyElement, App, Bounds, Corners, IntoElement, PathBuilder, canvas, point, prelude::*, px, rgb,
+    AnyElement, App, Bounds, Corners, IntoElement, PathBuilder, canvas, div, point, prelude::*, px,
+    rgb,
 };
 
 use crate::{
@@ -127,17 +128,15 @@ pub fn icon(kind: Icon, color: u32) -> AnyElement {
         move |bounds, _, window, _| {
             if native {
                 let side = f32::from(bounds.size.width);
-                let key = symbols::Key::new(
+                let points = kind.symbol_points(side);
+                if paint_symbol(
                     kind.symbol(),
-                    kind.symbol_points(side),
-                    side,
+                    points,
                     kind.symbol_weight(),
                     color,
-                    window.scale_factor(),
-                );
-                if let Some(image) = symbols::image(key) {
-                    let square = Bounds::new(bounds.origin, gpui::size(px(side), px(side)));
-                    let _ = window.paint_image(square, square, Corners::default(), image, 0, false);
+                    bounds,
+                    window,
+                ) {
                     return;
                 }
             }
@@ -246,6 +245,72 @@ pub fn icon(kind: Icon, color: u32) -> AnyElement {
         },
     )
     .size(px(14.0 * scale))
+    .flex_shrink_0()
+    .into_any_element()
+}
+
+/// Paint SF Symbol `name` centered in the square at `bounds`' origin. False when this
+/// macOS has no such symbol, so the caller can draw something else.
+fn paint_symbol(
+    name: &'static str,
+    points: f32,
+    weight: Weight,
+    color: u32,
+    bounds: Bounds<gpui::Pixels>,
+    window: &mut gpui::Window,
+) -> bool {
+    let side = f32::from(bounds.size.width);
+    let key = symbols::Key::new(name, points, side, weight, color, window.scale_factor());
+    let Some(image) = symbols::image(key) else {
+        return false;
+    };
+    let square = Bounds::new(bounds.origin, gpui::size(px(side), px(side)));
+    let _ = window.paint_image(square, square, Corners::default(), image, 0, false);
+    true
+}
+
+/// The SF Symbol Native draws for a text mark that stands for a control: a row's
+/// disclosure triangle, a sort arrow, a gear, a pencil. None keeps the mark as text.
+pub fn mark_symbol(mark: &str) -> Option<&'static str> {
+    Some(match mark {
+        "⚙" => "gearshape",
+        "↗" => "arrow.up.right",
+        "✎" => "pencil",
+        "×" => "xmark",
+        "+" => "plus",
+        "▸" => "chevron.right",
+        "▾" => "chevron.down",
+        "▴" => "chevron.up",
+        "↓" => "arrow.down",
+        "↑" => "arrow.up",
+        "✓" => "checkmark",
+        "⌕" => "magnifyingglass",
+        _ => return None,
+    })
+}
+
+/// A text mark used as a control, as the colorful themes show it; under Native, its SF
+/// Symbol in a box the size of the text at `size` px, so it sits in the line like the mark.
+/// Disclosure chevrons are drawn smaller and bolder, as in a Finder sidebar.
+pub fn mark(mark: &'static str, size: f32, color: u32) -> AnyElement {
+    let symbol = mark_symbol(mark).filter(|_| ui_text::is_native());
+    let Some(name) = symbol else {
+        return div().flex_none().child(mark).into_any_element();
+    };
+    let chevron = name.starts_with("chevron");
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let side = f32::from(bounds.size.width);
+            let (points, weight) = if chevron {
+                (side * 0.62, Weight::Medium)
+            } else {
+                (side * 0.8, Weight::Regular)
+            };
+            paint_symbol(name, points, weight, color, bounds, window);
+        },
+    )
+    .size(ui_text::text(size + 2.0))
     .flex_shrink_0()
     .into_any_element()
 }
@@ -659,6 +724,19 @@ mod tests {
             one += usize::from(a != b);
         }
         one as f32 / either as f32
+    }
+
+    #[test]
+    fn control_marks_map_to_symbols_and_text_stays_text() {
+        assert_eq!(mark_symbol("▸"), Some("chevron.right"));
+        assert_eq!(mark_symbol("⚙"), Some("gearshape"));
+        assert_eq!(mark_symbol("A1"), None);
+        for mark in ["⚙", "↗", "✎", "×", "+", "▸", "▾", "▴", "↓", "↑", "✓", "⌕"]
+        {
+            let name = mark_symbol(mark).unwrap();
+            let key = symbols::Key::new(name, 12.0, 14.0, Weight::Regular, 0, 2.0);
+            assert!(symbols::image(key).is_some(), "{mark}: {name}");
+        }
     }
 
     #[test]

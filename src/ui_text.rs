@@ -157,6 +157,80 @@ pub fn cased(text: impl Into<SharedString>) -> SharedString {
     }
 }
 
+/// Text composed at run time with capitalized words in it, such as "CODEX · 7d 81% left"
+/// or "1 LIVE", as the theme shows it: as it is in the colorful themes, in sentence case
+/// in Native (see `sentence_case`).
+pub fn quiet(text: impl Into<SharedString>) -> SharedString {
+    let text = text.into();
+    if is_native() {
+        sentence_case(&text).into()
+    } else {
+        text
+    }
+}
+
+/// Names that keep their capital in sentence case.
+const PROPER_NOUNS: [&str; 12] = [
+    "Codex", "Claude", "Grok", "Orca", "Cua", "Mac", "Ghostty", "RiWork", "Vim", "Finder",
+    "GitHub", "Git",
+];
+
+/// Abbreviations that stay in capitals.
+const ACRONYMS: [&str; 14] = [
+    "CPU", "RAM", "MCP", "ID", "URL", "PR", "SSH", "API", "OK", "UI", "AI", "CLI", "TCC", "PID",
+];
+
+/// Rewrites the words written in capitals in `text` into sentence case: a word of two or
+/// more capital letters becomes lowercase, or capitalized where a sentence starts (the
+/// text's start, or after "·", ":" or "."). Names (Codex, Claude, Orca…) keep their capital
+/// and abbreviations (CPU, RAM…) stay capitals. Anything else, including mixed-case words,
+/// ids such as A1 and paths, is left as it is.
+pub fn sentence_case(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut sentence_start = true;
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String, sentence_start: &mut bool| {
+        if word.is_empty() {
+            return;
+        }
+        let caps = word.chars().count() >= 2 && word.chars().all(|c| c.is_ascii_uppercase());
+        if caps && !ACRONYMS.contains(&word.as_str()) {
+            let lower = word.to_ascii_lowercase();
+            let proper = PROPER_NOUNS
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case(&lower));
+            match proper {
+                Some(name) => out.push_str(name),
+                None if *sentence_start => {
+                    let mut chars = lower.chars();
+                    if let Some(first) = chars.next() {
+                        out.push(first.to_ascii_uppercase());
+                        out.push_str(chars.as_str());
+                    }
+                }
+                None => out.push_str(&lower),
+            }
+        } else {
+            out.push_str(word);
+        }
+        *sentence_start = false;
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out, &mut sentence_start);
+            if matches!(c, '·' | ':' | '.' | '/') {
+                sentence_start = true;
+            }
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out, &mut sentence_start);
+    out
+}
+
 /// The size Settings shows for the saved `points`: what the face draws.
 pub fn shown_points(settings: &Settings, points: f32) -> f32 {
     points + Face::of(settings).offset(settings.ui_text_matches_terminal)
@@ -482,6 +556,28 @@ mod tests {
             assert_eq!(cased("Add host"), "Add host");
         }
         FACE.with(|cell| cell.set(Face::Menlo));
+    }
+
+    #[test]
+    fn capitals_composed_at_run_time_read_in_sentence_case() {
+        for (caps, sentence) in [
+            ("CODEX · 7d 81% left", "Codex · 7d 81% left"),
+            (
+                "DEFAULT (APP) · System default",
+                "Default (app) · System default",
+            ),
+            ("1 LIVE", "1 live"),
+            ("USAGE · LOADING", "Usage · Loading"),
+            ("CPU 0.0% RAM 5.5 MiB", "CPU 0.0% RAM 5.5 MiB"),
+            ("CODEX A1 · me@example.com", "Codex A1 · me@example.com"),
+            ("NO PROJECTS", "No projects"),
+            ("RIWORK / PREFERENCES", "RiWork / Preferences"),
+            ("zsh 06 · main", "zsh 06 · main"),
+        ] {
+            assert_eq!(sentence_case(caps), sentence, "{caps}");
+        }
+        // Off the UI thread the theme is a colorful one, which keeps the capitals.
+        assert_eq!(quiet("1 LIVE"), "1 LIVE");
     }
 
     #[test]

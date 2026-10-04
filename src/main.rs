@@ -4,6 +4,7 @@ mod appearance_file;
 mod appearance_sync;
 mod cli;
 mod cli_agents;
+mod controls;
 mod codex_accounts;
 mod cua;
 mod dock_menu;

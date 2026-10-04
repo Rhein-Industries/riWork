@@ -12,8 +12,9 @@ use std::{
 
 use fs2::FileExt;
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, Global, IntoElement,
-    KeyDownEvent, MouseButton, Pixels, Render, Window, canvas, div, prelude::*, px, rgb,
+    AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, FontWeight, Global,
+    IntoElement, KeyDownEvent, MouseButton, Pixels, Render, Window, canvas, div, prelude::*, px,
+    rgb,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -21,6 +22,7 @@ use uuid::Uuid;
 
 use crate::{
     codex_accounts::{self, AccountsSnapshot},
+    controls,
     cua::{CuaManager, CuaStatus},
     orca_import::{ImportManager, ImportPreview, ImportReceipt},
     project_sort::ProjectOrder,
@@ -603,15 +605,15 @@ impl Section {
 
     fn title(self) -> &'static str {
         match self {
-            Self::Cua => "COMPUTER USE",
-            Self::Codex => "CODEX ACCOUNTS",
-            Self::Appearance => "APPEARANCE",
-            Self::Files => "FILES",
-            Self::Agents => "AGENT SESSIONS",
-            Self::Windows => "WINDOWS",
-            Self::StatusBar => "STATUS BAR",
-            Self::Remote => "REMOTE",
-            Self::Orca => "IMPORT FROM ORCA",
+            Self::Cua => "Computer use",
+            Self::Codex => "Codex accounts",
+            Self::Appearance => "Appearance",
+            Self::Files => "Files",
+            Self::Agents => "Agent sessions",
+            Self::Windows => "Windows",
+            Self::StatusBar => "Status bar",
+            Self::Remote => "Remote",
+            Self::Orca => "Import from Orca",
         }
     }
 
@@ -711,6 +713,9 @@ fn section_card(
     colors: Palette,
     body: AnyElement,
 ) -> AnyElement {
+    if ui_text::is_native() {
+        return native_section_card(section, layout, colors, body);
+    }
     div()
         .flex()
         .flex_col()
@@ -739,7 +744,11 @@ fn section_card(
                                 .text_color(rgb(colors.magenta))
                                 .child(section.number()),
                         )
-                        .child(div().text_color(rgb(colors.cyan)).child(section.title())),
+                        .child(
+                            div()
+                                .text_color(rgb(colors.cyan))
+                                .child(ui_text::cased(section.title())),
+                        ),
                 )
                 .child(
                     div()
@@ -753,7 +762,73 @@ fn section_card(
         .into_any_element()
 }
 
+/// Native's section: a soft card with its title in semibold and no rule or number.
+fn native_section_card(
+    section: Section,
+    layout: SettingsLayout,
+    colors: Palette,
+    body: AnyElement,
+) -> AnyElement {
+    controls::card(div(), colors)
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .gap(ui_text::space(12.0))
+        .p(px(layout.card_padding()))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(ui_text::space(2.0))
+                .child(
+                    div()
+                        .text_size(ui_text::text(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(colors.text))
+                        .child(section.title()),
+                )
+                .child(
+                    div()
+                        .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(colors.muted))
+                        .child(section.description()),
+                ),
+        )
+        .child(body)
+        .into_any_element()
+}
+
+/// Native's radio mark: a ring, filled with the primary color when chosen.
+fn radio(mark: Div, selected: bool, colors: Palette) -> Div {
+    mark.size(ui_text::space(12.0))
+        .mt(ui_text::space(2.0))
+        .rounded_full()
+        .border_color(rgb(if selected {
+            colors.cyan
+        } else {
+            colors.divider
+        }))
+        .when(selected, |mark| {
+            mark.border(ui_text::space(4.0)).bg(rgb(colors.bg))
+        })
+}
+
+/// Native's kind of a Settings button that is either a group's lead action or not.
+fn button_kind(primary: bool, disabled: bool) -> controls::Button {
+    if disabled {
+        controls::Button::Disabled
+    } else if primary {
+        controls::Button::Primary
+    } else {
+        controls::Button::Secondary
+    }
+}
+
 fn status_chip(label: &'static str, color: u32, colors: Palette) -> AnyElement {
+    if ui_text::is_native() {
+        return controls::chip(label, color == colors.gold, colors);
+    }
     div()
         .flex_none()
         .px(ui_text::space(7.0))
@@ -763,7 +838,7 @@ fn status_chip(label: &'static str, color: u32, colors: Palette) -> AnyElement {
         .bg(rgb(colors.panel_active))
         .text_size(ui_text::text(9.0))
         .text_color(rgb(color))
-        .child(label)
+        .child(ui_text::cased(label))
         .into_any_element()
 }
 
@@ -1153,9 +1228,10 @@ impl SettingsPanel {
                             .flex_none().px(ui_text::space(10.0)).py(ui_text::space(6.0)).self_start()
                             .border_1().border_color(rgb(colors.divider)).cursor_pointer()
                             .text_size(ui_text::text(10.0)).text_color(rgb(colors.cyan))
-                            .hover(|style| style.bg(rgb(colors.panel_active)))
+                            .hover(move |style| controls::hovered(style, controls::Button::Secondary.hover(colors), |style| style.bg(rgb(colors.panel_active))))
                             .focus_visible(|style| style.bg(rgb(colors.panel_active)).border_color(rgb(colors.cyan)))
-                            .child(if state.pending { "CHECKING ACCOUNTS…" } else { "REFRESH ACCOUNTS" })
+                            .map(|button| controls::native(button, |button| controls::button(button, controls::Button::Secondary, colors)))
+                            .child(ui_text::cased(if state.pending { "Checking accounts…" } else { "Refresh accounts" }))
                             .on_mouse_down(MouseButton::Left, cx.listener(|view, _, window, cx| view.account_refresh_focus.focus(window, cx)))
                             .on_click(cx.listener(|_, _, _, cx| refresh_codex_accounts(cx))),
                     ),
@@ -1404,9 +1480,20 @@ impl SettingsPanel {
                 colors.text
             }))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(
+                    style,
+                    button_kind(import, disabled).hover(colors),
+                    |style| style.bg(rgb(colors.panel_active)),
+                )
+            })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .child(label)
+            .map(|button| {
+                controls::native(button, |button| {
+                    controls::button(button, button_kind(import, disabled), colors)
+                })
+            })
+            .child(ui_text::cased(label))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -1657,9 +1744,24 @@ impl SettingsPanel {
             .text_size(ui_text::text(10.0))
             .text_color(rgb(accent))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(style, controls::Button::Secondary.hover(colors), |style| {
+                    style.bg(rgb(colors.panel_active))
+                })
+            })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .child(label)
+            .map(|button| {
+                // The signal color marks a destructive confirmation; it stays on the text.
+                controls::native(button, |button| {
+                    let button = controls::button(button, controls::Button::Secondary, colors);
+                    if accent == colors.gold {
+                        button.text_color(rgb(colors.gold))
+                    } else {
+                        button
+                    }
+                })
+            })
+            .child(ui_text::cased(label))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |_, _, window, cx| focus_on_press.focus(window, cx)),
@@ -1874,9 +1976,20 @@ impl SettingsPanel {
                 colors.text
             }))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(
+                    style,
+                    button_kind(primary, disabled).hover(colors),
+                    |style| style.bg(rgb(colors.panel_active)),
+                )
+            })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .child(label)
+            .map(|button| {
+                controls::native(button, |button| {
+                    controls::button(button, button_kind(primary, disabled), colors)
+                })
+            })
+            .child(ui_text::cased(label))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -2021,8 +2134,13 @@ impl SettingsPanel {
                 colors.divider
             }))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(style, controls::row_hover(selected, colors), |style| {
+                    style.bg(rgb(colors.panel_active))
+                })
+            })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
+            .map(|row| controls::native(row, |row| controls::row(row, selected, colors)))
             .child(
                 div()
                     .flex_none()
@@ -2030,7 +2148,8 @@ impl SettingsPanel {
                     .size(ui_text::space(8.0))
                     .border_1()
                     .border_color(rgb(if selected { colors.cyan } else { colors.muted }))
-                    .when(selected, |style| style.bg(rgb(colors.cyan))),
+                    .when(selected, |style| style.bg(rgb(colors.cyan)))
+                    .map(|mark| controls::native(mark, |mark| radio(mark, selected, colors))),
             )
             .child(
                 div()
@@ -2053,7 +2172,11 @@ impl SettingsPanel {
                                     .text_color(rgb(colors.text))
                                     .child(theme.label()),
                             )
-                            .children(selected.then(|| status_chip("ACTIVE", colors.cyan, colors))),
+                            // Native's filled row and radio already say which is active.
+                            .children(
+                                (selected && !ui_text::is_native())
+                                    .then(|| status_chip("Active", colors.cyan, colors)),
+                            ),
                     )
                     .child(
                         div()
@@ -2128,8 +2251,13 @@ impl SettingsPanel {
             .border_1()
             .border_color(rgb(colors.divider))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(style, controls::row_hover(false, colors), |style| {
+                    style.bg(rgb(colors.panel_active))
+                })
+            })
             .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
             .child(
                 row_text()
                     .child(
@@ -2146,7 +2274,9 @@ impl SettingsPanel {
                             .child(description),
                     ),
             )
-            .child(
+            .child(if ui_text::is_native() {
+                controls::switch(enabled, colors)
+            } else {
                 div()
                     .flex_none()
                     .w(ui_text::space(42.0))
@@ -2157,8 +2287,9 @@ impl SettingsPanel {
                     .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
                     .text_size(ui_text::text(10.0))
                     .text_center()
-                    .child(if enabled { "ON" } else { "OFF" }),
-            )
+                    .child(if enabled { "ON" } else { "OFF" })
+                    .into_any_element()
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -2241,7 +2372,14 @@ impl SettingsPanel {
                 .text_color(rgb(if active { colors.cyan } else { colors.muted }))
                 .text_size(ui_text::text(10.0))
                 .cursor_pointer()
-                .hover(|style| style.border_color(rgb(colors.cyan)))
+                .hover(move |style| {
+                    controls::hovered(style, controls::segment_hover(active, colors), |style| {
+                        style.border_color(rgb(colors.cyan))
+                    })
+                })
+                .map(|choice| {
+                    controls::native(choice, |choice| controls::segment(choice, active, colors))
+                })
                 .child(font.label())
                 .on_mouse_down(
                     MouseButton::Left,
@@ -2265,6 +2403,7 @@ impl SettingsPanel {
             .border_1()
             .border_color(rgb(colors.divider))
             .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
             .child(
                 row_text()
                     .child(
@@ -2282,11 +2421,12 @@ impl SettingsPanel {
                     ),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(ui_text::space(6.0))
-                    .children(InterfaceFont::ALL.map(|font| choice(font, cx))),
+                if ui_text::is_native() {
+                    controls::segments(colors)
+                } else {
+                    div().flex().flex_wrap().gap(ui_text::space(6.0))
+                }
+                .children(InterfaceFont::ALL.map(|font| choice(font, cx))),
             )
             .into_any_element()
     }
@@ -2311,38 +2451,50 @@ impl SettingsPanel {
         let shown = ui_text::current_points(cx);
         let matching = settings.ui_text_matches_terminal;
         let value_color = if matching { colors.muted } else { colors.cyan };
-        let button =
-            |id: &'static str, label: &'static str, change: SizeChange, cx: &mut Context<Self>| {
-                let limit = match change {
-                    SizeChange::Bigger => shown >= ui_text::MAX_POINTS,
-                    SizeChange::Smaller => shown <= ui_text::MIN_POINTS,
-                    SizeChange::Reset => shown == ui_text::DEFAULT_POINTS && !matching,
-                };
-                let active = !matching && !limit;
-                div()
-                    .id(id)
-                    .flex_none()
-                    .min_w(ui_text::space(26.0))
-                    .px(ui_text::space(6.0))
-                    .py(ui_text::space(4.0))
-                    .border_1()
-                    .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-                    .bg(rgb(colors.panel_active))
-                    .text_color(rgb(if active { colors.cyan } else { colors.muted }))
-                    .text_size(ui_text::text(10.0))
-                    .text_center()
-                    .cursor_pointer()
-                    .hover(|style| style.border_color(rgb(colors.cyan)))
-                    .child(label)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
-                    )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        cx.stop_propagation();
-                        view.change_text_size(change, cx);
-                    }))
+        let button = |id: &'static str,
+                      label: &'static str,
+                      change: SizeChange,
+                      cx: &mut Context<Self>| {
+            let limit = match change {
+                SizeChange::Bigger => shown >= ui_text::MAX_POINTS,
+                SizeChange::Smaller => shown <= ui_text::MIN_POINTS,
+                SizeChange::Reset => shown == ui_text::DEFAULT_POINTS && !matching,
             };
+            let active = !matching && !limit;
+            div()
+                .id(id)
+                .flex_none()
+                .min_w(ui_text::space(26.0))
+                .px(ui_text::space(6.0))
+                .py(ui_text::space(4.0))
+                .border_1()
+                .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                .bg(rgb(colors.panel_active))
+                .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+                .text_size(ui_text::text(10.0))
+                .text_center()
+                .cursor_pointer()
+                .hover(move |style| {
+                    controls::hovered(style, button_kind(false, !active).hover(colors), |style| {
+                        style.border_color(rgb(colors.cyan))
+                    })
+                })
+                .map(|button| {
+                    controls::native(button, |button| {
+                        controls::button(button, button_kind(false, !active), colors)
+                            .px(ui_text::space(8.0))
+                    })
+                })
+                .child(ui_text::cased(label))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.change_text_size(change, cx);
+                }))
+        };
         let description = match ui_text::terminal_font_size(cx).filter(|_| matching) {
             Some(size) => {
                 format!("Panels, tabs, menus and status bar. Matches Ghostty's font-size = {size}.")
@@ -2396,11 +2548,37 @@ impl SettingsPanel {
             .text_size(ui_text::text(10.0))
             .text_center()
             .cursor_pointer()
-            .hover(|style| style.border_color(rgb(colors.cyan)))
-            .child(if matching {
-                "MATCH TERMINAL · ON"
-            } else {
-                "MATCH TERMINAL · OFF"
+            .hover(move |style| {
+                if ui_text::is_native() {
+                    style.text_color(rgb(colors.text))
+                } else {
+                    style.border_color(rgb(colors.cyan))
+                }
+            })
+            .map(|button| {
+                // Native: a labelled switch, the same control as the toggle rows.
+                controls::native(button, |button| {
+                    button
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(6.0))
+                        .border_0()
+                        .bg(gpui::transparent_black())
+                        .text_color(rgb(colors.muted))
+                })
+            })
+            .map(|button| {
+                if ui_text::is_native() {
+                    button
+                        .child("Match terminal")
+                        .child(controls::switch(matching, colors))
+                } else {
+                    button.child(if matching {
+                        "MATCH TERMINAL · ON"
+                    } else {
+                        "MATCH TERMINAL · OFF"
+                    })
+                }
             })
             .on_mouse_down(
                 MouseButton::Left,
@@ -2423,6 +2601,7 @@ impl SettingsPanel {
             .border_1()
             .border_color(rgb(colors.divider))
             .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
             .child(
                 row_text()
                     .child(
@@ -2461,7 +2640,7 @@ impl SettingsPanel {
                     .child(button("ui-text-bigger", "+", SizeChange::Bigger, cx))
                     // RESET only when there is something to reset; Cmd+0 always works.
                     .when(!matching && shown != ui_text::DEFAULT_POINTS, |controls| {
-                        controls.child(button("ui-text-reset", "RESET", SizeChange::Reset, cx))
+                        controls.child(button("ui-text-reset", "Reset", SizeChange::Reset, cx))
                     })
                     .child(match_button),
             )
@@ -2521,6 +2700,7 @@ impl Render for SettingsPanel {
         let colors = palette(cx);
         let width = self.bounds.get().size.width.as_f32();
         let (layout, theme_cells) = width_class(width);
+        let native = ui_text::is_native();
         let mut columns = Vec::new();
         for sections in section_columns(layout) {
             let mut cards = Vec::new();
@@ -2592,8 +2772,7 @@ impl Render for SettingsPanel {
                                             .items_center()
                                             .gap(ui_text::space(12.0))
                                             .pb(ui_text::space(14.0))
-                                            .border_b_1()
-                                            .border_color(rgb(colors.cyan))
+                                            .when(!native, |head| head.border_b_1().border_color(rgb(colors.cyan)))
                                             .child(
                                                 div()
                                                     .flex_1()
@@ -2601,15 +2780,15 @@ impl Render for SettingsPanel {
                                                     .flex()
                                                     .flex_col()
                                                     .gap(ui_text::space(4.0))
-                                                    .child(div().text_size(ui_text::text(10.0)).text_color(rgb(colors.magenta)).child("RIWORK / PREFERENCES"))
-                                                    .child(div().text_size(ui_text::text(20.0)).child("Settings")),
+                                                    .children((!native).then(|| div().text_size(ui_text::text(10.0)).text_color(rgb(colors.magenta)).child("RIWORK / PREFERENCES")))
+                                                    .child(div().text_size(ui_text::text(20.0)).when(native, |title| title.font_weight(FontWeight::BOLD)).child("Settings")),
                                             )
-                                            .child(status_chip("ALL PROJECTS", colors.magenta, colors)),
+                                            .child(status_chip("All projects", colors.magenta, colors)),
                                     )
                                     // Columns only differ in the wide layout; otherwise this is one stack of cards.
                                     .child(div().flex().items_start().gap(px(layout.gap())).children(columns))
                                     .children(self.error.as_ref().map(|error| div().text_size(ui_text::text(11.0)).text_color(rgb(colors.gold)).child(error.clone())))
-                                    .child(div().pt(ui_text::space(10.0)).border_t_1().border_color(rgb(colors.divider)).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("Saved automatically · Tab to move · Enter or Space to select · Arrows step the text size")),
+                                    .child(div().pt(ui_text::space(10.0)).when(!native, |foot| foot.border_t_1().border_color(rgb(colors.divider))).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("Saved automatically · Tab to move · Enter or Space to select · Arrows step the text size")),
                             ),
                     ),
             )
