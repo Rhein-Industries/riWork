@@ -6763,15 +6763,9 @@ impl Workspace {
                 // The X is left out, not disabled, so a locked pane's tabs lose no room to it.
                 let close_visible = active && tab_can_close;
                 // Native gives every closable tab its X, shown on the selected tab and under
-                // the pointer, so a tab never changes width when it is chosen. A symbol tab
-                // keeps its fixed width: its X is a small badge over its corner.
-                let native_close = native && tab_can_close;
-                let close_badge = native_close && icon_panel.is_some();
-                let close_slot = if native {
-                    native_close && icon_panel.is_none()
-                } else {
-                    close_visible
-                };
+                // the pointer, so a tab never changes width when it is chosen. Symbol tabs
+                // carry it the same way as tabs with words.
+                let close_slot = if native { tab_can_close } else { close_visible };
                 // Native's close mark sits in its own round hover, which already pads it.
                 let pad_right_with_close = if native { 4.0 } else { 8.0 };
                 let (pad_left, pad_right, gap) = match (icon_panel, close_slot) {
@@ -6812,6 +6806,11 @@ impl Workspace {
                         tab.flex_shrink(1.0)
                             .min_w(ui_text::space(if icon_panel.is_some() {
                                 NATIVE_ICON_TAB_MIN
+                                    + if close_slot {
+                                        NATIVE_TAB_CLOSE + 4.0
+                                    } else {
+                                        0.0
+                                    }
                             } else {
                                 44.0
                             }))
@@ -6924,31 +6923,6 @@ impl Workspace {
                             }
                         }
                     })
-                    .children(close_badge.then(|| {
-                        div()
-                            .id(("close-tab", tab_id))
-                            .absolute()
-                            .top(ui_text::space(2.0))
-                            .right(ui_text::space(1.0))
-                            .size(ui_text::space(11.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .cursor_pointer()
-                            .bg(rgb(colors.divider))
-                            .text_color(rgb(colors.text))
-                            .invisible()
-                            .group_hover(TAB_GROUP, |style| style.visible())
-                            .hover(|style| style.bg(rgb(colors.muted)).text_color(rgb(colors.bg)))
-                            .child(icons::text_icon(Icon::Close, 6.0, colors.text))
-                            .child(tooltip::anchor("Close tab · ⌘W", Look::Pane))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |workspace, _, window, cx| {
-                                cx.stop_propagation();
-                                workspace.close_tab_by_user(pane_id, tab_id, window, cx);
-                            }))
-                    }))
                     .children(close_slot.then(|| {
                         div()
                             .id(("close-tab", tab_id))
