@@ -287,6 +287,25 @@ riwork open /path/to/another/project
 
 Project windows and independently launched app processes keep their own selected project. Projects, tasks, the shell registry, and layouts share the RiWork data directory. Older and newer builds can share it after `riwork update` leaves an older window or `riwork` on `PATH`: a build keeps the fields and shell entries it does not understand, such as a session for a harness it predates, when it rewrites `state.json` or `sessions.json`; it hides those entries instead of failing. A store schema newer than the build is still refused. Closing a window preserves its shells. There is one persistent global orchestrator and one persistent orchestrator per project.
 
+## Chat host
+
+Codex and Claude chats talk to the agents through their structured interfaces, not their terminals. The agent processes behind them belong to the chat host, `riwork chat serve`, so a chat keeps working while app windows reload, update or quit. There is one host per RiWork data directory. It listens on `run/chat.sock` (mode 600, in a mode-700 directory, connections from other users are dropped), `run/chat.lock` keeps a second host out, and `run/chat.log` has its output. `riwork chat ensure` starts it detached if it is not running (several callers at once start one) and prints the socket. The host exits by itself after 15 minutes with no client connected and no chat starting, running or waiting for you (`chat serve --idle-seconds N` changes that); the next `ensure` starts it again.
+
+```sh
+riwork chat ensure
+riwork chat new --provider codex --worktree WORKTREE_ID --mode auto-edit
+riwork chat new --provider claude --project PROJECT_ID
+riwork chat list --json
+riwork chat send CHAT_ID "run the tests"
+riwork chat stop CHAT_ID
+```
+
+`--mode` is how much the agent may do without asking: `supervised` (the default; ask before commands and edits), `auto-edit` (edit the workspace, ask for the rest), `full` (never ask; what unrestricted launches use) or `plan` (plan first, change nothing). Like `shell create`, `chat new` starts in the given worktree, in the project's primary worktree, or else in the active project. Chat IDs are UUIDs; commands accept a unique prefix of at least eight characters.
+
+Each chat is a directory, `chats/CHAT_ID/`, in the RiWork data directory: `info.json` (the chat's id, project, worktree, directory, title, mode, model, the provider's thread id and the Codex account it runs under, replaced atomically) and `events.jsonl` (everything that happened in it, one JSON object per line, appended as it happens; the line number is the event's `seq`). A client that opens a chat gets `events.jsonl` from the `seq` it last saw and then follows live events on the same connection, so a client that reconnects loses nothing; one that falls too far behind is disconnected and asks again from its last `seq`. The host starts no agent when it starts: every chat it loads is stopped, and the first message to one starts its agent again on the saved thread (Codex `thread/resume`, Claude `--resume`). A turn that a stop or a crash cut off is ended in the log (as interrupted) so no window waits for it. `chat stop` ends the agent and keeps the history; deleting a chat also removes its directory. If an agent cannot start (not installed, no Cua driver, a Codex account that is no longer available) the chat is kept as failed with the reason, and the next message tries again.
+
+Chats are started the way terminal launches are: the same `codex` and `claude` programs (found on the login shell's `PATH`), the same Cua.ai Driver MCP wiring (`mcp_servers.cua-driver` for Codex, `--mcp-config` for Claude), the Codex account of the project (or of the app) saved with the chat so a chat keeps its Codex home, and `ANTHROPIC_API_KEY` removed from Claude's environment so a stray key cannot switch it to API billing.
+
 ## Orchestrator
 
 The global orchestrator coordinates objectives and dependencies across projects. Each project's orchestrator manages its tasks, repositories, worktrees, and Codex, Claude, or Grok workers. They have separate persistent shells and ordinary workspace tabs; project orchestrators belong to their project and have no worktree, while the global orchestrator has neither project nor worktree ownership.

@@ -10,11 +10,18 @@
 //! - `wire` is the line protocol of the chat host (`riwork chat serve`), the
 //!   background process that owns the provider processes so chats keep running
 //!   while app windows reload.
+//! - `host` is that process: it serves `wire`, keeps each chat's files (`log`)
+//!   and starts drivers with the configuration `launch` resolves.
 
 // The contract lands before the host and the tabs that use it.
 #![allow(dead_code)]
 
 pub mod client;
 pub mod driver;
+pub mod host;
+mod launch;
+mod log;
 pub mod model;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod wire;
