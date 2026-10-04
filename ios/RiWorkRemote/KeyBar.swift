@@ -16,7 +16,7 @@ private final class KeyScrollView: UIScrollView {
 /// including the "+" that opens the hotkey editor at the very end, is in the scrolling part.
 @MainActor final class KeyBarView: UIInputView {
     enum Action: Hashable {
-        case key(TerminalKey), control, alt, text(String), paste, hide, hotkey(String), editHotkeys, palette, help
+        case key(TerminalKey), control, alt, text(String), paste, attach, hide, hotkey(String), editHotkeys, palette, help
     }
     private enum Role { case plain, hotkey, muted }
 
@@ -164,6 +164,7 @@ private final class KeyScrollView: UIScrollView {
         key(.pageUp, named("PgUp", "chevron.up.2"), "Page up"); key(.pageDown, named("PgDn", "chevron.down.2"), "Page down")
         key(.delete, named("Del", "delete.right"), "Delete"); key(.backspace, (nil, "delete.left"), "Backspace"); key(.enter, (nil, "return"), "Enter")
         add(.paste, title: nil, symbol: "doc.on.clipboard", label: "Paste", role: .plain)
+        add(.attach, title: nil, symbol: "paperclip", label: "Send a photo or file", role: .plain)
         addDivider()
         // The hotkey menu first: it reaches every hotkey, shortcut and key from the keyboard (also ⌘K).
         add(.palette, title: nil, symbol: "command", label: "Hotkey menu", role: .hotkey)

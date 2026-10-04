@@ -136,6 +136,8 @@ enum ConnectionState: Equatable {
     var compressTraffic = true
     /// What the desktop announced when this connection began, and whether it agreed to compress.
     @ObservationIgnored var desktopFeatures = DesktopFeatures()
+    /// Files and photos on their way to the Mac (RemoteModel+Upload.swift).
+    let attachments = Attachments()
     var compressionAgreed = false
     /// How the latest `shell.output` reply travelled: what a line of this terminal weighs, before any page has said.
     @ObservationIgnored var lastOutputTiming: ReplyTiming?

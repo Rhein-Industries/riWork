@@ -36,7 +36,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>Scan a pairing code from your RiWork desktop.</string>
+	<string>Scan a pairing code from your RiWork desktop, or take a photo to send to a terminal or chat on it.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to a RiWork relay on your local network.</string>
 	<key>UIApplicationSceneManifest</key>
