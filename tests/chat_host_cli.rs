@@ -215,3 +215,63 @@ fn chat_commands_refuse_what_they_cannot_do_without_starting_a_host() {
     assert_eq!(serve.status.code(), Some(2));
     assert!(!home.socket().exists(), "none of them started a host");
 }
+
+#[test]
+fn events_and_command_refuse_an_unknown_chat_and_capabilities_announce_chat() {
+    let home = Home::new();
+    let capabilities = home.run(&["capabilities", "--json"]);
+    assert!(capabilities.status.success(), "{}", stderr(&capabilities));
+    let capabilities: serde_json::Value = serde_json::from_slice(&capabilities.stdout).unwrap();
+    assert_eq!(capabilities["chat"], true);
+    assert_eq!(capabilities["v"], 1);
+    assert!(stdout(&home.run(&["capabilities"])).contains("chat yes"));
+
+    // A command that is not one is refused before any host is started.
+    let bad = home.run(&[
+        "chat",
+        "command",
+        "abcdefgh",
+        "--command-json",
+        r#"{"command":"send","text":"hi","extra":1}"#,
+        "--json",
+    ]);
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(
+        stderr(&bad).contains("invalid_request: "),
+        "{}",
+        stderr(&bad)
+    );
+    assert!(!home.socket().exists(), "no host was started");
+
+    let unknown = "00000000-0000-4000-8000-000000000000";
+    let events = home.run(&[
+        "chat",
+        "events",
+        unknown,
+        "--since",
+        "0",
+        "--wait-ms",
+        "0",
+        "--json",
+    ]);
+    assert_eq!(events.status.code(), Some(2));
+    assert!(
+        stderr(&events).contains("Unknown chat"),
+        "{}",
+        stderr(&events)
+    );
+    let command = home.run(&[
+        "chat",
+        "command",
+        unknown,
+        "--command-json",
+        r#"{"command":"interrupt"}"#,
+        "--json",
+    ]);
+    assert_eq!(command.status.code(), Some(2));
+    assert!(
+        stderr(&command).contains("Unknown chat"),
+        "{}",
+        stderr(&command)
+    );
+}

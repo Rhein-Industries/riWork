@@ -6,7 +6,7 @@
 
 use super::model::{ChatCommand, ChatInfo, NewChat};
 use super::wire::{Envelope, Request, Response};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -103,8 +103,29 @@ impl Client {
 
 /// A chat's events from `since` on, oldest first, then live. Blocks; run it on
 /// a thread of its own. Ends (`None`) when the host goes away.
+///
+/// `next_within` reads with a deadline instead, for a caller (the CLI's
+/// `chat events`) that collects what arrives in a time window.
 pub struct Subscription {
     stream: BufReader<UnixStream>,
+    /// The bytes of a line that has begun and not ended. A read that times out
+    /// keeps what it got here, so no byte of an event is lost between calls.
+    pending: Vec<u8>,
+    /// The read timeout the socket has now (`None`: block).
+    timeout: Option<Duration>,
+}
+
+/// What `Subscription::next_within` found.
+// An event is read and handled at once; boxing every one only to shrink the
+// two variants without one would cost more than it saves.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum Poll {
+    Event(Envelope),
+    /// No whole event arrived in time; a part of one is kept for the next call.
+    TimedOut,
+    /// The host ended the connection.
+    Closed,
 }
 
 impl Subscription {
@@ -123,6 +144,8 @@ impl Subscription {
         })?;
         Ok(Self {
             stream: client.stream,
+            pending: Vec::new(),
+            timeout: None,
         })
     }
 
@@ -138,13 +161,51 @@ impl Subscription {
 
     /// The next event, or `None` when the connection ended.
     pub fn next_envelope(&mut self) -> Option<Result<Envelope, String>> {
-        let mut line = String::new();
-        match self.stream.read_line(&mut line) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => Some(
-                serde_json::from_str(&line)
-                    .map_err(|error| format!("chat host sent an unreadable event: {error}")),
-            ),
+        match self.read(None) {
+            Ok(Poll::Event(envelope)) => Some(Ok(envelope)),
+            Ok(Poll::TimedOut) | Ok(Poll::Closed) => None,
+            Err(error) => Some(Err(error)),
+        }
+    }
+
+    /// The next event if it arrives within `wait`. A zero `wait` is read as one
+    /// millisecond: a socket cannot be given a zero timeout. `Err` is an event
+    /// that could not be read; the connection is then still usable.
+    pub fn next_within(&mut self, wait: Duration) -> Result<Poll, String> {
+        self.read(Some(wait.max(Duration::from_millis(1))))
+    }
+
+    fn read(&mut self, wait: Option<Duration>) -> Result<Poll, String> {
+        if self.timeout != wait {
+            match self.stream.get_ref().set_read_timeout(wait) {
+                Ok(()) => self.timeout = wait,
+                // A socket whose host has gone refuses the change (macOS says
+                // EINVAL). What it still holds can be read, and the end after
+                // it, without waiting.
+                Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        match self.stream.read_until(b'\n', &mut self.pending) {
+            // The host ended the connection, in the middle of a line or not.
+            Ok(0) => Ok(Poll::Closed),
+            Ok(_) if self.pending.last() == Some(&b'\n') => {
+                let line = std::mem::take(&mut self.pending);
+                serde_json::from_slice(&line)
+                    .map(Poll::Event)
+                    .map_err(|error| format!("chat host sent an unreadable event: {error}"))
+            }
+            // The end of the stream cut a line short.
+            Ok(_) => Ok(Poll::Closed),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(Poll::TimedOut)
+            }
+            Err(_) => Ok(Poll::Closed),
         }
     }
 }
@@ -182,7 +243,7 @@ fn decode<T: serde::de::DeserializeOwned>(result: Option<serde_json::Value>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::model::{ApprovalMode, ChatEvent, ChatState, Provider};
+    use crate::chat::model::{ApprovalMode, ChatEvent, ChatState, Delta, Provider};
     use std::os::unix::net::UnixListener;
     use std::thread;
 
@@ -259,5 +320,138 @@ mod tests {
         host.join().unwrap();
         assert!(subscription.next_envelope().is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A host stand-in that answers one `Subscribe` and then writes what the
+    /// test script hands it: bytes, or a pause.
+    fn scripted_subscription(script: Vec<Result<Vec<u8>, Duration>>) -> (Subscription, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rwchat-{}", &new_id()[..8]));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("c.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let Request::Subscribe { id, .. } = serde_json::from_str(&line).unwrap() else {
+                panic!("expected a subscribe");
+            };
+            let response = Response {
+                id,
+                ok: true,
+                result: None,
+                error: None,
+            };
+            writeln!(writer, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+            for step in script {
+                match step {
+                    Ok(bytes) => {
+                        writer.write_all(&bytes).unwrap();
+                        writer.flush().unwrap();
+                    }
+                    Err(pause) => thread::sleep(pause),
+                }
+            }
+        });
+        (Subscription::open(&socket, "chat-1", 0).unwrap(), dir)
+    }
+
+    fn envelope_line(seq: u64, text: &str) -> Vec<u8> {
+        let envelope = Envelope {
+            chat_id: "chat-1".into(),
+            seq,
+            event: ChatEvent::ItemDelta {
+                item_id: "agent-1".into(),
+                delta: Delta::Text(text.into()),
+            },
+        };
+        format!("{}\n", serde_json::to_string(&envelope).unwrap()).into_bytes()
+    }
+
+    #[test]
+    fn a_read_with_a_deadline_times_out_and_then_still_gets_the_event() {
+        let (mut subscription, dir) = scripted_subscription(vec![
+            Err(Duration::from_millis(300)),
+            Ok(envelope_line(1, "late")),
+            Err(Duration::from_millis(300)),
+        ]);
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            subscription.next_within(Duration::from_millis(20)),
+            Ok(Poll::TimedOut)
+        ));
+        assert!(started.elapsed() < Duration::from_millis(250));
+        let Ok(Poll::Event(first)) = subscription.next_within(Duration::from_secs(10)) else {
+            panic!("the event never came");
+        };
+        assert_eq!(first.seq, 1);
+        // A zero wait is a short one, not an error.
+        assert!(matches!(
+            subscription.next_within(Duration::ZERO),
+            Ok(Poll::TimedOut)
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_line_split_across_a_timeout_arrives_whole() {
+        // The cut falls inside the two-byte character of the text.
+        let line = envelope_line(7, "caf\u{e9} au lait");
+        let cut = line.iter().position(|byte| *byte == 0xc3).unwrap() + 1;
+        let (mut subscription, dir) = scripted_subscription(vec![
+            Ok(line[..cut].to_vec()),
+            Err(Duration::from_millis(300)),
+            Ok(line[cut..].to_vec()),
+        ]);
+        assert!(matches!(
+            subscription.next_within(Duration::from_millis(50)),
+            Ok(Poll::TimedOut)
+        ));
+        let Ok(Poll::Event(envelope)) = subscription.next_within(Duration::from_secs(10)) else {
+            panic!("the event never came");
+        };
+        assert_eq!(envelope.seq, 7);
+        assert_eq!(
+            envelope.event,
+            ChatEvent::ItemDelta {
+                item_id: "agent-1".into(),
+                delta: Delta::Text("caf\u{e9} au lait".into())
+            }
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_end_of_the_stream_closes_the_subscription_for_both_reads() {
+        let (mut subscription, dir) = scripted_subscription(vec![
+            Ok(envelope_line(1, "last")),
+            // The host goes away in the middle of a line.
+            Ok(b"{\"chat_id\":\"chat".to_vec()),
+        ]);
+        let first = subscription.next_within(Duration::from_secs(10));
+        assert!(matches!(first, Ok(Poll::Event(_))), "{first:?}");
+        assert!(matches!(
+            subscription.next_within(Duration::from_secs(10)),
+            Ok(Poll::Closed)
+        ));
+        assert!(subscription.next_envelope().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_blocking_read_after_a_deadline_blocks_again() {
+        let (mut subscription, dir) = scripted_subscription(vec![
+            Err(Duration::from_millis(200)),
+            Ok(envelope_line(1, "after the pause")),
+        ]);
+        assert!(matches!(
+            subscription.next_within(Duration::from_millis(20)),
+            Ok(Poll::TimedOut)
+        ));
+        // `next_envelope` waits as long as it takes, as it always did.
+        assert_eq!(subscription.next_envelope().unwrap().unwrap().seq, 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

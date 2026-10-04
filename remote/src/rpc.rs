@@ -25,6 +25,8 @@ use tokio::{
     time::{Duration, timeout},
 };
 
+mod chat;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -1034,6 +1036,10 @@ pub struct Rpc {
     cli_checks_shells: tokio::sync::OnceCell<bool>,
     /// Whether the CLI said it has `shell attach --exec` (see `require_attach_exec`).
     attach_exec: AtomicBool,
+    /// Whether the CLI said it has the chat commands (see `chat_supported`).
+    chat: AtomicBool,
+    /// Held while the CLI is asked about chats, so that two askers at once run it once.
+    asking_chat: tokio::sync::Mutex<()>,
 }
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
@@ -1044,6 +1050,8 @@ impl Rpc {
             history_cap: AtomicU32::new(HISTORY_PAGE_MAX),
             cli_checks_shells: tokio::sync::OnceCell::new(),
             attach_exec: AtomicBool::new(false),
+            chat: AtomicBool::new(false),
+            asking_chat: tokio::sync::Mutex::new(()),
         }
     }
     /// The most lines a `shell.history` page may have right now (announced in `ready`).
@@ -1692,6 +1700,27 @@ impl Rpc {
                 let spec = project_spec(&r.params)?;
                 self.create_project(device, spec).await
             }
+            // Chats; see `chat`.
+            "chats.list" => {
+                let spec = chat::list_spec(&r.params)?;
+                self.chats_list(spec, reply_limit).await
+            }
+            "chat.create" => {
+                let spec = chat::new_spec(&r.params)?;
+                self.chat_create(device, spec).await
+            }
+            "chat.events" => {
+                let spec = chat::events_spec(&r.params)?;
+                self.chat_events(&r.id, spec, reply_limit).await
+            }
+            "chat.command" => {
+                let spec = chat::command_spec(&r.params)?;
+                self.chat_command(device, spec).await
+            }
+            "chat.stop" => {
+                let spec = chat::stop_spec(&r.params)?;
+                self.chat_stop(device, spec).await
+            }
             // A desktop device's terminal streams; see `pty`.
             "pty.open" => {
                 let set = pty_set(pty)?;
@@ -1717,7 +1746,7 @@ impl Rpc {
         if !self.storage.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
-        self.target_exists(&spec.target).await?;
+        self.target_exists(&spec.target, create_fault).await?;
         // The CLI starts the tmux session and only then writes it into the
         // registry; a CLI killed in between leaves a session nobody can see or
         // close. The connection's tasks are dropped (and their CLI processes
@@ -1814,15 +1843,16 @@ impl Rpc {
     /// The project or worktree must exist under exactly this id. The CLI also
     /// matches names, branches, paths and id prefixes, so an id that is nobody's
     /// could otherwise start a terminal somewhere else.
-    async fn target_exists(&self, target: &CreateTarget) -> std::result::Result<(), Fault> {
+    async fn target_exists(
+        &self,
+        target: &CreateTarget,
+        explain: fn(Fault) -> Fault,
+    ) -> std::result::Result<(), Fault> {
         let (kind, target) = match target {
             CreateTarget::Project(project) => ("project", project),
             CreateTarget::Worktree(worktree) => ("worktree", worktree),
         };
-        let shown = self
-            .read(&[kind, "show", target])
-            .await
-            .map_err(create_fault)?;
+        let shown = self.read(&[kind, "show", target]).await.map_err(explain)?;
         if shown.get("id").and_then(Value::as_str) == Some(target) {
             Ok(())
         } else {

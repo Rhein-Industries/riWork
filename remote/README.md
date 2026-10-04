@@ -135,8 +135,8 @@ earlier result and `wait_ms` (0 to 10000) makes the one `riwork shell output ...
 (about every 80 ms where it cannot say) and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time. That
 call may take ten seconds, so the connector no longer handles a device's requests one
 at a time: `lanes.rs` lets one ordered request (`shell.keys`, `shell.input`,
-`shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`, in arrival order) and three others run at once,
-at most two of them waits, queues the rest in arrival order, and the connection loop
+`shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`, `chat.create`, `chat.command`, `chat.stop`, in arrival order) and three others run at once,
+at most two of them waits (a `shell.output` with `if_changed` and `wait_ms`, or a `chat.events` with `wait_ms` above 0), queues the rest in arrival order, and the connection loop
 alone seals and sends the responses (out of order by request, in order by counter). A
 wait ends, and its CLI process is killed, when the connection closes, the phone goes
 offline or the device is revoked (checked every 250 ms while requests are pending).
@@ -209,6 +209,24 @@ is not idempotent and not deduplicated: a repeat answers `already_exists`. Its t
 (`tests/project_create.rs`); the root crate's `tests/project_create_cli.rs` pins the CLI sentences
 and output the connector relies on (in a throwaway `HOME` and `RIWORK_HOME`), and an ignored test
 drives the real CLI with `RIWORK_TEST_CLI` the same way.
+
+`chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop` let the phone follow and drive the
+desktop's Codex and Claude chats (the contract is in [remote-protocol.md](../docs/remote-protocol.md), "Chat
+extension"; the code is `src/rpc/chat.rs`). Each is one call of the installed CLI (`riwork chat list|new|events|
+command|stop ... --json`) with an argument vector built from validated values; the chat JSON itself is the
+desktop's `src/chat/model.rs`, passed on as printed, after the connector checked its envelope (a chat has a
+canonical id, a known provider and a state; a page of events has `{seq, event}` entries in rising order after
+`since`). A project or worktree is looked up by its exact id first, like `shell.create`. `riwork capabilities
+--json` says whether the CLI has chats (`"chat":true`): it decides `features.chat` in `ready` (asked once per
+connection while the answer is no, and remembered once it is yes) and each method refuses with "update RiWork"
+without it. `chat.create`, `chat.command` and `chat.stop` are in the ordered lane; a creation's CLI runs in a
+task of its own, like `shell.create`'s. `chat.events` is a long poll of up to 25 seconds: the CLI subscribes to the
+chat host from `since`, waits for the first event, collects for 50 ms and prints a page. The connector asks it for
+at most the reply limit less 1 KiB of JSON (128 KiB, or 2 MiB for a session that deflates) and then halves the
+page until the reply fits one sealed frame the way `connector.rs` will seal it (`link::encode_reply`), setting
+`more` and `next` for the cut (one event that is more than a frame by itself has its long strings cut, as the CLI cuts them for a page). `tests/chat.rs` runs the RPCs against a stub CLI (an ignored test drives the real
+CLI and its chat host in a throwaway home with `RIWORK_TEST_CLI`); `tests/chat_link.rs` runs a real relay and the
+real connector binary for `features.chat`, the lanes and the sealing of a page.
 
 `projects.list`, `shells.list` and `orchestrators.list` also carry what the desktop knows about
 recency and agent activity (the contract is in [remote-protocol.md](../docs/remote-protocol.md),
