@@ -435,7 +435,7 @@ impl RemotePrompt {
             .cursor_pointer()
             .border_1()
             .border_color(rgb(if focused {
-                colors.gold
+                colors.focus
             } else if primary {
                 colors.cyan
             } else {
@@ -549,7 +549,7 @@ impl Render for RemotePrompt {
             .flex()
             .flex_col()
             .gap(ui_text::space(14.0))
-            .font_family("Menlo")
+            .font_family(ui_text::ui_family())
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.magenta))

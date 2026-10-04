@@ -2009,7 +2009,7 @@ impl FileExplorer {
             _ => self.root.is_some(),
         };
         let color = if active {
-            colors.gold
+            colors.focus
         } else if available {
             colors.cyan
         } else {
@@ -2026,7 +2026,7 @@ impl FileExplorer {
             .justify_center()
             .cursor_pointer()
             .border_1()
-            .border_color(rgb(if active { colors.gold } else { colors.divider }))
+            .border_color(rgb(if active { colors.focus } else { colors.divider }))
             .text_color(rgb(color));
         let button = match face {
             Face::Text(label) => {
@@ -2202,7 +2202,7 @@ impl FileExplorer {
             .border_l_1()
             .border_color(rgb(if selected {
                 if self.mode == Mode::Tree && self.focus.is_focused(window) {
-                    colors.gold
+                    colors.focus
                 } else {
                     colors.cyan
                 }
@@ -2501,7 +2501,7 @@ impl FileExplorer {
             .text_size(ui_text::text(11.0))
             .border_1()
             .border_color(rgb(if self.is_current(Mode::Preview, window) {
-                colors.gold
+                colors.focus
             } else {
                 colors.divider
             }))

@@ -28,7 +28,7 @@ use crate::{
     remote_tree::Link,
     status_bar::StatusBarSettings,
     theme::{Appearance, Palette, ThemeChoice, palette},
-    ui_text::{self, SizeChange, TextPoints},
+    ui_text::{self, InterfaceFont, SizeChange, TextPoints},
 };
 
 #[derive(Clone, Default)]
@@ -154,6 +154,23 @@ pub struct Settings {
     pub ui_text_size: TextPoints,
     /// Interface text follows Ghostty's `font-size` instead of `ui_text_size`.
     pub ui_text_matches_terminal: bool,
+    /// Native's "Terminals match the theme": terminals take Native's white or
+    /// black background and palette. Off keeps Ghostty's own colors.
+    pub native_terminal_colors: bool,
+    /// Native's interface font. The other themes draw in Menlo.
+    pub interface_font: InterfaceFont,
+}
+
+impl Settings {
+    /// Whether the selected theme's terminal colors option is on: "Terminals
+    /// match the theme" for Native, "Use RiWork terminal colors" while following
+    /// Ghostty. The presets force their colors whatever this says.
+    pub fn terminal_colors_forced(&self) -> bool {
+        match self.theme {
+            ThemeChoice::Native => self.native_terminal_colors,
+            _ => self.use_riwork_colors,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -171,6 +188,8 @@ impl Default for Settings {
             agent_inline_mode: true,
             ui_text_size: TextPoints::DEFAULT,
             ui_text_matches_terminal: false,
+            native_terminal_colors: true,
+            interface_font: InterfaceFont::default(),
         }
     }
 }
@@ -222,6 +241,12 @@ impl<'de> Deserialize<'de> for Settings {
                 "ui_text_matches_terminal",
                 defaults.ui_text_matches_terminal,
             ),
+            native_terminal_colors: lenient_field(
+                &object,
+                "native_terminal_colors",
+                defaults.native_terminal_colors,
+            ),
+            interface_font: lenient_field(&object, "interface_font", defaults.interface_font),
         })
     }
 }
@@ -411,6 +436,9 @@ impl Toggle {
 
     fn flip(self, settings: &mut Settings) {
         let value = match self {
+            Self::TerminalColors if settings.theme == ThemeChoice::Native => {
+                &mut settings.native_terminal_colors
+            }
             Self::TerminalColors => &mut settings.use_riwork_colors,
             Self::PanelTabIcons => &mut settings.panel_tab_icons,
             Self::PreviewOnSelect => &mut settings.open_preview_on_select,
@@ -435,6 +463,7 @@ pub struct SettingsPanel {
     account_focus: BTreeMap<String, FocusHandle>,
     theme_focus: Vec<FocusHandle>,
     terminal_focus: FocusHandle,
+    font_focus: FocusHandle,
     tab_icons_focus: FocusHandle,
     preview_focus: FocusHandle,
     inline_focus: FocusHandle,
@@ -843,6 +872,7 @@ impl SettingsPanel {
                 .collect(),
             theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
+            font_focus: cx.focus_handle(),
             tab_icons_focus: cx.focus_handle(),
             preview_focus: cx.focus_handle(),
             inline_focus: cx.focus_handle(),
@@ -904,8 +934,11 @@ impl SettingsPanel {
         handles.push(self.account_refresh_focus.clone());
         handles.extend(self.account_focus.values().cloned());
         handles.extend(self.theme_focus.iter().cloned());
-        if settings.theme == ThemeChoice::Ghostty {
+        if matches!(settings.theme, ThemeChoice::Ghostty | ThemeChoice::Native) {
             handles.push(self.terminal_focus.clone());
+        }
+        if settings.theme == ThemeChoice::Native {
+            handles.push(self.font_focus.clone());
         }
         handles.push(self.tab_icons_focus.clone());
         handles.push(self.text_size_focus.clone());
@@ -1203,10 +1236,17 @@ impl SettingsPanel {
                 } else if let Some(index) = theme_index {
                     let theme = ThemeChoice::ALL[index];
                     self.change(|settings| settings.theme = theme, cx);
-                } else if settings.theme == ThemeChoice::Ghostty
+                } else if matches!(settings.theme, ThemeChoice::Ghostty | ThemeChoice::Native)
                     && self.terminal_focus.is_focused(window)
                 {
                     self.change(|settings| Toggle::TerminalColors.flip(settings), cx);
+                } else if settings.theme == ThemeChoice::Native
+                    && self.font_focus.is_focused(window)
+                {
+                    self.change(
+                        |settings| settings.interface_font = settings.interface_font.other(),
+                        cx,
+                    );
                 } else if self.tab_icons_focus.is_focused(window) {
                     self.change(|settings| Toggle::PanelTabIcons.flip(settings), cx);
                 } else if self.text_size_focus.is_focused(window) {
@@ -2146,19 +2186,30 @@ impl SettingsPanel {
     ) -> AnyElement {
         let colors = palette(cx);
         let appearance_error = cx.global::<Appearance>().error.clone();
-        let terminal_row = (settings.theme == ThemeChoice::Ghostty).then(|| {
-            self.toggle_row(
+        let terminal_row = match settings.theme {
+            ThemeChoice::Ghostty => Some(self.toggle_row(
                 Toggle::TerminalColors,
                 "Use RiWork terminal colors",
                 "Keep RiWork terminal colors while following Ghostty. Off uses Ghostty colors.",
                 settings.use_riwork_colors,
                 cx,
-            )
-        });
+            )),
+            ThemeChoice::Native => Some(self.toggle_row(
+                Toggle::TerminalColors,
+                "Terminals match the theme",
+                "Terminals take the theme's white or black background and a quiet palette. Off keeps Ghostty's own colors.",
+                settings.native_terminal_colors,
+                cx,
+            )),
+            _ => None,
+        };
+        let font_row = (settings.theme == ThemeChoice::Native)
+            .then(|| self.font_row(settings.interface_font, cx));
         row_list()
             .child(self.theme_grid(theme_columns, settings.theme, cx))
             .children(appearance_error.map(|error| div().text_size(ui_text::text(11.0)).text_color(rgb(colors.gold)).child(error)))
             .children(terminal_row)
+            .children(font_row)
             .child(self.toggle_row(
                 Toggle::PanelTabIcons,
                 "Icons instead of labels",
@@ -2167,6 +2218,76 @@ impl SettingsPanel {
                 cx,
             ))
             .child(self.text_size_row(settings, cx))
+            .into_any_element()
+    }
+
+    /// Native's Interface font: one choice per face. The row takes focus like a
+    /// toggle, and Enter or Space switches to the other face.
+    fn font_row(&self, selected: InterfaceFont, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
+        let choice = |font: InterfaceFont, cx: &mut Context<Self>| {
+            let active = font == selected;
+            div()
+                .id(match font {
+                    InterfaceFont::System => "interface-font-system",
+                    InterfaceFont::SystemMono => "interface-font-system-mono",
+                })
+                .flex_none()
+                .px(ui_text::space(8.0))
+                .py(ui_text::space(4.0))
+                .border_1()
+                .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                .bg(rgb(colors.panel_active))
+                .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+                .text_size(ui_text::text(10.0))
+                .cursor_pointer()
+                .hover(|style| style.border_color(rgb(colors.cyan)))
+                .child(font.label())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| view.font_focus.focus(window, cx)),
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.change(|settings| settings.interface_font = font, cx);
+                }))
+        };
+        div()
+            .id("interface-font")
+            .track_focus(&self.font_focus)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(ui_text::space(12.0))
+            .px(ui_text::space(ROW_PAD_X))
+            .py(ui_text::space(ROW_PAD_Y))
+            .bg(rgb(colors.panel))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .child(
+                row_text()
+                    .child(
+                        div()
+                            .text_size(ui_text::text(12.0))
+                            .text_color(rgb(colors.text))
+                            .child("Interface font"),
+                    )
+                    .child(
+                        div()
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            .child("SF Pro throughout, or with paths, branches, shortcut keys and counts in a monospace face."),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(ui_text::space(6.0))
+                    .children(InterfaceFont::ALL.map(|font| choice(font, cx))),
+            )
             .into_any_element()
     }
 
@@ -2235,7 +2356,12 @@ impl SettingsPanel {
                 div()
                     .flex()
                     .gap(ui_text::space(4.0))
-                    .child(div().text_color(rgb(colors.text)).child(key))
+                    .child(
+                        div()
+                            .font_family(ui_text::mono_family())
+                            .text_color(rgb(colors.text))
+                            .child(key),
+                    )
                     .child(label),
             )
         };
@@ -2458,7 +2584,7 @@ impl Render for SettingsPanel {
                                     .min_w_0()
                                     .when_some(layout.max_width(), |page, max| page.max_w(px(max)))
                                     .gap(px(layout.gap()))
-                                    .font_family("Menlo")
+                                    .font_family(ui_text::ui_family())
                                     .text_color(rgb(colors.text))
                                     .child(
                                         div()
@@ -2699,6 +2825,65 @@ mod tests {
             .update(|settings| settings.use_riwork_colors = true)
             .unwrap();
         assert_eq!(document(&dir)["open_preview_on_select"], "sometimes");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn native_options_default_on_and_the_terminal_row_flips_the_selected_themes_option() {
+        let dir = env::temp_dir().join(format!("riwork-settings-native-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let defaults = Settings::default();
+        assert!(defaults.native_terminal_colors);
+        assert_eq!(defaults.interface_font, InterfaceFont::SystemMono);
+        // A file from a build without them reads as the defaults.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"theme":"native","use_riwork_colors":false}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.theme, ThemeChoice::Native);
+        assert!(loaded.native_terminal_colors);
+        assert!(loaded.terminal_colors_forced());
+        assert_eq!(loaded.interface_font, InterfaceFont::SystemMono);
+
+        // Under Native the terminal row flips Native's option, not RiWork's.
+        let saved = store
+            .update(|settings| Toggle::TerminalColors.flip(settings))
+            .unwrap();
+        assert!(!saved.native_terminal_colors);
+        assert!(!saved.use_riwork_colors);
+        assert!(!saved.terminal_colors_forced());
+        let saved = store
+            .update(|settings| settings.interface_font = settings.interface_font.other())
+            .unwrap();
+        assert_eq!(saved.interface_font, InterfaceFont::System);
+        let file: Value =
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(file["native_terminal_colors"], false);
+        assert_eq!(file["interface_font"], "system");
+        assert_eq!(store.load().unwrap(), saved);
+
+        // Following Ghostty, the same row is "Use RiWork terminal colors" again.
+        let saved = store
+            .update(|settings| {
+                settings.theme = ThemeChoice::Ghostty;
+                Toggle::TerminalColors.flip(settings);
+            })
+            .unwrap();
+        assert!(saved.use_riwork_colors);
+        assert!(!saved.native_terminal_colors);
+        assert!(saved.terminal_colors_forced());
+
+        // A font this build does not know falls back to the default alone.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"interface_font":"comic","native_terminal_colors":false}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.interface_font, InterfaceFont::SystemMono);
+        assert!(!loaded.native_terminal_colors);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3298,7 +3483,8 @@ mod tests {
         for (index, section) in Section::ALL.iter().enumerate() {
             assert_eq!(section.number(), format!("{:02}", index + 1));
             assert!(!section.title().is_empty());
-            // Menlo at 10 px is about 6 px per character.
+            // Menlo at 10 px is about 6 px per character; Native's SF Pro, drawn
+            // at 13/11 of that, averages a little less, so the bound holds for both.
             let width = section.description().chars().count() as f32 * 6.1;
             assert!(width <= DESCRIPTION_MAX_WIDTH, "{:?} wraps", section);
         }

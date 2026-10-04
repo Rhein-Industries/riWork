@@ -210,7 +210,7 @@ impl Render for DraggedProjectItem {
             .border_1()
             .border_color(rgb(colors.cyan))
             .text_color(rgb(colors.text))
-            .font_family("Menlo")
+            .font_family(ui_text::ui_family())
             .text_size(ui_text::text(11.0))
             .child(match self.kind {
                 ProjectDragKind::Project(_) => "◇",
@@ -668,7 +668,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                         tasks.len()
                                     ),
                                     if activity.working > 0 {
-                                        colors.cyan
+                                        colors.working
                                     } else {
                                         colors.muted
                                     },
@@ -732,7 +732,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     selected,
                     colors.magenta,
                     vec![
-                        line(
+                        mono_line(
                             format!(
                                 "{} {}{}{}",
                                 if worktree.is_primary { "◆" } else { "◇" },
@@ -748,7 +748,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             if selected { colors.cyan } else { colors.text },
                             11.0,
                         ),
-                        line(path.into_owned(), colors.muted, 10.0),
+                        mono_line(path.into_owned(), colors.muted, 10.0),
                         line(
                             format!(
                                 "{}{done}/{} TASKS · {}",
@@ -760,7 +760,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                 short_id(&worktree.id)
                             ),
                             if activity.working > 0 {
-                                colors.cyan
+                                colors.working
                             } else {
                                 colors.muted
                             },
@@ -838,7 +838,9 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     continue;
                 }
                 let metrics = data.metrics.get(&shell.id).copied().unwrap_or_default();
-                let status = shell_status_label(shell.alive, data.activity.get(&shell.id));
+                let agent = data.activity.get(&shell.id);
+                let status = shell_status_label(shell.alive, agent);
+                let working = agent.is_some_and(|state| state.activity == AgentActivity::Working);
                 rows.push(row(
                     format!("shell-{}", shell.id),
                     false,
@@ -857,16 +859,18 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_color(rgb(if shell.alive {
-                                        colors.cyan
-                                    } else {
+                                    .text_color(rgb(if !shell.alive {
                                         colors.magenta
+                                    } else if working {
+                                        colors.working
+                                    } else {
+                                        colors.cyan
                                     }))
                                     .child(status),
                             )
                             .into_any_element(),
-                        line(path.into_owned(), colors.muted, 10.0),
-                        line(
+                        mono_line(path.into_owned(), colors.muted, 10.0),
+                        mono_line(
                             format!(
                                 "CPU {:.1}% · RAM {} · {command}",
                                 metrics.cpu_percent,
@@ -879,7 +883,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             },
                             10.0,
                         ),
-                        line(shell.id.clone(), colors.muted, 10.0),
+                        mono_line(shell.id.clone(), colors.muted, 10.0),
                     ],
                     PanelAction::Shell(shell.id.clone()),
                     on_action.clone(),
@@ -1717,7 +1721,7 @@ fn push_remote_panel<V: 'static>(
                         selected,
                         colors.magenta,
                         vec![
-                            line(
+                            mono_line(
                                 format!(
                                     "{} {}",
                                     if worktree.primary { "◆" } else { "◇" },
@@ -1726,7 +1730,7 @@ fn push_remote_panel<V: 'static>(
                                 if selected { colors.cyan } else { colors.text },
                                 11.0,
                             ),
-                            line(worktree.path.clone(), colors.muted, 10.0),
+                            mono_line(worktree.path.clone(), colors.muted, 10.0),
                             line(
                                 format!(
                                     "{done}/{} TASKS · {}",
@@ -1848,8 +1852,8 @@ fn push_remote_panel<V: 'static>(
                                         .child(if shell.alive { "● LIVE" } else { "× EXITED" }),
                                 )
                                 .into_any_element(),
-                            line(shell.cwd.clone(), colors.muted, 10.0),
-                            line(
+                            mono_line(shell.cwd.clone(), colors.muted, 10.0),
+                            mono_line(
                                 command.to_owned(),
                                 if shell.alive {
                                     colors.cyan
@@ -1858,7 +1862,7 @@ fn push_remote_panel<V: 'static>(
                                 },
                                 10.0,
                             ),
-                            line(shell.id.clone(), colors.muted, 10.0),
+                            mono_line(shell.id.clone(), colors.muted, 10.0),
                         ],
                         PanelAction::Remote(RemoteAction::OpenShell {
                             host: remote.host.clone(),
@@ -2205,6 +2209,18 @@ fn row<V: 'static>(
 }
 
 fn line(text: String, color: u32, size: f32) -> AnyElement {
+    line_box(text, color, size).into_any_element()
+}
+
+/// A line of technical text, a path, a branch, an id or a command, in the
+/// interface's monospace accent face.
+fn mono_line(text: String, color: u32, size: f32) -> AnyElement {
+    line_box(text, color, size)
+        .font_family(ui_text::mono_family())
+        .into_any_element()
+}
+
+fn line_box(text: String, color: u32, size: f32) -> Div {
     div()
         .min_w_0()
         .overflow_hidden()
@@ -2212,7 +2228,6 @@ fn line(text: String, color: u32, size: f32) -> AnyElement {
         .text_size(ui_text::text(size))
         .text_color(rgb(color))
         .child(text)
-        .into_any_element()
 }
 
 fn worktree_label<'a>(state: &'a State, id: Option<&str>) -> &'a str {

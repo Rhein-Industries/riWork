@@ -41,7 +41,7 @@ const MARGIN: f32 = 8.0;
 pub(crate) enum Look {
     /// Pane chrome: tabs and the pane toolbar.
     Pane,
-    /// Panel and settings controls, in the monospace of their labels.
+    /// Panel and settings controls, in the interface face of their labels.
     Control,
     /// Status bar items and their settings.
     Status,
@@ -62,11 +62,11 @@ impl Look {
         let mut style = TextStyle::default();
         let (family, font_size) = match self {
             Self::Pane => (None, 11.0),
-            Self::Control => (Some("Menlo"), 10.0),
+            Self::Control => (Some(ui_text::ui_family()), 10.0),
             Self::Status => (None, 10.0),
         };
         if let Some(family) = family {
-            style.font_family = family.into();
+            style.font_family = family;
         }
         style.font_size = ui_text::text(font_size).into();
         style

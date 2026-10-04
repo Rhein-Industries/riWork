@@ -11,16 +11,95 @@
 //! at every call, so free helpers without a `cx` scale too; it is kept in step
 //! with the globals by `init`, which also redraws every window when it changes.
 //! Other threads, tests included, always see the design sizes.
+//!
+//! The face is decided here too. The colorful themes draw everything in Menlo,
+//! as RiWork always has. Native draws in the system font (SF Pro) and, with
+//! Settings → Interface font on "System + monospace accents", keeps a monospace
+//! face (SF Mono, else Menlo) for technical text: paths, branches, ids, shortcut
+//! keys and counts. Render code asks `ui_family()` for a root and
+//! `mono_family()` for such text instead of naming a font.
 
 use std::cell::Cell;
 
-use gpui::{App, Global, Keystroke, Pixels, px};
+use gpui::{App, Global, Keystroke, Pixels, SharedString, px};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     settings::{Settings, SettingsStore},
-    theme::{self, GhosttyConfigStamp},
+    theme::{self, GhosttyConfigStamp, ThemeChoice},
 };
+
+/// Settings → Interface font, for the Native theme.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterfaceFont {
+    /// SF Pro for everything.
+    System,
+    /// SF Pro, with a monospace face for paths, branches, shortcut keys and counts.
+    #[default]
+    SystemMono,
+}
+
+impl InterfaceFont {
+    pub const ALL: [Self; 2] = [Self::System, Self::SystemMono];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System (SF Pro)",
+            Self::SystemMono => "System + monospace accents",
+        }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Self::System => Self::SystemMono,
+            Self::SystemMono => Self::System,
+        }
+    }
+}
+
+/// The faces RiWork's interface is drawn in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    /// Menlo throughout: every theme but Native.
+    Menlo,
+    /// The system font throughout.
+    System,
+    /// The system font, with monospace accents.
+    SystemMono,
+}
+
+impl Face {
+    pub fn of(settings: &Settings) -> Self {
+        if settings.theme != ThemeChoice::Native {
+            return Self::Menlo;
+        }
+        match settings.interface_font {
+            InterfaceFont::System => Self::System,
+            InterfaceFont::SystemMono => Self::SystemMono,
+        }
+    }
+
+    /// How much larger than the design size this face draws. Sizes were designed
+    /// in Menlo, whose 11 px list text sits beside a 13 pt terminal. SF Pro is
+    /// narrower and has a smaller x-height at equal size, and macOS's own lists,
+    /// sidebars and menus use it at 13 pt, so the system face draws the 11 px
+    /// list text at 13 px, with tabs and captions growing alike. While the size
+    /// matches the terminal it is Ghostty's number as it is, like Menlo's.
+    pub fn factor(self, matching_terminal: bool) -> f32 {
+        match self {
+            Self::Menlo => 1.0,
+            Self::System | Self::SystemMono if matching_terminal => 1.0,
+            Self::System | Self::SystemMono => SYSTEM_BODY_POINTS / REFERENCE_SIZE,
+        }
+    }
+}
+
+/// macOS's body text size, which Native draws the 11 px design text at.
+pub const SYSTEM_BODY_POINTS: f32 = 13.0;
+const MENLO: &str = "Menlo";
+const SYSTEM_FONT: &str = ".SystemUIFont";
+const SF_MONO: &str = "SF Mono";
 
 /// The size the text-size setting names: the 11 px list text of the panels
 /// (Projects, Files, Preview, Shells), the UI text read most. At the default
@@ -49,6 +128,33 @@ pub const GHOSTTY_DEFAULT_FONT_SIZE: f32 = 13.0;
 
 thread_local! {
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
+    static FACE: Cell<Face> = const { Cell::new(Face::Menlo) };
+    /// Whether SF Mono is installed; Menlo stands in for it otherwise.
+    static HAS_SF_MONO: Cell<bool> = const { Cell::new(true) };
+}
+
+/// The face the interface is drawn in now.
+pub fn face() -> Face {
+    FACE.with(Cell::get)
+}
+
+/// The font family of a window's or popup's root.
+pub fn ui_family() -> SharedString {
+    match face() {
+        Face::Menlo => MENLO.into(),
+        Face::System | Face::SystemMono => SYSTEM_FONT.into(),
+    }
+}
+
+/// The font family of technical text: a path, a branch, an id, a shortcut key or
+/// a count. Menlo or SF Mono, or the system font when accents are off.
+pub fn mono_family() -> SharedString {
+    match face() {
+        Face::Menlo => MENLO.into(),
+        Face::System => SYSTEM_FONT.into(),
+        Face::SystemMono if HAS_SF_MONO.with(Cell::get) => SF_MONO.into(),
+        Face::SystemMono => MENLO.into(),
+    }
 }
 
 /// The effective scale: 1.0 is today's exact sizes.
@@ -244,8 +350,13 @@ pub fn refresh_terminal_font_size(cx: &mut App) {
 /// A hint on screen or about to open was measured at the old scale; its popup
 /// window would keep that size, so it goes until the pointer rests again.
 fn sync(cx: &mut App) {
-    let scale = current_points(cx) / REFERENCE_SIZE;
-    if SCALE.with(|cell| cell.replace(scale)) != scale {
+    let settings = cx.global::<Settings>();
+    let face = Face::of(settings);
+    let scale =
+        current_points(cx) / REFERENCE_SIZE * face.factor(settings.ui_text_matches_terminal);
+    let scale_moved = SCALE.with(|cell| cell.replace(scale)) != scale;
+    let face_moved = FACE.with(|cell| cell.replace(face)) != face;
+    if scale_moved || face_moved {
         crate::tooltip::hide(cx);
         cx.refresh_windows();
     }
@@ -280,6 +391,12 @@ pub fn save(store: &SettingsStore, change: SizeChange, cx: &mut App) -> Result<S
 
 /// Call once both `Settings` and the window-independent globals exist.
 pub fn init(cx: &mut App) {
+    let has_sf_mono = cx
+        .text_system()
+        .all_font_names()
+        .iter()
+        .any(|name| name == SF_MONO);
+    HAS_SF_MONO.with(|cell| cell.set(has_sf_mono));
     refresh_terminal_font_size(cx);
     sync(cx);
     cx.observe_global::<Settings>(|cx| {
@@ -301,6 +418,54 @@ pub fn change(change: SizeChange, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_native_draws_in_the_system_face_at_its_native_size() {
+        let mut settings = Settings::default();
+        for theme in ThemeChoice::ALL {
+            settings.theme = theme;
+            let face = Face::of(&settings);
+            if theme == ThemeChoice::Native {
+                assert_eq!(face, Face::SystemMono);
+                // The 11 px design text is drawn at macOS's 13 pt body size.
+                assert!((REFERENCE_SIZE * face.factor(false) - SYSTEM_BODY_POINTS).abs() < 1e-4);
+                // Matching the terminal shows Ghostty's own number.
+                assert_eq!(face.factor(true), 1.0);
+            } else {
+                assert_eq!(face, Face::Menlo, "{theme:?}");
+                assert_eq!(face.factor(false), 1.0);
+            }
+        }
+        settings.theme = ThemeChoice::Native;
+        settings.interface_font = InterfaceFont::System;
+        assert_eq!(Face::of(&settings), Face::System);
+        assert_eq!(InterfaceFont::System.other(), InterfaceFont::SystemMono);
+        // Off the UI thread, and before `init`, the face is Menlo as it always was.
+        assert_eq!(ui_family(), "Menlo");
+        assert_eq!(mono_family(), "Menlo");
+    }
+
+    #[test]
+    fn faces_name_their_families() {
+        let families = |face| {
+            FACE.with(|cell| cell.set(face));
+            let names = (ui_family(), mono_family());
+            FACE.with(|cell| cell.set(Face::Menlo));
+            names
+        };
+        assert_eq!(families(Face::Menlo), ("Menlo".into(), "Menlo".into()));
+        assert_eq!(
+            families(Face::System),
+            (".SystemUIFont".into(), ".SystemUIFont".into())
+        );
+        assert_eq!(
+            families(Face::SystemMono),
+            (".SystemUIFont".into(), "SF Mono".into())
+        );
+        HAS_SF_MONO.with(|cell| cell.set(false));
+        assert_eq!(families(Face::SystemMono).1, "Menlo");
+        HAS_SF_MONO.with(|cell| cell.set(true));
+    }
 
     #[test]
     fn steps_are_whole_points_and_stop_at_the_limits() {

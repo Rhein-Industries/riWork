@@ -972,7 +972,7 @@ impl Render for DraggedTab {
             .border_1()
             .border_color(rgb(colors.cyan))
             .text_color(rgb(colors.text))
-            .font_family("Menlo")
+            .font_family(ui_text::ui_family())
             .text_size(ui_text::text(11.0))
             .child(self.title.clone())
     }
@@ -1697,6 +1697,9 @@ impl Workspace {
             workspace.apply_settings(window, cx);
         })
         .detach();
+        // Native follows macOS light and dark mode as it switches, not at the next poll.
+        cx.observe_window_appearance(window, |_, _, cx| sync_appearance(cx))
+            .detach();
         cx.observe_global::<settings::CodexAccountsState>(|_, cx| {
             request_codex_usage(false, cx);
             cx.notify();
@@ -1756,7 +1759,7 @@ impl Workspace {
     }
 
     fn terminal_theme(settings: &Settings, appearance: &Appearance) -> Option<TerminalTheme> {
-        appearance.terminal_override(settings.use_riwork_colors)
+        appearance.terminal_override(settings.terminal_colors_forced())
     }
 
     fn spawn_tab(
@@ -7533,6 +7536,7 @@ impl Workspace {
                     .id("status-current-worktree")
                     .max_w(ui_text::space(220.0))
                     .min_w_0()
+                    .font_family(ui_text::mono_family())
                     .text_ellipsis()
                     .overflow_hidden()
                     .cursor_pointer()
@@ -7588,7 +7592,7 @@ impl Workspace {
                     .overflow_hidden()
                     .cursor_pointer()
                     .text_color(rgb(if counts.working > 0 {
-                        colors.cyan
+                        colors.working
                     } else {
                         colors.muted
                     }))
@@ -7600,6 +7604,7 @@ impl Workspace {
             }
             StatusItemKind::LiveSessions => div()
                 .flex_none()
+                .font_family(ui_text::mono_family())
                 .child(format!(
                     "{} LIVE",
                     self.shells
@@ -7624,6 +7629,7 @@ impl Workspace {
                     });
                 div()
                     .flex_none()
+                    .font_family(ui_text::mono_family())
                     .child(format!("CPU {cpu:.1}% RAM {}", format_bytes(ram)))
                     .into_any_element()
             }
@@ -7642,6 +7648,7 @@ impl Workspace {
                 div()
                     .id("copy-active-shell-id")
                     .flex_none()
+                    .font_family(ui_text::mono_family())
                     .text_color(rgb(colors.cyan))
                     .when_some(id, |item, id| {
                         item.cursor_pointer()
@@ -8674,7 +8681,7 @@ impl Render for Workspace {
             .flex_col()
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
-            .font_family("Menlo")
+            .font_family(ui_text::ui_family())
             .text_size(ui_text::text(10.0))
             .child(
                 div()
@@ -9440,10 +9447,15 @@ fn sync_appearance(cx: &mut App) {
     // Text matching the terminal follows edits to Ghostty's font-size, whatever the theme.
     ui_text::refresh_terminal_font_size(cx);
     let selected = cx.global::<Settings>().theme;
-    // Presets are static; native configuration is resolved again to pick up edits,
-    // including recursive config files and custom theme files. The parse itself is
-    // skipped while none of those files changed.
-    if selected != ThemeChoice::Ghostty && cx.global::<Appearance>().selected == selected {
+    // Presets are static and Native changes only with macOS's light or dark mode;
+    // native configuration is resolved again to pick up edits, including recursive
+    // config files and custom theme files. The parse itself is skipped while none
+    // of those files changed.
+    let current = cx.global::<Appearance>();
+    if selected != ThemeChoice::Ghostty
+        && current.selected == selected
+        && !current.is_stale_for(theme::system_is_dark(cx))
+    {
         return;
     }
     let Some(appearance) = theme::refresh_appearance(selected, cx) else {
@@ -9526,7 +9538,11 @@ fn main() {
                 eprintln!("riwork: {error}");
                 Settings::default()
             });
-        cx.set_global(Appearance::resolve(settings.theme));
+        theme::force_system_appearance(cx);
+        cx.set_global(Appearance::resolve(
+            settings.theme,
+            theme::system_is_dark(cx),
+        ));
         cx.set_global(settings);
         ui_text::init(cx);
         // After both globals exist: publishes now and again on every change.
@@ -10470,7 +10486,7 @@ mod workspace_tab_tests {
             .filter(|theme| *theme != ThemeChoice::Ghostty)
         {
             settings.theme = selected;
-            let appearance = Appearance::resolve(selected);
+            let appearance = Appearance::resolve(selected, false);
             assert_eq!(
                 Workspace::terminal_theme(&settings, &appearance),
                 appearance.terminal
@@ -10481,7 +10497,20 @@ mod workspace_tab_tests {
                 appearance.terminal
             );
         }
-        let mut appearance = Appearance::resolve(ThemeChoice::RiWork);
+        // Native forces its colors only while "Terminals match the theme" is on,
+        // whatever the RiWork option says.
+        settings.theme = ThemeChoice::Native;
+        let native = Appearance::resolve(ThemeChoice::Native, true);
+        settings.native_terminal_colors = false;
+        assert_eq!(Workspace::terminal_theme(&settings, &native), None);
+        settings.native_terminal_colors = true;
+        settings.use_riwork_colors = false;
+        assert_eq!(
+            Workspace::terminal_theme(&settings, &native),
+            Some(theme::native_terminal_theme(true))
+        );
+        settings.use_riwork_colors = true;
+        let mut appearance = Appearance::resolve(ThemeChoice::RiWork, false);
         appearance.selected = ThemeChoice::Ghostty;
         appearance.terminal = None;
         settings.theme = ThemeChoice::Ghostty;
