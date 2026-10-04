@@ -2,6 +2,7 @@ mod activity;
 mod agent_hooks;
 mod appearance_file;
 mod appearance_sync;
+mod chat;
 mod cli;
 mod cli_agents;
 mod codex_accounts;
