@@ -309,6 +309,14 @@ riwork orchestrator load-skill --project PROJECT_ID
 
 All orchestrator operations use the global scope when `--project` is omitted. `riwork orchestrator close` ends only the global session; `riwork orchestrator close --project PROJECT_ID` ends only that project's session. Worker shell lists exclude orchestrators. MCP orchestrator status/output tools accept an optional project selector.
 
+## Chat tabs
+
+**Codex chat** and **Claude chat** under **New Tab** in a pane's **…** actions menu open a native chat instead of the agent's terminal: Cmd+Option+Shift+C opens a Codex chat and Cmd+Option+Shift+L a Claude chat, in the selected worktree, in the main pane. The **· unrestricted** entries start the chat in Full mode, which never asks before it acts. A chat is driven through the agent's structured interface (`codex app-server`, Claude's stream-json mode) by the chat host, a background process (`riwork chat serve`) that owns the agent process and the chat's event log. A tab only follows the chat, so closing it, reloading the app or restarting the host does not end the chat: a restored layout reopens its chat tabs by id and rebuilds each transcript from the start of the log, and while the host is away a tab shows **Reconnecting…** and subscribes again from the last event it saw. A tab whose chat was deleted says so and offers **Close**.
+
+The tab is titled by the chat, with the agent's name or, with **Icons instead of labels** on, its mark (`>_` for Codex, a spark for Claude), and a working (●), waiting (◌) or done (✓) mark in front of the title, with the same hover hint that agents in terminals get. Open chats count among the agents in the status bar and in the project and worktree rows. Messages read as a conversation: your messages on the right, the agent's as Markdown (headings, lists, tables, quotes, links that open in the browser, code blocks with a **copy** button; **copy** on hover takes the whole message). Drag to select text within a paragraph, a table cell or a code block, double-click a word, triple-click the whole run, and Cmd+C copies it. The agent's thinking is folded under **Thinking…**. Commands, file changes (with an expandable diff, additions and removals tinted) and other tool calls are cards that open on click; long output keeps its last 200 lines. Plans and todo lists are checklists. The list follows new text until you scroll up, and **↓ latest** brings you back.
+
+When the agent asks to run a command, change files or use a tool, a bar above the message box names it and offers what the agent allows: **Allow**, **Allow for session**, **Deny**, **Stop**. With the message box empty, ⏎ allows, ⇧⏎ allows for the session and ⎋ denies; anything typed makes ⏎ a message again. Questions from the agent show their options as buttons beside a text field. In the message box ⏎ sends, also while a turn runs (the agent steers or queues it), ⇧⏎ starts a new line, and **Interrupt** or Cmd+. stops the turn. The toolbar sets the approval mode (Supervised, Auto-edit, Full, Plan), the model (a name, with opus, sonnet and haiku offered for Claude) and the effort, compacts the context, and shows how much of the context window is in use. Claude's own cost figure is shown as an estimate, never a bill. **⋯** has **Stop chat**, which ends the agent's process but keeps the chat (a stopped chat says it resumes when you send a message; a failed one offers **Retry**), and **Delete chat**.
+
 ## UI controls
 
 | Action | Shortcut |
@@ -329,6 +337,8 @@ All orchestrator operations use the global scope when `--project` is omitted. `r
 | Gather the tabs of unlocked panes into the main pane | Cmd+Shift+M |
 | Apply the default layout (locked navigation pane on the left, everything else in the main pane) | Cmd+Option+L |
 | Open Codex / Claude / Grok | Cmd+Shift+C / Cmd+Shift+L / Cmd+Shift+G |
+| Open a Codex / Claude chat | Cmd+Option+Shift+C / Cmd+Option+Shift+L |
+| Interrupt the turn of a chat | Cmd+. |
 | Bigger / smaller / actual-size app text (outside a terminal) | Cmd+= or Cmd++ / Cmd+- / Cmd+0 |
 | Open a URL or file in a terminal / open a file there in Vim | Cmd+click / Cmd+Shift+click |
 
