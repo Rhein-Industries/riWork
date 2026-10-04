@@ -380,12 +380,12 @@ impl DiffColors {
 /// The diff colors for the theme on screen, readable on the panels' highlight
 /// color. A configuration that gave no terminal colors falls back to RiWork's.
 pub fn diff_colors(cx: &App) -> DiffColors {
-    let use_riwork_colors = cx
+    let force = cx
         .try_global::<Settings>()
-        .is_some_and(|settings| settings.use_riwork_colors);
+        .is_some_and(Settings::terminal_colors_forced);
     let appearance = cx.try_global::<Appearance>();
     let theme = appearance
-        .and_then(|appearance| appearance.shown_terminal(use_riwork_colors))
+        .and_then(|appearance| appearance.shown_terminal(force))
         .unwrap_or_else(riwork_terminal_theme);
     DiffColors::from_terminal(&theme, palette(cx).panel_active)
 }
