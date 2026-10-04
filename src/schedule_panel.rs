@@ -583,6 +583,9 @@ impl Render for SchedulePanel {
                 .child(
                     div()
                         .text_color(rgb(colors.cyan))
+                        .when(ui_text::is_native(), |title| {
+                            title.font_weight(gpui::FontWeight::SEMIBOLD)
+                        })
                         .child(ui_text::cased("Schedules")),
                 )
                 .child(self.button(

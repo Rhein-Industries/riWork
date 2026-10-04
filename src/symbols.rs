@@ -80,10 +80,11 @@ impl Key {
         }
     }
 
-    /// The bitmap's side in pixels: the box at the backing scale.
+    /// The bitmap's side in pixels: the box at the backing scale. The caller sizes the box to
+    /// whole device pixels, so this rounds away only the key's hundredths.
     pub fn pixels(&self) -> usize {
         ((self.side as f32 / 100.0) * (self.scale as f32 / 100.0))
-            .ceil()
+            .round()
             .clamp(1.0, 512.0) as usize
     }
 }
@@ -218,10 +219,13 @@ fn coverage(key: &Key) -> Option<Vec<u8>> {
         }
         let fit = (box_points / size.width.max(size.height)).min(1.0);
         let (width, height) = (size.width * fit, size.height * fit);
+        // Centered on whole device pixels, as text is laid out, so the symbol's straight
+        // strokes land on pixel rows instead of being smeared across two.
+        let snap = |value: f64| (value * scale).round() / scale;
         let rect = CGRect {
             origin: CGPoint {
-                x: (box_points - width) / 2.0,
-                y: (box_points - height) / 2.0,
+                x: snap((box_points - width) / 2.0),
+                y: snap((box_points - height) / 2.0),
             },
             size: CGSize { width, height },
         };

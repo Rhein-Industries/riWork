@@ -2401,13 +2401,13 @@ impl FileExplorer {
                             .py(ui_text::space(6.0))
                             .text_size(ui_text::text(9.0))
                             .text_color(rgb(if *truncated { gold } else { muted }))
-                            .child(if *truncated {
+                            .child(ui_text::quiet(if *truncated {
                                 "PREVIEW TRUNCATED AT 1 MiB OR 10,000 LINES"
                             } else if markdown {
                                 "MARKDOWN SOURCE · READ ONLY"
                             } else {
                                 "TEXT · READ ONLY"
-                            }),
+                            })),
                     )
                     .child(
                         uniform_list("file-preview-lines", count, move |range, _, _| {
@@ -2452,6 +2452,7 @@ impl FileExplorer {
                         })
                         .flex_1()
                         .min_h_0()
+                        .font_family(accent_family())
                         .track_scroll(&self.preview_scroll),
                     )
                     .into_any_element()
@@ -2469,7 +2470,7 @@ impl FileExplorer {
                         .py(ui_text::space(6.0))
                         .text_size(ui_text::text(9.0))
                         .text_color(rgb(colors.muted))
-                        .child(format!("{description} · READ ONLY")),
+                        .child(ui_text::quiet(format!("{description} · READ ONLY"))),
                 )
                 .child(
                     div()
@@ -2511,7 +2512,7 @@ impl FileExplorer {
                                         colors.muted
                                     }))
                                     .cursor_pointer()
-                                    .child("‹ PREV")
+                                    .child(ui_text::quiet("‹ PREV"))
                                     .on_click(cx.listener(move |view, _, window, cx| {
                                         view.mode = Mode::Preview;
                                         view.preview_focus.focus(window, cx);
@@ -2523,7 +2524,7 @@ impl FileExplorer {
                             .child(
                                 div()
                                     .text_color(rgb(colors.text))
-                                    .child(format!("PAGE {page} OF {pages}")),
+                                    .child(ui_text::quiet(format!("PAGE {page} OF {pages}"))),
                             )
                             .child(
                                 div()
@@ -2534,7 +2535,7 @@ impl FileExplorer {
                                         colors.muted
                                     }))
                                     .cursor_pointer()
-                                    .child("NEXT ›")
+                                    .child(ui_text::quiet("NEXT ›"))
                                     .on_click(cx.listener(move |view, _, window, cx| {
                                         view.mode = Mode::Preview;
                                         view.preview_focus.focus(window, cx);
@@ -2567,7 +2568,7 @@ impl FileExplorer {
             .min_h_0()
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
-            .font_family("SF Mono")
+            .font_family(panel_family())
             .text_size(ui_text::text(11.0))
             .border_1()
             .border_color(rgb(if self.is_current(Mode::Preview, window) {
@@ -2604,6 +2605,9 @@ impl FileExplorer {
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .text_color(rgb(colors.cyan))
+                                    .when(ui_text::is_native(), |title| {
+                                        title.font_weight(gpui::FontWeight::SEMIBOLD)
+                                    })
                                     .child(title),
                             )
                             .child(
@@ -2705,6 +2709,8 @@ impl Render for FileExplorer {
         )
         .flex_1()
         .min_h_0()
+        // File names are technical text: the monospace accent, in Native as elsewhere.
+        .font_family(accent_family())
         .track_scroll(&self.scroll);
         let relative = self
             .selected
@@ -2725,7 +2731,7 @@ impl Render for FileExplorer {
             .flex_col()
             .bg(rgb(colors.panel))
             .text_color(rgb(colors.text))
-            .font_family("SF Mono")
+            .font_family(panel_family())
             .text_size(ui_text::text(11.0))
             .child(
                 div()
@@ -2748,6 +2754,9 @@ impl Render for FileExplorer {
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .text_color(rgb(colors.cyan))
+                                    .when(ui_text::is_native(), |title| {
+                                        title.font_weight(gpui::FontWeight::SEMIBOLD)
+                                    })
                                     .child(
                                         self.root
                                             .as_ref()
@@ -2827,6 +2836,9 @@ impl Render for FileExplorer {
                             .text_ellipsis()
                             .text_color(rgb(colors.muted))
                             .text_size(ui_text::text(10.0))
+                            .when(self.selected.is_some(), |path| {
+                                path.font_family(accent_family())
+                            })
                             .child(relative),
                     ),
             );
@@ -3879,5 +3891,25 @@ mod tests {
             icon_tooltip("Copy contents", reason),
             "Copy contents · Too large to copy (over 1 MiB)"
         );
+    }
+}
+
+/// The face a file panel is set in: SF Mono in the colorful themes, as they have always
+/// drawn it; Native's interface face, with only file names, paths and file text in the
+/// monospace accent.
+fn panel_family() -> SharedString {
+    if ui_text::is_native() {
+        ui_text::ui_family()
+    } else {
+        "SF Mono".into()
+    }
+}
+
+/// The face of a file panel's technical text: its file names, paths and file contents.
+fn accent_family() -> SharedString {
+    if ui_text::is_native() {
+        ui_text::mono_family()
+    } else {
+        "SF Mono".into()
     }
 }

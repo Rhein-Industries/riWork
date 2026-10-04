@@ -883,7 +883,7 @@ impl Render for ProjectSettingsPanel {
                         div().flex().flex_wrap().min_w_0().justify_between().items_center().gap(ui_text::space(12.0))
                             .border_l_2().border_color(rgb(colors.cyan)).pl(ui_text::space(12.0)).py(ui_text::space(6.0))
                             .child(div().min_w_0().flex().flex_col().gap(ui_text::space(5.0))
-                                .child(div().text_color(rgb(colors.cyan)).text_size(ui_text::text(16.0)).child(ui_text::cased("Project settings")))
+                                .child(div().text_color(rgb(colors.cyan)).text_size(ui_text::text(16.0)).when(ui_text::is_native(), |title| title.font_weight(gpui::FontWeight::SEMIBOLD)).child(ui_text::cased("Project settings")))
                                 .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child(self.project.name.clone())))
                             .child(div().px(ui_text::space(8.0)).py(ui_text::space(4.0)).border_1().border_color(rgb(colors.divider))
                                 .text_size(ui_text::text(9.0)).text_color(rgb(if dirty { colors.magenta } else { colors.muted }))
