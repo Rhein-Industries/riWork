@@ -854,7 +854,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 }
                 let metrics = data.metrics.get(&shell.id).copied().unwrap_or_default();
                 let agent = data.activity.get(&shell.id);
-                let status = shell_status_label(shell.alive, agent);
+                let status = ui_text::quiet(shell_status_label(shell.alive, agent)).to_string();
                 let working = agent.is_some_and(|state| state.activity == AgentActivity::Working);
                 rows.push(row(
                     format!("shell-{}", shell.id),
@@ -1704,7 +1704,7 @@ fn remote_worktree_label(remote: &SelectedView, id: Option<&str>) -> String {
             .find(|worktree| worktree.id == id)
     })
     .map_or_else(
-        || "UNASSIGNED".to_owned(),
+        || ui_text::cased("Unassigned").to_string(),
         |worktree| worktree.branch.clone(),
     )
 }
@@ -1932,7 +1932,11 @@ fn push_remote_panel<V: 'static>(
                                         } else {
                                             colors.magenta
                                         }))
-                                        .child(if shell.alive { "● LIVE" } else { "× EXITED" }),
+                                        .child(ui_text::quiet(if shell.alive {
+                                            "● LIVE"
+                                        } else {
+                                            "× EXITED"
+                                        })),
                                 )
                                 .into_any_element(),
                             mono_line(shell.cwd.clone(), colors.muted, 10.0),

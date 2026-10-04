@@ -2248,9 +2248,13 @@ impl FileExplorer {
                         .mx(ui_text::space(6.0))
                         .w_auto()
                         .rounded(controls::radius(6.0))
+                        // The focused list's selection is a deeper fill, not a ring.
                         .when(
                             selected && self.mode == Mode::Tree && self.focus.is_focused(window),
-                            |row| row.border_color(rgb(colors.focus)),
+                            |row| {
+                                row.border_color(gpui::transparent_black())
+                                    .bg(rgb(colors.divider))
+                            },
                         )
                 })
             })

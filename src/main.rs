@@ -8103,7 +8103,7 @@ impl Workspace {
         }
         for (home, label) in profiles {
             let entry = cache.codex.get(&home);
-            let title = format!("CODEX · {label}");
+            let title = format!("{} · {label}", ui_text::cased("Codex"));
             if let Some(snapshot) = entry.and_then(|entry| entry.codex.as_ref()) {
                 cards.push(render_provider_usage(snapshot, &title, colors));
             } else {
@@ -8150,7 +8150,7 @@ impl Workspace {
         let mut has_claude = false;
         for shell in claude_shells {
             has_claude = true;
-            let title = format!("CLAUDE · {}", &shell.id[..8]);
+            let title = format!("{} · {}", ui_text::cased("Claude"), &shell.id[..8]);
             if let Some(snapshot) = self.claude_usage.get(&shell.id) {
                 cards.push(render_provider_usage(snapshot, &title, colors));
             } else {
@@ -8219,8 +8219,8 @@ impl Workspace {
                 .values()
                 .flat_map(|pane| pane.tabs.iter())
                 .find(|tab| tab.shell_id() == Some(shell.id.as_str()))
-                .map(|tab| tab.title.to_uppercase())
-                .unwrap_or_else(|| format!("GROK · {}", &shell.id[..8]));
+                .map(|tab| ui_text::cased(tab.title.clone()).to_string())
+                .unwrap_or_else(|| format!("{} · {}", ui_text::cased("Grok"), &shell.id[..8]));
             let tab = self.grok_usage.get(&shell.id);
             usages.extend(tab.and_then(|tab| tab.usage.as_ref()));
             cards.push(render_grok_session(&title, tab, colors));
