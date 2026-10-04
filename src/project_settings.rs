@@ -235,6 +235,14 @@ pub(crate) fn input_content<T: EntityInputHandler>(
         .bg(rgb(colors.bg))
         .border_1()
         .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+        // Native: a rounded field with a hairline, ringed while it has the keyboard.
+        .map(|field| {
+            crate::controls::native(field, |field| {
+                crate::controls::field(field, colors)
+                    .h(ui_text::space(28.0))
+                    .when(active, |field| field.border_color(rgb(colors.focus)))
+            })
+        })
         .text_color(rgb(if input.text.is_empty() {
             colors.muted
         } else {
@@ -744,6 +752,14 @@ impl Render for ProjectSettingsPanel {
                 } else {
                     colors.muted
                 }))
+                .map(|chip| {
+                    native_choice(
+                        chip,
+                        self.folder_id.is_none(),
+                        focused && self.active == Field::Folder(0),
+                        colors,
+                    )
+                })
                 .child(ui_text::cased("Unfiled"))
                 .on_click(cx.listener(|form, _, window, cx| {
                     form.active = Field::Folder(0);
@@ -779,6 +795,14 @@ impl Render for ProjectSettingsPanel {
                     } else {
                         colors.text
                     }))
+                    .map(|chip| {
+                        native_choice(
+                            chip,
+                            selected,
+                            focused && self.active == Field::Folder(index + 1),
+                            colors,
+                        )
+                    })
                     .child(
                         self.folder_paths
                             .get(&folder.id)
@@ -809,6 +833,7 @@ impl Render for ProjectSettingsPanel {
                         .bg(rgb(colors.bg))
                         .border_l_1()
                         .border_color(rgb(colors.magenta))
+                        .map(|row| native_path(row, colors))
                         .child(root.to_string_lossy().into_owned()),
                 );
             }
@@ -854,7 +879,20 @@ impl Render for ProjectSettingsPanel {
                     } else {
                         colors.text
                     }))
-                    .child(if selected { "◉" } else { "○" })
+                    .map(|chip| {
+                        native_choice(
+                            chip,
+                            selected,
+                            focused && self.active == Field::Account(index),
+                            colors,
+                        )
+                        .when(ui_text::is_native() && !available, |chip| {
+                            chip.text_color(rgb(colors.muted))
+                        })
+                    })
+                    .when(!ui_text::is_native(), |chip| {
+                        chip.child(if selected { "◉" } else { "○" })
+                    })
                     .child(
                         div()
                             .min_w_0()
@@ -871,116 +909,400 @@ impl Render for ProjectSettingsPanel {
                     })),
             );
         }
+        let native = ui_text::is_native();
+        // A section: a ruled box in the colorful themes, a Native card otherwise.
+        let section_box = |gap: f32| {
+            div()
+                .p(ui_text::space(14.0))
+                .flex()
+                .flex_col()
+                .gap(ui_text::space(gap))
+                .bg(rgb(colors.panel))
+                .border_1()
+                .border_color(rgb(colors.divider))
+                .map(|card| {
+                    crate::controls::native(card, |card| {
+                        crate::controls::card(card, colors).p(ui_text::space(12.0))
+                    })
+                })
+        };
+        let label = |text: &str| {
+            div()
+                .text_color(rgb(colors.muted))
+                .text_size(ui_text::text(10.0))
+                .child(ui_text::cased(text.to_owned()))
+        };
+        let identity = section_box(12.0)
+            .child(section("01  IDENTITY", colors))
+            .child(label("Project name"))
+            .child(self.field(Field::Name, window, cx));
+        let folder = section_box(12.0)
+            .child(section("02  VIRTUAL FOLDER", colors))
+            .child(folders)
+            .child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .text_size(ui_text::text(10.0))
+                    .child("Group projects in the browser. Files stay in their current locations."),
+            )
+            .children(
+                self.folder_id
+                    .as_ref()
+                    .and_then(|id| self.folder_paths.get(id))
+                    .map(|path| {
+                        div()
+                            .text_color(rgb(if native { colors.muted } else { colors.magenta }))
+                            .text_size(ui_text::text(10.0))
+                            .child(if native {
+                                format!("New subfolders go under {path}")
+                            } else {
+                                format!("NEW SUBFOLDER UNDER  /  {path}")
+                            })
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .min_w_0()
+                    .items_center()
+                    .gap(ui_text::space(8.0))
+                    .child(self.field(Field::FolderName, window, cx))
+                    .child({
+                        let subfolder = self.folder_id.is_some();
+                        let ring = focused && self.active == Field::AddFolder;
+                        let button = div()
+                            .id("project-settings-create-folder")
+                            .h(ui_text::space(34.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .border_1()
+                            .border_color(rgb(if ring { colors.focus } else { colors.magenta }))
+                            .text_color(rgb(colors.magenta));
+                        // Icons keep the button's size, colour and focus ring; the tooltip names it.
+                        let button = if native {
+                            let kind = crate::controls::Button::Secondary;
+                            crate::controls::button(button, kind, colors)
+                                .h(ui_text::space(28.0))
+                                .hover(move |style| style.bg(rgb(kind.hover(colors))))
+                                .when(ring, |button| button.border_color(rgb(colors.focus)))
+                                .child(if subfolder {
+                                    "Add subfolder"
+                                } else {
+                                    "Add folder"
+                                })
+                        } else if icons::labels_as_icons(cx) {
+                            button
+                                .w(ui_text::space(34.0))
+                                .justify_center()
+                                .child(icons::icon(
+                                    Icon::Action(ActionGlyph::NewFolder),
+                                    colors.magenta,
+                                ))
+                                .child(tooltip::anchor(
+                                    if subfolder {
+                                        "New subfolder"
+                                    } else {
+                                        "New folder"
+                                    },
+                                    Look::Control,
+                                ))
+                        } else {
+                            button.px(ui_text::space(12.0)).child(if subfolder {
+                                "+ SUBFOLDER"
+                            } else {
+                                "+ FOLDER"
+                            })
+                        };
+                        button.on_click(cx.listener(|form, _, window, cx| {
+                            form.active = Field::AddFolder;
+                            form.focus.focus(window, cx);
+                            form.create_folder(cx);
+                        }))
+                    }),
+            );
+        let account = section_box(10.0)
+            .child(section("03  CODEX ACCOUNT", colors))
+            .child(div().text_size(ui_text::text(10.0)).text_color(rgb(colors.muted))
+                .child("New Codex sessions use this choice. Running sessions keep their account. Selection saves immediately."))
+            .child(account_rows)
+            .child(div().id("project-codex-refresh").cursor_pointer()
+                .text_size(ui_text::text(10.0))
+                .text_color(rgb(if focused && self.active == Field::AccountRefresh { colors.focus } else { colors.cyan }))
+                .map(|button| crate::controls::native(button, |button| {
+                    let kind = crate::controls::Button::Secondary;
+                    crate::controls::button(button, kind, colors)
+                        .self_start()
+                        .py(ui_text::space(3.0))
+                        .hover(move |style| style.bg(rgb(kind.hover(colors))))
+                        .when(focused && self.active == Field::AccountRefresh, |button| button.border_color(rgb(colors.focus)))
+                }))
+                .child(ui_text::cased(if account_state.pending { "Checking accounts…" } else { "Refresh accounts" }))
+                .on_click(cx.listener(|form, _, window, cx| {
+                    form.active = Field::AccountRefresh;
+                    form.focus.focus(window, cx);
+                    refresh_codex_accounts(cx);
+                })))
+            .children(account_state.snapshot.as_ref().and_then(|snapshot| snapshot.error.as_ref()).map(|error|
+                div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold)).child(error.clone())))
+            .children(matches!(self.project.codex_account, ProjectCodexAccount::Saved(_))
+                .then_some(self.project.codex_account.clone())
+                .filter(|choice| self.account_choices(cx).iter().any(|(row, _, available)| row == choice && !available))
+                .map(|_| div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold))
+                    .child("Selected account unavailable. Choose another before starting Codex.")));
+        let save_ring = focused && self.active == Field::Save;
+        let save = div()
+            .flex()
+            .flex_wrap()
+            .min_w_0()
+            .items_center()
+            .justify_between()
+            .gap(ui_text::space(10.0))
+            .when(native, |row| {
+                row.px(ui_text::space(
+                    crate::controls::PANEL_INSET - crate::controls::LIST_MARGIN,
+                ))
+            })
+            .child(
+                div()
+                    .min_w_0()
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(if self.error.is_some() {
+                        colors.gold
+                    } else {
+                        colors.muted
+                    }))
+                    .child(
+                        self.error
+                            .clone()
+                            .unwrap_or_else(|| self.status.message().into()),
+                    ),
+            )
+            .child(
+                div()
+                    .id("project-settings-save")
+                    .flex_none()
+                    .px(ui_text::space(14.0))
+                    .py(ui_text::space(10.0))
+                    .cursor_pointer()
+                    .bg(rgb(colors.panel_active))
+                    .border_1()
+                    .border_color(rgb(if save_ring { colors.focus } else { colors.cyan }))
+                    .text_color(rgb(colors.cyan))
+                    .map(|button| {
+                        crate::controls::native(button, |button| {
+                            let kind = if dirty {
+                                crate::controls::Button::Primary
+                            } else {
+                                crate::controls::Button::Secondary
+                            };
+                            crate::controls::button(button, kind, colors)
+                                .py(ui_text::space(4.0))
+                                .hover(move |style| style.bg(rgb(kind.hover(colors))))
+                                .when(save_ring, |button| button.border_color(rgb(colors.focus)))
+                        })
+                    })
+                    .child(ui_text::cased("Save project"))
+                    .on_click(cx.listener(|form, _, window, cx| {
+                        form.active = Field::Save;
+                        form.focus.focus(window, cx);
+                        form.save(cx);
+                    })),
+            );
+        let locations = section_box(12.0)
+            .child(section("04  LOCATIONS", colors))
+            .child(label("Project root"))
+            .child(
+                div()
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(8.0))
+                    .bg(rgb(colors.bg))
+                    .border_l_1()
+                    .border_color(rgb(colors.cyan))
+                    .map(|row| native_path(row, colors))
+                    .child(self.project.root.to_string_lossy().into_owned()),
+            )
+            .child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .text_size(ui_text::text(10.0))
+                    .child(if native {
+                        format!("Repositories · {}", self.project.repository_roots.len())
+                    } else {
+                        format!(
+                            "REPOSITORIES  /  {:02}",
+                            self.project.repository_roots.len()
+                        )
+                    }),
+            )
+            .child(repositories)
+            .child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .text_size(ui_text::text(9.0))
+                    .child(if native {
+                        format!("Project ID {}", self.project.id)
+                    } else {
+                        format!("PROJECT ID  /  {}", self.project.id)
+                    }),
+            );
+        if native {
+            return crate::controls::panel(colors)
+                .id("project-settings-panel")
+                .track_focus(&self.focus)
+                .key_context("ProjectSettings")
+                .on_key_down(cx.listener(Self::key_down))
+                .child(crate::controls::panel_header(
+                    crate::layouts::PanelKind::ProjectSettings.label(),
+                    Some(if dirty {
+                        format!("{} · Unsaved", self.project.name).into()
+                    } else {
+                        self.project.name.clone().into()
+                    }),
+                    [],
+                    colors,
+                ))
+                .child(
+                    div()
+                        .id("project-settings-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .px(ui_text::space(crate::controls::LIST_MARGIN))
+                        .pb(ui_text::space(crate::controls::PANEL_INSET))
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .max_w(ui_text::space(760.0))
+                                .flex()
+                                .flex_col()
+                                .gap(ui_text::space(8.0))
+                                .child(identity)
+                                .child(folder)
+                                .child(account)
+                                .child(save)
+                                .child(locations),
+                        ),
+                )
+                .into_any_element();
+        }
         div()
             .id("project-settings-panel")
-            .size_full().min_w_0().track_focus(&self.focus).key_context("ProjectSettings")
-            .on_key_down(cx.listener(Self::key_down)).overflow_y_scroll()
-            .bg(rgb(colors.bg)).text_color(rgb(colors.text)).font_family(ui_text::ui_family()).text_size(ui_text::text(11.0))
+            .size_full()
+            .min_w_0()
+            .track_focus(&self.focus)
+            .key_context("ProjectSettings")
+            .on_key_down(cx.listener(Self::key_down))
+            .overflow_y_scroll()
+            .bg(rgb(colors.bg))
+            .text_color(rgb(colors.text))
+            .font_family(ui_text::ui_family())
+            .text_size(ui_text::text(11.0))
             .p(ui_text::space(20.0))
             .child(
-                div().w_full().min_w_0().max_w(ui_text::space(760.0)).flex().flex_col().gap(ui_text::space(18.0))
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .max_w(ui_text::space(760.0))
+                    .flex()
+                    .flex_col()
+                    .gap(ui_text::space(18.0))
                     .child(
-                        div().flex().flex_wrap().min_w_0().justify_between().items_center().gap(ui_text::space(12.0))
-                            .border_l_2().border_color(rgb(colors.cyan)).pl(ui_text::space(12.0)).py(ui_text::space(6.0))
-                            .child(div().min_w_0().flex().flex_col().gap(ui_text::space(5.0))
-                                .child(div().text_color(rgb(colors.cyan)).text_size(ui_text::text(16.0)).when(ui_text::is_native(), |title| title.font_weight(gpui::FontWeight::SEMIBOLD)).child(ui_text::cased("Project settings")))
-                                .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child(self.project.name.clone())))
-                            .child(div().px(ui_text::space(8.0)).py(ui_text::space(4.0)).border_1().border_color(rgb(colors.divider))
-                                .text_size(ui_text::text(9.0)).text_color(rgb(if dirty { colors.magenta } else { colors.muted }))
-                                .child(ui_text::cased(if dirty { "Unsaved" } else { "Local project" }))),
-                    )
-                    .child(
-                        div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(12.0)).bg(rgb(colors.panel))
-                            .border_1().border_color(rgb(colors.divider))
-                            .child(section("01  IDENTITY", colors))
-                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child(ui_text::cased("Project name")))
-                            .child(self.field(Field::Name, window, cx)),
-                    )
-                    .child(
-                        div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(12.0)).bg(rgb(colors.panel))
-                            .border_1().border_color(rgb(colors.divider))
-                            .child(section("02  VIRTUAL FOLDER", colors))
-                            .child(folders)
-                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child("Group projects in the browser. Files stay in their current locations."))
-                            .children(self.folder_id.as_ref().and_then(|id| self.folder_paths.get(id)).map(|path| {
-                                div().text_color(rgb(colors.magenta)).text_size(ui_text::text(10.0)).child(format!("NEW SUBFOLDER UNDER  /  {path}"))
-                            }))
-                            .child(div().flex().flex_wrap().min_w_0().items_center().gap(ui_text::space(8.0))
-                                .child(self.field(Field::FolderName, window, cx))
-                                .child({
-                                    let subfolder = self.folder_id.is_some();
-                                    let button = div().id("project-settings-create-folder").h(ui_text::space(34.0))
-                                        .flex_none().flex().items_center().cursor_pointer().border_1()
-                                        .border_color(rgb(if focused && self.active == Field::AddFolder { colors.focus } else { colors.magenta }))
-                                        .text_color(rgb(colors.magenta));
-                                    // Icons keep the button's size, colour and focus ring; the tooltip names it.
-                                    let button = if icons::labels_as_icons(cx) {
-                                        button.w(ui_text::space(34.0)).justify_center()
-                                            .child(icons::icon(Icon::Action(ActionGlyph::NewFolder), colors.magenta))
-                                            .child(tooltip::anchor(if subfolder { "New subfolder" } else { "New folder" }, Look::Control))
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .min_w_0()
+                            .justify_between()
+                            .items_center()
+                            .gap(ui_text::space(12.0))
+                            .border_l_2()
+                            .border_color(rgb(colors.cyan))
+                            .pl(ui_text::space(12.0))
+                            .py(ui_text::space(6.0))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(ui_text::space(5.0))
+                                    .child(
+                                        div()
+                                            .text_color(rgb(colors.cyan))
+                                            .text_size(ui_text::text(16.0))
+                                            .child(ui_text::cased("Project settings")),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_color(rgb(colors.muted))
+                                            .text_size(ui_text::text(10.0))
+                                            .child(self.project.name.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(ui_text::space(8.0))
+                                    .py(ui_text::space(4.0))
+                                    .border_1()
+                                    .border_color(rgb(colors.divider))
+                                    .text_size(ui_text::text(9.0))
+                                    .text_color(rgb(if dirty {
+                                        colors.magenta
                                     } else {
-                                        button.px(ui_text::space(12.0)).child(if subfolder { "+ SUBFOLDER" } else { "+ FOLDER" })
-                                    };
-                                    button.on_click(cx.listener(|form, _, window, cx| {
-                                        form.active = Field::AddFolder;
-                                        form.focus.focus(window, cx);
-                                        form.create_folder(cx);
+                                        colors.muted
                                     }))
-                                })),
+                                    .child(ui_text::cased(if dirty {
+                                        "Unsaved"
+                                    } else {
+                                        "Local project"
+                                    })),
+                            ),
                     )
-                    .child(
-                        div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(10.0)).bg(rgb(colors.panel))
-                            .border_1().border_color(rgb(colors.divider))
-                            .child(section("03  CODEX ACCOUNT", colors))
-                            .child(div().text_size(ui_text::text(10.0)).text_color(rgb(colors.muted))
-                                .child("New Codex sessions use this choice. Running sessions keep their account. Selection saves immediately."))
-                            .child(account_rows)
-                            .child(div().id("project-codex-refresh").cursor_pointer()
-                                .text_size(ui_text::text(10.0))
-                                .text_color(rgb(if focused && self.active == Field::AccountRefresh { colors.focus } else { colors.cyan }))
-                                .child(ui_text::cased(if account_state.pending { "Checking accounts…" } else { "Refresh accounts" }))
-                                .on_click(cx.listener(|form, _, window, cx| {
-                                    form.active = Field::AccountRefresh;
-                                    form.focus.focus(window, cx);
-                                    refresh_codex_accounts(cx);
-                                })))
-                            .children(account_state.snapshot.as_ref().and_then(|snapshot| snapshot.error.as_ref()).map(|error|
-                                div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold)).child(error.clone())))
-                            .children(matches!(self.project.codex_account, ProjectCodexAccount::Saved(_))
-                                .then_some(self.project.codex_account.clone())
-                                .filter(|choice| self.account_choices(cx).iter().any(|(row, _, available)| row == choice && !available))
-                                .map(|_| div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold))
-                                    .child("Selected account unavailable. Choose another before starting Codex."))),
-                    )
-                    .child(
-                        div().flex().flex_wrap().min_w_0().items_center().justify_between().gap(ui_text::space(10.0))
-                            .child(div().min_w_0().text_size(ui_text::text(10.0)).text_color(rgb(if self.error.is_some() { colors.gold } else { colors.muted }))
-                                .child(self.error.clone().unwrap_or_else(|| self.status.message().into())))
-                            .child(div().id("project-settings-save").flex_none().px(ui_text::space(14.0)).py(ui_text::space(10.0)).cursor_pointer()
-                                .bg(rgb(colors.panel_active)).border_1()
-                                .border_color(rgb(if focused && self.active == Field::Save { colors.focus } else { colors.cyan }))
-                                .text_color(rgb(colors.cyan)).child(ui_text::cased("Save project"))
-                                .on_click(cx.listener(|form, _, window, cx| {
-                                    form.active = Field::Save;
-                                    form.focus.focus(window, cx);
-                                    form.save(cx);
-                                }))),
-                    )
-                    .child(
-                        div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(12.0)).bg(rgb(colors.panel))
-                            .border_1().border_color(rgb(colors.divider))
-                            .child(section("04  LOCATIONS", colors))
-                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child(ui_text::cased("Project root")))
-                            .child(div().px(ui_text::space(10.0)).py(ui_text::space(8.0)).bg(rgb(colors.bg)).border_l_1()
-                                .border_color(rgb(colors.cyan)).child(self.project.root.to_string_lossy().into_owned()))
-                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0))
-                                .child(format!("REPOSITORIES  /  {:02}", self.project.repository_roots.len())))
-                            .child(repositories)
-                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).child(format!("PROJECT ID  /  {}", self.project.id))),
-                    ),
+                    .child(identity)
+                    .child(folder)
+                    .child(account)
+                    .child(save)
+                    .child(locations),
             )
             .into_any_element()
     }
+}
+
+/// Native's choice among a few options (a folder, an account): a capsule, filled with the
+/// primary color when chosen. The colorful themes keep their outlined boxes.
+fn native_choice(
+    chip: gpui::Stateful<gpui::Div>,
+    selected: bool,
+    ring: bool,
+    colors: Palette,
+) -> gpui::Stateful<gpui::Div> {
+    crate::controls::native(chip, |chip| {
+        let kind = if selected {
+            crate::controls::Button::Primary
+        } else {
+            crate::controls::Button::Secondary
+        };
+        crate::controls::button(chip, kind, colors)
+            .py(ui_text::space(4.0))
+            .hover(move |style| style.bg(rgb(kind.hover(colors))))
+            .when(ring, |chip| chip.border_color(rgb(colors.focus)))
+    })
+}
+
+/// A path under Native: monospace on a quiet rounded fill, without the colored rule.
+fn native_path(row: gpui::Div, colors: Palette) -> gpui::Div {
+    crate::controls::native(row, |row| {
+        row.border_l_0()
+            .rounded(crate::controls::radius(crate::controls::FIELD_RADIUS))
+            .bg(rgb(colors.panel))
+            .font_family(ui_text::mono_family())
+            .text_size(ui_text::text(10.0))
+    })
 }
 
 pub struct FolderEditor {

@@ -799,10 +799,13 @@ fn native_section_card(
         .into_any_element()
 }
 
+/// The line box of a theme choice's title under Native, which its radio is centered on.
+const THEME_TITLE_LINE: f32 = 16.0;
+
 /// Native's radio mark: a ring, filled with the primary color when chosen.
 fn radio(mark: Div, selected: bool, colors: Palette) -> Div {
     mark.size(ui_text::space(12.0))
-        .mt(ui_text::space(2.0))
+        .mt_0()
         .rounded_full()
         .border_color(rgb(if selected {
             colors.cyan
@@ -2155,16 +2158,22 @@ impl SettingsPanel {
             })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
             .map(|row| controls::native(row, |row| controls::row(row, selected, colors)))
-            .child(
-                div()
+            .child({
+                let mark = div()
                     .flex_none()
                     .mt(ui_text::space(4.0))
                     .size(ui_text::space(8.0))
                     .border_1()
                     .border_color(rgb(if selected { colors.cyan } else { colors.muted }))
-                    .when(selected, |style| style.bg(rgb(colors.cyan)))
-                    .map(|mark| controls::native(mark, |mark| radio(mark, selected, colors))),
-            )
+                    .when(selected, |style| style.bg(rgb(colors.cyan)));
+                if ui_text::is_native() {
+                    // Centered on the title's line box, which the title is set in exactly.
+                    controls::on_first_line(radio(mark, selected, colors), THEME_TITLE_LINE)
+                        .into_any_element()
+                } else {
+                    mark.into_any_element()
+                }
+            })
             .child(
                 div()
                     .flex_1()
@@ -2183,6 +2192,9 @@ impl SettingsPanel {
                                     .flex_1()
                                     .min_w_0()
                                     .text_size(ui_text::text(12.0))
+                                    .when(ui_text::is_native(), |title| {
+                                        title.line_height(ui_text::space(THEME_TITLE_LINE))
+                                    })
                                     .text_color(rgb(colors.text))
                                     .child(theme.label()),
                             )
@@ -2741,6 +2753,19 @@ impl Render for SettingsPanel {
             .relative()
             .size_full()
             .bg(rgb(colors.bg))
+            // Native: a navigation panel's page and header, its cards on the sidebar grey.
+            .when(native, |page| {
+                page.flex()
+                    .flex_col()
+                    .bg(rgb(colors.panel))
+                    .font_family(ui_text::ui_family())
+                    .child(controls::panel_header(
+                        "Settings",
+                        Some("All projects · Saved automatically".into()),
+                        [],
+                        colors,
+                    ))
+            })
             .child(
                 canvas(
                     move |measured, _, cx| {
@@ -2763,6 +2788,7 @@ impl Render for SettingsPanel {
                 div()
                     .id("settings-scroll")
                     .size_full()
+                    .when(native, |scroll| scroll.flex_1().min_h_0())
                     .overflow_y_scroll()
                     .child(
                         div()
@@ -2770,6 +2796,11 @@ impl Render for SettingsPanel {
                             .flex()
                             .justify_center()
                             .p(px(layout.page_padding()))
+                            .when(native, |page| {
+                                page.pt_0()
+                                    .px(ui_text::space(controls::LIST_MARGIN))
+                                    .pb(ui_text::space(controls::PANEL_INSET))
+                            })
                             .child(
                                 div()
                                     .flex()
@@ -2780,7 +2811,8 @@ impl Render for SettingsPanel {
                                     .gap(px(layout.gap()))
                                     .font_family(ui_text::ui_family())
                                     .text_color(rgb(colors.text))
-                                    .child(
+                                    .when(native, |page| page.gap(ui_text::space(8.0)))
+                                    .children((!native).then(|| {
                                         div()
                                             .flex()
                                             .items_center()
@@ -2797,12 +2829,12 @@ impl Render for SettingsPanel {
                                                     .children((!native).then(|| div().text_size(ui_text::text(10.0)).text_color(rgb(colors.magenta)).child("RIWORK / PREFERENCES")))
                                                     .child(div().text_size(ui_text::text(20.0)).when(native, |title| title.font_weight(FontWeight::BOLD)).child("Settings")),
                                             )
-                                            .child(status_chip("All projects", colors.magenta, colors)),
-                                    )
+                                            .child(status_chip("All projects", colors.magenta, colors))
+                                    }))
                                     // Columns only differ in the wide layout; otherwise this is one stack of cards.
                                     .child(div().flex().items_start().gap(px(layout.gap())).children(columns))
                                     .children(self.error.as_ref().map(|error| div().text_size(ui_text::text(11.0)).text_color(rgb(colors.gold)).child(error.clone())))
-                                    .child(div().pt(ui_text::space(10.0)).when(!native, |foot| foot.border_t_1().border_color(rgb(colors.divider))).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("Saved automatically · Tab to move · Enter or Space to select · Arrows step the text size")),
+                                    .child(div().pt(ui_text::space(10.0)).when(!native, |foot| foot.border_t_1().border_color(rgb(colors.divider))).when(native, |foot| foot.pt(ui_text::space(2.0)).px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN)).text_size(ui_text::text(9.0))).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child(if native { "Tab to move · Enter or Space to select · Arrows step the text size" } else { "Saved automatically · Tab to move · Enter or Space to select · Arrows step the text size" })),
                             ),
                     ),
             )

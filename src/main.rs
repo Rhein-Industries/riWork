@@ -180,6 +180,8 @@ const NATIVE_BAR_BUTTON: f32 = 22.0;
 const NATIVE_BAR_BUTTON_GAP: f32 = 2.0;
 const NATIVE_BAR_BUTTON_INSET: f32 = 3.0;
 const NATIVE_TAB_CLOSE: f32 = 16.0;
+/// The group a tab's hover reveals its close mark in.
+const TAB_GROUP: &str = "pane-tab";
 /// The narrowest a Native symbol tab gets when even the symbols crowd the bar.
 const NATIVE_ICON_TAB_MIN: f32 = 22.0;
 /// A window restored fullscreen or zoomed is first drawn at its opening size and animates
@@ -2239,18 +2241,7 @@ impl Workspace {
 
     /// A panel's name in sentence case, as Native writes labels.
     fn panel_label(panel: PanelKind) -> &'static str {
-        match panel {
-            PanelKind::Projects => "Projects",
-            PanelKind::Worktrees => "Worktrees",
-            PanelKind::Files => "Files",
-            PanelKind::Preview => "Preview",
-            PanelKind::Tasks => "Tasks",
-            PanelKind::Shells => "Shells",
-            PanelKind::Usage => "Usage",
-            PanelKind::Settings => "Settings",
-            PanelKind::Schedules => "Schedules",
-            PanelKind::ProjectSettings => "Project settings",
-        }
+        panel.label()
     }
 
     fn panel_title(panel: PanelKind) -> &'static str {
@@ -6749,7 +6740,8 @@ impl Workspace {
                 .iter()
                 .enumerate()
                 .map(|(index, title)| {
-                    let shown_close = index == pane.active && tab_can_close;
+                    // Native keeps every closable tab's X in place, shown or not.
+                    let shown_close = (native || index == pane.active) && tab_can_close;
                     ui_text::space_f32(16.0)
                         + 1.0
                         + native_label_width(title, cx)
@@ -6773,9 +6765,19 @@ impl Workspace {
                     .filter(|_| self.settings.panel_tab_icons || compact_panels);
                 // The X is left out, not disabled, so a locked pane's tabs lose no room to it.
                 let close_visible = active && tab_can_close;
+                // Native gives every closable tab its X, shown on the selected tab and under
+                // the pointer, so a tab never changes width when it is chosen. A symbol tab
+                // keeps its fixed width: its X is a small badge over its corner.
+                let native_close = native && tab_can_close;
+                let close_badge = native_close && icon_panel.is_some();
+                let close_slot = if native {
+                    native_close && icon_panel.is_none()
+                } else {
+                    close_visible
+                };
                 // Native's close mark sits in its own round hover, which already pads it.
                 let pad_right_with_close = if native { 4.0 } else { 8.0 };
-                let (pad_left, pad_right, gap) = match (icon_panel, close_visible) {
+                let (pad_left, pad_right, gap) = match (icon_panel, close_slot) {
                     (None, true) => (8.0, pad_right_with_close, 6.0),
                     (None, false) => (8.0, 8.0, 6.0),
                     (Some(_), true) => (0.0, 4.0, 0.0),
@@ -6819,6 +6821,8 @@ impl Workspace {
                     })
                     .items_center()
                     .h_full()
+                    .relative()
+                    .group(TAB_GROUP)
                     .pl(ui_text::space(pad_left))
                     .pr(ui_text::space(pad_right))
                     .gap(ui_text::space(gap))
@@ -6923,7 +6927,32 @@ impl Workspace {
                             }
                         }
                     })
-                    .children(close_visible.then(|| {
+                    .children(close_badge.then(|| {
+                        div()
+                            .id(("close-tab", tab_id))
+                            .absolute()
+                            .top(ui_text::space(2.0))
+                            .right(ui_text::space(1.0))
+                            .size(ui_text::space(11.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .bg(rgb(colors.divider))
+                            .text_color(rgb(colors.text))
+                            .invisible()
+                            .group_hover(TAB_GROUP, |style| style.visible())
+                            .hover(|style| style.bg(rgb(colors.muted)).text_color(rgb(colors.bg)))
+                            .child(icons::text_icon(Icon::Close, 6.0, colors.text))
+                            .child(tooltip::anchor("Close tab · ⌘W", Look::Pane))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |workspace, _, window, cx| {
+                                cx.stop_propagation();
+                                workspace.close_tab_by_user(pane_id, tab_id, window, cx);
+                            }))
+                    }))
+                    .children(close_slot.then(|| {
                         div()
                             .id(("close-tab", tab_id))
                             .size(ui_text::space(18.0))
@@ -6949,6 +6978,11 @@ impl Workspace {
                                         .size(ui_text::space(NATIVE_TAB_CLOSE))
                                         .rounded_full()
                                         .text_color(rgb(colors.muted))
+                                        .when(!active, |close| {
+                                            close
+                                                .invisible()
+                                                .group_hover(TAB_GROUP, |style| style.visible())
+                                        })
                                 })
                             })
                             .child(icons::text_icon(Icon::Close, 10.0, colors.muted))
@@ -8228,7 +8262,8 @@ impl Workspace {
                         .p(ui_text::space(12.0))
                         .border_t_1()
                         .border_color(rgb(colors.divider))
-                        .child(title)
+                        .map(|card| usage_card(card, colors))
+                        .child(usage_title(&title, colors))
                         .child(
                             div()
                                 .mt(ui_text::space(6.0))
@@ -8275,7 +8310,8 @@ impl Workspace {
                         .p(ui_text::space(12.0))
                         .border_t_1()
                         .border_color(rgb(colors.divider))
-                        .child(title)
+                        .map(|card| usage_card(card, colors))
+                        .child(usage_title(&title, colors))
                         .child(
                             div()
                                 .mt(ui_text::space(6.0))
@@ -8290,12 +8326,47 @@ impl Workspace {
             cards.push(
                 div()
                     .p(ui_text::space(12.0))
+                    .map(|card| usage_card(card, colors))
                     .text_color(rgb(colors.muted))
                     .child("Open a Claude session to see its usage here")
                     .into_any_element(),
             );
         }
         cards.extend(self.render_grok_usage_cards(colors));
+        if ui_text::is_native() {
+            let refreshing = pending || self.grok_usage_pending;
+            return controls::panel(colors)
+                .child(controls::panel_header(
+                    PanelKind::Usage.label(),
+                    Some(if refreshing { "Refreshing…" } else { "Account usage" }.into()),
+                    [controls::toolbar_button(
+                        "refresh-account-usage",
+                        "arrow.clockwise",
+                        "Refresh usage",
+                        !refreshing,
+                        colors,
+                    )
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.refresh_usage(window, cx);
+                    }))
+                    .into_any_element()],
+                    colors,
+                ))
+                .child(
+                    div()
+                        .id("usage-panel-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap(ui_text::space(8.0))
+                        .pb(ui_text::space(controls::LIST_MARGIN))
+                        .children(cards),
+                )
+                .child(controls::footnote("Quota is shared by all sessions on the same account. Missing windows are unavailable. Claude subscription quota requires a supported Pro/Max account. Grok shows each session's tokens and cost only.", colors))
+                .into_any_element();
+        }
         div().size_full().flex().flex_col().min_h_0().bg(rgb(colors.panel))
             .child(div().h(ui_text::space(32.0)).flex_none().flex().items_center().px(ui_text::space(10.0)).justify_between()
                 .border_b_1().border_color(rgb(colors.divider))
@@ -8303,19 +8374,28 @@ impl Workspace {
                 .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan)).cursor_pointer()
                     .child(ui_text::cased(if pending || self.grok_usage_pending { "Refreshing…" } else { "↻ Refresh" }))
                     .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.refresh_grok_usage(true, cx);
-                        request_codex_usage(true, cx);
-                        for home in workspace.shells.iter()
-                            .filter(|shell| shell.harness == Some(HarnessKind::Codex))
-                            .filter_map(|shell| shell.codex_home.clone()).collect::<HashSet<_>>() {
-                            request_codex_usage_at(home, true, cx);
-                        }
-                        workspace.refresh(window, cx);
+                        workspace.refresh_usage(window, cx);
                     }))))
             .child(div().id("usage-panel-scroll").flex_1().min_h_0().overflow_y_scroll().children(cards))
             .child(div().flex_none().p(ui_text::space(10.0)).border_t_1().border_color(rgb(colors.divider)).text_color(rgb(colors.muted)).text_size(ui_text::text(9.0))
                 .child("Quota is shared by all sessions on the same account. Missing windows are unavailable. Claude subscription quota requires a supported Pro/Max account. Grok shows each session's tokens and cost only."))
             .into_any_element()
+    }
+
+    /// Ask every provider for fresh account usage.
+    fn refresh_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_grok_usage(true, cx);
+        request_codex_usage(true, cx);
+        for home in self
+            .shells
+            .iter()
+            .filter(|shell| shell.harness == Some(HarnessKind::Codex))
+            .filter_map(|shell| shell.codex_home.clone())
+            .collect::<HashSet<_>>()
+        {
+            request_codex_usage_at(home, true, cx);
+        }
+        self.refresh(window, cx);
     }
 
     /// Grok's section of the Usage panel: one card per live Grok tab of the
@@ -8348,6 +8428,7 @@ impl Workspace {
                     .p(ui_text::space(12.0))
                     .border_t_1()
                     .border_color(rgb(colors.divider))
+                    .map(|card| usage_card(card, colors))
                     .text_color(rgb(colors.muted))
                     .child("No live Grok sessions")
                     .into_any_element(),
@@ -8366,6 +8447,12 @@ impl Workspace {
                 .pt(ui_text::space(8.0))
                 .border_t_1()
                 .border_color(rgb(colors.divider))
+                // Native: fine print under the cards, without a rule.
+                .when(ui_text::is_native(), |note| {
+                    note.border_t_0()
+                        .px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN))
+                        .pt(ui_text::space(2.0))
+                })
                 .text_color(rgb(colors.muted))
                 .text_size(ui_text::text(9.0))
                 .child("Grok's account allowance and credits are shown only in Grok's own /usage screen. RiWork cannot read them through an official interface.")
@@ -9527,10 +9614,11 @@ fn render_grok_session(
     let card = div()
         .p(ui_text::space(12.0))
         .border_t_1()
-        .border_color(rgb(colors.divider));
+        .border_color(rgb(colors.divider))
+        .map(|card| usage_card(card, colors));
     let Some(tab) = tab else {
         return card
-            .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+            .child(usage_title(title, colors))
             .child(
                 div()
                     .mt(ui_text::space(6.0))
@@ -9541,7 +9629,7 @@ fn render_grok_session(
     };
     let Some(session) = &tab.usage else {
         return card
-            .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+            .child(usage_title(title, colors))
             .child(
                 div()
                     .mt(ui_text::space(6.0))
@@ -9584,7 +9672,7 @@ fn render_grok_session(
             .items_center()
             .justify_between()
             .gap(ui_text::space(8.0))
-            .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+            .child(usage_title(title, colors))
             .child(
                 div()
                     .text_color(rgb(colors.muted))
@@ -9646,7 +9734,8 @@ fn render_grok_total(totals: &usage::GrokTotals, missing: usize, colors: Palette
         .p(ui_text::space(12.0))
         .border_t_1()
         .border_color(rgb(colors.divider))
-        .child(div().text_color(rgb(colors.cyan)).child(ui_text::cased("Grok · Total")))
+        .map(|card| usage_card(card, colors))
+        .child(usage_title(&ui_text::cased("Grok · Total"), colors))
         .child(div().mt(ui_text::space(6.0)).child(format!(
             "{} · {} tokens · {} session{}",
             usage::format_usd(totals.cost_usd),
@@ -9683,6 +9772,26 @@ fn render_grok_total(totals: &usage::GrokTotals, missing: usize, colors: Palette
         .into_any_element()
 }
 
+/// A Usage card: a ruled block in the colorful themes, a Native card otherwise, inset like
+/// the navigation panels' rows.
+fn usage_card(card: Div, colors: Palette) -> Div {
+    controls::native(card, |card| {
+        controls::card(card, colors).mx(ui_text::space(controls::LIST_MARGIN))
+    })
+}
+
+/// A Usage card's title: in the primary color, or semibold body text under Native.
+fn usage_title(title: &str, colors: Palette) -> Div {
+    div()
+        .text_color(rgb(colors.cyan))
+        .when(ui_text::is_native(), |title| {
+            title
+                .text_color(rgb(colors.text))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+        })
+        .child(title.to_owned())
+}
+
 fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette) -> AnyElement {
     let age = unix_time().saturating_sub(snapshot.updated_at_unix);
     let limits = snapshot
@@ -9711,12 +9820,24 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
                         .mt(ui_text::space(5.0))
                         .h(ui_text::space(3.0))
                         .bg(rgb(colors.divider))
+                        // Native: a rounded gauge on a grey track, as macOS draws a level.
+                        .when(ui_text::is_native(), |track| {
+                            track
+                                .h(ui_text::space(5.0))
+                                .rounded_full()
+                                .bg(rgb(colors.panel_active))
+                        })
                         .child(
                             div()
                                 .h_full()
                                 .w(gpui::relative((remaining / 100.0) as f32))
+                                .when(ui_text::is_native(), |level| level.rounded_full())
                                 .bg(rgb(if remaining < 15.0 {
-                                    colors.magenta
+                                    if ui_text::is_native() {
+                                        colors.gold
+                                    } else {
+                                        colors.magenta
+                                    }
                                 } else {
                                     colors.cyan
                                 })),
@@ -9729,7 +9850,8 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
         .p(ui_text::space(12.0))
         .border_t_1()
         .border_color(rgb(colors.divider))
-        .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+        .map(|card| usage_card(card, colors))
+        .child(usage_title(title, colors))
         .children(snapshot.account_label.as_ref().map(|label| {
             div()
                 .mt(ui_text::space(4.0))

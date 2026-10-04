@@ -944,6 +944,22 @@ impl PanelKind {
             Self::Schedules => "schedules",
         }
     }
+
+    /// Its name in sentence case, as Native writes labels and titles its header.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Projects => "Projects",
+            Self::Worktrees => "Worktrees",
+            Self::Files => "Files",
+            Self::Preview => "Preview",
+            Self::Tasks => "Tasks",
+            Self::Shells => "Shells",
+            Self::Usage => "Usage",
+            Self::Settings => "Settings",
+            Self::Schedules => "Schedules",
+            Self::ProjectSettings => "Project settings",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

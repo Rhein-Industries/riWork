@@ -656,7 +656,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             .child(div().flex_1().min_w_0().child(line(
                                 project.name.clone(),
                                 colors.text,
-                                11.0,
+                                controls::ROW_TITLE_TEXT,
                             )))
                             .child(controls);
                         rows.push(project_row(
@@ -687,7 +687,11 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                                     } else {
                                         colors.muted
                                     },
-                                    9.0,
+                                    if ui_text::is_native() {
+                                        controls::ROW_DETAIL_TEXT
+                                    } else {
+                                        9.0
+                                    },
                                 ),
                             ],
                             PanelAction::Project(project.id.clone()),
@@ -913,18 +917,46 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
     } else {
         rows.len()
     };
+    let native = ui_text::is_native();
     if rows.is_empty() {
-        rows.push(
+        let empty = if query.is_empty() {
+            ui_text::cased(format!("No {}", panel_noun(kind)))
+        } else {
+            ui_text::cased("No matches")
+        };
+        rows.push(if native {
+            controls::empty_state(
+                if query.is_empty() {
+                    Icon::Panel(kind).symbol()
+                } else {
+                    "magnifyingglass"
+                },
+                empty,
+                colors,
+            )
+            .into_any_element()
+        } else {
             div()
                 .p(ui_text::space(10.0))
                 .text_color(rgb(colors.muted))
-                .child(if query.is_empty() {
-                    ui_text::cased(format!("No {}", panel_noun(kind)))
-                } else {
-                    ui_text::cased("No matches")
-                })
-                .into_any_element(),
+                .child(empty)
+                .into_any_element()
+        });
+    }
+    if native {
+        let panel = native_panel(
+            kind,
+            &data,
+            NativeChrome {
+                count,
+                total,
+                rows,
+                sort_selector_bounds: Rc::new(Cell::new(Bounds::<Pixels>::default())),
+            },
+            on_action,
+            cx,
         );
+        return panel;
     }
 
     let search_label = if data.query.is_empty() {
@@ -952,7 +984,7 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
     let search_action = on_action.clone();
     let as_icons = icons::labels_as_icons(cx);
     let sort_selector_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
-    let mut panel =
+    let panel =
         div()
             .relative()
             .flex()
@@ -1103,6 +1135,20 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                     .children(rows),
             );
 
+    finish_panel(panel, kind, &data, sort_selector_bounds, on_action, cx)
+}
+
+/// What every panel ends with: the selected task's detail under the Tasks list, and the
+/// Projects sort menu while it is open.
+fn finish_panel<V: 'static>(
+    mut panel: Div,
+    kind: PanelKind,
+    data: &PanelData<'_>,
+    sort_selector_bounds: Rc<Cell<Bounds<Pixels>>>,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
     if kind == PanelKind::Tasks {
         if let Some(remote) = data.selected_remote {
             if let Some(task) = data
@@ -1139,13 +1185,214 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
             (kind == PanelKind::Projects && data.project_sort_menu_open).then(|| {
                 project_sort_menu(
                     data.project_order,
-                    sort_selector_bounds.clone(),
+                    sort_selector_bounds,
                     on_action.clone(),
                     cx,
                 )
             }),
         )
         .into_any_element()
+}
+
+/// The numbers a Native panel's header and list are drawn from.
+struct NativeChrome {
+    count: usize,
+    total: usize,
+    rows: Vec<AnyElement>,
+    sort_selector_bounds: Rc<Cell<Bounds<Pixels>>>,
+}
+
+/// A list panel under Native: the shared header (its name, a count and, for Projects, the
+/// sort and create buttons), the search field, and the inset rows.
+fn native_panel<V: Render + EntityInputHandler + 'static>(
+    kind: PanelKind,
+    data: &PanelData<'_>,
+    chrome: NativeChrome,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    let NativeChrome {
+        count,
+        total,
+        rows,
+        sort_selector_bounds,
+    } = chrome;
+    let mut meta = native_count(count, total, panel_noun(kind));
+    // The lists of one project say which.
+    if kind != PanelKind::Projects {
+        let project = data
+            .selected_remote
+            .map(|remote| remote.project_name.clone())
+            .or_else(|| {
+                data.state
+                    .projects
+                    .iter()
+                    .find(|project| project.id == data.project_id)
+                    .map(|project| project.name.clone())
+            });
+        if let Some(project) = project {
+            meta = format!("{meta} · {project}");
+        }
+    }
+    let mut actions = Vec::new();
+    if kind == PanelKind::Projects {
+        actions.push(project_sort_button(
+            data.project_order,
+            data.project_sort_menu_open,
+            sort_selector_bounds.clone(),
+            on_action.clone(),
+            cx,
+        ));
+        for (id, button) in [
+            (
+                "new-project-folder",
+                HeaderButton {
+                    label: "+ Folder",
+                    tooltip: "New folder",
+                    glyph: ActionGlyph::NewFolder,
+                    color: colors.magenta,
+                    pad: 6.0,
+                    action: PanelAction::CreateFolder,
+                },
+            ),
+            (
+                "new-project",
+                HeaderButton {
+                    label: "+ Project",
+                    tooltip: "New project",
+                    glyph: ActionGlyph::NewProject,
+                    color: colors.cyan,
+                    pad: 8.0,
+                    action: PanelAction::CreateProject,
+                },
+            ),
+        ] {
+            actions.push(project_header_button(
+                id,
+                button,
+                true,
+                on_action.clone(),
+                cx,
+            ));
+        }
+    }
+    let name = kind.name();
+    let search_input = data.search_focused.then(|| {
+        let focus = data.focus.clone();
+        let view = cx.entity();
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                window.handle_input(&focus, ElementInputHandler::new(bounds, view.clone()), cx);
+            },
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
+    });
+    let search_action = on_action.clone();
+    let search = controls::search_field(
+        div().id(format!("{name}-search")).relative(),
+        data.search_focused,
+        colors,
+    )
+    .cursor_text()
+    .child(icons::mark("⌕", 10.0, colors.muted))
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(if data.query.is_empty() {
+                "Search".to_owned()
+            } else {
+                format!(
+                    "{}{}",
+                    data.query,
+                    if data.search_focused { "▌" } else { "" }
+                )
+            }),
+    )
+    .when(data.query.is_empty(), |search| {
+        search.child(
+            div()
+                .flex_none()
+                .text_size(ui_text::text(9.0))
+                .text_color(rgb(colors.muted))
+                .child("⌘F"),
+        )
+    })
+    .children(search_input)
+    .on_click(cx.listener(move |view, _, window, cx| {
+        search_action(view, PanelAction::Search, window, cx);
+    }));
+    let panel = controls::panel(colors)
+        .relative()
+        .child(controls::panel_header(
+            kind.label(),
+            Some(meta.into()),
+            actions,
+            colors,
+        ))
+        .child(search)
+        .child(
+            div()
+                .id(format!("{name}-rows"))
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .gap(ui_text::space(1.0))
+                .pb(ui_text::space(controls::LIST_MARGIN))
+                .overflow_y_scroll()
+                .children(rows),
+        );
+    finish_panel(panel, kind, data, sort_selector_bounds, on_action, cx)
+}
+
+/// Native's sort control for Projects: a header button whose menu picks the order and
+/// its direction, as Finder's View menu does.
+fn project_sort_button<V: 'static>(
+    order: ProjectOrder,
+    open: bool,
+    selector_bounds: Rc<Cell<Bounds<Pixels>>>,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    let button = controls::toolbar_button(
+        "project-sort-selector",
+        "arrow.up.arrow.down",
+        format!(
+            "Sort by {} · {}",
+            order.by.label().to_lowercase(),
+            order.direction_label()
+        ),
+        true,
+        colors,
+    );
+    if open {
+        controls::toolbar_button_on(button, colors)
+    } else {
+        button
+    }
+    .relative()
+    .child(
+        canvas(
+            move |bounds, _, _| selector_bounds.set(bounds),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0(),
+    )
+    .on_click(cx.listener(move |view, _, window, cx| {
+        on_action(view, PanelAction::ToggleProjectSortMenu, window, cx);
+    }))
+    .into_any_element()
 }
 
 /// A create button in the Projects header.
@@ -1180,21 +1427,7 @@ fn project_header_button<V: 'static>(
     // Native draws both as bare symbols with their names in tooltips, like the pane's own
     // buttons on the bar above: muted, in a round hover, turning primary under the pointer.
     if ui_text::is_native() {
-        return div()
-            .id(id)
-            .flex_none()
-            .size(ui_text::space(22.0))
-            .my(ui_text::space(4.0))
-            .mr(ui_text::space(if id == "new-project" { 6.0 } else { 2.0 }))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .cursor_pointer()
-            .text_color(rgb(colors.muted))
-            .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
-            .child(icons::text_icon(Icon::Action(glyph), 11.0, colors.muted))
-            .child(tooltip::anchor(tooltip, Look::Control))
+        return controls::toolbar_button(id, Icon::Action(glyph).symbol(), tooltip, true, colors)
             .on_click(cx.listener(move |view, _, window, cx| {
                 on_action(view, action.clone(), window, cx);
             }))
@@ -1355,8 +1588,11 @@ fn project_sort_menu<V: 'static>(
         .map(|menu| {
             controls::native(menu, |menu| {
                 controls::menu(menu, colors)
+                    .top(ui_text::space(controls::HEADER_HEIGHT - 6.0))
+                    .right(ui_text::space(controls::LIST_MARGIN))
+                    .w(ui_text::space(200.0))
                     .bottom_auto()
-                    .max_h(ui_text::space(160.0))
+                    .max_h(ui_text::space(220.0))
             })
         })
         .occlude()
@@ -1377,47 +1613,85 @@ fn project_sort_menu<V: 'static>(
             ]
             .into_iter()
             .map(|by| {
-                let action = on_action.clone();
                 let selected = by == order.by;
                 let next = if selected {
                     order
                 } else {
                     ProjectOrder::for_sort(by)
                 };
-                div()
-                    .id(format!("project-sort-{}", by.label()))
-                    .flex()
-                    .items_center()
-                    .gap(ui_text::space(7.0))
-                    .px(ui_text::space(8.0))
-                    .py(ui_text::space(7.0))
-                    .cursor_pointer()
-                    .text_size(ui_text::text(10.0))
-                    .text_color(rgb(if selected { colors.cyan } else { colors.text }))
-                    .hover(move |style| {
-                        controls::hovered(style, controls::menu_row_hover(colors), |style| {
-                            style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
-                        })
-                    })
-                    .map(|row| controls::native(row, |row| controls::menu_row(row, colors)))
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(ui_text::space(12.0))
-                            .when(selected, |check| {
-                                check.child(if ui_text::is_native() {
-                                    icons::text_mark("✓", 10.0)
-                                } else {
-                                    "✓".into_any_element()
-                                })
-                            }),
-                    )
-                    .child(div().flex_1().min_w_0().text_ellipsis().child(by.label()))
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        action(view, PanelAction::SetProjectOrder(next), window, cx);
-                    }))
+                sort_menu_row(
+                    format!("project-sort-{}", by.label()),
+                    by.label(),
+                    selected,
+                    next,
+                    on_action.clone(),
+                    cx,
+                )
             }),
         )
+        // Native's menu also holds the direction, as Finder's sort menus do.
+        .when(ui_text::is_native(), |menu| {
+            menu.child(controls::menu_separator(colors))
+                .children([false, true].map(|descending| {
+                    let next = ProjectOrder {
+                        descending,
+                        ..order
+                    };
+                    sort_menu_row(
+                        format!("project-sort-descending-{descending}"),
+                        next.direction_label(),
+                        order.descending == descending,
+                        next,
+                        on_action.clone(),
+                        cx,
+                    )
+                }))
+        })
+        .into_any_element()
+}
+
+/// One choice in the Projects sort menu, ticked when it is the current one.
+fn sort_menu_row<V: 'static>(
+    id: String,
+    label: &'static str,
+    selected: bool,
+    next: ProjectOrder,
+    action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(ui_text::space(7.0))
+        .px(ui_text::space(8.0))
+        .py(ui_text::space(7.0))
+        .cursor_pointer()
+        .text_size(ui_text::text(10.0))
+        .text_color(rgb(if selected { colors.cyan } else { colors.text }))
+        .hover(move |style| {
+            controls::hovered(style, controls::menu_row_hover(colors), |style| {
+                style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
+            })
+        })
+        .map(|row| controls::native(row, |row| controls::menu_row(row, colors)))
+        .child(
+            div()
+                .flex_none()
+                .w(ui_text::space(12.0))
+                .when(selected, |check| {
+                    check.child(if ui_text::is_native() {
+                        icons::text_mark("✓", 10.0)
+                    } else {
+                        "✓".into_any_element()
+                    })
+                }),
+        )
+        .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+        .on_click(cx.listener(move |view, _, window, cx| {
+            action(view, PanelAction::SetProjectOrder(next), window, cx);
+        }))
         .into_any_element()
 }
 
@@ -2126,6 +2400,10 @@ fn folder_bar(id: String, depth: usize, colors: Palette) -> Stateful<Div> {
             controls::native(bar, |bar| {
                 bar.mt(ui_text::space(8.0))
                     .h(ui_text::space(22.0))
+                    .pl(ui_text::space(
+                        controls::PANEL_INSET + NATIVE_LEVEL * depth.min(16) as f32,
+                    ))
+                    .pr(ui_text::space(controls::PANEL_INSET - 4.0))
                     .border_b_0()
                     .bg(gpui::transparent_black())
                     .text_color(rgb(colors.muted))
@@ -2335,7 +2613,11 @@ fn project_row<V: 'static>(
             })
         })
         .group(PROJECT_ROW_GROUP)
-        .map(|row| controls::native(row, |row| sidebar_row(row, selected, colors)))
+        .map(|row| {
+            controls::native(row, |row| {
+                sidebar_row(row, selected, colors).pl(native_row_indent(depth))
+            })
+        })
         .children(children)
         .on_click(cx.listener(move |view, _, window, cx| {
             on_action(view, action.clone(), window, cx);
@@ -2357,12 +2639,22 @@ const PROJECT_ROW_GROUP: &str = "project-row";
 /// Native's sidebar row: inset from the panel's edges and rounded, filled when chosen,
 /// with no bar along its side.
 fn sidebar_row(row: Stateful<Div>, selected: bool, colors: Palette) -> Stateful<Div> {
-    controls::row(row, selected, colors)
-        .mx(ui_text::space(6.0))
+    controls::list_row(row, selected, colors)
+        .mx(ui_text::space(controls::LIST_MARGIN))
         .border_l_0()
         .border_0()
-        .rounded(controls::radius(8.0))
 }
+
+/// How far Native indents a project row's text at `depth`: a level's step is a disclosure
+/// chevron and its gap, so a project's name lines up with its folder's.
+fn native_row_indent(depth: usize) -> Pixels {
+    ui_text::space(
+        controls::PANEL_INSET - controls::LIST_MARGIN + NATIVE_LEVEL * depth.min(16) as f32,
+    )
+}
+
+/// One level of Native's project tree: a chevron and the gap after it.
+const NATIVE_LEVEL: f32 = 16.0;
 
 fn row<V: 'static>(
     id: String,

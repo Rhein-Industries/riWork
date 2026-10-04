@@ -662,6 +662,18 @@ fn tooltip_hint(mode: Mode) -> Option<&'static str> {
     }
 }
 
+/// The SF Symbol and name of a button under Native, which draws them all as symbols.
+fn native_face(mode: Mode, face: &Face, show_hidden: bool) -> (&'static str, &'static str) {
+    match (mode, face) {
+        (_, Face::Glyph(glyph, name)) => (Icon::Action(*glyph).symbol(), name),
+        (Mode::Refresh, _) => ("arrow.clockwise", "Refresh"),
+        (Mode::Hidden, _) if show_hidden => ("eye", "Hide hidden files"),
+        (Mode::Hidden, _) => ("eye.slash", "Show hidden files"),
+        (Mode::RevealRoot, _) => ("folder", "Reveal worktree in Finder"),
+        _ => ("questionmark", "Action"),
+    }
+}
+
 /// An icon has no words, so its tooltip is the name, then the hint or the reason
 /// the button is unavailable.
 fn icon_tooltip(name: &str, detail: Option<&str>) -> String {
@@ -2019,6 +2031,50 @@ impl FileExplorer {
         // Copy Contents has limits the label cannot show, so it always explains.
         let explanation = (mode == Mode::CopyContents)
             .then(|| self.copy_contents_refusal().unwrap_or(COPY_CONTENTS_HINT));
+        let click = move |view: &mut Self,
+                          _: &gpui::ClickEvent,
+                          window: &mut Window,
+                          cx: &mut Context<Self>| {
+            // The preview panel also takes clicks to focus itself; this button
+            // owns its own focus state.
+            cx.stop_propagation();
+            view.mode = mode;
+            let focus = view.focus_of(mode).clone();
+            focus.focus(window, cx);
+            // A disabled Copy Contents says why on click, as it does on
+            // Enter, since a tooltip needs a hover.
+            if available || mode == Mode::CopyContents {
+                view.action(mode, cx);
+            }
+            cx.notify();
+        };
+        // Native: every button is a bare symbol in the header, named by its tooltip; the
+        // one the keyboard is on keeps a ring, and Hidden is filled while it is on.
+        if ui_text::is_native() {
+            let (symbol, name) = native_face(mode, &face, self.show_hidden);
+            let detail = explanation.or_else(|| tooltip_hint(mode).filter(|_| available));
+            let button = controls::toolbar_button(
+                id,
+                symbol,
+                icon_tooltip(name, detail),
+                available || mode == Mode::CopyContents,
+                colors,
+            );
+            let button = if mode == Mode::Hidden && self.show_hidden {
+                controls::toolbar_button_on(button, colors)
+            } else {
+                button
+            };
+            return button
+                .border_1()
+                .border_color(if active {
+                    rgb(colors.focus).into()
+                } else {
+                    gpui::transparent_black()
+                })
+                .on_click(cx.listener(click))
+                .into_any_element();
+        }
         let button = div()
             .id(id)
             .flex_none()
@@ -2068,29 +2124,15 @@ impl FileExplorer {
                     .child(tooltip::anchor(tooltip, Look::Control))
             }
         };
-        button
-            .on_click(cx.listener(move |view, _, window, cx| {
-                // The preview panel also takes clicks to focus itself; this button
-                // owns its own focus state.
-                cx.stop_propagation();
-                view.mode = mode;
-                let focus = view.focus_of(mode).clone();
-                focus.focus(window, cx);
-                // A disabled Copy Contents says why on click, as it does on
-                // Enter, since a tooltip needs a hover.
-                if available || mode == Mode::CopyContents {
-                    view.action(mode, cx);
-                }
-                cx.notify();
-            }))
-            .into_any_element()
+        button.on_click(cx.listener(click)).into_any_element()
     }
 
     /// The file actions, right of the file name. They drop to their own line only
     /// once the name is down to a stub, and wrap among themselves only when even
     /// that line is too narrow.
     fn preview_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let as_icons = icons::labels_as_icons(cx);
+        // Native draws the file's actions as symbols in the header, as Quick Look does.
+        let as_icons = icons::labels_as_icons(cx) || ui_text::is_native();
         div()
             .id("file-preview-actions")
             .ml_auto()
@@ -2110,7 +2152,11 @@ impl FileExplorer {
         let colors = theme::palette(cx);
         let active = self.is_current(Mode::Search, window);
         let mut text = if self.filter.text.is_empty() {
-            "Filter loaded files…".to_owned()
+            if ui_text::is_native() {
+                "Filter".to_owned()
+            } else {
+                "Filter loaded files…".to_owned()
+            }
         } else {
             self.filter.text.clone()
         };
@@ -2157,19 +2203,24 @@ impl FileExplorer {
             .bg(rgb(colors.bg))
             .border_1()
             .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-            .map(|field| {
-                controls::native(field, |field| {
-                    controls::field(field, colors)
-                        .h(ui_text::space(26.0))
-                        .font_family(ui_text::ui_family())
-                        .when(active, |field| field.border_color(rgb(colors.focus)))
-                })
-            })
             .text_color(rgb(if self.filter.text.is_empty() {
                 colors.muted
             } else {
                 colors.text
             }))
+            // Native: the capsule every navigation panel searches with.
+            .map(|field| {
+                controls::native(field, |field| {
+                    controls::search_field(field, active, colors)
+                        .mb_0()
+                        .text_color(rgb(if self.filter.text.is_empty() {
+                            colors.muted
+                        } else {
+                            colors.text
+                        }))
+                        .child(icons::mark("⌕", 10.0, colors.muted))
+                })
+            })
             .child(
                 div()
                     .min_w_0()
@@ -2203,6 +2254,7 @@ impl FileExplorer {
             RowKind::Status => "…",
         };
         let label = row.label.clone();
+        let depth = row.depth;
         let clicked_row = row.clone();
         let color = match row.kind {
             RowKind::Error => colors.gold,
@@ -2244,8 +2296,11 @@ impl FileExplorer {
             .map(|row| {
                 // Native: an inset rounded row, and the focus shown by a ring.
                 controls::native(row, |row| {
-                    controls::row(row, selected, colors)
-                        .rounded(controls::radius(6.0))
+                    controls::list_row(row, selected, colors)
+                        .h(ui_text::space(24.0))
+                        .pl(px(ui_text::space_f32(
+                            controls::PANEL_INSET - controls::LIST_MARGIN,
+                        ) + depth as f32 * 14.0))
                         // The focused list's selection is a deeper fill, not a ring.
                         .when(
                             selected && self.mode == Mode::Tree && self.focus.is_focused(window),
@@ -2304,11 +2359,7 @@ impl FileExplorer {
         // Native insets the rounded row from the list's edges; a margin on a full-width
         // row would push it past the right edge, so a padded box holds it.
         if ui_text::is_native() {
-            div()
-                .w_full()
-                .px(ui_text::space(6.0))
-                .child(row)
-                .into_any_element()
+            controls::list_inset(row).into_any_element()
         } else {
             row
         }
@@ -2317,6 +2368,9 @@ impl FileExplorer {
     /// The Preview pane: the selected file's name and actions above its contents. It is
     /// drawn by `FilePreview`, but its clicks and keys act on this entity.
     fn preview_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if ui_text::is_native() {
+            return self.native_preview_panel(window, cx);
+        }
         let colors = theme::palette(cx);
         let title = preview_title(self.preview_path.as_deref(), self.selected.as_deref());
         let content: AnyElement = match &self.preview {
@@ -2657,6 +2711,295 @@ impl FileExplorer {
     }
 }
 
+impl FileExplorer {
+    /// The Preview pane under Native, laid out like every navigation panel: the file's name
+    /// over its kind, size and path, its actions as symbols, then the contents on the
+    /// panel's own background with nothing framing them.
+    fn native_preview_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
+        let shown = self.preview_path.as_deref().or(self.selected.as_deref());
+        let title = shown
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Preview".into());
+        let path = shown.map(|path| {
+            self.root
+                .as_ref()
+                .and_then(|root| path.strip_prefix(&root.path).ok())
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned()
+        });
+        let kind = if self.preview_loading && self.preview_path != self.selected {
+            Some("Loading…".to_owned())
+        } else {
+            match &self.preview {
+                PreviewState::Ready(PreviewContent::Text {
+                    lines, markdown, ..
+                }) => Some(format!(
+                    "{} · {} {}",
+                    if *markdown { "Markdown" } else { "Text" },
+                    lines.len(),
+                    if lines.len() == 1 { "line" } else { "lines" }
+                )),
+                PreviewState::Ready(PreviewContent::Image { description, .. }) => {
+                    Some(format!("Image · {description}"))
+                }
+                PreviewState::Ready(PreviewContent::Pdf { pages, .. }) => Some(format!(
+                    "PDF · {pages} {}",
+                    if *pages == 1 { "page" } else { "pages" }
+                )),
+                PreviewState::PdfPending => Some("PDF".to_owned()),
+                _ => None,
+            }
+        };
+        let meta = [kind, path]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let meta = (!meta.is_empty()).then(|| meta.into());
+        let actions = TOOLBAR
+            .iter()
+            .map(|action| self.toolbar_button(action, true, window, cx))
+            .collect::<Vec<_>>();
+        let content: AnyElement = match &self.preview {
+            PreviewState::Empty => {
+                controls::empty_state("eye", "Select a file to preview it here.", colors)
+                    .into_any_element()
+            }
+            PreviewState::Loading => {
+                controls::empty_state("doc", "Loading preview…", colors).into_any_element()
+            }
+            PreviewState::PdfPending => controls::empty_state(
+                "doc.richtext",
+                "PDFs are only rendered on request, because the PDF parser runs inside RiWork.",
+                colors,
+            )
+            // While a newer selection loads, this placeholder is stale.
+            .children((self.preview_path == self.selected).then(|| {
+                controls::button(
+                    div().id("file-preview-open-pdf"),
+                    controls::Button::Secondary,
+                    colors,
+                )
+                .py(ui_text::space(3.0))
+                .cursor_pointer()
+                .hover(move |style| style.bg(rgb(controls::Button::Secondary.hover(colors))))
+                .child("Preview PDF")
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.mode = Mode::Preview;
+                    view.preview_focus.focus(window, cx);
+                    view.open_pdf_preview(cx);
+                }))
+            }))
+            .into_any_element(),
+            PreviewState::Error(error) => {
+                controls::empty_state("exclamationmark.triangle", error.clone(), colors)
+                    .into_any_element()
+            }
+            PreviewState::Ready(PreviewContent::Message(message)) => controls::empty_state(
+                if message.starts_with("Expand this folder") {
+                    "folder"
+                } else {
+                    "eye.slash"
+                },
+                message.clone(),
+                colors,
+            )
+            .into_any_element(),
+            PreviewState::Ready(PreviewContent::Text {
+                lines,
+                truncated,
+                markdown,
+            }) => {
+                let lines = lines.clone();
+                let count = lines.len();
+                let markdown = *markdown;
+                // A quiet gutter, wide enough for the last line's number.
+                let digits = count.max(1).to_string().len().max(2) as f32;
+                let gutter = ui_text::space(14.0 + digits * 6.5);
+                let number = theme::mix(colors.muted, colors.panel, 0.35);
+                let text = colors.text;
+                let marked = self
+                    .highlight_line
+                    .as_ref()
+                    .filter(|(path, _)| Some(path) == self.preview_path.as_ref())
+                    .map(|(_, index)| *index);
+                let marker = colors.panel_active;
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .children(truncated.then(|| {
+                        controls::footnote("Preview truncated at 1 MiB or 10,000 lines", colors)
+                            .text_color(rgb(colors.gold))
+                    }))
+                    .child(
+                        uniform_list("file-preview-lines", count, move |range, _, _| {
+                            range
+                                .map(|index| {
+                                    let line = &lines[index];
+                                    let heading = markdown && line.trim_start().starts_with('#');
+                                    div()
+                                        .h(ui_text::space(18.0))
+                                        .w_full()
+                                        .flex()
+                                        .items_center()
+                                        .pr(ui_text::space(controls::PANEL_INSET))
+                                        .when(marked == Some(index), |row| row.bg(rgb(marker)))
+                                        .child(
+                                            div()
+                                                .w(gutter)
+                                                .flex_none()
+                                                .flex()
+                                                .justify_end()
+                                                .pr(ui_text::space(8.0))
+                                                .text_color(rgb(number))
+                                                .text_size(ui_text::text(9.0))
+                                                .child(format!("{}", index + 1)),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .text_size(ui_text::text(10.5))
+                                                .text_color(rgb(text))
+                                                .when(heading, |line| {
+                                                    line.font_weight(gpui::FontWeight::SEMIBOLD)
+                                                })
+                                                .child(line.clone()),
+                                        )
+                                        .into_any_element()
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .flex_1()
+                        .min_h_0()
+                        .pb(ui_text::space(controls::LIST_MARGIN))
+                        .font_family(accent_family())
+                        .track_scroll(&self.preview_scroll),
+                    )
+                    .into_any_element()
+            }
+            PreviewState::Ready(PreviewContent::Image { image, .. }) => div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .px(ui_text::space(controls::PANEL_INSET + 4.0))
+                .pt(ui_text::space(4.0))
+                .pb(ui_text::space(controls::PANEL_INSET + 4.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(img(image.clone()).size_full())
+                .into_any_element(),
+            PreviewState::Ready(PreviewContent::Pdf {
+                image, page, pages, ..
+            }) => {
+                let previous = *page - 1;
+                let next = *page + 1;
+                let can_previous = *page > 1;
+                let can_next = *page < *pages;
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .px(ui_text::space(controls::PANEL_INSET + 4.0))
+                            .pt(ui_text::space(4.0))
+                            .child(img(image.clone()).size_full()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .py(ui_text::space(6.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(ui_text::space(6.0))
+                            .text_size(ui_text::text(controls::META_TEXT))
+                            .text_color(rgb(colors.muted))
+                            .child(
+                                controls::toolbar_button(
+                                    "file-preview-previous-page",
+                                    "chevron.left",
+                                    "Previous page",
+                                    can_previous,
+                                    colors,
+                                )
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
+                                        cx.stop_propagation();
+                                        view.mode = Mode::Preview;
+                                        view.preview_focus.focus(window, cx);
+                                        if can_previous {
+                                            view.pdf_page(previous, cx);
+                                        }
+                                    },
+                                )),
+                            )
+                            .child(format!("Page {page} of {pages}"))
+                            .child(
+                                controls::toolbar_button(
+                                    "file-preview-next-page",
+                                    "chevron.right",
+                                    "Next page",
+                                    can_next,
+                                    colors,
+                                )
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
+                                        cx.stop_propagation();
+                                        view.mode = Mode::Preview;
+                                        view.preview_focus.focus(window, cx);
+                                        if can_next {
+                                            view.pdf_page(next, cx);
+                                        }
+                                    },
+                                )),
+                            ),
+                    )
+                    .into_any_element()
+            }
+        };
+        controls::panel(colors)
+            .id("file-preview-panel")
+            .track_focus(&self.preview_focus)
+            .key_context("FilePreview")
+            .on_key_down(cx.listener(Self::preview_key_down))
+            .child(controls::panel_header(title, meta, actions, colors))
+            // Directly under the header, where the action that caused it just was.
+            .children(self.notice.as_ref().map(|notice| {
+                controls::footnote(notice.text.clone(), colors)
+                    .pt_0()
+                    .text_size(ui_text::text(controls::META_TEXT))
+                    .text_color(rgb(if notice.confirmation {
+                        colors.text
+                    } else {
+                        colors.gold
+                    }))
+            }))
+            .child(content)
+            .on_click(cx.listener(|view, _, window, cx| {
+                view.mode = Mode::Preview;
+                view.preview_focus.focus(window, cx);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+}
+
 /// How a button shows its action.
 enum Face<'a> {
     Text(&'a str),
@@ -2722,6 +3065,63 @@ impl Render for FileExplorer {
             })
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Select a file or folder".into());
+        if ui_text::is_native() {
+            let error = root_state.is_some_and(|state| state.error.is_some());
+            let meta = match &self.root {
+                Some(root) => format!(
+                    "{} · {item_count} {}",
+                    root.label,
+                    if item_count == 1 { "item" } else { "items" }
+                ),
+                None => "No worktree".to_owned(),
+            };
+            return controls::panel(colors)
+                .id("file-explorer-browser")
+                .child(controls::panel_header(
+                    crate::layouts::PanelKind::Files.label(),
+                    Some(meta.into()),
+                    [
+                        self.button("file-explorer-refresh", "", Mode::Refresh, window, cx),
+                        self.button("file-explorer-hidden", "", Mode::Hidden, window, cx),
+                        self.button(
+                            "file-explorer-reveal-root",
+                            "",
+                            Mode::RevealRoot,
+                            window,
+                            cx,
+                        ),
+                    ],
+                    colors,
+                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .pb(ui_text::space(6.0))
+                        .child(self.search(window, cx)),
+                )
+                .children(message.map(|message| {
+                    if error {
+                        controls::footnote(message, colors)
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.gold))
+                    } else {
+                        controls::empty_state("folder", message, colors)
+                    }
+                }))
+                .child(tree.pb(ui_text::space(controls::LIST_MARGIN)))
+                .child(
+                    controls::footnote(relative, colors)
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .when(self.selected.is_some(), |path| {
+                            path.font_family(accent_family())
+                        }),
+                )
+                .track_focus(&self.focus)
+                .key_context("FileExplorer")
+                .on_key_down(cx.listener(Self::key_down));
+        }
         let browser = div()
             .id("file-explorer-browser")
             .size_full()
