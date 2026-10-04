@@ -173,6 +173,14 @@ const FOCUS_TOOLBAR_HEIGHT: f32 = 32.0;
 /// Design sizes at 100 % interface text; they grow with it (`ui_text::space`).
 const STATUS_BAR_HEIGHT: f32 = 22.0;
 const PANE_HEADER_HEIGHT: f32 = 28.0;
+/// Native's pane bar: its buttons are round hovers this wide, this far apart, and kept this
+/// far from the pane's edge; a tab's close mark has a smaller round hover.
+const NATIVE_BAR_BUTTON: f32 = 22.0;
+const NATIVE_BAR_BUTTON_GAP: f32 = 2.0;
+const NATIVE_BAR_BUTTON_INSET: f32 = 3.0;
+const NATIVE_TAB_CLOSE: f32 = 16.0;
+/// The narrowest a Native symbol tab gets when even the symbols crowd the bar.
+const NATIVE_ICON_TAB_MIN: f32 = 22.0;
 /// A window restored fullscreen or zoomed is first drawn at its opening size and animates
 /// to the real one. Sizes seen this soon after the first draw are that settling, not the
 /// user resizing, so they must not rebalance the saved ratios.
@@ -6695,27 +6703,75 @@ impl Workspace {
         // it to the menu's check mark.
         let show_main = is_main
             && header_width
-                >= ui_text::space_f32(if self.settings.panel_tab_icons {
+                >= ui_text::space_f32(if self.settings.panel_tab_icons || ui_text::is_native() {
                     136.0
                 } else {
                     152.0
                 });
         let account_numbers = codex_account_numbers(&self.shells);
+        let native = ui_text::is_native();
+        let tab_can_close = user_close_refusal(pane_locked, UserClose::Tab).is_none();
+        // A panel's tab says its name as the theme writes labels; a saved layout keeps
+        // whatever title the tab was created with.
+        let titles: Vec<String> = pane
+            .tabs
+            .iter()
+            .map(|tab| match tab.panel() {
+                Some(kind) if native => Self::panel_label(kind).to_owned(),
+                _ => {
+                    let shell = tab
+                        .shell_id()
+                        .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
+                    codex_tab_title(&tab.title, shell, &account_numbers)
+                }
+            })
+            .collect();
+        // Native never cuts a tab off mid-word: when the words do not fit beside the pane's
+        // buttons, its panels show their symbols instead, as Xcode's navigator bar does.
+        let compact_panels = native && !self.settings.panel_tab_icons && {
+            let buttons = [show_main, show_lock, show_focus, true]
+                .into_iter()
+                .filter(|shown| *shown)
+                .count() as f32;
+            let reserved = buttons * ui_text::space_f32(NATIVE_BAR_BUTTON)
+                + (buttons - 1.0) * ui_text::space_f32(NATIVE_BAR_BUTTON_GAP)
+                + 2.0 * ui_text::space_f32(NATIVE_BAR_BUTTON_INSET)
+                + if drag_handle { handle_width } else { 0.0 }
+                + ui_text::space_f32(18.0);
+            let close = ui_text::space_f32(6.0 + NATIVE_TAB_CLOSE) - ui_text::space_f32(4.0);
+            let words: f32 = titles
+                .iter()
+                .enumerate()
+                .map(|(index, title)| {
+                    let shown_close = index == pane.active && tab_can_close;
+                    ui_text::space_f32(16.0)
+                        + 1.0
+                        + native_label_width(title, cx)
+                        + if shown_close { close } else { 0.0 }
+                })
+                .sum();
+            words > header_width - reserved
+        };
         let tabs = pane
             .tabs
             .iter()
+            .zip(titles)
             .enumerate()
-            .map(|(index, tab)| {
+            .map(|(index, (tab, display_title))| {
                 let tab_id = tab.id;
                 let active = index == pane.active;
                 let panel = tab.panel().is_some();
                 // Shell tabs keep their titles; only built-in panels swap in an icon.
-                let icon_panel = tab.panel().filter(|_| self.settings.panel_tab_icons);
+                let icon_panel = tab
+                    .panel()
+                    .filter(|_| self.settings.panel_tab_icons || compact_panels);
                 // The X is left out, not disabled, so a locked pane's tabs lose no room to it.
-                let close_visible =
-                    active && user_close_refusal(pane_locked, UserClose::Tab).is_none();
+                let close_visible = active && tab_can_close;
+                // Native's close mark sits in its own round hover, which already pads it.
+                let pad_right_with_close = if native { 4.0 } else { 8.0 };
                 let (pad_left, pad_right, gap) = match (icon_panel, close_visible) {
-                    (None, _) => (8.0, 8.0, 6.0),
+                    (None, true) => (8.0, pad_right_with_close, 6.0),
+                    (None, false) => (8.0, 8.0, 6.0),
                     (Some(_), true) => (0.0, 4.0, 0.0),
                     (Some(_), false) => (0.0, 0.0, 0.0),
                 };
@@ -6737,15 +6793,6 @@ impl Workspace {
                     colors.panel_active
                 };
                 let workspace = cx.entity();
-                let shell = tab
-                    .shell_id()
-                    .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
-                // A panel's tab says its name as the theme writes labels; a saved
-                // layout keeps whatever title the tab was created with.
-                let display_title = match tab.panel() {
-                    Some(kind) if ui_text::is_native() => Self::panel_label(kind).to_owned(),
-                    _ => codex_tab_title(&tab.title, shell, &account_numbers),
-                };
                 let activity_hint = tab
                     .shell_id()
                     .and_then(|id| self.agent_activity.get(id))
@@ -6754,6 +6801,16 @@ impl Workspace {
                     .id(("tab", tab_id))
                     .flex()
                     .flex_shrink_0()
+                    // Should even the symbols not fit, Native's tabs narrow alike and end
+                    // their words in an ellipsis, as Finder's do, rather than run off the bar.
+                    .when(native, |tab| {
+                        tab.flex_shrink(1.0)
+                            .min_w(ui_text::space(if icon_panel.is_some() {
+                                NATIVE_ICON_TAB_MIN
+                            } else {
+                                44.0
+                            }))
+                    })
                     .items_center()
                     .h_full()
                     .pl(ui_text::space(pad_left))
@@ -6797,6 +6854,10 @@ impl Workspace {
                     .hover(move |style| {
                         if active && colors.plain_tabs {
                             style
+                        } else if native {
+                            style
+                                .bg(rgb(colors.panel_active))
+                                .text_color(rgb(colors.text))
                         } else {
                             style.bg(rgb(colors.panel_active))
                         }
@@ -6811,30 +6872,50 @@ impl Workspace {
                             .h_full()
                             .min_w(ui_text::space(32.0))
                             .px(ui_text::space(8.0))
+                            // Native's symbol tabs keep their padding while they fit and
+                            // narrow, symbol centered, only as far as a crowded bar needs.
+                            .when(native, |icon| {
+                                icon.px_0()
+                                    .w(ui_text::space(32.0))
+                                    .flex_shrink(1.0)
+                                    .min_w(ui_text::space(NATIVE_ICON_TAB_MIN))
+                            })
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icons::icon(Icon::Panel(kind), tab_color))
+                            .child(icons::text_icon(Icon::Panel(kind), 10.0, tab_color))
                             .child(tooltip::anchor(panel_tooltip(kind), Look::Pane))
                             .into_any_element(),
                         // Another Mac's tabs wear its name in the remote accent.
-                        None => match remote_tree::split_remote_title(&display_title)
-                            .filter(|_| tab.remote().is_some())
-                        {
-                            Some((mark, rest)) => div()
-                                .flex()
-                                .child(div().text_color(rgb(colors.magenta)).child(mark.to_owned()))
-                                .child(rest.to_owned())
-                                .into_any_element(),
-                            // What the agent in the tab is doing, on hover.
-                            None => match activity_hint {
-                                Some(hint) => div()
-                                    .child(display_title.clone())
-                                    .child(tooltip::anchor(hint, Look::Pane))
+                        None => {
+                            let label = match remote_tree::split_remote_title(&display_title)
+                                .filter(|_| tab.remote().is_some())
+                            {
+                                Some((mark, rest)) => div()
+                                    .flex()
+                                    .child(
+                                        div()
+                                            .text_color(rgb(colors.magenta))
+                                            .child(mark.to_owned()),
+                                    )
+                                    .child(rest.to_owned())
                                     .into_any_element(),
-                                None => display_title.clone().into_any_element(),
-                            },
-                        },
+                                // What the agent in the tab is doing, on hover.
+                                None => match activity_hint {
+                                    Some(hint) => div()
+                                        .child(display_title.clone())
+                                        .child(tooltip::anchor(hint, Look::Pane))
+                                        .into_any_element(),
+                                    None => display_title.clone().into_any_element(),
+                                },
+                            };
+                            // The words of a narrowed tab end in an ellipsis.
+                            if native {
+                                div().min_w_0().truncate().child(label).into_any_element()
+                            } else {
+                                label
+                            }
+                        }
                     })
                     .children(close_visible.then(|| {
                         div()
@@ -6846,8 +6927,25 @@ impl Workspace {
                             .justify_center()
                             .cursor_pointer()
                             .rounded(px(3.0))
-                            .hover(|style| style.bg(rgb(colors.divider)))
-                            .child(icons::icon(Icon::Close, colors.muted))
+                            .hover(move |style| {
+                                let style = style.bg(rgb(colors.divider));
+                                if native {
+                                    style.text_color(rgb(colors.text))
+                                } else {
+                                    style
+                                }
+                            })
+                            // Native's close mark is a small cross in a round hover, muted
+                            // until the pointer is on it.
+                            .map(|close| {
+                                controls::native(close, |close| {
+                                    close
+                                        .size(ui_text::space(NATIVE_TAB_CLOSE))
+                                        .rounded_full()
+                                        .text_color(rgb(colors.muted))
+                                })
+                            })
+                            .child(icons::text_icon(Icon::Close, 10.0, colors.muted))
                             .child(tooltip::anchor("Close tab · ⌘W", Look::Pane))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |workspace, _, window, cx| {
@@ -6949,7 +7047,10 @@ impl Workspace {
                     // Native leaves the pane's buttons bare on the bar, like a toolbar.
                     .map(|group| {
                         controls::native(group, |group| {
-                            group.items_center().mx(ui_text::space(4.0))
+                            group
+                                .items_center()
+                                .gap(ui_text::space(NATIVE_BAR_BUTTON_GAP))
+                                .mx(ui_text::space(NATIVE_BAR_BUTTON_INSET))
                         })
                     })
                     .children(show_main.then(|| self.main_marker(pane_id, cx)))
@@ -7343,13 +7444,19 @@ impl Workspace {
                         .border_1()
                         .border_color(rgb(colors.magenta))
                         .p(ui_text::space(3.0))
+                        .map(|menu| {
+                            controls::native(menu, |menu| {
+                                controls::menu(menu, colors)
+                                    .top(ui_text::space(PANE_HEADER_HEIGHT) + px(4.0))
+                            })
+                        })
                         .on_mouse_down_out(cx.listener(|workspace, _, window, cx| {
                             workspace.panel_menu = None;
                             workspace.finish_tab_drag(cx);
                             workspace.focus_active(window, cx);
                             cx.notify();
                         }));
-                    menu.child(pane_menu_heading("New tab", colors))
+                    menu.child(pane_menu_heading("New tab", true, colors))
                         .children(
                             [
                                 ("Shell", "⌘T", Some(Icon::Add), PaneMenuAction::Shell),
@@ -7407,7 +7514,7 @@ impl Workspace {
                                 self.pane_menu_row(pane_id, label, shortcut, icon, action, cx)
                             }),
                         )
-                        .child(pane_menu_heading("Views", colors))
+                        .child(pane_menu_heading("Views", false, colors))
                         .children(
                             [
                                 PanelKind::Projects,
@@ -7425,7 +7532,11 @@ impl Workspace {
                             .map(|kind| {
                                 self.pane_menu_row(
                                     pane_id,
-                                    Self::panel_title(kind),
+                                    if ui_text::is_native() {
+                                        Self::panel_label(kind)
+                                    } else {
+                                        Self::panel_title(kind)
+                                    },
                                     match kind {
                                         PanelKind::Files => "⌘⇧E",
                                         PanelKind::Preview => "⌘⇧P",
@@ -7439,7 +7550,7 @@ impl Workspace {
                                 )
                             }),
                         )
-                        .child(pane_menu_heading("Pane", colors))
+                        .child(pane_menu_heading("Pane", false, colors))
                         .children(
                             [
                                 (
@@ -7891,6 +8002,7 @@ impl Workspace {
             .border_1()
             .border_color(rgb(colors.magenta))
             .p(ui_text::space(3.0))
+            .map(|menu| controls::native(menu, |menu| controls::menu(menu, colors)))
             .occlude()
             .on_mouse_down_out(cx.listener(
                 |workspace, event: &gpui::MouseDownEvent, window, cx| {
@@ -7917,10 +8029,14 @@ impl Workspace {
             .px(ui_text::space(8.0))
             .py(ui_text::space(5.0))
             .text_size(ui_text::text(10.0))
+            .map(|item| controls::native(item, |item| controls::menu_row(item, colors)))
             .text_color(rgb(if enabled { colors.text } else { colors.muted }))
             .when(enabled, |item| {
-                item.cursor_pointer()
-                    .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan)))
+                item.cursor_pointer().hover(move |style| {
+                    controls::hovered(style, controls::menu_row_hover(colors), |style| {
+                        style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
+                    })
+                })
             })
             .child(
                 div()
@@ -7931,7 +8047,7 @@ impl Workspace {
                         div()
                             .w(ui_text::space(14.0))
                             .flex_none()
-                            .children(row.icon.map(|icon| icons::icon(icon, colors.muted))),
+                            .children(row.icon.map(|icon| menu_icon(icon, colors))),
                     )
                     .child(
                         div()
@@ -8425,9 +8541,9 @@ impl Workspace {
                 key == "menu" && self.panel_menu == Some(pane_id),
                 |button| button.bg(rgb(colors.divider)),
             )
-            .hover(|style| style.bg(rgb(colors.divider)))
-            .map(|button| controls::native(button, toolbar_button))
-            .child(icons::icon(icon, color))
+            .hover(move |style| toolbar_hover(style, colors))
+            .map(|button| controls::native(button, |button| toolbar_button(button, color)))
+            .child(icons::text_icon(icon, 10.0, color))
             .when(
                 key != "menu" || self.panel_menu != Some(pane_id),
                 |button| {
@@ -8460,12 +8576,16 @@ impl Workspace {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.divider)))
-            .map(|marker| controls::native(marker, toolbar_button));
-        let marker = if self.settings.panel_tab_icons {
+            .hover(move |style| toolbar_hover(style, colors))
+            .map(|marker| controls::native(marker, |marker| toolbar_button(marker, colors.cyan)));
+        // Native always shows the star, a symbol among the bar's other symbols.
+        let marker = if self.settings.panel_tab_icons || ui_text::is_native() {
             marker
                 .w(ui_text::space(28.0))
-                .child(icons::icon(Icon::Main, colors.cyan))
+                .map(|marker| {
+                    controls::native(marker, |marker| marker.w(ui_text::space(NATIVE_BAR_BUTTON)))
+                })
+                .child(icons::text_icon(Icon::Main, 10.0, colors.cyan))
         } else {
             marker
                 .px(ui_text::space(6.0))
@@ -8506,21 +8626,17 @@ impl Workspace {
             .text_size(ui_text::text(10.0))
             .text_color(rgb(colors.text))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan)))
+            .hover(move |style| {
+                controls::hovered(style, controls::menu_row_hover(colors), |style| {
+                    style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
+                })
+            })
+            .map(|row| controls::native(row, |row| controls::menu_row(row, colors)))
             .child(
                 div()
                     .w(ui_text::space(14.0))
                     .flex_none()
-                    .children(icon.map(|icon| {
-                        icons::icon(
-                            icon,
-                            if matches!(icon, Icon::Check) {
-                                colors.cyan
-                            } else {
-                                colors.muted
-                            },
-                        )
-                    })),
+                    .children(icon.map(|icon| menu_icon(icon, colors))),
             )
             .child(div().flex_1().min_w_0().text_ellipsis().child(label))
             .children((!shortcut.is_empty()).then(|| {
@@ -8917,16 +9033,77 @@ fn status_accent(accent: u32, colors: Palette) -> u32 {
     }
 }
 
-/// Native's toolbar button: a round hover in its capsule, not a full-height cell.
-fn toolbar_button(button: Stateful<Div>) -> Stateful<Div> {
+/// Native's toolbar button: a round hover on the bar, not a full-height cell, whose symbol
+/// takes `color` from the button's text color, so the hover can brighten it.
+fn toolbar_button(button: Stateful<Div>, color: u32) -> Stateful<Div> {
     button
-        .h(ui_text::space(20.0))
-        .min_w(ui_text::space(24.0))
+        .h(ui_text::space(NATIVE_BAR_BUTTON))
+        .min_w(ui_text::space(NATIVE_BAR_BUTTON))
         .w_auto()
         .rounded_full()
+        .text_color(rgb(color))
 }
 
-fn pane_menu_heading(label: &'static str, colors: Palette) -> AnyElement {
+/// A pane bar button under the pointer: filled, and under Native its muted symbol turns primary.
+fn toolbar_hover(style: gpui::StyleRefinement, colors: Palette) -> gpui::StyleRefinement {
+    let style = style.bg(rgb(colors.divider));
+    if ui_text::is_native() {
+        style.text_color(rgb(colors.text))
+    } else {
+        style
+    }
+}
+
+/// How wide a Native tab's words are at the bar's text size, in the medium weight the
+/// selected tab wears so the measure holds whichever tab is selected.
+fn native_label_width(label: &str, cx: &App) -> f32 {
+    let text_system = cx.text_system();
+    let font = gpui::Font {
+        weight: gpui::FontWeight::MEDIUM,
+        ..gpui::font(ui_text::ui_family())
+    };
+    let font_id = text_system.resolve_font(&font);
+    let size = ui_text::text(10.0);
+    label
+        .chars()
+        .map(|ch| {
+            text_system
+                .advance(font_id, size, ch)
+                .map(|advance| f32::from(advance.width))
+                .unwrap_or(f32::from(size) * 0.6)
+        })
+        .sum::<f32>()
+        .ceil()
+}
+
+/// A menu row's symbol: muted, or primary for a check mark. Native draws it at the size of
+/// the row's text.
+fn menu_icon(icon: Icon, colors: Palette) -> AnyElement {
+    let color = if matches!(icon, Icon::Check) {
+        colors.cyan
+    } else {
+        colors.muted
+    };
+    if ui_text::is_native() {
+        div()
+            .text_color(rgb(color))
+            .child(icons::text_icon(icon, 11.0, color))
+            .into_any_element()
+    } else {
+        icons::icon(icon, color)
+    }
+}
+
+fn pane_menu_heading(label: &'static str, first: bool, colors: Palette) -> AnyElement {
+    // Native parts the groups by an inset hairline over a small heading, as macOS menus do.
+    if ui_text::is_native() {
+        return div()
+            .when(!first, |group| {
+                group.child(controls::menu_separator(colors))
+            })
+            .child(controls::menu_heading(label, colors))
+            .into_any_element();
+    }
     div()
         .px(ui_text::space(8.0))
         .py(ui_text::space(6.0))

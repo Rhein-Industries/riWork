@@ -86,7 +86,7 @@ impl Icon {
             },
             Self::Action(action) => match action {
                 ActionGlyph::NewFolder => "folder.badge.plus",
-                ActionGlyph::NewProject => "plus.rectangle.on.folder",
+                ActionGlyph::NewProject => "plus",
                 ActionGlyph::EditInVim => "square.and.pencil",
                 ActionGlyph::CopyPath => "link",
                 ActionGlyph::CopyContents => "doc.on.doc",
@@ -341,6 +341,17 @@ pub fn mark_symbol(mark: &str) -> Option<&'static str> {
 /// Symbol in a box the size of the text at `size` px, so it sits in the line like the mark.
 /// Disclosure chevrons are drawn smaller and bolder, as in a Finder sidebar.
 pub fn mark(mark: &'static str, size: f32, color: u32) -> AnyElement {
+    paint_mark(mark, size, Some(color))
+}
+
+/// A text mark used as a control, whose Native symbol takes the text color its element has
+/// at that moment, as the mark itself does in the colorful themes: a control that brightens
+/// its text on hover brightens the symbol with it.
+pub fn text_mark(mark: &'static str, size: f32) -> AnyElement {
+    paint_mark(mark, size, None)
+}
+
+fn paint_mark(mark: &'static str, size: f32, color: Option<u32>) -> AnyElement {
     let symbol = mark_symbol(mark).filter(|_| ui_text::is_native());
     let Some(name) = symbol else {
         return div().flex_none().child(mark).into_any_element();
@@ -355,6 +366,7 @@ pub fn mark(mark: &'static str, size: f32, color: u32) -> AnyElement {
             } else {
                 (side * 0.8, Weight::Regular)
             };
+            let color = color.unwrap_or_else(|| text_color(window));
             paint_symbol(name, points, weight, color, bounds, window);
         },
     )

@@ -220,6 +220,62 @@ pub fn row_hover(selected: bool, colors: Palette) -> u32 {
     }
 }
 
+/// A menu's corner radius, and its rows', concentric with it at the menu's padding.
+pub const MENU_RADIUS: f32 = 10.0;
+pub const MENU_ROW_RADIUS: f32 = 6.0;
+const MENU_PADDING: f32 = 4.0;
+
+/// A popover menu, as macOS draws one: a raised rounded panel with a hairline edge and a
+/// soft shadow. Its rows are styled with `menu_row`.
+pub fn menu<E: Styled>(element: E, colors: Palette) -> E {
+    element
+        .rounded(radius(MENU_RADIUS))
+        .border_1()
+        .border_color(rgb(colors.divider))
+        .bg(rgb(raised(colors)))
+        .shadow_lg()
+        .p(ui_text::space(MENU_PADDING))
+}
+
+/// A menu row: body text, inset from the menu's edge, highlighted by a rounded fill.
+pub fn menu_row<E: Styled>(element: E, colors: Palette) -> E {
+    element
+        .rounded(radius(MENU_ROW_RADIUS))
+        .min_h(ui_text::space(22.0))
+        .px(ui_text::space(8.0))
+        .py(ui_text::space(3.0))
+        .text_size(ui_text::text(11.0))
+        .text_color(rgb(colors.text))
+}
+
+/// The fill of a menu row under the pointer, for `hovered`: a step from the menu's surface.
+pub fn menu_row_hover(colors: Palette) -> u32 {
+    theme::mix(raised(colors), colors.text, 0.09)
+}
+
+/// A hairline between a menu's groups, inset like its rows' text.
+pub fn menu_separator(colors: Palette) -> AnyElement {
+    div()
+        .h(gpui::px(1.0))
+        .mx(ui_text::space(8.0))
+        .my(ui_text::space(4.0))
+        .bg(rgb(colors.divider))
+        .into_any_element()
+}
+
+/// A group's heading in a menu: small, muted and semibold, over its rows.
+pub fn menu_heading(label: impl Into<gpui::SharedString>, colors: Palette) -> AnyElement {
+    div()
+        .px(ui_text::space(8.0))
+        .pt(ui_text::space(3.0))
+        .pb(ui_text::space(2.0))
+        .text_size(ui_text::text(9.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgb(colors.muted))
+        .child(label.into())
+        .into_any_element()
+}
+
 /// A text field: a rounded well with a hairline.
 pub fn field<E: Styled>(element: E, colors: Palette) -> E {
     element

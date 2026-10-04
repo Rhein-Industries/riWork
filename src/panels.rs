@@ -1177,6 +1177,29 @@ fn project_header_button<V: 'static>(
         pad,
         action,
     } = button;
+    // Native draws both as bare symbols with their names in tooltips, like the pane's own
+    // buttons on the bar above: muted, in a round hover, turning primary under the pointer.
+    if ui_text::is_native() {
+        return div()
+            .id(id)
+            .flex_none()
+            .size(ui_text::space(22.0))
+            .my(ui_text::space(4.0))
+            .mr(ui_text::space(if id == "new-project" { 6.0 } else { 2.0 }))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .cursor_pointer()
+            .text_color(rgb(colors.muted))
+            .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
+            .child(icons::text_icon(Icon::Action(glyph), 11.0, colors.muted))
+            .child(tooltip::anchor(tooltip, Look::Control))
+            .on_click(cx.listener(move |view, _, window, cx| {
+                on_action(view, action.clone(), window, cx);
+            }))
+            .into_any_element();
+    }
     div()
         .id(id)
         .flex_none()
@@ -1186,16 +1209,6 @@ fn project_header_button<V: 'static>(
         .text_color(rgb(color))
         .cursor_pointer()
         .hover(|style| style.bg(rgb(colors.panel_active)))
-        .map(|button| {
-            controls::native(button, |button| {
-                button
-                    .h(ui_text::space(22.0))
-                    .my(ui_text::space(4.0))
-                    .mr(ui_text::space(4.0))
-                    .rounded_full()
-                    .text_color(rgb(colors.text))
-            })
-        })
         .map(|button| {
             if as_icon {
                 button
@@ -1255,11 +1268,7 @@ fn project_sort_controls<V: 'static>(
                     })
                 })
                 .child(order.by.label())
-                .child(icons::mark(
-                    if open { "▴" } else { "▾" },
-                    8.0,
-                    if open { colors.cyan } else { colors.muted },
-                ))
+                .child(icons::text_mark(if open { "▴" } else { "▾" }, 8.0))
                 .child(
                     canvas(
                         move |bounds, _, _| selector_bounds.set(bounds),
@@ -1288,12 +1297,23 @@ fn project_sort_controls<V: 'static>(
                 .h(ui_text::space(20.0))
                 .cursor_pointer()
                 .text_color(rgb(colors.cyan))
-                .hover(|style| style.bg(rgb(colors.panel_active)))
-                .map(|control| controls::native(control, |control| control.rounded_full()))
-                .child(icons::mark(
+                .hover(move |style| {
+                    let style = style.bg(rgb(colors.panel_active));
+                    if ui_text::is_native() {
+                        style.text_color(rgb(colors.text))
+                    } else {
+                        style
+                    }
+                })
+                // Native's arrow is muted like the order beside it, primary under the pointer.
+                .map(|control| {
+                    controls::native(control, |control| {
+                        control.rounded_full().text_color(rgb(colors.muted))
+                    })
+                })
+                .child(icons::text_mark(
                     if order.descending { "↓" } else { "↑" },
                     9.0,
-                    colors.cyan,
                 ))
                 .when(!open, |control| {
                     control.child(tooltip::anchor(order.direction_label(), Look::Control))
@@ -1332,6 +1352,13 @@ fn project_sort_menu<V: 'static>(
         .border_1()
         .border_color(rgb(colors.magenta))
         .p(ui_text::space(3.0))
+        .map(|menu| {
+            controls::native(menu, |menu| {
+                controls::menu(menu, colors)
+                    .bottom_auto()
+                    .max_h(ui_text::space(160.0))
+            })
+        })
         .occlude()
         .on_mouse_down_out(
             cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
@@ -1367,12 +1394,23 @@ fn project_sort_menu<V: 'static>(
                     .cursor_pointer()
                     .text_size(ui_text::text(10.0))
                     .text_color(rgb(if selected { colors.cyan } else { colors.text }))
-                    .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan)))
+                    .hover(move |style| {
+                        controls::hovered(style, controls::menu_row_hover(colors), |style| {
+                            style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
+                        })
+                    })
+                    .map(|row| controls::native(row, |row| controls::menu_row(row, colors)))
                     .child(
                         div()
                             .flex_none()
                             .w(ui_text::space(12.0))
-                            .child(if selected { "✓" } else { "" }),
+                            .when(selected, |check| {
+                                check.child(if ui_text::is_native() {
+                                    icons::text_mark("✓", 10.0)
+                                } else {
+                                    "✓".into_any_element()
+                                })
+                            }),
                     )
                     .child(div().flex_1().min_w_0().text_ellipsis().child(by.label()))
                     .on_click(cx.listener(move |view, _, window, cx| {
@@ -1403,13 +1441,24 @@ fn project_control<V: 'static>(
         .h(ui_text::space(18.0))
         .text_color(rgb(colors.cyan))
         .cursor_pointer()
-        .hover(|style| {
-            style
-                .bg(rgb(colors.divider))
-                .text_color(rgb(colors.magenta))
+        .hover(move |style| {
+            let style = style.bg(rgb(colors.divider));
+            if ui_text::is_native() {
+                style.text_color(rgb(colors.text))
+            } else {
+                style.text_color(rgb(colors.magenta))
+            }
         })
-        .map(|control| controls::native(control, |control| control.rounded(controls::radius(5.0))))
-        .child(icons::mark(mark, 10.0, colors.cyan))
+        // Native's row controls are muted symbols in a round hover, like the bar's buttons.
+        .map(|control| {
+            controls::native(control, |control| {
+                control
+                    .size(ui_text::space(20.0))
+                    .rounded_full()
+                    .text_color(rgb(colors.muted))
+            })
+        })
+        .child(icons::text_mark(mark, 10.0))
         .child(tooltip::anchor(tooltip, Look::Control))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(move |view, _, window, cx| {
@@ -1436,9 +1485,27 @@ fn project_notification_control<V: 'static>(
         .w(ui_text::space(20.0))
         .h(ui_text::space(18.0))
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(colors.divider)))
-        .child(icons::icon(
+        .hover(move |style| {
+            let style = style.bg(rgb(colors.divider));
+            if ui_text::is_native() {
+                style.text_color(rgb(colors.text))
+            } else {
+                style
+            }
+        })
+        // Native draws the bell as its row's other controls: the size of their symbols, in
+        // a round hover, primary while notifications are on.
+        .map(|control| {
+            controls::native(control, |control| {
+                control
+                    .size(ui_text::space(20.0))
+                    .rounded_full()
+                    .text_color(rgb(if enabled { colors.text } else { colors.muted }))
+            })
+        })
+        .child(icons::text_icon(
             if enabled { Icon::Bell } else { Icon::BellOff },
+            9.6,
             if enabled { colors.cyan } else { colors.muted },
         ))
         .child(tooltip::anchor(
