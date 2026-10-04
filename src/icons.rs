@@ -96,7 +96,15 @@ impl Icon {
                 ActionGlyph::Reveal => "folder",
                 ActionGlyph::OpenExternally => "arrow.up.forward.app",
             },
+            // An agent's mark is its own logo, which SF Symbols does not have: Native
+            // draws the same vector mark as the other themes.
+            Self::Provider(_) => "",
         }
+    }
+
+    /// Whether Native draws this icon as an SF Symbol rather than its vector glyph.
+    fn has_symbol(self) -> bool {
+        !matches!(self, Self::Provider(_))
     }
 
     /// A menu's tick is medium, as AppKit draws it; the rest are regular, like the text.
@@ -163,7 +171,7 @@ fn paint_icon(kind: Icon, color: u32, text: Option<f32>) -> AnyElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            if native {
+            if native && kind.has_symbol() {
                 let side = f32::from(bounds.size.width);
                 let (points, weight, tint) = match text {
                     Some(text) => {
