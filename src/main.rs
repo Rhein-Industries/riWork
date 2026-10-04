@@ -181,8 +181,9 @@ const NATIVE_BAR_BUTTON_INSET: f32 = 3.0;
 const NATIVE_TAB_CLOSE: f32 = 16.0;
 /// The group a tab's hover reveals its close mark in.
 const TAB_GROUP: &str = "pane-tab";
-/// The narrowest a Native symbol tab gets when even the symbols crowd the bar.
-const NATIVE_ICON_TAB_MIN: f32 = 22.0;
+/// The narrowest a Native symbol tab gets when even the symbols crowd the bar: its symbol
+/// with a point either side.
+const NATIVE_ICON_TAB_MIN: f32 = 16.0;
 /// A window restored fullscreen or zoomed is first drawn at its opening size and animates
 /// to the real one. Sizes seen this soon after the first draw are that settling, not the
 /// user resizing, so they must not rebalance the saved ratios.
@@ -6721,16 +6722,18 @@ impl Workspace {
             .collect();
         // Native never cuts a tab off mid-word: when the words do not fit beside the pane's
         // buttons, its panels show their symbols instead, as Xcode's navigator bar does.
+        let buttons = [show_main, show_lock, show_focus, true]
+            .into_iter()
+            .filter(|shown| *shown)
+            .count() as f32;
+        // What the bar keeps beside its tabs: the buttons, the drag handle and the window
+        // drag space after the last tab.
+        let reserved = buttons * ui_text::space_f32(NATIVE_BAR_BUTTON)
+            + (buttons - 1.0) * ui_text::space_f32(NATIVE_BAR_BUTTON_GAP)
+            + 2.0 * ui_text::space_f32(NATIVE_BAR_BUTTON_INSET)
+            + if drag_handle { handle_width } else { 0.0 }
+            + ui_text::space_f32(18.0);
         let compact_panels = native && !self.settings.panel_tab_icons && {
-            let buttons = [show_main, show_lock, show_focus, true]
-                .into_iter()
-                .filter(|shown| *shown)
-                .count() as f32;
-            let reserved = buttons * ui_text::space_f32(NATIVE_BAR_BUTTON)
-                + (buttons - 1.0) * ui_text::space_f32(NATIVE_BAR_BUTTON_GAP)
-                + 2.0 * ui_text::space_f32(NATIVE_BAR_BUTTON_INSET)
-                + if drag_handle { handle_width } else { 0.0 }
-                + ui_text::space_f32(18.0);
             let close = ui_text::space_f32(6.0 + NATIVE_TAB_CLOSE) - ui_text::space_f32(4.0);
             let words: f32 = titles
                 .iter()
@@ -6745,6 +6748,19 @@ impl Workspace {
                 })
                 .sum();
             words > header_width - reserved
+        };
+        // Native's symbol tabs keep their padding while they fit and narrow alike, symbols
+        // centered, as far as a crowded bar needs to keep the selected tab's X in view.
+        let icon_cell = {
+            let full = ui_text::space_f32(32.0);
+            let count = pane.tabs.len().max(1) as f32;
+            let close = if tab_can_close {
+                ui_text::space_f32(NATIVE_TAB_CLOSE + 4.0)
+            } else {
+                0.0
+            };
+            ((header_width - reserved - close) / count - 1.0)
+                .clamp(ui_text::space_f32(NATIVE_ICON_TAB_MIN), full)
         };
         let tabs = pane
             .tabs
@@ -6761,10 +6777,15 @@ impl Workspace {
                     .filter(|_| self.settings.panel_tab_icons || compact_panels);
                 // The X is left out, not disabled, so a locked pane's tabs lose no room to it.
                 let close_visible = active && tab_can_close;
-                // Native gives every closable tab its X, shown on the selected tab and under
-                // the pointer, so a tab never changes width when it is chosen. Symbol tabs
-                // carry it the same way as tabs with words.
-                let close_slot = if native { tab_can_close } else { close_visible };
+                // Native gives every closable tab with words its X, shown on the selected tab
+                // and under the pointer, so such a tab never changes width when it is chosen.
+                // Symbol tabs are too narrow to all keep that room: the selected one carries
+                // the same X beside its symbol.
+                let close_slot = if native && icon_panel.is_none() {
+                    tab_can_close
+                } else {
+                    close_visible
+                };
                 // Native's close mark sits in its own round hover, which already pads it.
                 let pad_right_with_close = if native { 4.0 } else { 8.0 };
                 let (pad_left, pad_right, gap) = match (icon_panel, close_slot) {
@@ -6803,16 +6824,8 @@ impl Workspace {
                     // their words in an ellipsis, as Finder's do, rather than run off the bar.
                     .when(native, |tab| {
                         tab.flex_shrink(1.0)
-                            .min_w(ui_text::space(if icon_panel.is_some() {
-                                NATIVE_ICON_TAB_MIN
-                                    + if close_slot {
-                                        NATIVE_TAB_CLOSE + 4.0
-                                    } else {
-                                        0.0
-                                    }
-                            } else {
-                                44.0
-                            }))
+                            .when(icon_panel.is_none(), |tab| tab.min_w(ui_text::space(44.0)))
+                            .when(icon_panel.is_some(), |tab| tab.flex_none())
                     })
                     .items_center()
                     .h_full()
@@ -6880,9 +6893,9 @@ impl Workspace {
                             // narrow, symbol centered, only as far as a crowded bar needs.
                             .when(native, |icon| {
                                 icon.px_0()
-                                    .w(ui_text::space(32.0))
-                                    .flex_shrink(1.0)
-                                    .min_w(ui_text::space(NATIVE_ICON_TAB_MIN))
+                                    .w(px(icon_cell))
+                                    .min_w(px(icon_cell))
+                                    .flex_none()
                             })
                             .flex()
                             .items_center()
