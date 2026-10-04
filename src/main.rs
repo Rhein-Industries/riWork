@@ -12,6 +12,8 @@ mod cua;
 mod dock_menu;
 mod file_explorer;
 mod file_preview;
+mod handoff;
+mod handoff_dialog;
 mod icons;
 mod layouts;
 mod mcp;
@@ -78,6 +80,7 @@ use gpui::{
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
+use handoff_dialog::{HandoffDialog, HandoffEvent, HandoffSource};
 use icons::Icon;
 use layouts::{
     Axis, DIVIDER_THICKNESS, Extent, Layout, LayoutStore, MIN_PANE_EXTENT, NAVIGATION_PANELS,
@@ -147,6 +150,8 @@ enum PaneMenuAction {
     /// A chat tab with the agent, unrestricted or not.
     Chat(Provider, bool),
     Orchestrator(bool),
+    /// Pass the selected agent tab's conversation to a new shell or chat.
+    Handoff,
     View(PanelKind),
     Split(Axis),
     Close,
@@ -930,6 +935,11 @@ fn plan_link_panel(
     )
 }
 
+/// Whether a shell's tab offers **Hand off…**: an agent in a terminal, not an orchestrator.
+fn hands_off(shell: &ShellSession) -> bool {
+    shell.kind == ShellKind::Project && shell.harness.is_some()
+}
+
 /// The saved form of a chat tab: none while the chat host is still making the chat, which has
 /// no id yet.
 fn saved_chat(chat_id: &str) -> Option<SavedTab> {
@@ -953,6 +963,7 @@ fn new_chat_request(
         project_id: Some(project_id.to_owned()),
         worktree_id,
         cwd,
+        codex_account_id: None,
         title: None,
         approval_mode: if unrestricted {
             ApprovalMode::Full
@@ -1155,6 +1166,11 @@ struct Workspace {
     folder_editor: Option<Entity<FolderEditor>>,
     /// The modal for adding a host, pairing another Mac or naming a project on a host.
     remote_prompt: Option<Entity<RemotePrompt>>,
+    /// The dialog behind **Hand off…**, while it is open.
+    handoff_dialog: Option<Entity<HandoffDialog>>,
+    /// A hand off whose dialog was hidden while it works (see `HandoffEvent::Detached`);
+    /// holding the dialog keeps the work, and the way to hear its end, alive.
+    handoff_running: Option<Entity<HandoffDialog>>,
     /// Remote tabs whose bridge process has exited: the shell ended on its host, or the
     /// bridge could not stay. They keep their last screen until closed.
     remote_ended: HashSet<TabId>,
@@ -1732,6 +1748,8 @@ impl Workspace {
             project_creator: None,
             folder_editor: None,
             remote_prompt: None,
+            handoff_dialog: None,
+            handoff_running: None,
             remote_ended: HashSet::new(),
             remote_pair_defaults: (String::new(), String::new()),
             collapsed_project_folders: HashSet::new(),
@@ -3166,6 +3184,7 @@ impl Workspace {
         self.project_creator.is_some()
             || self.folder_editor.is_some()
             || self.remote_prompt.is_some()
+            || self.handoff_dialog.is_some()
     }
 
     fn begin_tab_drag(&mut self, cx: &mut Context<Self>) {
@@ -4711,6 +4730,174 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Open the dialog that hands `source`'s conversation to a new shell or chat.
+    fn begin_handoff(
+        &mut self,
+        source: HandoffSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal_open() {
+            return;
+        }
+        self.panel_menu = None;
+        if self.is_remote() {
+            self.notice = Some("Hand off works on the projects of this Mac.".to_owned());
+            cx.notify();
+            return;
+        }
+        if self.handoff_running.is_some() {
+            self.notice =
+                Some("A hand off is still running; its tab opens when it is done.".to_owned());
+            cx.notify();
+            return;
+        }
+        self.search_focused = false;
+        self.notice = None;
+        self.begin_tab_drag(cx);
+        let home = self.sessions.state_home().to_path_buf();
+        let config = self.chat_config();
+        let dialog =
+            cx.new(|cx| HandoffDialog::new(source, home, Arc::new(move || config.ensure()), cx));
+        dialog.update(cx, |dialog, cx| dialog.focus(window, cx));
+        cx.subscribe_in(&dialog, window, |workspace, dialog, event, window, cx| {
+            match event {
+                HandoffEvent::Progress(step) => {
+                    workspace.notice = Some(format!("Hand off: {step}"));
+                    cx.notify();
+                    return;
+                }
+                HandoffEvent::Detached => {
+                    workspace.handoff_running = Some(dialog.clone());
+                    workspace.notice =
+                        Some("Hand off running; its tab opens when it is done.".to_owned());
+                }
+                HandoffEvent::Closed => {}
+                HandoffEvent::Failed(error) => {
+                    workspace.handoff_running = None;
+                    workspace.notice = Some(format!("Hand off failed: {error}"));
+                }
+                HandoffEvent::Done(outcome) => {
+                    workspace.handoff_running = None;
+                    workspace.open_handed_off(outcome, window, cx);
+                }
+            }
+            workspace.handoff_dialog = None;
+            workspace.finish_tab_drag(cx);
+            workspace.focus_active(window, cx);
+            cx.notify();
+        })
+        .detach();
+        self.handoff_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// **Hand off…** in the menu of the pane `pane_id`, for the agent whose tab is selected.
+    fn begin_handoff_from_pane(
+        &mut self,
+        pane_id: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(shell) = self
+            .panes
+            .get(&pane_id)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .and_then(Tab::shell_id)
+            .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
+            .filter(|shell| hands_off(shell))
+            .cloned()
+        else {
+            return;
+        };
+        let source = handoff::Source::Shell(shell.clone());
+        self.begin_handoff(
+            HandoffSource {
+                id: shell.id.clone(),
+                label: source.label(),
+                askable: source.is_askable(),
+                kind: handoff::Kind::Shell,
+                provider: shell.harness.unwrap_or(HarnessKind::Codex),
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// **Hand off…** in a chat tab's ⋯ menu.
+    fn begin_handoff_from_chat(
+        &mut self,
+        view: &Entity<ChatView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let chat_id = self
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .find_map(|tab| match &tab.content {
+                TabContent::Chat { chat_id, view: v } if v == view => Some(chat_id.clone()),
+                _ => None,
+            })
+            .filter(|id| !id.is_empty());
+        let (Some(id), summary) = (chat_id, view.read(cx).summary()) else {
+            return;
+        };
+        let provider = summary.provider.unwrap_or(Provider::Codex);
+        self.begin_handoff(
+            HandoffSource {
+                label: handoff::chat_label(provider, &summary.title, &id),
+                id,
+                askable: true,
+                kind: handoff::Kind::Chat,
+                provider: match provider {
+                    Provider::Codex => HarnessKind::Codex,
+                    Provider::Claude => HarnessKind::Claude,
+                },
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Open the tab of the shell or chat a handoff made, in the pane new tabs go to.
+    fn open_handed_off(
+        &mut self,
+        outcome: &handoff::Outcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pane = self.new_tab_pane();
+        let result = match &outcome.target {
+            handoff::Started::Shell(shell) => {
+                let shell = shell.clone();
+                let result = self.attach_session(pane, shell, window, cx);
+                if let Ok(shells) = self.sessions.list() {
+                    self.shells = shells;
+                }
+                result
+            }
+            handoff::Started::Chat(chat) => {
+                let config = self.chat_config();
+                let view = cx.new(|cx| ChatView::open(chat.id.clone(), config, cx));
+                let tab = self.chat_tab(chat.id.clone(), view, window, cx);
+                self.place_new_tab(pane, tab, cx)
+            }
+        };
+        // After the tab is placed, which clears the notice.
+        match (result, &outcome.fallback) {
+            (Err(error), _) => self.notice = Some(error),
+            (Ok(()), Some(reason)) => {
+                self.notice = Some(format!(
+                    "No summary came ({reason}), so the handoff holds the transcript."
+                ));
+            }
+            (Ok(()), None) => {}
+        }
+        self.save_layout();
+        request_codex_usage(false, cx);
+    }
+
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.window_visible = window.is_visible();
         if let Ok(settings) = self.settings_store.load() {
@@ -6123,6 +6310,7 @@ impl Workspace {
                     self.remove_tab(pane_id, tab_id, window, cx);
                 }
             }
+            ChatViewEvent::HandOff => self.begin_handoff_from_chat(view, window, cx),
         }
     }
 
@@ -7031,6 +7219,13 @@ impl Workspace {
         let pane_locked = self.pane_is_locked(pane_id);
         let has_main = self.main_pane().is_some();
         let is_main = self.main_pane() == Some(pane_id);
+        // **Hand off…** is for the agent whose tab is selected.
+        let handoff_row = pane
+            .tabs
+            .get(pane.active)
+            .and_then(Tab::shell_id)
+            .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
+            .is_some_and(hands_off);
         // The marker is an icon button like the others, or its word; a narrower pane leaves
         // it to the menu's check mark.
         let show_main = is_main
@@ -7923,6 +8118,17 @@ impl Workspace {
                                 self.pane_menu_row(pane_id, label, shortcut, icon, action, cx)
                             }),
                         )
+                        .children(handoff_row.then(|| pane_menu_heading("Tab", false, colors)))
+                        .children(handoff_row.then(|| {
+                            self.pane_menu_row(
+                                pane_id,
+                                "Hand off…",
+                                "",
+                                None,
+                                PaneMenuAction::Handoff,
+                                cx,
+                            )
+                        }))
                         .child(pane_menu_heading("Views", false, colors))
                         .children(
                             [
@@ -9108,6 +9314,9 @@ impl Workspace {
                         let project_id = project_scoped.then(|| workspace.project_id.clone());
                         workspace.open_scoped_orchestrator(project_id, window, cx);
                     }
+                    PaneMenuAction::Handoff => {
+                        workspace.begin_handoff_from_pane(pane_id, window, cx)
+                    }
                     PaneMenuAction::View(kind) => workspace.open_panel(kind, pane_id, window, cx),
                     PaneMenuAction::Split(axis) => workspace.add_split(axis, window, cx),
                     PaneMenuAction::Close => workspace.close_pane_by_user(pane_id, window, cx),
@@ -9459,6 +9668,19 @@ impl Render for Workspace {
                     .bg(gpui::rgba(0x00000099))
                     .occlude()
                     .child(prompt.clone())
+            }))
+            .children(self.handoff_dialog.as_ref().map(|dialog| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .p(ui_text::space(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgba(0x00000099))
+                    .occlude()
+                    .child(dialog.clone())
             }))
             .children(self.notice.as_ref().map(|notice| {
                 div()
@@ -13375,6 +13597,29 @@ mod chat_tab_tests {
         // Like the terminal agents, only the plain entries have a shortcut.
         let shortcuts = CHAT_MENU.map(|(_, shortcut, _, _)| shortcut);
         assert_eq!(shortcuts, ["⌘⌥⇧C", "⌘⌥⇧L", "", ""]);
+    }
+
+    #[test]
+    fn only_an_agent_in_a_terminal_offers_to_hand_off() {
+        let shell = |kind: &str, harness: Option<&str>| -> ShellSession {
+            serde_json::from_value(serde_json::json!({
+                "id": "0d3f2c1e-5b6a-4c7d-8e9f-0a1b2c3d4e5f",
+                "project_id": null,
+                "worktree_id": null,
+                "kind": kind,
+                "cwd": "/work",
+                "command": null,
+                "harness": harness,
+                "created_at_unix": 0
+            }))
+            .unwrap()
+        };
+        for harness in ["codex", "claude", "grok"] {
+            assert!(hands_off(&shell("project", Some(harness))), "{harness}");
+        }
+        // A plain shell has no conversation of its own, an orchestrator is not handed off.
+        assert!(!hands_off(&shell("project", None)));
+        assert!(!hands_off(&shell("orchestrator", Some("codex"))));
     }
 
     #[test]

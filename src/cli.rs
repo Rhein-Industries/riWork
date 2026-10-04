@@ -105,6 +105,10 @@ riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [
                                         Read a chat's events after N, waiting up to M ms for the first
 riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
 riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
+riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok
+               [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID]
+               [--mode supervised|auto-edit|full|plan] [--context transcript|summary] [--note TEXT]
+                                        Pass a conversation to a new shell or chat
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD]
 riwork orchestrator list [--project ID]   List global and project orchestrators
@@ -144,6 +148,19 @@ strings cut. chat command takes one ChatCommand as JSON (send, interrupt, approv
 answer, configure, compact, stop) and refuses unknown fields; errors that start with
 `invalid_request:` are about the command, anything else about the host or the chat.
 capabilities --json has \"chat\": true.
+handoff writes the source conversation into RIWORK_HOME/handoffs/ID.md (owner-only) and
+starts the target in the same project, worktree and directory with a first message that
+points at it (a chat gets a short document inline); the source is neither stopped nor
+changed, but --context summary sends it one message. --from
+defaults to the session the command runs in (RIWORK_SHELL_ID or RIWORK_CHAT_ID) and takes
+a shell or chat id or a unique prefix of eight characters or more. --context transcript
+(the default) builds the document from the chat's log, the shell's Codex rollout or Claude
+transcript, or else its scrollback; --context summary first asks an idle Codex or Claude
+source to write a summary (up to five minutes) and falls back to the transcript, saying so,
+if none comes. --account is a Codex account's label or id (only Codex has accounts); without
+it the project's own account is used, as in a new tab. For a shell target --mode supervised
+leaves the CLI's usual permissions. --json prints {handoff_id, document, target:{kind,id},
+context} and, if a summary was replaced by the transcript, fallback.
 worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
@@ -262,6 +279,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "shell"
             | "orchestrator"
             | "chat"
+            | "handoff"
             | "schedule"
             | "search"
             | "usage"
@@ -353,6 +371,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         "shell" => shell_command(args, json)?,
         "orchestrator" => orchestrator_command(args, json)?,
         "chat" => chat_command(args, json)?,
+        "handoff" => handoff::command(args, json)?,
         "schedule" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
         "mcp" => {
@@ -1896,6 +1915,7 @@ fn chat_client_command(
                 project_id: Some(project_id),
                 worktree_id,
                 cwd,
+                codex_account_id: None,
                 title,
                 approval_mode,
                 model,
@@ -2804,6 +2824,7 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 }
 
 mod chat_remote;
+mod handoff;
 use chat_remote::{
     effort_setting, model_setting, parse_events_arguments, take_verbatim_option, title_setting,
 };

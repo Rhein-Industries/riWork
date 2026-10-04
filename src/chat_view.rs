@@ -73,6 +73,8 @@ pub enum ChatViewEvent {
     Created(String),
     /// The tab has nothing left to show and asks to be closed.
     Close,
+    /// **Hand off…** was chosen: the window asks where the conversation goes.
+    HandOff,
 }
 
 impl EventEmitter<ChatViewEvent> for ChatView {}
@@ -255,6 +257,14 @@ impl ChatView {
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.field = Field::Composer;
         self.focus.focus(window, cx);
+    }
+
+    /// Ask the window to hand this chat's conversation over; a chat that is still being
+    /// made has no conversation to hand.
+    pub fn hand_off(&mut self, cx: &mut Context<Self>) {
+        if self.chat_id.is_some() {
+            cx.emit(ChatViewEvent::HandOff);
+        }
     }
 
     /// Stop the provider process. The chat and its history stay; the next message resumes it.

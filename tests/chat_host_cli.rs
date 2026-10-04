@@ -37,6 +37,10 @@ impl Home {
             .args(args)
             .env("RIWORK_HOME", &self.0)
             .env("RIWORK_RUNTIME_DIR", self.0.join("runtime"))
+            // A test may itself run in a RiWork shell or chat: the command under test
+            // is nobody's session.
+            .env_remove("RIWORK_SHELL_ID")
+            .env_remove("RIWORK_CHAT_ID")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -214,6 +218,66 @@ fn chat_commands_refuse_what_they_cannot_do_without_starting_a_host() {
     let serve = home.run(&["chat", "serve", "--idle-seconds", "0"]);
     assert_eq!(serve.status.code(), Some(2));
     assert!(!home.socket().exists(), "none of them started a host");
+}
+
+#[test]
+fn handoff_says_what_is_missing_before_it_starts_a_host_or_writes_a_document() {
+    let home = Home::new();
+    let fails = |args: &[&str], expected: &[&str]| {
+        let output = home.run(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        for wanted in expected {
+            assert!(
+                stderr(&output).contains(wanted),
+                "{args:?}: {}",
+                stderr(&output)
+            );
+        }
+    };
+    // Not started by a shell or a chat, and told no source.
+    fails(
+        &["handoff", "--to", "chat", "--provider", "codex"],
+        &["Pass --from"],
+    );
+    fails(
+        &["handoff"],
+        &["--to must be shell or chat", "Usage: riwork handoff"],
+    );
+    fails(
+        &["handoff", "--to", "chat", "--provider", "gemini"],
+        &["--provider must be codex, claude or grok"],
+    );
+    fails(
+        &[
+            "handoff",
+            "--from",
+            "cccccccc",
+            "--to",
+            "chat",
+            "--provider",
+            "codex",
+        ],
+        &["No shell or chat has the id cccccccc"],
+    );
+    fails(
+        &[
+            "handoff",
+            "--from",
+            "x",
+            "--to",
+            "chat",
+            "--provider",
+            "codex",
+        ],
+        &["not a shell or chat id"],
+    );
+    assert!(!home.socket().exists(), "none of them started a host");
+    assert!(
+        !home.0.join("handoffs").exists(),
+        "none of them wrote a document"
+    );
+    let help = home.run(&["help"]);
+    assert!(stdout(&help).contains("riwork handoff [--from SHELL_OR_CHAT_ID]"));
 }
 
 #[test]

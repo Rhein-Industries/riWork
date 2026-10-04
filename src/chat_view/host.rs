@@ -34,6 +34,11 @@ impl HostConfig {
             ensure: Arc::new(move || ensure_host(&home)),
         }
     }
+
+    /// Makes sure the host runs and says where it listens.
+    pub fn ensure(&self) -> Result<PathBuf, String> {
+        (self.ensure)()
+    }
 }
 
 #[cfg(test)]

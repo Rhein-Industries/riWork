@@ -250,6 +250,48 @@ impl SessionManager {
         )
     }
 
+    /// `create_harness` with the model, effort, permissions, first message and Codex
+    /// account chosen (`HarnessChoices`); `Full` is the CLI's permission bypass.
+    pub fn create_harness_with(
+        &self,
+        project_id: String,
+        worktree_id: Option<String>,
+        cwd: PathBuf,
+        harness: HarnessKind,
+        choices: HarnessChoices,
+    ) -> Result<ShellSession, String> {
+        validate_uuid(&project_id)?;
+        if let Some(id) = &worktree_id {
+            validate_uuid(id)?;
+        }
+        if choices.binding.is_some() && harness != HarnessKind::Codex {
+            return Err(format!(
+                "{} has no RiWork-managed accounts",
+                harness.program()
+            ));
+        }
+        let _lock = self.lock_registry()?;
+        let mut registry = self.read_registry()?;
+        let session = self.new_tmux_session_with(NewSession {
+            id: Uuid::new_v4().to_string(),
+            project_id: Some(project_id),
+            worktree_id,
+            kind: ShellKind::Project,
+            cwd,
+            command: None,
+            harness: Some(harness),
+            unrestricted: choices.mode == Some(crate::chat::model::ApprovalMode::Full),
+            binding: choices.binding.clone(),
+            choices,
+        })?;
+        registry.sessions.push(session.clone());
+        if let Err(error) = self.write_registry(&registry) {
+            let _ = self.kill_tmux_session(&session.id);
+            return Err(error);
+        }
+        Ok(session)
+    }
+
     /// Return the projectless global orchestrator, creating it when needed.
     /// The default command is the official `codex` CLI.
     pub fn orchestrator_create(
@@ -1542,6 +1584,25 @@ impl SessionManager {
         Ok(format!("{cursor}{screen}"))
     }
 
+    /// Send `text` and Return to a Codex or Claude pane the way a schedule does: the
+    /// same bracketed paste and one Return, under the shell's input lock, and only while
+    /// the screen shows the agent's empty prompt (not busy, asking for approval, or holding
+    /// a draft). The caller decides whether the agent is idle; this checks the screen.
+    pub(crate) fn send_at_empty_prompt(
+        &self,
+        shell: &ShellSession,
+        text: &str,
+    ) -> Result<(), String> {
+        crate::session_input::submit_checked(
+            &self.home,
+            &shell.id,
+            text,
+            &|args| self.tmux_text(args),
+            &|args, input| self.tmux_text_input(args, input),
+            || self.schedule_prompt_screen(shell).map(drop),
+        )
+    }
+
     /// Send literal text followed by Return to an existing shell.
     pub fn send(&self, id: &str, text: &str) -> Result<(), String> {
         self.require_live(id)?;
@@ -1763,6 +1824,33 @@ impl SessionManager {
         unrestricted: bool,
         binding: Option<crate::codex_accounts::CodexAccountBinding>,
     ) -> Result<ShellSession, String> {
+        self.new_tmux_session_with(NewSession {
+            id,
+            project_id,
+            worktree_id,
+            kind,
+            cwd,
+            command,
+            harness,
+            unrestricted,
+            binding,
+            choices: HarnessChoices::default(),
+        })
+    }
+
+    fn new_tmux_session_with(&self, new: NewSession) -> Result<ShellSession, String> {
+        let NewSession {
+            id,
+            project_id,
+            worktree_id,
+            kind,
+            cwd,
+            command,
+            harness,
+            unrestricted,
+            binding,
+            choices,
+        } = new;
         let binding = match binding {
             Some(binding) => Some(binding),
             None if harness == Some(HarnessKind::Codex) => {
@@ -1855,6 +1943,7 @@ impl SessionManager {
                     HarnessOptions {
                         unrestricted,
                         inline,
+                        choices: &choices,
                     },
                     &program,
                     &executable,
@@ -1966,6 +2055,9 @@ impl SessionManager {
         if cua_driver.is_none() {
             absent.push("RIWORK_CUA_DRIVER");
         }
+        // A server that a chat's agent started must not hand that chat's id to
+        // every pane (`riwork handoff` reads it to tell whose conversation it is).
+        absent.push("RIWORK_CHAT_ID");
         if harness == Some(HarnessKind::Grok) {
             for name in ["GROK_MCP_STARTUP_TIMEOUT_SECS", "MCP_TIMEOUT"] {
                 if !grok_timeouts.iter().any(|(key, _)| *key == name) {
@@ -2762,16 +2854,98 @@ fn respawn_arguments(
 
 /// What a harness launch asks for beyond the program and the profile.
 #[derive(Clone, Copy)]
-struct HarnessOptions {
+struct HarnessOptions<'a> {
     /// Skip the CLI's permission prompts, as the caller asked.
     unrestricted: bool,
     /// Keep the agent on the main screen (see `inline_arguments`).
     inline: bool,
+    choices: &'a HarnessChoices,
+}
+
+/// What a launch chooses besides the agent: its model and reasoning effort, how much
+/// it may do without asking, the message it starts with, and a Codex account picked by
+/// name. A terminal that `riwork handoff` starts uses all of them; the New Tab menu
+/// uses none and gets the CLI's own defaults.
+#[derive(Clone, Debug, Default)]
+pub struct HarnessChoices {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// `Full` is the CLI's permission bypass (the caller's `unrestricted`); `Supervised`
+    /// leaves the CLI's usual permissions; the others set what each CLI calls them.
+    pub mode: Option<crate::chat::model::ApprovalMode>,
+    /// The first message, in place of the startup guidance. Codex gets the guidance
+    /// after it, since it has no other place for it; Claude and Grok carry it elsewhere.
+    pub prompt: Option<String>,
+    /// The Codex account to start under, in place of the project's own.
+    pub binding: Option<crate::codex_accounts::CodexAccountBinding>,
+}
+
+impl HarnessChoices {
+    /// The command line flags for the model, the effort and the permission mode.
+    fn arguments(&self, harness: HarnessKind) -> Vec<String> {
+        use crate::chat::model::ApprovalMode;
+        let mut arguments = Vec::new();
+        if let Some(model) = &self.model {
+            let flag = if harness == HarnessKind::Claude {
+                "--model"
+            } else {
+                "-m"
+            };
+            arguments.extend([flag.to_owned(), model.clone()]);
+        }
+        if let Some(effort) = &self.effort {
+            arguments.extend(match harness {
+                HarnessKind::Codex => vec![
+                    "-c".to_owned(),
+                    format!("model_reasoning_effort={}", toml_string(effort)),
+                ],
+                HarnessKind::Claude => vec!["--effort".to_owned(), effort.clone()],
+                HarnessKind::Grok => vec!["--reasoning-effort".to_owned(), effort.clone()],
+            });
+        }
+        let mode = |name: &str| ["--permission-mode".to_owned(), name.to_owned()];
+        match (harness, self.mode) {
+            (HarnessKind::Codex, Some(ApprovalMode::AutoEdit)) => arguments.extend(
+                [
+                    "--sandbox",
+                    "workspace-write",
+                    "--ask-for-approval",
+                    "on-request",
+                ]
+                .map(str::to_owned),
+            ),
+            (HarnessKind::Codex, Some(ApprovalMode::Plan)) => arguments.extend(
+                ["--sandbox", "read-only", "--ask-for-approval", "on-request"].map(str::to_owned),
+            ),
+            (HarnessKind::Claude | HarnessKind::Grok, Some(ApprovalMode::AutoEdit)) => {
+                arguments.extend(mode("acceptEdits"))
+            }
+            (HarnessKind::Claude | HarnessKind::Grok, Some(ApprovalMode::Plan)) => {
+                arguments.extend(mode("plan"))
+            }
+            _ => {}
+        }
+        arguments
+    }
+}
+
+/// The arguments of `new_tmux_session_with`.
+struct NewSession {
+    id: String,
+    project_id: Option<String>,
+    worktree_id: Option<String>,
+    kind: ShellKind,
+    cwd: PathBuf,
+    command: Option<String>,
+    harness: Option<HarnessKind>,
+    unrestricted: bool,
+    binding: Option<crate::codex_accounts::CodexAccountBinding>,
+    choices: HarnessChoices,
 }
 
 fn harness_command(
     harness: HarnessKind,
-    options: HarnessOptions,
+    options: HarnessOptions<'_>,
     program: &Path,
     executable: &Path,
     state_home: &Path,
@@ -2781,9 +2955,11 @@ fn harness_command(
     let HarnessOptions {
         unrestricted,
         inline,
+        choices,
     } = options;
     let mut arguments = vec![program.to_string_lossy().into_owned()];
     arguments.extend(cua_harness_arguments(harness, executable, state_home));
+    arguments.extend(choices.arguments(harness));
     match harness {
         HarnessKind::Codex => {
             arguments.extend(codex_shell_environment_arguments(
@@ -2806,7 +2982,10 @@ fn harness_command(
             if inline {
                 arguments.extend(inline_arguments(harness));
             }
-            arguments.push(cua_startup_prompt());
+            arguments.push(match &choices.prompt {
+                Some(prompt) => format!("{prompt}\n\n{CUA_GUIDANCE}"),
+                None => cua_startup_prompt(),
+            });
         }
         HarnessKind::Claude => {
             if unrestricted {
@@ -2839,6 +3018,9 @@ fn harness_command(
             });
             arguments.push("--settings".to_owned());
             arguments.push(settings.to_string());
+            // After `--settings`, whose value is one argument: an option that
+            // takes several (`--mcp-config`) would otherwise swallow the message.
+            arguments.extend(choices.prompt.clone());
         }
         HarnessKind::Grok => {
             if unrestricted {
@@ -2847,6 +3029,7 @@ fn harness_command(
             if inline {
                 arguments.extend(inline_arguments(harness));
             }
+            arguments.extend(choices.prompt.clone());
         }
     }
     let command = format!(
@@ -6249,6 +6432,7 @@ mod tests {
             HarnessOptions {
                 unrestricted: false,
                 inline: false,
+                choices: &HarnessChoices::default(),
             },
             &program,
             Path::new("/fake/riwork"),
@@ -6485,6 +6669,7 @@ mod tests {
                 HarnessOptions {
                     unrestricted,
                     inline: false,
+                    choices: &HarnessChoices::default(),
                 },
                 program,
                 executable,
@@ -6526,6 +6711,7 @@ mod tests {
                         HarnessOptions {
                             unrestricted: false,
                             inline,
+                            choices: &HarnessChoices::default(),
                         },
                         Path::new("/opt/bin/cli"),
                         executable,
@@ -6753,6 +6939,7 @@ mod tests {
                 HarnessOptions {
                     unrestricted,
                     inline: false,
+                    choices: &HarnessChoices::default(),
                 },
                 program,
                 telemetry,
@@ -6905,6 +7092,7 @@ mod tests {
                 HarnessOptions {
                     unrestricted: false,
                     inline: false,
+                    choices: &HarnessChoices::default(),
                 },
                 Path::new("/opt/bin/cli"),
                 executable,
@@ -7032,6 +7220,7 @@ mod tests {
                 HarnessOptions {
                     unrestricted,
                     inline: false,
+                    choices: &HarnessChoices::default(),
                 },
                 Path::new("/Users/test/.grok/bin/grok"),
                 executable,
@@ -8617,6 +8806,8 @@ else:
         crate::cua::CuaManager::open_default().unwrap();
         assert!(crate::layouts::LayoutStore::open_default().is_ok());
     }
+
+    mod handoff_launch_tests;
 }
 
 #[cfg(test)]

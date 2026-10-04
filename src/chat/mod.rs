@@ -25,7 +25,7 @@ pub mod codex;
 pub mod driver;
 pub mod host;
 mod launch;
-mod log;
+pub(crate) mod log;
 pub mod model;
 #[cfg(test)]
 pub(crate) mod testing;
