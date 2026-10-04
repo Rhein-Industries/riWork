@@ -4,8 +4,8 @@ mod appearance_file;
 mod appearance_sync;
 mod cli;
 mod cli_agents;
-mod controls;
 mod codex_accounts;
+mod controls;
 mod cua;
 mod dock_menu;
 mod file_explorer;
@@ -65,11 +65,11 @@ use std::{
 use activity::{ActivityTracker, AgentState};
 use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, DragMoveEvent, Entity, EntityInputHandler,
-    FocusHandle, Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton,
-    Pixels, Point, Render, StatefulInteractiveElement, TitlebarOptions, UTF16Selection, Window,
-    WindowBounds, WindowHandle, WindowOptions, actions, canvas, div, img, point, prelude::*, px,
-    rgb, size,
+    AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity,
+    EntityInputHandler, FocusHandle, Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem,
+    MouseButton, Pixels, Point, Render, Stateful, StatefulInteractiveElement, TitlebarOptions,
+    UTF16Selection, Window, WindowBounds, WindowHandle, WindowOptions, actions, canvas, div, img,
+    point, prelude::*, px, rgb, size,
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
@@ -2221,6 +2221,22 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// A panel's name in sentence case, as Native writes labels.
+    fn panel_label(panel: PanelKind) -> &'static str {
+        match panel {
+            PanelKind::Projects => "Projects",
+            PanelKind::Worktrees => "Worktrees",
+            PanelKind::Files => "Files",
+            PanelKind::Preview => "Preview",
+            PanelKind::Tasks => "Tasks",
+            PanelKind::Shells => "Shells",
+            PanelKind::Usage => "Usage",
+            PanelKind::Settings => "Settings",
+            PanelKind::Schedules => "Schedules",
+            PanelKind::ProjectSettings => "Project settings",
+        }
     }
 
     fn panel_title(panel: PanelKind) -> &'static str {
@@ -6706,7 +6722,12 @@ impl Workspace {
                 let shell = tab
                     .shell_id()
                     .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
-                let display_title = codex_tab_title(&tab.title, shell, &account_numbers);
+                // A panel's tab says its name as the theme writes labels; a saved
+                // layout keeps whatever title the tab was created with.
+                let display_title = match tab.panel() {
+                    Some(kind) if ui_text::is_native() => Self::panel_label(kind).to_owned(),
+                    _ => codex_tab_title(&tab.title, shell, &account_numbers),
+                };
                 let activity_hint = tab
                     .shell_id()
                     .and_then(|id| self.agent_activity.get(id))
@@ -6749,7 +6770,11 @@ impl Workspace {
                         }
                     })
                     .text_color(rgb(tab_color))
-                    .text_size(ui_text::text(if panel { 9.0 } else { 10.0 }))
+                    .text_size(ui_text::text(if panel && !colors.plain_tabs {
+                        9.0
+                    } else {
+                        10.0
+                    }))
                     .cursor_grab()
                     .hover(move |style| {
                         if active && colors.plain_tabs {
@@ -6903,6 +6928,18 @@ impl Workspace {
                     .flex()
                     .h_full()
                     .flex_none()
+                    // Native groups the pane's buttons in one capsule, as a toolbar does.
+                    .map(|group| {
+                        controls::native(group, |group| {
+                            group
+                                .h(ui_text::space(24.0))
+                                .items_center()
+                                .mx(ui_text::space(6.0))
+                                .px(ui_text::space(2.0))
+                                .rounded_full()
+                                .bg(rgb(colors.panel_active))
+                        })
+                    })
                     .children(show_main.then(|| self.main_marker(pane_id, cx)))
                     .children(show_lock.then(|| {
                         self.pane_button(
@@ -7249,14 +7286,19 @@ impl Workspace {
                     .border_b_1()
                     .border_color(rgb(colors.divider))
                     .text_color(rgb(colors.muted))
-                    .child("ORCHESTRATOR SKILL UPDATE AVAILABLE")
+                    .child(ui_text::cased("Orchestrator skill update available"))
                     .child(div().flex_1())
                     .child(
                         div()
                             .id(("load-orchestrator-skill", pane_id))
-                            .text_color(rgb(colors.gold))
+                            // The colorful themes call it out; Native's link is the primary color.
+                            .text_color(rgb(if ui_text::is_native() {
+                                colors.cyan
+                            } else {
+                                colors.gold
+                            }))
                             .cursor_pointer()
-                            .child("LOAD SKILL")
+                            .child(ui_text::cased("Load skill"))
                             .on_click(cx.listener(move |workspace, _, _, cx| {
                                 match workspace.sessions.load_orchestrator_skill(&shell_id) {
                                     Ok(_) => {
@@ -7467,6 +7509,8 @@ impl Workspace {
         use status_bar::StatusSide;
         let colors = theme::palette(cx);
         let settings = &self.settings.status_bar;
+        // Native parts its items by space alone, and a little more of it.
+        let status_gap = if ui_text::is_native() { 16.0 } else { 10.0 };
         div()
             .id("status-items")
             .size_full()
@@ -7474,7 +7518,11 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(ui_text::space(8.0))
-            .px(ui_text::space(8.0))
+            .px(ui_text::space(if ui_text::is_native() {
+                12.0
+            } else {
+                8.0
+            }))
             .text_size(ui_text::text(9.0))
             .text_color(rgb(colors.muted))
             // Items keep one line; at larger text the right side gives way first and
@@ -7495,7 +7543,7 @@ impl Workspace {
                     ))
                     .min_w_0()
                     .items_center()
-                    .gap(ui_text::space(10.0))
+                    .gap(ui_text::space(status_gap))
                     .overflow_x_scroll()
                     .children(
                         settings
@@ -7511,7 +7559,7 @@ impl Workspace {
                     .flex()
                     .min_w_0()
                     .items_center()
-                    .gap(ui_text::space(10.0))
+                    .gap(ui_text::space(status_gap))
                     .overflow_x_scroll()
                     .children(
                         settings
@@ -7613,10 +7661,10 @@ impl Workspace {
                 });
                 div()
                     .flex_none()
-                    .child(format!(
+                    .child(ui_text::quiet(format!(
                         "{} LIVE",
                         live.map_or("—".to_owned(), |live| live.to_string())
-                    ))
+                    )))
                     .into_any_element()
             }
             StatusItemKind::AgentActivity => {
@@ -7646,7 +7694,7 @@ impl Workspace {
             StatusItemKind::LiveSessions => div()
                 .flex_none()
                 .font_family(ui_text::mono_family())
-                .child(format!(
+                .child(ui_text::quiet(format!(
                     "{} LIVE",
                     self.shells
                         .iter()
@@ -7655,7 +7703,7 @@ impl Workspace {
                                 && shell.alive
                         )
                         .count()
-                ))
+                )))
                 .into_any_element(),
             StatusItemKind::Resources => {
                 let (cpu, ram) = self
@@ -7690,7 +7738,7 @@ impl Workspace {
                     .id("copy-active-shell-id")
                     .flex_none()
                     .font_family(ui_text::mono_family())
-                    .text_color(rgb(colors.cyan))
+                    .text_color(rgb(status_accent(colors.cyan, colors)))
                     .when_some(id, |item, id| {
                         item.cursor_pointer()
                             .child(id.chars().take(8).collect::<String>())
@@ -7703,9 +7751,9 @@ impl Workspace {
             StatusItemKind::GlobalOrchestrator => div()
                 .id("top-orchestrator")
                 .flex_none()
-                .text_color(rgb(colors.magenta))
+                .text_color(rgb(status_accent(colors.magenta, colors)))
                 .cursor_pointer()
-                .child("G·ORCH")
+                .child(ui_text::quiet("G·ORCH"))
                 .on_click(
                     cx.listener(|workspace, _, window, cx| workspace.open_orchestrator(window, cx)),
                 )
@@ -7713,9 +7761,9 @@ impl Workspace {
             StatusItemKind::ProjectOrchestrator => div()
                 .id("project-orchestrator")
                 .flex_none()
-                .text_color(rgb(colors.cyan))
+                .text_color(rgb(status_accent(colors.cyan, colors)))
                 .cursor_pointer()
-                .child("P·ORCH")
+                .child(ui_text::quiet("P·ORCH"))
                 .on_click(cx.listener(|workspace, _, window, cx| {
                     workspace.open_scoped_orchestrator(
                         Some(workspace.project_id.clone()),
@@ -7753,7 +7801,12 @@ impl Workspace {
                     .text_color(rgb(colors.cyan))
             })
             .child(icons::icon(Icon::Layout, color))
-            .children((!self.settings.panel_tab_icons).then(|| div().child("LAYOUT")))
+            .when(ui_text::is_native(), |item| {
+                item.rounded_full().px(ui_text::space(6.0))
+            })
+            .children(
+                (!self.settings.panel_tab_icons).then(|| div().child(ui_text::cased("Layout"))),
+            )
             .child(
                 canvas(move |area, _, _| bounds.set(area), |_, _, _, _| {})
                     .absolute()
@@ -7938,9 +7991,9 @@ impl Workspace {
             .min_w_0()
             .overflow_hidden()
             .text_ellipsis()
-            .text_color(rgb(colors.cyan))
+            .text_color(rgb(status_accent(colors.cyan, colors)))
             .cursor_pointer()
-            .child(label)
+            .child(ui_text::quiet(label))
             .on_click(cx.listener(|workspace, _, window, cx| {
                 workspace.open_panel(
                     PanelKind::ProjectSettings,
@@ -8000,10 +8053,10 @@ impl Workspace {
             .max_w(ui_text::space(220.0))
             .overflow_hidden()
             .text_ellipsis()
-            .text_color(rgb(colors.cyan))
+            .text_color(rgb(status_accent(colors.cyan, colors)))
             .cursor_pointer()
             .hover(|style| style.text_color(rgb(colors.magenta)))
-            .child(label)
+            .child(ui_text::quiet(label))
             .on_click(cx.listener(|workspace, _, window, cx| {
                 workspace.open_panel(PanelKind::Usage, workspace.active_pane, window, cx);
             }))
@@ -8356,6 +8409,7 @@ impl Workspace {
                 |button| button.bg(rgb(colors.divider)),
             )
             .hover(|style| style.bg(rgb(colors.divider)))
+            .map(|button| controls::native(button, toolbar_button))
             .child(icons::icon(icon, color))
             .when(
                 key != "menu" || self.panel_menu != Some(pane_id),
@@ -8389,7 +8443,8 @@ impl Workspace {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.divider)));
+            .hover(|style| style.bg(rgb(colors.divider)))
+            .map(|marker| controls::native(marker, toolbar_button));
         let marker = if self.settings.panel_tab_icons {
             marker
                 .w(ui_text::space(28.0))
@@ -8399,7 +8454,9 @@ impl Workspace {
                 .px(ui_text::space(6.0))
                 .text_size(ui_text::text(9.0))
                 .text_color(rgb(colors.cyan))
-                .child("MAIN")
+                .min_w(ui_text::space(0.0))
+                .px(ui_text::space(8.0))
+                .child(ui_text::cased("Main"))
         };
         marker
             .child(tooltip::anchor(
@@ -8832,6 +8889,24 @@ impl Render for Workspace {
             // Last, so that the terminals have painted the underline of a hovered link.
             .child(self.terminal_link_underline())
     }
+}
+
+/// An accent the colorful themes give a status bar item; Native keeps the bar muted.
+fn status_accent(accent: u32, colors: Palette) -> u32 {
+    if ui_text::is_native() {
+        colors.muted
+    } else {
+        accent
+    }
+}
+
+/// Native's toolbar button: a round hover in its capsule, not a full-height cell.
+fn toolbar_button(button: Stateful<Div>) -> Stateful<Div> {
+    button
+        .h(ui_text::space(20.0))
+        .min_w(ui_text::space(24.0))
+        .w_auto()
+        .rounded_full()
 }
 
 fn pane_menu_heading(label: &'static str, colors: Palette) -> AnyElement {

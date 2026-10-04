@@ -170,9 +170,9 @@ unsafe extern "C" {
         bytes_per_row: usize,
         space: *mut c_void,
         bitmap_info: u32,
-    ) -> *mut CGContext;
-    fn CGContextRelease(context: *mut CGContext);
-    fn CGContextScaleCTM(context: *mut CGContext, sx: f64, sy: f64);
+    ) -> *mut c_void;
+    fn CGContextRelease(context: *mut c_void);
+    fn CGContextScaleCTM(context: *mut c_void, sx: f64, sy: f64);
 }
 
 /// `kCGImageAlphaPremultipliedLast`: RGBA, which is all a bitmap context draws into.
@@ -246,7 +246,7 @@ fn coverage(key: &Key) -> Option<Vec<u8>> {
         CGContextScaleCTM(context, scale, scale);
         let graphics: *mut AnyObject = msg_send![
             class!(NSGraphicsContext),
-            graphicsContextWithCGContext: context,
+            graphicsContextWithCGContext: context.cast::<CGContext>(),
             flipped: false
         ];
         let drawn = !graphics.is_null();

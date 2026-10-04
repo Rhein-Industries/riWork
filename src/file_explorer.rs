@@ -29,6 +29,7 @@ use gpui::{
 };
 
 use crate::{
+    controls,
     file_preview::{self, FileIdentity, PreviewContent},
     icons::{self, ActionGlyph, Icon},
     settings::Settings,
@@ -604,35 +605,35 @@ enum Mode {
 const TOOLBAR: [ToolbarAction; 5] = [
     ToolbarAction {
         id: "file-explorer-edit",
-        label: "EDIT IN VIM ↗",
+        label: "Edit in Vim ↗",
         name: "Edit in Vim",
         glyph: ActionGlyph::EditInVim,
         mode: Mode::Edit,
     },
     ToolbarAction {
         id: "file-explorer-copy",
-        label: "COPY PATH",
+        label: "Copy path",
         name: "Copy path",
         glyph: ActionGlyph::CopyPath,
         mode: Mode::Copy,
     },
     ToolbarAction {
         id: "file-explorer-copy-contents",
-        label: "COPY CONTENTS",
+        label: "Copy contents",
         name: "Copy contents",
         glyph: ActionGlyph::CopyContents,
         mode: Mode::CopyContents,
     },
     ToolbarAction {
         id: "file-explorer-reveal",
-        label: "REVEAL",
+        label: "Reveal",
         name: "Reveal in Finder",
         glyph: ActionGlyph::Reveal,
         mode: Mode::Reveal,
     },
     ToolbarAction {
         id: "file-explorer-open",
-        label: "OPEN EXTERNALLY",
+        label: "Open externally",
         name: "Open externally",
         glyph: ActionGlyph::OpenExternally,
         mode: Mode::Open,
@@ -2028,12 +2029,29 @@ impl FileExplorer {
             .border_1()
             .border_color(rgb(if active { colors.focus } else { colors.divider }))
             .text_color(rgb(color));
+        // Native: capsule buttons in the system face; the one in use keeps its ring.
+        let native = ui_text::is_native();
+        let button = controls::native(button, |button| {
+            let kind = if available {
+                controls::Button::Secondary
+            } else {
+                controls::Button::Disabled
+            };
+            let button = controls::button(button, kind, colors)
+                .font_family(ui_text::ui_family())
+                .hover(move |style| style.bg(rgb(kind.hover(colors))));
+            if active {
+                button.border_color(rgb(colors.focus))
+            } else {
+                button
+            }
+        });
         let button = match face {
             Face::Text(label) => {
                 let button = button
-                    .px(ui_text::space(7.0))
-                    .py(ui_text::space(5.0))
-                    .child(label.to_owned());
+                    .px(ui_text::space(if native { 10.0 } else { 7.0 }))
+                    .py(ui_text::space(if native { 4.0 } else { 5.0 }))
+                    .child(ui_text::cased(label.to_owned()));
                 match explanation {
                     Some(text) => button.child(tooltip::anchor(text, Look::Control)),
                     None => button,
@@ -2045,6 +2063,7 @@ impl FileExplorer {
                 let tooltip: SharedString = icon_tooltip(name, detail).into();
                 button
                     .size(ui_text::space(24.0))
+                    .when(native, |button| button.px_0().w(ui_text::space(28.0)))
                     .child(icons::icon(Icon::Action(glyph), color))
                     .child(tooltip::anchor(tooltip, Look::Control))
             }
@@ -2138,6 +2157,14 @@ impl FileExplorer {
             .bg(rgb(colors.bg))
             .border_1()
             .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+            .map(|field| {
+                controls::native(field, |field| {
+                    controls::field(field, colors)
+                        .h(ui_text::space(26.0))
+                        .font_family(ui_text::ui_family())
+                        .when(active, |field| field.border_color(rgb(colors.focus)))
+                })
+            })
             .text_color(rgb(if self.filter.text.is_empty() {
                 colors.muted
             } else {
@@ -2209,13 +2236,32 @@ impl FileExplorer {
             } else {
                 colors.panel
             }))
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(style, controls::row_hover(selected, colors), |style| {
+                    style.bg(rgb(colors.panel_active))
+                })
+            })
+            .map(|row| {
+                // Native: an inset rounded row, and the focus shown by a ring.
+                controls::native(row, |row| {
+                    controls::row(row, selected, colors)
+                        .mx(ui_text::space(6.0))
+                        .w_auto()
+                        .rounded(controls::radius(6.0))
+                        .when(
+                            selected && self.mode == Mode::Tree && self.focus.is_focused(window),
+                            |row| row.border_color(rgb(colors.focus)),
+                        )
+                })
+            })
             .child(
                 div()
                     .w(ui_text::space(10.0))
                     .flex_none()
+                    .flex()
+                    .justify_center()
                     .text_color(rgb(color))
-                    .child(icon),
+                    .child(icons::mark(icon, 8.0, colors.muted)),
             )
             .child(
                 div()
@@ -2230,7 +2276,7 @@ impl FileExplorer {
                 div()
                     .text_size(ui_text::text(8.0))
                     .text_color(rgb(colors.muted))
-                    .child("LINK")
+                    .child(ui_text::cased("Link"))
             }))
             .on_click(cx.listener(move |view, event, window, cx| {
                 view.mode = Mode::Tree;
@@ -2316,6 +2362,10 @@ impl FileExplorer {
                 let lines = lines.clone();
                 let count = lines.len();
                 let gold = colors.gold;
+                // A Markdown heading is a color only in the colorful themes; Native keeps
+                // its one signal color for state and sets headings in semibold instead.
+                let native = ui_text::is_native();
+                let heading_color = if native { colors.text } else { gold };
                 let muted = colors.muted;
                 let text = colors.text;
                 let markdown = *markdown;
@@ -2373,7 +2423,14 @@ impl FileExplorer {
                                                 .min_w_0()
                                                 .overflow_hidden()
                                                 .text_ellipsis()
-                                                .text_color(rgb(if heading { gold } else { text }))
+                                                .text_color(rgb(if heading {
+                                                    heading_color
+                                                } else {
+                                                    text
+                                                }))
+                                                .when(heading && native, |line| {
+                                                    line.font_weight(gpui::FontWeight::SEMIBOLD)
+                                                })
                                                 .child(line.clone()),
                                         )
                                         .into_any_element()
@@ -2547,9 +2604,9 @@ impl FileExplorer {
                                         if self.preview_loading
                                             && self.preview_path != self.selected
                                         {
-                                            "LOADING…"
+                                            ui_text::cased("Loading…")
                                         } else {
-                                            "PREVIEW"
+                                            ui_text::cased("Preview")
                                         },
                                     ),
                             ),
@@ -2689,7 +2746,11 @@ impl Render for FileExplorer {
                                     .text_color(rgb(colors.magenta))
                                     .text_size(ui_text::text(9.0))
                                     .flex_none()
-                                    .child(format!("{item_count:02} ITEMS")),
+                                    .child(if ui_text::is_native() {
+                                        format!("{item_count} items")
+                                    } else {
+                                        format!("{item_count:02} ITEMS")
+                                    }),
                             ),
                     )
                     .child(
@@ -2700,7 +2761,7 @@ impl Render for FileExplorer {
                             .text_size(ui_text::text(9.0))
                             .child(self.button(
                                 "file-explorer-refresh",
-                                "↻ REFRESH",
+                                "↻ Refresh",
                                 Mode::Refresh,
                                 window,
                                 cx,
@@ -2708,9 +2769,9 @@ impl Render for FileExplorer {
                             .child(self.button(
                                 "file-explorer-hidden",
                                 if self.show_hidden {
-                                    "● HIDDEN"
+                                    "● Hidden"
                                 } else {
-                                    "○ HIDDEN"
+                                    "○ Hidden"
                                 },
                                 Mode::Hidden,
                                 window,
@@ -2718,7 +2779,7 @@ impl Render for FileExplorer {
                             ))
                             .child(self.button(
                                 "file-explorer-reveal-root",
-                                "↗ WORKTREE",
+                                "↗ Worktree",
                                 Mode::RevealRoot,
                                 window,
                                 cx,
@@ -3753,11 +3814,11 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "EDIT IN VIM ↗",
-                "COPY PATH",
-                "COPY CONTENTS",
-                "REVEAL",
-                "OPEN EXTERNALLY"
+                "Edit in Vim ↗",
+                "Copy path",
+                "Copy contents",
+                "Reveal",
+                "Open externally"
             ]
         );
         for (index, action) in TOOLBAR.iter().enumerate() {
