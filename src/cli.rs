@@ -95,6 +95,12 @@ riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
 riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
 riwork shell cwd|metrics|attach|close ID
 riwork shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux client of the shell (for remote terminals)
+riwork chat serve [--idle-seconds N]    Run the chat host in the foreground (exits after 15 idle minutes by default)
+riwork chat ensure                      Start the chat host if it is not running; print its socket
+riwork chat list [--json]               List Codex and Claude chats, running or not
+riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
+riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
+riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD]
 riwork orchestrator list [--project ID]   List global and project orchestrators
@@ -108,12 +114,18 @@ riwork schedule update SCHEDULE_UUID --revision N --scope SCOPE [--project UUID]
 riwork schedule pause|resume|delete SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID
 riwork schedule help                    Show schedule contract and examples
 
-Add --json to read commands for structured output. Project, worktree, and task
-IDs accept a unique UUID prefix of at least eight characters; shell IDs need
-their full UUID. Project, worktree, and task data lives in RIWORK_HOME
+Add --json to read commands for structured output. Project, worktree, task, and
+chat IDs accept a unique UUID prefix of at least eight characters; shell IDs
+need their full UUID. Project, worktree, and task data lives in RIWORK_HOME
 or ~/.local/share/riwork. Shell processes stay alive independently of the UI.
 Only no arguments or one existing project directory open the workspace; any
 other unknown command or option exits with an error.
+The chat host (`chat serve`) owns the Codex and Claude processes behind chats so
+they outlive app windows; `chat ensure` starts it detached, and it exits after
+15 minutes with no client and no chat at work. Chats are kept in RIWORK_HOME/chats.
+chat new defaults to the active project, like shell create, and starts the chat's
+provider at once; --mode is how much the agent may do without asking (supervised by
+default). A chat whose provider cannot start is kept as failed; chat send retries.
 worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
@@ -196,7 +208,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
     let mut args = args.to_vec();
     let literal_arguments = matches!(
         args.first().map(String::as_str),
-        Some("shell" | "orchestrator")
+        Some("shell" | "orchestrator" | "chat")
     ) && args.get(1).map(String::as_str) == Some("send")
         || args.first().map(String::as_str) == Some("cua")
             && args.get(1).map(String::as_str) == Some("harness")
@@ -231,6 +243,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "tasks"
             | "shell"
             | "orchestrator"
+            | "chat"
             | "schedule"
             | "search"
             | "usage"
@@ -321,6 +334,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         "task" | "tasks" => task_command(args, json)?,
         "shell" => shell_command(args, json)?,
         "orchestrator" => orchestrator_command(args, json)?,
+        "chat" => chat_command(args, json)?,
         "schedule" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
         "mcp" => {
@@ -1536,38 +1550,8 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 return Err("--unrestricted requires --harness".to_owned());
             }
             let state = Store::open_default()?.snapshot()?;
-            let (project_id, worktree_id, cwd) = if let Some(selector) = worktree {
-                // A named project scopes the selector, so a branch shared by
-                // many projects (`main`) is not ambiguous.
-                let worktree = match project.as_deref() {
-                    Some(project_selector) => {
-                        let selected = state.project(project_selector)?;
-                        let worktree = state.worktree_in_project(&selected.id, &selector)?;
-                        if selected.id != worktree.project_id {
-                            return Err("Worktree belongs to another project".to_owned());
-                        }
-                        worktree
-                    }
-                    None => state.worktree(&selector)?,
-                };
-                (
-                    worktree.project_id.clone(),
-                    Some(worktree.id.clone()),
-                    worktree.path.clone(),
-                )
-            } else {
-                let project_id = project_id(&state, project.as_deref())?;
-                let project = state.project(&project_id)?;
-                let primary = state
-                    .worktrees_for(&project_id)
-                    .into_iter()
-                    .find(|worktree| worktree.is_primary);
-                (
-                    project_id,
-                    primary.map(|worktree| worktree.id.clone()),
-                    project.root.clone(),
-                )
-            };
+            let (project_id, worktree_id, cwd) =
+                launch_scope(&state, project.as_deref(), worktree.as_deref())?;
             let shell = if let Some(harness) = harness {
                 manager.create_harness(project_id, worktree_id, cwd, harness, unrestricted)?
             } else {
@@ -1782,6 +1766,188 @@ fn exec_attach(manager: &SessionManager, id: &str, options: AttachOptions) -> Re
         let _ = (manager, id, options);
         Err("shell attach --exec needs a Unix system".to_owned())
     }
+}
+
+fn chat_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
+    let home = crate::paths::riwork_home()?;
+    if args.first().map(String::as_str) == Some("serve") {
+        args.remove(0);
+        let idle = match take_option(&mut args, "--idle-seconds")? {
+            Some(seconds) => seconds
+                .parse::<u64>()
+                .ok()
+                .filter(|seconds| *seconds > 0)
+                .map(std::time::Duration::from_secs)
+                .ok_or("--idle-seconds must be a whole number of seconds, at least 1")?,
+            None => crate::chat::host::DEFAULT_IDLE,
+        };
+        ensure_empty(&args)?;
+        return crate::chat::host::serve(&home, idle);
+    }
+    let ensure = |home: &Path| {
+        let executable =
+            env::current_exe().map_err(|error| format!("Cannot locate RiWork: {error}"))?;
+        crate::chat::host::ensure(home, &executable)
+    };
+    print!("{}", chat_client_command(&home, args, json, &ensure)?);
+    Ok(())
+}
+
+/// The chat commands that talk to the host, as the text they print. `ensure`
+/// starts the host and returns its socket.
+fn chat_client_command(
+    home: &Path,
+    mut args: Vec<String>,
+    json: bool,
+    ensure: &dyn Fn(&Path) -> Result<PathBuf, String>,
+) -> Result<String, String> {
+    use crate::chat::{client::Client, model::ChatCommand};
+    let operation = pop_command(&mut args, "list");
+    match operation.as_str() {
+        "ensure" => {
+            ensure_empty(&args)?;
+            let socket = ensure(home)?;
+            if json {
+                json_text(&json!({ "socket": socket }))
+            } else {
+                Ok(format!("{}\n", socket.display()))
+            }
+        }
+        "list" => {
+            ensure_empty(&args)?;
+            let chats = Client::connect(&ensure(home)?)?.list()?;
+            if json {
+                json_text(&chats)
+            } else {
+                Ok(chats.iter().map(chat_line).collect())
+            }
+        }
+        "new" => {
+            let provider = match take_option(&mut args, "--provider")?.as_deref() {
+                Some("codex") => crate::chat::model::Provider::Codex,
+                Some("claude") => crate::chat::model::Provider::Claude,
+                _ => return Err(CHAT_NEW_USAGE.to_owned()),
+            };
+            let project = take_option(&mut args, "--project")?;
+            let worktree = take_option(&mut args, "--worktree")?;
+            let approval_mode = match take_option(&mut args, "--mode")?.as_deref() {
+                None | Some("supervised") => crate::chat::model::ApprovalMode::Supervised,
+                Some("auto-edit") => crate::chat::model::ApprovalMode::AutoEdit,
+                Some("full") => crate::chat::model::ApprovalMode::Full,
+                Some("plan") => crate::chat::model::ApprovalMode::Plan,
+                Some(_) => return Err("--mode must be supervised, auto-edit, full, or plan".into()),
+            };
+            ensure_empty(&args)?;
+            let state = Store::open(home)?.snapshot()?;
+            let (project_id, worktree_id, cwd) =
+                launch_scope(&state, project.as_deref(), worktree.as_deref())?;
+            let chat = Client::connect(&ensure(home)?)?.create(crate::chat::model::NewChat {
+                provider,
+                project_id: Some(project_id),
+                worktree_id,
+                cwd,
+                title: None,
+                approval_mode,
+                model: None,
+                effort: None,
+            })?;
+            if let crate::chat::model::ChatState::Failed { message } = &chat.state {
+                return Err(format!(
+                    "Chat {} was created, but its provider did not start: {message}",
+                    chat.id
+                ));
+            }
+            if json {
+                json_text(&chat)
+            } else {
+                Ok(chat_line(&chat))
+            }
+        }
+        "send" => {
+            if args.len() < 2 {
+                return Err("Usage: riwork chat send CHAT_ID TEXT".to_owned());
+            }
+            let selector = args.remove(0);
+            let text = args.join(" ");
+            let mut client = Client::connect(&ensure(home)?)?;
+            let id = resolve_chat(&mut client, &selector)?;
+            client.command(&id, ChatCommand::Send { text: text.clone() })?;
+            if json {
+                json_text(&json!({ "id": id, "sent": text }))
+            } else {
+                Ok(String::new())
+            }
+        }
+        "stop" => {
+            let selector = take_single(args, "chat stop CHAT_ID")?;
+            // Stopping needs a host that already runs: there is nothing to stop
+            // in one that is not.
+            let socket = crate::chat::client::socket_path(home);
+            let mut client = Client::connect(&socket)
+                .map_err(|_| "No chat host is running, so no chat is running".to_owned())?;
+            let id = resolve_chat(&mut client, &selector)?;
+            client.close(&id)?;
+            if json {
+                json_text(&json!({ "id": id, "state": "stopped" }))
+            } else {
+                Ok(format!("Stopped {id}\n"))
+            }
+        }
+        _ => Err("Usage: riwork chat serve|ensure|list|new|send|stop (riwork help)".to_owned()),
+    }
+}
+
+const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]";
+
+/// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
+fn resolve_chat(
+    client: &mut crate::chat::client::Client,
+    selector: &str,
+) -> Result<String, String> {
+    let chats = client.list()?;
+    if let Some(chat) = chats.iter().find(|chat| chat.id == selector) {
+        return Ok(chat.id.clone());
+    }
+    if selector.len() < 8 {
+        return Err(format!(
+            "'{selector}' is not a chat; chat IDs need at least eight characters when shortened"
+        ));
+    }
+    let mut matching = chats.iter().filter(|chat| chat.id.starts_with(selector));
+    match (matching.next(), matching.next()) {
+        (Some(chat), None) => Ok(chat.id.clone()),
+        (None, _) => Err(format!("Unknown chat {selector}")),
+        _ => Err(format!("Chat ID prefix {selector} is ambiguous")),
+    }
+}
+
+fn chat_line(chat: &crate::chat::model::ChatInfo) -> String {
+    use crate::chat::model::{ChatState, Provider};
+    let state = match &chat.state {
+        ChatState::Starting => "starting".to_owned(),
+        ChatState::Idle => "idle".to_owned(),
+        ChatState::Running => "running".to_owned(),
+        ChatState::Waiting => "waiting".to_owned(),
+        ChatState::Stopped => "stopped".to_owned(),
+        ChatState::Failed { message } => format!("failed ({})", terminal_safe(message)),
+    };
+    format!(
+        "{}  {}  {}  {}  {}\n",
+        chat.id,
+        match chat.provider {
+            Provider::Codex => "codex",
+            Provider::Claude => "claude",
+        },
+        state,
+        terminal_safe(&chat.title),
+        chat.cwd.display()
+    )
+}
+
+fn json_text(value: &impl Serialize) -> Result<String, String> {
+    serde_json::to_string_pretty(value)
+        .map(|text| text + "\n")
+        .map_err(|error| error.to_string())
 }
 
 fn orchestrator_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
@@ -2218,6 +2384,46 @@ fn print_shell_result(shell: &ShellSession, json: bool) -> Result<(), String> {
     }
 }
 
+/// Where a new shell or chat starts: the project, the worktree and the
+/// directory that `--project` and `--worktree` name. A named project scopes the
+/// worktree selector, so a branch shared by many projects (`main`) is not
+/// ambiguous; with neither, the active project's primary worktree.
+fn launch_scope(
+    state: &State,
+    project: Option<&str>,
+    worktree: Option<&str>,
+) -> Result<(String, Option<String>, PathBuf), String> {
+    if let Some(selector) = worktree {
+        let worktree = match project {
+            Some(project_selector) => {
+                let selected = state.project(project_selector)?;
+                let worktree = state.worktree_in_project(&selected.id, selector)?;
+                if selected.id != worktree.project_id {
+                    return Err("Worktree belongs to another project".to_owned());
+                }
+                worktree
+            }
+            None => state.worktree(selector)?,
+        };
+        return Ok((
+            worktree.project_id.clone(),
+            Some(worktree.id.clone()),
+            worktree.path.clone(),
+        ));
+    }
+    let project_id = project_id(state, project)?;
+    let project = state.project(&project_id)?;
+    let primary = state
+        .worktrees_for(&project_id)
+        .into_iter()
+        .find(|worktree| worktree.is_primary);
+    Ok((
+        project_id,
+        primary.map(|worktree| worktree.id.clone()),
+        project.root.clone(),
+    ))
+}
+
 fn project_id(state: &State, selector: Option<&str>) -> Result<String, String> {
     match selector {
         Some(selector) => Ok(state.project(selector)?.id.clone()),
@@ -2483,6 +2689,9 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
         Err(format!("Unexpected arguments: {}", args.join(" ")))
     }
 }
+
+#[cfg(test)]
+mod chat_tests;
 
 #[cfg(test)]
 mod tests {
