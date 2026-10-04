@@ -61,6 +61,9 @@ targets:
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSCameraUsageDescription: Scan a pairing code from your RiWork desktop.
         NSLocalNetworkUsageDescription: Connect to a RiWork relay on your local network.
+        # Dictation into terminals and chats. Recognition runs on the iPhone; speech is never sent anywhere.
+        NSMicrophoneUsageDescription: Dictate commands and messages. Your voice is recognized on this iPhone and is not sent anywhere.
+        NSSpeechRecognitionUsageDescription: Turn what you dictate into text on this iPhone, using words from the session on screen.
         CFBundleURLTypes:
           - CFBundleURLName: com.riwork.remote.pair
             CFBundleURLSchemes: [riwork]
