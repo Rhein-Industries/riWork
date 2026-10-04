@@ -127,6 +127,7 @@ actions!(
         BiggerText,
         SmallerText,
         ActualSizeText,
+        PasteInTerminal,
         Quit
     ]
 );
@@ -10019,6 +10020,13 @@ fn main() {
             KeyBinding::new("cmd--", SmallerText, outside_terminals),
             KeyBinding::new("cmd-0", ActualSizeText, outside_terminals),
         ]);
+        // ⌘V in a terminal: RiWork pastes copied files and pictures (terminal_drop) and leaves
+        // text to Ghostty, which gets the key when the action propagates.
+        cx.bind_keys([KeyBinding::new(
+            "cmd-v",
+            PasteInTerminal,
+            Some("Terminal"),
+        )]);
         cx.bind_keys([
             KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("cmd-alt-a", OpenProjectSettings, None),

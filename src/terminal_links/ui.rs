@@ -412,6 +412,12 @@ impl Workspace {
                     cx.stop_propagation();
                 }),
             )
+            // ⌘V with files or a picture copied (terminal_drop).
+            .on_action(
+                cx.listener(move |workspace, _: &crate::PasteInTerminal, _, cx| {
+                    workspace.terminal_paste(pane_id, tab_id, cx);
+                }),
+            )
             .hover_listener_mode(gpui::HoverListenerMode::InputModalityIndependent)
             .on_hover(cx.listener(move |workspace, hovered: &bool, _, cx| {
                 if !*hovered {
