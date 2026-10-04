@@ -5,7 +5,9 @@ import RiWorkCore
 
 @MainActor final class StubSource: TerminalLineSource {
     var buffer = TerminalBuffer()
+    var columns: Int?
     var terminalBuffer: TerminalBuffer { buffer }
+    var terminalColumns: Int? { columns }
 }
 
 /// The scroll surface on its own, against a plain buffer: how rows are placed, recycled and kept in place.

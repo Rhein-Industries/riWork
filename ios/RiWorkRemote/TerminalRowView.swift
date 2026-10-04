@@ -52,7 +52,9 @@ import RiWorkCore
         return (ascent * scale).rounded() / scale
     }
 
-    static func draw(_ line: StyledLine, cursorColumn: Int?, settings: TerminalRenderer.Settings, fontSize: Double, in context: CGContext, scale: Double) {
+    /// `links` are character ranges of the line that are links: underlined in the link color, whatever their style (touch has no hover
+    /// to show them otherwise).
+    static func draw(_ line: StyledLine, cursorColumn: Int?, links: [Range<Int>] = [], settings: TerminalRenderer.Settings, fontSize: Double, in context: CGContext, scale: Double) {
         guard !line.text.isEmpty else { return }
         let segments = TerminalRenderer.segments(text: line.text, runs: line.runs, cursorColumn: cursorColumn, settings: settings)
         guard !segments.isEmpty else { return }
@@ -106,6 +108,17 @@ import RiWorkCore
             if attributes.contains(.underline) { context.fill(CGRect(x: x, y: snapped(underline - thickness / 2, scale), width: width, height: thickness)) }
             if attributes.contains(.strikethrough) { context.fill(CGRect(x: x, y: snapped(strike - thickness / 2, scale), width: width, height: thickness)) }
         }
+        guard !links.isEmpty else { return }
+        // Links: the cells their characters cover, underlined in the link color.
+        let characters = Array(line.text)
+        context.setFillColor(cgColor(settings.link))
+        for link in links {
+            let lower = max(0, min(link.lowerBound, characters.count)), upper = max(lower, min(link.upperBound, characters.count))
+            guard lower < upper else { continue }
+            let from = characters[..<lower].reduce(0) { $0 + TerminalText.cellWidth($1) }
+            let cells = characters[lower..<upper].reduce(0) { $0 + TerminalText.cellWidth($1) }
+            context.fill(CGRect(x: Double(from) * cell.width, y: snapped(underline - thickness / 2, scale), width: Double(cells) * cell.width, height: thickness))
+        }
     }
     private static func snapped(_ value: Double, _ scale: Double) -> Double { (value * scale).rounded() / scale }
 }
@@ -114,6 +127,8 @@ import RiWorkCore
 @MainActor final class TerminalRowView: UIView {
     private(set) var line: StyledLine?
     private(set) var cursorColumn: Int?
+    /// The character ranges of the line that are links.
+    private(set) var links: [Range<Int>] = []
     /// Which look the row was painted with: a counter the surface bumps when colors, font or size change.
     private(set) var look = -1
     private var settings: TerminalRenderer.Settings?
@@ -130,9 +145,9 @@ import RiWorkCore
     required init?(coder: NSCoder) { fatalError("not used") }
 
     /// Shows `line`; paints again only when something about it differs from what is already painted.
-    func configure(line: StyledLine, cursorColumn: Int?, look: Int, settings: TerminalRenderer.Settings, fontSize: Double) {
-        guard line != self.line || cursorColumn != self.cursorColumn || look != self.look else { return }
-        self.line = line; self.cursorColumn = cursorColumn; self.look = look
+    func configure(line: StyledLine, cursorColumn: Int?, links: [Range<Int>] = [], look: Int, settings: TerminalRenderer.Settings, fontSize: Double) {
+        guard line != self.line || cursorColumn != self.cursorColumn || links != self.links || look != self.look else { return }
+        self.line = line; self.cursorColumn = cursorColumn; self.links = links; self.look = look
         self.settings = settings; self.fontSize = fontSize
         setNeedsDisplay()
     }
@@ -140,7 +155,7 @@ import RiWorkCore
     /// given another line, which always paints (`look` is -1), so painting nothing here would only be work.
     func clear() {
         guard line != nil else { return }
-        line = nil; cursorColumn = nil; look = -1
+        line = nil; cursorColumn = nil; links = []; look = -1
     }
 
     override func draw(_ rect: CGRect) {
@@ -149,6 +164,6 @@ import RiWorkCore
         let signpost = Perf.signposter.beginInterval("RowPaint")
         defer { Perf.signposter.endInterval("RowPaint", signpost) }
         let scale = Double(window?.screen.scale ?? traitCollection.displayScale)
-        TerminalRowPainter.draw(line, cursorColumn: cursorColumn, settings: settings, fontSize: fontSize, in: context, scale: scale > 0 ? scale : TerminalFont.pixelsPerPoint)
+        TerminalRowPainter.draw(line, cursorColumn: cursorColumn, links: links, settings: settings, fontSize: fontSize, in: context, scale: scale > 0 ? scale : TerminalFont.pixelsPerPoint)
     }
 }
