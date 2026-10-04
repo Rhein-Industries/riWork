@@ -14,16 +14,16 @@ struct NewTerminalSheet: View {
     private var showFocus: Bool { sheet.keyboardInUse }
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: "NEW TERMINAL") {
+            WorkspaceBar(title: style.cased("New terminal")) {
                 Button("Cancel", action: sheet.cancel).accessibilityHint("Closes without opening a terminal")
             }
             ScrollView { formContent }.scrollBounceBehavior(.basedOnSize)
             footer
         }
-        .background(style.background)
-        .foregroundStyle(style.text).font(style.mono(13, relativeTo: .body)).tint(style.accent)
+        .desktopSheetSurface(style)
+        .foregroundStyle(style.text).font(style.face(13, relativeTo: .body)).tint(style.accent)
         .background { NewTerminalKeys(onKey: handle).frame(width: 1, height: 1).accessibilityHidden(true) }
-        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(8)
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .onChange(of: sheet.model.worktrees) { _, _ in sheet.refreshTargets() }
         .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidConnect)) { _ in hardwareKeyboard = true }
         .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidDisconnect)) { _ in hardwareKeyboard = GCKeyboard.coalesced != nil }
@@ -31,9 +31,9 @@ struct NewTerminalSheet: View {
 
     private var formContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sectionLabel("WHERE")
+            sectionLabel(style.cased("Where"))
             targetRow
-            sectionLabel("WHAT")
+            sectionLabel(style.cased("What"))
             VStack(spacing: 0) {
                 ForEach(NewTerminalKind.allCases) { kindRow($0) }
             }
@@ -68,7 +68,7 @@ struct NewTerminalSheet: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(form.target?.title ?? "No project").lineLimit(1)
                 if let branch = form.target?.branchLabel, form.targets.count > 1 {
-                    Text(branch).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                    Text(branch).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
                 }
             }
             Spacer(minLength: 4)
@@ -107,9 +107,9 @@ struct NewTerminalSheet: View {
             HStack(spacing: 10) {
                 Image(systemName: selected ? "largecircle.fill.circle" : "circle").frame(width: style.pt(22)).foregroundStyle(selected ? style.accent : style.muted)
                 Image(systemName: icon(kind)).frame(width: style.pt(20)).foregroundStyle(style.muted)
-                Text(kind.title).font(style.mono(14, bold: selected, relativeTo: .body))
+                Text(kind.title).font(style.face(14, bold: selected, relativeTo: .body))
                 Spacer(minLength: 4)
-                Text(detail(kind)).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                Text(detail(kind)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
             }
             .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: style.pt(48), alignment: .leading)
             .background(selected ? style.active : .clear).contentShape(Rectangle())
@@ -154,13 +154,13 @@ struct NewTerminalSheet: View {
         VStack(spacing: 6) {
             DesktopRule()
             if hardwareKeyboard || sheet.keyboardInUse {
-                Text("↩ create   ⎋ cancel   ↑↓ choose   ⇥ next control").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                Text("↩ create   ⎋ cancel   ↑↓ choose   ⇥ next control").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                     .lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 12).accessibilityHidden(true)
             }
             Button { sheet.keyboardInUse = false; sheet.create() } label: {
                 HStack(spacing: 8) {
                     if sheet.busy { ProgressView().controlSize(.small) }
-                    Text(sheet.busy ? "Creating…" : createTitle).font(style.mono(14, bold: true, relativeTo: .headline))
+                    Text(sheet.busy ? "Creating…" : createTitle).font(style.face(14, bold: true, relativeTo: .headline))
                 }.frame(maxWidth: .infinity, minHeight: style.pt(48))
             }
             .buttonStyle(DesktopButtonStyle(prominent: true))

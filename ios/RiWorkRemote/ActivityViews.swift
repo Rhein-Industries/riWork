@@ -37,7 +37,7 @@ struct ActivityIndicator: View {
             case .working:
                 HStack(spacing: 3) {
                     WorkingDot()
-                    if subagents > 0 { Text("+\(subagents)").font(style.mono(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.accent).monospacedDigit() }
+                    if subagents > 0 { Text("+\(subagents)").font(style.face(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.accent).monospacedDigit() }
                 }
             case .waiting:
                 WaitingDisc()
@@ -62,13 +62,13 @@ struct ProjectAgentBadges: View {
             if agents.working > 0 {
                 HStack(spacing: 3) {
                     WorkingDot()
-                    Text("\(agents.working)").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent).monospacedDigit()
+                    Text("\(agents.working)").font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent).monospacedDigit()
                 }
             }
             if agents.waiting > 0 {
                 HStack(spacing: 3) {
                     WaitingDisc()
-                    Text("\(agents.waiting)").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.gold).monospacedDigit()
+                    Text("\(agents.waiting)").font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.gold).monospacedDigit()
                 }
             }
         }
@@ -88,7 +88,7 @@ struct ProjectSortMenu: View {
                 ForEach(ProjectSort.allCases) { sort in Text("\(sort.title) · \(sort.detail)").tag(sort) }
             }
         } label: {
-            Label(model.projectSort.title, systemImage: "arrow.up.arrow.down").font(style.mono(11, relativeTo: .caption)).lineLimit(1)
+            Label(model.projectSort.title, systemImage: "arrow.up.arrow.down").font(style.face(11, relativeTo: .caption)).lineLimit(1)
                 .frame(minHeight: style.pt(44)).contentShape(Rectangle())
         }
         .fixedSize()

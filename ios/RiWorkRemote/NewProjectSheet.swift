@@ -15,27 +15,27 @@ struct NewProjectSheet: View {
     private var showFocus: Bool { sheet.keyboardInUse }
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: "NEW PROJECT") {
+            WorkspaceBar(title: style.cased("New project")) {
                 Button("Cancel", action: sheet.cancel).accessibilityHint("Closes without creating a project")
             }
             ScrollView { formContent }.scrollBounceBehavior(.basedOnSize)
             footer
         }
-        .background(style.background)
-        .foregroundStyle(style.text).font(style.mono(13, relativeTo: .body)).tint(style.accent)
+        .desktopSheetSurface(style)
+        .foregroundStyle(style.text).font(style.face(13, relativeTo: .body)).tint(style.accent)
         // The keyboard belongs to the name field while it has the ring, and to this view while the switch or Create has it.
         .background { NewProjectKeys(wantsKeyboard: sheet.form.focus != .name, onKey: handle).frame(width: 1, height: 1).accessibilityHidden(true) }
-        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(8)
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidConnect)) { _ in hardwareKeyboard = true }
         .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidDisconnect)) { _ in hardwareKeyboard = GCKeyboard.coalesced != nil }
     }
 
     private var formContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sectionLabel("NAME")
+            sectionLabel(style.cased("Name"))
             nameField
             nameNote
-            sectionLabel("GIT")
+            sectionLabel(style.cased("Git"))
             gitRow
             if let message = sheet.message { messageRow(message) }
         }
@@ -115,13 +115,13 @@ struct NewProjectSheet: View {
         VStack(spacing: 6) {
             DesktopRule()
             if hardwareKeyboard || sheet.keyboardInUse {
-                Text("↩ create   ⎋ cancel   ⇥ next control   ⌘G git").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                Text("↩ create   ⎋ cancel   ⇥ next control   ⌘G git").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                     .lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 12).accessibilityHidden(true)
             }
             Button { sheet.keyboardInUse = false; sheet.create() } label: {
                 HStack(spacing: 8) {
                     if sheet.busy { ProgressView().controlSize(.small) }
-                    Text(sheet.busy ? "Creating…" : createTitle).font(style.mono(14, bold: true, relativeTo: .headline))
+                    Text(sheet.busy ? "Creating…" : createTitle).font(style.face(14, bold: true, relativeTo: .headline))
                 }.frame(maxWidth: .infinity, minHeight: style.pt(48))
             }
             .buttonStyle(DesktopButtonStyle(prominent: true))
@@ -237,7 +237,7 @@ private struct NewProjectNameInput: UIViewRepresentable {
         let style = context.environment.desktopStyle
         if context.coordinator.appliedStyle != style || context.coordinator.appliedPlaceholder != placeholder {
             context.coordinator.appliedStyle = style; context.coordinator.appliedPlaceholder = placeholder
-            field.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: style.uiFont("Menlo", size: 14))
+            field.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: style.uiFace(size: 14))
             field.textColor = style.textUI
             field.tintColor = style.accentUI
             field.attributedPlaceholder = NSAttributedString(string: placeholder, attributes: [.foregroundColor: style.mutedUI])
