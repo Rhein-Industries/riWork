@@ -2211,7 +2211,7 @@ impl FileExplorer {
             RowKind::Entry(EntryKind::Symlink) => colors.magenta,
             _ => colors.text,
         };
-        div()
+        let row = div()
             .id(("file-explorer-row", index))
             .h(ui_text::space(27.0))
             .w_full()
@@ -2245,8 +2245,6 @@ impl FileExplorer {
                 // Native: an inset rounded row, and the focus shown by a ring.
                 controls::native(row, |row| {
                     controls::row(row, selected, colors)
-                        .mx(ui_text::space(6.0))
-                        .w_auto()
                         .rounded(controls::radius(6.0))
                         // The focused list's selection is a deeper fill, not a ring.
                         .when(
@@ -2302,7 +2300,18 @@ impl FileExplorer {
                 }
                 cx.notify();
             }))
-            .into_any_element()
+            .into_any_element();
+        // Native insets the rounded row from the list's edges; a margin on a full-width
+        // row would push it past the right edge, so a padded box holds it.
+        if ui_text::is_native() {
+            div()
+                .w_full()
+                .px(ui_text::space(6.0))
+                .child(row)
+                .into_any_element()
+        } else {
+            row
+        }
     }
 
     /// The Preview pane: the selected file's name and actions above its contents. It is
