@@ -29,8 +29,9 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, Bounds, Context, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ScrollWheelEvent, Task, Window, canvas, div, prelude::*,
+    AnyElement, Bounds, Context, DragMoveEvent, ExternalPaths, Modifiers, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, Task, Window,
+    canvas, div, prelude::*,
 };
 
 use super::{
@@ -399,6 +400,18 @@ impl Workspace {
             .on_scroll_wheel(cx.listener(move |workspace, _: &ScrollWheelEvent, _, cx| {
                 workspace.terminal_link_scrolled(tab_id, cx);
             }))
+            // Files dragged from Finder: their paths are pasted into this shell (terminal_drop).
+            .on_drag_move(cx.listener(
+                move |workspace, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                    workspace.terminal_drag_moved(tab_id, event, cx);
+                },
+            ))
+            .on_drop(
+                cx.listener(move |workspace, paths: &ExternalPaths, window, cx| {
+                    workspace.terminal_dropped(pane_id, tab_id, paths, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .hover_listener_mode(gpui::HoverListenerMode::InputModalityIndependent)
             .on_hover(cx.listener(move |workspace, hovered: &bool, _, cx| {
                 if !*hovered {

@@ -1548,6 +1548,18 @@ impl SessionManager {
         self.paste_and_submit(id, text)
     }
 
+    /// Paste text into an existing shell as a terminal paste, without Return.
+    pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
+        self.registered_session(id)?;
+        crate::session_input::paste(
+            &self.home,
+            id,
+            text,
+            &|args| self.tmux_text(args),
+            &|args, input| self.tmux_text_input(args, input),
+        )
+    }
+
     pub fn resize_viewport(
         &self,
         id: &str,

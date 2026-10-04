@@ -41,6 +41,7 @@ mod settings;
 mod sgr;
 mod status_bar;
 mod store;
+mod terminal_drop;
 mod terminal_lifecycle;
 mod terminal_links;
 mod theme;
@@ -1099,6 +1100,7 @@ struct Workspace {
     terminal_snapshots: BTreeMap<TabId, Arc<gpui::RenderImage>>,
     /// ⌘-clicking URLs and files in local terminals.
     terminal_links: terminal_links::LinkState,
+    terminal_drop: terminal_drop::DropState,
     /// The pending pass that releases hidden terminals; replaced whenever the set
     /// of hidden tabs changes.
     terminal_release: Option<gpui::Task<()>>,
@@ -1657,6 +1659,7 @@ impl Workspace {
             tab_dragging: false,
             terminal_snapshots: BTreeMap::new(),
             terminal_links: terminal_links::LinkState::default(),
+            terminal_drop: terminal_drop::DropState::default(),
             terminal_release: None,
             attach_retry: None,
             search_focused: false,
@@ -8603,6 +8606,7 @@ impl Render for Workspace {
         if self.layout_menu_open && (!self.layout_item_shown() || !self.tab_dragging) {
             self.layout_menu_open = false;
         }
+        self.settle_terminal_drop(cx);
         if !cx.has_active_drag() {
             self.drop_target = None;
             if self.tab_dragging
@@ -8783,6 +8787,7 @@ impl Render for Workspace {
             )
             // Last, so that the terminals have painted the underline of a hovered link.
             .child(self.terminal_link_underline())
+            .child(self.terminal_drop_outline(cx))
     }
 }
 
