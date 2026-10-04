@@ -581,6 +581,8 @@ struct SessionConsole: View {
     /// The hotkey help (⌘/): a reference over the terminal that leaves the keyboard where it is.
     @State private var help = HelpController()
     @State private var editor: HotkeyEditorStart?
+    /// A dictated line waiting to be checked before it is typed into the shell (`TerminalDictationPanel`).
+    @State private var dictatedLine: String?
     @Environment(\.scenePhase) private var scenePhase
     /// Live pinch scale. A GestureState resets by itself if the gesture is cancelled; the size is committed (and the
     /// grid recomputed) only when the pinch ends.
@@ -619,6 +621,7 @@ struct SessionConsole: View {
                                    shortcuts: model.hotkeys.shortcuts, palette: palette, help: help,
                                    onEditHotkeys: { openEditor(.list) }, onNewHotkey: { openEditor(.new) }, onEditHotkey: { openEditor(.edit($0)) },
                                    onKeyEvent: { model.keyboard.events.record($0) },
+                                   dictation: DictationController.shared.barState(for: .terminal), onDictate: dictate,
                                    onItems: { model.type($0) == .accepted })
                             .frame(width: 1, height: 1).accessibilityHidden(true)
                     }
@@ -673,6 +676,10 @@ struct SessionConsole: View {
         // The chip and notices float over the pane instead of taking room from it, so they appearing or vanishing never
         // changes the terminal's size (and so never resizes the desktop). Content gets a matching bottom margin.
         .overlay(alignment: .bottom) { FloatingStatus(model: model) }
+        .overlay(alignment: .bottom) {
+            TerminalDictationPanel(controller: .shared, review: $dictatedLine, canType: model.session?.alive == true, type: typeDictated,
+                                   done: { keyFocus.focus() })
+        }
         .onChange(of: model.sessionAutoSwitches) { _, _ in configureFocus(); keyFocus.shellReplacedWithoutTap() }
         .simultaneousGesture(TapGesture().onEnded { terminalTapped() })
         .simultaneousGesture(magnify)
@@ -786,6 +793,7 @@ struct SessionConsole: View {
                              label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
                              onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
                     .modifier(DesktopField())
+                TerminalMicButton(isEnabled: model.canEditDraft, action: dictate)
                 Button("Send", systemImage: "arrow.up", action: send)
                     .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))
                     .disabled(!canSubmit)
@@ -799,6 +807,19 @@ struct SessionConsole: View {
         }.padding(8).background(style.panel).overlay(alignment: .top) { DesktopRule() }
     }
     private var canSubmit: Bool { model.canSend && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// The mic (key bar or line composer): the line goes to a field to be checked first, never straight to the shell.
+    private func dictate() {
+        DictationController.shared.toggle(for: .terminal) { [model] text in
+            let line = DictatedText.forTerminal(text)
+            if model.directTyping { dictatedLine = DictatedText.joined(dictatedLine ?? "", line) }
+            else { model.draft = DictatedText.joined(model.draft, line) }
+        }
+    }
+    /// A checked dictated line, typed into the shell.
+    private func typeDictated(_ line: String, submit: Bool) {
+        let items: [KeyItem] = submit ? [.text(line), .key(.enter)] : [.text(line)]
+        if model.type(items) != .accepted { model.error = "The dictated line could not be typed into this terminal." }
+    }
     private func send() {
         guard let selectedID = model.sessionID else { return }
         let line = model.draft

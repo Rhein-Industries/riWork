@@ -11,6 +11,8 @@ struct CommandField: UIViewRepresentable {
     var label: String
     var onSubmit: () -> Void
     var onRejectedInput: () -> Void
+    /// Takes the keyboard as soon as it is on screen (the review of a dictated line).
+    var takesFocus = false
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextField {
@@ -34,6 +36,7 @@ struct CommandField: UIViewRepresentable {
         colorize(field, context.environment.desktopStyle, coordinator: context.coordinator)
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        if takesFocus { DispatchQueue.main.async { if field.window != nil { _ = field.becomeFirstResponder() } } }
         return field
     }
     /// Colors are applied on creation and again only when the synced palette changes, so typing is never disturbed.

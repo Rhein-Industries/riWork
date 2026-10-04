@@ -12,11 +12,11 @@ private final class KeyScrollView: UIScrollView {
 /// - alone at the bottom edge of the screen when a hardware keyboard is attached (iOS hides the software keyboard then).
 ///
 /// The row scrolls. Its ends are padded (`KeyBarGeometry`) so that, scrolled fully left or right, the first and the last key are
-/// clear of the display's rounded corners. Hide stays put at the trailing end, so it is always within reach; everything else,
-/// including the "+" that opens the hotkey editor at the very end, is in the scrolling part.
+/// clear of the display's rounded corners. Hide stays put at the trailing end, with the dictation mic just before it, so both are always
+/// within reach; everything else, including the "+" that opens the hotkey editor at the very end, is in the scrolling part.
 @MainActor final class KeyBarView: UIInputView {
     enum Action: Hashable {
-        case key(TerminalKey), control, alt, text(String), paste, hide, hotkey(String), editHotkeys, palette, help
+        case key(TerminalKey), control, alt, text(String), paste, hide, hotkey(String), editHotkeys, palette, help, dictate
     }
     private enum Role { case plain, hotkey, muted }
 
@@ -66,6 +66,7 @@ private final class KeyScrollView: UIScrollView {
     private var stackLeading: NSLayoutConstraint!, hideTrailing: NSLayoutConstraint!
     private var hideWidth: NSLayoutConstraint!, hideMinWidth: NSLayoutConstraint?, dividerInsets: [NSLayoutConstraint] = [], stackTrailing: NSLayoutConstraint!
     private var controlArmed = false, altArmed = false
+    private var dictation = Dictation.idle, dictateWidth: NSLayoutConstraint?
     private var repeatTask: Task<Void, Never>?
     private var didRepeat = false
     private var keyboardObservers: [any NSObjectProtocol] = []
@@ -108,7 +109,7 @@ private final class KeyScrollView: UIScrollView {
             row.topAnchor.constraint(equalTo: topAnchor, constant: 1), bottomAnchor.constraint(equalTo: row.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: row.leadingAnchor), scroll.topAnchor.constraint(equalTo: row.topAnchor), scroll.bottomAnchor.constraint(equalTo: row.bottomAnchor),
             hideDividerTop, hideDividerBottom,
-            hideDivider.widthAnchor.constraint(equalToConstant: 1), scroll.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor),
+            hideDivider.widthAnchor.constraint(equalToConstant: 1),
             stackLeading, stackTrailing,
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor), stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)
@@ -122,6 +123,7 @@ private final class KeyScrollView: UIScrollView {
             hideTrailing, hide.leadingAnchor.constraint(equalTo: hideDivider.trailingAnchor), hide.topAnchor.constraint(equalTo: row.topAnchor),
             hide.bottomAnchor.constraint(equalTo: row.bottomAnchor), hideWidth
         ])
+        addDictateButton()
         rebuild()
         restyle()
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: KeyBarView, _) in view.restyle() }
@@ -138,6 +140,8 @@ private final class KeyScrollView: UIScrollView {
             hide.configuration?.image = UIImage(systemName: "keyboard.chevron.compact.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14 * CGFloat(style.scale), weight: .regular))
             hideMinWidth?.constant = unit(40)
         }
+        dictateWidth?.constant = unit(44)
+        setDictation(dictation)
         rebuild()
         invalidateIntrinsicContentSize()
         setNeedsLayout()
@@ -148,9 +152,10 @@ private final class KeyScrollView: UIScrollView {
     /// Special keys, then the hotkey menu and help buttons and the built-in and added hotkeys, then symbols, then the hotkey editor's "+" at the very end.
     private func rebuild() {
         for view in stack.arrangedSubviews { stack.removeArrangedSubview(view); view.removeFromSuperview() }
-        let hide = buttons[.hide]
+        let hide = buttons[.hide], dictate = buttons[.dictate]
         buttons = [:]; roles = [:]; dividers = []
         if let hide { buttons[.hide] = hide; roles[.hide] = .plain }
+        if let dictate { buttons[.dictate] = dictate; roles[.dictate] = .plain }
         // Native draws the named keys as the symbols macOS uses for them; the terminal look spells them out.
         func named(_ title: String, _ symbol: String) -> (String?, String?) { style.native ? (nil, symbol) : (title, nil) }
         func key(_ key: TerminalKey, _ face: (String?, String?), _ label: String) {
@@ -256,6 +261,32 @@ private final class KeyScrollView: UIScrollView {
     }
     private func endRepeat() { repeatTask?.cancel(); repeatTask = nil }
 
+    // MARK: Dictation
+
+    /// The mic's state: listening is drawn like an armed modifier, getting ready and settling are dimmed.
+    enum Dictation { case idle, busy, listening }
+    /// The mic sits between the scrolling row and Hide, fixed like Hide.
+    private func addDictateButton() {
+        let mic = makeButton(.dictate, title: nil, symbol: "mic", label: "Dictate", role: .plain)
+        mic.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(mic)
+        dictateWidth = mic.widthAnchor.constraint(equalToConstant: 44)
+        NSLayoutConstraint.activate([
+            scroll.trailingAnchor.constraint(equalTo: mic.leadingAnchor), mic.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor),
+            mic.topAnchor.constraint(equalTo: row.topAnchor), mic.bottomAnchor.constraint(equalTo: row.bottomAnchor), dictateWidth!
+        ])
+    }
+    func setDictation(_ state: Dictation) {
+        dictation = state
+        guard let mic = buttons[.dictate] else { return }
+        let symbol = state == .idle ? "mic" : "mic.fill"
+        mic.configuration?.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14 * CGFloat(style.scale), weight: .regular))
+        mic.configuration?.baseForegroundColor = state == .listening ? style.accentUI : (state == .busy ? style.mutedUI : style.textUI)
+        mic.configuration?.background.backgroundColor = state == .listening ? style.activeUI : .clear
+        mic.accessibilityLabel = state == .idle ? "Dictate" : "Stop dictation"
+        mic.accessibilityValue = state == .listening ? "Listening" : nil
+    }
+
     // MARK: Look
 
     private func restyle() {
@@ -278,6 +309,7 @@ private final class KeyScrollView: UIScrollView {
             }
         }
         setArmed(control: controlArmed, alt: altArmed)
+        setDictation(dictation)
     }
     /// Native on iOS 26 puts the row on glass, inset from the edges like the system's own bars; anything else takes it away.
     private func applyGlass() {
