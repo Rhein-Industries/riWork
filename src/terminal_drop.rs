@@ -1,23 +1,44 @@
-//! Files dropped on a terminal: their paths are pasted into it, as Ghostty and Terminal do.
+//! Files dropped on a terminal, or copied and pasted into it with ⌘V: their paths are pasted
+//! into it, as Ghostty and Terminal do.
 //!
 //! The terminal's native view takes no part in hit testing and is not registered for drags, so
 //! a drag from Finder reaches the window's GPUI view, which hands the dropped files to GPUI as
 //! `ExternalPaths`. The terminal of a local shell takes them (see `terminal_link_layer`): each
 //! path is shell-escaped the way Ghostty escapes it, the paths are joined by spaces, and the text
 //! is pasted into the shell's tmux pane (`paste-buffer -p`), bracketed when the program asked for
-//! bracketed paste. Ghostty's own drop does the same through its paste path, so a CLI such as
-//! Claude Code or Codex sees a paste and can attach a dropped picture.
+//! bracketed paste. A CLI agent sees a paste and attaches a dropped picture:
+//!
+//! - Claude Code splits a paste at each space before a `/`, unescapes every part and attaches
+//!   each part that names a picture (png, jpeg, gif, webp); the other parts stay text.
+//! - Grok does the same with its own parser.
+//! - Codex attaches a paste only when the whole paste is one picture's path, so it is given one
+//!   paste per path, with a space after each path that is not a picture (Codex puts one after
+//!   an attached picture itself).
+//!
+//! ⌘V in such a terminal goes to Ghostty's paste, which reads only text from the pasteboard: a
+//! file copied in Finder would paste its bare name, and a copied picture with no file (a
+//! screenshot taken with ⌃⇧⌘4) nothing. So RiWork takes ⌘V when the pasteboard holds files and
+//! pastes their paths as for a drop. A picture alone becomes Ctrl+V for an agent, the key with
+//! which Claude Code, Codex and Grok read a picture from the pasteboard themselves; a shell is
+//! given nothing, as in Ghostty. Text on the pasteboard is left to Ghostty.
 //!
 //! A terminal of another Mac's shell takes nothing: a path on this Mac means nothing there.
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use gpui::{
-    AnyElement, Bounds, Context, DragMoveEvent, ExternalPaths, Pixels, Window, canvas, prelude::*,
+    AnyElement, Bounds, ClipboardEntry, Context, DragMoveEvent, ExternalPaths, Pixels, Window,
+    canvas, prelude::*,
 };
 
 use crate::{
     PaneId, TabId, Workspace,
+    session_input::Input,
+    sessions::HarnessKind,
     terminal_links::{Overlay, Strip},
     theme,
 };
@@ -50,6 +71,122 @@ pub fn dropped_text(paths: &[PathBuf]) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" ")
     })
+}
+
+/// What a terminal's foreground program does with a paste of paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Program {
+    /// A shell, or any program that is not one of the agents: it gets what Ghostty would paste.
+    Shell,
+    Claude,
+    Codex,
+    Grok,
+}
+
+/// The program in front in a pane whose tmux `pane_current_command` is `command`, in a shell
+/// started for `harness`. Claude Code's process is named after its version (`2.1.289`); Codex
+/// may run as `node`, and an agent started by RiWork may run under RiWork's own launcher, which
+/// is where the harness tells. A shell in front means the agent is gone.
+pub fn program(harness: Option<HarnessKind>, command: &str) -> Program {
+    let name = command.trim().trim_start_matches('-');
+    let name = name.rsplit('/').next().unwrap_or(name);
+    let version = !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.');
+    match name {
+        "claude" => return Program::Claude,
+        "codex" => return Program::Codex,
+        "grok" => return Program::Grok,
+        _ if name.starts_with("grok-") => return Program::Grok,
+        "zsh" | "bash" | "sh" | "fish" | "dash" | "ksh" | "tcsh" | "csh" | "nu" | "login" => {
+            return Program::Shell;
+        }
+        _ => {}
+    }
+    match harness {
+        Some(HarnessKind::Claude) => Program::Claude,
+        Some(HarnessKind::Codex) => Program::Codex,
+        Some(HarnessKind::Grok) => Program::Grok,
+        None if version => Program::Claude,
+        None => Program::Shell,
+    }
+}
+
+/// Whether Codex would likely take `path` for a picture: it reads the file, RiWork guesses from
+/// the extension, which only decides whether a space follows.
+fn picture(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff"]
+                .contains(&extension.to_ascii_lowercase().as_str())
+        })
+}
+
+/// The pastes that put `paths` into `program`: the text Ghostty would paste, or for Codex one
+/// paste per path (see the module comment).
+pub fn path_input(program: Program, paths: &[PathBuf]) -> Vec<Input> {
+    if program != Program::Codex {
+        return dropped_text(paths).map(Input::Paste).into_iter().collect();
+    }
+    paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let mut text = shell_escape(&path.to_string_lossy());
+            if index + 1 < paths.len() && !picture(path) {
+                text.push(' ');
+            }
+            Input::Paste(text)
+        })
+        .collect()
+}
+
+/// What ⌘V finds on the pasteboard, as far as the terminal is concerned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Copied {
+    /// Files, copied in Finder: their paths go in as for a drop.
+    Files(Vec<PathBuf>),
+    /// A picture and no text and no file: an agent reads it from the pasteboard on Ctrl+V.
+    Picture,
+    /// Text, or nothing: Ghostty's own paste.
+    Text,
+}
+
+/// Sort what GPUI read from the pasteboard. GPUI gives files (with their names as text) before
+/// text, and a picture only when there is neither.
+pub fn copied(entries: &[ClipboardEntry]) -> Copied {
+    let files: Vec<PathBuf> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            ClipboardEntry::ExternalPaths(paths) => Some(paths.paths()),
+            _ => None,
+        })
+        .flatten()
+        .cloned()
+        .collect();
+    if !files.is_empty() {
+        return Copied::Files(files);
+    }
+    let text = entries
+        .iter()
+        .any(|entry| matches!(entry, ClipboardEntry::String(string) if !string.text().is_empty()));
+    let picture = entries
+        .iter()
+        .any(|entry| matches!(entry, ClipboardEntry::Image(_)));
+    if picture && !text {
+        Copied::Picture
+    } else {
+        Copied::Text
+    }
+}
+
+/// What ⌘V with `copied` on the pasteboard gives `program`; `None` leaves ⌘V to Ghostty.
+pub fn paste_input(copied: &Copied, program: Program) -> Option<Vec<Input>> {
+    match copied {
+        Copied::Files(paths) => Some(path_input(program, paths)),
+        Copied::Picture if program == Program::Shell => Some(Vec::new()),
+        Copied::Picture => Some(vec![Input::Key("C-v")]),
+        Copied::Text => None,
+    }
 }
 
 /// A thin outline just inside `bounds` (window points), as four strips.
@@ -122,24 +259,63 @@ impl Workspace {
     ) {
         self.terminal_drop.target = None;
         cx.notify();
-        let Some(text) = dropped_text(paths.paths()) else {
+        if paths.paths().is_empty() {
+            return;
+        }
+        let Some(shell_id) = self.local_shell_id(pane_id, tab_id) else {
             return;
         };
-        let Some(shell_id) = self
-            .panes
+        self.select_pane(pane_id, window, cx);
+        let paths = paths.paths().to_vec();
+        self.give_shell(shell_id, "dropped paths", move |program| {
+            path_input(program, &paths)
+        });
+    }
+
+    /// ⌘V in `tab_id`'s terminal: files or a lone picture on the pasteboard are RiWork's to
+    /// paste (see the module comment); anything else goes on to Ghostty's paste.
+    pub(crate) fn terminal_paste(
+        &mut self,
+        pane_id: PaneId,
+        tab_id: TabId,
+        cx: &mut Context<Self>,
+    ) {
+        let copied = cx
+            .read_from_clipboard()
+            .map_or(Copied::Text, |item| copied(item.entries()));
+        let shell_id = self.local_shell_id(pane_id, tab_id);
+        let (Some(shell_id), false) = (shell_id, copied == Copied::Text) else {
+            cx.propagate();
+            return;
+        };
+        self.give_shell(shell_id, "pasted files", move |program| {
+            paste_input(&copied, program).unwrap_or_default()
+        });
+    }
+
+    fn local_shell_id(&self, pane_id: PaneId, tab_id: TabId) -> Option<String> {
+        self.panes
             .get(&pane_id)
             .and_then(|pane| pane.tabs.iter().find(|tab| tab.id == tab_id))
             .and_then(|tab| tab.shell_id())
             .map(str::to_owned)
-        else {
-            return;
-        };
-        self.select_pane(pane_id, window, cx);
+    }
+
+    /// Give `shell_id` what `input` chooses for its foreground program, off the UI thread:
+    /// tmux is a process call.
+    fn give_shell(
+        &self,
+        shell_id: String,
+        what: &'static str,
+        input: impl FnOnce(Program) -> Vec<Input> + Send + 'static,
+    ) {
         let sessions = self.sessions.clone();
-        // tmux is a process call; keep it off the UI thread.
         std::thread::spawn(move || {
-            if let Err(error) = sessions.paste(&shell_id, &text) {
-                eprintln!("riwork: dropped paths not pasted into {shell_id}: {error}");
+            let result = sessions.paste(&shell_id, |harness, command| {
+                input(program(harness, command))
+            });
+            if let Err(error) = result {
+                eprintln!("riwork: {what} not pasted into {shell_id}: {error}");
             }
         });
     }
@@ -205,6 +381,103 @@ mod tests {
             Some("/tmp/a\\ b.png /tmp/c")
         );
         assert_eq!(dropped_text(&[]), None);
+    }
+
+    #[test]
+    fn the_program_in_front_decides_and_a_shell_in_front_means_the_agent_is_gone() {
+        use HarnessKind::{Claude, Codex, Grok};
+        assert_eq!(program(None, "zsh"), Program::Shell);
+        assert_eq!(program(None, "-zsh\n"), Program::Shell);
+        assert_eq!(program(None, "vim"), Program::Shell);
+        assert_eq!(program(None, "claude"), Program::Claude);
+        // Claude Code's process carries its version as its name.
+        assert_eq!(program(None, "2.1.289"), Program::Claude);
+        assert_eq!(program(None, "codex"), Program::Codex);
+        assert_eq!(program(None, "grok-1.0.46-mac"), Program::Grok);
+        // An agent RiWork started may run under a launcher or as node.
+        assert_eq!(program(Some(Codex), "node"), Program::Codex);
+        assert_eq!(program(Some(Claude), "riwork"), Program::Claude);
+        assert_eq!(program(Some(Grok), "riwork"), Program::Grok);
+        assert_eq!(program(Some(Codex), "zsh"), Program::Shell);
+        assert_eq!(program(Some(Claude), "codex"), Program::Codex);
+    }
+
+    #[test]
+    fn codex_gets_one_paste_per_path_and_the_others_ghosttys_text() {
+        let paths = [
+            PathBuf::from("/tmp/Screen Shot.png"),
+            PathBuf::from("/tmp/notes file.txt"),
+            PathBuf::from("/tmp/b.JPG"),
+            PathBuf::from("/tmp/c"),
+        ];
+        let paste = |text: &str| Input::Paste(text.to_owned());
+        assert_eq!(
+            path_input(Program::Codex, &paths),
+            [
+                paste("/tmp/Screen\\ Shot.png"),
+                paste("/tmp/notes\\ file.txt "),
+                paste("/tmp/b.JPG"),
+                paste("/tmp/c"),
+            ]
+        );
+        let joined = [paste(
+            "/tmp/Screen\\ Shot.png /tmp/notes\\ file.txt /tmp/b.JPG /tmp/c",
+        )];
+        for program in [Program::Shell, Program::Claude, Program::Grok] {
+            assert_eq!(path_input(program, &paths), joined);
+        }
+        assert!(path_input(Program::Codex, &[]).is_empty());
+        assert!(path_input(Program::Shell, &[]).is_empty());
+    }
+
+    #[test]
+    fn the_pasteboard_is_sorted_files_first_then_text_then_a_lone_picture() {
+        let text =
+            |text: &str| gpui::ClipboardItem::new_string(text.to_owned()).entries()[0].clone();
+        let files = ClipboardEntry::ExternalPaths(ExternalPaths(
+            [PathBuf::from("/tmp/a b.png")].into_iter().collect(),
+        ));
+        let picture = ClipboardEntry::Image(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            vec![1, 2, 3],
+        ));
+        // Finder puts a copied file's name beside its URL.
+        assert_eq!(
+            copied(&[files, text("a b.png")]),
+            Copied::Files(vec![PathBuf::from("/tmp/a b.png")])
+        );
+        assert_eq!(copied(&[text("hello")]), Copied::Text);
+        assert_eq!(copied(&[picture.clone()]), Copied::Picture);
+        assert_eq!(copied(&[picture, text("caption")]), Copied::Text);
+        assert_eq!(copied(&[]), Copied::Text);
+    }
+
+    #[test]
+    fn a_lone_picture_is_ctrl_v_for_an_agent_and_nothing_for_a_shell() {
+        assert_eq!(
+            paste_input(&Copied::Picture, Program::Claude),
+            Some(vec![Input::Key("C-v")])
+        );
+        assert_eq!(
+            paste_input(&Copied::Picture, Program::Codex),
+            Some(vec![Input::Key("C-v")])
+        );
+        assert_eq!(
+            paste_input(&Copied::Picture, Program::Grok),
+            Some(vec![Input::Key("C-v")])
+        );
+        assert_eq!(
+            paste_input(&Copied::Picture, Program::Shell),
+            Some(Vec::new())
+        );
+        assert_eq!(paste_input(&Copied::Text, Program::Claude), None);
+        assert_eq!(
+            paste_input(
+                &Copied::Files(vec![PathBuf::from("/tmp/x")]),
+                Program::Shell
+            ),
+            Some(vec![Input::Paste("/tmp/x".into())])
+        );
     }
 
     #[test]
