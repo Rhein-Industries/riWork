@@ -6946,16 +6946,10 @@ impl Workspace {
                     .flex()
                     .h_full()
                     .flex_none()
-                    // Native groups the pane's buttons in one capsule, as a toolbar does.
+                    // Native leaves the pane's buttons bare on the bar, like a toolbar.
                     .map(|group| {
                         controls::native(group, |group| {
-                            group
-                                .h(ui_text::space(24.0))
-                                .items_center()
-                                .mx(ui_text::space(6.0))
-                                .px(ui_text::space(2.0))
-                                .rounded_full()
-                                .bg(rgb(colors.panel_active))
+                            group.items_center().mx(ui_text::space(4.0))
                         })
                     })
                     .children(show_main.then(|| self.main_marker(pane_id, cx)))
