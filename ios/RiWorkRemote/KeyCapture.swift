@@ -50,7 +50,11 @@ enum TerminalFont {
     var onActiveChange: ((Bool) -> Void)?
     /// The person hid the keyboard with the bar's Hide key (not a sheet taking the keyboard, not the view going away).
     var onUserHide: (() -> Void)?
-    private(set) var mapper = KeyMapper() { didSet { bar.setArmed(control: mapper.controlArmed, alt: mapper.altArmed) } }
+    private(set) var mapper = KeyMapper() { didSet { bar.setLatches(control: mapper.control, alt: mapper.alt, shift: mapper.shift) } }
+    /// The modifiers a held bar key started with: every repeat of it keeps them (holding Ctrl+→ moves word after word).
+    private var repeatModifiers: ChordModifiers = []
+    /// Hardware presses used here rather than by the text system, so their release is not passed on either.
+    private var usedPresses: Set<Int> = []
     let bar = KeyBarView()
     /// All the hotkeys the person added; the built-in ones are always there. The bar shows those that want a button.
     var hotkeys: [Hotkey] = [] { didSet { guard hotkeys != oldValue else { return }; bar.hotkeys = hotkeys.filter(\.showsOnBar); refreshShortcuts() } }
@@ -211,9 +215,12 @@ enum TerminalFont {
             }
         }
         switch action {
-        case .key(let key): emit(mapper.press(key))
-        case .control: mapper.toggleControl()
-        case .alt: mapper.toggleAlt()
+        case .key(let key) where bar.isRepeating: emit(KeyMapper.encode(key, modifiers: repeatModifiers))
+        case .key(let key): repeatModifiers = mapper.armed; emit(mapper.press(key))
+        case .control: mapper.tap(.control)
+        case .alt: mapper.tap(.alt)
+        case .shift: mapper.tap(.shift)
+        case .latch(let modifier, let latch): mapper.setLatch(modifier, latch)
         case .text(let symbol): emit(mapper.insert(symbol))
         case .paste: paste(nil)
         case .hide: onUserHide?(); _ = resignFirstResponder()
@@ -368,14 +375,35 @@ enum TerminalFont {
         if let title { command.discoverabilityTitle = title }
         return command
     }
+    /// The keys with a terminal meaning of their own that a modifier changes (Ctrl+→, Alt+Return, Shift+Home …).
+    private static let modifiableInputs: [(input: String, key: TerminalKey)] = [
+        (UIKeyCommand.inputUpArrow, .up), (UIKeyCommand.inputDownArrow, .down), (UIKeyCommand.inputLeftArrow, .left), (UIKeyCommand.inputRightArrow, .right),
+        (UIKeyCommand.inputHome, .home), (UIKeyCommand.inputEnd, .end), (UIKeyCommand.inputPageUp, .pageUp), (UIKeyCommand.inputPageDown, .pageDown),
+        (UIKeyCommand.inputEscape, .escape), ("\t", .tab), ("\r", .enter)
+    ]
+    /// Shift, Ctrl and Alt in every combination, one at least. Command is the system's and the app's, never the terminal's.
+    private static let terminalFlags: [UIKeyModifierFlags] = (1...7).map { bits in
+        var flags: UIKeyModifierFlags = []
+        if bits & 1 != 0 { flags.insert(.shift) }
+        if bits & 2 != 0 { flags.insert(.control) }
+        if bits & 4 != 0 { flags.insert(.alternate) }
+        return flags
+    }
     private lazy var commands: [UIKeyCommand] = {
         var list = Self.namedCommands.map { Self.command($0.input, $0.flags) }
-        for value in 97...122 { list.append(Self.command(String(UnicodeScalar(UInt8(value))), .control)) }
+        var seen = Set(Self.namedCommands.map { "\($0.input)|\($0.flags.rawValue)" })
+        // The same keys with modifiers held. Their own command each, so that they repeat while held like the plain ones.
+        for (input, _) in Self.modifiableInputs {
+            for flags in Self.terminalFlags where seen.insert("\(input)|\(flags.rawValue)").inserted { list.append(Self.command(input, flags)) }
+        }
+        // Ctrl plus a letter, alone or with Shift and Alt (Option alone types the layout's own characters, as on the Mac).
+        for flags in Self.terminalFlags where flags.contains(.control) {
+            for value in 97...122 { list.append(Self.command(String(UnicodeScalar(UInt8(value))), flags)) }
+        }
         list.append(Self.command("k", .command, "Hotkey menu"))
         list.append(Self.command(",", .command, "Hotkey settings"))
         list.append(Self.command("/", .command, "Hotkey help"))
-        // Inside the menu: Shift-Return edits the chosen hotkey (outside it, Shift-Return is Enter).
-        list.append(Self.command("\r", .shift))
+        // Shift-Return is among the modified keys above: inside the menu it edits the chosen hotkey (outside it, it is Enter).
         return list
     }()
     /// Commands that mean something only while the hotkey menu is open, and are claimed only then: with the menu closed, ⌘N belongs
@@ -422,8 +450,11 @@ enum TerminalFont {
             else if input == ".", flags == .command { palette.close() }
             return
         }
-        if input == "\r", flags == .shift { emit(mapper.press(.enter)); return }
-        if let key = named ?? control { emit(mapper.press(key)) }
+        guard !flags.contains(.command) else { return }
+        let held = Self.modifiers(flags)
+        if let key = Self.modifiableInputs.first(where: { $0.input == input })?.key { emit(mapper.press(key, modifiers: held)); return }
+        // Ctrl with a letter or `[`, and whatever Shift and Alt are held with it. Armed bar modifiers add to them.
+        if flags.contains(.control), input.count == 1, let character = input.first { emit(mapper.press(character, modifiers: held)) }
     }
 
     // MARK: Key presses
@@ -461,17 +492,34 @@ enum TerminalFont {
         case .down:
             tapDetector.keyDown(code)
             // A modifier going down is never used up: it is the start of a chord, or of a tap.
-            guard !HIDKey.isModifier(code), let action = shortcuts.action(for: KeyChord(keyCode: code, modifiers: event.modifiers)) else { return false }
+            guard !HIDKey.isModifier(code) else { return false }
+            guard let action = shortcuts.action(for: KeyChord(keyCode: code, modifiers: event.modifiers)) else { return deleteKey(code, event.modifiers) }
             // Keys a `UIKeyCommand` can name are handled by their command, once.
             guard Self.commandInput(forKeyCode: code) == nil else { return false }
             perform(action)
             return true
         case .up:
             if let tap = tapDetector.keyUp(code), let action = shortcuts.action(for: tap) { perform(action) }
-            return false
+            return usedPresses.remove(code) != nil
         case .cancelled, .command:
+            if event.phase == .cancelled { usedPresses.remove(code) }
             return false
         }
+    }
+    /// Forward Delete, and Backspace with Ctrl or Alt held, which the text system would turn into a plain delete or nothing at all
+    /// (the view's document is one space with the caret at its end). Matched by their key codes: no `UIKeyCommand` input names
+    /// Backspace for certain. Plain Backspace stays with the text system, which repeats it while held.
+    private func deleteKey(_ code: Int, _ modifiers: ChordModifiers) -> Bool {
+        guard !palette.isOpen, !modifiers.contains(.command) else { return false }
+        let key: TerminalKey
+        switch code {
+        case HIDKey.deleteForward: key = .delete
+        case HIDKey.backspace where !modifiers.isDisjoint(with: [.control, .alt]): key = .backspace
+        default: return false
+        }
+        usedPresses.insert(code)
+        emit(mapper.press(key, modifiers: modifiers))
+        return true
     }
 }
 

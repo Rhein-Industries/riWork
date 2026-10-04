@@ -186,54 +186,48 @@ final class HotkeyTests: XCTestCase {
 
 /// Alt (Meta) on the key bar: readline style, Escape first and then the key or text.
 final class AltMappingTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000)
+
     func testAltThenALetterSendsEscapeThenTheLetter() {
         var mapper = KeyMapper()
-        mapper.toggleAlt()
+        mapper.tap(.alt, at: t0)
         XCTAssertTrue(mapper.altArmed)
         XCTAssertEqual(mapper.insert("b"), [.key(.escape), .text("b")])
         XCTAssertFalse(mapper.altArmed, "one key only")
         XCTAssertEqual(mapper.insert("b"), [.text("b")])
     }
-    func testAltThenAKeySendsEscapeThenTheKey() {
+    func testAltThenANamedKeySendsItsXtermForm() {
         var mapper = KeyMapper()
-        mapper.toggleAlt()
-        XCTAssertEqual(mapper.press(.left), [.key(.escape), .key(.left)])
+        mapper.tap(.alt, at: t0)
+        XCTAssertEqual(mapper.press(.left), [.key(.escape), .text("[1;3D")], "Alt+Left, as xterm sends it")
         XCTAssertFalse(mapper.altArmed)
-        mapper.toggleAlt()
+        mapper.tap(.alt, at: t0)
         XCTAssertEqual(mapper.deleteBackward(), [.key(.escape), .key(.backspace)], "Alt+Backspace deletes a word in readline")
         XCTAssertFalse(mapper.altArmed)
     }
     func testAltAndControlTogetherSendEscapeThenTheControlKey() {
         var mapper = KeyMapper()
-        mapper.toggleControl(); mapper.toggleAlt()
+        mapper.tap(.control, at: t0); mapper.tap(.alt, at: t0)
         XCTAssertEqual(mapper.insert("h"), [.key(.escape), .key(.control("h"))])
         XCTAssertFalse(mapper.controlArmed)
         XCTAssertFalse(mapper.altArmed)
     }
-    func testAltOnlyPrefixesTextOnceAndKeepsTheRestLiteral() {
+    func testAltLeavesTextOfSeveralCharactersAloneAndWaitsForAKey() {
         var mapper = KeyMapper()
-        mapper.toggleAlt()
-        XCTAssertEqual(mapper.insert("ab\n"), [.key(.escape), .text("ab"), .key(.enter)])
-        XCTAssertEqual(mapper.insert("cd"), [.text("cd")])
-    }
-    func testAltStaysArmedWhenNothingWouldBeSent() {
-        var mapper = KeyMapper()
-        mapper.toggleAlt()
-        XCTAssertEqual(mapper.insert("\u{7}"), [], "a bare control character is dropped")
+        mapper.tap(.alt, at: t0)
+        XCTAssertEqual(mapper.insert("ab\n"), [.text("ab"), .key(.enter)], "dictated or pasted: not a key press")
         XCTAssertTrue(mapper.altArmed)
-        XCTAssertEqual(mapper.insert(""), [])
-        XCTAssertTrue(mapper.altArmed)
-        XCTAssertEqual(mapper.insert("f"), [.key(.escape), .text("f")])
+        XCTAssertEqual(mapper.insert("."), [.key(.escape), .text(".")])
     }
-    func testTogglingAltTwiceDisarmsIt() {
+    func testTappingAltTwiceSlowlyDisarmsIt() {
         var mapper = KeyMapper()
-        mapper.toggleAlt(); mapper.toggleAlt()
+        mapper.tap(.alt, at: t0); mapper.tap(.alt, at: t0 + 1)
         XCTAssertFalse(mapper.altArmed)
         XCTAssertEqual(mapper.press(.tab), [.key(.tab)])
     }
     func testAHotkeyIsSentAsDefinedAndConsumesBothModifiers() {
         var mapper = KeyMapper()
-        mapper.toggleAlt(); mapper.toggleControl()
+        mapper.tap(.alt, at: t0); mapper.tap(.control, at: t0)
         let clear = Hotkey(label: "Clear", steps: [.text("/clear"), .key(.enter)])
         XCTAssertEqual(mapper.run(clear), [.text("/clear"), .key(.enter)], "no Escape in front")
         XCTAssertFalse(mapper.altArmed)
@@ -242,7 +236,7 @@ final class AltMappingTests: XCTestCase {
     }
     func testDisarmModifiersClearsBoth() {
         var mapper = KeyMapper()
-        mapper.toggleAlt(); mapper.toggleControl()
+        mapper.tap(.alt, at: t0); mapper.tap(.control, at: t0)
         mapper.disarmModifiers()
         XCTAssertFalse(mapper.altArmed)
         XCTAssertFalse(mapper.controlArmed)
@@ -250,7 +244,7 @@ final class AltMappingTests: XCTestCase {
     func testEscapeThenTextSurvivesTheBufferIntoValidBatches() throws {
         var mapper = KeyMapper()
         var buffer = KeyBuffer()
-        mapper.toggleAlt()
+        mapper.tap(.alt, at: t0)
         XCTAssertTrue(buffer.append(mapper.insert("b"), now: Date(timeIntervalSince1970: 1_000)))
         let batch = try XCTUnwrap(buffer.nextBatch())
         XCTAssertEqual(batch.items, [.key(.escape), .text("b")])
