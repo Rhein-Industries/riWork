@@ -72,7 +72,7 @@ struct PairDesktopSheet: View {
         catch { self.error = error.localizedDescription }
     }
     @ViewBuilder private var codeEntry: some View {
-        Text("PAIRING CODE").font(style.system(.caption)).foregroundStyle(style.muted)
+        Text(style.cased("Pairing code")).font(style.system(.caption)).foregroundStyle(style.muted)
         PairingCodeField(text: $code)
             .frame(height: 140)
             .background(style.background).overlay(Rectangle().stroke(style.divider, lineWidth: 1))
@@ -85,19 +85,19 @@ struct PairDesktopSheet: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: "PAIR DESKTOP") { Button("Cancel") { code = ""; dismiss() } }
+            WorkspaceBar(title: style.cased("Pair desktop")) { Button("Cancel") { code = ""; dismiss() } }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if fromLink {
-                        Label("A link asked to pair this device", systemImage: "link.badge.plus").font(style.mono(12, bold: true, relativeTo: .subheadline))
+                        Label("A link asked to pair this device", systemImage: "link.badge.plus").font(style.face(12, bold: true, relativeTo: .subheadline))
                         Text("Any app or web page can open pairing links. Continue only if you just created this pairing on your own desktop.").foregroundStyle(style.warning)
                     } else {
                         Text("Paste the desktop’s pairing JSON or link. Treat this code like a password.").foregroundStyle(style.muted)
                     }
-                    Text("DESKTOP NAME").font(style.system(.caption)).foregroundStyle(style.muted)
+                    Text(style.cased("Desktop name")).font(style.system(.caption)).foregroundStyle(style.muted)
                     TextField("e.g. Studio Mac", text: $name).textContentType(.name).modifier(DesktopField())
                     if let pairing {
-                        Text("PAIRING DETAILS").font(style.system(.caption)).foregroundStyle(style.muted)
+                        Text(style.cased("Pairing details")).font(style.system(.caption)).foregroundStyle(style.muted)
                         PairingDetails(pairing: pairing)
                     }
                     // A link's raw base64 says nothing useful; show it only when it does not parse, so it can be fixed or dismissed.
@@ -116,8 +116,8 @@ struct PairDesktopSheet: View {
                     Text("End-to-end encrypted. Pairing keys stay in this device’s Keychain.").font(style.system(.caption)).foregroundStyle(style.muted)
                 }.padding(16).frame(maxWidth: 560, alignment: .leading).frame(maxWidth: .infinity)
             }
-        }.background(style.background.ignoresSafeArea()).foregroundStyle(style.text)
-            .font(style.mono(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
+        }.desktopSheetSurface(style).foregroundStyle(style.text)
+            .font(style.face(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
             .onAppear { code = initialText }
             .onChange(of: initialText) { _, text in code = text; error = nil }
             .alert("Pair with \(pairing?.relayHost ?? "this relay")?", isPresented: $confirming) {
@@ -127,7 +127,6 @@ struct PairDesktopSheet: View {
                 if let pairing { Text("Device “\(pairing.displayDeviceName)” for desktop \(pairing.desktopShortID) would connect through \(pairing.relayHost). Pair only if you created this yourself.") }
             }
             .sheet(isPresented: $scanning) { QRScannerSheet { value in code = value } }
-            .presentationCornerRadius(8)
     }
 }
 
@@ -152,7 +151,7 @@ private struct PairingDetails: View {
     }
     private func row(_ title: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title.uppercased()).font(style.system(.caption)).foregroundStyle(style.muted).frame(width: 72, alignment: .leading)
+            Text(style.cased(title)).font(style.system(.caption)).foregroundStyle(style.muted).frame(width: 72, alignment: .leading)
             Text(value).lineLimit(2).textSelection(.enabled)
         }
     }
@@ -167,17 +166,17 @@ struct RenameDesktopSheet: View {
     @State private var error: String?
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: "RENAME DESKTOP") { Button("Cancel") { dismiss() } }
+            WorkspaceBar(title: style.cased("Rename desktop")) { Button("Cancel") { dismiss() } }
             VStack(alignment: .leading, spacing: 12) {
-                Text("DESKTOP NAME").font(style.system(.caption)).foregroundStyle(style.muted)
+                Text(style.cased("Desktop name")).font(style.system(.caption)).foregroundStyle(style.muted)
                 TextField("Name", text: $name).modifier(DesktopField())
                 if let error { Text(error).foregroundStyle(style.error) }
                 Button("Save") { do { try model.rename(id: desktop.id, name: name); dismiss() } catch { self.error = error.localizedDescription } }
                     .buttonStyle(DesktopButtonStyle(prominent: true)).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(16).frame(maxWidth: 560, alignment: .leading).frame(maxWidth: .infinity)
             Spacer(minLength: 0)
-        }.background(style.background).foregroundStyle(style.text)
-            .font(style.mono(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
-            .onAppear { name = desktop.name }.presentationDetents([.medium]).presentationCornerRadius(8)
+        }.desktopSheetSurface(style).foregroundStyle(style.text)
+            .font(style.face(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
+            .onAppear { name = desktop.name }.presentationDetents([.medium])
     }
 }

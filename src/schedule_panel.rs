@@ -1,5 +1,7 @@
 //! Compact scheduling tab, using RiWork's existing GPUI input and palette.
 use crate::{
+    controls,
+    layouts::PanelKind,
     project_settings::{Input, impl_input_handler, input_content},
     schedules::{self, Schedule, ScheduleStore, Scope, Target, Timing},
     sessions::{HarnessKind, SessionManager, ShellSession},
@@ -484,15 +486,37 @@ impl SchedulePanel {
         let colors = theme::palette(cx);
         let index = self.controls.len();
         self.controls.push(action.clone());
+        let focused = self.active == index && self.focus.is_focused(window);
+        if ui_text::is_native() {
+            // Native: capsules; the chosen one, or the action a form leads with, is filled.
+            let kind = if selected {
+                controls::Button::Primary
+            } else {
+                controls::Button::Secondary
+            };
+            return controls::button(div().id(format!("schedule-control-{index}")), kind, colors)
+                .py(ui_text::space(3.0))
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .hover(move |style| style.bg(rgb(kind.hover(colors))))
+                .when(focused, |button| button.border_color(rgb(colors.focus)))
+                .child(label)
+                .on_click(cx.listener(move |panel, _, window, cx| {
+                    panel.active = index;
+                    panel.perform(action.clone(), window, cx);
+                }))
+                .into_any_element();
+        }
         div()
             .id(format!("schedule-control-{index}"))
             .px(ui_text::space(8.0))
             .py(ui_text::space(5.0))
-            .cursor_pointer()
             .border_1()
             .border_color(rgb(
                 if self.active == index && self.focus.is_focused(window) {
-                    colors.gold
+                    colors.focus
                 } else if selected {
                     colors.cyan
                 } else {
@@ -536,7 +560,7 @@ impl SchedulePanel {
                 div()
                     .text_size(ui_text::text(9.0))
                     .text_color(rgb(colors.muted))
-                    .child(label.to_owned()),
+                    .child(ui_text::cased(label.to_owned())),
             )
             .child(
                 div()
@@ -544,6 +568,8 @@ impl SchedulePanel {
                     .min_w_0()
                     .border_1()
                     .border_color(rgb(colors.divider))
+                    // Native's field draws its own rounded edge.
+                    .when(ui_text::is_native(), |field| field.border_0())
                     .child(input_content(
                         input,
                         self.active == control && self.focus.is_focused(window),
@@ -573,17 +599,75 @@ impl Render for SchedulePanel {
             .flex()
             .flex_col()
             .gap(ui_text::space(12.0));
+        let native = ui_text::is_native();
+        // Native puts the title and the new-schedule button in the shared panel header.
+        let header = native.then(|| {
+            let index = self.controls.len();
+            self.controls.push(Control::New);
+            let focused = self.active == index && self.focus.is_focused(window);
+            let count = self.rows.len();
+            controls::panel_header(
+                PanelKind::Schedules.label(),
+                Some(
+                    match count {
+                        0 => "No schedules".to_owned(),
+                        1 => "1 schedule".to_owned(),
+                        count => format!("{count} schedules"),
+                    }
+                    .into(),
+                ),
+                [controls::toolbar_button(
+                    "schedule-control-new",
+                    "plus",
+                    "New schedule",
+                    true,
+                    colors,
+                )
+                .border_1()
+                .border_color(if focused {
+                    rgb(colors.focus).into()
+                } else {
+                    gpui::transparent_black()
+                })
+                .on_click(cx.listener(move |panel, _, window, cx| {
+                    panel.active = index;
+                    panel.perform(Control::New, window, cx);
+                }))
+                .into_any_element()],
+                colors,
+            )
+        });
+        if !native {
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .justify_between()
+                    .items_center()
+                    .gap(ui_text::space(8.0))
+                    .child(
+                        div()
+                            .text_color(rgb(colors.cyan))
+                            .child(ui_text::cased("Schedules")),
+                    )
+                    .child(self.button(
+                        ui_text::cased("+ Schedule").to_string(),
+                        Control::New,
+                        false,
+                        window,
+                        cx,
+                    )),
+            );
+        }
         body = body.child(
             div()
-                .flex()
-                .flex_wrap()
-                .justify_between()
-                .items_center()
-                .gap(ui_text::space(8.0))
-                .child(div().text_color(rgb(colors.cyan)).child("SCHEDULES"))
-                .child(self.button("+ SCHEDULE", Control::New, false, window, cx)),
+                .text_color(rgb(colors.muted))
+                .text_size(ui_text::text(10.0))
+                .when(native, |note| {
+                    note.px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN))
+                })
+                .child("App → global orchestrator · Project → project orchestrator · Workspace → selected worktree worker"),
         );
-        body = body.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child("App → global orchestrator · Project → project orchestrator · Workspace → selected worktree worker"));
         if let Some(editor) = &self.editor {
             let scope_index = editor.scope;
             let repeat = editor.repeat;
@@ -605,11 +689,12 @@ impl Render for SchedulePanel {
                 .p(ui_text::space(12.0))
                 .border_1()
                 .border_color(rgb(colors.divider))
-                .bg(rgb(colors.panel));
+                .bg(rgb(colors.panel))
+                .map(|form| controls::native(form, |form| controls::card(form, colors)));
             let mut scopes = div().flex().flex_wrap().gap(ui_text::space(5.0));
-            for (i, label) in ["APP", "PROJECT", "WORKSPACE"].iter().enumerate() {
+            for (i, label) in ["App", "Project", "Workspace"].iter().enumerate() {
                 scopes = scopes.child(self.button(
-                    *label,
+                    ui_text::cased(*label).to_string(),
                     Control::Scope(i),
                     i == scope_index,
                     window,
@@ -639,13 +724,13 @@ impl Render for SchedulePanel {
                         div()
                             .text_color(rgb(colors.muted))
                             .text_size(ui_text::text(9.0))
-                            .child("WORKSPACE / WORKTREE"),
+                            .child(ui_text::cased("Workspace / worktree")),
                     )
                     .child(choices);
             }
             form = form
-                .child(self.field(0, "TITLE", window, cx))
-                .child(self.field(1, "PROMPT · SINGLE LINE", window, cx));
+                .child(self.field(0, "Title", window, cx))
+                .child(self.field(1, "Prompt · Single line", window, cx));
             let scope = self.scope(scope_index);
             let targets: Vec<_> = self
                 .targets
@@ -663,7 +748,9 @@ impl Render for SchedulePanel {
                 div()
                     .text_color(rgb(colors.muted))
                     .text_size(ui_text::text(9.0))
-                    .child("EXISTING TARGET · CLICK TO EXPLICITLY BIND THIS SESSION"),
+                    .child(ui_text::cased(
+                        "Existing target · Click to explicitly bind this session",
+                    )),
             );
             if targets.is_empty() {
                 choices = choices.child(div().text_color(rgb(colors.gold)).child(scope.as_ref().err().cloned().unwrap_or("No live Codex or Claude session in this scope. Open one separately, complete a turn, then return here.".into())));
@@ -682,18 +769,18 @@ impl Render for SchedulePanel {
                     div()
                         .text_color(rgb(colors.muted))
                         .text_size(ui_text::text(9.0))
-                        .child(format!("PINNED TARGET  /  {id}")),
+                        .child(ui_text::quiet(format!("PINNED TARGET  /  {id}"))),
                 );
             }
             let mut first_choices = div().flex().flex_wrap().gap(ui_text::space(5.0));
             for (seconds, label) in [
-                (600, "IN 10 MIN"),
-                (1800, "IN 30 MIN"),
-                (3600, "IN 1 HOUR"),
-                (86400, "IN 1 DAY"),
+                (600, "In 10 min"),
+                (1800, "In 30 min"),
+                (3600, "In 1 hour"),
+                (86400, "In 1 day"),
             ] {
                 first_choices = first_choices.child(self.button(
-                    label,
+                    ui_text::cased(label).to_string(),
                     Control::FirstIn(seconds),
                     first_quick == Some(seconds),
                     window,
@@ -701,7 +788,7 @@ impl Render for SchedulePanel {
                 ));
             }
             first_choices = first_choices.child(self.button(
-                "EXACT TIME…",
+                ui_text::cased("Exact time…").to_string(),
                 Control::ExactTime,
                 exact_time,
                 window,
@@ -713,32 +800,32 @@ impl Render for SchedulePanel {
                     div()
                         .text_color(rgb(colors.muted))
                         .text_size(ui_text::text(9.0))
-                        .child("FIRST RUN"),
+                        .child(ui_text::cased("First run")),
                 )
                 .child(first_choices)
                 .child(
                     div()
                         .text_size(ui_text::text(10.0))
-                        .child(format!("LOCAL  {first_display}")),
+                        .child(ui_text::quiet(format!("LOCAL  {first_display}"))),
                 );
             if exact_time {
                 form = form.child(self.field(
                     2,
-                    "EXACT DATE / TIME · ISO WITH UTC OFFSET",
+                    "Exact date / time · ISO with UTC offset",
                     window,
                     cx,
                 ));
             }
             let mut presets = div().flex().flex_wrap().gap(ui_text::space(5.0));
             for (seconds, label) in [
-                (0, "ONCE"),
-                (3600, "HOURLY"),
-                (86400, "24 HOURS"),
-                (604800, "7 DAYS"),
-                (u64::MAX, "MINUTES…"),
+                (0, "Once"),
+                (3600, "Hourly"),
+                (86400, "24 hours"),
+                (604800, "7 days"),
+                (u64::MAX, "Minutes…"),
             ] {
                 presets = presets.child(self.button(
-                    label,
+                    ui_text::cased(label).to_string(),
                     Control::Repeat(seconds),
                     repeat == seconds,
                     window,
@@ -747,18 +834,33 @@ impl Render for SchedulePanel {
             }
             form = form.child(presets);
             if repeat == u64::MAX {
-                form = form.child(self.field(3, "EVERY N MINUTES · MINIMUM 5", window, cx));
+                form = form.child(self.field(3, "Every N minutes · Minimum 5", window, cx));
             }
             form = form.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).child("Repeats use elapsed time from the first run (fixed UTC cadence, including DST)."))
-                .child(div().flex().gap(ui_text::space(6.0)).child(self.button(if editing {"SAVE CHANGES"} else {"CREATE SCHEDULE"},Control::Save,true,window,cx)).child(self.button("CANCEL",Control::Cancel,false,window,cx)));
+                .child(div().flex().gap(ui_text::space(6.0)).child(self.button(ui_text::cased(if editing {"Save changes"} else {"Create schedule"}).to_string(),Control::Save,true,window,cx)).child(self.button(ui_text::cased("Cancel").to_string(),Control::Cancel,false,window,cx)));
             body = body.child(form);
         }
-        if self.rows.is_empty() {
-            body = body.child(
+        if self.rows.is_empty() && !(native && self.editor.is_some()) {
+            body = body.child(if native {
+                controls::empty_state(
+                    "calendar",
+                    "No schedules. Create a prompt when you are ready.",
+                    colors,
+                )
+            } else {
                 div()
                     .py(ui_text::space(12.0))
                     .text_color(rgb(colors.muted))
-                    .child("No schedules. Create a prompt when you are ready."),
+                    .child("No schedules. Create a prompt when you are ready.")
+            });
+        }
+        if native && !self.rows.is_empty() {
+            body = body.child(
+                controls::section_heading("Scheduled prompts", colors)
+                    .px(ui_text::space(
+                        controls::PANEL_INSET - controls::LIST_MARGIN,
+                    ))
+                    .pb_0(),
             );
         }
         for row in self.rows.clone() {
@@ -785,6 +887,7 @@ impl Render for SchedulePanel {
                 .py(ui_text::space(10.0))
                 .border_b_1()
                 .border_color(rgb(colors.divider))
+                .map(|item| controls::native(item, |item| controls::card(item, colors)))
                 .child(
                     div()
                         .flex()
@@ -795,13 +898,13 @@ impl Render for SchedulePanel {
                         .child(
                             div()
                                 .text_color(rgb(if row.paused { colors.gold } else { colors.cyan }))
-                                .child(if row.paused {
-                                    "PAUSED"
+                                .child(ui_text::cased(if row.paused {
+                                    "Paused"
                                 } else if row.next_run.is_none() {
-                                    "COMPLETE"
+                                    "Complete"
                                 } else {
-                                    "ACTIVE"
-                                }),
+                                    "Active"
+                                })),
                         ),
                 )
                 .child(
@@ -848,25 +951,34 @@ impl Render for SchedulePanel {
                 .flex()
                 .flex_wrap()
                 .gap(ui_text::space(5.0))
-                .child(self.button("EDIT", Control::Edit(row.id.clone()), false, window, cx))
                 .child(self.button(
-                    if row.paused { "RESUME" } else { "PAUSE" },
-                    Control::Pause(row.id.clone()),
+                    ui_text::cased("Edit").to_string(),
+                    Control::Edit(row.id.clone()),
                     false,
                     window,
                     cx,
                 ))
                 .child(self.button(
-                    if self.delete_confirm.as_ref() == Some(&row.id) {
-                        "CONFIRM DELETE"
-                    } else {
-                        "DELETE"
-                    },
-                    Control::Delete(row.id.clone()),
+                    ui_text::cased(if row.paused { "Resume" } else { "Pause" }).to_string(),
+                    Control::Pause(row.id.clone()),
                     false,
                     window,
                     cx,
-                ));
+                ))
+                .child(
+                    self.button(
+                        ui_text::cased(if self.delete_confirm.as_ref() == Some(&row.id) {
+                            "Confirm delete"
+                        } else {
+                            "Delete"
+                        })
+                        .to_string(),
+                        Control::Delete(row.id.clone()),
+                        false,
+                        window,
+                        cx,
+                    ),
+                );
             body = body.child(item.child(actions));
         }
         if let Some(error) = &self.error {
@@ -876,14 +988,33 @@ impl Render for SchedulePanel {
             body = body.child(
                 div()
                     .text_color(rgb(colors.gold))
-                    .child(format!("SCHEDULER ERROR  /  {error}")),
+                    .child(ui_text::quiet(format!("SCHEDULER ERROR  /  {error}"))),
             );
         }
-        body = body.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).child(if self.pending {"SAVING…"} else {"Runs while RiWork is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review. TAB / ENTER · CMD+S to save."}));
+        body = body.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).when(native, |note| note.px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN))).child(if self.pending {ui_text::cased("Saving…")} else {"Runs while RiWork is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review. TAB / ENTER · CMD+S to save.".into()}));
         if let Some(control) = focused_control
             && let Some(index) = self.controls.iter().position(|c| c == &control)
         {
             self.active = index;
+        }
+        if let Some(header) = header {
+            return controls::panel(colors)
+                .id("schedule-panel")
+                .track_focus(&self.focus)
+                .key_context("Schedules")
+                .on_key_down(cx.listener(Self::key_down))
+                .child(header)
+                .child(
+                    div()
+                        .id("schedule-panel-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .px(ui_text::space(controls::LIST_MARGIN))
+                        .pb(ui_text::space(controls::PANEL_INSET))
+                        .child(body.gap(ui_text::space(8.0))),
+                )
+                .into_any_element();
         }
         div()
             .id("schedule-panel")
@@ -896,9 +1027,10 @@ impl Render for SchedulePanel {
             .p(ui_text::space(14.0))
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
-            .font_family("Menlo")
+            .font_family(ui_text::ui_family())
             .text_size(ui_text::text(11.0))
             .child(body)
+            .into_any_element()
     }
 }
 impl_input_handler!(SchedulePanel);

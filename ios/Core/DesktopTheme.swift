@@ -31,6 +31,8 @@ public struct DesktopTheme: Sendable, Equatable {
     /// `nil` while built in (follow the phone's appearance); otherwise the desktop's `dark` flag, which also drives the status bar.
     public var dark: Bool?
     public var isSynced: Bool { dark != nil }
+    /// The desktop uses its Native skin, so the interface is drawn the native way. False while built in.
+    public var native = false
     public var warning: ThemeColor { gold }
 
     /// Below this WCAG contrast ratio a synced foreground is not trusted against its background.
@@ -97,6 +99,6 @@ public struct DesktopTheme: Sendable, Equatable {
             gold: fixed(guarded(p.gold, builtIn: builtIn.gold)), error: fixed(guarded(builtIn.error, builtIn: builtIn.error)),
             terminalBackground: fixed(background), terminalForeground: fixed(foreground), terminalCursor: fixed(foreground),
             ansi: (appearance.terminal?.palette ?? TerminalRenderColors.fallbackAnsi(dark: appearance.dark)).map(fixed),
-            dark: appearance.dark)
+            dark: appearance.dark, native: appearance.native)
     }
 }

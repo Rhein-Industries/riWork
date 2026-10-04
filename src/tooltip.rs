@@ -41,7 +41,7 @@ const MARGIN: f32 = 8.0;
 pub(crate) enum Look {
     /// Pane chrome: tabs and the pane toolbar.
     Pane,
-    /// Panel and settings controls, in the monospace of their labels.
+    /// Panel and settings controls, in the interface face of their labels.
     Control,
     /// Status bar items and their settings.
     Status,
@@ -62,11 +62,11 @@ impl Look {
         let mut style = TextStyle::default();
         let (family, font_size) = match self {
             Self::Pane => (None, 11.0),
-            Self::Control => (Some("Menlo"), 10.0),
+            Self::Control => (Some(ui_text::ui_family()), 10.0),
             Self::Status => (None, 10.0),
         };
         if let Some(family) = family {
-            style.font_family = family.into();
+            style.font_family = family;
         }
         style.font_size = ui_text::text(font_size).into();
         style
@@ -503,6 +503,11 @@ fn show(generation: u64, text: &SharedString, look: Look, window: &mut Window, c
     };
     let text = text.clone();
     let opened = cx.open_window(options, |window, cx| {
+        // Native draws the hint as one rounded panel; the window around it must show
+        // nothing of its own.
+        if ui_text::is_native() {
+            bare_window(window);
+        }
         cx.new(|cx| {
             // A click on the panel makes it the key window, and the terminal would
             // stop getting keys. Give the key back by going away.
@@ -535,6 +540,40 @@ fn show(generation: u64, text: &SharedString, look: Look, window: &mut Window, c
     }
 }
 
+/// Strip a hint window down to its content. GPUI opens a pop-up as a titled panel with a
+/// full-size content view, so AppKit gives it a window's frame: the large rounded corners,
+/// the window shadow and, on macOS 26, the glass material of a titled window, all around
+/// the hint's own box, which then reads as a rectangle inside a second surface. A
+/// borderless panel without the system shadow leaves only what the hint paints. The
+/// non-activating flag is kept, so the hint still never takes the keyboard.
+fn bare_window(window: &Window) {
+    use objc2::{msg_send, runtime::AnyObject};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    /// `NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel`.
+    const BORDERLESS_NONACTIVATING: usize = 1 << 7;
+    // SAFETY: the handle is the window's NSView, alive as long as the window, and windows
+    // are made and used on the main thread, where this runs. Every selector is one NSWindow
+    // has; the style mask is an NSUInteger and the shadow flag a BOOL.
+    unsafe {
+        let view = handle.ns_view.as_ptr().cast::<AnyObject>();
+        let ns_window: *mut AnyObject = msg_send![view, window];
+        if ns_window.is_null() {
+            return;
+        }
+        let _: () = msg_send![ns_window, setStyleMask: BORDERLESS_NONACTIVATING];
+        let _: () = msg_send![ns_window, setHasShadow: false];
+    }
+}
+
+/// A hint's corner radius under Native, as macOS rounds a help tag.
+const NATIVE_RADIUS: f32 = 6.0;
+
 /// The content of a hint window.
 struct Hint {
     text: SharedString,
@@ -566,6 +605,13 @@ impl Render for Hint {
                     .bg(rgb(colors.panel_active))
                     .border_1()
                     .border_color(rgb(colors.divider))
+                    // Native: the only surface, a small raised panel with a hairline and a
+                    // soft shadow drawn in the window's transparent margin.
+                    .when(ui_text::is_native(), |hint| {
+                        hint.rounded(px(NATIVE_RADIUS))
+                            .bg(rgb(crate::controls::raised(colors)))
+                            .shadow_md()
+                    })
                     .text_color(rgb(colors.text))
                     .font_family(style.font_family)
                     .text_size(style.font_size)

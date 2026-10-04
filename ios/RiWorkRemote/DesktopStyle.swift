@@ -74,6 +74,33 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
         UIFont(name: name, size: size * CGFloat(scale)) ?? .monospacedSystemFont(ofSize: size * CGFloat(scale), weight: .regular)
     }
 
+    // MARK: Native
+
+    /// The desktop uses its Native skin: the interface is set in the system face, in sentence case, on glass where iOS has it.
+    /// Otherwise (another theme, a desktop from before the flag, no desktop) the terminal look, exactly as before.
+    var native: Bool { theme.native }
+    /// Drawn with iOS 26's Liquid Glass: Native, on a system that has it.
+    var glass: Bool {
+        if #available(iOS 26, *) { return native }
+        return false
+    }
+    /// Points the system face is set larger than Menlo at the same nominal size, so that it reads at the same size.
+    private static let nativeLift: CGFloat = 2
+    /// The interface face: Menlo in the terminal look (`mono`), SF Pro in Native. Terminal content keeps `mono` whatever the skin.
+    func face(_ size: CGFloat, bold: Bool = false, relativeTo textStyle: Font.TextStyle = .body) -> Font {
+        guard native else { return mono(size, bold: bold, relativeTo: textStyle) }
+        let metrics = UIFontMetrics(forTextStyle: Self.uiTextStyle(textStyle))
+        return .system(size: metrics.scaledValue(for: size + Self.nativeLift) * CGFloat(scale), weight: bold ? .semibold : .regular)
+    }
+    /// `face` for UIKit (key bar, text fields), unscaled for Dynamic Type like `uiFont`.
+    func uiFace(size: CGFloat) -> UIFont {
+        native ? .systemFont(ofSize: (size + Self.nativeLift) * CGFloat(scale)) : uiFont("Menlo", size: size)
+    }
+    /// A label or title as the skin writes it. Written in sentence case; the terminal look shows it in capitals, as it always has.
+    func cased(_ text: String) -> String { native ? text : text.uppercased() }
+    /// What a bar or a sheet is painted with: nothing on glass, so the system's glass shows through, else the background.
+    var surface: Color { glass ? .clear : background }
+
     var text: Color { Color(uiColor: textUI) }
     var muted: Color { Color(uiColor: mutedUI) }
     /// The desktop's cyan.
@@ -108,7 +135,7 @@ private struct DesktopThemed: ViewModifier {
             .environment(\.desktopStyle, style)
             .tint(style.accent)
             .foregroundStyle(style.text)
-            .font(style.mono(13))
+            .font(style.face(13))
             .buttonStyle(DesktopButtonStyle())
             .preferredColorScheme(style.colorScheme)
     }
@@ -124,6 +151,26 @@ struct DesktopButtonStyle: ButtonStyle {
     var compact = false
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
+        if style.native { nativeBody(configuration) } else { terminalBody(configuration) }
+    }
+    /// Native: no fills or underlines. A prominent button is a capsule in the primary color (on glass on iOS 26), and a press dims.
+    @ViewBuilder private func nativeBody(_ configuration: Configuration) -> some View {
+        let label = configuration.label
+            .font(style.face(12, bold: prominent, relativeTo: .subheadline))
+            .foregroundStyle(prominent ? style.background : style.text)
+            .padding(.horizontal, style.pt(compact ? 6 : (prominent ? 16 : 10))).frame(minWidth: style.pt(compact ? 40 : 44), minHeight: style.pt(compact ? 40 : 44))
+        Group {
+            if !prominent {
+                label
+            } else if #available(iOS 26, *) {
+                label.glassEffect(.regular.tint(style.accent).interactive(), in: .capsule)
+            } else {
+                label.background(Capsule().fill(style.accent))
+            }
+        }
+        .contentShape(Capsule()).opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.45)
+    }
+    private func terminalBody(_ configuration: Configuration) -> some View {
         configuration.label
             .font(style.mono(12, relativeTo: .subheadline))
             .foregroundStyle(prominent ? style.accent : style.text)
@@ -149,6 +196,26 @@ struct WorkspaceBar<Actions: View>: View {
     @ViewBuilder var actions: () -> Actions
     var body: some View {
         let _ = Perf.count("body.WorkspaceBar")
+        if style.native { nativeBar } else { terminalBar }
+    }
+    /// Native: the title in the system face on the screen's own surface, with the controls grouped on glass (iOS 26) as a
+    /// navigation bar draws them, and no rule under it while on glass.
+    private var nativeBar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: compact ? 4 : 8) {
+                if let back { Button("Back", systemImage: "chevron.left", action: back).labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: compact)).nativeGlass(style, in: Circle()) }
+                Text(title).font(style.face(13, bold: true, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 4)
+                // Each control on its own glass; a container lets neighbours run together as one group.
+                NativeGlassGroup(style: style) { actions().buttonStyle(DesktopButtonStyle(compact: compact)).nativeGlass(style, in: Capsule()) }
+            }.padding(.horizontal, compact ? 6 : 10).padding(.vertical, style.glass ? 4 : 0).frame(minHeight: style.pt(compact ? 40 : 44))
+                .background(style.glass ? style.surface : style.panel)
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap?() }, including: onDoubleTap == nil ? .none : .all)
+            if !style.glass { DesktopRule() }
+        }
+    }
+    private var terminalBar: some View {
         VStack(spacing: 0) {
             HStack(spacing: compact ? 2 : 4) {
                 if let back { Button("Back", systemImage: "chevron.left", action: back).labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: compact)) }
@@ -166,8 +233,39 @@ struct WorkspaceBar<Actions: View>: View {
 struct DesktopField: ViewModifier {
     @Environment(\.desktopStyle) private var style
     func body(content: Content) -> some View {
-        content.textFieldStyle(.plain).padding(8)
-            .background(style.background)
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(style.divider, lineWidth: 1))
+        if style.native {
+            // A filled rounded field, as iOS draws a search or text field.
+            content.textFieldStyle(.plain).padding(.horizontal, 12).padding(.vertical, 9)
+                .background(style.panel, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        } else {
+            content.textFieldStyle(.plain).padding(8)
+                .background(style.background)
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(style.divider, lineWidth: 1))
+        }
+    }
+}
+
+/// Controls side by side; on glass, in a container so their glass blends where they meet.
+struct NativeGlassGroup<Content: View>: View {
+    let style: DesktopStyle
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        if #available(iOS 26, *), style.glass {
+            GlassEffectContainer(spacing: 6) { HStack(spacing: 2) { content() } }
+        } else {
+            HStack(spacing: 0) { content() }
+        }
+    }
+}
+
+extension View {
+    /// Liquid Glass in `shape` while the style is on glass (Native on iOS 26); otherwise the view as it is.
+    @ViewBuilder func nativeGlass<S: Shape>(_ style: DesktopStyle, in shape: S) -> some View {
+        if #available(iOS 26, *), style.glass { glassEffect(.regular.interactive(), in: shape) } else { self }
+    }
+    /// A sheet's surface and corners: the background with small square corners in the terminal look; in Native, the system's
+    /// own corners, and on iOS 26 its glass.
+    @ViewBuilder func desktopSheetSurface(_ style: DesktopStyle) -> some View {
+        if style.native { background(style.surface) } else { background(style.background).presentationCornerRadius(8) }
     }
 }

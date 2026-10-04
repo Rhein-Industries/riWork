@@ -128,7 +128,7 @@ private struct LivePill: View {
 
     private func button(_ pill: StickyBottom.Pill) -> some View {
         Button { model.jumpToLatest() } label: {
-            Text(pill.label).font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+            Text(pill.label).font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
                 .padding(.horizontal, 12).frame(minHeight: style.pt(30))
                 .background(.ultraThinMaterial, in: Capsule())
                 .overlay(Capsule().stroke(style.divider, lineWidth: 1))
@@ -161,7 +161,7 @@ struct AlternateHint: View {
     let loud: Bool
     @State private var settled = false
     var body: some View {
-        Text("Scrolling the app").font(style.mono(10, relativeTo: .caption2))
+        Text("Scrolling the app").font(style.face(10, relativeTo: .caption2))
             .foregroundStyle(style.terminalForeground)
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(style.panel.opacity(0.85), in: Capsule())

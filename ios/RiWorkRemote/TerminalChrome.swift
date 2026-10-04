@@ -18,7 +18,7 @@ struct KeyPreviewChip: View {
         HStack(spacing: 6) {
             Text(preview.text).font(style.mono(11, relativeTo: .caption))
                 .lineLimit(1).truncationMode(.head).frame(maxWidth: .infinity, alignment: .leading)
-            Text(preview.label).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(tint)
+            Text(preview.label).font(style.face(10, relativeTo: .caption2)).foregroundStyle(tint)
                 .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
             Button { discard() } label: { Image(systemName: "xmark.circle.fill").font(.system(size: style.pt(13))).frame(width: style.pt(30), height: style.pt(28)).contentShape(Rectangle()) }
                 .buttonStyle(.plain).foregroundStyle(style.muted).accessibilityLabel("Discard pending input")
@@ -53,7 +53,7 @@ struct FloatingStatus: View {
         if model.directTyping {
             VStack(spacing: 0) {
                 if let notice = model.floatingNotice {
-                    Text(notice).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                    Text(notice).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
                         .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: Double(style.pt(Self.noticeHeight)), alignment: .leading)
                         .background(style.panel).overlay(alignment: .top) { DesktopRule() }
                 }
@@ -185,7 +185,7 @@ struct LatencyOverlay: View {
 struct CopyModeBadge: View {
     @Environment(\.desktopStyle) private var style
     var body: some View {
-        Text("COPY MODE").font(style.mono(9, bold: true, relativeTo: .caption2)).foregroundStyle(style.warning)
+        Text(style.cased("Copy mode")).font(style.face(9, bold: true, relativeTo: .caption2)).foregroundStyle(style.warning)
             .padding(.horizontal, 4).padding(.vertical, 1)
             .overlay(RoundedRectangle(cornerRadius: 2).stroke(style.warning.opacity(0.6), lineWidth: 1))
             .accessibilityLabel("Terminal is in copy mode")

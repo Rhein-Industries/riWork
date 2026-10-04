@@ -13,7 +13,7 @@ struct DisplaySettingsSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: "DISPLAY") { Button("Done") { dismiss() } }
+            WorkspaceBar(title: style.cased("Display")) { Button("Done") { dismiss() } }
             List {
                 Section {
                     row(title: "Interface size", value: "\(InterfaceScale.percent(draftScale))%") {
@@ -24,10 +24,10 @@ struct DisplaySettingsSheet: View {
                         stepButton("Larger interface", "plus", disabled: draftScale >= InterfaceScale.range.upperBound) { commit(InterfaceScale.stepped(draftScale, by: 1)) }
                     }
                     resetRow("Reset to 100%", disabled: model.interfaceScale == InterfaceScale.standard) { commit(InterfaceScale.standard) }
-                } header: { Text("APP").font(style.system(.caption)) } footer: {
+                } header: { Text(style.cased("App")).font(style.system(.caption)) } footer: {
                     Text("Headers, lists, the key bar and buttons. The terminal text has its own size.").font(style.system(.caption))
                 }
-                .listRowBackground(style.background).listRowSeparatorTint(style.divider)
+                .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
 
                 Section {
                     row(title: "Terminal text size", value: "\(Int(model.terminalFontSize)) pt") {
@@ -44,10 +44,10 @@ struct DisplaySettingsSheet: View {
                     resetRow("Reset to \(Int(TerminalFontSize.standard)) pt", disabled: model.terminalFontSize == TerminalFontSize.standard) {
                         model.setTerminalFontSize(TerminalFontSize.standard)
                     }
-                } header: { Text("TERMINAL").font(style.system(.caption)) } footer: {
+                } header: { Text(style.cased("Terminal")).font(style.system(.caption)) } footer: {
                     Text("Pinching the terminal changes this too. The desktop pane follows the new grid.").font(style.system(.caption))
                 }
-                .listRowBackground(style.background).listRowSeparatorTint(style.divider)
+                .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
 
                 Section {
                     ForEach(HistoryMode.allCases, id: \.self) { mode in
@@ -55,11 +55,11 @@ struct DisplaySettingsSheet: View {
                     }
                     Toggle("Compress traffic", isOn: Binding(get: { model.compressTraffic }, set: { model.setCompressTraffic($0) }))
                         .frame(minHeight: style.pt(44))
-                } header: { Text("HISTORY DOWNLOAD").font(style.system(.caption)) } footer: {
+                } header: { Text(style.cased("History download")).font(style.system(.caption)) } footer: {
                     Text("Older lines are fetched after the live screen, a page at a time, so scrolling needs no round trip. Compression makes pages several times smaller; turn it off only if you must not compress what the desktop sends.")
                         .font(style.system(.caption))
                 }
-                .listRowBackground(style.background).listRowSeparatorTint(style.divider)
+                .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
 
                 Section {
                     // The meter is not observable; look again every second while the sheet is open.
@@ -79,39 +79,39 @@ struct DisplaySettingsSheet: View {
                         }
                         .padding(.vertical, 4).accessibilityElement(children: .combine)
                     }
-                } header: { Text("LINK").font(style.system(.caption)) } footer: {
+                } header: { Text(style.cased("Link")).font(style.system(.caption)) } footer: {
                     Text("How the phone decides. The round trip and the desktop's own time are taken out of a page's time before its speed is judged. Transfer is the best of the last three pages.")
                         .font(style.system(.caption))
                 }
-                .listRowBackground(style.background).listRowSeparatorTint(style.divider)
+                .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
 
                 Section {
                     Picker("Focus keyboard when a shell opens", selection: Binding(get: { model.keyboard.focusSetting }, set: { model.keyboard.setFocusSetting($0) })) {
                         ForEach(KeyboardFocusSetting.allCases) { Text($0.title).tag($0) }
                     }.pickerStyle(.menu).frame(minHeight: style.pt(44))
-                } header: { Text("KEYBOARD").font(style.system(.caption)) } footer: {
+                } header: { Text(style.cased("Keyboard")).font(style.system(.caption)) } footer: {
                     Text("Typing goes straight into a shell once it is ready. “Always” brings up the on-screen keyboard when there is no hardware keyboard; a keyboard you hid in a shell stays hidden there until you tap the terminal. ⌘K opens the hotkey menu.")
                         .font(style.system(.caption))
                 }
-                .listRowBackground(style.background).listRowSeparatorTint(style.divider)
+                .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
 
                 Section {
                     Toggle("Show key events", isOn: Binding(get: { model.keyboard.showKeyEvents }, set: { model.keyboard.setShowKeyEvents($0) }))
                         .frame(minHeight: style.pt(44))
                     Toggle("Show latency", isOn: Binding(get: { model.showLatency }, set: { model.setShowLatency($0) }))
                         .frame(minHeight: style.pt(44))
-                } header: { Text("DEBUG").font(style.system(.caption)) } footer: {
+                } header: { Text(style.cased("Debug")).font(style.system(.caption)) } footer: {
                     Text("Small overlays in the terminal. Key events: the last key's HID usage, modifiers and characters, which shows what a key such as the Clicks button sends. Latency: round trips of keys and screen reads, echo latency, the age of the last change, live or poll, the last payload size, and the link: round trip, transfer rate and tier, the desktop's own time, compression, and what the history download is doing.")
                         .font(style.system(.caption))
                 }
-                .listRowBackground(style.background).listRowSeparatorTint(style.divider)
+                .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
             }
             .listStyle(.plain).scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, style.pt(44))
         }
-        .background(style.background).foregroundStyle(style.text)
-        .font(style.mono(13)).tint(style.accent).buttonStyle(DesktopButtonStyle())
-        .presentationDetents([.medium, .large]).presentationCornerRadius(8)
+        .desktopSheetSurface(style).foregroundStyle(style.text)
+        .font(style.face(13)).tint(style.accent).buttonStyle(DesktopButtonStyle())
+        .presentationDetents([.medium, .large])
         .onAppear { draftScale = model.interfaceScale }
         .onChange(of: model.interfaceScale) { _, value in draftScale = value }
     }

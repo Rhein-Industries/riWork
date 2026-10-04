@@ -12,8 +12,9 @@ use std::{
 
 use fs2::FileExt;
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, Global, IntoElement,
-    KeyDownEvent, MouseButton, Pixels, Render, Window, canvas, div, prelude::*, px, rgb,
+    AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, FontWeight, Global,
+    IntoElement, KeyDownEvent, MouseButton, Pixels, Render, Window, canvas, div, prelude::*, px,
+    rgb,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -21,6 +22,7 @@ use uuid::Uuid;
 
 use crate::{
     codex_accounts::{self, AccountsSnapshot},
+    controls,
     cua::{CuaManager, CuaStatus},
     orca_import::{ImportManager, ImportPreview, ImportReceipt},
     project_sort::ProjectOrder,
@@ -28,7 +30,7 @@ use crate::{
     remote_tree::Link,
     status_bar::StatusBarSettings,
     theme::{Appearance, Palette, ThemeChoice, palette},
-    ui_text::{self, SizeChange, TextPoints},
+    ui_text::{self, InterfaceFont, SizeChange, TextPoints},
 };
 
 #[derive(Clone, Default)]
@@ -154,6 +156,23 @@ pub struct Settings {
     pub ui_text_size: TextPoints,
     /// Interface text follows Ghostty's `font-size` instead of `ui_text_size`.
     pub ui_text_matches_terminal: bool,
+    /// Native's "Terminals match the theme": terminals take Native's white or
+    /// black background and palette. Off keeps Ghostty's own colors.
+    pub native_terminal_colors: bool,
+    /// Native's interface font. The other themes draw in Menlo.
+    pub interface_font: InterfaceFont,
+}
+
+impl Settings {
+    /// Whether the selected theme's terminal colors option is on: "Terminals
+    /// match the theme" for Native, "Use RiWork terminal colors" while following
+    /// Ghostty. The presets force their colors whatever this says.
+    pub fn terminal_colors_forced(&self) -> bool {
+        match self.theme {
+            ThemeChoice::Native => self.native_terminal_colors,
+            _ => self.use_riwork_colors,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -171,6 +190,8 @@ impl Default for Settings {
             agent_inline_mode: true,
             ui_text_size: TextPoints::DEFAULT,
             ui_text_matches_terminal: false,
+            native_terminal_colors: true,
+            interface_font: InterfaceFont::default(),
         }
     }
 }
@@ -222,6 +243,12 @@ impl<'de> Deserialize<'de> for Settings {
                 "ui_text_matches_terminal",
                 defaults.ui_text_matches_terminal,
             ),
+            native_terminal_colors: lenient_field(
+                &object,
+                "native_terminal_colors",
+                defaults.native_terminal_colors,
+            ),
+            interface_font: lenient_field(&object, "interface_font", defaults.interface_font),
         })
     }
 }
@@ -411,6 +438,9 @@ impl Toggle {
 
     fn flip(self, settings: &mut Settings) {
         let value = match self {
+            Self::TerminalColors if settings.theme == ThemeChoice::Native => {
+                &mut settings.native_terminal_colors
+            }
             Self::TerminalColors => &mut settings.use_riwork_colors,
             Self::PanelTabIcons => &mut settings.panel_tab_icons,
             Self::PreviewOnSelect => &mut settings.open_preview_on_select,
@@ -435,6 +465,7 @@ pub struct SettingsPanel {
     account_focus: BTreeMap<String, FocusHandle>,
     theme_focus: Vec<FocusHandle>,
     terminal_focus: FocusHandle,
+    font_focus: FocusHandle,
     tab_icons_focus: FocusHandle,
     preview_focus: FocusHandle,
     inline_focus: FocusHandle,
@@ -574,15 +605,15 @@ impl Section {
 
     fn title(self) -> &'static str {
         match self {
-            Self::Cua => "COMPUTER USE",
-            Self::Codex => "CODEX ACCOUNTS",
-            Self::Appearance => "APPEARANCE",
-            Self::Files => "FILES",
-            Self::Agents => "AGENT SESSIONS",
-            Self::Windows => "WINDOWS",
-            Self::StatusBar => "STATUS BAR",
-            Self::Remote => "REMOTE",
-            Self::Orca => "IMPORT FROM ORCA",
+            Self::Cua => "Computer use",
+            Self::Codex => "Codex accounts",
+            Self::Appearance => "Appearance",
+            Self::Files => "Files",
+            Self::Agents => "Agent sessions",
+            Self::Windows => "Windows",
+            Self::StatusBar => "Status bar",
+            Self::Remote => "Remote",
+            Self::Orca => "Import from Orca",
         }
     }
 
@@ -682,6 +713,9 @@ fn section_card(
     colors: Palette,
     body: AnyElement,
 ) -> AnyElement {
+    if ui_text::is_native() {
+        return native_section_card(section, colors, body);
+    }
     div()
         .flex()
         .flex_col()
@@ -710,7 +744,11 @@ fn section_card(
                                 .text_color(rgb(colors.magenta))
                                 .child(section.number()),
                         )
-                        .child(div().text_color(rgb(colors.cyan)).child(section.title())),
+                        .child(
+                            div()
+                                .text_color(rgb(colors.cyan))
+                                .child(ui_text::cased(section.title())),
+                        ),
                 )
                 .child(
                     div()
@@ -724,7 +762,71 @@ fn section_card(
         .into_any_element()
 }
 
+/// Native's section: a group on the page under a list's section heading, with no number.
+fn native_section_card(section: Section, colors: Palette, body: AnyElement) -> AnyElement {
+    controls::card(div(), colors)
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .gap(ui_text::space(12.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(ui_text::space(2.0))
+                // Headed like a navigation list's section.
+                .child(
+                    div()
+                        .text_size(ui_text::text(controls::META_TEXT))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(colors.muted))
+                        .child(section.title()),
+                )
+                .child(
+                    div()
+                        .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                        .text_size(ui_text::text(controls::ROW_DETAIL_TEXT))
+                        .text_color(rgb(colors.muted))
+                        .child(section.description()),
+                ),
+        )
+        .child(body)
+        .into_any_element()
+}
+
+/// The line box of a theme choice's title under Native, which its radio is centered on.
+const THEME_TITLE_LINE: f32 = 16.0;
+
+/// Native's radio mark: a ring, filled with the primary color when chosen.
+fn radio(mark: Div, selected: bool, colors: Palette) -> Div {
+    mark.size(ui_text::space(12.0))
+        .mt_0()
+        .rounded_full()
+        .border_color(rgb(if selected {
+            colors.cyan
+        } else {
+            colors.divider
+        }))
+        .when(selected, |mark| {
+            mark.border(ui_text::space(4.0)).bg(rgb(colors.bg))
+        })
+}
+
+/// Native's kind of a Settings button that is either a group's lead action or not.
+fn button_kind(primary: bool, disabled: bool) -> controls::Button {
+    if disabled {
+        controls::Button::Disabled
+    } else if primary {
+        controls::Button::Primary
+    } else {
+        controls::Button::Secondary
+    }
+}
+
 fn status_chip(label: &'static str, color: u32, colors: Palette) -> AnyElement {
+    if ui_text::is_native() {
+        return controls::chip(label, color == colors.gold, colors);
+    }
     div()
         .flex_none()
         .px(ui_text::space(7.0))
@@ -734,16 +836,16 @@ fn status_chip(label: &'static str, color: u32, colors: Palette) -> AnyElement {
         .bg(rgb(colors.panel_active))
         .text_size(ui_text::text(9.0))
         .text_color(rgb(color))
-        .child(label)
+        .child(ui_text::cased(label))
         .into_any_element()
 }
 
 fn import_counts(projects: usize, folders: usize, worktrees: usize, colors: Palette) -> AnyElement {
-    let mut counts = vec![(projects, "PROJECTS")];
+    let mut counts = vec![(projects, "projects")];
     if folders > 0 {
-        counts.push((folders, "FOLDERS"));
+        counts.push((folders, "folders"));
     }
-    counts.push((worktrees, "WORKTREES"));
+    counts.push((worktrees, "worktrees"));
     div()
         .flex()
         .flex_wrap()
@@ -757,7 +859,12 @@ fn import_counts(projects: usize, folders: usize, worktrees: usize, colors: Pale
                 .bg(rgb(colors.panel_active))
                 .text_size(ui_text::text(10.0))
                 .text_color(rgb(colors.cyan))
-                .child(format!("{count} {label}"))
+                .map(|chip| {
+                    controls::native(chip, |chip| {
+                        chip.rounded_full().border_0().text_color(rgb(colors.text))
+                    })
+                })
+                .child(ui_text::cased(format!("{count} {label}")))
         }))
         .into_any_element()
 }
@@ -800,8 +907,8 @@ impl OrcaImportOffer {
 
     fn button(self) -> Option<&'static str> {
         match self {
-            Self::Import => Some("IMPORT NOW"),
-            Self::Finish => Some("FINISH IMPORT"),
+            Self::Import => Some("Import now"),
+            Self::Finish => Some("Finish import"),
             Self::NothingYet => None,
         }
     }
@@ -843,6 +950,7 @@ impl SettingsPanel {
                 .collect(),
             theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
+            font_focus: cx.focus_handle(),
             tab_icons_focus: cx.focus_handle(),
             preview_focus: cx.focus_handle(),
             inline_focus: cx.focus_handle(),
@@ -904,8 +1012,11 @@ impl SettingsPanel {
         handles.push(self.account_refresh_focus.clone());
         handles.extend(self.account_focus.values().cloned());
         handles.extend(self.theme_focus.iter().cloned());
-        if settings.theme == ThemeChoice::Ghostty {
+        if matches!(settings.theme, ThemeChoice::Ghostty | ThemeChoice::Native) {
             handles.push(self.terminal_focus.clone());
+        }
+        if settings.theme == ThemeChoice::Native {
+            handles.push(self.font_focus.clone());
         }
         handles.push(self.tab_icons_focus.clone());
         handles.push(self.text_size_focus.clone());
@@ -1024,9 +1135,17 @@ impl SettingsPanel {
                             }))
                             .when_some(focus, |row, focus| row.track_focus(&focus))
                             .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+                            .map(|row| {
+                                controls::native(row, |row| controls::row(row, active, colors))
+                            })
                             .when(available, |row| {
-                                row.cursor_pointer()
-                                    .hover(|style| style.bg(rgb(colors.panel_active)))
+                                row.hover(move |style| {
+                                    controls::hovered(
+                                        style,
+                                        controls::row_hover(active, colors),
+                                        |style| style.bg(rgb(colors.panel_active)),
+                                    )
+                                })
                             })
                             .child(
                                 row_text()
@@ -1066,11 +1185,11 @@ impl SettingsPanel {
                             )
                             .child(status_chip(
                                 if !available {
-                                    "UNAVAILABLE"
+                                    "Unavailable"
                                 } else if active {
-                                    "SELECTED"
+                                    "Selected"
                                 } else {
-                                    "USE ACCOUNT"
+                                    "Use account"
                                 },
                                 if !available {
                                     colors.gold
@@ -1118,11 +1237,12 @@ impl SettingsPanel {
                     .child(
                         div().id("refresh-codex-accounts").track_focus(&self.account_refresh_focus)
                             .flex_none().px(ui_text::space(10.0)).py(ui_text::space(6.0)).self_start()
-                            .border_1().border_color(rgb(colors.divider)).cursor_pointer()
+                            .border_1().border_color(rgb(colors.divider))
                             .text_size(ui_text::text(10.0)).text_color(rgb(colors.cyan))
-                            .hover(|style| style.bg(rgb(colors.panel_active)))
+                            .hover(move |style| controls::hovered(style, controls::Button::Secondary.hover(colors), |style| style.bg(rgb(colors.panel_active))))
                             .focus_visible(|style| style.bg(rgb(colors.panel_active)).border_color(rgb(colors.cyan)))
-                            .child(if state.pending { "CHECKING ACCOUNTS…" } else { "REFRESH ACCOUNTS" })
+                            .map(|button| controls::native(button, |button| controls::button(button, controls::Button::Secondary, colors)))
+                            .child(ui_text::cased(if state.pending { "Checking accounts…" } else { "Refresh accounts" }))
                             .on_mouse_down(MouseButton::Left, cx.listener(|view, _, window, cx| view.account_refresh_focus.focus(window, cx)))
                             .on_click(cx.listener(|_, _, _, cx| refresh_codex_accounts(cx))),
                     ),
@@ -1203,10 +1323,17 @@ impl SettingsPanel {
                 } else if let Some(index) = theme_index {
                     let theme = ThemeChoice::ALL[index];
                     self.change(|settings| settings.theme = theme, cx);
-                } else if settings.theme == ThemeChoice::Ghostty
+                } else if matches!(settings.theme, ThemeChoice::Ghostty | ThemeChoice::Native)
                     && self.terminal_focus.is_focused(window)
                 {
                     self.change(|settings| Toggle::TerminalColors.flip(settings), cx);
+                } else if settings.theme == ThemeChoice::Native
+                    && self.font_focus.is_focused(window)
+                {
+                    self.change(
+                        |settings| settings.interface_font = settings.interface_font.other(),
+                        cx,
+                    );
                 } else if self.tab_icons_focus.is_focused(window) {
                     self.change(|settings| Toggle::PanelTabIcons.flip(settings), cx);
                 } else if self.text_size_focus.is_focused(window) {
@@ -1363,10 +1490,20 @@ impl SettingsPanel {
             } else {
                 colors.text
             }))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(
+                    style,
+                    button_kind(import, disabled).hover(colors),
+                    |style| style.bg(rgb(colors.panel_active)),
+                )
+            })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .child(label)
+            .map(|button| {
+                controls::native(button, |button| {
+                    controls::button(button, button_kind(import, disabled), colors)
+                })
+            })
+            .child(ui_text::cased(label))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -1434,11 +1571,11 @@ impl SettingsPanel {
                     .child(div().flex_1().text_size(ui_text::text(13.0)).child("Orca"))
                     .child(status_chip(
                         if pending {
-                            "WORKING"
+                            "Working"
                         } else if receipt.is_some() {
-                            "IMPORTED"
+                            "Imported"
                         } else {
-                            "ONE-TIME IMPORT"
+                            "One-time import"
                         },
                         if receipt.is_some() {
                             colors.cyan
@@ -1504,9 +1641,9 @@ impl SettingsPanel {
                 action_bar(layout)
                     .child(self.orca_button(
                         if receipt.is_some() {
-                            "CHECK IMPORT"
+                            "Check import"
                         } else {
-                            "PREVIEW IMPORT"
+                            "Preview import"
                         },
                         false,
                         pending,
@@ -1616,10 +1753,24 @@ impl SettingsPanel {
             .bg(rgb(colors.panel))
             .text_size(ui_text::text(10.0))
             .text_color(rgb(accent))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(style, controls::Button::Secondary.hover(colors), |style| {
+                    style.bg(rgb(colors.panel_active))
+                })
+            })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .child(label)
+            .map(|button| {
+                // The signal color marks a destructive confirmation; it stays on the text.
+                controls::native(button, |button| {
+                    let button = controls::button(button, controls::Button::Secondary, colors);
+                    if accent == colors.gold {
+                        button.text_color(rgb(colors.gold))
+                    } else {
+                        button
+                    }
+                })
+            })
+            .child(ui_text::cased(label))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |_, _, window, cx| focus_on_press.focus(window, cx)),
@@ -1657,6 +1808,7 @@ impl SettingsPanel {
                     .border_1()
                     .border_color(rgb(colors.divider))
                     .bg(rgb(colors.panel_active))
+                    .map(|row| controls::native(row, |row| controls::row(row, true, colors)))
                     .child(div().flex_none().text_color(rgb(dot)).child(
                         if *link == Some(Link::Offline) {
                             "○"
@@ -1684,9 +1836,9 @@ impl SettingsPanel {
                     .child(self.remote_button(
                         format!("remote-remove-{}", host.id),
                         if confirming {
-                            "CONFIRM REMOVE"
+                            "Confirm remove"
                         } else {
-                            "REMOVE"
+                            "Remove"
                         },
                         focus,
                         if confirming {
@@ -1714,9 +1866,9 @@ impl SettingsPanel {
                     .child(div().flex_1().text_size(ui_text::text(13.0)).child("Other Macs"))
                     .child(status_chip(
                         if self.remote_pending.is_some() {
-                            "WORKING"
+                            "Working"
                         } else {
-                            "ENCRYPTED"
+                            "Encrypted"
                         },
                         colors.magenta,
                         colors,
@@ -1758,7 +1910,7 @@ impl SettingsPanel {
                 action_bar(layout)
                     .child(self.remote_button(
                         "remote-pair-mac".to_owned(),
-                        "PAIR ANOTHER MAC",
+                        "Pair another Mac",
                         &self.remote_pair_focus,
                         colors.text,
                         |view, cx| {
@@ -1769,7 +1921,7 @@ impl SettingsPanel {
                     ))
                     .child(self.remote_button(
                         "remote-add-host".to_owned(),
-                        "ADD HOST",
+                        "Add host",
                         &self.remote_add_focus,
                         colors.cyan,
                         |view, cx| {
@@ -1833,10 +1985,20 @@ impl SettingsPanel {
             } else {
                 colors.text
             }))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(
+                    style,
+                    button_kind(primary, disabled).hover(colors),
+                    |style| style.bg(rgb(colors.panel_active)),
+                )
+            })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .child(label)
+            .map(|button| {
+                controls::native(button, |button| {
+                    controls::button(button, button_kind(primary, disabled), colors)
+                })
+            })
+            .child(ui_text::cased(label))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -1885,9 +2047,9 @@ impl SettingsPanel {
                 .gap(ui_text::space(6.0))
                 .child(status_chip(
                     if status.accessibility {
-                        "ACCESSIBILITY READY"
+                        "Accessibility ready"
                     } else {
-                        "ACCESSIBILITY NEEDED"
+                        "Accessibility needed"
                     },
                     if status.accessibility {
                         colors.cyan
@@ -1898,9 +2060,9 @@ impl SettingsPanel {
                 ))
                 .child(status_chip(
                     if status.screen_recording {
-                        "RECORDING READY"
+                        "Recording ready"
                     } else {
-                        "RECORDING NEEDED"
+                        "Recording needed"
                     },
                     if status.screen_recording {
                         colors.cyan
@@ -1911,9 +2073,9 @@ impl SettingsPanel {
                 ))
                 .child(status_chip(
                     if status.direct_capture_verified {
-                        "CAPTURE VERIFIED"
+                        "Capture verified"
                     } else {
-                        "CAPTURE UNVERIFIED"
+                        "Capture unverified"
                     },
                     if status.direct_capture_verified {
                         colors.cyan
@@ -1935,7 +2097,7 @@ impl SettingsPanel {
                     .gap(ui_text::space(10.0))
                     .child(div().flex_1().text_size(ui_text::text(13.0)).child("Cua.ai"))
                     .child(status_chip(
-                        if state.pending.is_some() { "WORKING" } else if ready { "CONNECTED" } else { "SETUP NEEDED" },
+                        if state.pending.is_some() { "Working" } else if ready { "Connected" } else { "Setup needed" },
                         if ready { colors.cyan } else { colors.gold },
                         colors,
                     )),
@@ -1946,8 +2108,8 @@ impl SettingsPanel {
                 .child("Enable CuaDriver in macOS Accessibility and Screen Recording to connect all agents.")))
             .child(div().max_w(ui_text::space(DESCRIPTION_MAX_WIDTH)).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("New agent sessions connect automatically. Restart existing sessions to connect them."))
             .child(action_bar(layout)
-                .child(self.cua_button(if ready { "CHECK CUA" } else if repair { "REPAIR CUA" } else if verify_capture { "VERIFY SCREEN CAPTURE" } else if installed { "GRANT MACOS ACCESS" } else { "SET UP CUA" }, true, state.pending.is_some(), cx))
-                .child(self.cua_button("CHECK AGAIN", false, state.pending.is_some(), cx)))
+                .child(self.cua_button(if ready { "Check Cua" } else if repair { "Repair Cua" } else if verify_capture { "Verify screen capture" } else if installed { "Grant macOS access" } else { "Set up Cua" }, true, state.pending.is_some(), cx))
+                .child(self.cua_button("Check again", false, state.pending.is_some(), cx)))
             .into_any_element()
     }
 
@@ -1980,18 +2142,29 @@ impl SettingsPanel {
             } else {
                 colors.divider
             }))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(style, controls::row_hover(selected, colors), |style| {
+                    style.bg(rgb(colors.panel_active))
+                })
+            })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .child(
-                div()
+            .map(|row| controls::native(row, |row| controls::row(row, selected, colors)))
+            .child({
+                let mark = div()
                     .flex_none()
                     .mt(ui_text::space(4.0))
                     .size(ui_text::space(8.0))
                     .border_1()
                     .border_color(rgb(if selected { colors.cyan } else { colors.muted }))
-                    .when(selected, |style| style.bg(rgb(colors.cyan))),
-            )
+                    .when(selected, |style| style.bg(rgb(colors.cyan)));
+                if ui_text::is_native() {
+                    // Centered on the title's line box, which the title is set in exactly.
+                    controls::on_first_line(radio(mark, selected, colors), THEME_TITLE_LINE)
+                        .into_any_element()
+                } else {
+                    mark.into_any_element()
+                }
+            })
             .child(
                 div()
                     .flex_1()
@@ -2010,10 +2183,17 @@ impl SettingsPanel {
                                     .flex_1()
                                     .min_w_0()
                                     .text_size(ui_text::text(12.0))
+                                    .when(ui_text::is_native(), |title| {
+                                        title.line_height(ui_text::space(THEME_TITLE_LINE))
+                                    })
                                     .text_color(rgb(colors.text))
                                     .child(theme.label()),
                             )
-                            .children(selected.then(|| status_chip("ACTIVE", colors.cyan, colors))),
+                            // Native's filled row and radio already say which is active.
+                            .children(
+                                (selected && !ui_text::is_native())
+                                    .then(|| status_chip("Active", colors.cyan, colors)),
+                            ),
                     )
                     .child(
                         div()
@@ -2087,9 +2267,13 @@ impl SettingsPanel {
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.divider))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                controls::hovered(style, controls::row_hover(false, colors), |style| {
+                    style.bg(rgb(colors.panel_active))
+                })
+            })
             .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
             .child(
                 row_text()
                     .child(
@@ -2106,7 +2290,9 @@ impl SettingsPanel {
                             .child(description),
                     ),
             )
-            .child(
+            .child(if ui_text::is_native() {
+                controls::switch(enabled, colors)
+            } else {
                 div()
                     .flex_none()
                     .w(ui_text::space(42.0))
@@ -2117,8 +2303,9 @@ impl SettingsPanel {
                     .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
                     .text_size(ui_text::text(10.0))
                     .text_center()
-                    .child(if enabled { "ON" } else { "OFF" }),
-            )
+                    .child(if enabled { "ON" } else { "OFF" })
+                    .into_any_element()
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -2146,19 +2333,30 @@ impl SettingsPanel {
     ) -> AnyElement {
         let colors = palette(cx);
         let appearance_error = cx.global::<Appearance>().error.clone();
-        let terminal_row = (settings.theme == ThemeChoice::Ghostty).then(|| {
-            self.toggle_row(
+        let terminal_row = match settings.theme {
+            ThemeChoice::Ghostty => Some(self.toggle_row(
                 Toggle::TerminalColors,
                 "Use RiWork terminal colors",
                 "Keep RiWork terminal colors while following Ghostty. Off uses Ghostty colors.",
                 settings.use_riwork_colors,
                 cx,
-            )
-        });
+            )),
+            ThemeChoice::Native => Some(self.toggle_row(
+                Toggle::TerminalColors,
+                "Terminals match the theme",
+                "Terminals take the theme's white or black background and a quiet palette. Off keeps Ghostty's own colors.",
+                settings.native_terminal_colors,
+                cx,
+            )),
+            _ => None,
+        };
+        let font_row = (settings.theme == ThemeChoice::Native)
+            .then(|| self.font_row(settings.interface_font, cx));
         row_list()
             .child(self.theme_grid(theme_columns, settings.theme, cx))
             .children(appearance_error.map(|error| div().text_size(ui_text::text(11.0)).text_color(rgb(colors.gold)).child(error)))
             .children(terminal_row)
+            .children(font_row)
             .child(self.toggle_row(
                 Toggle::PanelTabIcons,
                 "Icons instead of labels",
@@ -2167,6 +2365,84 @@ impl SettingsPanel {
                 cx,
             ))
             .child(self.text_size_row(settings, cx))
+            .into_any_element()
+    }
+
+    /// Native's Interface font: one choice per face. The row takes focus like a
+    /// toggle, and Enter or Space switches to the other face.
+    fn font_row(&self, selected: InterfaceFont, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
+        let choice = |font: InterfaceFont, cx: &mut Context<Self>| {
+            let active = font == selected;
+            div()
+                .id(match font {
+                    InterfaceFont::System => "interface-font-system",
+                    InterfaceFont::SystemMono => "interface-font-system-mono",
+                })
+                .flex_none()
+                .px(ui_text::space(8.0))
+                .py(ui_text::space(4.0))
+                .border_1()
+                .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                .bg(rgb(colors.panel_active))
+                .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+                .text_size(ui_text::text(10.0))
+                .hover(move |style| {
+                    controls::hovered(style, controls::segment_hover(active, colors), |style| {
+                        style.border_color(rgb(colors.cyan))
+                    })
+                })
+                .map(|choice| {
+                    controls::native(choice, |choice| controls::segment(choice, active, colors))
+                })
+                .child(font.label())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| view.font_focus.focus(window, cx)),
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.change(|settings| settings.interface_font = font, cx);
+                }))
+        };
+        div()
+            .id("interface-font")
+            .track_focus(&self.font_focus)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(ui_text::space(12.0))
+            .px(ui_text::space(ROW_PAD_X))
+            .py(ui_text::space(ROW_PAD_Y))
+            .bg(rgb(colors.panel))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
+            .child(
+                row_text()
+                    .child(
+                        div()
+                            .text_size(ui_text::text(12.0))
+                            .text_color(rgb(colors.text))
+                            .child("Interface font"),
+                    )
+                    .child(
+                        div()
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            .child("SF Pro throughout, or with paths, branches, shortcut keys and counts in a monospace face."),
+                    ),
+            )
+            .child(
+                if ui_text::is_native() {
+                    controls::segments(colors)
+                } else {
+                    div().flex().flex_wrap().gap(ui_text::space(6.0))
+                }
+                .children(InterfaceFont::ALL.map(|font| choice(font, cx))),
+            )
             .into_any_element()
     }
 
@@ -2190,38 +2466,49 @@ impl SettingsPanel {
         let shown = ui_text::current_points(cx);
         let matching = settings.ui_text_matches_terminal;
         let value_color = if matching { colors.muted } else { colors.cyan };
-        let button =
-            |id: &'static str, label: &'static str, change: SizeChange, cx: &mut Context<Self>| {
-                let limit = match change {
-                    SizeChange::Bigger => shown >= ui_text::MAX_POINTS,
-                    SizeChange::Smaller => shown <= ui_text::MIN_POINTS,
-                    SizeChange::Reset => shown == ui_text::DEFAULT_POINTS && !matching,
-                };
-                let active = !matching && !limit;
-                div()
-                    .id(id)
-                    .flex_none()
-                    .min_w(ui_text::space(26.0))
-                    .px(ui_text::space(6.0))
-                    .py(ui_text::space(4.0))
-                    .border_1()
-                    .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-                    .bg(rgb(colors.panel_active))
-                    .text_color(rgb(if active { colors.cyan } else { colors.muted }))
-                    .text_size(ui_text::text(10.0))
-                    .text_center()
-                    .cursor_pointer()
-                    .hover(|style| style.border_color(rgb(colors.cyan)))
-                    .child(label)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
-                    )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        cx.stop_propagation();
-                        view.change_text_size(change, cx);
-                    }))
+        let button = |id: &'static str,
+                      label: &'static str,
+                      change: SizeChange,
+                      cx: &mut Context<Self>| {
+            let limit = match change {
+                SizeChange::Bigger => shown >= ui_text::MAX_POINTS,
+                SizeChange::Smaller => shown <= ui_text::MIN_POINTS,
+                SizeChange::Reset => shown == ui_text::DEFAULT_POINTS && !matching,
             };
+            let active = !matching && !limit;
+            div()
+                .id(id)
+                .flex_none()
+                .min_w(ui_text::space(26.0))
+                .px(ui_text::space(6.0))
+                .py(ui_text::space(4.0))
+                .border_1()
+                .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                .bg(rgb(colors.panel_active))
+                .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+                .text_size(ui_text::text(10.0))
+                .text_center()
+                .hover(move |style| {
+                    controls::hovered(style, button_kind(false, !active).hover(colors), |style| {
+                        style.border_color(rgb(colors.cyan))
+                    })
+                })
+                .map(|button| {
+                    controls::native(button, |button| {
+                        controls::button(button, button_kind(false, !active), colors)
+                            .px(ui_text::space(8.0))
+                    })
+                })
+                .child(ui_text::cased(label))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.change_text_size(change, cx);
+                }))
+        };
         let description = match ui_text::terminal_font_size(cx).filter(|_| matching) {
             Some(size) => {
                 format!("Panels, tabs, menus and status bar. Matches Ghostty's font-size = {size}.")
@@ -2235,7 +2522,12 @@ impl SettingsPanel {
                 div()
                     .flex()
                     .gap(ui_text::space(4.0))
-                    .child(div().text_color(rgb(colors.text)).child(key))
+                    .child(
+                        div()
+                            .font_family(ui_text::mono_family())
+                            .text_color(rgb(colors.text))
+                            .child(key),
+                    )
                     .child(label),
             )
         };
@@ -2269,12 +2561,37 @@ impl SettingsPanel {
             .text_color(rgb(if matching { colors.cyan } else { colors.muted }))
             .text_size(ui_text::text(10.0))
             .text_center()
-            .cursor_pointer()
-            .hover(|style| style.border_color(rgb(colors.cyan)))
-            .child(if matching {
-                "MATCH TERMINAL · ON"
-            } else {
-                "MATCH TERMINAL · OFF"
+            .hover(move |style| {
+                if ui_text::is_native() {
+                    style.text_color(rgb(colors.text))
+                } else {
+                    style.border_color(rgb(colors.cyan))
+                }
+            })
+            .map(|button| {
+                // Native: a labelled switch, the same control as the toggle rows.
+                controls::native(button, |button| {
+                    button
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(6.0))
+                        .border_0()
+                        .bg(gpui::transparent_black())
+                        .text_color(rgb(colors.muted))
+                })
+            })
+            .map(|button| {
+                if ui_text::is_native() {
+                    button
+                        .child("Match terminal")
+                        .child(controls::switch(matching, colors))
+                } else {
+                    button.child(if matching {
+                        "MATCH TERMINAL · ON"
+                    } else {
+                        "MATCH TERMINAL · OFF"
+                    })
+                }
             })
             .on_mouse_down(
                 MouseButton::Left,
@@ -2297,6 +2614,7 @@ impl SettingsPanel {
             .border_1()
             .border_color(rgb(colors.divider))
             .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
             .child(
                 row_text()
                     .child(
@@ -2330,12 +2648,12 @@ impl SettingsPanel {
                             .text_size(ui_text::text(10.0))
                             .text_center()
                             .text_color(rgb(value_color))
-                            .child(ui_text::label(shown)),
+                            .child(ui_text::label(ui_text::shown_points(settings, shown))),
                     )
                     .child(button("ui-text-bigger", "+", SizeChange::Bigger, cx))
                     // RESET only when there is something to reset; Cmd+0 always works.
                     .when(!matching && shown != ui_text::DEFAULT_POINTS, |controls| {
-                        controls.child(button("ui-text-reset", "RESET", SizeChange::Reset, cx))
+                        controls.child(button("ui-text-reset", "Reset", SizeChange::Reset, cx))
                     })
                     .child(match_button),
             )
@@ -2395,6 +2713,7 @@ impl Render for SettingsPanel {
         let colors = palette(cx);
         let width = self.bounds.get().size.width.as_f32();
         let (layout, theme_cells) = width_class(width);
+        let native = ui_text::is_native();
         let mut columns = Vec::new();
         for sections in section_columns(layout) {
             let mut cards = Vec::new();
@@ -2409,6 +2728,8 @@ impl Render for SettingsPanel {
                     .flex_1()
                     .min_w_0()
                     .gap(px(layout.gap()))
+                    // Native's groups are separated by their own hairlines.
+                    .when(native, |column| column.gap_0())
                     .children(cards),
             );
         }
@@ -2421,6 +2742,19 @@ impl Render for SettingsPanel {
             .relative()
             .size_full()
             .bg(rgb(colors.bg))
+            // Native: a navigation panel's page and header, its cards on the sidebar grey.
+            .when(native, |page| {
+                page.flex()
+                    .flex_col()
+                    .bg(rgb(colors.panel))
+                    .font_family(ui_text::ui_family())
+                    .child(controls::panel_header(
+                        "Settings",
+                        Some("All projects · Saved automatically".into()),
+                        [],
+                        colors,
+                    ))
+            })
             .child(
                 canvas(
                     move |measured, _, cx| {
@@ -2443,6 +2777,7 @@ impl Render for SettingsPanel {
                 div()
                     .id("settings-scroll")
                     .size_full()
+                    .when(native, |scroll| scroll.flex_1().min_h_0())
                     .overflow_y_scroll()
                     .child(
                         div()
@@ -2450,6 +2785,11 @@ impl Render for SettingsPanel {
                             .flex()
                             .justify_center()
                             .p(px(layout.page_padding()))
+                            .when(native, |page| {
+                                page.pt_0()
+                                    .px(ui_text::space(controls::LIST_MARGIN))
+                                    .pb(ui_text::space(controls::PANEL_INSET))
+                            })
                             .child(
                                 div()
                                     .flex()
@@ -2458,16 +2798,16 @@ impl Render for SettingsPanel {
                                     .min_w_0()
                                     .when_some(layout.max_width(), |page, max| page.max_w(px(max)))
                                     .gap(px(layout.gap()))
-                                    .font_family("Menlo")
+                                    .font_family(ui_text::ui_family())
                                     .text_color(rgb(colors.text))
-                                    .child(
+                                    .when(native, |page| page.gap_0())
+                                    .children((!native).then(|| {
                                         div()
                                             .flex()
                                             .items_center()
                                             .gap(ui_text::space(12.0))
                                             .pb(ui_text::space(14.0))
-                                            .border_b_1()
-                                            .border_color(rgb(colors.cyan))
+                                            .when(!native, |head| head.border_b_1().border_color(rgb(colors.cyan)))
                                             .child(
                                                 div()
                                                     .flex_1()
@@ -2475,15 +2815,15 @@ impl Render for SettingsPanel {
                                                     .flex()
                                                     .flex_col()
                                                     .gap(ui_text::space(4.0))
-                                                    .child(div().text_size(ui_text::text(10.0)).text_color(rgb(colors.magenta)).child("RIWORK / PREFERENCES"))
-                                                    .child(div().text_size(ui_text::text(20.0)).child("Settings")),
+                                                    .children((!native).then(|| div().text_size(ui_text::text(10.0)).text_color(rgb(colors.magenta)).child("RIWORK / PREFERENCES")))
+                                                    .child(div().text_size(ui_text::text(20.0)).when(native, |title| title.font_weight(FontWeight::BOLD)).child("Settings")),
                                             )
-                                            .child(status_chip("ALL PROJECTS", colors.magenta, colors)),
-                                    )
+                                            .child(status_chip("All projects", colors.magenta, colors))
+                                    }))
                                     // Columns only differ in the wide layout; otherwise this is one stack of cards.
                                     .child(div().flex().items_start().gap(px(layout.gap())).children(columns))
                                     .children(self.error.as_ref().map(|error| div().text_size(ui_text::text(11.0)).text_color(rgb(colors.gold)).child(error.clone())))
-                                    .child(div().pt(ui_text::space(10.0)).border_t_1().border_color(rgb(colors.divider)).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("Saved automatically · Tab to move · Enter or Space to select · Arrows step the text size")),
+                                    .child(div().pt(ui_text::space(10.0)).when(!native, |foot| foot.border_t_1().border_color(rgb(colors.divider))).when(native, |foot| foot.pt(ui_text::space(2.0)).px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN)).text_size(ui_text::text(9.0))).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child(if native { "Tab to move · Enter or Space to select · Arrows step the text size" } else { "Saved automatically · Tab to move · Enter or Space to select · Arrows step the text size" })),
                             ),
                     ),
             )
@@ -2699,6 +3039,65 @@ mod tests {
             .update(|settings| settings.use_riwork_colors = true)
             .unwrap();
         assert_eq!(document(&dir)["open_preview_on_select"], "sometimes");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn native_options_default_on_and_the_terminal_row_flips_the_selected_themes_option() {
+        let dir = env::temp_dir().join(format!("riwork-settings-native-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let defaults = Settings::default();
+        assert!(defaults.native_terminal_colors);
+        assert_eq!(defaults.interface_font, InterfaceFont::SystemMono);
+        // A file from a build without them reads as the defaults.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"theme":"native","use_riwork_colors":false}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.theme, ThemeChoice::Native);
+        assert!(loaded.native_terminal_colors);
+        assert!(loaded.terminal_colors_forced());
+        assert_eq!(loaded.interface_font, InterfaceFont::SystemMono);
+
+        // Under Native the terminal row flips Native's option, not RiWork's.
+        let saved = store
+            .update(|settings| Toggle::TerminalColors.flip(settings))
+            .unwrap();
+        assert!(!saved.native_terminal_colors);
+        assert!(!saved.use_riwork_colors);
+        assert!(!saved.terminal_colors_forced());
+        let saved = store
+            .update(|settings| settings.interface_font = settings.interface_font.other())
+            .unwrap();
+        assert_eq!(saved.interface_font, InterfaceFont::System);
+        let file: Value =
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(file["native_terminal_colors"], false);
+        assert_eq!(file["interface_font"], "system");
+        assert_eq!(store.load().unwrap(), saved);
+
+        // Following Ghostty, the same row is "Use RiWork terminal colors" again.
+        let saved = store
+            .update(|settings| {
+                settings.theme = ThemeChoice::Ghostty;
+                Toggle::TerminalColors.flip(settings);
+            })
+            .unwrap();
+        assert!(saved.use_riwork_colors);
+        assert!(!saved.native_terminal_colors);
+        assert!(saved.terminal_colors_forced());
+
+        // A font this build does not know falls back to the default alone.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"interface_font":"comic","native_terminal_colors":false}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.interface_font, InterfaceFont::SystemMono);
+        assert!(!loaded.native_terminal_colors);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3231,11 +3630,11 @@ mod tests {
         // Skipped-item warnings are still recorded as a receipt.
         let skipped = OrcaImportOffer::new(true, true);
         assert_eq!(skipped, OrcaImportOffer::Finish);
-        assert_eq!(skipped.button(), Some("FINISH IMPORT"));
+        assert_eq!(skipped.button(), Some("Finish import"));
         assert!(skipped.hint().starts_with("Nothing new to add"));
         let records = OrcaImportOffer::new(false, true);
         assert_eq!(records, OrcaImportOffer::Import);
-        assert_eq!(records.button(), Some("IMPORT NOW"));
+        assert_eq!(records.button(), Some("Import now"));
     }
 
     #[test]
@@ -3298,7 +3697,8 @@ mod tests {
         for (index, section) in Section::ALL.iter().enumerate() {
             assert_eq!(section.number(), format!("{:02}", index + 1));
             assert!(!section.title().is_empty());
-            // Menlo at 10 px is about 6 px per character.
+            // Menlo at 10 px is about 6 px per character; Native's SF Pro, drawn
+            // at 13/11 of that, averages a little less, so the bound holds for both.
             let width = section.description().chars().count() as f32 * 6.1;
             assert!(width <= DESCRIPTION_MAX_WIDTH, "{:?} wraps", section);
         }

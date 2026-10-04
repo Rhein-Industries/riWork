@@ -42,7 +42,7 @@ struct RemoteRootView: View {
     var body: some View {
         NavigationStack(path: $path) {
             VStack(spacing: 0) {
-                WorkspaceBar(title: "RIWORK") {
+                WorkspaceBar(title: style.cased("RiWork")) {
                     Button("Display settings", systemImage: "textformat.size") { showingDisplay = true }.labelStyle(.iconOnly)
                     Button("Add desktop", systemImage: "plus") { pairingRequest = PairingRequest(text: "") }.labelStyle(.iconOnly).disabled(model.loadFailed)
                 }
@@ -62,8 +62,8 @@ struct RemoteRootView: View {
                                         HStack(spacing: 8) {
                                             Image(systemName: "desktopcomputer").font(.system(size: style.pt(14))).foregroundStyle(style.accent)
                                             VStack(alignment: .leading, spacing: 2) {
-                                                Text(desktop.name).font(style.mono(13, bold: true, relativeTo: .headline)).foregroundStyle(style.text)
-                                                Text(desktop.pairing.relayHost).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted)
+                                                Text(desktop.name).font(style.face(13, bold: true, relativeTo: .headline)).foregroundStyle(style.text)
+                                                Text(desktop.pairing.relayHost).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted)
                                             }
                                             Spacer(minLength: 4)
                                             Image(systemName: "chevron.right").font(style.system(.caption)).foregroundStyle(style.muted)
@@ -100,7 +100,7 @@ struct RemoteRootView: View {
                 switch route {
                 case .projects(let desktopID):
                     VStack(spacing: 0) {
-                        WorkspaceBar(title: "PROJECTS", back: pop) {
+                        WorkspaceBar(title: style.cased("Projects"), back: pop) {
                             // A desktop found too old hides it for the connection; none connected dims it.
                             if model.offersNewProject {
                                 Button("New project", systemImage: "plus") { openNewProject() }.labelStyle(.iconOnly)
@@ -148,7 +148,7 @@ private struct LibraryFailureView: View {
     @State private var resetError: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("SAVED PAIRINGS UNAVAILABLE", systemImage: "exclamationmark.lock").font(style.mono(14, bold: true, relativeTo: .headline))
+            Label(style.cased("Saved pairings unavailable"), systemImage: "exclamationmark.lock").font(style.face(14, bold: true, relativeTo: .headline))
             Text(model.loadFailure ?? "").foregroundStyle(style.warning).textSelection(.enabled)
             Text("Nothing was changed or deleted. Pairing and removing desktops is paused until this loads.").foregroundStyle(style.muted)
             if let resetError { Text(resetError).foregroundStyle(style.error) }
@@ -167,7 +167,7 @@ private struct EmptyDesktopOverlay: View {
     var add: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("NO DESKTOP CONNECTED", systemImage: "terminal").font(style.mono(14, bold: true, relativeTo: .headline))
+            Label(style.cased("No desktop connected"), systemImage: "terminal").font(style.face(14, bold: true, relativeTo: .headline))
             Text("Pair a desktop, choose a project, then continue in its open terminal tabs.").foregroundStyle(style.muted)
             Button("Pair a desktop", systemImage: "plus", action: add).buttonStyle(DesktopButtonStyle(prominent: true))
         }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center).background(style.background)
@@ -181,7 +181,7 @@ struct ConnectionPanel: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle().fill(model.state == .connected ? style.accent : style.warning).frame(width: 6, height: 6)
-                Text(model.state.label).font(style.mono(11, relativeTo: .caption))
+                Text(model.state.label).font(style.face(11, relativeTo: .caption))
                 Spacer(minLength: 4)
                 if model.state == .connecting { ProgressView().controlSize(.small) }
                 if model.state == .connected {
@@ -235,8 +235,8 @@ struct ProjectSelectionView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "folder").font(.system(size: style.pt(14))).foregroundStyle(style.accent)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(project.name).font(style.mono(13, bold: true, relativeTo: .headline)).foregroundStyle(style.text)
-                                Text(project.root).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
+                                Text(project.name).font(style.face(13, bold: true, relativeTo: .headline)).foregroundStyle(style.text)
+                                Text(project.root).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
                             }
                             Spacer(minLength: 4)
                             if let agents = project.agents, !agents.isIdle { ProjectAgentBadges(agents: agents) }
@@ -355,7 +355,7 @@ struct TerminalTabsView: View {
             } else if model.sessionID == nil && openSessions.isEmpty {
                 VStack {
                     VStack(alignment: .leading, spacing: 12) {
-                        Label("NO OPEN TERMINALS", systemImage: "terminal").font(style.mono(14, bold: true, relativeTo: .headline))
+                        Label(style.cased("No open terminals"), systemImage: "terminal").font(style.face(14, bold: true, relativeTo: .headline))
                         Text("Open one here, or on your desktop and then refresh.").foregroundStyle(style.muted)
                         Button("New terminal", systemImage: "plus") { openNewTerminal() }.buttonStyle(DesktopButtonStyle(prominent: true))
                             .disabled(model.state != .connected || model.projectID != project.id)
@@ -424,10 +424,10 @@ struct TerminalTabsView: View {
                                     Label { Text(session.title) } icon: {
                                         Image(systemName: session.kind == "orchestrator" ? "point.3.connected.trianglepath.dotted" : "terminal")
                                             .foregroundStyle(session.kind == "orchestrator" ? style.magenta : style.text)
-                                    }.font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
+                                    }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
                                     ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
                                 }
-                                Text(tabDetail(session)).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                                Text(tabDetail(session)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
                             }
                             .tabChrome(selected: selected, waiting: session.shownActivity == .waiting)
                         }
@@ -480,17 +480,28 @@ struct TerminalTabsView: View {
     }
 }
 
-/// What every tab of the strip looks like: the selected one is underlined in the accent color, one that waits for a person in gold.
+/// One cell of the tab strip, a terminal's or a chat's.
+/// - Terminal look: the selected tab is underlined in the accent color; one that waits for a person, in gold.
+/// - Native: the selected tab is filled with the content's own background, as on the desktop; only waiting keeps a mark, in the
+///   signal color, and on glass the cells sit on the screen's surface with no rules between them.
 private struct TabChrome: ViewModifier {
     @Environment(\.desktopStyle) private var style
     let selected: Bool
     let waiting: Bool
     func body(content: Content) -> some View {
-        content
-            .padding(.horizontal, 10).frame(minHeight: style.pt(36))
-            .background(selected ? style.active : style.panel)
-            .overlay(alignment: .trailing) { Rectangle().fill(style.divider).frame(width: 1) }
-            .overlay(alignment: .bottom) { Rectangle().fill(selected ? style.accent : (waiting ? style.gold : style.divider)).frame(height: waiting ? 2 : 1) }
+        let cell = content.padding(.horizontal, 10).frame(minHeight: style.pt(36))
+        if style.native {
+            cell
+                .background(selected ? (style.glass ? style.active : style.background) : (style.glass ? style.surface : style.panel))
+                .overlay(alignment: .bottom) { if waiting { Capsule().fill(style.gold).frame(height: 2).padding(.horizontal, 8) } }
+                .padding(.horizontal, style.glass ? 2 : 0)
+                .overlay(alignment: .trailing) { if !style.glass { Rectangle().fill(style.divider).frame(width: 1) } }
+        } else {
+            cell
+                .background(selected ? style.active : style.panel)
+                .overlay(alignment: .trailing) { Rectangle().fill(style.divider).frame(width: 1) }
+                .overlay(alignment: .bottom) { Rectangle().fill(selected ? style.accent : (waiting ? style.gold : style.divider)).frame(height: waiting ? 2 : 1) }
+        }
     }
 }
 private extension View {
@@ -513,10 +524,10 @@ private struct SessionInfoSheet: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: "SESSION INFO") { Button("Done") { dismiss() } }
+            WorkspaceBar(title: style.cased("Session info")) { Button("Done") { dismiss() } }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(info.title).font(style.mono(14, bold: true, relativeTo: .headline))
+                    Text(info.title).font(style.face(14, bold: true, relativeTo: .headline))
                     Text(info.kind).font(style.system(.caption)).foregroundStyle(style.muted)
                     if let activity = info.activity {
                         HStack(spacing: 4) {
@@ -525,15 +536,15 @@ private struct SessionInfoSheet: View {
                         }.font(style.system(.footnote))
                     }
                     DesktopRule()
-                    Text("SESSION UUID").font(style.system(.caption)).foregroundStyle(style.muted)
+                    Text(style.cased("Session UUID")).font(style.system(.caption)).foregroundStyle(style.muted)
                     Text(info.id).textSelection(.enabled).accessibilityLabel("Session UUID: \(info.id)")
-                    Text("WORKING DIRECTORY").font(style.system(.caption)).foregroundStyle(style.muted)
+                    Text(style.cased("Working directory")).font(style.system(.caption)).foregroundStyle(style.muted)
                     Text(info.cwd).textSelection(.enabled)
                 }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
             }
-        }.background(style.background).foregroundStyle(style.text)
-            .font(style.mono(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
-            .presentationDetents([.medium, .large]).presentationCornerRadius(8)
+        }.desktopSheetSurface(style).foregroundStyle(style.text)
+            .font(style.face(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
+            .presentationDetents([.medium, .large])
     }
 }
 
@@ -545,7 +556,7 @@ private struct PendingInputNotice: View {
         if let pending = model.pendingInput {
             VStack(alignment: .leading, spacing: 6) {
                 Label(model.sending ? "Submitting once…" : "Unconfirmed submission", systemImage: "exclamationmark.bubble").font(style.system(.subheadline, weight: .bold))
-                Text("Session \(pending.shellID.prefix(8)) · request \(pending.id.prefix(8))").font(style.mono(12, relativeTo: .caption))
+                Text("Session \(pending.shellID.prefix(8)) · request \(pending.id.prefix(8))").font(style.face(12, relativeTo: .caption))
                 Text(pending.line).font(style.mono(12, relativeTo: .caption)).lineLimit(4).textSelection(.enabled)
                 if !model.sending {
                     Text("Check that session’s output. This input will not be resent.").font(style.system(.footnote))
@@ -763,13 +774,13 @@ struct SessionConsole: View {
             Button(keyFocus.isActive ? "Hide keyboard" : "Show keyboard", systemImage: keyFocus.isActive ? "keyboard.chevron.compact.down" : "keyboard") {
                 if keyFocus.isActive { keyFocus.userDismiss() } else { keyFocus.focus() }
             }.labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: true))
-        }.font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+        }.font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
             .padding(.leading, 8).frame(minHeight: style.pt(36)).background(style.panel).overlay(alignment: .top) { DesktopRule() }
     }
     /// The line composer: today's behaviour, for desktops that cannot take keys and for anyone who prefers it.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !focused, let notice = model.deliveryNotice { Text(notice).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted) }
+            if !focused, let notice = model.deliveryNotice { Text(notice).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted) }
             HStack {
                 CommandField(text: $model.draft, placeholder: "Continue the selected session…", isEnabled: model.canEditDraft,
                              label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
@@ -782,7 +793,7 @@ struct SessionConsole: View {
                     .accessibilityHint("Submits this line once followed by Return")
             }
             if !focused {
-                Text("One line + Return · selected \(model.session?.shortID ?? "—")").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                Text("One line + Return · selected \(model.session?.shortID ?? "—")").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                 if model.state != .connected { Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting) }
             }
         }.padding(8).background(style.panel).overlay(alignment: .top) { DesktopRule() }
@@ -813,7 +824,7 @@ struct StatusStrip: View {
                 Text("\(viewport.columns)×\(viewport.rows)").monospacedDigit()
                     .accessibilityLabel("Terminal size \(viewport.columns) columns, \(viewport.rows) rows")
             }
-        }.font(style.mono(10, relativeTo: .caption2)).foregroundStyle(outputStale ? style.warning : style.muted)
+        }.font(style.face(10, relativeTo: .caption2)).foregroundStyle(outputStale ? style.warning : style.muted)
             .padding(.horizontal, 8).padding(.vertical, 2).background(style.panel)
     }
     private var outputStale: Bool { model.state != .connected || model.snapshotStale || model.outputSessionID != model.sessionID || model.session?.alive != true || !model.viewportReady }

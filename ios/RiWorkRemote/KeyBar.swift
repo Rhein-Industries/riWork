@@ -43,8 +43,9 @@ private final class KeyScrollView: UIScrollView {
     var style = DesktopStyle.builtIn {
         didSet {
             guard style != oldValue else { return }
-            // A new interface size changes every key's size and the bar's height; colors only need a restyle.
-            if style.scale != oldValue.scale { applyScale() } else { restyle() }
+            // A new interface size changes every key's size and the bar's height, and Native draws other keys (symbols, another
+            // face); colors only need a restyle.
+            if style.scale != oldValue.scale || style.native != oldValue.native { applyScale() } else { restyle() }
         }
     }
     /// Where the bar is and the padding at the ends of the row that follows from it.
@@ -54,6 +55,8 @@ private final class KeyScrollView: UIScrollView {
     var scrollView: UIScrollView { scroll }
 
     private let rule = UIView()
+    /// Native on iOS 26: the row sits on a capsule of Liquid Glass instead of the panel color.
+    private var glassView: UIVisualEffectView?
     private let row = UIView()
     private let scroll = KeyScrollView()
     private let stack = UIStackView()
@@ -148,21 +151,25 @@ private final class KeyScrollView: UIScrollView {
         let hide = buttons[.hide]
         buttons = [:]; roles = [:]; dividers = []
         if let hide { buttons[.hide] = hide; roles[.hide] = .plain }
-        func key(_ key: TerminalKey, _ title: String?, _ symbol: String? = nil, _ label: String) {
-            add(.key(key), title: title, symbol: symbol, label: label, role: .plain)
+        // Native draws the named keys as the symbols macOS uses for them; the terminal look spells them out.
+        func named(_ title: String, _ symbol: String) -> (String?, String?) { style.native ? (nil, symbol) : (title, nil) }
+        func key(_ key: TerminalKey, _ face: (String?, String?), _ label: String) {
+            add(.key(key), title: face.0, symbol: face.1, label: label, role: .plain)
         }
-        key(.escape, "Esc", nil, "Escape"); key(.tab, "Tab", nil, "Tab")
-        add(.control, title: "Ctrl", symbol: nil, label: "Control", role: .plain); add(.alt, title: "Alt", symbol: nil, label: "Alt", role: .plain)
-        key(.left, nil, "arrow.left", "Left arrow"); key(.up, nil, "arrow.up", "Up arrow"); key(.down, nil, "arrow.down", "Down arrow"); key(.right, nil, "arrow.right", "Right arrow")
-        key(.backTab, "⇧Tab", nil, "Shift Tab"); key(.home, "Home", nil, "Home"); key(.end, "End", nil, "End")
-        key(.pageUp, "PgUp", nil, "Page up"); key(.pageDown, "PgDn", nil, "Page down")
-        key(.delete, "Del", nil, "Delete"); key(.backspace, nil, "delete.left", "Backspace"); key(.enter, nil, "return", "Enter")
+        key(.escape, named("Esc", "escape"), "Escape"); key(.tab, named("Tab", "arrow.right.to.line"), "Tab")
+        let control = named("Ctrl", "control"), alt = named("Alt", "option")
+        add(.control, title: control.0, symbol: control.1, label: "Control", role: .plain); add(.alt, title: alt.0, symbol: alt.1, label: "Alt", role: .plain)
+        key(.left, (nil, "arrow.left"), "Left arrow"); key(.up, (nil, "arrow.up"), "Up arrow"); key(.down, (nil, "arrow.down"), "Down arrow"); key(.right, (nil, "arrow.right"), "Right arrow")
+        key(.backTab, named("⇧Tab", "arrow.left.to.line"), "Shift Tab"); key(.home, named("Home", "arrow.up.left"), "Home"); key(.end, named("End", "arrow.down.right"), "End")
+        key(.pageUp, named("PgUp", "chevron.up.2"), "Page up"); key(.pageDown, named("PgDn", "chevron.down.2"), "Page down")
+        key(.delete, named("Del", "delete.right"), "Delete"); key(.backspace, (nil, "delete.left"), "Backspace"); key(.enter, (nil, "return"), "Enter")
         add(.paste, title: nil, symbol: "doc.on.clipboard", label: "Paste", role: .plain)
         addDivider()
         // The hotkey menu first: it reaches every hotkey, shortcut and key from the keyboard (also ⌘K).
         add(.palette, title: nil, symbol: "command", label: "Hotkey menu", role: .hotkey)
         // And the hotkey help (⌘/): every hotkey with its shortcut, to look at before pressing one.
-        add(.help, title: "?", symbol: nil, label: "Hotkey help", role: .hotkey)
+        let help = named("?", "questionmark.circle")
+        add(.help, title: help.0, symbol: help.1, label: "Hotkey help", role: .hotkey)
         for hotkey in Hotkey.builtIn + hotkeys {
             add(.hotkey(hotkey.id), title: hotkey.label, symbol: nil, label: "Hotkey \(hotkey.label)", role: .hotkey)
         }
@@ -195,7 +202,7 @@ private final class KeyScrollView: UIScrollView {
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: inset, bottom: 0, trailing: inset)
         if let title {
             let size: CGFloat = wide ? 13 : 16
-            configuration.attributedTitle = AttributedString(title, attributes: AttributeContainer([.font: style.uiFont("Menlo", size: size)]))
+            configuration.attributedTitle = AttributedString(title, attributes: AttributeContainer([.font: style.uiFace(size: size)]))
         }
         if let symbol { configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14 * CGFloat(style.scale), weight: .regular)) }
         configuration.titleLineBreakMode = .byClipping
@@ -252,13 +259,17 @@ private final class KeyScrollView: UIScrollView {
     // MARK: Look
 
     private func restyle() {
-        backgroundColor = style.panelUI
+        applyGlass()
+        backgroundColor = glassView == nil ? style.panelUI : .clear
         rule.backgroundColor = style.dividerUI
+        rule.isHidden = glassView != nil
         hideDivider.backgroundColor = style.dividerUI
         for line in dividers { line.backgroundColor = style.dividerUI }
         // The row spans the bar, in focus mode too, and its ends are padded clear of the display corners.
-        stackLeading.constant = CGFloat(padding.left)
-        hideTrailing.constant = CGFloat(padding.right)
+        // On glass the end keys also keep clear of the capsule's rounded ends.
+        let capsuleInset: CGFloat = glassView == nil ? 0 : 12
+        stackLeading.constant = CGFloat(padding.left) + capsuleInset
+        hideTrailing.constant = CGFloat(padding.right) + capsuleInset
         for (action, button) in buttons {
             switch roles[action] ?? .plain {
             case .plain: button.configuration?.baseForegroundColor = style.textUI
@@ -267,6 +278,24 @@ private final class KeyScrollView: UIScrollView {
             }
         }
         setArmed(control: controlArmed, alt: altArmed)
+    }
+    /// Native on iOS 26 puts the row on glass, inset from the edges like the system's own bars; anything else takes it away.
+    private func applyGlass() {
+        guard #available(iOS 26, *), style.glass else {
+            glassView?.removeFromSuperview(); glassView = nil
+            return
+        }
+        guard glassView == nil else { return }
+        let glass = UIVisualEffectView(effect: UIGlassEffect())
+        glass.translatesAutoresizingMaskIntoConstraints = false
+        glass.isUserInteractionEnabled = false
+        glass.cornerConfiguration = .capsule()
+        insertSubview(glass, at: 0)
+        NSLayoutConstraint.activate([
+            glass.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6), trailingAnchor.constraint(equalTo: glass.trailingAnchor, constant: 6),
+            glass.topAnchor.constraint(equalTo: topAnchor, constant: 2), bottomAnchor.constraint(equalTo: glass.bottomAnchor, constant: 2)
+        ])
+        glassView = glass
     }
     override func layoutSubviews() {
         super.layoutSubviews()

@@ -7,6 +7,7 @@ mod chat_view;
 mod cli;
 mod cli_agents;
 mod codex_accounts;
+mod controls;
 mod cua;
 mod dock_menu;
 mod file_explorer;
@@ -43,6 +44,7 @@ mod settings;
 mod sgr;
 mod status_bar;
 mod store;
+mod symbols;
 mod terminal_drop;
 mod terminal_lifecycle;
 mod terminal_links;
@@ -68,11 +70,11 @@ use chat::model::{ApprovalMode, NewChat, Provider};
 use chat_view::{ChatView, ChatViewEvent, HostConfig};
 use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, DragMoveEvent, Entity, EntityInputHandler,
-    FocusHandle, Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton,
-    Pixels, Point, Render, StatefulInteractiveElement, TitlebarOptions, UTF16Selection, Window,
-    WindowBounds, WindowHandle, WindowOptions, actions, canvas, div, img, point, prelude::*, px,
-    rgb, size,
+    AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity,
+    EntityInputHandler, FocusHandle, Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem,
+    MouseButton, Pixels, Point, Render, Stateful, StatefulInteractiveElement, TitlebarOptions,
+    UTF16Selection, Window, WindowBounds, WindowHandle, WindowOptions, actions, canvas, div, img,
+    point, prelude::*, px, rgb, size,
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
@@ -181,6 +183,23 @@ const FOCUS_TOOLBAR_HEIGHT: f32 = 32.0;
 /// Design sizes at 100 % interface text; they grow with it (`ui_text::space`).
 const STATUS_BAR_HEIGHT: f32 = 22.0;
 const PANE_HEADER_HEIGHT: f32 = 28.0;
+/// Native's pane bar: its buttons are round hovers this wide, this far apart, and kept this
+/// far from the pane's edge; a tab's close mark has a smaller round hover.
+const NATIVE_BAR_BUTTON: f32 = 22.0;
+const NATIVE_BAR_BUTTON_GAP: f32 = 2.0;
+const NATIVE_BAR_BUTTON_INSET: f32 = 3.0;
+const NATIVE_TAB_CLOSE: f32 = 16.0;
+/// The group a tab's hover reveals its close mark in.
+const TAB_GROUP: &str = "pane-tab";
+/// A Native symbol tab's width with its full padding.
+const NATIVE_ICON_TAB_FULL: f32 = 32.0;
+/// The narrowest a Native symbol tab gets while the bar still shows its focus and lock
+/// buttons: its symbols then sit about as far apart as the buttons' (`NATIVE_BAR_BUTTON`
+/// and its gap).
+const NATIVE_ICON_TAB_ROOMY: f32 = 22.0;
+/// The narrowest a Native symbol tab gets when even the symbols crowd the bar: its symbol
+/// with a point either side.
+const NATIVE_ICON_TAB_MIN: f32 = 16.0;
 /// A window restored fullscreen or zoomed is first drawn at its opening size and animates
 /// to the real one. Sizes seen this soon after the first draw are that settling, not the
 /// user resizing, so they must not rebalance the saved ratios.
@@ -1094,7 +1113,7 @@ impl Render for DraggedTab {
             .border_1()
             .border_color(rgb(colors.cyan))
             .text_color(rgb(colors.text))
-            .font_family("Menlo")
+            .font_family(ui_text::ui_family())
             .text_size(ui_text::text(11.0))
             .child(self.title.clone())
     }
@@ -1824,6 +1843,9 @@ impl Workspace {
             workspace.apply_settings(window, cx);
         })
         .detach();
+        // Native follows macOS light and dark mode as it switches, not at the next poll.
+        cx.observe_window_appearance(window, |_, _, cx| sync_appearance(cx))
+            .detach();
         cx.observe_global::<settings::CodexAccountsState>(|_, cx| {
             request_codex_usage(false, cx);
             cx.notify();
@@ -1883,7 +1905,7 @@ impl Workspace {
     }
 
     fn terminal_theme(settings: &Settings, appearance: &Appearance) -> Option<TerminalTheme> {
-        appearance.terminal_override(settings.use_riwork_colors)
+        appearance.terminal_override(settings.terminal_colors_forced())
     }
 
     fn spawn_tab(
@@ -2343,6 +2365,11 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// A panel's name in sentence case, as Native writes labels.
+    fn panel_label(panel: PanelKind) -> &'static str {
+        panel.label()
     }
 
     fn panel_title(panel: PanelKind) -> &'static str {
@@ -4293,9 +4320,8 @@ impl Workspace {
                 .border_1()
                 .border_color(rgb(colors.divider))
                 .text_color(rgb(colors.text))
-                .cursor_pointer()
                 .hover(|style| style.bg(rgb(colors.divider)))
-                .child("RECONNECT")
+                .child(ui_text::cased("Reconnect"))
                 .on_click(cx.listener(move |workspace, _, window, cx| {
                     workspace.reconnect_remote_tab(pane_id, tab_id, window, cx);
                 }))
@@ -6853,7 +6879,25 @@ impl Workspace {
                     .id(format!("divider-{path:?}"))
                     .flex_none()
                     .bg(rgb(colors.divider))
-                    .hover(|style| style.bg(rgb(colors.cyan)))
+                    .hover(move |style| {
+                        controls::hovered(style, colors.divider, |style| style.bg(rgb(colors.cyan)))
+                    })
+                    // Native: a hairline in the middle of the grip, which fills on hover.
+                    .map(|divider| {
+                        controls::native(divider, |divider| {
+                            divider
+                                .bg(rgb(colors.panel))
+                                .flex()
+                                .justify_center()
+                                .items_center()
+                                .when(horizontal, |divider| {
+                                    divider.child(div().w(px(1.0)).h_full().bg(rgb(colors.divider)))
+                                })
+                                .when(!horizontal, |divider| {
+                                    divider.child(div().h(px(1.0)).w_full().bg(rgb(colors.divider)))
+                                })
+                        })
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |workspace, _, _, cx| {
@@ -6975,6 +7019,12 @@ impl Workspace {
         } else {
             0.0
         };
+        let native = ui_text::is_native();
+        // Native's bar beside the window controls keeps no drag room after its tabs: the
+        // controls' area already drags the window, and the room only parted the tabs from
+        // the buttons.
+        let drag_room = !(native && control_inset > 0.0);
+        let drag_handle = drag_handle && drag_room;
         let header_width = pane_width - control_inset;
         let show_lock = header_width >= ui_text::space_f32(108.0);
         let show_focus = header_width >= ui_text::space_f32(180.0);
@@ -6985,49 +7035,142 @@ impl Workspace {
         // it to the menu's check mark.
         let show_main = is_main
             && header_width
-                >= ui_text::space_f32(if self.settings.panel_tab_icons {
+                >= ui_text::space_f32(if self.settings.panel_tab_icons || ui_text::is_native() {
                     136.0
                 } else {
                     152.0
                 });
         let account_numbers = codex_account_numbers(&self.shells);
-        let tabs = pane
+        let tab_can_close = user_close_refusal(pane_locked, UserClose::Tab).is_none();
+        // A panel's tab says its name as the theme writes labels; a saved layout keeps
+        // whatever title the tab was created with.
+        let titles: Vec<String> = pane
             .tabs
             .iter()
-            .enumerate()
-            .map(|(index, tab)| {
-                let tab_id = tab.id;
-                let active = index == pane.active;
-                let panel = tab.panel().is_some();
-                // Shell tabs keep their titles; only built-in panels swap in an icon.
-                let icon_panel = tab.panel().filter(|_| self.settings.panel_tab_icons);
-                // The X is left out, not disabled, so a locked pane's tabs lose no room to it.
-                let close_visible =
-                    active && user_close_refusal(pane_locked, UserClose::Tab).is_none();
-                let (pad_left, pad_right, gap) = match (icon_panel, close_visible) {
-                    (None, _) => (8.0, 8.0, 6.0),
-                    (Some(_), true) => (0.0, 4.0, 0.0),
-                    (Some(_), false) => (0.0, 0.0, 0.0),
-                };
-                let tab_color = if active {
-                    if panel { colors.magenta } else { colors.text }
-                } else {
-                    colors.muted
-                };
-                let workspace = cx.entity();
-                let shell = tab
-                    .shell_id()
-                    .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
-                let chat = tab.chat().map(|view| view.read(cx).summary());
-                let display_title = match &chat {
+            .map(|tab| match tab.panel() {
+                Some(kind) if native => Self::panel_label(kind).to_owned(),
+                _ => match tab.chat().map(|view| view.read(cx).summary()) {
                     Some(summary) => chat_tab_text(
                         summary.provider,
                         &summary.title,
                         summary.activity,
                         self.settings.panel_tab_icons,
                     ),
-                    None => codex_tab_title(&tab.title, shell, &account_numbers),
+                    None => {
+                        let shell = tab
+                            .shell_id()
+                            .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
+                        codex_tab_title(&tab.title, shell, &account_numbers)
+                    }
+                },
+            })
+            .collect();
+        // Native never cuts a tab off mid-word: when the words do not fit beside the pane's
+        // buttons, its panels show their symbols instead, as Xcode's navigator bar does.
+        // What the bar keeps beside its tabs: the buttons, the drag handle and the window
+        // drag space after the last tab.
+        let bar_reserved = |lock: bool, focus: bool| {
+            let buttons = [show_main, lock, focus, true]
+                .into_iter()
+                .filter(|shown| *shown)
+                .count() as f32;
+            buttons * ui_text::space_f32(NATIVE_BAR_BUTTON)
+                + (buttons - 1.0) * ui_text::space_f32(NATIVE_BAR_BUTTON_GAP)
+                + 2.0 * ui_text::space_f32(NATIVE_BAR_BUTTON_INSET)
+                + if drag_handle { handle_width } else { 0.0 }
+                + if drag_room {
+                    ui_text::space_f32(18.0)
+                } else {
+                    0.0
+                }
+        };
+        let reserved = bar_reserved(show_lock, show_focus);
+        let compact_panels = native && !self.settings.panel_tab_icons && {
+            let close = ui_text::space_f32(6.0 + NATIVE_TAB_CLOSE) - ui_text::space_f32(4.0);
+            let words: f32 = titles
+                .iter()
+                .enumerate()
+                .map(|(index, title)| {
+                    // Native keeps every closable tab's X in place, shown or not.
+                    let shown_close = (native || index == pane.active) && tab_can_close;
+                    ui_text::space_f32(16.0)
+                        + 1.0
+                        + native_label_width(title, cx)
+                        + if shown_close { close } else { 0.0 }
+                })
+                .sum();
+            words > header_width - reserved
+        };
+        // Native's symbol tabs keep their padding while they fit and narrow alike, symbols
+        // centered, as far as a crowded bar needs to keep the selected tab's X in view.
+        // Before they get cramped the bar hands its focus button and then its lock to the
+        // pane menu, as a toolbar moves what does not fit into its overflow menu.
+        let symbol_tabs = native
+            && (self.settings.panel_tab_icons || compact_panels)
+            && pane.tabs.iter().any(|tab| tab.panel().is_some());
+        let close = if tab_can_close {
+            ui_text::space_f32(NATIVE_TAB_CLOSE + 4.0)
+        } else {
+            0.0
+        };
+        let (show_lock, show_focus, icon_cell) = native_symbol_bar(
+            header_width - bar_reserved(false, false) - close,
+            ui_text::space_f32(NATIVE_BAR_BUTTON) + ui_text::space_f32(NATIVE_BAR_BUTTON_GAP),
+            pane.tabs.len(),
+            (show_lock, show_focus),
+            symbol_tabs,
+        );
+        let tabs = pane
+            .tabs
+            .iter()
+            .zip(titles)
+            .enumerate()
+            .map(|(index, (tab, display_title))| {
+                let tab_id = tab.id;
+                let active = index == pane.active;
+                let panel = tab.panel().is_some();
+                // Shell tabs keep their titles; only built-in panels swap in an icon.
+                let icon_panel = tab
+                    .panel()
+                    .filter(|_| self.settings.panel_tab_icons || compact_panels);
+                // The X is left out, not disabled, so a locked pane's tabs lose no room to it.
+                let close_visible = active && tab_can_close;
+                // Native gives every closable tab with words its X, shown on the selected tab
+                // and under the pointer, so such a tab never changes width when it is chosen.
+                // Symbol tabs are too narrow to all keep that room: the selected one carries
+                // the same X beside its symbol.
+                let close_slot = if native && icon_panel.is_none() {
+                    tab_can_close
+                } else {
+                    close_visible
                 };
+                // Native's close mark sits in its own round hover, which already pads it.
+                let pad_right_with_close = if native { 4.0 } else { 8.0 };
+                let (pad_left, pad_right, gap) = match (icon_panel, close_slot) {
+                    (None, true) => (8.0, pad_right_with_close, 6.0),
+                    (None, false) => (8.0, 8.0, 6.0),
+                    (Some(_), true) => (0.0, 4.0, 0.0),
+                    (Some(_), false) => (0.0, 0.0, 0.0),
+                };
+                let tab_color = if active {
+                    if panel && !colors.plain_tabs {
+                        colors.magenta
+                    } else {
+                        colors.text
+                    }
+                } else {
+                    colors.muted
+                };
+                // Native's selected tab is a full-height cell in the content's own
+                // background with medium weight, brightest in the selected pane.
+                // Other tabs are muted words on the bar; hairlines part the cells.
+                let tab_fill = if selected {
+                    colors.bg
+                } else {
+                    colors.panel_active
+                };
+                let workspace = cx.entity();
+                let chat = tab.chat().map(|view| view.read(cx).summary());
                 let activity_hint = match &chat {
                     Some(summary) => chat_tab_hint(summary),
                     None => tab
@@ -7044,23 +7187,65 @@ impl Workspace {
                     .id(("tab", tab_id))
                     .flex()
                     .flex_shrink_0()
+                    // Should even the symbols not fit, Native's tabs narrow alike and end
+                    // their words in an ellipsis, as Finder's do, rather than run off the bar.
+                    .when(native, |tab| {
+                        tab.flex_shrink(1.0)
+                            .when(icon_panel.is_none(), |tab| tab.min_w(ui_text::space(44.0)))
+                            .when(icon_panel.is_some(), |tab| tab.flex_none())
+                    })
                     .items_center()
                     .h_full()
+                    .relative()
+                    .group(TAB_GROUP)
                     .pl(ui_text::space(pad_left))
                     .pr(ui_text::space(pad_right))
                     .gap(ui_text::space(gap))
-                    .border_r_1()
-                    .border_b_1()
-                    .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-                    .bg(rgb(if active {
-                        colors.panel_active
-                    } else {
-                        colors.panel
-                    }))
+                    .map(|style| {
+                        if !colors.plain_tabs {
+                            return style
+                                .border_r_1()
+                                .border_b_1()
+                                .border_color(rgb(if active {
+                                    colors.cyan
+                                } else {
+                                    colors.divider
+                                }))
+                                .bg(rgb(if active {
+                                    colors.panel_active
+                                } else {
+                                    colors.panel
+                                }));
+                        }
+                        let style = style
+                            .h_full()
+                            .border_r_1()
+                            .border_color(rgb(colors.divider));
+                        if active {
+                            style
+                                .bg(rgb(tab_fill))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                        } else {
+                            style
+                        }
+                    })
                     .text_color(rgb(tab_color))
-                    .text_size(ui_text::text(if panel { 9.0 } else { 10.0 }))
-                    .cursor_grab()
-                    .hover(|style| style.bg(rgb(colors.panel_active)))
+                    .text_size(ui_text::text(if panel && !colors.plain_tabs {
+                        9.0
+                    } else {
+                        10.0
+                    }))
+                    .hover(move |style| {
+                        if active && colors.plain_tabs {
+                            style
+                        } else if native {
+                            style
+                                .bg(rgb(colors.panel_active))
+                                .text_color(rgb(colors.text))
+                        } else {
+                            style.bg(rgb(colors.panel_active))
+                        }
+                    })
                     .drag_over::<DraggedTab>(move |style, _, _, _| {
                         style.border_l_2().border_color(rgb(colors.cyan))
                     })
@@ -7071,44 +7256,64 @@ impl Workspace {
                             .h_full()
                             .min_w(ui_text::space(32.0))
                             .px(ui_text::space(8.0))
+                            // Native's symbol tabs keep their padding while they fit and
+                            // narrow, symbol centered, only as far as a crowded bar needs.
+                            .when(native, |icon| {
+                                icon.px_0()
+                                    .w(px(icon_cell))
+                                    .min_w(px(icon_cell))
+                                    .flex_none()
+                            })
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icons::icon(Icon::Panel(kind), tab_color))
+                            .child(icons::text_icon(Icon::Panel(kind), 10.0, tab_color))
                             .child(tooltip::anchor(panel_tooltip(kind), Look::Pane))
                             .into_any_element(),
                         // Another Mac's tabs wear its name in the remote accent.
-                        None => match remote_tree::split_remote_title(&display_title)
-                            .filter(|_| tab.remote().is_some())
-                        {
-                            Some((mark, rest)) => div()
-                                .flex()
-                                .child(div().text_color(rgb(colors.magenta)).child(mark.to_owned()))
-                                .child(rest.to_owned())
-                                .into_any_element(),
-                            // What the agent in the tab is doing, on hover.
-                            None => {
-                                let label = match chat_mark {
-                                    Some(provider) => div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(ui_text::space(5.0))
-                                        .child(icons::icon(Icon::Provider(provider), tab_color))
-                                        .child(display_title.clone())
-                                        .into_any_element(),
-                                    None => display_title.clone().into_any_element(),
-                                };
-                                match activity_hint {
-                                    Some(hint) => div()
-                                        .child(label)
-                                        .child(tooltip::anchor(hint, Look::Pane))
-                                        .into_any_element(),
-                                    None => label,
+                        None => {
+                            let label = match remote_tree::split_remote_title(&display_title)
+                                .filter(|_| tab.remote().is_some())
+                            {
+                                Some((mark, rest)) => div()
+                                    .flex()
+                                    .child(
+                                        div()
+                                            .text_color(rgb(colors.magenta))
+                                            .child(mark.to_owned()),
+                                    )
+                                    .child(rest.to_owned())
+                                    .into_any_element(),
+                                // What the agent in the tab is doing, on hover.
+                                None => {
+                                    let label = match chat_mark {
+                                        Some(provider) => div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(ui_text::space(5.0))
+                                            .child(icons::icon(Icon::Provider(provider), tab_color))
+                                            .child(display_title.clone())
+                                            .into_any_element(),
+                                        None => display_title.clone().into_any_element(),
+                                    };
+                                    match activity_hint {
+                                        Some(hint) => div()
+                                            .child(label)
+                                            .child(tooltip::anchor(hint, Look::Pane))
+                                            .into_any_element(),
+                                        None => label,
+                                    }
                                 }
+                            };
+                            // The words of a narrowed tab end in an ellipsis.
+                            if native {
+                                div().min_w_0().truncate().child(label).into_any_element()
+                            } else {
+                                label
                             }
-                        },
+                        }
                     })
-                    .children(close_visible.then(|| {
+                    .children(close_slot.then(|| {
                         div()
                             .id(("close-tab", tab_id))
                             .size(ui_text::space(18.0))
@@ -7116,10 +7321,31 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .cursor_pointer()
                             .rounded(px(3.0))
-                            .hover(|style| style.bg(rgb(colors.divider)))
-                            .child(icons::icon(Icon::Close, colors.muted))
+                            .hover(move |style| {
+                                let style = style.bg(rgb(colors.divider));
+                                if native {
+                                    style.text_color(rgb(colors.text))
+                                } else {
+                                    style
+                                }
+                            })
+                            // Native's close mark is a small cross in a round hover, muted
+                            // until the pointer is on it.
+                            .map(|close| {
+                                controls::native(close, |close| {
+                                    close
+                                        .size(ui_text::space(NATIVE_TAB_CLOSE))
+                                        .rounded_full()
+                                        .text_color(rgb(colors.muted))
+                                        .when(!active, |close| {
+                                            close
+                                                .invisible()
+                                                .group_hover(TAB_GROUP, |style| style.visible())
+                                        })
+                                })
+                            })
+                            .child(icons::text_icon(Icon::Close, 10.0, colors.muted))
                             .child(tooltip::anchor("Close tab · ⌘W", Look::Pane))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |workspace, _, window, cx| {
@@ -7164,7 +7390,8 @@ impl Workspace {
             .items_center()
             .bg(rgb(colors.panel))
             .border_b_1()
-            .border_color(rgb(if selected {
+            // Native marks the selected pane by its brighter tab, not by a line.
+            .border_color(rgb(if selected && !colors.plain_tabs {
                 colors.cyan
             } else {
                 colors.divider
@@ -7183,12 +7410,10 @@ impl Workspace {
                         div()
                             .id(("window-drag-space", pane_id))
                             .flex_1()
-                            .min_w(ui_text::space(18.0))
+                            .min_w(ui_text::space(if drag_room { 18.0 } else { 0.0 }))
                             .h_full()
                             .when(window_drag_enabled, |space| {
-                                space
-                                    .cursor_grab()
-                                    .on_mouse_down(MouseButton::Left, start_window_drag)
+                                space.on_mouse_down(MouseButton::Left, start_window_drag)
                             }),
                     )
                     .on_drop(
@@ -7209,7 +7434,6 @@ impl Workspace {
                     .flex_none()
                     .w(px(handle_width))
                     .h_full()
-                    .cursor_grab()
                     .on_mouse_down(MouseButton::Left, start_window_drag)
             }))
             .child(
@@ -7217,6 +7441,15 @@ impl Workspace {
                     .flex()
                     .h_full()
                     .flex_none()
+                    // Native leaves the pane's buttons bare on the bar, like a toolbar.
+                    .map(|group| {
+                        controls::native(group, |group| {
+                            group
+                                .items_center()
+                                .gap(ui_text::space(NATIVE_BAR_BUTTON_GAP))
+                                .mx(ui_text::space(NATIVE_BAR_BUTTON_INSET))
+                        })
+                    })
                     .children(show_main.then(|| self.main_marker(pane_id, cx)))
                     .children(show_lock.then(|| {
                         self.pane_button(
@@ -7566,14 +7799,18 @@ impl Workspace {
                     .border_b_1()
                     .border_color(rgb(colors.divider))
                     .text_color(rgb(colors.muted))
-                    .child("ORCHESTRATOR SKILL UPDATE AVAILABLE")
+                    .child(ui_text::cased("Orchestrator skill update available"))
                     .child(div().flex_1())
                     .child(
                         div()
                             .id(("load-orchestrator-skill", pane_id))
-                            .text_color(rgb(colors.gold))
-                            .cursor_pointer()
-                            .child("LOAD SKILL")
+                            // The colorful themes call it out; Native's link is the primary color.
+                            .text_color(rgb(if ui_text::is_native() {
+                                colors.cyan
+                            } else {
+                                colors.gold
+                            }))
+                            .child(ui_text::cased("Load skill"))
                             .on_click(cx.listener(move |workspace, _, _, cx| {
                                 match workspace.sessions.load_orchestrator_skill(&shell_id) {
                                     Ok(_) => {
@@ -7606,13 +7843,19 @@ impl Workspace {
                         .border_1()
                         .border_color(rgb(colors.magenta))
                         .p(ui_text::space(3.0))
+                        .map(|menu| {
+                            controls::native(menu, |menu| {
+                                controls::menu(menu, colors)
+                                    .top(ui_text::space(PANE_HEADER_HEIGHT) + px(4.0))
+                            })
+                        })
                         .on_mouse_down_out(cx.listener(|workspace, _, window, cx| {
                             workspace.panel_menu = None;
                             workspace.finish_tab_drag(cx);
                             workspace.focus_active(window, cx);
                             cx.notify();
                         }));
-                    menu.child(pane_menu_heading("NEW TAB", colors))
+                    menu.child(pane_menu_heading("New tab", true, colors))
                         .children(
                             [
                                 ("Shell", "⌘T", Some(Icon::Add), PaneMenuAction::Shell),
@@ -7680,7 +7923,7 @@ impl Workspace {
                                 self.pane_menu_row(pane_id, label, shortcut, icon, action, cx)
                             }),
                         )
-                        .child(pane_menu_heading("VIEWS", colors))
+                        .child(pane_menu_heading("Views", false, colors))
                         .children(
                             [
                                 PanelKind::Projects,
@@ -7698,7 +7941,11 @@ impl Workspace {
                             .map(|kind| {
                                 self.pane_menu_row(
                                     pane_id,
-                                    Self::panel_title(kind),
+                                    if ui_text::is_native() {
+                                        Self::panel_label(kind)
+                                    } else {
+                                        Self::panel_title(kind)
+                                    },
                                     match kind {
                                         PanelKind::Files => "⌘⇧E",
                                         PanelKind::Preview => "⌘⇧P",
@@ -7712,7 +7959,7 @@ impl Workspace {
                                 )
                             }),
                         )
-                        .child(pane_menu_heading("PANE", colors))
+                        .child(pane_menu_heading("Pane", false, colors))
                         .children(
                             [
                                 (
@@ -7794,6 +8041,8 @@ impl Workspace {
         use status_bar::StatusSide;
         let colors = theme::palette(cx);
         let settings = &self.settings.status_bar;
+        // Native parts its items by space alone, and a little more of it.
+        let status_gap = if ui_text::is_native() { 16.0 } else { 10.0 };
         div()
             .id("status-items")
             .size_full()
@@ -7801,7 +8050,11 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(ui_text::space(8.0))
-            .px(ui_text::space(8.0))
+            .px(ui_text::space(if ui_text::is_native() {
+                12.0
+            } else {
+                8.0
+            }))
             .text_size(ui_text::text(9.0))
             .text_color(rgb(colors.muted))
             // Items keep one line; at larger text the right side gives way first and
@@ -7822,7 +8075,7 @@ impl Workspace {
                     ))
                     .min_w_0()
                     .items_center()
-                    .gap(ui_text::space(10.0))
+                    .gap(ui_text::space(status_gap))
                     .overflow_x_scroll()
                     .children(
                         settings
@@ -7838,7 +8091,7 @@ impl Workspace {
                     .flex()
                     .min_w_0()
                     .items_center()
-                    .gap(ui_text::space(10.0))
+                    .gap(ui_text::space(status_gap))
                     .overflow_x_scroll()
                     .children(
                         settings
@@ -7869,7 +8122,6 @@ impl Workspace {
                     .text_ellipsis()
                     .overflow_hidden()
                     .text_color(rgb(colors.cyan))
-                    .cursor_pointer()
                     .child(name)
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         workspace.open_panel(
@@ -7904,9 +8156,9 @@ impl Workspace {
                     .id("status-current-worktree")
                     .max_w(ui_text::space(220.0))
                     .min_w_0()
+                    .font_family(ui_text::mono_family())
                     .text_ellipsis()
                     .overflow_hidden()
-                    .cursor_pointer()
                     .child(branch)
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         workspace.open_panel(
@@ -7939,10 +8191,10 @@ impl Workspace {
                 });
                 div()
                     .flex_none()
-                    .child(format!(
+                    .child(ui_text::quiet(format!(
                         "{} LIVE",
                         live.map_or("—".to_owned(), |live| live.to_string())
-                    ))
+                    )))
                     .into_any_element()
             }
             StatusItemKind::AgentActivity => {
@@ -7958,9 +8210,8 @@ impl Workspace {
                     .min_w_0()
                     .text_ellipsis()
                     .overflow_hidden()
-                    .cursor_pointer()
                     .text_color(rgb(if counts.working > 0 {
-                        colors.cyan
+                        colors.working
                     } else {
                         colors.muted
                     }))
@@ -7972,7 +8223,8 @@ impl Workspace {
             }
             StatusItemKind::LiveSessions => div()
                 .flex_none()
-                .child(format!(
+                .font_family(ui_text::mono_family())
+                .child(ui_text::quiet(format!(
                     "{} LIVE",
                     self.shells
                         .iter()
@@ -7981,7 +8233,7 @@ impl Workspace {
                                 && shell.alive
                         )
                         .count()
-                ))
+                )))
                 .into_any_element(),
             StatusItemKind::Resources => {
                 let (cpu, ram) = self
@@ -7996,6 +8248,7 @@ impl Workspace {
                     });
                 div()
                     .flex_none()
+                    .font_family(ui_text::mono_family())
                     .child(format!("CPU {cpu:.1}% RAM {}", format_bytes(ram)))
                     .into_any_element()
             }
@@ -8014,10 +8267,10 @@ impl Workspace {
                 div()
                     .id("copy-active-shell-id")
                     .flex_none()
-                    .text_color(rgb(colors.cyan))
+                    .font_family(ui_text::mono_family())
+                    .text_color(rgb(status_accent(colors.cyan, colors)))
                     .when_some(id, |item, id| {
-                        item.cursor_pointer()
-                            .child(id.chars().take(8).collect::<String>())
+                        item.child(id.chars().take(8).collect::<String>())
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(id.clone()))
                             }))
@@ -8027,9 +8280,8 @@ impl Workspace {
             StatusItemKind::GlobalOrchestrator => div()
                 .id("top-orchestrator")
                 .flex_none()
-                .text_color(rgb(colors.magenta))
-                .cursor_pointer()
-                .child("G·ORCH")
+                .text_color(rgb(status_accent(colors.magenta, colors)))
+                .child(ui_text::quiet("G·ORCH"))
                 .on_click(
                     cx.listener(|workspace, _, window, cx| workspace.open_orchestrator(window, cx)),
                 )
@@ -8037,9 +8289,8 @@ impl Workspace {
             StatusItemKind::ProjectOrchestrator => div()
                 .id("project-orchestrator")
                 .flex_none()
-                .text_color(rgb(colors.cyan))
-                .cursor_pointer()
-                .child("P·ORCH")
+                .text_color(rgb(status_accent(colors.cyan, colors)))
+                .child(ui_text::quiet("P·ORCH"))
                 .on_click(cx.listener(|workspace, _, window, cx| {
                     workspace.open_scoped_orchestrator(
                         Some(workspace.project_id.clone()),
@@ -8068,7 +8319,6 @@ impl Workspace {
             .gap(ui_text::space(4.0))
             .px(ui_text::space(4.0))
             .py(ui_text::space(1.0))
-            .cursor_pointer()
             .text_color(rgb(color))
             .when(open, |item| item.bg(rgb(colors.panel_active)))
             .hover(|style| {
@@ -8077,7 +8327,12 @@ impl Workspace {
                     .text_color(rgb(colors.cyan))
             })
             .child(icons::icon(Icon::Layout, color))
-            .children((!self.settings.panel_tab_icons).then(|| div().child("LAYOUT")))
+            .when(ui_text::is_native(), |item| {
+                item.rounded_full().px(ui_text::space(6.0))
+            })
+            .children(
+                (!self.settings.panel_tab_icons).then(|| div().child(ui_text::cased("Layout"))),
+            )
             .child(
                 canvas(move |area, _, _| bounds.set(area), |_, _, _, _| {})
                     .absolute()
@@ -8150,6 +8405,7 @@ impl Workspace {
             .border_1()
             .border_color(rgb(colors.magenta))
             .p(ui_text::space(3.0))
+            .map(|menu| controls::native(menu, |menu| controls::menu(menu, colors)))
             .occlude()
             .on_mouse_down_out(cx.listener(
                 |workspace, event: &gpui::MouseDownEvent, window, cx| {
@@ -8176,10 +8432,14 @@ impl Workspace {
             .px(ui_text::space(8.0))
             .py(ui_text::space(5.0))
             .text_size(ui_text::text(10.0))
+            .map(|item| controls::native(item, |item| controls::menu_row(item, colors)))
             .text_color(rgb(if enabled { colors.text } else { colors.muted }))
             .when(enabled, |item| {
-                item.cursor_pointer()
-                    .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan)))
+                item.hover(move |style| {
+                    controls::hovered(style, controls::menu_row_hover(colors), |style| {
+                        style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
+                    })
+                })
             })
             .child(
                 div()
@@ -8190,7 +8450,7 @@ impl Workspace {
                         div()
                             .w(ui_text::space(14.0))
                             .flex_none()
-                            .children(row.icon.map(|icon| icons::icon(icon, colors.muted))),
+                            .children(row.icon.map(|icon| menu_icon(icon, colors))),
                     )
                     .child(
                         div()
@@ -8262,9 +8522,8 @@ impl Workspace {
             .min_w_0()
             .overflow_hidden()
             .text_ellipsis()
-            .text_color(rgb(colors.cyan))
-            .cursor_pointer()
-            .child(label)
+            .text_color(rgb(status_accent(colors.cyan, colors)))
+            .child(ui_text::quiet(label))
             .on_click(cx.listener(|workspace, _, window, cx| {
                 workspace.open_panel(
                     PanelKind::ProjectSettings,
@@ -8324,10 +8583,9 @@ impl Workspace {
             .max_w(ui_text::space(220.0))
             .overflow_hidden()
             .text_ellipsis()
-            .text_color(rgb(colors.cyan))
-            .cursor_pointer()
+            .text_color(rgb(status_accent(colors.cyan, colors)))
             .hover(|style| style.text_color(rgb(colors.magenta)))
-            .child(label)
+            .child(ui_text::quiet(label))
             .on_click(cx.listener(|workspace, _, window, cx| {
                 workspace.open_panel(PanelKind::Usage, workspace.active_pane, window, cx);
             }))
@@ -8356,7 +8614,7 @@ impl Workspace {
         }
         for (home, label) in profiles {
             let entry = cache.codex.get(&home);
-            let title = format!("CODEX · {label}");
+            let title = format!("{} · {label}", ui_text::cased("Codex"));
             if let Some(snapshot) = entry.and_then(|entry| entry.codex.as_ref()) {
                 cards.push(render_provider_usage(snapshot, &title, colors));
             } else {
@@ -8365,7 +8623,8 @@ impl Workspace {
                         .p(ui_text::space(12.0))
                         .border_t_1()
                         .border_color(rgb(colors.divider))
-                        .child(title)
+                        .map(|card| usage_card(card, colors))
+                        .child(usage_title(&title, colors))
                         .child(
                             div()
                                 .mt(ui_text::space(6.0))
@@ -8403,7 +8662,7 @@ impl Workspace {
         let mut has_claude = false;
         for shell in claude_shells {
             has_claude = true;
-            let title = format!("CLAUDE · {}", &shell.id[..8]);
+            let title = format!("{} · {}", ui_text::cased("Claude"), &shell.id[..8]);
             if let Some(snapshot) = self.claude_usage.get(&shell.id) {
                 cards.push(render_provider_usage(snapshot, &title, colors));
             } else {
@@ -8412,7 +8671,8 @@ impl Workspace {
                         .p(ui_text::space(12.0))
                         .border_t_1()
                         .border_color(rgb(colors.divider))
-                        .child(title)
+                        .map(|card| usage_card(card, colors))
+                        .child(usage_title(&title, colors))
                         .child(
                             div()
                                 .mt(ui_text::space(6.0))
@@ -8427,31 +8687,75 @@ impl Workspace {
             cards.push(
                 div()
                     .p(ui_text::space(12.0))
+                    .map(|card| usage_card(card, colors))
                     .text_color(rgb(colors.muted))
                     .child("Open a Claude session to see its usage here")
                     .into_any_element(),
             );
         }
         cards.extend(self.render_grok_usage_cards(colors));
+        if ui_text::is_native() {
+            let refreshing = pending || self.grok_usage_pending;
+            return controls::panel(colors)
+                .child(controls::panel_header(
+                    PanelKind::Usage.label(),
+                    Some(if refreshing { "Refreshing…" } else { "Account usage" }.into()),
+                    [controls::toolbar_button(
+                        "refresh-account-usage",
+                        "arrow.clockwise",
+                        "Refresh usage",
+                        !refreshing,
+                        colors,
+                    )
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.refresh_usage(window, cx);
+                    }))
+                    .into_any_element()],
+                    colors,
+                ))
+                .child(
+                    div()
+                        .id("usage-panel-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .pb(ui_text::space(controls::LIST_MARGIN))
+                        .children(cards),
+                )
+                .child(controls::footnote("Quota is shared by all sessions on the same account. Missing windows are unavailable. Claude subscription quota requires a supported Pro/Max account. Grok shows each session's tokens and cost only.", colors))
+                .into_any_element();
+        }
         div().size_full().flex().flex_col().min_h_0().bg(rgb(colors.panel))
             .child(div().h(ui_text::space(32.0)).flex_none().flex().items_center().px(ui_text::space(10.0)).justify_between()
-                .border_b_1().border_color(rgb(colors.divider)).child("ACCOUNT USAGE")
-                .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan)).cursor_pointer()
-                    .child(if pending || self.grok_usage_pending { "REFRESHING…" } else { "↻ REFRESH" })
+                .border_b_1().border_color(rgb(colors.divider))
+                .child(div().when(ui_text::is_native(), |title| title.font_weight(gpui::FontWeight::SEMIBOLD)).child(ui_text::cased("Account usage")))
+                .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan))
+                    .child(ui_text::cased(if pending || self.grok_usage_pending { "Refreshing…" } else { "↻ Refresh" }))
                     .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.refresh_grok_usage(true, cx);
-                        request_codex_usage(true, cx);
-                        for home in workspace.shells.iter()
-                            .filter(|shell| shell.harness == Some(HarnessKind::Codex))
-                            .filter_map(|shell| shell.codex_home.clone()).collect::<HashSet<_>>() {
-                            request_codex_usage_at(home, true, cx);
-                        }
-                        workspace.refresh(window, cx);
+                        workspace.refresh_usage(window, cx);
                     }))))
             .child(div().id("usage-panel-scroll").flex_1().min_h_0().overflow_y_scroll().children(cards))
             .child(div().flex_none().p(ui_text::space(10.0)).border_t_1().border_color(rgb(colors.divider)).text_color(rgb(colors.muted)).text_size(ui_text::text(9.0))
                 .child("Quota is shared by all sessions on the same account. Missing windows are unavailable. Claude subscription quota requires a supported Pro/Max account. Grok shows each session's tokens and cost only."))
             .into_any_element()
+    }
+
+    /// Ask every provider for fresh account usage.
+    fn refresh_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_grok_usage(true, cx);
+        request_codex_usage(true, cx);
+        for home in self
+            .shells
+            .iter()
+            .filter(|shell| shell.harness == Some(HarnessKind::Codex))
+            .filter_map(|shell| shell.codex_home.clone())
+            .collect::<HashSet<_>>()
+        {
+            request_codex_usage_at(home, true, cx);
+        }
+        self.refresh(window, cx);
     }
 
     /// Grok's section of the Usage panel: one card per live Grok tab of the
@@ -8472,8 +8776,8 @@ impl Workspace {
                 .values()
                 .flat_map(|pane| pane.tabs.iter())
                 .find(|tab| tab.shell_id() == Some(shell.id.as_str()))
-                .map(|tab| tab.title.to_uppercase())
-                .unwrap_or_else(|| format!("GROK · {}", &shell.id[..8]));
+                .map(|tab| ui_text::cased(tab.title.clone()).to_string())
+                .unwrap_or_else(|| format!("{} · {}", ui_text::cased("Grok"), &shell.id[..8]));
             let tab = self.grok_usage.get(&shell.id);
             usages.extend(tab.and_then(|tab| tab.usage.as_ref()));
             cards.push(render_grok_session(&title, tab, colors));
@@ -8484,6 +8788,7 @@ impl Workspace {
                     .p(ui_text::space(12.0))
                     .border_t_1()
                     .border_color(rgb(colors.divider))
+                    .map(|card| usage_card(card, colors))
                     .text_color(rgb(colors.muted))
                     .child("No live Grok sessions")
                     .into_any_element(),
@@ -8502,6 +8807,12 @@ impl Workspace {
                 .pt(ui_text::space(8.0))
                 .border_t_1()
                 .border_color(rgb(colors.divider))
+                // Native: fine print under the cards, without a rule.
+                .when(ui_text::is_native(), |note| {
+                    note.border_t_0()
+                        .px(ui_text::space(controls::PANEL_INSET))
+                        .pt(ui_text::space(8.0))
+                })
                 .text_color(rgb(colors.muted))
                 .text_size(ui_text::text(9.0))
                 .child("Grok's account allowance and credits are shown only in Grok's own /usage screen. RiWork cannot read them through an official interface.")
@@ -8549,15 +8860,17 @@ impl Workspace {
                     .items_center()
                     .gap(ui_text::space(12.0))
                     .when(show_window_controls, |space| {
-                        space
-                            .cursor_grab()
-                            .on_mouse_down(MouseButton::Left, start_window_drag)
+                        space.on_mouse_down(MouseButton::Left, start_window_drag)
                     })
                     .children((width >= 720.0).then(|| {
                         div()
                             .flex_none()
                             .text_color(rgb(colors.cyan))
-                            .child(if centered { "CENTER FOCUS" } else { "FOCUS" })
+                            .child(ui_text::cased(if centered {
+                                "Center focus"
+                            } else {
+                                "Focus"
+                            }))
                     }))
                     .child(
                         div()
@@ -8572,7 +8885,6 @@ impl Workspace {
                     .flex_none()
                     .px(ui_text::space(8.0))
                     .py(ui_text::space(5.0))
-                    .cursor_pointer()
                     .text_color(rgb(colors.muted))
                     .hover(|style| {
                         style
@@ -8600,7 +8912,6 @@ impl Workspace {
                     .border_color(rgb(colors.divider))
                     .bg(rgb(colors.panel_active))
                     .text_color(rgb(colors.cyan))
-                    .cursor_pointer()
                     .hover(|style| style.border_color(rgb(colors.cyan)))
                     .child(if width >= 600.0 {
                         "↙ RESTORE  ⌘⇧F"
@@ -8674,13 +8985,13 @@ impl Workspace {
             .flex_none()
             .items_center()
             .justify_center()
-            .cursor_pointer()
             .when(
                 key == "menu" && self.panel_menu == Some(pane_id),
                 |button| button.bg(rgb(colors.divider)),
             )
-            .hover(|style| style.bg(rgb(colors.divider)))
-            .child(icons::icon(icon, color))
+            .hover(move |style| toolbar_hover(style, colors))
+            .map(|button| controls::native(button, |button| toolbar_button(button, color)))
+            .child(icons::text_icon(icon, 10.0, color))
             .when(
                 key != "menu" || self.panel_menu != Some(pane_id),
                 |button| {
@@ -8712,18 +9023,24 @@ impl Workspace {
             .flex_none()
             .items_center()
             .justify_center()
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.divider)));
-        let marker = if self.settings.panel_tab_icons {
+            .hover(move |style| toolbar_hover(style, colors))
+            .map(|marker| controls::native(marker, |marker| toolbar_button(marker, colors.cyan)));
+        // Native always shows the star, a symbol among the bar's other symbols.
+        let marker = if self.settings.panel_tab_icons || ui_text::is_native() {
             marker
                 .w(ui_text::space(28.0))
-                .child(icons::icon(Icon::Main, colors.cyan))
+                .map(|marker| {
+                    controls::native(marker, |marker| marker.w(ui_text::space(NATIVE_BAR_BUTTON)))
+                })
+                .child(icons::text_icon(Icon::Main, 10.0, colors.cyan))
         } else {
             marker
                 .px(ui_text::space(6.0))
                 .text_size(ui_text::text(9.0))
                 .text_color(rgb(colors.cyan))
-                .child("MAIN")
+                .min_w(ui_text::space(0.0))
+                .px(ui_text::space(8.0))
+                .child(ui_text::cased("Main"))
         };
         marker
             .child(tooltip::anchor(
@@ -8755,22 +9072,17 @@ impl Workspace {
             .py(ui_text::space(5.0))
             .text_size(ui_text::text(10.0))
             .text_color(rgb(colors.text))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan)))
+            .hover(move |style| {
+                controls::hovered(style, controls::menu_row_hover(colors), |style| {
+                    style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
+                })
+            })
+            .map(|row| controls::native(row, |row| controls::menu_row(row, colors)))
             .child(
                 div()
                     .w(ui_text::space(14.0))
                     .flex_none()
-                    .children(icon.map(|icon| {
-                        icons::icon(
-                            icon,
-                            if matches!(icon, Icon::Check) {
-                                colors.cyan
-                            } else {
-                                colors.muted
-                            },
-                        )
-                    })),
+                    .children(icon.map(|icon| menu_icon(icon, colors))),
             )
             .child(div().flex_1().min_w_0().text_ellipsis().child(label))
             .children((!shortcut.is_empty()).then(|| {
@@ -9047,12 +9359,27 @@ impl Render for Workspace {
                 MouseButton::Left,
                 cx.listener(|workspace, _, window, cx| workspace.end_resize(window, cx)),
             )
+            // A divider keeps its resize cursor for the whole drag, as AppKit's split views
+            // do, even once the pointer runs ahead of it onto a pane.
+            .children(self.resizing.as_ref().map(|resize| {
+                let cursor = if resize.axis == Axis::SideBySide {
+                    gpui::CursorStyle::ResizeColumn
+                } else {
+                    gpui::CursorStyle::ResizeRow
+                };
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| window.set_window_cursor_style(cursor),
+                )
+                .absolute()
+                .size_0()
+            }))
             .size_full()
             .flex()
             .flex_col()
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
-            .font_family("Menlo")
+            .font_family(ui_text::ui_family())
             .text_size(ui_text::text(10.0))
             .child(
                 div()
@@ -9165,7 +9492,120 @@ impl Render for Workspace {
     }
 }
 
-fn pane_menu_heading(label: &'static str, colors: Palette) -> AnyElement {
+/// An accent the colorful themes give a status bar item; Native keeps the bar muted.
+fn status_accent(accent: u32, colors: Palette) -> u32 {
+    if ui_text::is_native() {
+        colors.muted
+    } else {
+        accent
+    }
+}
+
+/// Native's toolbar button: a round hover on the bar, not a full-height cell, whose symbol
+/// takes `color` from the button's text color, so the hover can brighten it.
+fn toolbar_button(button: Stateful<Div>, color: u32) -> Stateful<Div> {
+    button
+        .h(ui_text::space(NATIVE_BAR_BUTTON))
+        .min_w(ui_text::space(NATIVE_BAR_BUTTON))
+        .w_auto()
+        .rounded_full()
+        .text_color(rgb(color))
+}
+
+/// A pane bar button under the pointer: filled, and under Native its muted symbol turns primary.
+fn toolbar_hover(style: gpui::StyleRefinement, colors: Palette) -> gpui::StyleRefinement {
+    let style = style.bg(rgb(colors.divider));
+    if ui_text::is_native() {
+        style.text_color(rgb(colors.text))
+    } else {
+        style
+    }
+}
+
+/// How a Native pane bar shares its room out among symbol tabs and its lock and focus
+/// buttons: `room` is what the tabs would have with neither button, `button` what each of
+/// them takes, and `shown` the buttons the pane is wide enough for. With `symbol_tabs`, the
+/// focus button and then the lock go to the pane menu while the tabs would otherwise be
+/// narrower than `NATIVE_ICON_TAB_ROOMY`. Returns the buttons shown, `(lock, focus)`, and
+/// the tabs' width beside their hairlines, never under `NATIVE_ICON_TAB_MIN` or over
+/// `NATIVE_ICON_TAB_FULL`.
+fn native_symbol_bar(
+    room: f32,
+    button: f32,
+    tabs: usize,
+    shown: (bool, bool),
+    symbol_tabs: bool,
+) -> (bool, bool, f32) {
+    let cell = |(lock, focus): (bool, bool)| {
+        let buttons = (lock as u8 + focus as u8) as f32;
+        (room - buttons * button) / tabs.max(1) as f32 - 1.0
+    };
+    let (lock, focus) = if symbol_tabs {
+        let roomy = ui_text::space_f32(NATIVE_ICON_TAB_ROOMY);
+        [shown, (shown.0, false), (false, false)]
+            .into_iter()
+            .find(|buttons| cell(*buttons) >= roomy)
+            .unwrap_or((false, false))
+    } else {
+        shown
+    };
+    let width = cell((lock, focus)).clamp(
+        ui_text::space_f32(NATIVE_ICON_TAB_MIN),
+        ui_text::space_f32(NATIVE_ICON_TAB_FULL),
+    );
+    (lock, focus, width)
+}
+
+/// How wide a Native tab's words are at the bar's text size, in the medium weight the
+/// selected tab wears so the measure holds whichever tab is selected.
+fn native_label_width(label: &str, cx: &App) -> f32 {
+    let text_system = cx.text_system();
+    let font = gpui::Font {
+        weight: gpui::FontWeight::MEDIUM,
+        ..gpui::font(ui_text::ui_family())
+    };
+    let font_id = text_system.resolve_font(&font);
+    let size = ui_text::text(10.0);
+    label
+        .chars()
+        .map(|ch| {
+            text_system
+                .advance(font_id, size, ch)
+                .map(|advance| f32::from(advance.width))
+                .unwrap_or(f32::from(size) * 0.6)
+        })
+        .sum::<f32>()
+        .ceil()
+}
+
+/// A menu row's symbol: muted, or primary for a check mark. Native draws it at the size of
+/// the row's text.
+fn menu_icon(icon: Icon, colors: Palette) -> AnyElement {
+    let color = if matches!(icon, Icon::Check) {
+        colors.cyan
+    } else {
+        colors.muted
+    };
+    if ui_text::is_native() {
+        div()
+            .text_color(rgb(color))
+            .child(icons::text_icon(icon, 11.0, color))
+            .into_any_element()
+    } else {
+        icons::icon(icon, color)
+    }
+}
+
+fn pane_menu_heading(label: &'static str, first: bool, colors: Palette) -> AnyElement {
+    // Native parts the groups by an inset hairline over a small heading, as macOS menus do.
+    if ui_text::is_native() {
+        return div()
+            .when(!first, |group| {
+                group.child(controls::menu_separator(colors))
+            })
+            .child(controls::menu_heading(label, colors))
+            .into_any_element();
+    }
     div()
         .px(ui_text::space(8.0))
         .py(ui_text::space(6.0))
@@ -9173,7 +9613,10 @@ fn pane_menu_heading(label: &'static str, colors: Palette) -> AnyElement {
         .border_color(rgb(colors.divider))
         .text_color(rgb(colors.muted))
         .text_size(ui_text::text(9.0))
-        .child(label)
+        .when(ui_text::is_native(), |heading| {
+            heading.font_weight(gpui::FontWeight::SEMIBOLD)
+        })
+        .child(ui_text::cased(label))
         .into_any_element()
 }
 
@@ -9259,6 +9702,8 @@ fn window_controls_visible(window: &Window) -> bool {
 
 fn window_controls_island(cx: &App) -> impl IntoElement {
     let colors = theme::palette(cx);
+    // Native keeps the area (it still drags the window) but draws nothing, so the
+    // traffic lights sit on the bar like a Mac app's.
     div()
         .id("window-controls-island")
         .absolute()
@@ -9266,11 +9711,14 @@ fn window_controls_island(cx: &App) -> impl IntoElement {
         .left_0()
         .w(px(WINDOW_CONTROLS_WIDTH))
         .h(px(WINDOW_CONTROLS_HEIGHT))
-        .rounded_br(px(8.0))
-        .bg(rgb(colors.panel_active))
-        .border_r_1()
-        .border_b_1()
-        .border_color(rgb(colors.divider))
+        .when(colors.controls_island, |island| {
+            island
+                .rounded_br(px(8.0))
+                .bg(rgb(colors.panel_active))
+                .border_r_1()
+                .border_b_1()
+                .border_color(rgb(colors.divider))
+        })
         .on_mouse_down(MouseButton::Left, start_window_drag)
 }
 
@@ -9573,10 +10021,11 @@ fn render_grok_session(
     let card = div()
         .p(ui_text::space(12.0))
         .border_t_1()
-        .border_color(rgb(colors.divider));
+        .border_color(rgb(colors.divider))
+        .map(|card| usage_card(card, colors));
     let Some(tab) = tab else {
         return card
-            .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+            .child(usage_title(title, colors))
             .child(
                 div()
                     .mt(ui_text::space(6.0))
@@ -9587,7 +10036,7 @@ fn render_grok_session(
     };
     let Some(session) = &tab.usage else {
         return card
-            .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+            .child(usage_title(title, colors))
             .child(
                 div()
                     .mt(ui_text::space(6.0))
@@ -9630,7 +10079,7 @@ fn render_grok_session(
             .items_center()
             .justify_between()
             .gap(ui_text::space(8.0))
-            .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+            .child(usage_title(title, colors))
             .child(
                 div()
                     .text_color(rgb(colors.muted))
@@ -9692,7 +10141,8 @@ fn render_grok_total(totals: &usage::GrokTotals, missing: usize, colors: Palette
         .p(ui_text::space(12.0))
         .border_t_1()
         .border_color(rgb(colors.divider))
-        .child(div().text_color(rgb(colors.cyan)).child("GROK · TOTAL"))
+        .map(|card| usage_card(card, colors))
+        .child(usage_title(&ui_text::cased("Grok · Total"), colors))
         .child(div().mt(ui_text::space(6.0)).child(format!(
             "{} · {} tokens · {} session{}",
             usage::format_usd(totals.cost_usd),
@@ -9729,6 +10179,26 @@ fn render_grok_total(totals: &usage::GrokTotals, missing: usize, colors: Palette
         .into_any_element()
 }
 
+/// A Usage card: a ruled block in the colorful themes, a Native group otherwise, inset like
+/// the navigation panels' rows.
+fn usage_card(card: Div, colors: Palette) -> Div {
+    controls::native(card, |card| {
+        controls::card(card, colors).mx(ui_text::space(controls::LIST_MARGIN))
+    })
+}
+
+/// A Usage card's title: in the primary color, or semibold body text under Native.
+fn usage_title(title: &str, colors: Palette) -> Div {
+    div()
+        .text_color(rgb(colors.cyan))
+        .when(ui_text::is_native(), |title| {
+            title
+                .text_color(rgb(colors.text))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+        })
+        .child(title.to_owned())
+}
+
 fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette) -> AnyElement {
     let age = unix_time().saturating_sub(snapshot.updated_at_unix);
     let limits = snapshot
@@ -9757,12 +10227,24 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
                         .mt(ui_text::space(5.0))
                         .h(ui_text::space(3.0))
                         .bg(rgb(colors.divider))
+                        // Native: a rounded gauge on a grey track, as macOS draws a level.
+                        .when(ui_text::is_native(), |track| {
+                            track
+                                .h(ui_text::space(5.0))
+                                .rounded_full()
+                                .bg(rgb(colors.panel_active))
+                        })
                         .child(
                             div()
                                 .h_full()
                                 .w(gpui::relative((remaining / 100.0) as f32))
+                                .when(ui_text::is_native(), |level| level.rounded_full())
                                 .bg(rgb(if remaining < 15.0 {
-                                    colors.magenta
+                                    if ui_text::is_native() {
+                                        colors.gold
+                                    } else {
+                                        colors.magenta
+                                    }
                                 } else {
                                     colors.cyan
                                 })),
@@ -9775,7 +10257,8 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
         .p(ui_text::space(12.0))
         .border_t_1()
         .border_color(rgb(colors.divider))
-        .child(div().text_color(rgb(colors.cyan)).child(title.to_owned()))
+        .map(|card| usage_card(card, colors))
+        .child(usage_title(title, colors))
         .children(snapshot.account_label.as_ref().map(|label| {
             div()
                 .mt(ui_text::space(4.0))
@@ -9789,7 +10272,7 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
                 .text_size(ui_text::text(9.0))
                 .child(format!(
                     "{}Updated {}m ago",
-                    if age > 900 { "STALE · " } else { "" },
+                    if age > 900 { "Stale · " } else { "" },
                     age / 60
                 )),
         )
@@ -9819,10 +10302,15 @@ fn sync_appearance(cx: &mut App) {
     // Text matching the terminal follows edits to Ghostty's font-size, whatever the theme.
     ui_text::refresh_terminal_font_size(cx);
     let selected = cx.global::<Settings>().theme;
-    // Presets are static; native configuration is resolved again to pick up edits,
-    // including recursive config files and custom theme files. The parse itself is
-    // skipped while none of those files changed.
-    if selected != ThemeChoice::Ghostty && cx.global::<Appearance>().selected == selected {
+    // Presets are static and Native changes only with macOS's light or dark mode;
+    // native configuration is resolved again to pick up edits, including recursive
+    // config files and custom theme files. The parse itself is skipped while none
+    // of those files changed.
+    let current = cx.global::<Appearance>();
+    if selected != ThemeChoice::Ghostty
+        && current.selected == selected
+        && !current.is_stale_for(theme::system_is_dark(cx))
+    {
         return;
     }
     let Some(appearance) = theme::refresh_appearance(selected, cx) else {
@@ -9905,7 +10393,11 @@ fn main() {
                 eprintln!("riwork: {error}");
                 Settings::default()
             });
-        cx.set_global(Appearance::resolve(settings.theme));
+        theme::force_system_appearance(cx);
+        cx.set_global(Appearance::resolve(
+            settings.theme,
+            theme::system_is_dark(cx),
+        ));
         cx.set_global(settings);
         ui_text::init(cx);
         // After both globals exist: publishes now and again on every change.
@@ -10859,7 +11351,7 @@ mod workspace_tab_tests {
             .filter(|theme| *theme != ThemeChoice::Ghostty)
         {
             settings.theme = selected;
-            let appearance = Appearance::resolve(selected);
+            let appearance = Appearance::resolve(selected, false);
             assert_eq!(
                 Workspace::terminal_theme(&settings, &appearance),
                 appearance.terminal
@@ -10870,7 +11362,20 @@ mod workspace_tab_tests {
                 appearance.terminal
             );
         }
-        let mut appearance = Appearance::resolve(ThemeChoice::RiWork);
+        // Native forces its colors only while "Terminals match the theme" is on,
+        // whatever the RiWork option says.
+        settings.theme = ThemeChoice::Native;
+        let native = Appearance::resolve(ThemeChoice::Native, true);
+        settings.native_terminal_colors = false;
+        assert_eq!(Workspace::terminal_theme(&settings, &native), None);
+        settings.native_terminal_colors = true;
+        settings.use_riwork_colors = false;
+        assert_eq!(
+            Workspace::terminal_theme(&settings, &native),
+            Some(theme::native_terminal_theme(true))
+        );
+        settings.use_riwork_colors = true;
+        let mut appearance = Appearance::resolve(ThemeChoice::RiWork, false);
         appearance.selected = ThemeChoice::Ghostty;
         appearance.terminal = None;
         settings.theme = ThemeChoice::Ghostty;
@@ -12781,6 +13286,73 @@ mod main_pane_tests {
         assert_eq!(
             DEFAULT_LAYOUT_PRESENT_HINT,
             "The default layout is already in place"
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_bar_tests {
+    use super::*;
+
+    /// What a Native navigation bar of five symbol tabs and no close marks shows when its
+    /// tabs have `room` with neither the lock nor the focus button.
+    fn navigation_bar(room: f32) -> (bool, bool, f32) {
+        let button =
+            ui_text::space_f32(NATIVE_BAR_BUTTON) + ui_text::space_f32(NATIVE_BAR_BUTTON_GAP);
+        native_symbol_bar(room, button, 5, (true, true), true)
+    }
+
+    #[test]
+    fn a_narrowing_bar_gives_up_its_focus_and_then_its_lock_before_cramping_its_symbol_tabs() {
+        let (full, roomy, min) = (
+            ui_text::space_f32(NATIVE_ICON_TAB_FULL),
+            ui_text::space_f32(NATIVE_ICON_TAB_ROOMY),
+            ui_text::space_f32(NATIVE_ICON_TAB_MIN),
+        );
+        let button =
+            ui_text::space_f32(NATIVE_BAR_BUTTON) + ui_text::space_f32(NATIVE_BAR_BUTTON_GAP);
+        // Room for both buttons and tabs at their full padding.
+        assert_eq!(
+            navigation_bar(5.0 * (full + 1.0) + 2.0 * button),
+            (true, true, full)
+        );
+        // Both buttons stay while the tabs keep at least the roomy width.
+        let both = 5.0 * (roomy + 1.0) + 2.0 * button;
+        assert_eq!(navigation_bar(both), (true, true, roomy));
+        // A point less and the focus button goes to the menu; the tabs widen with its room.
+        let (lock, focus, cell) = navigation_bar(both - 1.0);
+        assert!(lock && !focus && cell > roomy, "{cell}");
+        // Then the lock.
+        let one = 5.0 * (roomy + 1.0) + button;
+        assert!(navigation_bar(one).0);
+        let (lock, focus, cell) = navigation_bar(one - 1.0);
+        assert!(!lock && !focus && cell > roomy, "{cell}");
+        // With only the menu left the tabs narrow alike, never under the floor.
+        assert_eq!(navigation_bar(5.0 * (min + 4.0)).2, min + 3.0);
+        assert_eq!(navigation_bar(10.0), (false, false, min));
+    }
+
+    #[test]
+    fn a_bar_of_words_or_a_wide_pane_keeps_the_buttons_it_has_room_for() {
+        let button =
+            ui_text::space_f32(NATIVE_BAR_BUTTON) + ui_text::space_f32(NATIVE_BAR_BUTTON_GAP);
+        // Tabs with words narrow by their own rule, so the buttons are left as they are.
+        assert_eq!(
+            native_symbol_bar(40.0, button, 3, (true, false), false).0,
+            true
+        );
+        assert_eq!(
+            native_symbol_bar(40.0, button, 3, (true, true), false).1,
+            true
+        );
+        // A pane too narrow for a button never gains it.
+        assert_eq!(
+            native_symbol_bar(1000.0, button, 5, (false, false), true),
+            (false, false, ui_text::space_f32(NATIVE_ICON_TAB_FULL))
+        );
+        assert_eq!(
+            native_symbol_bar(1000.0, button, 5, (true, false), true).1,
+            false
         );
     }
 }

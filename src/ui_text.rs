@@ -11,16 +11,97 @@
 //! at every call, so free helpers without a `cx` scale too; it is kept in step
 //! with the globals by `init`, which also redraws every window when it changes.
 //! Other threads, tests included, always see the design sizes.
+//!
+//! The face is decided here too. The colorful themes draw everything in Menlo,
+//! as RiWork always has. Native draws in the system font (SF Pro) and, with
+//! Settings → Interface font on "System + monospace accents", keeps a monospace
+//! face (SF Mono, else Menlo) for technical text: paths, branches, ids, shortcut
+//! keys and counts. Render code asks `ui_family()` for a root and
+//! `mono_family()` for such text instead of naming a font.
 
 use std::cell::Cell;
 
-use gpui::{App, Global, Keystroke, Pixels, px};
+use gpui::{App, Global, Keystroke, Pixels, SharedString, px};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     settings::{Settings, SettingsStore},
-    theme::{self, GhosttyConfigStamp},
+    theme::{self, GhosttyConfigStamp, ThemeChoice},
 };
+
+/// Settings → Interface font, for the Native theme.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterfaceFont {
+    /// SF Pro for everything.
+    System,
+    /// SF Pro, with a monospace face for paths, branches, shortcut keys and counts.
+    #[default]
+    SystemMono,
+}
+
+impl InterfaceFont {
+    pub const ALL: [Self; 2] = [Self::System, Self::SystemMono];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System (SF Pro)",
+            Self::SystemMono => "System + monospace accents",
+        }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Self::System => Self::SystemMono,
+            Self::SystemMono => Self::System,
+        }
+    }
+}
+
+/// The faces RiWork's interface is drawn in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    /// Menlo throughout: every theme but Native.
+    Menlo,
+    /// The system font throughout.
+    System,
+    /// The system font, with monospace accents.
+    SystemMono,
+}
+
+impl Face {
+    pub fn of(settings: &Settings) -> Self {
+        if settings.theme != ThemeChoice::Native {
+            return Self::Menlo;
+        }
+        match settings.interface_font {
+            InterfaceFont::System => Self::System,
+            InterfaceFont::SystemMono => Self::SystemMono,
+        }
+    }
+
+    /// How many points larger than the saved size this face draws. Sizes were
+    /// designed in Menlo, whose 11 px list text sits beside a 13 pt terminal. SF
+    /// Pro is narrower and has a smaller x-height at equal size, and macOS's own
+    /// lists, sidebars and menus use it at 13 pt, so the system face draws the
+    /// default 11 pt list text at 13 pt, with tabs and captions growing alike.
+    /// It is an offset, not a factor, so the size Settings shows (`shown_points`)
+    /// is the size drawn and still steps by whole points. While the size matches
+    /// the terminal it is Ghostty's number as it is, like Menlo's.
+    pub fn offset(self, matching_terminal: bool) -> f32 {
+        match self {
+            Self::Menlo => 0.0,
+            Self::System | Self::SystemMono if matching_terminal => 0.0,
+            Self::System | Self::SystemMono => SYSTEM_BODY_POINTS - REFERENCE_SIZE,
+        }
+    }
+}
+
+/// macOS's body text size, which Native draws the 11 px design text at.
+pub const SYSTEM_BODY_POINTS: f32 = 13.0;
+const MENLO: &str = "Menlo";
+const SYSTEM_FONT: &str = ".SystemUIFont";
+const SF_MONO: &str = "SF Mono";
 
 /// The size the text-size setting names: the 11 px list text of the panels
 /// (Projects, Files, Preview, Shells), the UI text read most. At the default
@@ -49,6 +130,129 @@ pub const GHOSTTY_DEFAULT_FONT_SIZE: f32 = 13.0;
 
 thread_local! {
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
+    static FACE: Cell<Face> = const { Cell::new(Face::Menlo) };
+    /// Whether SF Mono is installed; Menlo stands in for it otherwise.
+    static HAS_SF_MONO: Cell<bool> = const { Cell::new(true) };
+}
+
+/// The face the interface is drawn in now.
+pub fn face() -> Face {
+    FACE.with(Cell::get)
+}
+
+/// Whether the Native theme is what the interface is drawn in: it is the one
+/// theme with the system face. Render code that has no `cx` asks this.
+pub fn is_native() -> bool {
+    face() != Face::Menlo
+}
+
+/// A label as Native shows it: in sentence case, as it is written in the source.
+/// The colorful themes show every label in capitals, as RiWork always has.
+pub fn cased(text: impl Into<SharedString>) -> SharedString {
+    let text = text.into();
+    if is_native() {
+        text
+    } else {
+        text.to_uppercase().into()
+    }
+}
+
+/// Text composed at run time with capitalized words in it, such as "CODEX · 7d 81% left"
+/// or "1 LIVE", as the theme shows it: as it is in the colorful themes, in sentence case
+/// in Native (see `sentence_case`).
+pub fn quiet(text: impl Into<SharedString>) -> SharedString {
+    let text = text.into();
+    if is_native() {
+        sentence_case(&text).into()
+    } else {
+        text
+    }
+}
+
+/// Names that keep their capital in sentence case.
+const PROPER_NOUNS: [&str; 12] = [
+    "Codex", "Claude", "Grok", "Orca", "Cua", "Mac", "Ghostty", "RiWork", "Vim", "Finder",
+    "GitHub", "Git",
+];
+
+/// Abbreviations that stay in capitals.
+const ACRONYMS: [&str; 14] = [
+    "CPU", "RAM", "MCP", "ID", "URL", "PR", "SSH", "API", "OK", "UI", "AI", "CLI", "TCC", "PID",
+];
+
+/// Rewrites the words written in capitals in `text` into sentence case: a word of two or
+/// more capital letters becomes lowercase, or capitalized where a sentence starts (the
+/// text's start, or after "·", ":" or "."). Names (Codex, Claude, Orca…) keep their capital
+/// and abbreviations (CPU, RAM…) stay capitals. Anything else, including mixed-case words,
+/// ids such as A1 and paths, is left as it is.
+pub fn sentence_case(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut sentence_start = true;
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String, sentence_start: &mut bool| {
+        if word.is_empty() {
+            return;
+        }
+        let caps = word.chars().count() >= 2 && word.chars().all(|c| c.is_ascii_uppercase());
+        if caps && !ACRONYMS.contains(&word.as_str()) {
+            let lower = word.to_ascii_lowercase();
+            let proper = PROPER_NOUNS
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case(&lower));
+            match proper {
+                Some(name) => out.push_str(name),
+                None if *sentence_start => {
+                    let mut chars = lower.chars();
+                    if let Some(first) = chars.next() {
+                        out.push(first.to_ascii_uppercase());
+                        out.push_str(chars.as_str());
+                    }
+                }
+                None => out.push_str(&lower),
+            }
+        } else {
+            out.push_str(word);
+        }
+        *sentence_start = false;
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out, &mut sentence_start);
+            if matches!(c, '·' | ':' | '.' | '/') {
+                sentence_start = true;
+            }
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out, &mut sentence_start);
+    out
+}
+
+/// The size Settings shows for the saved `points`: what the face draws.
+pub fn shown_points(settings: &Settings, points: f32) -> f32 {
+    points + Face::of(settings).offset(settings.ui_text_matches_terminal)
+}
+
+/// The font family of a window's or popup's root.
+pub fn ui_family() -> SharedString {
+    match face() {
+        Face::Menlo => MENLO.into(),
+        Face::System | Face::SystemMono => SYSTEM_FONT.into(),
+    }
+}
+
+/// The font family of technical text: a path, a branch, an id, a shortcut key or
+/// a count. Menlo or SF Mono, or the system font when accents are off.
+pub fn mono_family() -> SharedString {
+    match face() {
+        Face::Menlo => MENLO.into(),
+        Face::System => SYSTEM_FONT.into(),
+        Face::SystemMono if HAS_SF_MONO.with(Cell::get) => SF_MONO.into(),
+        Face::SystemMono => MENLO.into(),
+    }
 }
 
 /// The effective scale: 1.0 is today's exact sizes.
@@ -244,8 +448,13 @@ pub fn refresh_terminal_font_size(cx: &mut App) {
 /// A hint on screen or about to open was measured at the old scale; its popup
 /// window would keep that size, so it goes until the pointer rests again.
 fn sync(cx: &mut App) {
-    let scale = current_points(cx) / REFERENCE_SIZE;
-    if SCALE.with(|cell| cell.replace(scale)) != scale {
+    let settings = cx.global::<Settings>();
+    let face = Face::of(settings);
+    let scale =
+        (current_points(cx) + face.offset(settings.ui_text_matches_terminal)) / REFERENCE_SIZE;
+    let scale_moved = SCALE.with(|cell| cell.replace(scale)) != scale;
+    let face_moved = FACE.with(|cell| cell.replace(face)) != face;
+    if scale_moved || face_moved {
         crate::tooltip::hide(cx);
         cx.refresh_windows();
     }
@@ -280,6 +489,12 @@ pub fn save(store: &SettingsStore, change: SizeChange, cx: &mut App) -> Result<S
 
 /// Call once both `Settings` and the window-independent globals exist.
 pub fn init(cx: &mut App) {
+    let has_sf_mono = cx
+        .text_system()
+        .all_font_names()
+        .iter()
+        .any(|name| name == SF_MONO);
+    HAS_SF_MONO.with(|cell| cell.set(has_sf_mono));
     refresh_terminal_font_size(cx);
     sync(cx);
     cx.observe_global::<Settings>(|cx| {
@@ -301,6 +516,91 @@ pub fn change(change: SizeChange, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_native_draws_in_the_system_face_at_its_native_size() {
+        let mut settings = Settings::default();
+        for theme in ThemeChoice::ALL {
+            settings.theme = theme;
+            let face = Face::of(&settings);
+            if theme == ThemeChoice::Native {
+                assert_eq!(face, Face::SystemMono);
+                // The default 11 pt is drawn, and shown, at macOS's 13 pt body size.
+                assert_eq!(DEFAULT_POINTS + face.offset(false), SYSTEM_BODY_POINTS);
+                assert_eq!(shown_points(&settings, 12.0), 14.0);
+                // Matching the terminal shows Ghostty's own number.
+                assert_eq!(face.offset(true), 0.0);
+            } else {
+                assert_eq!(face, Face::Menlo, "{theme:?}");
+                assert_eq!(face.offset(false), 0.0);
+                assert_eq!(shown_points(&settings, 12.0), 12.0);
+            }
+        }
+        settings.theme = ThemeChoice::Native;
+        settings.interface_font = InterfaceFont::System;
+        assert_eq!(Face::of(&settings), Face::System);
+        assert_eq!(InterfaceFont::System.other(), InterfaceFont::SystemMono);
+        // Off the UI thread, and before `init`, the face is Menlo as it always was.
+        assert_eq!(ui_family(), "Menlo");
+        assert_eq!(mono_family(), "Menlo");
+    }
+
+    #[test]
+    fn labels_are_capitals_in_the_colorful_themes_and_as_written_in_native() {
+        assert!(!is_native());
+        assert_eq!(cased("Add host"), "ADD HOST");
+        assert_eq!(cased("+ Folder"), "+ FOLDER");
+        for face in [Face::System, Face::SystemMono] {
+            FACE.with(|cell| cell.set(face));
+            assert!(is_native());
+            assert_eq!(cased("Add host"), "Add host");
+        }
+        FACE.with(|cell| cell.set(Face::Menlo));
+    }
+
+    #[test]
+    fn capitals_composed_at_run_time_read_in_sentence_case() {
+        for (caps, sentence) in [
+            ("CODEX · 7d 81% left", "Codex · 7d 81% left"),
+            (
+                "DEFAULT (APP) · System default",
+                "Default (app) · System default",
+            ),
+            ("1 LIVE", "1 live"),
+            ("USAGE · LOADING", "Usage · Loading"),
+            ("CPU 0.0% RAM 5.5 MiB", "CPU 0.0% RAM 5.5 MiB"),
+            ("CODEX A1 · me@example.com", "Codex A1 · me@example.com"),
+            ("NO PROJECTS", "No projects"),
+            ("RIWORK / PREFERENCES", "RiWork / Preferences"),
+            ("zsh 06 · main", "zsh 06 · main"),
+        ] {
+            assert_eq!(sentence_case(caps), sentence, "{caps}");
+        }
+        // Off the UI thread the theme is a colorful one, which keeps the capitals.
+        assert_eq!(quiet("1 LIVE"), "1 LIVE");
+    }
+
+    #[test]
+    fn faces_name_their_families() {
+        let families = |face| {
+            FACE.with(|cell| cell.set(face));
+            let names = (ui_family(), mono_family());
+            FACE.with(|cell| cell.set(Face::Menlo));
+            names
+        };
+        assert_eq!(families(Face::Menlo), ("Menlo".into(), "Menlo".into()));
+        assert_eq!(
+            families(Face::System),
+            (".SystemUIFont".into(), ".SystemUIFont".into())
+        );
+        assert_eq!(
+            families(Face::SystemMono),
+            (".SystemUIFont".into(), "SF Mono".into())
+        );
+        HAS_SF_MONO.with(|cell| cell.set(false));
+        assert_eq!(families(Face::SystemMono).1, "Menlo");
+        HAS_SF_MONO.with(|cell| cell.set(true));
+    }
 
     #[test]
     fn steps_are_whole_points_and_stop_at_the_limits() {

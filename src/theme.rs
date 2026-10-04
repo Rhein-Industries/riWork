@@ -2,7 +2,7 @@
 
 use crate::appearance_file::{PaletteColors, Published, Rgb, TerminalColors};
 use crate::settings::Settings;
-use gpui::{App, Global};
+use gpui::{App, Global, WindowAppearance};
 use gpui_libghostty::{TerminalColor, TerminalTheme};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -12,6 +12,7 @@ use std::path::PathBuf;
 pub enum ThemeChoice {
     #[default]
     Ghostty,
+    Native,
     RiWork,
     Catppuccin,
     TokyoNight,
@@ -19,8 +20,9 @@ pub enum ThemeChoice {
 }
 
 impl ThemeChoice {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Ghostty,
+        Self::Native,
         Self::RiWork,
         Self::Catppuccin,
         Self::TokyoNight,
@@ -30,6 +32,7 @@ impl ThemeChoice {
     pub fn label(self) -> &'static str {
         match self {
             Self::Ghostty => "Follow Ghostty",
+            Self::Native => "Native",
             Self::RiWork => "RiWork",
             Self::Catppuccin => "Catppuccin Mocha",
             Self::TokyoNight => "Tokyo Night",
@@ -41,6 +44,9 @@ impl ThemeChoice {
         match self {
             Self::Ghostty => {
                 "Use your Ghostty colors throughout RiWork. Configuration changes sync automatically."
+            }
+            Self::Native => {
+                "Black on white, or white on black when macOS is dark. Follows the system appearance."
             }
             Self::RiWork => "RiWork's original dark palette with cyan and purple accents.",
             Self::Catppuccin => "A soft dark palette with pastel accents.",
@@ -61,6 +67,20 @@ pub struct Palette {
     pub gold: u32,
     pub text: u32,
     pub muted: u32,
+    /// The keyboard focus ring of a control. Not one of the published colors:
+    /// it is `gold` in the colorful themes and the primary color in Native,
+    /// whose one signal color is kept for state that must stand out.
+    pub focus: u32,
+    /// What says an agent is working. `cyan` in the colorful themes, the signal
+    /// color (`gold`) in Native. Not published either.
+    pub working: u32,
+    /// How a pane's tabs show which one is selected: the colorful themes draw
+    /// terminal-style cells with a primary underline; Native fills the selected
+    /// full-height cell with the content's own background, like a macOS tab bar.
+    pub plain_tabs: bool,
+    /// Whether the window controls sit on a filled island. Native leaves them on
+    /// the window's own surface, as a Mac app does; the space stays reserved.
+    pub controls_island: bool,
 }
 
 impl Palette {
@@ -74,23 +94,79 @@ impl Palette {
         gold: 0xf4bf75,
         text: 0xd3e1e6,
         muted: 0x708993,
+        focus: 0xf4bf75,
+        working: 0x55e6dc,
+        plain_tabs: false,
+        controls_island: true,
     };
+
+    /// Native in light mode, on the published tokens: `cyan`, the primary and
+    /// selection color, is black; `magenta`, the secondary accent, a dark grey;
+    /// `gold` is the one signal color, a deep orange for working agents, errors
+    /// and warnings. Every text color reads at 4.5:1 or better on `panel_active`.
+    pub const NATIVE_LIGHT: Self = Self {
+        bg: 0xffffff,
+        panel: 0xf5f5f7,
+        panel_active: 0xe8e8ed,
+        divider: 0xd2d2d7,
+        cyan: 0x000000,
+        magenta: 0x3a3a3c,
+        gold: 0xb34000,
+        text: 0x1d1d1f,
+        muted: 0x636366,
+        focus: 0x000000,
+        working: 0xb34000,
+        plain_tabs: true,
+        controls_island: false,
+    };
+
+    /// Native in dark mode: the same roles inverted, white on black, with the
+    /// signal color lifted to macOS's dark-mode orange.
+    pub const NATIVE_DARK: Self = Self {
+        bg: 0x000000,
+        panel: 0x1c1c1e,
+        panel_active: 0x2c2c2e,
+        divider: 0x3a3a3c,
+        cyan: 0xffffff,
+        magenta: 0xc7c7cc,
+        gold: 0xff9f0a,
+        text: 0xf5f5f7,
+        muted: 0x98989d,
+        focus: 0xffffff,
+        working: 0xff9f0a,
+        plain_tabs: true,
+        controls_island: false,
+    };
+
+    pub const fn native(dark: bool) -> Self {
+        if dark {
+            Self::NATIVE_DARK
+        } else {
+            Self::NATIVE_LIGHT
+        }
+    }
 
     fn from_terminal(theme: &TerminalTheme) -> Self {
         let bg = color_u32(theme.background);
         let text = readable(color_u32(theme.foreground), bg);
         let panel = mix(bg, text, 0.035);
         let panel_active = mix(bg, text, 0.075);
+        let cyan = readable(color_u32(theme.palette[6]), panel_active);
+        let gold = readable(color_u32(theme.palette[3]), panel_active);
         Self {
             bg,
             panel,
             panel_active,
             divider: mix(bg, text, 0.20),
-            cyan: readable(color_u32(theme.palette[6]), panel_active),
+            cyan,
             magenta: readable(color_u32(theme.palette[5]), panel_active),
-            gold: readable(color_u32(theme.palette[3]), panel_active),
+            gold,
             text: readable(text, panel_active),
             muted: readable(mix(bg, text, 0.58), panel_active),
+            focus: gold,
+            working: cyan,
+            plain_tabs: false,
+            controls_island: true,
         }
     }
 }
@@ -111,8 +187,20 @@ impl Global for Appearance {}
 impl Appearance {
     /// Reloading uses Ghostty's parser, including named themes, includes, and overrides.
     /// Its conditional appearance matches the bundled terminal adapter's initial state.
+    /// `system_dark` is macOS's light or dark appearance, which only Native follows.
     /// Call on the application UI thread, never while creating or updating a surface.
-    pub fn resolve(choice: ThemeChoice) -> Self {
+    pub fn resolve(choice: ThemeChoice, system_dark: bool) -> Self {
+        if choice == ThemeChoice::Native {
+            // Ghostty's own colors are what terminals keep with "Terminals match
+            // the theme" off; unknown if the configuration cannot be read.
+            return Self {
+                selected: choice,
+                palette: Palette::native(system_dark),
+                terminal: Some(native_terminal_theme(system_dark)),
+                ghostty: read_ghostty_theme().ok().map(|(theme, _)| theme),
+                error: None,
+            };
+        }
         if choice == ThemeChoice::Ghostty {
             return match read_ghostty_theme() {
                 Ok((theme, error)) => Self {
@@ -145,23 +233,32 @@ impl Appearance {
         }
     }
 
-    /// The colors terminals are forced to: the selected preset's, or RiWork's
-    /// while following Ghostty with the RiWork terminal colors option on. None
+    /// The colors terminals are forced to: the selected preset's, RiWork's while
+    /// following Ghostty with the RiWork terminal colors option on, or Native's
+    /// while its "Terminals match the theme" option is on. `force` is whichever
+    /// option the selected theme shows (`Settings::terminal_colors_forced`). None
     /// leaves terminals with the user's own Ghostty configuration.
-    pub fn terminal_override(&self, use_riwork_colors: bool) -> Option<TerminalTheme> {
-        self.terminal
-            .or_else(|| use_riwork_colors.then(riwork_terminal_theme))
+    pub fn terminal_override(&self, force: bool) -> Option<TerminalTheme> {
+        if self.selected == ThemeChoice::Native {
+            return self.terminal.filter(|_| force);
+        }
+        self.terminal.or_else(|| force.then(riwork_terminal_theme))
+    }
+
+    /// Whether this is Native resolved for the other system appearance.
+    pub fn is_stale_for(&self, system_dark: bool) -> bool {
+        self.selected == ThemeChoice::Native && self.palette != Palette::native(system_dark)
     }
 
     /// The terminal colors the desktop actually shows, if they are known.
-    pub fn shown_terminal(&self, use_riwork_colors: bool) -> Option<TerminalTheme> {
-        self.terminal_override(use_riwork_colors).or(self.ghostty)
+    pub fn shown_terminal(&self, force: bool) -> Option<TerminalTheme> {
+        self.terminal_override(force).or(self.ghostty)
     }
 
     /// What the phone companion mirrors, not yet stamped with a time.
-    pub fn published(&self, use_riwork_colors: bool) -> Published {
+    pub fn published(&self, force: bool) -> Published {
         let palette = self.palette;
-        Published::new(
+        let mut published = Published::new(
             is_dark(palette.bg),
             PaletteColors {
                 bg: Rgb(palette.bg),
@@ -174,13 +271,14 @@ impl Appearance {
                 text: Rgb(palette.text),
                 muted: Rgb(palette.muted),
             },
-            self.shown_terminal(use_riwork_colors)
-                .map(|theme| TerminalColors {
-                    background: Rgb(color_u32(theme.background)),
-                    foreground: Rgb(color_u32(theme.foreground)),
-                    palette: theme.palette.map(|color| Rgb(color_u32(color))),
-                }),
-        )
+            self.shown_terminal(force).map(|theme| TerminalColors {
+                background: Rgb(color_u32(theme.background)),
+                foreground: Rgb(color_u32(theme.foreground)),
+                palette: theme.palette.map(|color| Rgb(color_u32(color))),
+            }),
+        );
+        published.native = self.selected == ThemeChoice::Native;
+        published
     }
 }
 
@@ -190,7 +288,7 @@ impl Appearance {
 /// thread, so the two-second poll must not do it for an unchanged config.
 pub fn refresh_appearance(choice: ThemeChoice, cx: &mut App) -> Option<Appearance> {
     if choice != ThemeChoice::Ghostty {
-        return Some(Appearance::resolve(choice));
+        return Some(Appearance::resolve(choice, system_is_dark(cx)));
     }
     // Taken before parsing, so an edit made during the parse shows up next poll.
     let stamp = ghostty_config_stamp();
@@ -200,7 +298,7 @@ pub fn refresh_appearance(choice: ThemeChoice, cx: &mut App) -> Option<Appearanc
     if following && cx.default_global::<GhosttyWatch>().stamp.as_ref() == Some(&stamp) {
         return None;
     }
-    let appearance = Appearance::resolve(choice);
+    let appearance = Appearance::resolve(choice, system_is_dark(cx));
     // A hard failure is retried on every poll; diagnostics about a config that
     // still produced colors are stable until the files change.
     cx.set_global(GhosttyWatch {
@@ -236,6 +334,27 @@ pub fn ghostty_config_stamp() -> GhosttyConfigStamp {
     config_files::stamp()
 }
 
+/// Whether macOS shows dark mode: the application's effective appearance, which
+/// follows the system unless RiWork forces one (see `force_system_appearance`).
+pub fn system_is_dark(cx: &App) -> bool {
+    matches!(
+        cx.window_appearance(),
+        WindowAppearance::Dark | WindowAppearance::VibrantDark
+    )
+}
+
+/// `RIWORK_APPEARANCE=light` or `dark` pins the application's appearance, so the
+/// Native theme's other mode can be looked at without changing the system
+/// setting. Anything else, or nothing, follows the system.
+pub fn force_system_appearance(cx: &App) {
+    let forced = match std::env::var("RIWORK_APPEARANCE").as_deref() {
+        Ok("light") => WindowAppearance::Light,
+        Ok("dark") => WindowAppearance::Dark,
+        _ => return,
+    };
+    cx.set_window_appearance(Some(forced));
+}
+
 pub fn palette(cx: &App) -> Palette {
     cx.try_global::<Appearance>()
         .map_or(Palette::RIWORK, |appearance| appearance.palette)
@@ -263,12 +382,12 @@ impl DiffColors {
 /// The diff colors for the theme on screen, readable on the panels' highlight
 /// color. A configuration that gave no terminal colors falls back to RiWork's.
 pub fn diff_colors(cx: &App) -> DiffColors {
-    let use_riwork_colors = cx
+    let force = cx
         .try_global::<Settings>()
-        .is_some_and(|settings| settings.use_riwork_colors);
+        .is_some_and(Settings::terminal_colors_forced);
     let appearance = cx.try_global::<Appearance>();
     let theme = appearance
-        .and_then(|appearance| appearance.shown_terminal(use_riwork_colors))
+        .and_then(|appearance| appearance.shown_terminal(force))
         .unwrap_or_else(riwork_terminal_theme);
     DiffColors::from_terminal(&theme, palette(cx).panel_active)
 }
@@ -296,9 +415,36 @@ pub fn riwork_terminal_theme() -> TerminalTheme {
     )
 }
 
+/// Native's terminal colors: the skin's own white or black background and a
+/// restrained ANSI palette. Each of the eight normal colors but the one that is
+/// the background's own (black on black) reads at 4.5:1 or better on it; the
+/// bright ones are a step lighter (dark) or brighter (light) of the same hues.
+pub fn native_terminal_theme(dark: bool) -> TerminalTheme {
+    if dark {
+        terminal_theme(
+            0x000000,
+            0xf5f5f7,
+            [
+                0x2c2c2e, 0xff6b60, 0x5fd07a, 0xe6c35c, 0x64a8ff, 0xc58af9, 0x5ac8d8, 0xc7c7cc,
+                0x636366, 0xff8a80, 0x85e09c, 0xf2d68a, 0x8cbfff, 0xd9a8ff, 0x8ad9e5, 0xffffff,
+            ],
+        )
+    } else {
+        terminal_theme(
+            0xffffff,
+            0x1d1d1f,
+            [
+                0x1d1d1f, 0xc4281c, 0x1f7a37, 0x8a5a00, 0x1d5fbf, 0x8b3dbf, 0x0f6f80, 0x636366,
+                0x8e8e93, 0xd93a2b, 0x2a8f46, 0xa66d00, 0x2f74d9, 0xa24fd6, 0x168596, 0x3a3a3c,
+            ],
+        )
+    }
+}
+
 fn preset(choice: ThemeChoice) -> TerminalTheme {
     match choice {
         ThemeChoice::Ghostty | ThemeChoice::RiWork => riwork_terminal_theme(),
+        ThemeChoice::Native => native_terminal_theme(false),
         ThemeChoice::Catppuccin => terminal_theme(
             0x1e1e2e,
             0xcdd6f4,
@@ -337,7 +483,7 @@ pub fn mix(first: u32, second: u32, amount: f64) -> u32 {
     result
 }
 
-fn luminance(color: u32) -> f64 {
+pub fn luminance(color: u32) -> f64 {
     let channel = |shift| {
         let value = f64::from((color >> shift) & 255u32) / 255.0;
         if value <= 0.04045 {
@@ -1116,7 +1262,7 @@ mod tests {
             ThemeChoice::TokyoNight,
             ThemeChoice::GruvboxLight,
         ] {
-            let appearance = Appearance::resolve(choice);
+            let appearance = Appearance::resolve(choice, false);
             let terminal = appearance.terminal.unwrap();
             let palette = appearance.palette;
             assert_eq!(palette.bg, color_u32(terminal.background));
@@ -1133,8 +1279,20 @@ mod tests {
                 );
             }
         }
-        assert!(luminance(Appearance::resolve(ThemeChoice::GruvboxLight).palette.bg) > 0.8);
-        assert!(luminance(Appearance::resolve(ThemeChoice::TokyoNight).palette.bg) < 0.1);
+        assert!(
+            luminance(
+                Appearance::resolve(ThemeChoice::GruvboxLight, false)
+                    .palette
+                    .bg
+            ) > 0.8
+        );
+        assert!(
+            luminance(
+                Appearance::resolve(ThemeChoice::TokyoNight, false)
+                    .palette
+                    .bg
+            ) < 0.1
+        );
     }
 
     #[test]
@@ -1156,7 +1314,7 @@ mod tests {
             (ThemeChoice::TokyoNight, true),
             (ThemeChoice::GruvboxLight, false),
         ] {
-            let published = Appearance::resolve(choice).published(false);
+            let published = Appearance::resolve(choice, false).published(false);
             assert_eq!(published.dark, dark, "{choice:?}");
         }
     }
@@ -1183,11 +1341,12 @@ mod tests {
 
     #[test]
     fn published_palette_and_terminal_mirror_a_selected_theme() {
+        // Native's terminal colors depend on its option; it has its own test.
         for choice in ThemeChoice::ALL
             .into_iter()
-            .filter(|choice| *choice != ThemeChoice::Ghostty)
+            .filter(|choice| !matches!(choice, ThemeChoice::Ghostty | ThemeChoice::Native))
         {
-            let appearance = Appearance::resolve(choice);
+            let appearance = Appearance::resolve(choice, false);
             // A selected theme forces its own terminal colors, whatever the option says.
             for option in [false, true] {
                 let published = appearance.published(option);
@@ -1226,7 +1385,7 @@ mod tests {
                 );
             }
         }
-        let riwork = Appearance::resolve(ThemeChoice::RiWork).published(false);
+        let riwork = Appearance::resolve(ThemeChoice::RiWork, false).published(false);
         assert_eq!(riwork.palette.bg.hex(), "#090d14");
         assert_eq!(riwork.palette.cyan.hex(), "#55e6dc");
         let terminal = riwork.terminal.unwrap();
@@ -1283,9 +1442,164 @@ mod tests {
         let following = following_ghostty(Some(riwork));
         assert_eq!(following.terminal_override(false), None);
         assert_eq!(following.terminal_override(true), Some(riwork));
-        let gruvbox = Appearance::resolve(ThemeChoice::GruvboxLight);
+        let gruvbox = Appearance::resolve(ThemeChoice::GruvboxLight, false);
         assert_eq!(gruvbox.terminal_override(false), gruvbox.terminal);
         assert_eq!(gruvbox.terminal_override(true), gruvbox.terminal);
+    }
+
+    #[test]
+    fn native_is_black_and_white_with_one_readable_signal_color() {
+        for dark in [false, true] {
+            let appearance = Appearance::resolve(ThemeChoice::Native, dark);
+            let palette = appearance.palette;
+            assert_eq!(palette, Palette::native(dark));
+            assert_eq!(is_dark(palette.bg), dark);
+            assert_eq!(appearance.published(true).dark, dark);
+            // Primary and selection are the extreme of the scale: black or white.
+            assert_eq!(palette.cyan, if dark { 0xffffff } else { 0x000000 });
+            assert_eq!(palette.focus, palette.cyan);
+            // The one hue is the signal color, and it is what working agents wear.
+            assert_eq!(palette.working, palette.gold);
+            assert!(palette.plain_tabs);
+            assert!(!palette.controls_island);
+            for color in [
+                palette.bg,
+                palette.panel,
+                palette.panel_active,
+                palette.divider,
+                palette.cyan,
+                palette.magenta,
+                palette.text,
+                palette.muted,
+            ] {
+                let [r, g, b] = [color >> 16, (color >> 8) & 255, color & 255];
+                assert!(
+                    r.abs_diff(g) <= 5 && g.abs_diff(b) <= 5,
+                    "{color:06x} is a grey"
+                );
+            }
+            let [r, g, b] = [
+                palette.gold >> 16,
+                (palette.gold >> 8) & 255,
+                palette.gold & 255,
+            ];
+            assert!(r > g && g > b, "{:06x} is orange", palette.gold);
+            for color in [
+                palette.text,
+                palette.muted,
+                palette.cyan,
+                palette.magenta,
+                palette.gold,
+            ] {
+                for background in [palette.bg, palette.panel, palette.panel_active] {
+                    assert!(
+                        contrast(color, background) >= 4.5,
+                        "dark={dark} {color:06x} on {background:06x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_terminal_colors_read_on_the_skins_background() {
+        for dark in [false, true] {
+            let theme = native_terminal_theme(dark);
+            let palette = Palette::native(dark);
+            assert_eq!(color_u32(theme.background), palette.bg);
+            let background = color_u32(theme.background);
+            assert!(contrast(color_u32(theme.foreground), background) >= 7.0);
+            // Normal colors 1–7, and black too on white; black on black is the
+            // one color that is the background's own.
+            let first = if dark { 1 } else { 0 };
+            for (index, color) in theme.palette[first..8].iter().enumerate() {
+                let color = color_u32(*color);
+                assert!(
+                    contrast(color, background) >= 4.5,
+                    "dark={dark} color {} {color:06x}",
+                    index + first
+                );
+            }
+            // Bright colors stay legible, if less so: dim text uses bright black.
+            for color in &theme.palette[8..] {
+                assert!(contrast(color_u32(*color), background) >= 3.0);
+            }
+        }
+    }
+
+    #[test]
+    fn native_terminals_match_the_theme_only_while_the_option_is_on() {
+        let ghostty = terminal_theme(0x282c34, 0xabb2bf, [0x101010; 16]);
+        for dark in [false, true] {
+            let mut appearance = Appearance::resolve(ThemeChoice::Native, dark);
+            appearance.ghostty = Some(ghostty);
+            let native = native_terminal_theme(dark);
+            assert_eq!(appearance.terminal_override(true), Some(native));
+            assert_eq!(appearance.published(true).terminal, Some(rgb(&native)));
+            // Off keeps Ghostty's own colors: no override, and that is what the phone shows.
+            assert_eq!(appearance.terminal_override(false), None);
+            assert_eq!(appearance.published(false).terminal, Some(rgb(&ghostty)));
+            // The palette is Native's either way.
+            assert_eq!(
+                appearance.published(false).palette,
+                appearance.published(true).palette
+            );
+        }
+    }
+
+    #[test]
+    fn only_native_tells_the_phone_to_draw_natively() {
+        for choice in ThemeChoice::ALL {
+            for dark in [false, true] {
+                let published = Appearance::resolve(choice, dark).published(false);
+                assert_eq!(
+                    published.native,
+                    choice == ThemeChoice::Native,
+                    "{choice:?}"
+                );
+            }
+        }
+        // Native's light and dark sides publish the mode with the flag.
+        assert!(
+            !Appearance::resolve(ThemeChoice::Native, false)
+                .published(true)
+                .dark
+        );
+        assert!(
+            Appearance::resolve(ThemeChoice::Native, true)
+                .published(true)
+                .dark
+        );
+    }
+
+    #[test]
+    fn only_native_goes_stale_when_macos_switches_light_and_dark() {
+        let light = Appearance::resolve(ThemeChoice::Native, false);
+        assert!(!light.is_stale_for(false));
+        assert!(light.is_stale_for(true));
+        let dark = Appearance::resolve(ThemeChoice::Native, true);
+        assert!(dark.is_stale_for(false));
+        assert!(!dark.is_stale_for(true));
+        for choice in [ThemeChoice::RiWork, ThemeChoice::GruvboxLight] {
+            let appearance = Appearance::resolve(choice, false);
+            assert!(!appearance.is_stale_for(true));
+            assert_eq!(appearance, Appearance::resolve(choice, true));
+        }
+    }
+
+    #[test]
+    fn colorful_themes_focus_in_gold_and_show_work_in_cyan() {
+        for choice in [
+            ThemeChoice::RiWork,
+            ThemeChoice::Catppuccin,
+            ThemeChoice::TokyoNight,
+        ] {
+            let palette = Appearance::resolve(choice, false).palette;
+            assert_eq!(palette.focus, palette.gold, "{choice:?}");
+            assert_eq!(palette.working, palette.cyan, "{choice:?}");
+            assert!(!palette.plain_tabs, "{choice:?}");
+            assert!(palette.controls_island, "{choice:?}");
+        }
     }
 
     #[test]

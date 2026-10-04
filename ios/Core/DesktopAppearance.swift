@@ -73,16 +73,19 @@ public enum AppearanceError: Error, Equatable, LocalizedError, Sendable {
 
 /// What `appearance.get` returns: the desktop's current colors.
 ///
-/// `{"v":1,"updated_at":<unix>,"dark":<bool>,"palette":{…9 × "#rrggbb"},"terminal":{"background","foreground","palette":[16 × "#rrggbb"]}}`
-/// with `terminal` optional. Parsing is strict about what it uses; unknown extra fields are ignored.
+/// `{"v":1,"updated_at":<unix>,"dark":<bool>,"palette":{…9 × "#rrggbb"},"terminal":{"background","foreground","palette":[16 × "#rrggbb"]},"native":true}`
+/// with `terminal` and `native` optional. Parsing is strict about what it uses; unknown extra fields are ignored.
 public struct DesktopAppearance: Sendable, Equatable, Codable {
     public static let version = 1
     public let updatedAt: UInt64
     public let dark: Bool
     public let palette: DesktopPalette
     public let terminal: TerminalColors?
-    public init(updatedAt: UInt64, dark: Bool, palette: DesktopPalette, terminal: TerminalColors? = nil) {
-        self.updatedAt = updatedAt; self.dark = dark; self.palette = palette; self.terminal = terminal
+    /// The desktop uses its Native skin: the interface is drawn the native way (system font, sentence case, glass). A desktop
+    /// from before the flag never sends it, and one with another theme leaves it out; both mean the terminal look.
+    public let native: Bool
+    public init(updatedAt: UInt64, dark: Bool, palette: DesktopPalette, terminal: TerminalColors? = nil, native: Bool = false) {
+        self.updatedAt = updatedAt; self.dark = dark; self.palette = palette; self.terminal = terminal; self.native = native
     }
 
     public init(json: JSONValue) throws {
@@ -117,6 +120,11 @@ public struct DesktopAppearance: Sendable, Equatable, Codable {
                 palette: try list.enumerated().map { try color($0.element, "terminal.palette[\($0.offset)]") })
         default: throw AppearanceError.invalid("terminal")
         }
+        switch json["native"] {
+        case .null: native = false
+        case .bool(let value): native = value
+        default: throw AppearanceError.invalid("native")
+        }
     }
 
     /// The wire shape, used for persistence so what is stored is validated by the same parser that reads the network.
@@ -132,14 +140,15 @@ public struct DesktopAppearance: Sendable, Equatable, Codable {
             fields["terminal"] = .object(["background": .string(terminal.background.hex), "foreground": .string(terminal.foreground.hex),
                                           "palette": .array(terminal.palette.map { .string($0.hex) })])
         }
+        if native { fields["native"] = .bool(true) }
         return .object(fields)
     }
     public init(from decoder: any Decoder) throws { try self.init(json: try JSONValue(from: decoder)) }
     public func encode(to encoder: any Encoder) throws { try json.encode(to: encoder) }
 
-    /// The same colors, whatever the publication time. A refresh that only bumps `updated_at` changes nothing on screen.
+    /// The same colors and skin, whatever the publication time. A refresh that only bumps `updated_at` changes nothing on screen.
     public func sameLook(as other: DesktopAppearance) -> Bool {
-        dark == other.dark && palette == other.palette && terminal == other.terminal
+        dark == other.dark && palette == other.palette && terminal == other.terminal && native == other.native
     }
 }
 

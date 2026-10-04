@@ -567,7 +567,7 @@ impl ProjectCreator {
                 div()
                     .text_color(rgb(colors.muted))
                     .text_size(ui_text::text(9.0))
-                    .child(label.to_owned()),
+                    .child(ui_text::cased(label.to_owned())),
             )
             .child(
                 div()
@@ -577,6 +577,7 @@ impl ProjectCreator {
                         "project-name"
                     })
                     .relative()
+                    .cursor_text()
                     .h(ui_text::space(32.0))
                     .px(ui_text::space(8.0))
                     .flex()
@@ -682,11 +683,14 @@ impl Render for ProjectCreator {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(div().text_color(rgb(colors.magenta)).child("NEW PROJECT"))
+                    .child(
+                        div()
+                            .text_color(rgb(colors.magenta))
+                            .child(ui_text::cased("New project")),
+                    )
                     .child(
                         div()
                             .id("cancel-project-x")
-                            .cursor_pointer()
                             .text_color(rgb(colors.muted))
                             .child("×")
                             .on_click(cx.listener(|form, _, _, cx| {
@@ -703,7 +707,7 @@ impl Render for ProjectCreator {
                     .items_end()
                     .child(div().flex_1().min_w_0().child(self.render_field(
                         Field::Path,
-                        "FOLDER",
+                        "Folder",
                         "/path/to/project",
                         cx,
                     )))
@@ -714,20 +718,19 @@ impl Render for ProjectCreator {
                             .px(ui_text::space(10.0))
                             .flex()
                             .items_center()
-                            .cursor_pointer()
                             .border_1()
                             .border_color(rgb(colors.divider))
                             .text_color(rgb(colors.cyan))
-                            .child("BROWSE…")
+                            .child(ui_text::cased("Browse…"))
                             .on_click(cx.listener(|form, _, window, cx| form.browse(window, cx))),
                     ),
             )
             .child(self.render_field(
                 Field::Name,
                 if self.path_follows_name {
-                    "PROJECT NAME"
+                    "Project name"
                 } else {
-                    "NAME · OPTIONAL"
+                    "Name · Optional"
                 },
                 if self.path_follows_name {
                     "my-project"
@@ -771,7 +774,6 @@ impl Render for ProjectCreator {
                     .flex()
                     .gap(ui_text::space(8.0))
                     .items_center()
-                    .cursor_pointer()
                     .text_color(rgb(colors.cyan))
                     .child(if self.init_git { "[✓]" } else { "[ ]" })
                     .child("Initialize Git  [CMD+G]")
@@ -808,9 +810,8 @@ impl Render for ProjectCreator {
                             .id("cancel-project")
                             .px(ui_text::space(12.0))
                             .py(ui_text::space(8.0))
-                            .cursor_pointer()
                             .text_color(rgb(colors.muted))
-                            .child("CANCEL")
+                            .child(ui_text::cased("Cancel"))
                             .on_click(cx.listener(|form, _, _, cx| {
                                 if !form.creating {
                                     cx.emit(ProjectCreationEvent::Cancelled);
@@ -822,16 +823,15 @@ impl Render for ProjectCreator {
                             .id("create-project")
                             .px(ui_text::space(12.0))
                             .py(ui_text::space(8.0))
-                            .cursor_pointer()
                             .bg(rgb(colors.panel_active))
                             .border_1()
                             .border_color(rgb(if ready { colors.cyan } else { colors.divider }))
                             .text_color(rgb(if ready { colors.cyan } else { colors.muted }))
-                            .child(if self.creating {
-                                "CREATING…"
+                            .child(ui_text::cased(if self.creating {
+                                "Creating…"
                             } else {
-                                "CREATE PROJECT  ↵"
-                            })
+                                "Create project  ↵"
+                            }))
                             .on_click(cx.listener(|form, _, _, cx| form.submit(cx))),
                     ),
             )
