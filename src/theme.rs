@@ -77,6 +77,9 @@ pub struct Palette {
     /// terminal-style cells with a primary underline; Native draws a rounded,
     /// raised segment in the content's own background, like a macOS tab bar.
     pub pill_tabs: bool,
+    /// Whether the window controls sit on a filled island. Native leaves them on
+    /// the window's own surface, as a Mac app does; the space stays reserved.
+    pub controls_island: bool,
 }
 
 impl Palette {
@@ -93,6 +96,7 @@ impl Palette {
         focus: 0xf4bf75,
         working: 0x55e6dc,
         pill_tabs: false,
+        controls_island: true,
     };
 
     /// Native in light mode, on the published tokens: `cyan`, the primary and
@@ -112,6 +116,7 @@ impl Palette {
         focus: 0x000000,
         working: 0xb34000,
         pill_tabs: true,
+        controls_island: false,
     };
 
     /// Native in dark mode: the same roles inverted, white on black, with the
@@ -129,6 +134,7 @@ impl Palette {
         focus: 0xffffff,
         working: 0xff9f0a,
         pill_tabs: true,
+        controls_island: false,
     };
 
     pub const fn native(dark: bool) -> Self {
@@ -159,6 +165,7 @@ impl Palette {
             focus: gold,
             working: cyan,
             pill_tabs: false,
+            controls_island: true,
         }
     }
 }
@@ -1418,6 +1425,7 @@ mod tests {
             // The one hue is the signal color, and it is what working agents wear.
             assert_eq!(palette.working, palette.gold);
             assert!(palette.pill_tabs);
+            assert!(!palette.controls_island);
             for color in [
                 palette.bg,
                 palette.panel,
@@ -1529,6 +1537,7 @@ mod tests {
             assert_eq!(palette.focus, palette.gold, "{choice:?}");
             assert_eq!(palette.working, palette.cyan, "{choice:?}");
             assert!(!palette.pill_tabs, "{choice:?}");
+            assert!(palette.controls_island, "{choice:?}");
         }
     }
 

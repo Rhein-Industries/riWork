@@ -8929,6 +8929,8 @@ fn window_controls_visible(window: &Window) -> bool {
 
 fn window_controls_island(cx: &App) -> impl IntoElement {
     let colors = theme::palette(cx);
+    // Native keeps the area (it still drags the window) but draws nothing, so the
+    // traffic lights sit on the bar like a Mac app's.
     div()
         .id("window-controls-island")
         .absolute()
@@ -8936,11 +8938,14 @@ fn window_controls_island(cx: &App) -> impl IntoElement {
         .left_0()
         .w(px(WINDOW_CONTROLS_WIDTH))
         .h(px(WINDOW_CONTROLS_HEIGHT))
-        .rounded_br(px(8.0))
-        .bg(rgb(colors.panel_active))
-        .border_r_1()
-        .border_b_1()
-        .border_color(rgb(colors.divider))
+        .when(colors.controls_island, |island| {
+            island
+                .rounded_br(px(8.0))
+                .bg(rgb(colors.panel_active))
+                .border_r_1()
+                .border_b_1()
+                .border_color(rgb(colors.divider))
+        })
         .on_mouse_down(MouseButton::Left, start_window_drag)
 }
 
