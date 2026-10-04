@@ -799,10 +799,13 @@ fn native_section_card(
         .into_any_element()
 }
 
+/// The line box of a theme choice's title under Native, which its radio is centered on.
+const THEME_TITLE_LINE: f32 = 16.0;
+
 /// Native's radio mark: a ring, filled with the primary color when chosen.
 fn radio(mark: Div, selected: bool, colors: Palette) -> Div {
     mark.size(ui_text::space(12.0))
-        .mt(ui_text::space(2.0))
+        .mt_0()
         .rounded_full()
         .border_color(rgb(if selected {
             colors.cyan
@@ -2155,16 +2158,22 @@ impl SettingsPanel {
             })
             .focus_visible(|style| style.border_color(rgb(colors.magenta)))
             .map(|row| controls::native(row, |row| controls::row(row, selected, colors)))
-            .child(
-                div()
+            .child({
+                let mark = div()
                     .flex_none()
                     .mt(ui_text::space(4.0))
                     .size(ui_text::space(8.0))
                     .border_1()
                     .border_color(rgb(if selected { colors.cyan } else { colors.muted }))
-                    .when(selected, |style| style.bg(rgb(colors.cyan)))
-                    .map(|mark| controls::native(mark, |mark| radio(mark, selected, colors))),
-            )
+                    .when(selected, |style| style.bg(rgb(colors.cyan)));
+                if ui_text::is_native() {
+                    // Centered on the title's line box, which the title is set in exactly.
+                    controls::on_first_line(radio(mark, selected, colors), THEME_TITLE_LINE)
+                        .into_any_element()
+                } else {
+                    mark.into_any_element()
+                }
+            })
             .child(
                 div()
                     .flex_1()
@@ -2183,6 +2192,9 @@ impl SettingsPanel {
                                     .flex_1()
                                     .min_w_0()
                                     .text_size(ui_text::text(12.0))
+                                    .when(ui_text::is_native(), |title| {
+                                        title.line_height(ui_text::space(THEME_TITLE_LINE))
+                                    })
                                     .text_color(rgb(colors.text))
                                     .child(theme.label()),
                             )
