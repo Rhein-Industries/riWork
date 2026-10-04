@@ -49,11 +49,9 @@ mod tests {
         std::fs::create_dir_all(home.join("run")).unwrap();
         let socket = socket_path(&home);
         assert_eq!(socket, home.join("run").join("chat.sock"));
-        assert!(
-            ensure_host(&home)
-                .unwrap_err()
-                .starts_with("The chat host is not running")
-        );
+        // With nothing listening the real host would be started; a test build
+        // refuses to start one from its own executable.
+        assert!(ensure_host(&home).is_err());
         std::os::unix::fs::symlink(&host.socket, &socket).unwrap();
         assert_eq!(ensure_host(&home).unwrap(), socket);
     }

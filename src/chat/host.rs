@@ -1685,6 +1685,12 @@ fn spawn_host(exe: &Path, home: &Path, paths: &Paths) -> Result<std::process::Ch
 /// bundled `riwork chat ensure`, and returns the socket to connect to. Blocks
 /// for up to a few seconds while a host starts; call it from a background task.
 pub fn ensure_host(home: &Path) -> Result<PathBuf, String> {
+    // In a test build the current executable is the test harness: run with
+    // `chat ensure` it would take those words as test filters, run the chat
+    // tests again, and each of them would start it once more.
+    if cfg!(test) {
+        return Err("a test build never starts a chat host from its own executable".into());
+    }
     let exe = std::env::current_exe()
         .map_err(|error| format!("Cannot locate the RiWork executable: {error}"))?;
     ensure_host_with(&exe, home)
