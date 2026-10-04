@@ -1027,6 +1027,151 @@ fn a_link_wrapped_over_rows_is_joined() {
     assert_eq!(view.link_at(9, 0, &bases(nowhere)), None);
 }
 
+// ---- what a link covers ------------------------------------------------------------------
+
+/// The runs of cells the link under a cell covers, as (row, first column, end column).
+fn runs_at(view: &PaneView, row: u32, col: u32, cwd: &Path) -> Option<Vec<(u32, u32, u32)>> {
+    view.link_span_at(row, col, &bases(cwd)).map(|(_, runs)| {
+        runs.into_iter()
+            .map(|run| (run.row, run.cols.start, run.cols.end))
+            .collect()
+    })
+}
+
+#[test]
+fn a_link_on_one_row_covers_its_own_cells() {
+    let raw = capture(30, 2, &[("see https://ex.com/a. ok", false), ("", false)]);
+    let view = PaneView::parse(&raw).unwrap();
+    let nowhere = Path::new("/nowhere");
+    // `https://ex.com/a` is columns 4 to 19; the full stop of the sentence is not part of it.
+    assert_eq!(runs_at(&view, 0, 10, nowhere), Some(vec![(0, 4, 20)]));
+    assert_eq!(runs_at(&view, 0, 1, nowhere), None);
+}
+
+#[test]
+fn a_wrapped_link_covers_every_row_it_was_wrapped_over() {
+    let raw = capture(
+        10,
+        4,
+        &[
+            ("go https:/", true),
+            ("/ex.com/a/", true),
+            ("b ok", false),
+            ("", false),
+        ],
+    );
+    let view = PaneView::parse(&raw).unwrap();
+    let nowhere = Path::new("/nowhere");
+    let whole = Some(vec![(0, 3, 10), (1, 0, 10), (2, 0, 1)]);
+    // The same, whichever row the pointer is on.
+    assert_eq!(runs_at(&view, 0, 5, nowhere), whole);
+    assert_eq!(runs_at(&view, 1, 3, nowhere), whole);
+    assert_eq!(runs_at(&view, 2, 0, nowhere), whole);
+}
+
+#[test]
+fn a_file_link_covers_its_position_too() {
+    let tree = Tree::new();
+    let raw = capture(30, 1, &[("see src/main.rs:12:3, then", false)]);
+    let view = PaneView::parse(&raw).unwrap();
+    let (link, runs) = view
+        .link_span_at(0, 6, &bases(&tree.join("work")))
+        .expect("a link");
+    assert_eq!(
+        Some(link),
+        found(
+            fs::canonicalize(tree.join("work/src/main.rs")).unwrap(),
+            Some(12),
+            Some(3),
+            false
+        )
+    );
+    // `src/main.rs:12:3` is columns 4 to 19, the comma after it is not.
+    assert_eq!(
+        runs,
+        [LinkRow {
+            row: 0,
+            cols: 4..20
+        }]
+    );
+}
+
+#[test]
+fn a_hyperlink_covers_the_words_it_is_on() {
+    let esc = "\u{1b}";
+    let mut raw = capture(30, 2, &[("see the docs here", false), ("", false)]);
+    raw.escaped = format!(
+        "see {esc}]8;;https://a.example/x{esc}\\the docs{esc}]8;;{esc}\\ here{:<13}\n{:<30}\n",
+        "", ""
+    );
+    let view = PaneView::parse(&raw).unwrap();
+    let nowhere = Path::new("/x");
+    // `the docs` is columns 4 to 11, from either end of it.
+    assert_eq!(runs_at(&view, 0, 4, nowhere), Some(vec![(0, 4, 12)]));
+    assert_eq!(runs_at(&view, 0, 11, nowhere), Some(vec![(0, 4, 12)]));
+}
+
+#[test]
+fn a_wide_character_covers_two_cells_and_a_row_out_of_view_none() {
+    // A link that wrapped from the context above the screen: only its visible row is covered.
+    let raw = RawCapture {
+        header: "10\t1\t1\t0\t\t0\t/work".into(),
+        clients: String::new(),
+        rows: "go https:/\n/x.com/你 \n".into(),
+        joined: "go https://x.com/你\n".into(),
+        escaped: String::new(),
+    };
+    let view = PaneView::parse(&raw).unwrap();
+    let nowhere = Path::new("/nowhere");
+    assert_eq!(
+        view.link_at(0, 2, &bases(nowhere)),
+        Some(Link::Url("https://x.com/你".into()))
+    );
+    assert_eq!(runs_at(&view, 0, 2, nowhere), Some(vec![(0, 0, 9)]));
+}
+
+#[test]
+fn the_underline_lies_along_the_bottom_of_the_links_cells() {
+    // 1000 x 600 pt at 2x: 2000 x 1200 px, 4 px padding, cells of 16 x 34.
+    let strips = underline_strips(
+        (1000.0, 600.0),
+        2.0,
+        (124, 35),
+        &DEFAULT_PADDING,
+        &mut CellHint::default(),
+        &[
+            LinkRow {
+                row: 5,
+                cols: 10..20,
+            },
+            LinkRow { row: 6, cols: 0..3 },
+            // Past the grid: nothing to draw.
+            LinkRow {
+                row: 40,
+                cols: 0..3,
+            },
+        ],
+    );
+    // Two device pixels (one point) high, ending at the bottom of the row.
+    assert_eq!(
+        strips,
+        [
+            Strip {
+                x: (4.0 + 16.0 * 10.0) / 2.0,
+                y: (4.0 + 34.0 * 6.0 - 2.0) / 2.0,
+                width: 16.0 * 10.0 / 2.0,
+                height: 1.0,
+            },
+            Strip {
+                x: 2.0,
+                y: (4.0 + 34.0 * 7.0 - 2.0) / 2.0,
+                width: 16.0 * 3.0 / 2.0,
+                height: 1.0,
+            },
+        ]
+    );
+}
+
 #[test]
 fn rows_that_were_not_wrapped_are_not_joined() {
     // Two rows that both end at the edge, as an agent that wraps its own text leaves them.

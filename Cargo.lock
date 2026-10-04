@@ -4291,6 +4291,7 @@ dependencies = [
 name = "riwork"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "chrono",
  "core-foundation-sys",
  "fs2",

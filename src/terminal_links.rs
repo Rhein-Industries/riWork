@@ -15,6 +15,7 @@ use std::{
 
 use crate::theme::{GhosttyPadding, PaddingBalance};
 
+mod overlay;
 mod ui;
 pub use ui::LinkState;
 
@@ -250,17 +251,77 @@ pub fn cell_under_pointer(
     padding: &GhosttyPadding,
     hint: &mut CellHint,
 ) -> Option<(u32, u32)> {
+    let grid = surface_grid(size, scale, cells, padding, hint)?;
+    cell_at(&grid, offset.0 * scale, offset.1 * scale)
+}
+
+/// The grid of a terminal `size` points large, in pixels.
+fn surface_grid(
+    size: (f64, f64),
+    scale: f64,
+    cells: (u32, u32),
+    padding: &GhosttyPadding,
+    hint: &mut CellHint,
+) -> Option<Grid> {
     let screen = ((size.0 * scale) as u32, (size.1 * scale) as u32);
     hint.for_scale(scale);
-    let grid = grid_geometry(
+    grid_geometry(
         screen,
         cells.0,
         cells.1,
         explicit_padding(padding, scale),
         padding.balance,
         hint,
-    )?;
-    cell_at(&grid, offset.0 * scale, offset.1 * scale)
+    )
+}
+
+/// The cells of one row of the visible screen that a link covers: columns `cols.start` up to
+/// `cols.end`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkRow {
+    pub row: u32,
+    pub cols: Range<u32>,
+}
+
+/// A rectangle in points, from the terminal's top left corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Strip {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Where the line under a link goes in a terminal laid out as `cell_under_pointer` sees it: one
+/// strip per row, along the bottom of the link's cells, a device pixel per point of scale thick.
+pub fn underline_strips(
+    size: (f64, f64),
+    scale: f64,
+    cells: (u32, u32),
+    padding: &GhosttyPadding,
+    hint: &mut CellHint,
+    rows: &[LinkRow],
+) -> Vec<Strip> {
+    let Some(grid) = surface_grid(size, scale, cells, padding, hint) else {
+        return Vec::new();
+    };
+    let thickness = scale.round().max(1.0);
+    rows.iter()
+        .filter(|run| run.row < grid.rows && run.cols.start < run.cols.end)
+        .map(|run| {
+            let end = run.cols.end.min(grid.cols);
+            let left = grid.origin_x + f64::from(run.cols.start) * grid.cell_width;
+            let right = grid.origin_x + f64::from(end) * grid.cell_width;
+            let bottom = (grid.origin_y + f64::from(run.row + 1) * grid.cell_height).floor();
+            Strip {
+                x: left / scale,
+                y: (bottom - thickness) / scale,
+                width: (right - left) / scale,
+                height: thickness / scale,
+            }
+        })
+        .filter(|strip| strip.width > 0.0)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -331,9 +392,30 @@ struct Located {
     index: usize,
     /// The target of the OSC 8 hyperlink on that character.
     hyperlink: Option<String>,
+    /// Where each character is: its captured row, first cell and width in cells.
+    places: Vec<(usize, u32, u32)>,
+    /// The OSC 8 hyperlink on each character, as an index into the targets.
+    links: Vec<Option<usize>>,
     /// The line may begin or end beyond what was captured.
     start_cut: bool,
     end_cut: bool,
+}
+
+impl Located {
+    /// The characters around the one under the cell that carry the same OSC 8 hyperlink.
+    fn hyperlink_span(&self) -> Range<usize> {
+        let Some(link) = self.links.get(self.index).copied().flatten() else {
+            return self.index..self.index;
+        };
+        let same = |at: &usize| self.links.get(*at).copied().flatten() == Some(link);
+        let start = (0..self.index)
+            .rev()
+            .take_while(same)
+            .last()
+            .unwrap_or(self.index);
+        let end = (self.index..self.links.len()).take_while(same).count() + self.index;
+        start..end
+    }
 }
 
 impl PaneView {
@@ -442,6 +524,8 @@ impl PaneView {
             .unwrap_or(index);
         let end = (index..last).take_while(|row| self.wraps[*row]).count() + index;
         let mut chars = Vec::new();
+        let mut places = Vec::new();
+        let mut links = Vec::new();
         let mut found = None;
         let mut hyperlink = None;
         for row in first..=end {
@@ -456,18 +540,33 @@ impl PaneView {
                     .and_then(|target| self.targets.get(target).cloned());
             }
             // A row that continues is full; the last one is trimmed of its blank tail.
-            if row == end {
-                chars.extend(text.trim_end_matches(' ').chars());
+            let kept = if row == end {
+                text.trim_end_matches(' ').chars().count()
             } else if self.padded[row] {
-                chars.extend(text.chars().take(text.chars().count().saturating_sub(1)));
+                text.chars().count().saturating_sub(1)
             } else {
-                chars.extend(text.chars());
+                text.chars().count()
+            };
+            let mut cell = 0;
+            for (offset, ch) in text.chars().take(kept).enumerate() {
+                // A combining mark covers no cell of its own.
+                let width = char_width(ch) as u32;
+                chars.push(ch);
+                places.push((row, cell, width));
+                links.push(
+                    self.hyperlinks
+                        .get(row)
+                        .and_then(|row| row.get(offset).copied().flatten()),
+                );
+                cell += width;
             }
         }
         Some(Located {
             chars,
             index: found?,
             hyperlink,
+            places,
+            links,
             start_cut: first == 0 && !self.at_history_top,
             end_cut: end == last && self.end_cut,
         })
@@ -481,7 +580,15 @@ impl PaneView {
     }
 
     /// What a cell of the visible screen links to.
+    #[cfg(test)]
     pub fn link_at(&self, row: u32, col: u32, bases: &Bases) -> Option<Link> {
+        self.link_span_at(row, col, bases).map(|(link, _)| link)
+    }
+
+    /// What a cell of the visible screen links to, and the cells of the screen the link covers,
+    /// one run per row: the words of a hyperlink, or the text that was read as the link, with
+    /// its position (`:120`) and on every row it was wrapped over.
+    pub fn link_span_at(&self, row: u32, col: u32, bases: &Bases) -> Option<(Link, Vec<LinkRow>)> {
         if self.mode == PaneMode::Other {
             return None;
         }
@@ -508,8 +615,36 @@ impl PaneView {
             }
             _ => true,
         });
+        let from_target = target.is_some();
         let candidates: Vec<Candidate> = target.into_iter().chain(text).collect();
-        resolve(&candidates, bases)
+        let (link, taken) = resolve_which(&candidates, bases)?;
+        let span = if from_target && taken == 0 {
+            located.hyperlink_span()
+        } else {
+            candidates[taken].span().clone()
+        };
+        Some((link, self.screen_runs(&located, span)))
+    }
+
+    /// The cells of the visible screen that characters of a located line cover, one run per row.
+    /// Rows scrolled out of view have none.
+    fn screen_runs(&self, located: &Located, span: Range<usize>) -> Vec<LinkRow> {
+        let mut runs: Vec<LinkRow> = Vec::new();
+        for &(line, cell, width) in located.places.get(span).unwrap_or_default() {
+            let row = line as i64 + self.first_line + self.scroll;
+            if width == 0 || row < 0 || row >= i64::from(self.rows) {
+                continue;
+            }
+            let row = row as u32;
+            match runs.last_mut() {
+                Some(run) if run.row == row => run.cols.end = run.cols.end.max(cell + width),
+                _ => runs.push(LinkRow {
+                    row,
+                    cols: cell..cell + width,
+                }),
+            }
+        }
+        runs
     }
 }
 
@@ -1214,8 +1349,14 @@ pub struct Bases<'a> {
 
 /// The first candidate that is a URL or names something that exists. A path that does not
 /// exist is not a link.
+#[cfg(test)]
 pub fn resolve(candidates: &[Candidate], bases: &Bases) -> Option<Link> {
-    candidates.iter().find_map(|candidate| match candidate {
+    resolve_which(candidates, bases).map(|(link, _)| link)
+}
+
+/// `resolve`, and which of the candidates it took.
+fn resolve_which(candidates: &[Candidate], bases: &Bases) -> Option<(Link, usize)> {
+    let link = |candidate: &Candidate| match candidate {
         Candidate::Url { url, .. } => Some(Link::Url(url.clone())),
         Candidate::Path {
             text, line, col, ..
@@ -1227,7 +1368,11 @@ pub fn resolve(candidates: &[Candidate], bases: &Bases) -> Option<Link> {
                 is_dir,
             })
         }),
-    })
+    };
+    candidates
+        .iter()
+        .enumerate()
+        .find_map(|(taken, candidate)| link(candidate).map(|link| (link, taken)))
 }
 
 fn resolve_path(text: &str, bases: &Bases) -> Option<(PathBuf, bool)> {
