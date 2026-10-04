@@ -35,11 +35,11 @@ struct NewTerminalSheet: View {
             targetRow
             sectionLabel("WHAT")
             VStack(spacing: 0) {
-                ForEach(NewTerminalKind.allCases) { kindRow($0) }
+                ForEach(sheet.form.kinds) { kindRow($0) }
             }
             .accessibilityElement(children: .contain).accessibilityLabel("Terminal kind")
             if sheet.form.kind.isAgent { unrestrictedRow }
-            if let message = sheet.message { messageRow(message) }
+            if let problem = sheet.problem { messageRow(problem) }
         }
     }
 
@@ -98,9 +98,11 @@ struct NewTerminalSheet: View {
         case .codex: "chevron.left.forwardslash.chevron.right"
         case .claude: "sparkles"
         case .grok: "bolt"
+        case .codexChat: ChatProvider.codex.glyph
+        case .claudeChat: ChatProvider.claude.glyph
         }
     }
-    private func detail(_ kind: NewTerminalKind) -> String { kind == .shell ? "The Mac’s login shell" : "Agent" }
+    private func detail(_ kind: NewTerminalKind) -> String { kind == .shell ? "The Mac’s login shell" : (kind.isChat ? "Native chat" : "Agent") }
     private func kindRow(_ kind: NewTerminalKind) -> some View {
         let selected = sheet.form.kind == kind
         return Button { sheet.select(kind: kind) } label: {
@@ -124,7 +126,8 @@ struct NewTerminalSheet: View {
         Toggle(isOn: Binding(get: { sheet.form.unrestricted }, set: { sheet.setUnrestricted($0) })) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Unrestricted: no approval prompts")
-                Text("The agent can run commands and change files on your Mac without asking.")
+                Text(sheet.form.kind.isChat ? "Starts in Full mode: the agent can run commands and change files on your Mac without asking. You can change the mode in the chat."
+                     : "The agent can run commands and change files on your Mac without asking.")
                     .font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -133,7 +136,7 @@ struct NewTerminalSheet: View {
         .padding(.top, 8)
     }
 
-    private func messageRow(_ message: TerminalControlError) -> some View {
+    private func messageRow(_ message: NewTabProblem) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: message.outcomeIsUncertain ? "questionmark.circle" : "exclamationmark.triangle")
             Text(message.message).font(style.system(.footnote)).fixedSize(horizontal: false, vertical: true)
@@ -147,7 +150,7 @@ struct NewTerminalSheet: View {
     // MARK: Footer
 
     private var createTitle: String {
-        if sheet.error?.outcomeIsUncertain == true { return "Try again" }
+        if sheet.problem?.outcomeIsUncertain == true { return "Try again" }
         return "Create \(sheet.form.kind.title)"
     }
     private var footer: some View {
@@ -167,7 +170,7 @@ struct NewTerminalSheet: View {
             .disabled(!sheet.canCreate)
             .overlay { ring(.create) }
             .padding(.horizontal, 12).padding(.bottom, 8)
-            .accessibilityHint(sheet.unsupported ? TerminalControlError.unsupportedMessage : "Opens it on your Mac and switches to it")
+            .accessibilityHint(sheet.unsupported ? sheet.unsupportedMessage : "Opens it on your Mac and switches to it")
         }.background(style.panel)
     }
 }
