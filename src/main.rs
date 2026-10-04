@@ -2236,18 +2236,7 @@ impl Workspace {
 
     /// A panel's name in sentence case, as Native writes labels.
     fn panel_label(panel: PanelKind) -> &'static str {
-        match panel {
-            PanelKind::Projects => "Projects",
-            PanelKind::Worktrees => "Worktrees",
-            PanelKind::Files => "Files",
-            PanelKind::Preview => "Preview",
-            PanelKind::Tasks => "Tasks",
-            PanelKind::Shells => "Shells",
-            PanelKind::Usage => "Usage",
-            PanelKind::Settings => "Settings",
-            PanelKind::Schedules => "Schedules",
-            PanelKind::ProjectSettings => "Project settings",
-        }
+        panel.label()
     }
 
     fn panel_title(panel: PanelKind) -> &'static str {

@@ -317,6 +317,28 @@ fn device_square(bounds: Bounds<gpui::Pixels>, scale: f32) -> Bounds<gpui::Pixel
     )
 }
 
+/// SF Symbol `name` at `points` (a design size, grown with the interface text like the text
+/// beside it), centered in a box a little larger than the symbol so it never clips. `color`
+/// None takes the text color its element has at that moment, so a button that brightens its
+/// text on hover brightens the symbol with it. Native's own controls use it; elsewhere, or on
+/// a macOS without the symbol, the box stays empty.
+pub fn symbol(name: &'static str, points: f32, color: Option<u32>) -> AnyElement {
+    let scale = ui_text::scale();
+    let native = ui_text::is_native();
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            if native {
+                let tint = color.unwrap_or_else(|| text_color(window));
+                paint_symbol(name, points * scale, Weight::Regular, tint, bounds, window);
+            }
+        },
+    )
+    .size(px((points * 1.3).max(14.0) * scale))
+    .flex_shrink_0()
+    .into_any_element()
+}
+
 /// The SF Symbol Native draws for a text mark that stands for a control: a row's
 /// disclosure triangle, a sort arrow, a gear, a pencil. None keeps the mark as text.
 pub fn mark_symbol(mark: &str) -> Option<&'static str> {
