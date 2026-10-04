@@ -69,6 +69,7 @@ impl Fake {
             approval_mode: ApprovalMode::Supervised,
             model: None,
             effort: None,
+            fast: false,
             resume: None,
             extra_args: Vec::new(),
             env: Vec::new(),

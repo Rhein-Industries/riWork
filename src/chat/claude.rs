@@ -9,7 +9,7 @@
 //! claude <extra_args> --output-format stream-json --verbose --input-format stream-json
 //!   --permission-prompt-tool stdio --include-partial-messages
 //!   --allow-dangerously-skip-permissions --permission-mode <mode>
-//!   [--model M] [--effort E] (--resume ID | --session-id UUID)
+//!   [--model M] [--effort E] [--settings '{"fastMode":true}'] (--resume ID | --session-id UUID)
 //! ```
 //!
 //! with `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`, which makes it announce
@@ -20,7 +20,9 @@
 //! later `Configure`.
 //!
 //! `start` sends the `initialize` control request and returns once it is
-//! answered, with stdin kept open for the whole chat. A new chat is started
+//! answered, with stdin kept open for the whole chat. The answer carries the models
+//! the CLI offers (`models`, SDK `ModelInfo`) and the Fast mode state
+//! (`fast_mode_state`, `fast_mode_disabled_reason`); see "Models and Fast mode". A new chat is started
 //! with a session id of our own (`--session-id`), since `system/init` only
 //! arrives with the first message; the id is known as soon as `start` returns.
 //! Resuming a session Claude never saved (it exits 1 with "No conversation
@@ -80,9 +82,40 @@
 //! | `Interrupt`              | `control_request` `interrupt` (with `cancel_queued`); after 5 s SIGINT to the process; after 5 s more, or if the process leaves within 10 s of SIGINT, it is stopped and restarted with `--resume`, closing the turn as Interrupted |
 //! | `Approve`                | `control_response` `{behavior:"allow", updatedInput}` (AcceptForSession adds `updatedPermissions`, always with destination `session`), or `{behavior:"deny", message}` (Cancel adds `interrupt:true` and also starts the `Interrupt` escalation) |
 //! | `Answer`                 | `control_response` `allow` with `updatedInput { questions, answers }`, answers keyed by question text, multiple choices joined by ", " |
-//! | `Configure`              | `set_permission_mode` / `set_model` control requests; a request the CLI cannot do, and an effort change, restart it with `--resume` (when idle) |
+//! | `Configure`              | `set_permission_mode` / `set_model` / `apply_flag_settings` (Fast mode) control requests; a request the CLI cannot do, and an effort change, restart it with `--resume` (when idle) |
 //! | `Compact`                | the user message `/compact`                                       |
 //! | `Stop`                   | `shutdown()`: close stdin, wait 5 s, SIGTERM, then SIGKILL, on the process group |
+//!
+//! # Models and Fast mode
+//!
+//! `Models` has one `ModelOption` per entry of the `initialize` answer's `models`: `id` is
+//! the `value` (what `--model` and `set_model` take; `default` is the CLI's own choice, and
+//! `is_default` is true for it only), `name` the `displayName`, `efforts` the
+//! `supportedEffortLevels` (none for a model without them, Haiku), `supports_fast` the
+//! `supportsFastMode` (absent means no). `default_effort` is not told by the CLI. The list
+//! is said once per process start when it changes, and again when a later `initialize` answer
+//! differs. A CLI that names no models says nothing, and the chat keeps a text field for the
+//! model (the `system/init` model is not made into a one-entry list: that would take the
+//! text field away). Which models exist depends on the account, the plan and the CLI's
+//! configuration, so nothing is assumed about them.
+//!
+//! Fast mode is a setting of the CLI's flag layer, `fastMode`: a headless CLI ignores a
+//! `fastMode` saved in the user's own settings. A chat with Fast mode on passes it as
+//! `--settings '{"fastMode":true}'` at every start (a restart too), and `Configure` changes it
+//! in the running process with the control request `apply_flag_settings`
+//! `{"settings":{"fastMode":B}}`; a CLI that does not know it is restarted with the flag as
+//! it is for other settings. The answer to that request is always `{}`, whether or not Fast
+//! mode can be served, so the driver then asks `initialize` again, which answers with the
+//! current `fast_mode_state` (`off`, `cooldown`, `on`) and `fast_mode_disabled_reason`.
+//! Those two also arrive in `system/init` and `result`.
+//!
+//! The chat's `fast` is the user's choice and stays whatever the CLI grants. When it is on and
+//! the state is not `on`, one `Notice` (Warning) says why, once for each state and reason:
+//! "Fast mode is cooling down after a rate limit..." for `cooldown`, the CLI's own
+//! reasons (a plan without it, the organization, the network, ...) for `off`; and one
+//! (Info) says "Fast mode is on again." when it comes back. A model without Fast mode
+//! (`supportsFastMode` absent in the list) makes the CLI say `off` without a reason, and
+//! nothing is said for it; `pending` is not said either.
 //!
 //! # Verified and assumed
 //!
@@ -97,6 +130,13 @@
 //! `AskUserQuestion` answer format, `control_cancel_request`,
 //! `session_state_changed` (the live captures predate asking for it),
 //! `set_model`, and the tool input shapes. Parsing is tolerant of all of them.
+//! The `models` array, `fast_mode_state` and `fast_mode_disabled_reason` of the `initialize`
+//! answer, `--settings '{"fastMode":true}'` and `apply_flag_settings` followed by a second
+//! `initialize` were checked live against claude 2.1.289 in an isolated, logged-out
+//! configuration (`testdata/claude/models_fast.ndjson` has the models as it answered). Without
+//! an account the CLI cannot look up the organization's Fast mode setting and answers
+//! `off`/`preference` to a request for it, so `on` and the cooldown come from the SDK types
+//! and from a probe that skipped that look-up, not from a real subscriber's account.
 //! Also checked live: `--resume` of an unknown session exits 1 with "No
 //! conversation found with session ID: ..." on stderr and a `result` error on
 //! stdout. Assumed: a session that never received a message counts as unknown
@@ -108,8 +148,8 @@ use super::child::{self, Frame, FrameReader, MAX_FRAME_BYTES, Proc};
 use super::driver::{Driver, DriverConfig};
 use super::model::{
     Approval, ApprovalKind, ApprovalMode, ChangeKind, ChatCommand, ChatEvent, ChatState, Decision,
-    FileChange, Item, ItemBody, ItemStatus, NoticeLevel, Question, QuestionOption, QuestionPrompt,
-    Step, StepStatus, TurnOutcome, Usage,
+    FileChange, Item, ItemBody, ItemStatus, ModelOption, NoticeLevel, Question, QuestionOption,
+    QuestionPrompt, Step, StepStatus, TurnOutcome, Usage,
 };
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
@@ -280,6 +320,9 @@ struct Settings {
     permission_mode: String,
     model: Option<String>,
     effort: Option<String>,
+    /// The user wants Fast mode. Whether the CLI grants it is another matter
+    /// (`Core::fast_reported`).
+    fast: bool,
 }
 
 /// A turn in progress.
@@ -406,6 +449,11 @@ struct Core {
     notice_prefix: String,
     notice_counter: u64,
     totals: Totals,
+    /// The models the CLI offers, from its `initialize` answer; empty if it said none.
+    models: Vec<ModelOption>,
+    /// The last Fast mode state a notice told the user about, as `(state, reason)`,
+    /// and `None` while Fast mode is on, not asked for, or not yet known.
+    fast_reported: Option<(String, Option<String>)>,
     /// The model `system/init` named, whose window `context_window` is.
     model: Option<String>,
     context_window: Option<u64>,
@@ -430,6 +478,7 @@ impl Core {
                 permission_mode: permission_mode(config.approval_mode).to_owned(),
                 model: config.model.clone(),
                 effort: config.effort.clone(),
+                fast: config.fast,
             },
             restart_wanted: false,
             // No process yet; `launch` announces `Starting`.
@@ -450,6 +499,8 @@ impl Core {
             notice_prefix: Uuid::new_v4().simple().to_string()[..8].to_owned(),
             notice_counter: 0,
             totals: Totals::default(),
+            models: Vec::new(),
+            fast_reported: None,
             model: None,
             context_window: None,
             context_used: None,
@@ -650,8 +701,9 @@ impl Core {
                 model,
                 effort,
                 approval_mode,
+                fast,
             } => {
-                self.configure(model, effort, approval_mode);
+                self.configure(model, effort, approval_mode, fast);
                 Ok(())
             }
             ChatCommand::Stop => Ok(()),
@@ -817,6 +869,7 @@ impl Core {
         model: Option<String>,
         effort: Option<String>,
         approval_mode: Option<ApprovalMode>,
+        fast: Option<bool>,
     ) {
         if let Some(mode) = approval_mode {
             let mode = permission_mode(mode).to_owned();
@@ -845,6 +898,101 @@ impl Core {
             // Only a flag at start-up sets it.
             self.settings.effort = Some(effort);
             self.restart_wanted = true;
+        }
+        if let Some(fast) = fast
+            && self.settings.fast != fast
+        {
+            self.settings.fast = fast;
+            self.fast_reported = None;
+            self.change_fast(fast);
+        }
+    }
+
+    /// Turn Fast mode on or off in the running process: a flag-layer setting, which
+    /// the process keeps until it ends (a restart passes it at launch). Its answer
+    /// never says whether Fast mode is available, so the state is asked for again.
+    fn change_fast(&mut self, fast: bool) {
+        let reply: Reply = Box::new(move |core, result| match result {
+            Ok(_) => core.ask_state(),
+            Err(error) if error.contains("Unsupported") => core.restart_wanted = true,
+            Err(error) => {
+                core.settings.fast = !fast;
+                core.notice(
+                    NoticeLevel::Warning,
+                    format!("claude did not change Fast mode: {error}"),
+                );
+            }
+        });
+        let request = json!({"subtype": "apply_flag_settings", "settings": {"fastMode": fast}});
+        if self.control(request, reply).is_err() {
+            self.restart_wanted = true;
+        }
+    }
+
+    /// Ask the CLI where it stands: `initialize` answers again with the models and the
+    /// Fast mode state as they are now.
+    fn ask_state(&mut self) {
+        let reply: Reply = Box::new(|core, result| {
+            if let Ok(state) = result {
+                core.take_state(&state);
+            }
+        });
+        let _ = self.control(json!({"subtype": "initialize", "hooks": null}), reply);
+    }
+
+    /// What the CLI said about itself in an `initialize` answer: the models it offers
+    /// and whether Fast mode is on.
+    fn take_state(&mut self, state: &Value) {
+        let models: Vec<ModelOption> = state["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(model_option)
+            .collect();
+        if !models.is_empty() && models != self.models {
+            self.models = models.clone();
+            self.emit(ChatEvent::Models { models });
+        }
+        self.note_fast_state(state);
+    }
+
+    /// Say so when Fast mode was asked for and is not on, and when it is on again.
+    /// `frame` is anything that carries `fast_mode_state` (the `initialize` answer,
+    /// `system/init`, `result`); one without it changes nothing. Each state is said
+    /// once, however many frames repeat it.
+    fn note_fast_state(&mut self, frame: &Value) {
+        let Some(state) = str_of(frame, "fast_mode_state") else {
+            return;
+        };
+        let reason = str_of(frame, "fast_mode_disabled_reason").map(str::to_owned);
+        // A model without Fast mode explains itself with its toggle gone.
+        let model = self.settings.model.as_deref().unwrap_or("default");
+        let unsupported = self
+            .models
+            .iter()
+            .find(|option| option.id == model)
+            .is_some_and(|option| !option.supports_fast);
+        if !self.settings.fast || unsupported {
+            self.fast_reported = None;
+            return;
+        }
+        if state == "on" {
+            if self.fast_reported.take().is_some() {
+                self.notice(NoticeLevel::Info, "Fast mode is on again.");
+            }
+            return;
+        }
+        // Checking is over soon, and says nothing yet.
+        if reason.as_deref() == Some("pending") {
+            return;
+        }
+        let said = Some((state.to_owned(), reason.clone()));
+        if self.fast_reported != said {
+            self.fast_reported = said;
+            self.notice(
+                NoticeLevel::Warning,
+                fast_off_text(state, reason.as_deref()),
+            );
         }
     }
 
@@ -915,6 +1063,7 @@ impl Core {
                 if let Some(model) = str_of(frame, "model") {
                     self.model = Some(model.to_owned());
                 }
+                self.note_fast_state(frame);
                 self.session_used = true;
             }
             Some("status") => {
@@ -1239,6 +1388,7 @@ impl Core {
         }
         let usage = self.usage_from(frame);
         self.emit(ChatEvent::Usage { usage });
+        self.note_fast_state(frame);
         if failed {
             let message = str_of(frame, "result")
                 .filter(|text| !text.is_empty())
@@ -1486,6 +1636,11 @@ fn launch_args(core: &Core) -> Vec<String> {
     if let Some(effort) = &core.settings.effort {
         args.extend(["--effort".into(), effort.clone()]);
     }
+    // Fast mode is on only for a settings overlay that says so: the user's own
+    // settings are not read for it when claude runs without a terminal.
+    if core.settings.fast {
+        args.extend(["--settings".into(), json!({"fastMode": true}).to_string()]);
+    }
     // A session nobody has written to has nothing to resume.
     let flag = if core.session_used {
         "--resume"
@@ -1547,6 +1702,9 @@ fn start_process(shared: &Arc<Shared>) -> Result<(), String> {
             json!({"subtype": "initialize", "hooks": null}),
             Box::new(move |core, result| {
                 core.ready |= result.is_ok();
+                if let Ok(state) = &result {
+                    core.take_state(state);
+                }
                 let _ = answer_tx.send(result);
             }),
         );
@@ -1787,6 +1945,54 @@ fn permission_mode(mode: ApprovalMode) -> &'static str {
         ApprovalMode::Full => "bypassPermissions",
         ApprovalMode::Plan => "plan",
     }
+}
+
+/// A model the CLI offers (`ModelInfo` of the SDK) as the chat shows it. Its `value` is
+/// what `--model` and `set_model` take (`default` is the CLI's own choice).
+fn model_option(model: &Value) -> Option<ModelOption> {
+    let id = str_of(model, "value")?;
+    Some(ModelOption {
+        id: id.to_owned(),
+        name: str_of(model, "displayName").unwrap_or(id).to_owned(),
+        description: str_of(model, "description").unwrap_or_default().to_owned(),
+        efforts: model["supportedEffortLevels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        default_effort: None,
+        supports_fast: model["supportsFastMode"].as_bool() == Some(true),
+        is_default: id == "default",
+    })
+}
+
+/// Why Fast mode is not on although it was asked for. `reason` is the CLI's
+/// `fast_mode_disabled_reason`, absent for a cooldown (a pause after a rate limit)
+/// and for a model that cannot do it.
+fn fast_off_text(state: &str, reason: Option<&str>) -> String {
+    let text = match (state, reason) {
+        ("cooldown", _) => {
+            "Fast mode is cooling down after a rate limit; turns run at standard speed until it ends"
+        }
+        (_, Some("free")) => "Fast mode needs a paid Claude subscription",
+        (_, Some("preference")) => "Your organization has turned off Fast mode",
+        (_, Some("extra_usage_disabled")) => "Fast mode needs extra usage, which is not enabled",
+        (_, Some("network_error")) => {
+            "Fast mode is unavailable: claude could not reach the network"
+        }
+        (_, Some("not_first_party")) => "Fast mode only works with the Anthropic API directly",
+        (_, Some("disabled_by_env")) => "Fast mode is turned off in claude's environment",
+        (_, Some("model_not_allowed")) => {
+            "Your organization does not allow this model with Fast mode"
+        }
+        (_, Some("sdk_opt_in_required")) => "Fast mode did not turn on",
+        (_, Some("unknown")) => "Fast mode is unavailable right now",
+        (_, Some(other)) => return format!("Fast mode is off ({other})"),
+        (_, None) => "Fast mode is off for this model",
+    };
+    text.to_owned()
 }
 
 fn str_of<'a>(value: &'a Value, key: &str) -> Option<&'a str> {

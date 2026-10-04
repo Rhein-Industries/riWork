@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-05: Additive, in the same "Chat extension": the models a chat can use and the provider's fast mode. A new `models` event (`models`: a list of `{id, name, description, efforts, default_effort, supports_fast, is_default}`, sent by the agent's driver once after it starts and again if the list changes, so it is in the chat's history like any event), `fast` on `ChatInfo` (the person's choice, a boolean, absent in a chat from before it), an optional `fast` boolean in `chat.create`, and an optional `fast` boolean in the `configure` command. A model's `id` is what `model` takes; `efforts` are the efforts that model takes; `supports_fast` says whether the toggle belongs to it. No new method and no new error code. A desktop from before it refuses `fast` as an unknown field (`invalid_request`) and never sends a `models` event; a client that has seen none offers a text field for the model and the usual efforts, as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-04: Additive chat extension: five methods that let the phone follow and drive the desktop's Codex and Claude chats (the chat host, `riwork chat ...`), `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop`, and `features.chat` in `ready`. `chat.events` is a long poll (`wait_ms` up to 25 000, counted with the waits of `shell.output`) that returns the events after a cursor, batched, in a page cut to fit one reply; `chat.create`, `chat.command` and `chat.stop` run in the ordered lane and a creation is not cut short when the phone's session ends. The chat JSON is the desktop's own (`src/chat/model.rs`); the phone decodes it leniently. No new error code. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.chat` out; see "Chat extension" below.
 - 2026-10-03: Additive, in the same "Activity and recency extension": `projects.list` entries gain optional `last_activity_unix` (Unix seconds: when the newest of the project's shells last had output) and `shells.list` / `orchestrators.list` entries gain optional `last_activity_unix` (when that shell last had output, from tmux), so the phone's "Recent" project order can follow shell activity instead of file edits. No new method and no new error code. A desktop that cannot supply it leaves it out, an older phone ignores it, and the connector checks it is a non-negative integer and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-03: Additive activity and recency extension, no new method and no new error code: `projects.list` entries gain optional `last_edited_unix` (when the desktop app last saw a file of the project change, Unix seconds) and `agents` (`{"working":n,"waiting":n}` and additively `"done":n`: the project's agent shells by state), and `shells.list` / `orchestrators.list` entries gain optional `activity` (`working|waiting|done|unknown|exited`), `activity_since_unix`, `subagents_working` and additively `subagent_kinds`, so the phone can sort recent projects and show whether a Codex or Claude is working, with its subagents. See "Activity and recency extension" below. A field the desktop cannot supply is simply absent, so an older desktop or CLI answers exactly as before and an older phone ignores them; the connector checks each new field's shape and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -173,7 +174,7 @@ unsolicited response except handshake `ready`.
 | `shell.close` | `{"shell_id":"UUID"}` (Terminal creation) | `{"shell_id":"UUID","status":"closed"}` |
 | `project.create` | `{"name":"My App"}` optionally `"git":false` (Project creation) | `{"project_id":"UUID","project":Project}` |
 | `chats.list` | `{}` or `{"project_id":"UUID"}` (Chat) | `{"chats":[ChatInfo]}` |
-| `chat.create` | `{"provider":"codex\|claude","project_id":"UUID"}` or `"worktree_id":"UUID"` instead, optionally `"approval_mode"`, `"model"`, `"effort"`, `"title"` (Chat) | `{"chat":ChatInfo}` |
+| `chat.create` | `{"provider":"codex\|claude","project_id":"UUID"}` or `"worktree_id":"UUID"` instead, optionally `"approval_mode"`, `"model"`, `"effort"`, `"fast"`, `"title"` (Chat) | `{"chat":ChatInfo}` |
 | `chat.events` | `{"chat_id":"UUID","since":0,"wait_ms":25000}` optionally `"max_events":500` (Chat) | `{"chat_id":"UUID","events":[{"seq":1,"event":ChatEvent}],"next":1,"more":false}` |
 | `chat.command` | `{"chat_id":"UUID","command":ChatCommand}` (Chat) | `{"status":"ok"}` |
 | `chat.stop` | `{"chat_id":"UUID"}` (Chat) | `{"status":"stopped"}` |
@@ -1205,8 +1206,9 @@ reason to fail a page.
 
 - `ChatInfo`: `id` (UUID), `provider` (`codex|claude`), `project_id` and `worktree_id`
   (UUID, either may be absent), `cwd`, `title`, `created_at_unix`, `approval_mode`
-  (`supervised|auto_edit|full|plan`), `state`, and, when known, `provider_thread_id`,
-  `model`, `effort` and `codex_account_id`.
+  (`supervised|auto_edit|full|plan`), `state`, `fast` (boolean: the person asked for the
+  provider's fast mode; absent, so `false`, in a chat from before 2026-10-05) and, when
+  known, `provider_thread_id`, `model`, `effort` and `codex_account_id`.
 - `state` is `{"state":"starting|idle|running|waiting|stopped"}` or
   `{"state":"failed","message":"..."}`. `waiting` means a turn waits for an approval or an
   answer. `stopped` has no agent process: the next message resumes the chat. `failed`
@@ -1216,8 +1218,9 @@ reason to fail a page.
   "completed|interrupted"}` or `{"outcome":"failed","message"}`), `item_started` and
   `item_completed` (`item`), `item_delta` (`item_id`, `delta`: `{"kind":"text|output",
   "text"}`), `approval_requested` (`approval`), `approval_resolved` (`request_id`,
-  `decision`), `question_requested` (`question`), `question_resolved` (`request_id`) and
-  `usage` (`usage`). An `item_completed` replaces what the deltas of that item built.
+  `decision`), `question_requested` (`question`), `question_resolved` (`request_id`),
+  `usage` (`usage`) and `models` (`models`, see below). An `item_completed` replaces what
+  the deltas of that item built.
 - An item is `{id, turn_id?, status, body}`, `status` `in_progress|completed|failed|
   declined|interrupted`; `body` has the tag `type`: `user_message`, `agent_message`
   (Markdown) and `reasoning` (`text`), `plan` (`explanation?`, `steps`), `command`
@@ -1231,6 +1234,20 @@ reason to fail a page.
   multi_select}]}`. A decision is `accept`, `accept_for_session`, `decline` or `cancel`.
 - `Usage` is `{input_tokens, output_tokens, cached_input_tokens, context_window?,
   context_used?, cost_usd?}`; `cost_usd` is the provider's own estimate, never a bill.
+- `models` carries `models`, a list of `{id, name, description, efforts, default_effort?,
+  supports_fast, is_default}` (since 2026-10-05; every field but `id` and `name` may be
+  absent: empty, `null` or `false`). It is what the provider itself says it offers, as
+  its agent reported it, so the list differs by provider, by account and by version; a
+  later `models` event replaces the earlier one, and an empty list takes the choice away.
+  `id` is what `model` takes (Codex's model id; for Claude its alias, or `default` for the
+  model Claude chooses), `name` is what to show, `efforts` are the efforts that model takes
+  (empty: none to choose, or not known), `default_effort` the one used when none is
+  chosen, `supports_fast` whether the model has a fast mode (Codex's "Fast" service tier,
+  Claude's fast mode) and `is_default` whether the provider uses it when no model is
+  chosen. A chat's agent reports the list a moment after it starts, so a chat that has not
+  run yet, or whose agent is too old to say, has none: offer a text field for the model.
+  A client shows the toggle for fast mode only for the chat's model (`ChatInfo.model`, or
+  the `is_default` model when there is none) if its `supports_fast` is true.
 
 **`chats.list`** answers `{"chats":[ChatInfo]}`, oldest first: every chat of the
 desktop, running or not, or, with `{"project_id":"UUID"}`, the chats of that project.
@@ -1245,7 +1262,7 @@ new` does. Params (an object; unknown fields, nulls and wrong types fail
 ```json
 {"provider":"codex","project_id":"UUID"}
 {"provider":"claude","worktree_id":"UUID","approval_mode":"auto_edit","title":"Fix the build"}
-{"provider":"codex","project_id":"UUID","model":"gpt-5.5","effort":"high"}
+{"provider":"codex","project_id":"UUID","model":"gpt-5.5","effort":"high","fast":true}
 ```
 
 - `provider` (required): `codex` or `claude`, spelled exactly.
@@ -1262,14 +1279,18 @@ new` does. Params (an object; unknown fields, nulls and wrong types fail
   optional strings with no control character; one that is blank is the same as leaving
   it out. A model and effort the provider does not know fail the chat's first turn, not
   the creation. Without a title the chat is called "Codex chat" or "Claude chat".
+- `fast` (optional boolean, default `false`; null and other types are refused): start with
+  the provider's fast mode on. A model without one ignores it. It is the person's choice
+  and stays in `ChatInfo.fast`; the provider may still not grant it (Claude pauses fast
+  mode after a rate limit and says so in a `notice` item).
 
 Result `{"chat":ChatInfo}`, with the state it has when the CLI returns: `idle` once the
 agent is up, or `starting`. **A chat whose agent could not be started is created all the
 same and is the answer**, with `{"state":"failed","message":"..."}` (for example `codex
 is not installed or is not on PATH`): the phone shows it and the next `Send` tries
 again, so a failed start does not invite a second creation. The connector checks that the
-chat is the one asked for (provider, project or worktree, mode, and model and effort when
-sent) and answers `cli_error` if not, after stopping that stray chat's agent.
+chat is the one asked for (provider, project or worktree, mode, and model, effort and fast
+mode when sent) and answers `cli_error` if not, after stopping that stray chat's agent.
 
 **`chat.events`** is how the phone follows a chat. Params (all but `max_events`
 required):
@@ -1337,7 +1358,7 @@ fields of its kind, none null and none unknown:
 | `interrupt` | | stops the turn that runs |
 | `approve` | `request_id` (1 to 200 bytes, one line), `decision` | answers an `approval_requested` |
 | `answer` | `request_id`, `answers`: 1 to 16 lists (one per question, in order) of at most 64 strings of at most 8 192 bytes, 65 536 bytes in all | answers a `question_requested`: the chosen labels, or free text |
-| `configure` | at least one of `model` (at most 100 characters), `effort` (at most 32), `approval_mode` | changes them for the next turns |
+| `configure` | at least one of `model` (at most 100 characters), `effort` (at most 32), `approval_mode`, `fast` (boolean, since 2026-10-05) | changes them for the next turns (`fast: false` turns fast mode off; an effort the model does not take is left out and a `notice` item says so) |
 | `compact` | | compacts the context |
 | `stop` | | stops the agent process, like `chat.stop` |
 
@@ -1370,7 +1391,7 @@ the other methods:
   UUID form and every limit above. Ids are canonical UUIDs; a chat is never named by a
   prefix, a title or a path.
 - The CLI is run with its argument vector built from validated values, one argument per
-  value (`chat new --provider P --project ID --mode M [--model=X] [--effort=X]
+  value (`chat new --provider P --project ID --mode M [--model=X] [--effort=X] [--fast]
   [--title=X] --json`, `chat events ID --since N --wait-ms N --max N --max-bytes N
   --json`, `chat command ID --command-json JSON --json`, `chat stop ID --json`, `chat
   list [--project ID] --json`). Nothing is concatenated into a shell string. Free text
@@ -1573,6 +1594,17 @@ ready response. Values are test-only and must never provision production devices
   idempotent, and a chat whose agent could not start is created and returned in the failed
   state. No new error code. A client that never calls the methods is unaffected, and an
   older desktop answers `invalid_request` "unsupported RPC method". Needs the iOS worker's
+  agreement; the iOS side implements the same text.
+
+- 2026-10-05: additive and backward compatible. Models and fast mode in the Chat extension.
+  A `models` chat event (`models`: `{id, name, description, efforts, default_effort,
+  supports_fast, is_default}` each), `fast` on `ChatInfo`, an optional boolean `fast` in
+  `chat.create` (passed to the CLI as `--fast`) and in the `configure` command, which
+  now needs one of `model`, `effort`, `approval_mode` or `fast`. The `models` event
+  passes through `chat.events` like every event, so a chat's history holds it and a
+  client that connects late sees it. No new method, no new error code. A desktop from
+  before it refuses `fast` (`invalid_request`, unknown field) and never sends `models`;
+  a phone then falls back to a text field for the model. Needs the iOS worker's
   agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),

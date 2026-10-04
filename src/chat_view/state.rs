@@ -211,6 +211,7 @@ mod tests {
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
             state,
+            fast: false,
         }
     }
 
@@ -227,6 +228,44 @@ mod tests {
 
     fn agent(text: &str) -> ItemBody {
         ItemBody::AgentMessage { text: text.into() }
+    }
+
+    #[test]
+    fn the_models_a_chat_reports_are_kept_for_the_toolbar_and_are_no_rows() {
+        use crate::chat::model::ModelOption;
+        let mut model = ChatModel::new();
+        assert!(model.transcript.models.is_empty());
+        let list = vec![ModelOption {
+            id: "opus".into(),
+            name: "Opus".into(),
+            supports_fast: true,
+            ..ModelOption::default()
+        }];
+        let applied = model.apply(&[envelope(
+            1,
+            ChatEvent::Models {
+                models: list.clone(),
+            },
+        )]);
+        // A counted event that adds and changes no row.
+        assert_eq!(
+            applied,
+            Applied {
+                appended: 0,
+                touched: BTreeSet::new(),
+                events: 1
+            }
+        );
+        assert_eq!(model.transcript.models, list);
+        // A repeat of the same event changes nothing, and a newer list replaces it.
+        assert_eq!(
+            model
+                .apply(&[envelope(1, ChatEvent::Models { models: Vec::new() })])
+                .events,
+            0
+        );
+        model.apply(&[envelope(2, ChatEvent::Models { models: Vec::new() })]);
+        assert!(model.transcript.models.is_empty());
     }
 
     #[test]

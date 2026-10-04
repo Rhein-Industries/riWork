@@ -32,6 +32,11 @@ every SIGINT or SIGTERM as {"signal": "INT", "ignored": false} (they end the
 fake unless it was told to ignore them), and {"eof": true} when stdin closed.
 A mismatch is recorded as {"mismatch": ...}
 and exits with status 98; running out of time waiting for input exits 99.
+
+The Codex driver asks `model/list` once, right before it opens the thread. A step
+that does not itself expect that request has it answered with an empty list (and
+recorded like any frame read), so the fixtures that predate it need not mention it;
+a fixture that wants real models expects it where it comes.
 """
 import json
 import os
@@ -156,12 +161,18 @@ for step in steps:
         out.write(b'{"pad":"' + b"x" * pad + b'"}\n')
         out.flush()
     elif kind == "expect":
-        line = read_line()
-        if line is None:
-            record({"mismatch": {"wanted": step["frame"], "got": "eof"}})
-            sys.exit(98)
-        frame = json.loads(line)
-        record({"recv": frame})
+        while True:
+            line = read_line()
+            if line is None:
+                record({"mismatch": {"wanted": step["frame"], "got": "eof"}})
+                sys.exit(98)
+            frame = json.loads(line)
+            record({"recv": frame})
+            if frame.get("method") == "model/list" and step["frame"].get("method") != "model/list":
+                last = frame
+                emit({"id": "$id", "result": {"data": [], "nextCursor": None}})
+                continue
+            break
         if not matches(step["frame"], frame):
             record({"mismatch": {"wanted": step["frame"], "got": frame}})
             sys.exit(98)

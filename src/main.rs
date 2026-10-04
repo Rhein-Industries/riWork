@@ -961,6 +961,7 @@ fn new_chat_request(
         },
         model: None,
         effort: None,
+        fast: false,
     }
 }
 

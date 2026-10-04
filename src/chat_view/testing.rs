@@ -157,6 +157,7 @@ fn info(id: &str) -> ChatInfo {
         approval_mode: ApprovalMode::Supervised,
         codex_account_id: None,
         state: ChatState::Idle,
+        fast: false,
     }
 }
 

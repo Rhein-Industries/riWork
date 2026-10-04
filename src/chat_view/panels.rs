@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use crate::{
-    chat::model::{ApprovalMode, ChatState, Decision, Question},
+    chat::model::{ApprovalMode, ChatState, Decision, Provider, Question},
     project_settings::Input,
     tooltip::{self, Look as TipLook},
     ui_text,
@@ -194,8 +194,12 @@ impl ChatView {
         let mode = info.map(|info| info.approval_mode).unwrap_or_default();
         let model = info.and_then(|info| info.model.clone());
         let effort = info.and_then(|info| info.effort.clone());
+        let fast = info.is_some_and(|info| info.fast);
         let thread = info.and_then(|info| info.provider_thread_id.clone());
         let idle = matches!(self.model.transcript.state, ChatState::Idle);
+        // What the driver said it offers; empty for a driver that says nothing.
+        let models = &self.model.transcript.models;
+        let provider = self.provider().unwrap_or(Provider::Codex);
 
         let picker = |name: &'static str, label: String, menu: Menu, cx: &mut Context<Self>| {
             let open = self.menu == Some(menu);
@@ -228,16 +232,40 @@ impl ChatView {
             ))
             .child(picker(
                 "chat-model",
-                format!("{} ▾", model.as_deref().unwrap_or("model")),
+                format!("{} ▾", toolbar::model_label(models, model.as_deref())),
                 Menu::Model,
                 cx,
             ))
-            .child(picker(
-                "chat-effort",
-                format!("{} ▾", effort.as_deref().unwrap_or("effort")),
-                Menu::Effort,
-                cx,
-            ))
+            .children(
+                toolbar::effort_available(models, model.as_deref(), provider).then(|| {
+                    picker(
+                        "chat-effort",
+                        format!(
+                            "{} ▾",
+                            toolbar::effort_label(models, model.as_deref(), effort.as_deref())
+                        ),
+                        Menu::Effort,
+                        cx,
+                    )
+                }),
+            )
+            .children(toolbar::fast_available(models, model.as_deref()).then(|| {
+                div()
+                    .relative()
+                    .child(
+                        button(
+                            "chat-fast",
+                            toolbar::fast_label(fast),
+                            fast.then_some(colors.cyan),
+                            look,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.toggle_fast(cx))),
+                    )
+                    .child(tooltip::anchor(
+                        "Fast mode answers sooner and uses more of your limits",
+                        TipLook::Control,
+                    ))
+            }))
             .child(if idle {
                 button("chat-compact", "Compact", None, look)
                     .on_click(cx.listener(|view, _, _, cx| view.compact(cx)))
@@ -384,34 +412,49 @@ impl ChatView {
                             mode == current,
                         )
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            view.configure(None, None, Some(mode), cx);
+                            view.configure(None, None, Some(mode), None, cx);
                         }))
                         .into_any_element()
                     })
                     .collect()
             }
             Menu::Effort => {
-                let current = info.and_then(|info| info.effort.clone());
-                self.provider()
-                    .map(toolbar::efforts)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|effort| {
-                        let name = (*effort).to_owned();
+                let model = info.and_then(|info| info.model.as_deref());
+                let effort = info.and_then(|info| info.effort.as_deref());
+                let provider = self.provider().unwrap_or(Provider::Codex);
+                toolbar::effort_rows(&self.model.transcript.models, model, effort, provider)
+                    .into_iter()
+                    .map(|line| {
+                        let name = line.effort;
+                        row(format!("effort-{name}"), line.label, None, line.current)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.configure(None, Some(name.clone()), None, None, cx);
+                            }))
+                            .into_any_element()
+                    })
+                    .collect()
+            }
+            Menu::Model if !self.model.transcript.models.is_empty() => {
+                let current = info.and_then(|info| info.model.as_deref());
+                toolbar::model_rows(&self.model.transcript.models, current)
+                    .into_iter()
+                    .map(|line| {
+                        let id = line.id;
                         row(
-                            format!("effort-{effort}"),
-                            name.clone(),
-                            None,
-                            current.as_deref() == Some(effort),
+                            format!("model-{id}"),
+                            line.label,
+                            line.detail.as_deref(),
+                            line.current,
                         )
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            view.configure(None, Some(name.clone()), None, cx);
+                            view.choose_model(&id, cx);
                         }))
                         .into_any_element()
                     })
                     .collect()
             }
             Menu::Model => {
+                // A driver that has not listed its models: type the name.
                 let current = info.and_then(|info| info.model.clone());
                 let suggestions = self
                     .provider()
@@ -433,7 +476,7 @@ impl ChatView {
                         current.as_deref() == Some(model),
                     )
                     .on_click(cx.listener(move |view, _, _, cx| {
-                        view.configure(Some(name.clone()), None, None, cx);
+                        view.configure(Some(name.clone()), None, None, None, cx);
                     }))
                     .into_any_element()
                 }));

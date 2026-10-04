@@ -268,6 +268,7 @@ mod tests {
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
             state: ChatState::Idle,
+            fast: false,
         };
         let served = info.clone();
         let host = thread::spawn(move || {
@@ -311,6 +312,7 @@ mod tests {
                 approval_mode: ApprovalMode::Supervised,
                 model: None,
                 effort: None,
+                fast: false,
             })
             .unwrap();
         assert_eq!(created, info);
