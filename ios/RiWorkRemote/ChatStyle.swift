@@ -24,6 +24,13 @@ extension DesktopStyle {
     /// Code, commands and their output.
     var code: Font { mono(12, relativeTo: .footnote) }
     var codeSmall: Font { mono(11, relativeTo: .caption) }
+    /// The outline of a block of the transcript (a card, a code block, a diff, a bar): square in the terminal look, rounded as iOS rounds
+    /// its grouped content in Native.
+    func block(_ radius: CGFloat = 10) -> RoundedRectangle { RoundedRectangle(cornerRadius: native ? radius : 0, style: .continuous) }
+    /// Links in a message: the accent color; in Native, whose accent is black or white like the text, the system's link blue.
+    var link: Color { native ? Color(uiColor: .link) : accent }
+    /// The band behind a card's header: the active color in the terminal look; none in Native, where the card's own fill is enough.
+    var cardHeader: Color { native ? .clear : active }
 }
 
 extension ChatProvider {
@@ -32,25 +39,41 @@ extension ChatProvider {
     var glyph: String { self == .codex ? "chevron.left.forwardslash.chevron.right" : "sparkles" }
 }
 
-/// A card: a flat panel with a thin border, like the desktop's blocks.
+extension View {
+    /// What a bar that waits for the person (a request, a question) sits on, in its signal color: a band with a rule on top in the terminal
+    /// look; in Native, a rounded tinted panel set in from the edges.
+    @ViewBuilder func chatRequestSurface(_ style: DesktopStyle, tint: Color, opacity: Double) -> some View {
+        if style.native {
+            background(tint.opacity(opacity), in: style.block(16)).padding(.horizontal, 8).padding(.top, 6)
+        } else {
+            background(tint.opacity(opacity)).overlay(alignment: .top) { Rectangle().fill(tint).frame(height: 2) }
+        }
+    }
+}
+
+/// A card: a flat panel with a thin border, like the desktop's blocks. In Native, a rounded panel without the border, as iOS groups content.
 struct ChatCard<Content: View>: View {
     @Environment(\.desktopStyle) private var style
     var tint: Color?
     @ViewBuilder var content: () -> Content
     var body: some View {
-        VStack(alignment: .leading, spacing: 0, content: content)
+        let card = VStack(alignment: .leading, spacing: 0, content: content)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background((tint ?? style.panel).opacity(tint == nil ? 1 : 0.12))
-            .overlay(Rectangle().stroke(tint ?? style.divider, lineWidth: 1))
+        if style.native {
+            card.clipShape(style.block()).overlay { if let tint { style.block().stroke(tint.opacity(0.5), lineWidth: 1) } }
+        } else {
+            card.overlay(Rectangle().stroke(tint ?? style.divider, lineWidth: 1))
+        }
     }
 }
 
-/// A small label for the kind of thing a card is: "COMMAND", "EDIT", "TOOL".
+/// A small label for the kind of thing a card is: "Input", "Result", "Plan". Written in sentence case; the terminal look shows capitals.
 struct ChatCaption: View {
     @Environment(\.desktopStyle) private var style
     let text: String
     var body: some View {
-        Text(text).font(style.mono(9, bold: true, relativeTo: .caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
+        Text(style.cased(text)).font(style.face(9, bold: true, relativeTo: .caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
     }
 }
 
@@ -68,7 +91,7 @@ struct CopyButton: View {
             Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
         } label: {
             Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc").labelStyle(.titleAndIcon)
-                .font(style.mono(10, relativeTo: .caption2)).foregroundStyle(copied ? style.accent : style.muted)
+                .font(style.face(10, relativeTo: .caption2)).foregroundStyle(copied ? style.accent : style.muted)
                 .padding(.trailing, 8)
                 .frame(minWidth: style.pt(44), minHeight: style.pt(28), alignment: .trailing)
                 .contentShape(Rectangle())
