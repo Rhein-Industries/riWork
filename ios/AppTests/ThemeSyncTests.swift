@@ -114,6 +114,50 @@ private final class Flag: @unchecked Sendable {
         await transport.unblock()
         await model.disconnect()
     }
+    /// The wire form with the desktop's Native flag, in Native's own light or dark colors (src/theme.rs NATIVE_LIGHT / NATIVE_DARK).
+    private func nativeWire(dark: Bool, updated: Double, native: Bool = true) -> JSONValue {
+        let base = dark
+            ? wire(dark: true, updated: updated, bg: "#000000", panel: "#1c1c1e", active: "#2c2c2e", divider: "#3a3a3c", cyan: "#ffffff", magenta: "#c7c7cc", gold: "#ff9f0a", text: "#f5f5f7", muted: "#98989d")
+            : wire(dark: false, updated: updated, bg: "#ffffff", panel: "#f5f5f7", active: "#e8e8ed", divider: "#d2d2d7", cyan: "#000000", magenta: "#3a3a3c", gold: "#b34000", text: "#1d1d1f", muted: "#636366")
+        guard native, case .object(var fields) = base else { return base }
+        fields["native"] = .bool(true)
+        return .object(fields)
+    }
+
+    func testFollowsTheDesktopSwitchingNativeAndItsLightAndDarkLive() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let defaults = scratchDefaults()
+        let transport = FixtureTransport()
+        // A desktop without the flag: the terminal look.
+        await transport.setAppearance(.ok(wire()))
+        let model = makeModel(transport, keychain, defaults: defaults, refresh: .milliseconds(40))
+        await model.connect()
+        await eventually("first palette") { model.theme.appearance != nil }
+        XCTAssertFalse(model.theme.style.native)
+        XCTAssertEqual(model.theme.style.cased("New terminal"), "NEW TERMINAL", "the terminal look keeps its capitals")
+        // Native switched on, light.
+        await transport.setAppearance(.ok(nativeWire(dark: false, updated: 1_790_000_100)))
+        await eventually("Native on") { model.theme.style.native }
+        XCTAssertEqual(model.theme.style.colorScheme, .light)
+        XCTAssertEqual(model.theme.style.cased("New terminal"), "New terminal")
+        // macOS goes dark: the same skin, the other side.
+        await transport.setAppearance(.ok(nativeWire(dark: true, updated: 1_790_000_200)))
+        await eventually("Native dark") { model.theme.style.colorScheme == .dark }
+        XCTAssertTrue(model.theme.style.native)
+        XCTAssertEqual(model.theme.style.theme.background, fixed("#000000"))
+        // Native off with the very same colors: still a change, back to the terminal look.
+        await transport.setAppearance(.ok(nativeWire(dark: true, updated: 1_790_000_300, native: false)))
+        await eventually("Native off") { !model.theme.style.native }
+        XCTAssertEqual(model.theme.style.theme.background, fixed("#000000"))
+        // What is stored follows, so a relaunch draws the last skin before the first answer.
+        await transport.setAppearance(.ok(nativeWire(dark: false, updated: 1_790_000_400)))
+        await eventually("Native on again") { model.theme.style.native }
+        await model.disconnect()
+        let relaunched = ThemeStore(defaults: defaults)
+        relaunched.showInitial(selected: routeA, existing: [routeA])
+        XCTAssertTrue(relaunched.style.native)
+    }
+
     func testRefreshesPeriodicallyWhileConnectedAndPicksUpChanges() async throws {
         let keychain = try makeStore(); defer { try? keychain.delete() }
         let defaults = scratchDefaults()
