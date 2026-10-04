@@ -6,6 +6,11 @@ import RiWorkCore
 /// array), but it must not be kept: a second reference to that array would make the next live answer copy all 50,000 lines.
 @MainActor protocol TerminalLineSource: AnyObject {
     var terminalBuffer: TerminalBuffer { get }
+    /// The desktop pane's width in cells, when the desktop reports it: a row that wide is taken to wrap onto the next (links).
+    var terminalColumns: Int? { get }
+}
+extension TerminalLineSource {
+    var terminalColumns: Int? { nil }
 }
 
 /// The row at the top of the loaded lines: "Loading…", "Beginning of history", or "Couldn't load, tap to retry".
@@ -32,7 +37,7 @@ struct HistoryHeader: Equatable {
 ///
 /// The model owns the buffer and tells the surface when it changed (`refresh`); the surface tells the model where the reader is
 /// (`onMetrics` for the follow logic, `onReader` for the prefetch).
-@MainActor final class TerminalSurfaceView: UIView, UIScrollViewDelegate, @preconcurrency UIEditMenuInteractionDelegate {
+@MainActor final class TerminalSurfaceView: UIView, UIScrollViewDelegate, @preconcurrency UIEditMenuInteractionDelegate, UIGestureRecognizerDelegate {
     struct Look: Equatable {
         var settings: TerminalRenderer.Settings
         /// The size being drawn (a pinch changes it before it is committed).
@@ -60,6 +65,10 @@ struct HistoryHeader: Equatable {
     var onReader: ((Int, Int) -> Void)?
     var isFollowing: () -> Bool = { true }
     var onRetry: (() -> Void)?
+    /// A link was tapped: open it (Safari, Mail). Tests put a recorder here.
+    var onOpenLink: ((URL) -> Void)?
+    /// A touch came down, on a link or not. The SwiftUI tap that focuses the keyboard asks the model, so a tap on a link only opens it.
+    var onLinkTouch: ((Bool) -> Void)?
     /// Counts requests to go to the bottom (typing, sending, the menu).
     var jumpToken = 0 { didSet { if jumpToken != oldValue { pendingJump = true; setNeedsLayout() } } }
     private var pendingJump = false
@@ -79,6 +88,10 @@ struct HistoryHeader: Equatable {
     private var lastEpoch: Int?
     private var lastMetrics: ScrollMetrics?
     private var pressedRow: Int?
+    /// The links of the rows worked out since the buffer last changed, by line index. Rows are added as they come into view.
+    private var linkRows: [Int: [TerminalLinkSpan]] = [:]
+    /// The touch that is under way came down on a link of a still view (a tap that stops a fling opens nothing).
+    private var touchOnLink = false
     /// The index of the first line held, and of the row that shows the header, when there is one.
     private var firstLine = 0
     private var headerRow: Int?
@@ -108,6 +121,7 @@ struct HistoryHeader: Equatable {
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
         tap.cancelsTouchesInView = false
+        tap.delegate = self
         scroll.addGestureRecognizer(tap)
         let press = UILongPressGestureRecognizer(target: self, action: #selector(pressed(_:)))
         press.minimumPressDuration = 0.45
@@ -190,6 +204,7 @@ struct HistoryHeader: Equatable {
         firstLine = buffer.start
         headerRow = hasHeader ? buffer.start - 1 : nil
         lastEpoch = buffer.epoch
+        linkRows.removeAll(keepingCapacity: true)
         // The scroll view tells its delegate about the size and offset changes made here, which would lay the rows out and report the
         // metrics before this method does both, once, below.
         refreshing = true
@@ -272,7 +287,7 @@ struct HistoryHeader: Equatable {
             guard let held else { continue }
             let line = held[index] ?? .missing
             let cursor = look.settings.showCursor && held.cursorIndex == index ? held.cursorColumn : nil
-            view.configure(line: line, cursorColumn: cursor, look: lookID, settings: look.settings, fontSize: look.fontSize)
+            view.configure(line: line, cursorColumn: cursor, links: links(row: index, in: held).map(\.range), look: lookID, settings: look.settings, fontSize: look.fontSize)
         }
 
         if let headerRow, visible.contains(headerRow) {
@@ -301,8 +316,66 @@ struct HistoryHeader: Equatable {
     // MARK: Tap, press and copy
 
     @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
-        guard header?.failed == true, let headerRow, row(at: recognizer.location(in: scroll)) == headerRow else { return }
-        onRetry?()
+        tap(at: recognizer.location(in: scroll))
+    }
+    /// A tap at a point of the scroll view's own space: retries a failed header, or opens the link under it.
+    func tap(at point: CGPoint) {
+        defer { touchOnLink = false }
+        if header?.failed == true, let headerRow, row(at: point) == headerRow { onRetry?(); return }
+        guard touchOnLink, pressedRow == nil, let link = link(at: point) else { return }
+        onOpenLink?(link)
+    }
+    /// A touch came down at a point of the scroll view's own space. Called before any gesture ends, so the keyboard tap can tell.
+    func touchBegan(at point: CGPoint) {
+        touchOnLink = !scroll.isDecelerating && link(at: point) != nil
+        onLinkTouch?(touchOnLink)
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        touchBegan(at: touch.location(in: scroll))
+        return true
+    }
+
+    // MARK: Links
+
+    /// The links on a row, worked out once per state of the buffer. A row that is part of a wrapped line is read with the rest of it,
+    /// and every row of that line is kept.
+    private func links(row index: Int, in buffer: TerminalBuffer) -> [TerminalLinkSpan] {
+        if let known = linkRows[index] { return known }
+        guard let line = buffer[index], !line.isMissing else { return [] }
+        let columns = source?.terminalColumns
+        let rows = TerminalLinks.wrappedRows(around: index, wrapColumns: columns) { buffer[$0] }
+        if rows.count == 1 {
+            let found = TerminalLinks.spans(in: line.text)
+            linkRows[index] = found
+            return found
+        }
+        let found = TerminalLinks.spans(inWrapped: rows.map { buffer[$0] ?? .missing })
+        for (offset, row) in rows.enumerated() { linkRows[row] = found[offset] }
+        return linkRows[index] ?? []
+    }
+
+    /// The link under a point of the scroll view's own space. A finger is wider than a cell: a column either side still counts.
+    func link(at point: CGPoint) -> URL? {
+        guard let index = row(at: point), index >= firstLine, let buffer = source?.terminalBuffer, let line = buffer[index] else { return nil }
+        let spans = links(row: index, in: buffer)
+        guard !spans.isEmpty else { return nil }
+        let cellWidth = TerminalFont.cell(size: look.fontSize).width
+        let x = Double(point.x) - look.padding
+        guard x >= -cellWidth else { return nil }
+        // The character under each cell: a wide character covers two.
+        let tapped = Int((x / cellWidth).rounded(.down))
+        var column = 0, character = 0
+        var hit: Int?
+        for glyph in line.text {
+            let width = TerminalText.cellWidth(glyph)
+            if tapped < column + width { hit = character; break }
+            column += width; character += 1
+        }
+        let at = hit ?? character
+        for candidate in [at, at - 1, at + 1] {
+            if let span = spans.first(where: { $0.range.contains(candidate) }) { return span.url }
+        }
+        return nil
     }
 
     /// The row under a point of the scroll view's own space (offset included).
@@ -357,8 +430,21 @@ struct HistoryHeader: Equatable {
     }
     override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
         get {
-            guard header?.failed == true else { return nil }
-            return [UIAccessibilityCustomAction(name: "Retry loading older lines") { [weak self] _ in self?.onRetry?(); return true }]
+            var actions: [UIAccessibilityCustomAction] = []
+            if header?.failed == true {
+                actions.append(UIAccessibilityCustomAction(name: "Retry loading older lines") { [weak self] _ in self?.onRetry?(); return true })
+            }
+            // The links in view, each once, top to bottom.
+            if let buffer = source?.terminalBuffer {
+                var seen = Set<URL>()
+                for index in geometry.visibleRows(offset: scroll.contentOffset.y) where index >= firstLine {
+                    for span in links(row: index, in: buffer) where seen.insert(span.url).inserted {
+                        let url = span.url
+                        actions.append(UIAccessibilityCustomAction(name: "Open \(url.absoluteString)") { [weak self] _ in self?.onOpenLink?(url); return true })
+                    }
+                }
+            }
+            return actions.isEmpty ? nil : actions
         }
         set {}
     }
@@ -378,6 +464,8 @@ struct HistoryHeader: Equatable {
     var shownRows: [Int: TerminalRowView] { rows }
     var headerShown: Bool { !headerView.isHidden }
     var headerRowText: String { headerView.text }
+    /// The links of a row as the surface found them.
+    func linkSpans(row index: Int) -> [TerminalLinkSpan] { source.map { links(row: index, in: $0.terminalBuffer) } ?? [] }
 }
 
 /// "Loading…" and its kin: one grid row of small, quiet text.
@@ -421,6 +509,8 @@ struct TerminalSurface: UIViewRepresentable {
         }
         view.onReader = { [weak model] top, rows in model?.noteReader(top: top, rows: rows) }
         view.onRetry = { [weak model] in model?.retryHistory() }
+        view.onOpenLink = { url in UIApplication.shared.open(url) }
+        view.onLinkTouch = { [weak model] onLink in model?.linkTouchedAt = onLink ? ProcessInfo.processInfo.systemUptime : nil }
         view.jumpToken = jumpToken
         model.attach(surface: view)
         return view
@@ -433,6 +523,6 @@ struct TerminalSurface: UIViewRepresentable {
         view.jumpToken = jumpToken
     }
     static func dismantleUIView(_ view: TerminalSurfaceView, coordinator: ()) {
-        view.onMetrics = nil; view.onReader = nil; view.onRetry = nil
+        view.onMetrics = nil; view.onReader = nil; view.onRetry = nil; view.onOpenLink = nil; view.onLinkTouch = nil
     }
 }

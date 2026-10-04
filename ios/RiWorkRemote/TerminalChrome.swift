@@ -129,7 +129,7 @@ extension TerminalRenderer.Settings {
         let colors = style.theme.terminalColors(dark: dark, boldIsBright: boldIsBright)
         let cursor = style.theme.terminalCursor
         self.init(colors: colors, cursorBackground: dark ? cursor.dark : cursor.light, cursorForeground: colors.background,
-                  showCursor: showCursor, fontSize: committedSize)
+                  showCursor: showCursor, link: dark ? style.theme.accent.dark : style.theme.accent.light, fontSize: committedSize)
     }
 }
 

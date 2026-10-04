@@ -678,6 +678,8 @@ struct SessionConsole: View {
     }
     private func revealControls() { controlsReveal += 1 }
     private func terminalTapped() {
+        // A link opens (the surface does that); the keyboard stays as it was.
+        if model.touchBeganOnLink { model.linkTouchedAt = nil; return }
         if focused { revealControls() }
         if model.directTyping { keyFocus.focus() }
     }

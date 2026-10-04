@@ -8782,6 +8782,8 @@ impl Render for Workspace {
                     })
                     .unwrap_or_default(),
             )
+            // Last, so that the terminals have painted the underline of a hovered link.
+            .child(self.terminal_link_underline())
     }
 }
 

@@ -381,6 +381,16 @@ Symbols that can also be emoji but are text by default (⏺ ⏸ ⚠ ✔ ▶ ℹ 
 foreground color as on the Mac; genuine emoji (✅ 🚀, FE0F, keycaps, ZWJ, flags, skin tones) are left alone. A long press on a line
 copies it (or the lines in view); **Copy screen text** in the menu copies the screen and the last 500 lines above it that are loaded.
 
+**Links** (iPhone scrollback). `http`, `https` and `mailto` URLs in the text are always underlined in the theme's accent (touch has no
+hover), and a tap on one opens it with `UIApplication.open` (Safari, Mail) instead of bringing up the keyboard; a tap anywhere else, a
+drag, a long press or a tap that stops a fling behave as before. VoiceOver lists the links in view as actions. The rules are the
+desktop's ⌘-click ones (`Core/TerminalLinks.swift`, after `src/terminal_links.rs`): a scheme not glued to a word, URL characters up to a
+blank, `…` (cut short: no link) or box drawing, then trailing `. , ; : ! ? ' *` and unbalanced `)` `]` dropped. The wire has no wrap
+flags (one line per row, not joined), so a row exactly as wide as the pane (`cols` of `shell.output`) is taken to continue on the next
+row; a URL wrapped by the terminal is then one link on both rows. Only rows in view are read, once per answer. Not covered: OSC 8
+hyperlinks (the desktop strips every OSC from `shell.output`, and the parser drops them; honouring them needs a protocol extension that
+keeps `ESC ] 8` and a target per cell), file paths, the full-screen-program view and the iPad terminal.
+
 **Scrolling** (iPhone; the iPad keeps its two-axis scroll view, the latest answer alone and its follow toggle). The terminal scrolls
 vertically only: the desktop pane has the phone's width, and a rare longer line is clipped at the edge.
 

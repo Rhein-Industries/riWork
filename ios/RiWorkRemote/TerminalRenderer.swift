@@ -16,6 +16,8 @@ enum TerminalRenderer {
         var cursorBackground: RGB
         var cursorForeground: RGB
         var showCursor: Bool
+        /// The underline of links: the theme's accent.
+        var link: RGB
         /// The size the columns were measured at. The text itself scales with the view's font (pinch), so this only steers kerns.
         var fontSize: Double
     }

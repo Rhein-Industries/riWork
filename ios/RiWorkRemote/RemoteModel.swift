@@ -181,6 +181,15 @@ enum ConnectionState: Equatable {
     // A not_found UUID is excluded until an explicit refresh or fresh connection.
     var missingSessionIDs: Set<String> = []
     @ObservationIgnored private var lastScreen: ShellOutput?
+    /// The desktop pane's width in cells, from the last screen: rows that wide are taken to wrap (links across rows).
+    var terminalColumns: Int? { lastScreen?.cols }
+    /// When the last touch on the terminal came down on a link (system uptime), nil when it did not: its tap opens the link and does not
+    /// bring up the keyboard. A touch that became a drag or a press leaves it behind, so it counts only for a second.
+    @ObservationIgnored var linkTouchedAt: Double?
+    var touchBeganOnLink: Bool {
+        guard let at = linkTouchedAt else { return false }
+        return ProcessInfo.processInfo.systemUptime - at < 1
+    }
     /// The lines of the last screens, parsed. The next answer differs from the last in a line or two, and only those are parsed again.
     @ObservationIgnored private let lineCache = StyledLineCache()
     @ObservationIgnored private var drainingForBackground = false

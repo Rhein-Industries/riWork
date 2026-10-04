@@ -111,7 +111,7 @@ fn next_line_head(reader: &mut impl BufRead, head: &mut Vec<u8>) -> io::Result<b
 
 /// Why a wait ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Woke {
+pub(crate) enum Woke {
     /// The pane may have changed.
     Change,
     /// Nothing happened for as long as was asked.
@@ -121,7 +121,7 @@ pub(super) enum Woke {
 }
 
 /// A control-mode client watching one session.
-pub(super) struct PaneWatch {
+pub(crate) struct PaneWatch {
     child: Child,
     // Held so the client sees its input stay open: when this process dies, in
     // any way, the pipe closes and the client leaves with it.
@@ -179,7 +179,7 @@ impl PaneWatch {
     ///
     /// Called right after a capture. Calling it again after a change means that
     /// capture found nothing new, which widens the spacing.
-    pub(super) fn wait(&mut self, longest: Duration) -> Woke {
+    pub(crate) fn wait(&mut self, longest: Duration) -> Woke {
         let entered = Instant::now();
         let deadline = entered + longest;
         if std::mem::take(&mut self.woken) {

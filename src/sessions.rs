@@ -21,6 +21,7 @@ use crate::session_keys::tmux_argument;
 mod sample;
 pub use sample::SessionSample;
 mod watch;
+pub(crate) use watch::Woke;
 
 const HISTORY_LINES: usize = 100_000;
 const ORCHESTRATOR_SKILL: &str = include_str!("../skills/riwork-orchestrator/SKILL.md");
@@ -4643,6 +4644,13 @@ impl SessionManager {
     /// A control-mode client watching the pane of `id`, if one can be attached.
     fn watch(&self, id: &str) -> Option<watch::PaneWatch> {
         watch::PaneWatch::start(self.tmux_client(), id)
+    }
+
+    /// The same client for the desktop's terminal links, which read a screen again only when it
+    /// may have changed. It blocks until attached (at most a second); call it off the UI thread.
+    pub(crate) fn watch_shell(&self, id: &str) -> Option<watch::PaneWatch> {
+        validate_uuid(id).ok()?;
+        self.watch(id)
     }
 }
 
