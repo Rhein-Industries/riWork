@@ -83,31 +83,76 @@ pub enum Program {
     Grok,
 }
 
-/// The program in front in a pane whose tmux `pane_current_command` is `command`, in a shell
-/// started for `harness`. Claude Code's process is named after its version (`2.1.289`); Codex
-/// may run as `node`, and an agent started by RiWork may run under RiWork's own launcher, which
-/// is where the harness tells. A shell in front means the agent is gone.
-pub fn program(harness: Option<HarnessKind>, command: &str) -> Program {
-    let name = command.trim().trim_start_matches('-');
+/// The agent a process name stands for. Claude Code's process is named after its version
+/// (`2.1.289`); Grok's after its build (`grok-1.0.46-mac`).
+fn agent(name: &str) -> Option<Program> {
+    let name = name.trim().trim_start_matches('-');
     let name = name.rsplit('/').next().unwrap_or(name);
-    let version = !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.');
     match name {
-        "claude" => return Program::Claude,
-        "codex" => return Program::Codex,
-        "grok" => return Program::Grok,
-        _ if name.starts_with("grok-") => return Program::Grok,
-        "zsh" | "bash" | "sh" | "fish" | "dash" | "ksh" | "tcsh" | "csh" | "nu" | "login" => {
-            return Program::Shell;
+        "claude" => Some(Program::Claude),
+        "codex" => Some(Program::Codex),
+        "grok" => Some(Program::Grok),
+        _ if name.starts_with("grok-") => Some(Program::Grok),
+        _ if !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.') => {
+            Some(Program::Claude)
         }
-        _ => {}
+        _ => None,
+    }
+}
+
+fn shell(name: &str) -> bool {
+    let name = name.trim().trim_start_matches('-');
+    let name = name.rsplit('/').next().unwrap_or(name);
+    matches!(
+        name,
+        "zsh" | "bash" | "sh" | "fish" | "dash" | "ksh" | "tcsh" | "csh" | "nu" | "login"
+    )
+}
+
+/// The program in front in a pane whose tmux `pane_current_command` is `command`, in a shell
+/// started for `harness`. `foreground` names the processes in front on the pane's terminal; it
+/// is asked only when `command` does not settle it, as for Codex installed by npm, which runs
+/// as `node` with the real `codex` beside it. An agent RiWork started may also run under
+/// RiWork's launcher, where the harness tells. A shell in front means the agent is gone.
+pub fn program(
+    harness: Option<HarnessKind>,
+    command: &str,
+    foreground: impl FnOnce() -> Vec<String>,
+) -> Program {
+    if let Some(program) = agent(command) {
+        return program;
+    }
+    if shell(command) {
+        return Program::Shell;
+    }
+    if let Some(program) = foreground().iter().find_map(|name| agent(name)) {
+        return program;
     }
     match harness {
         Some(HarnessKind::Claude) => Program::Claude,
         Some(HarnessKind::Codex) => Program::Codex,
         Some(HarnessKind::Grok) => Program::Grok,
-        None if version => Program::Claude,
         None => Program::Shell,
     }
+}
+
+/// The names of the processes in the foreground of terminal `tty` (`/dev/ttys001`).
+fn foreground_names(tty: &str) -> Vec<String> {
+    let Some(tty) = tty.strip_prefix("/dev/").filter(|tty| !tty.is_empty()) else {
+        return Vec::new();
+    };
+    let Ok(output) = std::process::Command::new("/bin/ps")
+        .args(["-t", tty, "-o", "stat=,comm="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().split_once(char::is_whitespace))
+        .filter(|(stat, _)| stat.contains('+'))
+        .map(|(_, name)| name.trim().to_owned())
+        .collect()
 }
 
 /// Whether Codex would likely take `path` for a picture: it reads the file, RiWork guesses from
@@ -311,8 +356,8 @@ impl Workspace {
     ) {
         let sessions = self.sessions.clone();
         std::thread::spawn(move || {
-            let result = sessions.paste(&shell_id, |harness, command| {
-                input(program(harness, command))
+            let result = sessions.paste(&shell_id, |harness, command, tty| {
+                input(program(harness, command, || foreground_names(tty)))
             });
             if let Err(error) = result {
                 eprintln!("riwork: {what} not pasted into {shell_id}: {error}");
@@ -386,20 +431,34 @@ mod tests {
     #[test]
     fn the_program_in_front_decides_and_a_shell_in_front_means_the_agent_is_gone() {
         use HarnessKind::{Claude, Codex, Grok};
-        assert_eq!(program(None, "zsh"), Program::Shell);
-        assert_eq!(program(None, "-zsh\n"), Program::Shell);
-        assert_eq!(program(None, "vim"), Program::Shell);
-        assert_eq!(program(None, "claude"), Program::Claude);
+        let none = Vec::new;
+        let unasked = || -> Vec<String> { panic!("the command settles it") };
+        assert_eq!(program(None, "zsh", unasked), Program::Shell);
+        assert_eq!(program(None, "-zsh\n", unasked), Program::Shell);
+        assert_eq!(program(None, "vim", none), Program::Shell);
+        assert_eq!(program(None, "claude", unasked), Program::Claude);
         // Claude Code's process carries its version as its name.
-        assert_eq!(program(None, "2.1.289"), Program::Claude);
-        assert_eq!(program(None, "codex"), Program::Codex);
-        assert_eq!(program(None, "grok-1.0.46-mac"), Program::Grok);
-        // An agent RiWork started may run under a launcher or as node.
-        assert_eq!(program(Some(Codex), "node"), Program::Codex);
-        assert_eq!(program(Some(Claude), "riwork"), Program::Claude);
-        assert_eq!(program(Some(Grok), "riwork"), Program::Grok);
-        assert_eq!(program(Some(Codex), "zsh"), Program::Shell);
-        assert_eq!(program(Some(Claude), "codex"), Program::Codex);
+        assert_eq!(program(None, "2.1.289", unasked), Program::Claude);
+        assert_eq!(program(None, "codex", unasked), Program::Codex);
+        assert_eq!(program(None, "grok-1.0.46-mac", unasked), Program::Grok);
+        // Codex from npm: node in front, the real binary beside it.
+        let npm = || {
+            vec![
+                "node".to_owned(),
+                "/usr/lib/node_modules/@openai/codex/vendor/bin/codex".to_owned(),
+            ]
+        };
+        assert_eq!(program(None, "node", npm), Program::Codex);
+        assert_eq!(
+            program(None, "node", || vec!["node".to_owned()]),
+            Program::Shell
+        );
+        // An agent RiWork started may run under a launcher.
+        assert_eq!(program(Some(Codex), "node", none), Program::Codex);
+        assert_eq!(program(Some(Claude), "riwork", none), Program::Claude);
+        assert_eq!(program(Some(Grok), "riwork", none), Program::Grok);
+        assert_eq!(program(Some(Codex), "zsh", unasked), Program::Shell);
+        assert_eq!(program(Some(Claude), "codex", unasked), Program::Codex);
     }
 
     #[test]

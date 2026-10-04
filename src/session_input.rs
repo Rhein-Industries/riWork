@@ -70,7 +70,8 @@ pub enum Input {
     Key(&'static str),
 }
 
-/// Give a shell's pane `input`, chosen from the name of the pane's foreground program, as a
+/// Give a shell's pane `input`, chosen from the name of the pane's foreground program and the
+/// pane's terminal device (`input(command, tty)`), as a
 /// terminal would: each paste bracketed when the program asked for bracketed paste, a key as
 /// typed, no Return. All of it goes in under the same input lock as `submit`. A pane in copy
 /// mode is taken out of it first, as a paste in Ghostty scrolls back to the prompt; a pane whose
@@ -78,7 +79,7 @@ pub enum Input {
 pub fn paste(
     home: &Path,
     id: &str,
-    input: impl FnOnce(&str) -> Vec<Input>,
+    input: impl FnOnce(&str, &str) -> Vec<Input>,
     t: &crate::session_viewport::Tmux<'_>,
     load: &TmuxInput<'_>,
 ) -> Result<(), String> {
@@ -89,18 +90,15 @@ pub fn paste(
         "-p",
         "-t",
         &pane,
-        "#{pane_in_mode}|#{pane_input_off}|#{pane_current_command}",
+        "#{pane_in_mode}|#{pane_input_off}|#{pane_tty}|#{pane_current_command}",
     ])?;
-    let mut fields = status.trim_end_matches('\n').splitn(3, '|');
-    let (mode, off, command) = (
-        fields.next().unwrap_or_default(),
-        fields.next().unwrap_or_default(),
-        fields.next().unwrap_or_default(),
-    );
+    let mut fields = status.trim_end_matches('\n').splitn(4, '|');
+    let mut field = || fields.next().unwrap_or_default();
+    let (mode, off, tty, command) = (field(), field(), field(), field());
     if off != "0" {
         return Err("terminal input is disabled for this pane".into());
     }
-    let input = input(command);
+    let input = input(command, tty);
     if input
         .iter()
         .all(|input| matches!(input, Input::Paste(text) if text.is_empty()))
@@ -288,7 +286,7 @@ mod tests {
         paste(
             &home,
             SHELL,
-            |_| vec![Input::Paste(text.into())],
+            |_, _| vec![Input::Paste(text.into())],
             &|args| tmux.run(args, None),
             &|args, input| tmux.run(args, Some(input)),
         )
@@ -336,8 +334,8 @@ mod tests {
     fn paste_leaves_copy_mode_first_and_refuses_disabled_input() {
         let calls = RefCell::new(Vec::new());
         let home = home();
-        let in_mode = answering(&calls, "1|0|zsh\n");
-        let x = |_: &str| vec![Input::Paste("x".into())];
+        let in_mode = answering(&calls, "1|0|/dev/ttys001|zsh\n");
+        let x = |_: &str, _: &str| vec![Input::Paste("x".into())];
         paste(&home, SHELL, x, &in_mode, &|args, _| in_mode(args)).unwrap();
         let subcommands: Vec<String> = calls.borrow().iter().map(|c| c[0].clone()).collect();
         assert_eq!(
@@ -351,7 +349,7 @@ mod tests {
         );
         assert_eq!(calls.borrow()[1][3..], ["-X", "cancel"]);
         calls.borrow_mut().clear();
-        let off = answering(&calls, "0|1|zsh\n");
+        let off = answering(&calls, "0|1|/dev/ttys001|zsh\n");
         assert!(paste(&home, SHELL, x, &off, &|args, _| off(args)).is_err());
         assert_eq!(calls.borrow().len(), 1);
         let _ = std::fs::remove_dir_all(home);
@@ -361,13 +359,13 @@ mod tests {
     fn paste_chooses_by_the_foreground_program_and_sends_each_input_in_order() {
         let calls = RefCell::new(Vec::new());
         let home = home();
-        let tmux = answering(&calls, "0|0|2.1.289\n");
+        let tmux = answering(&calls, "0|0|/dev/ttys002|2.1.289\n");
         let seen = RefCell::new(String::new());
         paste(
             &home,
             SHELL,
-            |command| {
-                *seen.borrow_mut() = command.to_owned();
+            |command, tty| {
+                *seen.borrow_mut() = format!("{command} {tty}");
                 vec![
                     Input::Paste("a".into()),
                     Input::Paste(String::new()),
@@ -379,7 +377,7 @@ mod tests {
             &|args, _| tmux(args),
         )
         .unwrap();
-        assert_eq!(*seen.borrow(), "2.1.289");
+        assert_eq!(*seen.borrow(), "2.1.289 /dev/ttys002");
         let subcommands: Vec<String> = calls.borrow().iter().map(|c| c[0].clone()).collect();
         assert_eq!(
             subcommands,
@@ -398,8 +396,8 @@ mod tests {
         );
         // Nothing to give: not even copy mode is left.
         calls.borrow_mut().clear();
-        let in_mode = answering(&calls, "1|0|zsh\n");
-        paste(&home, SHELL, |_| Vec::new(), &in_mode, &|args, _| {
+        let in_mode = answering(&calls, "1|0|/dev/ttys001|zsh\n");
+        paste(&home, SHELL, |_, _| Vec::new(), &in_mode, &|args, _| {
             in_mode(args)
         })
         .unwrap();
