@@ -457,11 +457,11 @@ struct TerminalTabsView: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Label { Text(ChatTabs.title(chat)) } icon: { Image(systemName: chat.provider.glyph).foregroundStyle(style.accent) }
-                        .font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
+                        .font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
                     ActivityIndicator(activity: activity)
                     if case .failed = state { Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).foregroundStyle(style.error).accessibilityHidden(true) }
                 }
-                Text(ChatTabs.detail(chat, branch: branch)).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                Text(ChatTabs.detail(chat, branch: branch)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
             }
             .tabChrome(selected: selected, waiting: activity == .waiting)
             .opacity(state == .stopped && !selected ? 0.6 : 1)
