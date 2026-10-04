@@ -122,9 +122,9 @@ impl RemotePrompt {
             .detach();
         let fields = match &kind {
             PromptKind::AddHost => vec![
-                Field::new("PAIRING LINK", "Paste the link (⌘V)", String::new(), true),
+                Field::new("Pairing link", "Paste the link (⌘V)", String::new(), true),
                 Field::new(
-                    "NAME (OPTIONAL)",
+                    "Name (optional)",
                     "How this Mac is shown here",
                     String::new(),
                     false,
@@ -135,22 +135,22 @@ impl RemotePrompt {
                 name,
                 routes,
             } => vec![
-                Field::new("NAME OF THE OTHER MAC", "MacBook", name.clone(), false),
+                Field::new("Name of the other Mac", "MacBook", name.clone(), false),
                 Field::new(
-                    "RELAY",
+                    "Relay",
                     "wss://relay.example.com/v1/ws",
                     relay.clone(),
                     false,
                 ),
                 Field::new(
-                    "RELAY ROUTES FILE",
+                    "Relay routes file",
                     "relay-routes.json",
                     routes.to_string_lossy().into_owned(),
                     false,
                 ),
             ],
             PromptKind::NewProject { .. } => {
-                vec![Field::new("PROJECT NAME", "My App", String::new(), false)]
+                vec![Field::new("Project name", "My App", String::new(), false)]
             }
         };
         // A pairing starts on the first field that is still empty.
@@ -386,9 +386,11 @@ impl RemotePrompt {
 
     fn title(&self) -> String {
         match &self.kind {
-            PromptKind::AddHost => "ADD HOST".to_owned(),
-            PromptKind::PairMac { .. } => "PAIR ANOTHER MAC".to_owned(),
-            PromptKind::NewProject { host_label, .. } => format!("NEW PROJECT ON {host_label}"),
+            PromptKind::AddHost => ui_text::cased("Add host").to_string(),
+            PromptKind::PairMac { .. } => ui_text::cased("Pair another Mac").to_string(),
+            PromptKind::NewProject { host_label, .. } => {
+                format!("{} {host_label}", ui_text::cased("New project on"))
+            }
         }
     }
 
@@ -411,9 +413,9 @@ impl RemotePrompt {
 
     fn action_label(&self) -> &'static str {
         match &self.kind {
-            PromptKind::AddHost => "ADD HOST  ↵",
-            PromptKind::PairMac { .. } => "MAKE LINK  ↵",
-            PromptKind::NewProject { .. } => "CREATE  ↵",
+            PromptKind::AddHost => "Add host  ↵",
+            PromptKind::PairMac { .. } => "Make link  ↵",
+            PromptKind::NewProject { .. } => "Create  ↵",
         }
     }
 
@@ -453,7 +455,7 @@ impl RemotePrompt {
             } else {
                 colors.muted
             }))
-            .child(label)
+            .child(ui_text::cased(label))
             .on_click(cx.listener(move |prompt, _, _, cx| prompt.press(press, cx)))
             .into_any_element()
     }
@@ -496,7 +498,7 @@ impl Render for RemotePrompt {
                         div()
                             .text_size(ui_text::text(9.0))
                             .text_color(rgb(colors.muted))
-                            .child(field.label),
+                            .child(ui_text::cased(field.label)),
                     )
                     .child(input_content(
                         &shown,
@@ -528,9 +530,9 @@ impl Render for RemotePrompt {
                 .child(masked(link.expose()))
         });
         let (first, second) = if self.link.is_some() {
-            (if self.copied { "COPIED" } else { "COPY LINK" }, "DONE  ↵")
+            (if self.copied { "Copied" } else { "Copy link" }, "Done  ↵")
         } else {
-            ("CANCEL", self.action_label())
+            ("Cancel", self.action_label())
         };
         let base = self.field_slots();
         div()

@@ -2350,6 +2350,12 @@ fn counter(count: usize) -> String {
 
 /// Native's panel count: "3 projects", or "2 of 3 projects" while a search hides some.
 fn native_count(count: usize, total: usize, noun: &str) -> String {
+    // "1 project", not "1 projects": every noun here is a plural in -s.
+    let noun = if total == 1 {
+        noun.strip_suffix('s').unwrap_or(noun)
+    } else {
+        noun
+    };
     if count == total {
         format!("{total} {noun}")
     } else {

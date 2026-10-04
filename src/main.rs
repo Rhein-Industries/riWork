@@ -4182,7 +4182,7 @@ impl Workspace {
                 .text_color(rgb(colors.text))
                 .cursor_pointer()
                 .hover(|style| style.bg(rgb(colors.divider)))
-                .child("RECONNECT")
+                .child(ui_text::cased("Reconnect"))
                 .on_click(cx.listener(move |workspace, _, window, cx| {
                     workspace.reconnect_remote_tab(pane_id, tab_id, window, cx);
                 }))
@@ -7337,7 +7337,7 @@ impl Workspace {
                             workspace.focus_active(window, cx);
                             cx.notify();
                         }));
-                    menu.child(pane_menu_heading("NEW TAB", colors))
+                    menu.child(pane_menu_heading("New tab", colors))
                         .children(
                             [
                                 ("Shell", "⌘T", Some(Icon::Add), PaneMenuAction::Shell),
@@ -7395,7 +7395,7 @@ impl Workspace {
                                 self.pane_menu_row(pane_id, label, shortcut, icon, action, cx)
                             }),
                         )
-                        .child(pane_menu_heading("VIEWS", colors))
+                        .child(pane_menu_heading("Views", colors))
                         .children(
                             [
                                 PanelKind::Projects,
@@ -7427,7 +7427,7 @@ impl Workspace {
                                 )
                             }),
                         )
-                        .child(pane_menu_heading("PANE", colors))
+                        .child(pane_menu_heading("Pane", colors))
                         .children(
                             [
                                 (
@@ -8164,9 +8164,9 @@ impl Workspace {
         cards.extend(self.render_grok_usage_cards(colors));
         div().size_full().flex().flex_col().min_h_0().bg(rgb(colors.panel))
             .child(div().h(ui_text::space(32.0)).flex_none().flex().items_center().px(ui_text::space(10.0)).justify_between()
-                .border_b_1().border_color(rgb(colors.divider)).child("ACCOUNT USAGE")
+                .border_b_1().border_color(rgb(colors.divider)).child(ui_text::cased("Account usage"))
                 .child(div().id("refresh-account-usage").text_color(rgb(colors.cyan)).cursor_pointer()
-                    .child(if pending || self.grok_usage_pending { "REFRESHING…" } else { "↻ REFRESH" })
+                    .child(ui_text::cased(if pending || self.grok_usage_pending { "Refreshing…" } else { "↻ Refresh" }))
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         workspace.refresh_grok_usage(true, cx);
                         request_codex_usage(true, cx);
@@ -8286,7 +8286,11 @@ impl Workspace {
                         div()
                             .flex_none()
                             .text_color(rgb(colors.cyan))
-                            .child(if centered { "CENTER FOCUS" } else { "FOCUS" })
+                            .child(ui_text::cased(if centered {
+                                "Center focus"
+                            } else {
+                                "Focus"
+                            }))
                     }))
                     .child(
                         div()
@@ -8917,7 +8921,10 @@ fn pane_menu_heading(label: &'static str, colors: Palette) -> AnyElement {
         .border_color(rgb(colors.divider))
         .text_color(rgb(colors.muted))
         .text_size(ui_text::text(9.0))
-        .child(label)
+        .when(ui_text::is_native(), |heading| {
+            heading.font_weight(gpui::FontWeight::SEMIBOLD)
+        })
+        .child(ui_text::cased(label))
         .into_any_element()
 }
 
@@ -9441,7 +9448,7 @@ fn render_grok_total(totals: &usage::GrokTotals, missing: usize, colors: Palette
         .p(ui_text::space(12.0))
         .border_t_1()
         .border_color(rgb(colors.divider))
-        .child(div().text_color(rgb(colors.cyan)).child("GROK · TOTAL"))
+        .child(div().text_color(rgb(colors.cyan)).child(ui_text::cased("Grok · Total")))
         .child(div().mt(ui_text::space(6.0)).child(format!(
             "{} · {} tokens · {} session{}",
             usage::format_usd(totals.cost_usd),
@@ -9538,7 +9545,7 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
                 .text_size(ui_text::text(9.0))
                 .child(format!(
                     "{}Updated {}m ago",
-                    if age > 900 { "STALE · " } else { "" },
+                    if age > 900 { "Stale · " } else { "" },
                     age / 60
                 )),
         )

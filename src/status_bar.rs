@@ -103,8 +103,8 @@ pub enum StatusSide {
 impl StatusSide {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Left => "LEFT",
-            Self::Right => "RIGHT",
+            Self::Left => "Left",
+            Self::Right => "Right",
         }
     }
 
@@ -345,7 +345,7 @@ pub fn render_settings<V: 'static>(
                                 .bg(rgb(colors.panel_active))
                                 .border_color(rgb(colors.cyan))
                         })
-                        .child("RESET DEFAULTS")
+                        .child(ui_text::cased("Reset defaults"))
                         .on_click(cx.listener(move |view, _, window, cx| {
                             reset(view, StatusBarSettings::default(), window, cx)
                         })),
@@ -372,7 +372,7 @@ pub fn render_settings<V: 'static>(
                         } else {
                             colors.magenta
                         }))
-                        .child(side.label()),
+                        .child(ui_text::cased(side.label())),
                 )
                 .children(items.iter().enumerate().map(|(index, item)| {
                     render_item(
@@ -458,7 +458,7 @@ fn render_item<V: 'static>(
                     colors.magenta
                 }))
                 .hover(|style| style.border_color(rgb(colors.cyan)))
-                .child(item.side.label())
+                .child(ui_text::cased(item.side.label()))
                 .child(tooltip::anchor(
                     if item.side == StatusSide::Left {
                         "Move to the right side"

@@ -259,7 +259,24 @@ fn section(label: &str, colors: Palette) -> AnyElement {
         .border_color(rgb(colors.divider))
         .text_size(ui_text::text(10.0))
         .text_color(rgb(colors.cyan))
-        .child(label.to_owned())
+        .map(|heading| {
+            // Native: a plain semibold title, without the number or the rule.
+            crate::controls::native(heading, |heading| {
+                heading
+                    .border_b_0()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgb(colors.text))
+            })
+        })
+        .child(if ui_text::is_native() {
+            ui_text::sentence_case(
+                label
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim(),
+            )
+        } else {
+            label.to_owned()
+        })
         .into_any_element()
 }
 
@@ -727,7 +744,7 @@ impl Render for ProjectSettingsPanel {
                 } else {
                     colors.muted
                 }))
-                .child("UNFILED")
+                .child(ui_text::cased("Unfiled"))
                 .on_click(cx.listener(|form, _, window, cx| {
                     form.active = Field::Folder(0);
                     form.focus.focus(window, cx);
@@ -866,17 +883,17 @@ impl Render for ProjectSettingsPanel {
                         div().flex().flex_wrap().min_w_0().justify_between().items_center().gap(ui_text::space(12.0))
                             .border_l_2().border_color(rgb(colors.cyan)).pl(ui_text::space(12.0)).py(ui_text::space(6.0))
                             .child(div().min_w_0().flex().flex_col().gap(ui_text::space(5.0))
-                                .child(div().text_color(rgb(colors.cyan)).text_size(ui_text::text(16.0)).child("PROJECT SETTINGS"))
+                                .child(div().text_color(rgb(colors.cyan)).text_size(ui_text::text(16.0)).child(ui_text::cased("Project settings")))
                                 .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child(self.project.name.clone())))
                             .child(div().px(ui_text::space(8.0)).py(ui_text::space(4.0)).border_1().border_color(rgb(colors.divider))
                                 .text_size(ui_text::text(9.0)).text_color(rgb(if dirty { colors.magenta } else { colors.muted }))
-                                .child(if dirty { "UNSAVED" } else { "LOCAL PROJECT" })),
+                                .child(ui_text::cased(if dirty { "Unsaved" } else { "Local project" }))),
                     )
                     .child(
                         div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(12.0)).bg(rgb(colors.panel))
                             .border_1().border_color(rgb(colors.divider))
                             .child(section("01  IDENTITY", colors))
-                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child("PROJECT NAME"))
+                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child(ui_text::cased("Project name")))
                             .child(self.field(Field::Name, window, cx)),
                     )
                     .child(
@@ -921,7 +938,7 @@ impl Render for ProjectSettingsPanel {
                             .child(div().id("project-codex-refresh").cursor_pointer()
                                 .text_size(ui_text::text(10.0))
                                 .text_color(rgb(if focused && self.active == Field::AccountRefresh { colors.focus } else { colors.cyan }))
-                                .child(if account_state.pending { "CHECKING ACCOUNTS…" } else { "REFRESH ACCOUNTS" })
+                                .child(ui_text::cased(if account_state.pending { "Checking accounts…" } else { "Refresh accounts" }))
                                 .on_click(cx.listener(|form, _, window, cx| {
                                     form.active = Field::AccountRefresh;
                                     form.focus.focus(window, cx);
@@ -942,7 +959,7 @@ impl Render for ProjectSettingsPanel {
                             .child(div().id("project-settings-save").flex_none().px(ui_text::space(14.0)).py(ui_text::space(10.0)).cursor_pointer()
                                 .bg(rgb(colors.panel_active)).border_1()
                                 .border_color(rgb(if focused && self.active == Field::Save { colors.focus } else { colors.cyan }))
-                                .text_color(rgb(colors.cyan)).child("SAVE PROJECT")
+                                .text_color(rgb(colors.cyan)).child(ui_text::cased("Save project"))
                                 .on_click(cx.listener(|form, _, window, cx| {
                                     form.active = Field::Save;
                                     form.focus.focus(window, cx);
@@ -953,7 +970,7 @@ impl Render for ProjectSettingsPanel {
                         div().p(ui_text::space(14.0)).flex().flex_col().gap(ui_text::space(12.0)).bg(rgb(colors.panel))
                             .border_1().border_color(rgb(colors.divider))
                             .child(section("04  LOCATIONS", colors))
-                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child("PROJECT ROOT"))
+                            .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0)).child(ui_text::cased("Project root")))
                             .child(div().px(ui_text::space(10.0)).py(ui_text::space(8.0)).bg(rgb(colors.bg)).border_l_1()
                                 .border_color(rgb(colors.cyan)).child(self.project.root.to_string_lossy().into_owned()))
                             .child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(10.0))
@@ -1127,17 +1144,15 @@ impl Render for FolderEditor {
             .border_color(rgb(colors.magenta))
             .text_color(rgb(colors.text))
             .text_size(ui_text::text(11.0))
-            .child(
-                div()
-                    .text_color(rgb(colors.cyan))
-                    .child(if self.folder.is_some() {
-                        "RENAME VIRTUAL FOLDER"
-                    } else if self.parent_id.is_some() {
-                        "NEW SUBFOLDER"
-                    } else {
-                        "NEW VIRTUAL FOLDER"
-                    }),
-            )
+            .child(div().text_color(rgb(colors.cyan)).child(ui_text::cased(
+                if self.folder.is_some() {
+                    "Rename virtual folder"
+                } else if self.parent_id.is_some() {
+                    "New subfolder"
+                } else {
+                    "New virtual folder"
+                },
+            )))
             .child(
                 div()
                     .text_color(rgb(colors.muted))
@@ -1192,7 +1207,7 @@ impl Render for FolderEditor {
                                 },
                             ))
                             .text_color(rgb(colors.muted))
-                            .child("CANCEL")
+                            .child(ui_text::cased("Cancel"))
                             .on_click(
                                 cx.listener(|_, _, _, cx| cx.emit(FolderEditorEvent::Cancelled)),
                             ),

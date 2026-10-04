@@ -567,7 +567,7 @@ impl ProjectCreator {
                 div()
                     .text_color(rgb(colors.muted))
                     .text_size(ui_text::text(9.0))
-                    .child(label.to_owned()),
+                    .child(ui_text::cased(label.to_owned())),
             )
             .child(
                 div()
@@ -682,7 +682,11 @@ impl Render for ProjectCreator {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(div().text_color(rgb(colors.magenta)).child("NEW PROJECT"))
+                    .child(
+                        div()
+                            .text_color(rgb(colors.magenta))
+                            .child(ui_text::cased("New project")),
+                    )
                     .child(
                         div()
                             .id("cancel-project-x")
@@ -703,7 +707,7 @@ impl Render for ProjectCreator {
                     .items_end()
                     .child(div().flex_1().min_w_0().child(self.render_field(
                         Field::Path,
-                        "FOLDER",
+                        "Folder",
                         "/path/to/project",
                         cx,
                     )))
@@ -718,16 +722,16 @@ impl Render for ProjectCreator {
                             .border_1()
                             .border_color(rgb(colors.divider))
                             .text_color(rgb(colors.cyan))
-                            .child("BROWSE…")
+                            .child(ui_text::cased("Browse…"))
                             .on_click(cx.listener(|form, _, window, cx| form.browse(window, cx))),
                     ),
             )
             .child(self.render_field(
                 Field::Name,
                 if self.path_follows_name {
-                    "PROJECT NAME"
+                    "Project name"
                 } else {
-                    "NAME · OPTIONAL"
+                    "Name · Optional"
                 },
                 if self.path_follows_name {
                     "my-project"
@@ -810,7 +814,7 @@ impl Render for ProjectCreator {
                             .py(ui_text::space(8.0))
                             .cursor_pointer()
                             .text_color(rgb(colors.muted))
-                            .child("CANCEL")
+                            .child(ui_text::cased("Cancel"))
                             .on_click(cx.listener(|form, _, _, cx| {
                                 if !form.creating {
                                     cx.emit(ProjectCreationEvent::Cancelled);
@@ -827,11 +831,11 @@ impl Render for ProjectCreator {
                             .border_1()
                             .border_color(rgb(if ready { colors.cyan } else { colors.divider }))
                             .text_color(rgb(if ready { colors.cyan } else { colors.muted }))
-                            .child(if self.creating {
-                                "CREATING…"
+                            .child(ui_text::cased(if self.creating {
+                                "Creating…"
                             } else {
-                                "CREATE PROJECT  ↵"
-                            })
+                                "Create project  ↵"
+                            }))
                             .on_click(cx.listener(|form, _, _, cx| form.submit(cx))),
                     ),
             )
