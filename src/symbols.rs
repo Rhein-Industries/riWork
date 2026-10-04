@@ -180,14 +180,22 @@ unsafe extern "C" {
 const PREMULTIPLIED_LAST: u32 = 1;
 /// `NSCompositingOperationSourceOver`.
 const SOURCE_OVER: usize = 2;
+/// The drawing scale AppKit draws symbols true to their proportions at. At any other scale
+/// (1x above all) it fits a small symbol to the pixel grid one side at a time, which squashes
+/// a dot into an oval and a lock into a squarer box. Every symbol is drawn at this scale, at
+/// a point size and box scaled by the window's own scale over it, so the pixels are the same
+/// as drawing at the window's scale.
+const DRAWING_SCALE: f64 = 2.0;
 
 /// The symbol's coverage over a `key.pixels()` square, row by row from the top: drawn at its
-/// own size, centered in the box, and scaled down only if it would not fit.
+/// own size and proportions, centered in the box, and scaled down only if it would not fit.
 fn coverage(key: &Key) -> Option<Vec<u8>> {
     let name = CString::new(key.name).ok()?;
     let side = key.pixels();
-    let scale = f64::from(key.scale) / 100.0;
-    let box_points = f64::from(key.side) / 100.0;
+    // Lengths below are in units of `DRAWING_SCALE` device pixels: points times `zoom`.
+    let zoom = f64::from(key.scale) / 100.0 / DRAWING_SCALE;
+    let scale = DRAWING_SCALE;
+    let box_side = f64::from(key.side) / 100.0 * zoom;
     let stride = side * 4;
     let mut pixels = vec![0u8; stride * side];
     autoreleasepool(|_| unsafe {
@@ -206,7 +214,7 @@ fn coverage(key: &Key) -> Option<Vec<u8>> {
         }
         let configuration: *mut AnyObject = msg_send![
             class!(NSImageSymbolConfiguration),
-            configurationWithPointSize: f64::from(key.points) / 100.0,
+            configurationWithPointSize: f64::from(key.points) / 100.0 * zoom,
             weight: key.weight.ns_font_weight()
         ];
         let symbol: *mut AnyObject = msg_send![symbol, imageWithSymbolConfiguration: configuration];
@@ -217,15 +225,15 @@ fn coverage(key: &Key) -> Option<Vec<u8>> {
         if !(size.width > 0.0 && size.height > 0.0) {
             return None;
         }
-        let fit = (box_points / size.width.max(size.height)).min(1.0);
+        let fit = (box_side / size.width.max(size.height)).min(1.0);
         let (width, height) = (size.width * fit, size.height * fit);
         // Centered on whole device pixels, as text is laid out, so the symbol's straight
         // strokes land on pixel rows instead of being smeared across two.
         let snap = |value: f64| (value * scale).round() / scale;
         let rect = CGRect {
             origin: CGPoint {
-                x: snap((box_points - width) / 2.0),
-                y: snap((box_points - height) / 2.0),
+                x: snap((box_side - width) / 2.0),
+                y: snap((box_side - height) / 2.0),
             },
             size: CGSize { width, height },
         };
@@ -338,5 +346,48 @@ mod tests {
         let missing = Key::new("riwork.not-a-symbol", 13.0, 16.0, Weight::Regular, 0, 2.0);
         assert!(coverage(&missing).is_none());
         assert!(image(missing).is_none());
+    }
+
+    /// The width and height of the ink in a `side` square of coverage, in pixels, to a
+    /// fraction of a pixel: an edge column or row counts as far as its strongest coverage.
+    fn ink(alpha: &[u8], side: usize) -> (f64, f64) {
+        let column = |x: usize| (0..side).map(|y| alpha[y * side + x]).max().unwrap();
+        let row = |y: usize| (0..side).map(|x| alpha[y * side + x]).max().unwrap();
+        let extent = |strongest: &dyn Fn(usize) -> u8| {
+            let inked: Vec<usize> = (0..side).filter(|&i| strongest(i) > 0).collect();
+            let (first, last) = (inked[0], *inked.last().unwrap());
+            let partial = |i: usize| f64::from(strongest(i)) / 255.0;
+            (last - first - 1) as f64 + partial(first) + partial(last)
+        };
+        (extent(&column), extent(&row))
+    }
+
+    /// A symbol keeps its own proportions at every point size and scale: drawing it at the
+    /// window's scale at 1x used to squash a dot into an oval and a lock into a squarer box.
+    #[test]
+    fn symbols_are_never_stretched() {
+        for name in [
+            "lock",
+            "lock.open",
+            "circle.fill",
+            "terminal",
+            "bell",
+            "gearshape",
+        ] {
+            let large = Key::new(name, 200.0, 300.0, Weight::Regular, 0, 1.0);
+            let (width, height) = ink(&coverage(&large).unwrap(), large.pixels());
+            let aspect = width / height;
+            for points in [6.0, 7.0, 7.8, 9.0, 10.0, 10.4, 11.0, 12.0, 13.0] {
+                for scale in [1.0, 2.0] {
+                    let key = Key::new(name, points, 24.0, Weight::Regular, 0, scale);
+                    let (width, height) = ink(&coverage(&key).unwrap(), key.pixels());
+                    assert!(
+                        (width - height * aspect).abs() <= 1.0,
+                        "{name} at {points}pt {scale}x is {width:.2}x{height:.2} px, \
+                         not {aspect:.3} wide per pixel high"
+                    );
+                }
+            }
+        }
     }
 }
