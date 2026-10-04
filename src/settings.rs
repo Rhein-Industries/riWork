@@ -714,7 +714,7 @@ fn section_card(
     body: AnyElement,
 ) -> AnyElement {
     if ui_text::is_native() {
-        return native_section_card(section, layout, colors, body);
+        return native_section_card(section, colors, body);
     }
     div()
         .flex()
@@ -762,35 +762,30 @@ fn section_card(
         .into_any_element()
 }
 
-/// Native's section: a soft card with its title in semibold and no rule or number.
-fn native_section_card(
-    section: Section,
-    layout: SettingsLayout,
-    colors: Palette,
-    body: AnyElement,
-) -> AnyElement {
+/// Native's section: a group on the page under a list's section heading, with no number.
+fn native_section_card(section: Section, colors: Palette, body: AnyElement) -> AnyElement {
     controls::card(div(), colors)
         .flex()
         .flex_col()
         .min_w_0()
         .gap(ui_text::space(12.0))
-        .p(px(layout.card_padding()))
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap(ui_text::space(2.0))
+                // Headed like a navigation list's section.
                 .child(
                     div()
-                        .text_size(ui_text::text(12.0))
+                        .text_size(ui_text::text(controls::META_TEXT))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(colors.text))
+                        .text_color(rgb(colors.muted))
                         .child(section.title()),
                 )
                 .child(
                     div()
                         .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
-                        .text_size(ui_text::text(10.0))
+                        .text_size(ui_text::text(controls::ROW_DETAIL_TEXT))
                         .text_color(rgb(colors.muted))
                         .child(section.description()),
                 ),
@@ -2733,6 +2728,8 @@ impl Render for SettingsPanel {
                     .flex_1()
                     .min_w_0()
                     .gap(px(layout.gap()))
+                    // Native's groups are separated by their own hairlines.
+                    .when(native, |column| column.gap_0())
                     .children(cards),
             );
         }
@@ -2803,7 +2800,7 @@ impl Render for SettingsPanel {
                                     .gap(px(layout.gap()))
                                     .font_family(ui_text::ui_family())
                                     .text_color(rgb(colors.text))
-                                    .when(native, |page| page.gap(ui_text::space(8.0)))
+                                    .when(native, |page| page.gap_0())
                                     .children((!native).then(|| {
                                         div()
                                             .flex()

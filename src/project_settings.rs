@@ -269,12 +269,14 @@ fn section(label: &str, colors: Palette) -> AnyElement {
         .text_size(ui_text::text(10.0))
         .text_color(rgb(colors.cyan))
         .map(|heading| {
-            // Native: a plain semibold title, without the number or the rule.
+            // Native: a navigation list's section heading, without the number or the rule.
             crate::controls::native(heading, |heading| {
                 heading
                     .border_b_0()
+                    .pb_0()
+                    .text_size(ui_text::text(crate::controls::META_TEXT))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(colors.text))
+                    .text_color(rgb(colors.muted))
             })
         })
         .child(if ui_text::is_native() {
@@ -919,9 +921,7 @@ impl Render for ProjectSettingsPanel {
                 .border_1()
                 .border_color(rgb(colors.divider))
                 .map(|card| {
-                    crate::controls::native(card, |card| {
-                        crate::controls::card(card, colors).p(ui_text::space(12.0))
-                    })
+                    crate::controls::native(card, |card| crate::controls::card(card, colors))
                 })
         };
         let label = |text: &str| {
