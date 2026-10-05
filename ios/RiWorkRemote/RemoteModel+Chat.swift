@@ -14,6 +14,8 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     private(set) var feed = ChatFeed()
     var transcript: ChatTranscript { feed.transcript }
     var modelCatalogue: [ChatModelOption] = []
+    var modelCatalogueSource: ChatCatalogueSource = .live
+    var modelCatalogueRevision: UInt64 = 0
     /// What the person has typed and not sent. Kept per chat, so changing tabs loses nothing.
     var draft = ""
     /// The cards the person opened (command output, diffs, reasoning), by item id. Kept here because rows come and go as the list scrolls.
@@ -49,10 +51,12 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     func accept(_ reply: ChatEventsReply, since: UInt64) -> ChatFeed.Outcome {
         let previousNext = feed.next
         let outcome = feed.accept(reply, since: since)
-        if outcome == .restarted { modelCatalogue = [] }
+        if outcome == .restarted { modelCatalogue = []; modelCatalogueRevision &+= 1 }
         else {
             for envelope in reply.events where envelope.seq > previousNext {
-                if case .models(let models) = envelope.event { modelCatalogue = models }
+                if case .models(let models) = envelope.event {
+                    modelCatalogue = models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
+                }
             }
         }
         if let pending = pendingMode, transcript.info?.approvalMode == pending { pendingMode = nil }
@@ -63,7 +67,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         return outcome
     }
     func setFollowing(_ on: Bool) { if following != on { following = on } }
-    func reset() { feed = ChatFeed(); modelCatalogue = []; answered = []; readError = nil }
+    func reset() { feed = ChatFeed(); modelCatalogue = []; modelCatalogueRevision &+= 1; answered = []; readError = nil }
     /// The approvals still to be answered, first in line first: those that were just answered are already out of the way.
     var openApprovals: [ChatApproval] { transcript.approvals.filter { !answered.contains($0.requestID) } }
     var openQuestions: [ChatQuestion] { transcript.questions.filter { !answered.contains($0.requestID) } }
@@ -257,6 +261,9 @@ extension RemoteModel {
                 conversation.readError = nil
                 backoff.success()
                 conversation.accept(reply, since: since)
+                if let info = conversation.transcript.info {
+                    prepareChatCatalogue(info)
+                }
                 if chatSupport == .unknown { chatSupport = .supported }
                 // Cut short: the rest is already there. Not waiting for a slot: a short read that found nothing waits a moment.
                 if reply.more { continue }

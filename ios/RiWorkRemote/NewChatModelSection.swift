@@ -31,10 +31,15 @@ struct NewChatModelSection: View {
                 if models.isEmpty, let model = choice.model { row(title: model.name, detail: "Last used", selected: choice.usesModel, last: true) }
             }
             .accessibilityElement(children: .contain).accessibilityLabel("Model")
+            if let provider = sheet.form.kind.chatProvider, let label = sheet.chatModelsSources[provider]?.label {
+                Text(label).font(style.system(.caption)).foregroundStyle(style.warning).padding(12)
+            }
             if sheet.loadingChatModels { ProgressView("Loading models…").padding(12) }
             if let error = sheet.chatModelsError {
                 Text(error).font(style.system(.caption)).foregroundStyle(style.warning).padding(12)
-                Button("Retry model list") { Task { await sheet.loadChatModels() } }.padding(.horizontal, 12)
+            }
+            if let provider = sheet.form.kind.chatProvider, sheet.chatModelsSources[provider] != .live || sheet.chatModelsError != nil {
+                Button("Retry live models") { Task { await sheet.loadChatModels() } }.padding(.horizontal, 12)
                     .disabled(sheet.loadingChatModels || sheet.busy)
             }
             if !choice.efforts.isEmpty {

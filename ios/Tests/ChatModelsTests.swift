@@ -296,4 +296,19 @@ final class ChatModelsTests: XCTestCase {
         XCTAssertNil(form.chatChoice?.chosen)
     }
 
+    func testBundledFallbackContainsRecordedVisibleProductionModelsAndDefaults() {
+        let codex = ChatBundledModels.models(for: .codex)
+        let claude = ChatBundledModels.models(for: .claude)
+        XCTAssertEqual(codex.count, 8)
+        XCTAssertEqual(Set(claude.map(\.id)), ["default", "opus", "fable", "sonnet", "haiku"])
+        for models in [codex, claude] {
+            XCTAssertFalse(models.isEmpty)
+            XCTAssertTrue(models.contains { $0.isDefault })
+            XCTAssertEqual(Set(models.map(\.id)).count, models.count)
+            XCTAssertFalse(models.contains { $0.id == "plain-model" || $0.id.contains("daybreak") || $0.id.contains("auto-review") })
+        }
+        XCTAssertFalse(claude.first { $0.id == "haiku" }!.supportsFast)
+        XCTAssertTrue(claude.first { $0.id == "haiku" }!.efforts.isEmpty)
+    }
+
 }

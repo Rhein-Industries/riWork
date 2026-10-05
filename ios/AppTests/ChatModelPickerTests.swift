@@ -107,7 +107,8 @@ import RiWorkCore
         await rig.transport.append(chatID, [.info(chat(model: "gpt-5", effort: "high"))])
         follow(rig)
         await eventually("the chat is read") { rig.model.conversation(self.chatID).feed.loaded }
-        XCTAssertFalse(choices(rig).isAvailable, "an older Mac sends no Models event: the toolbar is as it was")
+        XCTAssertTrue(choices(rig).isAvailable, "an older host gets an immediately usable bundled fallback")
+        XCTAssertEqual(rig.model.conversation(chatID).modelCatalogueSource, .bundled)
         XCTAssertNil(rig.model.conversation(chatID).pendingModel)
         let sent = await rig.transport.commands()
         XCTAssertTrue(sent.isEmpty)
@@ -279,7 +280,8 @@ import RiWorkCore
         sheet.select(kind: .claudeChat)
         await sheet.loadChatModels()
         XCTAssertNotNil(sheet.chatModelsError)
-        XCTAssertNil(sheet.form.chatModels[.claude])
+        XCTAssertEqual(sheet.chatModelsSources[.claude], .bundled)
+        XCTAssertFalse(sheet.form.chatModels[.claude]?.isEmpty ?? true)
         sheet.select(kind: .codexChat)
         await rig.transport.failEvents(1)
         await sheet.loadChatModels()
@@ -308,6 +310,128 @@ import RiWorkCore
         XCTAssertEqual(commands, [configure(["model": .string(compatible.id)])])
         XCTAssertEqual(rig.model.conversation(chatID).modelChoices(fallback: info).selectedEffort, "medium")
         XCTAssertTrue(rig.model.conversation(chatID).modelChoices(fallback: info).fastIsOn)
+        await finish(rig)
+    }
+
+    // MARK: Fallbacks and legacy-host recovery
+
+    func testLegacyChatUsesNewestCompleteCatalogueFromCompatibleSibling() async throws {
+        let legacy = chat(model: gpt.id)
+        var sibling = legacy
+        sibling.id = "dddddddd-1111-4111-8111-111111111111"
+        let rig = try await connected(chats: [legacy, sibling])
+        await rig.transport.append(chatID, [.info(legacy)]) // A pre-Models chat, as on the user's running host.
+        await rig.transport.append(sibling.id, [.models([gpt])])
+        await rig.transport.append(sibling.id, Array(repeating: .state(.idle), count: 501))
+        await rig.transport.append(sibling.id, [.models([mini])])
+        let models = try await rig.model.availableChatModels(provider: .codex, chat: legacy)
+        XCTAssertEqual(models, [mini], "the last complete page wins, not the first Models event")
+        let commands = await rig.transport.commands()
+        XCTAssertTrue(commands.isEmpty)
+        await finish(rig)
+    }
+
+    func testEmptyCatalogueDoesNotResurrectAnOlderLiveList() async throws {
+        let rig = try await connected()
+        await rig.transport.append(chatID, [.models(list), .models([])])
+        do {
+            _ = try await rig.model.availableChatModels(provider: .codex, chat: chat())
+            XCTFail("an explicitly empty latest list must not return the earlier one as live")
+        } catch { }
+        rig.model.prepareChatCatalogue(chat())
+        XCTAssertEqual(rig.model.conversation(chatID).modelCatalogueSource, .bundled)
+        XCTAssertFalse(choices(rig).models.isEmpty)
+        await finish(rig)
+    }
+
+    func testCachedCatalogueSurvivesRelaunchAndIsIsolatedByDesktopProviderAndAccount() async throws {
+        let suite = defaults()
+        let first = try await connected(defaults: suite)
+        var accountA = chat(); accountA.codexAccountID = "account-a"
+        first.model.rememberModelCatalogue(list, provider: .codex, chat: accountA)
+        await finish(first)
+        let next = try await connected(defaults: suite)
+        next.model.prepareChatCatalogue(accountA)
+        XCTAssertEqual(next.model.conversation(chatID).modelCatalogue, list)
+        XCTAssertEqual(next.model.conversation(chatID).modelCatalogueSource, .cached)
+        var accountB = accountA; accountB.codexAccountID = "account-b"
+        XCTAssertEqual(next.model.cachedOrBundledModels(provider: .codex, chat: accountB).source, .bundled)
+        XCTAssertEqual(next.model.cachedOrBundledModels(provider: .claude, chat: accountA).source, .bundled)
+        let original = next.model.selectedDesktopID
+        next.model.selectedDesktopID = nil
+        XCTAssertEqual(next.model.cachedOrBundledModels(provider: .codex, chat: accountA).source, .bundled)
+        next.model.selectedDesktopID = original
+        await finish(next)
+    }
+
+    func testFirstRunNetworkFailureKeepsBundledChoicesAndRecoveryReplacesThem() async throws {
+        let rig = try await connected()
+        let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
+        sheet.select(kind: .codexChat)
+        await rig.transport.failEvents(1)
+        await sheet.loadChatModels()
+        XCTAssertEqual(sheet.chatModelsSources[.codex], .bundled)
+        XCTAssertFalse(sheet.form.chatModels[.codex]?.isEmpty ?? true)
+        XCTAssertNotNil(sheet.chatModelsError)
+        await rig.transport.append(chatID, [.models(list)])
+        await sheet.loadChatModels()
+        XCTAssertEqual(sheet.chatModelsSources[.codex], .live)
+        XCTAssertEqual(sheet.form.chatModels[.codex], list)
+        XCTAssertNil(sheet.chatModelsError)
+        XCTAssertEqual(rig.model.cachedOrBundledModels(provider: .codex).source, .cached)
+        await finish(rig)
+    }
+
+    func testBundledModelRejectionRestoresSelectionAndShowsReason() async throws {
+        let rig = try await connected()
+        let info = chat(model: "existing-model")
+        rig.model.prepareChatCatalogue(info)
+        let target = try XCTUnwrap(choices(rig).models.first)
+        await rig.transport.failCommand(.rpc(code: "invalid_request", message: "model is not available for this account"))
+        let failure = await rig.model.chooseChatModel(info, .model(target.id))
+        XCTAssertNotNil(failure)
+        XCTAssertNil(rig.model.conversation(chatID).pendingModel)
+        XCTAssertEqual(rig.model.conversation(chatID).modelChoices(fallback: info).modelID, "existing-model")
+        XCTAssertTrue(rig.model.conversation(chatID).notice?.contains("not available") == true)
+        await finish(rig)
+    }
+
+    func testLoadingIsBoundedAndLateCompletionCannotReplaceNewerList() async throws {
+        let rig = try await connected()
+        await rig.transport.gateEvents(true)
+        let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
+        sheet.select(kind: .codexChat)
+        let request = Task { await sheet.loadChatModels() }
+        await eventually("fallback is available during loading") { sheet.loadingChatModels && sheet.form.chatModels[.codex]?.isEmpty == false }
+        await eventually("spinner stops within the bounded period", timeout: 5) { !sheet.loadingChatModels }
+        XCTAssertNotNil(sheet.chatModelsError)
+        sheet.form.chatModels[.codex] = [mini]
+        sheet.chatModelsSources[.codex] = .live
+        await rig.transport.append(chatID, [.models([gpt])])
+        await rig.transport.gateEvents(false)
+        await request.value
+        XCTAssertEqual(sheet.form.chatModels[.codex], [mini], "the timed-out callback is discarded")
+        await finish(rig)
+    }
+
+    func testCompatibleSourcesNeverCrossAccountsAndGenerationChangesDiscardCallbacks() async throws {
+        var old = chat(); old.codexAccountID = "account-a"
+        var other = old; other.id = "eeeeeeee-1111-4111-8111-111111111111"; other.codexAccountID = "account-b"
+        let rig = try await connected(chats: [old, other])
+        await rig.transport.append(other.id, [.models(list)])
+        do { _ = try await rig.model.availableChatModels(provider: .codex, chat: old); XCTFail("another account is not compatible") } catch { }
+        rig.model.chats = [old]
+        await rig.transport.setChats([old])
+        await rig.transport.gateEvents(true)
+        let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
+        sheet.select(kind: .codexChat)
+        let request = Task { await sheet.loadChatModels() }
+        await eventually("loading") { sheet.loadingChatModels }
+        rig.model.generation = UUID()
+        await rig.transport.append(chatID, [.models(list)])
+        await rig.transport.gateEvents(false)
+        await request.value
+        XCTAssertEqual(sheet.chatModelsSources[.codex], .bundled)
         await finish(rig)
     }
 
@@ -520,9 +644,9 @@ import RiWorkCore
         // The chat runs a model that is not in the list now, so the one there is gets chosen; it has no Fast, which the chat has on.
         await eventually("the one model there is is chosen") { await rig.transport.commands() == [self.configure(["model": .string("bare"), "fast": .bool(false)])] }
         await rig.transport.append(chatID, [.models([])])
-        await eventually("no models at all") { !self.choices(rig).isAvailable }
+        await eventually("empty catalogue falls back") { rig.model.conversation(self.chatID).modelCatalogueSource == .cached }
         press(sheet, UIKeyCommand.inputDownArrow); press(sheet, "\r")
-        XCTAssertEqual(sheet.closed.count, 0)
+        XCTAssertTrue(self.choices(rig).isAvailable)
         await finish(rig)
     }
 

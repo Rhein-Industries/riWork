@@ -34,6 +34,7 @@ actor ChatTransport: RemoteTransport {
     var createMode = CreateMode.ok
     /// The next this many `chat.events` fail with a CLI error.
     var eventFailures = 0
+    var eventsGated = false
     /// The next `chat.command` fails with this.
     var commandError: RemoteError?
     var gatedCommands = false
@@ -54,6 +55,7 @@ actor ChatTransport: RemoteTransport {
     func setOrchestratorMode(_ mode: OrchestratorMode) { orchestratorMode = mode }
     func setNewOrchestratorsAreChats(_ on: Bool) { newOrchestratorsAreChats = on }
     func setCreateMode(_ mode: CreateMode) { createMode = mode }
+    func gateEvents(_ on: Bool) { eventsGated = on }
     func failEvents(_ count: Int) { eventFailures = count }
     func failCommand(_ error: RemoteError?) { commandError = error }
     func gateCommands(_ on: Bool) { gatedCommands = on }
@@ -180,6 +182,7 @@ actor ChatTransport: RemoteTransport {
 
     /// `chat.events`: what is after `since` at once, else what arrives within the wait, else nothing.
     private func events(_ params: [String: JSONValue]) async throws -> JSONValue {
+        while eventsGated { try await Task.sleep(for: .milliseconds(5)) }
         guard let chat = params["chat_id"]?.string, case .number(let sinceNumber)? = params["since"], case .number(let waitNumber)? = params["wait_ms"] else {
             throw RemoteError.rpc(code: "invalid_request", message: "bad request")
         }

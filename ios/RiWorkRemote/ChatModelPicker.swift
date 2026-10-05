@@ -104,6 +104,7 @@ struct ChatModelSheet: View {
     @State private var keyboardInUse: Bool
     @State private var loadingModels = false
     @State private var modelsError: String?
+    @State private var catalogueRequest = UUID()
 
     init(model: RemoteModel, chat: ChatInfo, close: @escaping () -> Void) {
         self.model = model; self.chat = chat; self.close = close
@@ -129,6 +130,10 @@ struct ChatModelSheet: View {
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .onChange(of: choices) { _, fresh in cursor.reconcile(with: fresh) }
         .task { await loadModels() }
+        .onChange(of: conversation.modelCatalogueRevision) { _, _ in
+            modelsError = nil; loadingModels = false; catalogueRequest = UUID()
+        }
+        .onDisappear { loadingModels = false; catalogueRequest = UUID() }
     }
 
     private func content(_ choices: ChatModelChoices) -> some View {
@@ -137,9 +142,12 @@ struct ChatModelSheet: View {
             else if !connected { messageRow("Not connected. Choose again when the link is back.", icon: "wifi.slash") }
             sectionLabel("Model")
             if loadingModels { ProgressView("Loading models…").padding(12) }
-            if let error = modelsError, choices.models.isEmpty {
+            if let label = conversation.modelCatalogueSource.label { messageRow(label, icon: "clock.arrow.circlepath") }
+            if let error = modelsError {
                 messageRow(error, icon: "exclamationmark.triangle")
-                Button("Retry model list") { Task { await loadModels() } }.padding(12).disabled(loadingModels || !connected)
+            }
+            if conversation.modelCatalogueSource != .live || modelsError != nil {
+                Button("Retry live models") { Task { await loadModels() } }.padding(12).disabled(loadingModels || !connected)
             }
             Text("Current model: \(choices.current?.name ?? choices.modelID ?? "Provider default")")
                 .font(style.system(.caption)).foregroundStyle(style.muted).padding(.horizontal, 12)
@@ -167,11 +175,34 @@ struct ChatModelSheet: View {
 
     private func loadModels() async {
         guard !loadingModels else { return }
+        model.prepareChatCatalogue(chat)
+        let token = UUID()
+        catalogueRequest = token
+        let generation = model.generation
+        let project = model.projectID
+        let revision = conversation.modelCatalogueRevision
         loadingModels = true; modelsError = nil
-        defer { loadingModels = false }
-        do { conversation.modelCatalogue = try await model.availableChatModels(provider: chat.provider, chat: chat) }
+        let timeout = Task {
+            try? await Task.sleep(for: RemoteModel.catalogueLoadingLimit)
+            guard !Task.isCancelled, catalogueRequest == token, model.generation == generation, model.projectID == project else { return }
+            catalogueRequest = UUID(); loadingModels = false
+            modelsError = "Live model lookup took too long. Use the fallback list or Retry."
+        }
+        defer { timeout.cancel(); if catalogueRequest == token { loadingModels = false } }
+        do {
+            let catalogue = try await model.availableChatModels(provider: chat.provider, chat: chat)
+            guard catalogueRequest == token, model.generation == generation, model.projectID == project,
+                  conversation.modelCatalogueRevision == revision else { return }
+            conversation.modelCatalogue = catalogue
+            conversation.modelCatalogueSource = .live
+            model.rememberModelCatalogue(catalogue, provider: chat.provider, chat: conversation.transcript.info ?? chat)
+        }
         catch is CancellationError { }
-        catch { modelsError = ChatControlError.from(error, operation: .list).message }
+        catch {
+            guard catalogueRequest == token, model.generation == generation, model.projectID == project,
+                  conversation.modelCatalogueRevision == revision else { return }
+            modelsError = ChatControlError.from(error, operation: .list).message
+        }
     }
 
     private func sectionLabel(_ text: String) -> some View {

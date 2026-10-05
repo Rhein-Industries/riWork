@@ -16,7 +16,7 @@ extension ChatConversation {
     }
     /// The chat's own word (an `info` event) has what was asked for: the choice no longer needs showing from here.
     func settleModelChoice() {
-        guard let pending = pendingModel, let info = transcript.info, pending.isSettled(by: info, models: transcript.models) else { return }
+        guard let pending = pendingModel, let info = transcript.info, pending.isSettled(by: info, models: transcript.models.isEmpty ? modelCatalogue : transcript.models) else { return }
         pendingModel = nil
         modelExpiry?.cancel()
     }
@@ -85,48 +85,120 @@ extension NewTerminalSheetModel {
     }
 }
 
+enum ChatCatalogueSource: String {
+    case live, cached, bundled
+    var label: String? {
+        switch self {
+        case .live: nil
+        case .cached: "Cached fallback · Last successfully loaded list. Availability may differ for your account."
+        case .bundled: "Bundled fallback · Recorded provider models. Availability may differ for your account."
+        }
+    }
+}
+
 extension RemoteModel {
-    /// Reuses the provider's Models events. Reading a catalogue never starts a chat or sends a command.
-    /// New chats use an existing chat of the same provider and project, including its orchestrator.
+    static let catalogueLoadingLimit: Duration = .seconds(4)
+
+    func catalogueAccount(provider: ChatProvider, chat: ChatInfo? = nil) -> String? {
+        guard provider == .codex else { return nil }
+        if let chat {
+            return chatConversations[chat.id]?.transcript.info?.codexAccountID ?? chat.codexAccountID
+                ?? chats.first(where: { $0.id == chat.id })?.codexAccountID
+        }
+        let accounts = Set(chats.filter { $0.provider == provider && $0.projectID == projectID }.compactMap(\.codexAccountID))
+        return accounts.count == 1 ? accounts.first : nil
+    }
+
+    /// Unknown accounts are additionally isolated by project; paired desktop identity survives app relaunch and renaming.
+    func catalogueCacheKey(provider: ChatProvider, chat: ChatInfo? = nil) -> String? {
+        guard let desktopID = desktop?.pairing.desktop_id else { return nil }
+        let account = catalogueAccount(provider: provider, chat: chat) ?? "unknown-project-\(chat?.projectID ?? projectID ?? "global")"
+        return "riwork.modelCatalogue.v1.\(desktopID).\(provider.rawValue).\(account)"
+    }
+
+    func cachedOrBundledModels(provider: ChatProvider, chat: ChatInfo? = nil) -> (models: [ChatModelOption], source: ChatCatalogueSource) {
+        if let key = catalogueCacheKey(provider: provider, chat: chat), let data = defaults.data(forKey: key),
+           let models = try? JSONDecoder().decode([ChatModelOption].self, from: data), !models.isEmpty {
+            return (models, .cached)
+        }
+        return (ChatBundledModels.models(for: provider), .bundled)
+    }
+
+    func rememberModelCatalogue(_ models: [ChatModelOption], provider: ChatProvider, chat: ChatInfo? = nil) {
+        guard !models.isEmpty, let key = catalogueCacheKey(provider: provider, chat: chat),
+              let data = try? JSONEncoder().encode(models) else { return }
+        if defaults.data(forKey: key) != data { defaults.set(data, forKey: key) }
+    }
+
+    /// Fallback rows are selectable immediately; successful provider events replace them.
+    func prepareChatCatalogue(_ chat: ChatInfo) {
+        let conversation = conversation(chat.id)
+        if !conversation.transcript.models.isEmpty {
+            conversation.modelCatalogueSource = .live
+            rememberModelCatalogue(conversation.transcript.models, provider: chat.provider, chat: conversation.transcript.info ?? chat)
+        } else if conversation.modelCatalogueSource != .live || conversation.modelCatalogue.isEmpty {
+            let fallback = cachedOrBundledModels(provider: chat.provider, chat: conversation.transcript.info ?? chat)
+            conversation.modelCatalogue = fallback.models
+            conversation.modelCatalogueSource = fallback.source
+        }
+    }
+
+    /// Read-only lookup. A legacy chat can use a newer compatible chat's catalogue. Only complete, bounded replays are trusted,
+    /// and the last Models event wins, including an empty event that withdraws a former catalogue.
     func availableChatModels(provider: ChatProvider, chat: ChatInfo? = nil) async throws -> [ChatModelOption] {
         guard state == .connected else { throw ChatControlError.notConnected }
         let token = generation
         let project = projectID
-        let candidates: [ChatInfo]
-        if let chat { candidates = [chat] }
-        else {
-            let listed = try await client.listChats(ChatListRequest(projectID: project))
-            var seen = Set<String>()
-            candidates = (listed + tabs.compactMap(\.chatInfo))
-                .filter { $0.provider == provider && $0.projectID == project && seen.insert($0.id).inserted }
-                .sorted { $0.createdAtUnix > $1.createdAtUnix }
-        }
-        var lastError: (any Error)?
-        for candidate in candidates {
+        let account = catalogueAccount(provider: provider, chat: chat)
+        let deadline = ContinuousClock.now + Self.catalogueLoadingLimit
+        func check() throws {
             try Task.checkCancellation()
             guard generation == token, projectID == project else { throw CancellationError() }
-            if let conversation = chatConversations[candidate.id], !conversation.transcript.models.isEmpty {
-                return conversation.transcript.models
-            }
+            guard ContinuousClock.now < deadline else { throw ChatControlError.failed("Live model lookup took too long. Use the fallback list or Retry.") }
+        }
+        // An already-followed chat's latest event is authoritative and incurs no replay.
+        if let chat, let conversation = chatConversations[chat.id], !conversation.transcript.models.isEmpty {
+            return conversation.transcript.models
+        }
+        var sources = chat.map { [$0] } ?? []
+        var lastError: (any Error)?
+        do { sources += try await client.listChats(ChatListRequest(projectID: nil)) }
+        catch { lastError = error }
+        try check()
+        sources += tabs.compactMap(\.chatInfo)
+        var seen = Set<String>()
+        let candidates = sources.filter { candidate in
+            guard candidate.provider == provider, seen.insert(candidate.id).inserted else { return false }
+            if candidate.id == chat?.id { return true }
+            if provider == .codex, let account { return candidate.codexAccountID == account }
+            return candidate.projectID == project && candidate.codexAccountID == nil
+        }.prefix(8)
+        for candidate in candidates {
+            try check()
             do {
                 var since: UInt64 = 0
+                var latest: [ChatModelOption]?
                 for _ in 0..<20 {
                     let reply = try await client.chatEvents(ChatEventsRequest(chatID: candidate.id, since: since, waitMilliseconds: 0, maxEvents: 500))
-                    try Task.checkCancellation()
-                    guard generation == token, projectID == project else { throw CancellationError() }
-                    let catalogue = reply.events.compactMap { envelope -> [ChatModelOption]? in
-                        if case .models(let models) = envelope.event { return models }
-                        return nil
-                    }.last
-                    if let catalogue, !catalogue.isEmpty { return catalogue }
-                    guard reply.more, reply.next > since else { break }
+                    try check()
+                    for envelope in reply.events {
+                        if case .models(let models) = envelope.event { latest = models }
+                    }
+                    if !reply.more {
+                        if let live = chatConversations[candidate.id], live.feed.next >= reply.next, !live.transcript.models.isEmpty {
+                            return live.transcript.models
+                        }
+                        if let latest, !latest.isEmpty { return latest }
+                        break
+                    }
+                    guard reply.next > since else { break }
                     since = reply.next
                 }
             } catch is CancellationError { throw CancellationError() }
             catch { lastError = error }
         }
         if let lastError { throw lastError }
-        throw ChatControlError.failed("No model list is available yet. Start a chat with the provider default, then reopen Model after it connects. If a connected chat still has no list, update RiWork on your Mac and retry.")
+        throw ChatControlError.failed("The running chat host has not published a model list. You can use the fallback list and Retry later; model availability depends on your account.")
     }
 }
 
@@ -134,16 +206,31 @@ extension NewTerminalSheetModel {
     func loadChatModels() async {
         guard let provider = form.kind.chatProvider else { return }
         let token = UUID()
+        let generation = model.generation
+        let project = model.projectID
         catalogueRequest = token
+        let fallback = model.cachedOrBundledModels(provider: provider)
+        if form.chatModels[provider]?.isEmpty != false || chatModelsSources[provider] != .live {
+            form.chatModels[provider] = fallback.models
+            chatModelsSources[provider] = fallback.source
+        }
         loadingChatModels = true; chatModelsError = nil
-        defer { if catalogueRequest == token { loadingChatModels = false } }
+        let timeout = Task { [weak self] in
+            try? await Task.sleep(for: RemoteModel.catalogueLoadingLimit)
+            guard !Task.isCancelled, let self, catalogueRequest == token, model.generation == generation, model.projectID == project else { return }
+            catalogueRequest = UUID(); loadingChatModels = false
+            chatModelsError = "Live model lookup took too long. Use the fallback list or Retry."
+        }
+        defer { timeout.cancel(); if catalogueRequest == token { loadingChatModels = false } }
         do {
             let models = try await model.availableChatModels(provider: provider)
-            guard catalogueRequest == token, form.kind.chatProvider == provider else { return }
+            guard catalogueRequest == token, form.kind.chatProvider == provider, model.generation == generation, model.projectID == project else { return }
             form.chatModels[provider] = models
+            chatModelsSources[provider] = .live
+            model.rememberModelCatalogue(models, provider: provider)
         } catch is CancellationError { }
         catch {
-            guard catalogueRequest == token, form.kind.chatProvider == provider else { return }
+            guard catalogueRequest == token, form.kind.chatProvider == provider, model.generation == generation, model.projectID == project else { return }
             chatModelsError = ChatControlError.from(error, operation: .list).message
         }
     }

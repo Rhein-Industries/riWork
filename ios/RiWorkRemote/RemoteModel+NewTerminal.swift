@@ -145,6 +145,7 @@ struct NewTabProblem: Equatable {
     let id = UUID()
     var form: NewTerminalForm
     var loadingChatModels = false
+    var chatModelsSources: [ChatProvider: ChatCatalogueSource] = [:]
     var chatModelsError: String?
     var catalogueRequest = UUID()
     var error: TerminalControlError?
