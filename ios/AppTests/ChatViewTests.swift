@@ -328,6 +328,57 @@ import RiWorkCore
     }
     /// The picture's name in a look; the terminal look keeps the plain name.
     private func named(_ name: String, _ look: Look) -> String { look == .terminal ? name : "\(name)-\(look.rawValue)" }
+    /// Pictures of the paperclip's menu open at each place it is, keyboard up, in Native dark and the terminal look. A system menu is
+    /// drawn outside the app's views, so neither this test nor a snapshot can open or draw it: with `RIWORK_ATTACH_SCREENSHOTS` set to a
+    /// directory, each state leaves `<name>.ready` and waits for `<name>.png`, which whoever drives the simulator takes after tapping
+    /// the paperclip (`xcrun simctl io <udid> screenshot`). Skipped otherwise.
+    func testPicturesOfThePaperclipMenu() async throws {
+        guard let path = ProcessInfo.processInfo.environment["RIWORK_ATTACH_SCREENSHOTS"] else { throw XCTSkip("Set RIWORK_ATTACH_SCREENSHOTS") }
+        executionTimeAllowance = 1800
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        func hold(_ name: String) async throws {
+            let ready = directory.appendingPathComponent(name + ".ready"), shot = directory.appendingPathComponent(name + ".png")
+            try? FileManager.default.removeItem(at: shot)
+            try Data().write(to: ready)
+            let deadline = Date().addingTimeInterval(600)
+            while !FileManager.default.fileExists(atPath: shot.path), Date() < deadline { try await Task.sleep(for: .milliseconds(250)) }
+            try? FileManager.default.removeItem(at: ready)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: shot.path), "no screenshot taken for \(name)")
+        }
+        let screen = UIScreen.main.bounds.size
+        for look in [Look.nativeDark, .terminal] {
+            // The chat composer, keyboard up.
+            var rig = try await makeRig(chats: mixed, hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            await rig.transport.append(chatID, conversationEvents())
+            let field = try await openChat(rig)
+            _ = field.becomeFirstResponder()
+            try await Task.sleep(for: .milliseconds(1200))
+            try await hold(named("attach-chat", look))
+            await finish(rig)
+
+            // The terminal's key bar above the keyboard, scrolled to its paperclip.
+            rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            let capture = try XCTUnwrap(descendants(KeyCaptureView.self, in: rig.host.view).first)
+            _ = capture.becomeFirstResponder()
+            try await Task.sleep(for: .milliseconds(1200))
+            let paperclip = try XCTUnwrap(capture.bar.buttons[.attach])
+            capture.bar.scrollView.scrollRectToVisible(paperclip.frame.insetBy(dx: -60, dy: 0), animated: false)
+            try await Task.sleep(for: .milliseconds(300))
+            try await hold(named("attach-keybar", look))
+            // The bar under the terminal while the keyboard is down.
+            _ = capture.resignFirstResponder()
+            try await Task.sleep(for: .milliseconds(1200))
+            try await hold(named("attach-terminal-bar", look))
+            // The line composer, its field holding the keyboard.
+            rig.model.preferLineComposer = true
+            try await Task.sleep(for: .milliseconds(600))
+            if let line = descendants(UITextField.self, in: rig.host.view).first { _ = line.becomeFirstResponder() }
+            try await Task.sleep(for: .milliseconds(1200))
+            try await hold(named("attach-line-composer", look))
+            await finish(rig)
+        }
+    }
     func testTheScreenDrawsEveryKindOfItem() async throws {
         for look in Look.allCases {
             // Tall enough to hold the whole transcript, so every row is drawn.
