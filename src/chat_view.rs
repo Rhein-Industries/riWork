@@ -209,6 +209,9 @@ impl ChatView {
         // follows the end while the user has not scrolled up.
         let list = ListState::new(1, ListAlignment::Top, px(600.0));
         list.set_follow_mode(FollowMode::Tail);
+        // Settings shows or hides the mic in every open chat at once.
+        cx.observe_global::<crate::settings::Settings>(|view, cx| view.follow_mic_setting(cx))
+            .detach();
         Self {
             config,
             chat_id: None,
@@ -472,8 +475,13 @@ impl ChatView {
         self.interrupt(cx);
     }
 
+    /// ⌘⇧Space. With the mic hidden the key is not this tab's: it goes on as if unbound.
     fn dictation_action(&mut self, _: &ToggleDictation, _: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_dictation(cx);
+        if dictate::mic_shown(cx) {
+            self.toggle_dictation(cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     fn approve(&mut self, request_id: String, decision: Decision, cx: &mut Context<Self>) {
@@ -813,7 +821,7 @@ impl ChatView {
                 self.interrupt(cx);
                 true
             }
-            "space" if mods.platform && mods.shift => {
+            "space" if mods.platform && mods.shift && dictate::mic_shown(cx) => {
                 self.toggle_dictation(cx);
                 true
             }

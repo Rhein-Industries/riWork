@@ -202,6 +202,11 @@ pub struct Settings {
     pub native_terminal_colors: bool,
     /// Native's interface font. The other themes draw in Menlo.
     pub interface_font: InterfaceFont,
+    /// Microphone buttons for dictation: in the Mac's chat message boxes, and on the
+    /// paired phone (its chats and terminals), which reads it from `appearance.json` as
+    /// `mic`. Off, the Mac's chats show no mic, ⌘⇧Space does nothing in them, and no speech
+    /// helper runs or asks for a permission.
+    pub dictation_mic: bool,
 }
 
 impl Settings {
@@ -235,6 +240,7 @@ impl Default for Settings {
             ui_text_matches_terminal: false,
             native_terminal_colors: true,
             interface_font: InterfaceFont::default(),
+            dictation_mic: false,
         }
     }
 }
@@ -302,6 +308,7 @@ impl<'de> Deserialize<'de> for Settings {
                 defaults.native_terminal_colors,
             ),
             interface_font: lenient_field(&object, "interface_font", defaults.interface_font),
+            dictation_mic: lenient_field(&object, "dictation_mic", defaults.dictation_mic),
         })
     }
 }
@@ -489,6 +496,7 @@ enum Toggle {
     PanelTabIcons,
     PreviewOnSelect,
     AgentInline,
+    DictationMic,
     WindowSize,
 }
 
@@ -499,6 +507,7 @@ impl Toggle {
             Self::PanelTabIcons => "panel-tab-icons",
             Self::PreviewOnSelect => "open-preview-on-select",
             Self::AgentInline => "agent-inline-mode",
+            Self::DictationMic => "dictation-mic",
             Self::WindowSize => "remember-window-size",
         }
     }
@@ -512,6 +521,7 @@ impl Toggle {
             Self::PanelTabIcons => &mut settings.panel_tab_icons,
             Self::PreviewOnSelect => &mut settings.open_preview_on_select,
             Self::AgentInline => &mut settings.agent_inline_mode,
+            Self::DictationMic => &mut settings.dictation_mic,
             Self::WindowSize => &mut settings.remember_window_size,
         };
         *value = !*value;
@@ -550,6 +560,7 @@ pub struct SettingsPanel {
     tab_icons_focus: FocusHandle,
     preview_focus: FocusHandle,
     inline_focus: FocusHandle,
+    mic_focus: FocusHandle,
     orchestrator_mode_focus: FocusHandle,
     orchestrator_provider_focus: FocusHandle,
     size_focus: FocusHandle,
@@ -706,9 +717,7 @@ impl Section {
             Self::Codex => "The account new Codex sessions start with.",
             Self::Appearance => "Choose a theme and text size, or sync with Ghostty.",
             Self::Files => "How the Files tree and its Preview pane open together.",
-            Self::Agents => {
-                "How new Codex, Grok, and Claude sessions draw, and how orchestrators run."
-            }
+            Self::Agents => "How agent sessions draw, how orchestrators run, and dictation.",
             Self::Windows => "How project windows open.",
             Self::StatusBar => "Choose what appears, which side it sits on, and its order.",
             Self::Remote => {
@@ -1039,6 +1048,7 @@ impl SettingsPanel {
             tab_icons_focus: cx.focus_handle(),
             preview_focus: cx.focus_handle(),
             inline_focus: cx.focus_handle(),
+            mic_focus: cx.focus_handle(),
             orchestrator_mode_focus: cx.focus_handle(),
             orchestrator_provider_focus: cx.focus_handle(),
             size_focus: cx.focus_handle(),
@@ -1109,6 +1119,7 @@ impl SettingsPanel {
         handles.push(self.text_size_focus.clone());
         handles.push(self.preview_focus.clone());
         handles.push(self.inline_focus.clone());
+        handles.push(self.mic_focus.clone());
         handles.push(self.orchestrator_mode_focus.clone());
         if settings.orchestrator_mode == OrchestratorMode::Chat {
             handles.push(self.orchestrator_provider_focus.clone());
@@ -1433,6 +1444,8 @@ impl SettingsPanel {
                     self.change(|settings| Toggle::PreviewOnSelect.flip(settings), cx);
                 } else if self.inline_focus.is_focused(window) {
                     self.change(|settings| Toggle::AgentInline.flip(settings), cx);
+                } else if self.mic_focus.is_focused(window) {
+                    self.change(|settings| Toggle::DictationMic.flip(settings), cx);
                 } else if self.orchestrator_mode_focus.is_focused(window) {
                     self.change(
                         |settings| settings.orchestrator_mode = settings.orchestrator_mode.other(),
@@ -2359,6 +2372,7 @@ impl SettingsPanel {
             Toggle::PanelTabIcons => &self.tab_icons_focus,
             Toggle::PreviewOnSelect => &self.preview_focus,
             Toggle::AgentInline => &self.inline_focus,
+            Toggle::DictationMic => &self.mic_focus,
             Toggle::WindowSize => &self.size_focus,
         };
         div()
@@ -2420,6 +2434,7 @@ impl SettingsPanel {
                         Toggle::PanelTabIcons => &view.tab_icons_focus,
                         Toggle::PreviewOnSelect => &view.preview_focus,
                         Toggle::AgentInline => &view.inline_focus,
+                        Toggle::DictationMic => &view.mic_focus,
                         Toggle::WindowSize => &view.size_focus,
                     }
                     .focus(window, cx);
@@ -2440,6 +2455,13 @@ impl SettingsPanel {
                 "Keep agent transcripts in scrollback (inline mode)",
                 "New Codex, Grok, and Claude sessions draw on the terminal's main screen, so the whole conversation stays in the terminal's scrollback. You can scroll it locally, and the iOS app can download and scroll it without sending keys to the agent. Off runs them full screen. A session that is already running keeps its mode until it restarts.",
                 settings.agent_inline_mode,
+                cx,
+            ))
+            .child(self.toggle_row(
+                Toggle::DictationMic,
+                "Show microphone buttons for dictation",
+                "Covers the mic in chat message boxes on this Mac (or ⌘⇧Space) and the mic buttons on a paired iPhone, in its chats and terminals. Speech is recognized on the device you speak to and stays there. Off hides them all.",
+                settings.dictation_mic,
                 cx,
             ))
             .child(self.choice_row(
@@ -3352,6 +3374,52 @@ mod tests {
     }
 
     #[test]
+    fn the_dictation_mic_is_off_by_default_and_persists_only_its_own_key() {
+        let dir = env::temp_dir().join(format!("riwork-settings-mic-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let document = |dir: &std::path::Path| -> Value {
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
+        };
+        assert!(!Settings::default().dictation_mic);
+
+        // A file from a build without the setting reads as off and is not rewritten.
+        let older = r#"{"schema_version":1,"theme":"native","future_setting":[1]}"#;
+        fs::write(dir.join("settings.json"), older).unwrap();
+        assert!(!store.load().unwrap().dictation_mic);
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.json")).unwrap(),
+            older
+        );
+
+        // Turning it on writes it, keeps the rest, and a later change keeps it on.
+        let saved = store
+            .update(|settings| Toggle::DictationMic.flip(settings))
+            .unwrap();
+        assert!(saved.dictation_mic);
+        let file = document(&dir);
+        assert_eq!(file["dictation_mic"], true);
+        assert_eq!(file["theme"], "native");
+        assert_eq!(file["future_setting"], serde_json::json!([1]));
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert!(store.load().unwrap().dictation_mic);
+        store
+            .update(|settings| Toggle::DictationMic.flip(settings))
+            .unwrap();
+        assert_eq!(document(&dir)["dictation_mic"], false);
+
+        // A value of another shape reads as off.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"dictation_mic":"yes"}"#,
+        )
+        .unwrap();
+        assert!(!store.load().unwrap().dictation_mic);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn agent_inline_mode_defaults_on_and_survives_older_odd_and_unreadable_files() {
         let dir = env::temp_dir().join(format!("riwork-settings-inline-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
@@ -3596,6 +3664,7 @@ mod tests {
             (Toggle::PanelTabIcons, "panel_tab_icons"),
             (Toggle::PreviewOnSelect, "open_preview_on_select"),
             (Toggle::AgentInline, "agent_inline_mode"),
+            (Toggle::DictationMic, "dictation_mic"),
             (Toggle::WindowSize, "remember_window_size"),
         ] {
             let mut flipped = base.clone();
@@ -3620,12 +3689,13 @@ mod tests {
             Toggle::PanelTabIcons,
             Toggle::PreviewOnSelect,
             Toggle::AgentInline,
+            Toggle::DictationMic,
             Toggle::WindowSize,
         ]
         .map(Toggle::id)
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
-        assert_eq!(ids.len(), 5);
+        assert_eq!(ids.len(), 6);
     }
 
     #[test]

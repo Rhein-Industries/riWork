@@ -1,6 +1,9 @@
 //! The message box: what ⏎ and ⎋ do in it, moving between its lines, and the text it sends.
 
-use crate::chat::model::Decision;
+use crate::{
+    chat::model::Decision,
+    dictation::{self, Phase},
+};
 
 use super::approval;
 
@@ -39,6 +42,32 @@ pub fn escape(empty: bool, offered: &[Decision]) -> Option<Decision> {
         approval::decision_for_key("escape", false, offered)
     } else {
         None
+    }
+}
+
+/// The line under the message box: its keys, or what a dictation is doing. Dictation and its
+/// key are named only while the mic is shown (`mic`).
+pub fn hint(dictation: &Phase, running: bool, mic: bool) -> String {
+    let key = dictation::SHORTCUT_LABEL;
+    match dictation {
+        Phase::Preparing { note: Some(note) } if mic => note.clone(),
+        Phase::Preparing { note: None } if mic => "Getting the microphone ready…".to_owned(),
+        Phase::Listening { .. } if mic => {
+            format!("Listening, recognized on this Mac · {key} or the mic stops · ⎋ cancels")
+        }
+        Phase::Finishing { .. } if mic => "Finishing what was heard…".to_owned(),
+        _ => {
+            let keys = if running {
+                "⏎ send (steers the turn) · ⇧⏎ new line · ⌘. interrupt"
+            } else {
+                "⏎ send · ⇧⏎ new line"
+            };
+            if mic {
+                format!("{keys} · {key} dictate")
+            } else {
+                keys.to_owned()
+            }
+        }
     }
 }
 
@@ -134,6 +163,33 @@ mod tests {
             Enter::NewLine
         );
         assert_eq!(escape(true, &[]), None);
+    }
+
+    #[test]
+    fn the_hint_names_dictation_only_while_the_mic_is_shown() {
+        assert_eq!(
+            hint(&Phase::Idle, false, true),
+            "⏎ send · ⇧⏎ new line · ⌘⇧Space dictate"
+        );
+        assert_eq!(
+            hint(&Phase::Idle, true, true),
+            "⏎ send (steers the turn) · ⇧⏎ new line · ⌘. interrupt · ⌘⇧Space dictate"
+        );
+        assert_eq!(hint(&Phase::Idle, false, false), "⏎ send · ⇧⏎ new line");
+        assert_eq!(
+            hint(&Phase::Idle, true, false),
+            "⏎ send (steers the turn) · ⇧⏎ new line · ⌘. interrupt"
+        );
+        let listening = Phase::Listening { text: "hi".into() };
+        assert!(hint(&listening, false, true).starts_with("Listening"));
+        // Hidden mid-dictation (before the dictation is cancelled), the keys again.
+        assert_eq!(hint(&listening, false, false), "⏎ send · ⇧⏎ new line");
+        let preparing = Phase::Preparing { note: None };
+        assert_eq!(
+            hint(&preparing, false, true),
+            "Getting the microphone ready…"
+        );
+        assert!(!hint(&preparing, false, false).contains("microphone"));
     }
 
     #[test]

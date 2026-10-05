@@ -21,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    ChatView, ChatViewEvent, Creation, Draft, Field, Menu, approval, composer,
+    ChatView, ChatViewEvent, Creation, Draft, Field, Menu, approval, composer, dictate,
     state::provider_name,
     toolbar,
     widgets::{self, Look, button, capsule, dimmed},
@@ -779,7 +779,9 @@ impl ChatView {
                 )
         };
         // Why dictation stopped, with the way to System Settings when a permission is off.
-        if let Phase::Failed(problem) = self.dictation.phase() {
+        if let Phase::Failed(problem) = self.dictation.phase()
+            && dictate::mic_shown(cx)
+        {
             let settings = problem.settings_url();
             return Some(
                 line(problem.message(), colors.gold)
@@ -1105,23 +1107,9 @@ impl ChatView {
         let colors = look.colors;
         let running = self.running();
         let dictation = self.dictation.phase();
-        let hint = match dictation {
-            Phase::Preparing { note: Some(note) } => note.clone(),
-            Phase::Preparing { note: None } => "Getting the microphone ready…".to_owned(),
-            Phase::Listening { .. } => format!(
-                "Listening, recognized on this Mac · {} or the mic stops · ⎋ cancels",
-                dictation::SHORTCUT_LABEL
-            ),
-            Phase::Finishing { .. } => "Finishing what was heard…".to_owned(),
-            _ if running => format!(
-                "⏎ send (steers the turn) · ⇧⏎ new line · ⌘. interrupt · {} dictate",
-                dictation::SHORTCUT_LABEL
-            ),
-            _ => format!(
-                "⏎ send · ⇧⏎ new line · {} dictate",
-                dictation::SHORTCUT_LABEL
-            ),
-        };
+        // The mic, its key and its hints only while Settings shows it in chats.
+        let mic = dictate::mic_shown(cx);
+        let hint = composer::hint(dictation, running, mic);
         div()
             .w_full()
             .flex()
@@ -1147,7 +1135,7 @@ impl ChatView {
                         look,
                         cx,
                     )))
-                    .child(widgets::beside_field(self.mic_button(look, cx)))
+                    .children(mic.then(|| widgets::beside_field(self.mic_button(look, cx))))
                     // Native's are round symbol buttons beside the field, as a message field
                     // has them; their keys are in the tooltips and the hint below. Send waits
                     // in grey until there is something to send.
