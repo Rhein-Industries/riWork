@@ -688,7 +688,7 @@ import RiWorkCore
         await echoing(rig)
         await rig.transport.append(chatID, [.info(chat(model: "gpt-5.5")), .models(list)])
         rig.model.selectChat(chatID)
-        await eventually("the chat screen and its list") { !self.descendants(ChatComposerTextView.self, in: screen.host.view).isEmpty && self.commandKeys(screen).contains("m") }
+        await eventually("the chat screen and its list") { !self.descendants(ChatComposerTextView.self, in: screen.host.view).isEmpty && self.commandKeys(screen).contains("m") && rig.model.conversation(self.chatID).transcript.models == self.list && rig.model.conversation(self.chatID).transcript.info?.model == "gpt-5.5" }
         let composer = try XCTUnwrap(descendants(ChatComposerTextView.self, in: screen.host.view).first)
         for _ in 0..<150 where !composer.isFirstResponder { try await Task.sleep(for: .milliseconds(10)) }
         if !composer.isFirstResponder { _ = composer.becomeFirstResponder() }

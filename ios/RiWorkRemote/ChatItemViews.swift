@@ -41,8 +41,15 @@ struct ChatItemRow: View, Equatable {
 
     var body: some View {
         content
-            .padding(.horizontal, 12).padding(.vertical, 5)
+            .padding(.horizontal, 16).padding(.vertical, rowSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var rowSpacing: CGFloat {
+        switch item.body {
+        case .userMessage, .agentMessage: 12
+        default: 5
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -86,15 +93,18 @@ struct ChatItemRow: View, Equatable {
 private struct UserBlock: View {
     @Environment(\.desktopStyle) private var style
     let text: String
+    @Environment(\.dynamicTypeSize) private var typeSize
     var body: some View {
-        Text(text).font(style.prose).foregroundStyle(style.text).textSelection(.enabled)
-            .padding(.vertical, 8).padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(style.accent.opacity(0.14))
-            .overlay(alignment: .leading) { Rectangle().fill(style.accent).frame(width: 3) }
-            .accessibilityLabel("You said")
-            .accessibilityValue(text)
+        HStack {
+            Spacer(minLength: typeSize.isAccessibilitySize ? 16 : 40)
+            Text(text).font(style.prose).foregroundStyle(style.text).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 12).padding(.horizontal, 16)
+                .background(style.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 18))
+                .accessibilityLabel("You said").accessibilityValue(text)
+        }
     }
+
 }
 
 /// The agent's reasoning: one collapsed line, opened on a tap.
@@ -113,7 +123,7 @@ private struct ReasoningBlock: View {
                     Image(systemName: "chevron.right").font(style.system(.caption2, weight: .semibold)).rotationEffect(.degrees(isOpen ? 90 : 0))
                     Spacer(minLength: 0)
                 }
-                .foregroundStyle(style.muted).frame(minHeight: style.pt(28)).contentShape(Rectangle())
+                .foregroundStyle(style.muted).frame(minHeight: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(item.status == .inProgress ? "Thinking" : "Thought")
@@ -143,7 +153,7 @@ private struct NoticeBlock: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-        .padding(8).background(color.opacity(level == .info ? 0 : 0.12))
+        .padding(12).background(color.opacity(level == .info ? 0 : 0.12))
         .accessibilityElement(children: .combine).accessibilityLabel("\(word): \(text)")
     }
 }
@@ -173,7 +183,7 @@ private struct ChecklistCard: View {
                 ForEach(steps.indices, id: \.self) { StepRow(step: steps[$0]) }
                 if steps.isEmpty { Text("No steps yet.").font(style.system(.footnote)).foregroundStyle(style.muted) }
             }
-            .padding(8)
+            .padding(12)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title.capitalized), \(done) of \(steps.count) done")
@@ -219,7 +229,7 @@ private struct CardHeader<Title: View>: View {
                 Image(systemName: "chevron.right").font(style.system(.caption2, weight: .semibold)).foregroundStyle(style.muted)
                     .rotationEffect(.degrees(isOpen ? 90 : 0)).padding(.top, 3).accessibilityHidden(true)
             }
-            .padding(.horizontal, 8).padding(.vertical, 6).frame(minHeight: style.pt(36), alignment: .leading).contentShape(Rectangle())
+            .padding(.horizontal, 12).padding(.vertical, 10).frame(minHeight: 44, alignment: .leading).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(style.active)
@@ -272,7 +282,7 @@ private struct CommandCard: View {
                     OutputText(text: output)
                     if !output.isEmpty { HStack { Spacer(); CopyButton(title: "Copy output", text: { output }) } }
                 }
-                .padding(8)
+                .padding(12)
             } else if item.status == .inProgress, !output.isEmpty {
                 // Output as it arrives, three lines of it, without opening the card.
                 Text(verbatim: ChatOutput.tail(output, lines: 3).text).font(style.codeSmall).foregroundStyle(style.muted).lineLimit(3)
@@ -297,7 +307,7 @@ private struct ToolCard: View {
             CardHeader(isOpen: isOpen, label: "\(item.body.summary), \(item.status.spoken)", toggle: toggle) {
                 ChatStatusGlyph(status: item.status)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text([server, tool].compactMap { $0 }.joined(separator: " · ")).font(style.mono(12, bold: true, relativeTo: .footnote)).foregroundStyle(style.text).lineLimit(1)
+                    Text([server, tool].compactMap { $0 }.joined(separator: " · ")).font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.text).lineLimit(1)
                     if !line.isEmpty { Text(line).font(style.codeSmall).foregroundStyle(style.muted).lineLimit(isOpen ? 4 : 1).multilineTextAlignment(.leading) }
                 }
             }
@@ -313,7 +323,7 @@ private struct ToolCard: View {
                         HStack { Spacer(); CopyButton(title: "Copy result", text: { output }) }
                     }
                 }
-                .padding(8)
+                .padding(12)
             }
         }
     }
@@ -353,7 +363,7 @@ private struct FileChangeCard: View {
                 ChatStatusGlyph(status: item.status)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(changes.count == 1 ? "Edit" : "Edit · \(changes.count) files").font(style.mono(12, bold: true, relativeTo: .footnote)).foregroundStyle(style.text)
+                        Text(changes.count == 1 ? "Edit" : "Edit · \(changes.count) files").font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.text)
                         if total.added + total.removed > 0 {
                             Text("+\(total.added)").foregroundStyle(style.added).monospacedDigit()
                             Text("−\(total.removed)").foregroundStyle(style.removed).monospacedDigit()
@@ -372,7 +382,7 @@ private struct FileChangeCard: View {
                                 toggle: { toggle("\(item.id)#\(changes[index].path)") })
                     }
                 }
-                .padding(8)
+                .padding(12)
             }
         }
     }
@@ -402,7 +412,7 @@ private struct FileRow: View {
                     Spacer(minLength: 4)
                     if change.diff != nil { Image(systemName: "chevron.right").font(style.system(.caption2, weight: .semibold)).foregroundStyle(style.muted).rotationEffect(.degrees(isOpen ? 90 : 0)) }
                 }
-                .frame(minHeight: style.pt(30)).contentShape(Rectangle())
+                .frame(minHeight: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(word) \(change.path)")
@@ -429,7 +439,7 @@ struct DiffView: View {
                 }
                 .frame(minWidth: width, alignment: .leading)
             }
-            .background(style.background).overlay(Rectangle().stroke(style.divider, lineWidth: 1))
+            .background(style.background).clipShape(RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(style.divider, lineWidth: 1))
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             if diff.hiddenLines > 0 {
                 Text("… \(diff.hiddenLines) more lines not shown").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)

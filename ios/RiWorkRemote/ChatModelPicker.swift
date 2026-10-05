@@ -10,16 +10,18 @@ import RiWorkCore
 /// The model in the toolbar: its short name, a bolt when Fast is on, and a chevron. A tap opens the picker.
 struct ChatModelChip: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.dynamicTypeSize) private var typeSize
     let choices: ChatModelChoices
     let enabled: Bool
     let open: () -> Void
 
     var body: some View {
         Button(action: open) {
-            HStack(spacing: 4) {
-                Text(choices.chipTitle).font(style.mono(11, bold: true, relativeTo: .caption)).lineLimit(1).truncationMode(.tail)
+            HStack(spacing: 7) {
+                Image(systemName: "cpu").foregroundStyle(style.accent).accessibilityHidden(true)
+                Text(choices.chipTitle).font(style.system(.subheadline, weight: .semibold)).lineLimit(typeSize.isAccessibilitySize ? nil : 1).truncationMode(.tail)
                 if choices.chipShowsFast { Image(systemName: "bolt.fill").font(.system(size: style.pt(10), weight: .bold)).foregroundStyle(style.gold).accessibilityHidden(true) }
-                Image(systemName: "chevron.up.chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
+                Image(systemName: "chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
             }
             .foregroundStyle(style.text).padding(.horizontal, 8)
             .frame(minHeight: style.pt(40)).contentShape(Rectangle())

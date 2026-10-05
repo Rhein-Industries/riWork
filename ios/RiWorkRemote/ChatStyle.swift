@@ -20,7 +20,7 @@ extension DesktopStyle {
     /// Removed lines and files.
     var removed: Color { ansiColor(1) }
     /// Text for prose (messages, questions): the system face, which reads better in paragraphs than Menlo; Menlo stays for code and chrome.
-    var prose: Font { system(.callout) }
+    var prose: Font { system(.body) }
     /// Code, commands and their output.
     var code: Font { mono(12, relativeTo: .footnote) }
     var codeSmall: Font { mono(11, relativeTo: .caption) }
@@ -32,7 +32,7 @@ extension ChatProvider {
     var glyph: String { self == .codex ? "chevron.left.forwardslash.chevron.right" : "sparkles" }
 }
 
-/// A card: a flat panel with a thin border, like the desktop's blocks.
+/// Tool surfaces share a quiet rounded outline, using the synced palette.
 struct ChatCard<Content: View>: View {
     @Environment(\.desktopStyle) private var style
     var tint: Color?
@@ -41,7 +41,8 @@ struct ChatCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 0, content: content)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background((tint ?? style.panel).opacity(tint == nil ? 1 : 0.12))
-            .overlay(Rectangle().stroke(tint ?? style.divider, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(tint ?? style.divider, lineWidth: 1))
     }
 }
 
@@ -50,7 +51,7 @@ struct ChatCaption: View {
     @Environment(\.desktopStyle) private var style
     let text: String
     var body: some View {
-        Text(text).font(style.mono(9, bold: true, relativeTo: .caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
+        Text(text).font(style.system(.caption2, weight: .semibold)).foregroundStyle(style.muted).accessibilityHidden(true)
     }
 }
 
@@ -68,9 +69,9 @@ struct CopyButton: View {
             Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
         } label: {
             Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc").labelStyle(.titleAndIcon)
-                .font(style.mono(10, relativeTo: .caption2)).foregroundStyle(copied ? style.accent : style.muted)
+                .font(style.system(.caption)).foregroundStyle(copied ? style.accent : style.muted)
                 .padding(.trailing, 8)
-                .frame(minWidth: style.pt(44), minHeight: style.pt(28), alignment: .trailing)
+                .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -38,9 +38,11 @@ struct ChatScreen: View {
             ChatStatusLines(model: model, chat: info, conversation: conversation, state: state)
             ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached)
             if let approval = approvals.first {
-                ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2),
-                                busy: !connected || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
-                    .id(approval.requestID)
+                BoundedScroll(maxHeight: max(110, height * 0.52)) {
+                    ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2),
+                                    busy: !connected || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
+                        .id(approval.requestID)
+                }
             } else if let question = questions.first {
                 ChatQuestionBar(question: question, scrollHeight: max(100, height * 0.3), busy: !connected || conversation.answered.contains(question.requestID)) { form in
                     Task { await model.answerChatQuestion(chat.id, form) }
@@ -50,6 +52,8 @@ struct ChatScreen: View {
             ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
                          send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } })
         }
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
         .background(style.background)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         .task(id: chat.id) { await model.followChat(chat.id) }
@@ -113,60 +117,75 @@ private struct ChatToolbar: View {
     private var connected: Bool { model.state == .connected }
     private var meter: ChatUsageMeter? { conversation.transcript.usage.map(ChatUsageMeter.init) }
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 2) {
-                Menu {
-                    Picker("Approval mode", selection: Binding(get: { shownMode }, set: { mode in Task { await model.setChatMode(chat.id, mode) } })) {
-                        ForEach(ChatApprovalMode.allCases) { mode in Label("\(mode.title) · \(mode.detail)", systemImage: icon(mode)).tag(mode) }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: icon(shownMode)).accessibilityHidden(true)
-                        Text(shownMode.title).font(style.mono(11, bold: true, relativeTo: .caption))
-                        Image(systemName: "chevron.up.chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
-                    }
-                    .foregroundStyle(shownMode == .full ? style.gold : style.text).padding(.horizontal, 8)
-                    .frame(minHeight: style.pt(40)).contentShape(Rectangle())
+        VStack(alignment: .leading, spacing: 4) {
+            if typeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .top) { modelButton; Spacer(minLength: 8); options }
+                    modeButton
                 }
-                .disabled(!connected)
-                .accessibilityLabel("Approval mode").accessibilityValue("\(shownMode.title), \(shownMode.detail)")
-                .accessibilityHint("Choose Supervised, Auto-edit, Full or Plan")
-                // The same picker handles the model chip, menu and keyboard shortcut.
-                ChatModelChip(choices: choices, enabled: connected) { showModels = true }
-                Spacer(minLength: 4)
-                Button { Task { await model.compactChat(chat.id) } } label: {
-                    Label("Compact", systemImage: "arrow.down.right.and.arrow.up.left").labelStyle(.titleAndIcon).font(style.mono(11, relativeTo: .caption))
-                }
-                .disabled(!connected || state.isBusy || state == .starting)
-                .accessibilityHint("Summarizes the conversation to free up context")
-                Menu {
-                    Button("Change model", systemImage: "cpu") {
-                        showModels = true
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { modelButton; Spacer(minLength: 8); modeButton.fixedSize(); options }
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack { modelButton; Spacer(minLength: 8); options }
+                        modeButton
                     }
-                    .disabled(!connected || state.isBusy || state == .starting)
-                    Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }
-                    Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }
-                        .disabled(!connected || state == .stopped)
-                    if let id = chat.providerThreadID { Button("Copy session id", systemImage: "doc.on.doc") { UIPasteboard.general.string = id } }
-                } label: { Label("Chat options", systemImage: "ellipsis") }
-                    .labelStyle(.iconOnly).frame(minWidth: style.pt(40), minHeight: style.pt(40))
+                }
             }
-            .buttonStyle(DesktopButtonStyle(compact: true))
-            .padding(.horizontal, 4)
             if let meter, let text = meter.text {
                 HStack(spacing: 8) {
                     if let fraction = meter.contextFraction { ContextBar(fraction: fraction) }
-                    Text(text).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.75)
-                    Spacer(minLength: 0)
+                    Text(text).font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.horizontal, 12).padding(.bottom, 4)
+                .padding(.horizontal, 10).padding(.bottom, 4)
                 .accessibilityElement(children: .ignore).accessibilityLabel("Usage").accessibilityValue(meter.spoken ?? text)
             }
-            DesktopRule()
         }
-        .background(style.panel)
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(style.background)
+        .overlay(alignment: .bottom) { DesktopRule() }
     }
+
+    private var modelButton: some View {
+        ChatModelChip(choices: choices, enabled: connected) { showModels = true }
+    }
+    private var modeButton: some View {
+        Menu {
+            Picker("Approval mode", selection: Binding(get: { shownMode }, set: { mode in Task { await model.setChatMode(chat.id, mode) } })) {
+                ForEach(ChatApprovalMode.allCases) { mode in Label("\(mode.title) · \(mode.detail)", systemImage: icon(mode)).tag(mode) }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon(shownMode)).accessibilityHidden(true)
+                Text(shownMode.title).font(style.system(.footnote, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                Image(systemName: "chevron.down").font(style.system(.caption2)).accessibilityHidden(true)
+            }
+            .foregroundStyle(shownMode == .full ? style.gold : style.muted)
+            .padding(.horizontal, 10).frame(minHeight: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(!connected)
+        .accessibilityLabel("Approval mode").accessibilityValue("\(shownMode.title), \(shownMode.detail)")
+        .accessibilityHint("Choose Supervised, Auto-edit, Full or Plan")
+    }
+    private var options: some View {
+        Menu {
+            Button("Change model", systemImage: "cpu") { showModels = true }.disabled(!connected || state.isBusy || state == .starting)
+            Button("Compact conversation", systemImage: "arrow.down.right.and.arrow.up.left") { Task { await model.compactChat(chat.id) } }
+                .disabled(!connected || state.isBusy || state == .starting)
+            Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }
+            Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }
+                .disabled(!connected || state == .stopped)
+            if let id = chat.providerThreadID { Button("Copy session id", systemImage: "doc.on.doc") { UIPasteboard.general.string = id } }
+        } label: {
+            Image(systemName: "ellipsis").font(style.system(.body, weight: .semibold)).foregroundStyle(style.muted)
+                .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).accessibilityLabel("Chat options")
+    }
+
 }
 
 /// How full the context is: a thin bar that turns gold above 80 % and red above 95 %.
@@ -260,6 +279,7 @@ private struct ChatTranscriptList: View {
     @State private var position = ScrollPosition(edge: .bottom)
     @State private var sticky = StickyBottom()
     @State private var userDriven = false
+    @State private var bottomCorrection: Task<Void, Never>?
 
     var body: some View {
         let transcript = conversation.transcript
@@ -276,25 +296,43 @@ private struct ChatTranscriptList: View {
                 if state == .running || state == .waiting || state == .starting { workingRow }
                 Color.clear.frame(height: 6)
             }
-            .padding(.top, 4)
+            .padding(.vertical, 12)
         }
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom)
         // Dragging the list puts the software keyboard away, as in a chat; a hardware keyboard has none to put away, and must not lose
         // the composer to a scroll.
         .scrollDismissesKeyboard(hardwareKeyboard ? .never : .interactively)
-        .onScrollPhaseChange { _, phase in userDriven = phase == .interacting || phase == .decelerating }
+        .onScrollPhaseChange { _, phase in
+            userDriven = phase == .interacting || phase == .decelerating
+            if userDriven { bottomCorrection?.cancel(); bottomCorrection = nil }
+        }
         .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
             ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height,
                           topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom)
         } action: { old, new in
-            if sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven) == .scrollToBottom { position.scrollTo(edge: .bottom) }
+            if sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven) == .scrollToBottom {
+                scheduleBottomCorrection()
+            }
         }
         .onChange(of: transcript.items.count) { _, count in sticky.contentChanged(end: count, epoch: 0) }
         .onChange(of: conversation.jumps) { _, _ in jump() }
         .onChange(of: conversation.feed.loaded) { _, _ in jump() }
         .overlay(alignment: .bottomTrailing) { pill }
         .accessibilityLabel("\(provider.chatTitle) conversation")
+        .onDisappear { bottomCorrection?.cancel(); bottomCorrection = nil }
+    }
+
+    /// Lazy rows can change their measured height during layout (especially with accessibility text). Scroll after that pass,
+    /// rather than feeding a new scroll position back into the geometry callback. A reader's gesture cancels the pending correction.
+    private func scheduleBottomCorrection() {
+        guard bottomCorrection == nil else { return }
+        bottomCorrection = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled else { return }
+            if sticky.following && !userDriven { position.scrollTo(edge: .bottom) }
+            bottomCorrection = nil
+        }
     }
 
     private func open(for item: ChatItem) -> Set<String> {
@@ -332,7 +370,7 @@ private struct ChatTranscriptList: View {
         if let pill = sticky.pill {
             Button(action: jump) {
                 Text(pill.newLines > 0 ? "↓ Latest · \(pill.newLines) new" : "↓ Latest").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
-                    .padding(.horizontal, 12).frame(minHeight: style.pt(30)).background(.ultraThinMaterial, in: Capsule())
+                    .padding(.horizontal, 12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
                     .overlay(Capsule().stroke(style.divider, lineWidth: 1)).contentShape(Capsule())
             }
             .buttonStyle(.plain).padding(.trailing, 10).padding(.bottom, 8).transition(.opacity)

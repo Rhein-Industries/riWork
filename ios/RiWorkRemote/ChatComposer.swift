@@ -17,6 +17,21 @@ import RiWorkCore
 /// - **Software keyboard.** Return makes a new line, as in any chat; the Send button sends.
 /// - **⌘. (interrupt) is not here:** it is a SwiftUI shortcut on the screen, so it works wherever the keyboard is.
 @MainActor final class ChatComposerTextView: UITextView {
+    private var focusRequested = false
+    /// SwiftUI may request focus before this view is attached. Keep that one request until UIKit gives it a window.
+    func requestFocusWhenAttached() {
+        focusRequested = true
+        DispatchQueue.main.async { [weak self] in self?.fulfilFocusRequest() }
+    }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { DispatchQueue.main.async { [weak self] in self?.fulfilFocusRequest() } }
+    }
+    private func fulfilFocusRequest() {
+        guard focusRequested, window != nil, isEditable else { return }
+        if isFirstResponder || becomeFirstResponder() { focusRequested = false }
+    }
+
     /// A key the router should judge, and what it came to. The view does not know what is on the screen.
     var onKey: (ChatKey) -> ChatKeyAction = { _ in .none }
     /// A request waits for the keys that answer it (and nothing is typed).
@@ -72,7 +87,7 @@ struct ChatComposerField: UIViewRepresentable {
         let view = ChatComposerTextView()
         view.delegate = context.coordinator
         view.backgroundColor = .clear
-        view.textContainerInset = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 4)
+        view.textContainerInset = UIEdgeInsets(top: 12, left: 8, bottom: 12, right: 8)
         view.textContainer.lineFragmentPadding = 4
         view.isScrollEnabled = false
         view.adjustsFontForContentSizeCategory = true
@@ -94,9 +109,11 @@ struct ChatComposerField: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         let style = context.environment.desktopStyle
-        if coordinator.appliedStyle != style {
+        let category = context.environment.dynamicTypeSize
+        if coordinator.appliedStyle != style || coordinator.appliedTypeSize != category {
             coordinator.appliedStyle = style
-            view.font = UIFontMetrics(forTextStyle: .callout).scaledFont(for: .systemFont(ofSize: 16 * CGFloat(style.scale)))
+            coordinator.appliedTypeSize = category
+            view.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17 * CGFloat(style.scale)), compatibleWith: view.traitCollection)
             view.textColor = style.textUI
             view.tintColor = style.accentUI
             view.keyboardAppearance = style.colorScheme == .dark ? .dark : .default
@@ -108,8 +125,7 @@ struct ChatComposerField: UIViewRepresentable {
         view.answersApproval = answersApproval
         if coordinator.lastFocusToken != focusToken {
             coordinator.lastFocusToken = focusToken
-            // The view may not be in a window yet (the screen is still arriving): the next turn of the run loop is early enough.
-            DispatchQueue.main.async { if view.window != nil, isEnabled, !view.isFirstResponder { _ = view.becomeFirstResponder() } }
+            if isEnabled { view.requestFocusWhenAttached() }
         }
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: ChatComposerTextView, context: Context) -> CGSize? {
@@ -125,6 +141,7 @@ struct ChatComposerField: UIViewRepresentable {
     @MainActor final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ChatComposerField
         var appliedStyle: DesktopStyle?
+        var appliedTypeSize: DynamicTypeSize?
         var lastFocusToken = 0
         init(_ parent: ChatComposerField) { self.parent = parent }
         func textViewDidChange(_ textView: UITextView) { parent.text = textView.text }
@@ -138,6 +155,7 @@ struct ChatComposerField: UIViewRepresentable {
 /// The text field, Send and Interrupt, and the notice under them.
 struct ChatComposer: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.dynamicTypeSize) private var typeSize
     let conversation: ChatConversation
     let provider: ChatProvider
     let state: ChatState
@@ -167,39 +185,42 @@ struct ChatComposer: View {
                 HStack(alignment: .top, spacing: 6) {
                     Text(notice).font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button("Dismiss message", systemImage: "xmark") { conversation.notice = nil }.labelStyle(.iconOnly).font(style.system(.caption)).foregroundStyle(style.muted)
+                    Button("Dismiss message", systemImage: "xmark") { conversation.notice = nil }.labelStyle(.iconOnly).font(style.system(.caption)).foregroundStyle(style.muted).frame(minWidth: 44, minHeight: 44)
                 }
                 .padding(.horizontal, 12)
                 .accessibilityElement(children: .combine)
             }
-            HStack(alignment: .bottom, spacing: 4) {
+            HStack(alignment: .bottom, spacing: 2) {
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
-                                  isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, onKey: handle, onFocusChange: { focused = $0 })
+                                  isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, maxLines: typeSize.isAccessibilitySize ? 3 : 6, onKey: handle, onFocusChange: { focused = $0 })
                     .overlay(alignment: .topLeading) {
                         if conversation.draft.isEmpty {
-                            Text(placeholder).font(style.prose).foregroundStyle(style.muted).padding(.top, 8).padding(.leading, 8)
+                            Text(placeholder).font(style.prose).foregroundStyle(style.muted).padding(.top, 12).padding(.leading, 12)
                                 .lineLimit(1).allowsHitTesting(false).accessibilityHidden(true)
                         }
                     }
-                    .background(style.background)
-                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? style.accent : style.divider, lineWidth: 1))
+
                 if state.isBusy {
-                    Button(action: interrupt) { Image(systemName: "stop.circle.fill").font(.system(size: style.pt(24))).foregroundStyle(style.gold) }
-                        .buttonStyle(.plain).frame(width: style.pt(44), height: style.pt(44)).contentShape(Rectangle())
+                    Button(action: interrupt) { Image(systemName: "stop.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(style.gold).frame(width: 36, height: 36).background(style.gold.opacity(0.12), in: Circle()) }
+                        .buttonStyle(.plain).frame(width: 44, height: 44).contentShape(Rectangle())
                         .disabled(!connected)
                         .accessibilityLabel("Interrupt").accessibilityHint("Stops what \(provider.title) is doing now")
                 }
                 Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: style.pt(28)))
-                        .foregroundStyle(canSend ? style.accent : style.muted.opacity(0.6))
+                    Image(systemName: "arrow.up").font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(canSend ? style.background : style.muted)
+                        .frame(width: 36, height: 36).background(canSend ? style.accent : style.active, in: Circle())
                 }
-                .buttonStyle(.plain).frame(width: style.pt(44), height: style.pt(44)).contentShape(Rectangle())
+                .buttonStyle(.plain).frame(width: 44, height: 44).contentShape(Rectangle())
                 .disabled(!canSend)
                 .accessibilityLabel("Send").accessibilityHint(conversation.sending ? "Sending" : "Sends the message")
             }
-            .padding(.horizontal, 8)
+            .padding(.trailing, 6).padding(.vertical, 3)
+            .background(style.panel, in: RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).stroke(focused ? style.accent : style.divider, lineWidth: 1))
         }
-        .padding(.vertical, 6).background(style.panel).overlay(alignment: .top) { DesktopRule() }
+        .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10)
+        .background(style.background)
     }
 
     /// A key from the hardware keyboard: the router says what it means now.
@@ -251,19 +272,22 @@ struct ChatApprovalBar: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: icon).foregroundStyle(style.gold).accessibilityHidden(true)
-                Text(kindWord).font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.gold)
+                Text(kindWord).font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.gold)
                 Spacer(minLength: 0)
-                if count > 1 { Text("1 of \(count)").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).monospacedDigit() }
+                if count > 1 { Text("1 of \(count)").font(style.system(.caption)).foregroundStyle(style.muted).monospacedDigit() }
+                if !approval.detail.isEmpty {
+                    Button { showDetail.toggle() } label: {
+                        Image(systemName: showDetail ? "info.circle.fill" : "info.circle")
+                            .font(style.system(.body)).foregroundStyle(style.muted)
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).accessibilityLabel(showDetail ? "Hide approval details" : "Show approval details")
+                    .accessibilityValue(showDetail ? "Shown" : "Hidden")
+                }
             }
             Text(verbatim: approval.title.isEmpty ? "(no description)" : approval.title).font(style.code).foregroundStyle(style.text)
                 .lineLimit(showDetail ? 12 : 3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             if !approval.detail.isEmpty {
-                Button { showDetail.toggle() } label: {
-                    Label(showDetail ? "Hide details" : "Details", systemImage: "chevron.right").labelStyle(.titleAndIcon)
-                        .font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted)
-                        .frame(minHeight: style.pt(28), alignment: .leading).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).accessibilityValue(showDetail ? "Shown" : "Hidden")
                 if showDetail {
                     BoundedScroll(maxHeight: detailHeight) {
                         Group {
@@ -275,21 +299,23 @@ struct ChatApprovalBar: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: style.pt(120)), spacing: 6)], alignment: .leading, spacing: 6) {
                 ForEach(approval.offered, id: \.self) { decision in
-                    Button { decide(decision) } label: { Text(Self.title(decision)).lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity) }
+                    Button { decide(decision) } label: { Text(Self.title(decision)).font(style.system(.subheadline, weight: .semibold)).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, minHeight: 44) }
                         .buttonStyle(DesktopButtonStyle(prominent: decision == .accept))
                         .foregroundStyle(decision == .cancel ? style.error : (decision == .accept ? style.accent : style.text))
-                        .overlay(Rectangle().stroke(decision == .cancel ? style.error.opacity(0.6) : style.divider, lineWidth: 1))
+                        .background(style.panel, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(decision == .cancel ? style.error.opacity(0.6) : style.divider, lineWidth: 1))
                         .disabled(busy)
                         .accessibilityLabel(Self.spoken(decision))
                 }
             }
             if keyHints {
-                Text(Self.hint(for: approval)).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7).accessibilityHidden(true)
+                Text(Self.hint(for: approval)).font(style.system(.caption)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7).accessibilityHidden(true)
             }
         }
-        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.gold.opacity(0.12))
-        .overlay(alignment: .top) { Rectangle().fill(style.gold).frame(height: 2) }
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .background(style.gold.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(style.gold.opacity(0.5), lineWidth: 1))
+        .padding(.horizontal, 16).padding(.vertical, 6)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Approval needed. \(kindWord) \(approval.title)")
     }
@@ -338,7 +364,7 @@ struct ChatQuestionBar: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "questionmark.bubble").foregroundStyle(style.accent).accessibilityHidden(true)
-                Text(question.questions.count > 1 ? "Questions" : "Question").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                Text(question.questions.count > 1 ? "Questions" : "Question").font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.accent)
             }
             BoundedScroll(maxHeight: scrollHeight) {
                 VStack(alignment: .leading, spacing: 12) {
@@ -349,9 +375,10 @@ struct ChatQuestionBar: View {
                 .buttonStyle(DesktopButtonStyle(prominent: true)).disabled(busy || !form.isComplete)
                 .accessibilityHint(form.isComplete ? "" : "Answer every question first")
         }
-        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.accent.opacity(0.10))
-        .overlay(alignment: .top) { Rectangle().fill(style.accent).frame(height: 2) }
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .background(style.panel, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(style.divider, lineWidth: 1))
+        .padding(.horizontal, 16).padding(.vertical, 6)
         .accessibilityElement(children: .contain)
     }
 
@@ -368,15 +395,15 @@ struct ChatQuestionBar: View {
                         Image(systemName: chosen ? (prompt.multiSelect ? "checkmark.square.fill" : "largecircle.fill.circle") : (prompt.multiSelect ? "square" : "circle"))
                             .foregroundStyle(chosen ? style.accent : style.muted)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(prompt.options[option].label).font(style.mono(12, bold: chosen, relativeTo: .footnote)).foregroundStyle(style.text)
+                            Text(prompt.options[option].label).font(style.system(.subheadline, weight: chosen ? .semibold : .regular)).foregroundStyle(style.text)
                             if !prompt.options[option].description.isEmpty {
                                 Text(prompt.options[option].description).font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: style.pt(40), alignment: .leading)
-                    .background(chosen ? style.active : .clear).overlay(Rectangle().stroke(chosen ? style.accent : style.divider, lineWidth: 1)).contentShape(Rectangle())
+                    .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .background(chosen ? style.active : .clear, in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(chosen ? style.accent : style.divider, lineWidth: 1)).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(prompt.options[option].label).accessibilityHint(prompt.options[option].description)
@@ -384,7 +411,7 @@ struct ChatQuestionBar: View {
             }
             TextField(prompt.options.isEmpty ? "Your answer" : "Or answer in your own words", text: Binding(get: { form.text[index] }, set: { form.setText(prompt: index, $0) }), axis: .vertical)
                 .lineLimit(1...4).textFieldStyle(.plain).padding(8).background(style.background)
-                .overlay(RoundedRectangle(cornerRadius: 3).stroke(style.divider, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(style.divider, lineWidth: 1))
                 .font(style.prose)
                 .autocorrectionDisabled()
                 .accessibilityLabel("Your own answer to: \(prompt.question)")
