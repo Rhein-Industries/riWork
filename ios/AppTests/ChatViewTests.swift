@@ -411,7 +411,9 @@ import RiWorkCore
             await finish(rig)
             // A turn running: Stop joins the row.
             rig = try await makeRig(chats: [chat(state: .running), mixed[1]], hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            await rig.transport.append(chatID, [.info(chat(state: .running)), .turnStarted(turnID: "t0"), .state(.running)])
             _ = try await openChat(rig).becomeFirstResponder()
+            await eventually("the turn is running") { rig.model.chatState(self.chat()).isBusy }
             rig.model.conversation(chatID).draft = "Also check the docs"
             try await hold(named("row-chat-running", look))
             await finish(rig)
