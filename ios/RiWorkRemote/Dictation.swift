@@ -44,6 +44,12 @@ enum DictationOwner: Hashable, Sendable {
         self.silenceBeforeSpeech = silenceBeforeSpeech
     }
 
+    /// The desktop's mic setting (`DesktopStyle.mic`), kept by the root view. Off, no dictation starts (and so neither the microphone nor
+    /// speech recognition is asked for), and one in progress is cancelled the moment it turns off.
+    var isAllowed = false {
+        didSet { if !isAllowed, oldValue, phase.isActive { cancel() } }
+    }
+
     func isActive(for owner: DictationOwner) -> Bool { self.owner == owner && phase.isActive }
     func phase(for owner: DictationOwner) -> DictationPhase { self.owner == owner ? phase : .idle }
 
@@ -51,6 +57,7 @@ enum DictationOwner: Hashable, Sendable {
     /// `live` sees the text while it is being heard (and "" when it is cancelled); `deliver` gets the final text, once.
     func toggle(for owner: DictationOwner, live: ((String) -> Void)? = nil, deliver: @escaping (String) -> Void) {
         if self.owner == owner, phase.isActive { stop(); return }
+        guard isAllowed else { return }
         if phase.isActive { cancel() }
         self.owner = owner
         self.deliver = deliver

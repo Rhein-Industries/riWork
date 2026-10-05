@@ -25,7 +25,16 @@ import RiWorkCore
         let controller = DictationController(silenceAfterSpeech: silence, silenceBeforeSpeech: .seconds(60))
         controller.makeEngine = { engine }
         controller.sessionSources = { SpeechVocabularySources(names: ["ios-speech-input"], text: "KeyBarView") }
+        // The desktop's mic setting is on.
+        controller.isAllowed = true
         return controller
+    }
+    /// The look with the desktop's mic setting on or off.
+    private func style(mic: Bool, native: Bool = false) -> DesktopStyle {
+        var theme = DesktopTheme.builtIn
+        theme.mic = mic
+        theme.native = native
+        return DesktopStyle(theme)
     }
     private func start(_ controller: DictationController, _ owner: DictationOwner = .terminal) -> Received {
         let received = Received()
@@ -142,6 +151,35 @@ import RiWorkCore
         XCTAssertEqual(controller.phase, .finishing(text: "ls"))
     }
 
+    // MARK: The desktop's mic setting
+
+    func testWithTheSettingOffNoDictationStartsAndNoEngineIsMade() {
+        var made = 0
+        let controller = DictationController()
+        controller.makeEngine = { made += 1; return ManualEngine() }
+        XCTAssertFalse(controller.isAllowed, "off until the desktop says otherwise")
+        controller.toggle(for: .chat("c"), deliver: { _ in XCTFail("nothing is heard") })
+        controller.toggle(for: .terminal, deliver: { _ in XCTFail("nothing is heard") })
+        XCTAssertEqual(controller.phase, .idle)
+        XCTAssertEqual(made, 0, "no engine, so neither the microphone nor speech recognition is asked for")
+    }
+    func testTurningTheSettingOffCancelsADictationInProgress() async {
+        for owner in [DictationOwner.chat("c"), .terminal] {
+            let engine = ManualEngine()
+            let controller = makeController(engine)
+            let received = start(controller, owner)
+            await wait(until: controller.phase == .listening(text: ""))
+            engine.send(.heard("half a sentence"))
+            controller.isAllowed = false
+            XCTAssertEqual(controller.phase, .idle, "\(owner)")
+            XCTAssertTrue(engine.cancelled)
+            XCTAssertEqual(received.delivered, [])
+            XCTAssertEqual(received.live.last, "", "what was shown is taken out")
+            controller.toggle(for: owner, deliver: { _ in })
+            XCTAssertEqual(controller.phase, .idle, "and none starts again while it is off")
+        }
+    }
+
     // MARK: Into a text view
 
     private final class Delegate: NSObject, UITextViewDelegate { var text = ""; func textViewDidChange(_ view: UITextView) { text = view.text } }
@@ -204,6 +242,7 @@ import RiWorkCore
 
     func testTheMicSitsRightBeforeHideAndStartsADictation() throws {
         let bar = KeyBarView()
+        bar.style = style(mic: true)
         bar.frame = CGRect(x: 0, y: 0, width: 402, height: KeyBarView.height)
         bar.setNeedsLayout(); bar.layoutIfNeeded()
         let mic = try XCTUnwrap(bar.buttons[.dictate]), hide = try XCTUnwrap(bar.buttons[.hide])
@@ -217,8 +256,42 @@ import RiWorkCore
         mic.sendActions(for: .touchUpInside)
         XCTAssertEqual(actions, [.dictate])
     }
+    /// Off (the default, and a desktop that predates the setting): no mic, and the scrolling row runs up to the divider before Hide. The
+    /// setting flips it in place, both ways, in both looks and on glass, with the layout unambiguous.
+    func testTheMicComesAndGoesWithTheSettingAndTheRowClosesUp() throws {
+        for native in [false, true] {
+            let bar = KeyBarView()
+            bar.style = style(mic: false, native: native)
+            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 200))
+            window.addSubview(bar)
+            windows.append(window)
+            bar.frame = CGRect(x: 0, y: 100, width: 402, height: KeyBarView.height)
+            func layout() { bar.setNeedsLayout(); bar.layoutIfNeeded() }
+            layout()
+            let mic = try XCTUnwrap(bar.buttons[.dictate]), hide = try XCTUnwrap(bar.buttons[.hide])
+            func frame(_ view: UIView) -> CGRect { view.convert(view.bounds, to: bar) }
+            XCTAssertFalse(bar.showsMic)
+            XCTAssertTrue(mic.isHidden)
+            XCTAssertEqual(bar.scrollView.frame.maxX, frame(hide).minX - 1, accuracy: 0.5, "native \(native): the row reaches the divider before Hide")
+            XCTAssertFalse(bar.scrollView.hasAmbiguousLayout || hide.hasAmbiguousLayout)
+            let offWidth = bar.scrollView.frame.width
+            bar.style = style(mic: true, native: native)
+            layout()
+            XCTAssertTrue(bar.showsMic)
+            XCTAssertFalse(mic.isHidden)
+            XCTAssertEqual(frame(mic).maxX, frame(hide).minX - 1, accuracy: 0.5, "native \(native): mic, the divider, then Hide")
+            XCTAssertEqual(bar.scrollView.frame.maxX, frame(mic).minX, accuracy: 0.5)
+            XCTAssertEqual(bar.scrollView.frame.width, offWidth - frame(mic).width, accuracy: 0.5, "the mic takes its room from the row")
+            XCTAssertFalse(bar.scrollView.hasAmbiguousLayout || mic.hasAmbiguousLayout)
+            bar.style = style(mic: false, native: native)
+            layout()
+            XCTAssertTrue(mic.isHidden)
+            XCTAssertEqual(bar.scrollView.frame.width, offWidth, accuracy: 0.5, "and gives it back")
+        }
+    }
     func testTheMicShowsListening() throws {
         let bar = KeyBarView()
+        bar.style = style(mic: true)
         let mic = try XCTUnwrap(bar.buttons[.dictate])
         bar.setDictation(.listening)
         XCTAssertEqual(mic.accessibilityLabel, "Stop dictation")

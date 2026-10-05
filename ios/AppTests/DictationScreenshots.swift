@@ -20,9 +20,11 @@ import RiWorkCore
         guard let path = ProcessInfo.processInfo.environment["RIWORK_SPEECH_SCREENSHOTS"] else { throw XCTSkip("Set RIWORK_SPEECH_SCREENSHOTS") }
         directory = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        DictationController.shared.isAllowed = true
     }
     override func tearDown() async throws {
         DictationController.shared.cancel()
+        DictationController.shared.isAllowed = false
         DictationController.shared.makeEngine = { DictationController.defaultEngine() }
         DictationController.shared.silenceAfterSpeech = DictationMachine.silenceAfterSpeech
         windows.forEach { $0.isHidden = true }
@@ -32,6 +34,8 @@ import RiWorkCore
     private func style(native: Bool) -> DesktopStyle {
         var theme = DesktopTheme.builtIn
         theme.native = native
+        // The mics are there only while the desktop's mic setting is on.
+        theme.mic = true
         return DesktopStyle(theme)
     }
     private func settle() async { try? await Task.sleep(for: .milliseconds(400)) }

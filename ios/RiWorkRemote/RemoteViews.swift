@@ -796,9 +796,14 @@ struct SessionConsole: View {
         // changes the terminal's size (and so never resizes the desktop). Content gets a matching bottom margin.
         .overlay(alignment: .bottom) { FloatingStatus(model: model) }
         .overlay(alignment: .bottom) {
-            TerminalDictationPanel(controller: .shared, review: $dictatedLine, canType: model.session?.alive == true, type: typeDictated,
-                                   done: { keyFocus.focus() })
+            // Dictation, and its review, exist only while the desktop's mic setting is on.
+            if style.mic {
+                TerminalDictationPanel(controller: .shared, review: $dictatedLine, canType: model.session?.alive == true, type: typeDictated,
+                                       done: { keyFocus.focus() })
+            }
         }
+        // The setting turned off: a line waiting to be checked goes with the mic, and does not come back with it.
+        .onChange(of: style.mic) { _, on in if !on { dictatedLine = nil } }
         // A file on its way to the Mac: at the top, clear of the chip and notices at the bottom.
         .overlay(alignment: .top) {
             if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)) {
@@ -920,7 +925,8 @@ struct SessionConsole: View {
                              onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
                     .modifier(DesktopField())
                 AttachButton(compact: false, choose: openPicker).equatable().disabled(model.state != .connected || model.session?.alive != true)
-                TerminalMicButton(isEnabled: model.canEditDraft, action: dictate)
+                // Only while the desktop's mic setting is on.
+                if style.mic { TerminalMicButton(isEnabled: model.canEditDraft, action: dictate) }
                 Button("Send", systemImage: "arrow.up", action: send)
                     .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))
                     .disabled(!canSubmit)

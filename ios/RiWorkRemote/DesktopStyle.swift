@@ -98,6 +98,9 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
     }
     /// A label or title as the skin writes it. Written in sentence case; the terminal look shows it in capitals, as it always has.
     func cased(_ text: String) -> String { native ? text : text.uppercased() }
+    /// The desktop's dictation setting: the mics (chat composer, key bar, line composer) are shown only while it is on. Off by
+    /// default and with a desktop that predates the setting.
+    var mic: Bool { theme.mic }
     /// What a bar or a sheet is painted with: nothing on glass, so the system's glass shows through, else the background.
     var surface: Color { glass ? .clear : background }
 

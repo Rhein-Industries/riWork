@@ -229,7 +229,8 @@ struct ChatComposer: View {
                         .disabled(!connected)
                         .accessibilityLabel("Interrupt").accessibilityHint("Stops what \(provider.title) is doing now")
                 }
-                DictationButton(owner: .chat(conversation.id), insertion: dictation)
+                // Only while the desktop's mic setting is on; off, the row closes up around the field.
+                if style.mic { DictationButton(owner: .chat(conversation.id), insertion: dictation) }
                 Button(action: send) {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: style.pt(28)))
                         .foregroundStyle(canSend ? style.accent : style.muted.opacity(0.6))

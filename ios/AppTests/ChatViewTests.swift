@@ -39,19 +39,32 @@ import RiWorkCore
     /// How the desktop draws: the terminal look (no palette published), or its Native skin in light or dark.
     enum Look: String, CaseIterable { case terminal, nativeLight = "native-light", nativeDark = "native-dark" }
     /// Native's own palette and flag, as the desktop publishes them (src/theme.rs NATIVE_LIGHT / NATIVE_DARK).
-    private func appearance(_ look: Look) -> JSONValue? {
-        guard look != .terminal else { return nil }
+    /// With `mic`, the desktop's mic setting is on too (`"mic": true`); the terminal look then has the Gruvbox Light palette published, as
+    /// the built-in style draws, since a setting travels with the colors.
+    private func appearance(_ look: Look, mic: Bool = false, updated: Double = 1_790_000_000, published: Bool = false) -> JSONValue? {
+        guard look != .terminal || mic || published else { return nil }
         let dark = look == .nativeDark
-        let colors = dark
+        let colors = look == .terminal
+            ? ["bg": "#fbf1c7", "panel": "#f4ebc2", "panel_active": "#ede3bc", "divider": "#d5ccb6", "cyan": "#427b58", "magenta": "#8f3f71", "gold": "#9d5015", "text": "#3c3836", "muted": "#756f5e"]
+            : dark
             ? ["bg": "#000000", "panel": "#1c1c1e", "panel_active": "#2c2c2e", "divider": "#3a3a3c", "cyan": "#ffffff", "magenta": "#c7c7cc", "gold": "#ff9f0a", "text": "#f5f5f7", "muted": "#98989d"]
             : ["bg": "#ffffff", "panel": "#f5f5f7", "panel_active": "#e8e8ed", "divider": "#d2d2d7", "cyan": "#000000", "magenta": "#3a3a3c", "gold": "#b34000", "text": "#1d1d1f", "muted": "#636366"]
-        return .object(["v": .number(1), "updated_at": .number(1_790_000_000), "dark": .bool(dark), "native": .bool(true), "palette": .object(colors.mapValues { .string($0) })])
+        var fields: [String: JSONValue] = ["v": .number(1), "updated_at": .number(updated), "dark": .bool(dark), "palette": .object(colors.mapValues { .string($0) })]
+        if look != .terminal { fields["native"] = .bool(true) }
+        if mic { fields["mic"] = .bool(true) }
+        return .object(fields)
     }
 
+    /// The tab screen in the desktop's current style, read where the app reads it, so a new look or setting reaches it live.
+    private struct ThemedTabs: View {
+        let model: RemoteModel
+        let project: RemoteProject
+        var body: some View { TerminalTabsView(model: model, project: project, onBack: {}).desktopThemed(model.theme.style) }
+    }
     private struct Rig {
         let model: RemoteModel, transport: ChatTransport, window: UIWindow, host: UIHostingController<AnyView>, keychain: KeychainStore
     }
-    private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal) async throws -> Rig {
+    private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal, mic: Bool = false) async throws -> Rig {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show a chat in") }
         let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
         let pairing = try Pairing.parse("""
@@ -62,7 +75,7 @@ import RiWorkCore
         try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
         let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
         defaultsNames.append(suite)
-        let transport = ChatTransport(chats: chats ?? [chat()], appearance: appearance(look))
+        let transport = ChatTransport(chats: chats ?? [chat()], appearance: appearance(look, mic: mic))
         await transport.setFeature(chatFeature)
         await transport.setOrchestratorFeature(orchestratorCreate)
         await transport.setOrchestrators(orchestrators)
@@ -70,8 +83,9 @@ import RiWorkCore
                                 hardwareKeyboard: HardwareKeyboardMonitor(probe: { hardwareKeyboard }))
         await model.connect()
         if look != .terminal { await eventually("the desktop's Native look is in") { model.theme.style.native } }
+        if mic { await eventually("the desktop's mic setting is in") { model.theme.style.mic } }
         let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
-        let root = AnyView(TerminalTabsView(model: model, project: projectValue, onBack: {}).desktopThemed(model.theme.style))
+        let root = AnyView(ThemedTabs(model: model, project: projectValue))
         let host = UIHostingController(rootView: root)
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: width, height: height)
@@ -352,7 +366,7 @@ import RiWorkCore
         let screen = UIScreen.main.bounds.size
         for look in [Look.nativeDark, .terminal] {
             // The chat composer, keyboard up.
-            var rig = try await makeRig(chats: mixed, hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            var rig = try await makeRig(chats: mixed, hardwareKeyboard: false, width: screen.width, height: screen.height, look: look, mic: true)
             await rig.transport.append(chatID, conversationEvents())
             let field = try await openChat(rig)
             _ = field.becomeFirstResponder()
@@ -361,7 +375,7 @@ import RiWorkCore
             await finish(rig)
 
             // The terminal's key bar above the keyboard, scrolled to its paperclip.
-            rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look, mic: true)
             let capture = try XCTUnwrap(descendants(KeyCaptureView.self, in: rig.host.view).first)
             _ = capture.becomeFirstResponder()
             try await Task.sleep(for: .milliseconds(1200))
@@ -402,7 +416,7 @@ import RiWorkCore
         }
         let screen = UIScreen.main.bounds.size
         for look in [Look.nativeDark, .terminal] {
-            var rig = try await makeRig(chats: [chat(state: .idle), mixed[1]], hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            var rig = try await makeRig(chats: [chat(state: .idle), mixed[1]], hardwareKeyboard: false, width: screen.width, height: screen.height, look: look, mic: true)
             let field = try await openChat(rig)
             _ = field.becomeFirstResponder()
             let conversation = rig.model.conversation(chatID)
@@ -413,7 +427,7 @@ import RiWorkCore
             try await hold(named("row-chat-three-lines", look))
             await finish(rig)
             // A turn running: Stop joins the row.
-            rig = try await makeRig(chats: [chat(state: .running), mixed[1]], hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            rig = try await makeRig(chats: [chat(state: .running), mixed[1]], hardwareKeyboard: false, width: screen.width, height: screen.height, look: look, mic: true)
             await rig.transport.append(chatID, [.info(chat(state: .running)), .turnStarted(turnID: "t0"), .state(.running)])
             _ = try await openChat(rig).becomeFirstResponder()
             await eventually("the turn is running") { rig.model.chatState(self.chat()).isBusy }
@@ -421,7 +435,7 @@ import RiWorkCore
             try await hold(named("row-chat-running", look))
             await finish(rig)
 
-            rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look, mic: true)
             try await hold(named("row-terminal-bar", look))
             rig.model.preferLineComposer = true
             try await Task.sleep(for: .milliseconds(600))
@@ -655,14 +669,110 @@ import RiWorkCore
     }
     /// Activates the accessibility element with `label` on the screen, as VoiceOver's double tap does.
     private func activate(_ label: String, in view: UIView) -> Bool {
+        // The tree is walked once, each node at most once and only so far: the terminal's views can expose a great many elements.
+        var seen = Set<ObjectIdentifier>(), budget = 4000
         func search(_ element: NSObject) -> Bool {
+            guard budget > 0, seen.insert(ObjectIdentifier(element)).inserted else { return false }
+            budget -= 1
+            if (element as? UIView)?.isHidden == true { return false }
             if element.accessibilityLabel == label, element.accessibilityActivate() { return true }
-            let children: [NSObject] = (element.accessibilityElements as? [NSObject])
-                ?? (0..<max(0, element.accessibilityElementCount())).compactMap { element.accessibilityElement(at: $0) as? NSObject }
+            let children = (element.accessibilityElements as? [NSObject]) ?? []
             if children.contains(where: search) { return true }
             return (element as? UIView)?.subviews.contains(where: search) ?? false
         }
         return search(view)
+    }
+
+    // MARK: The desktop's mic setting
+
+    /// The width of a text field on the screen, in points: the mic beside it takes its room, so the field says whether it is there.
+    private func width<T: UIView>(of type: T.Type, in rig: Rig) -> CGFloat? {
+        descendants(type, in: rig.host.view).first { $0.window != nil }.map { $0.convert($0.bounds, to: nil).width }
+    }
+    /// The desktop turns its mic setting on or off; the phone picks it up on its next look at the colors (connect, foreground, the
+    /// periodic refresh), here asked for at once.
+    private func setMic(_ rig: Rig, _ on: Bool, look: Look, updated: Double) async {
+        await rig.transport.setAppearance(appearance(look, mic: on, updated: updated, published: true))
+        await rig.model.fetchAppearance()
+        await eventually("the setting is followed") { rig.model.theme.style.mic == on }
+    }
+
+    func testTheChatComposerHasAMicOnlyWhileTheDesktopsSettingIsOnAndFollowsItLive() async throws {
+        for look in Look.allCases {
+            let rig = try await makeRig(look: look)
+            _ = try await openChat(rig)
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertFalse(rig.model.theme.style.mic, "\(look): off by default, as with a Mac that predates the setting")
+            let off = try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig))
+            try snapshot(rig, name: named("chat-composer-mic-off", look))
+            await setMic(rig, true, look: look, updated: 1_790_000_100)
+            // The mic is 44 points wide, with the row's 4-point spacing.
+            await eventually("\(look): the mic is there") { abs((self.width(of: ChatComposerTextView.self, in: rig) ?? 0) - (off - 48)) < 1 }
+            try await Task.sleep(for: .milliseconds(300))
+            try snapshot(rig, name: named("chat-composer-mic-on", look))
+            await setMic(rig, false, look: look, updated: 1_790_000_200)
+            await eventually("\(look): and gone again, the field closing up") { abs((self.width(of: ChatComposerTextView.self, in: rig) ?? 0) - off) < 1 }
+            await finish(rig)
+        }
+    }
+    func testTurningTheSettingOffCancelsAChatDictationInProgress() async throws {
+        let rig = try await makeRig(look: .nativeLight, mic: true)
+        _ = try await openChat(rig)
+        let controller = DictationController.shared
+        defer { controller.makeEngine = { DictationController.defaultEngine() } }
+        XCTAssertTrue(controller.isAllowed, "the model passes the setting on")
+        controller.makeEngine = { ScriptedSpeechEngine(script: "run the whole suite", interval: .milliseconds(30)) }
+        final class Shown { var texts: [String] = [] }
+        let shown = Shown()
+        // As the composer's mic does.
+        controller.toggle(for: .chat(chatID), live: { shown.texts.append($0) }, deliver: { _ in XCTFail("nothing is delivered") })
+        await eventually("listening") { controller.isActive(for: .chat(self.chatID)) && !(shown.texts.last ?? "").isEmpty }
+        await setMic(rig, false, look: .nativeLight, updated: 1_790_000_100)
+        await eventually("cancelled") { !controller.phase.isActive }
+        XCTAssertEqual(shown.texts.last, "", "what was heard is taken out")
+        XCTAssertFalse(controller.isAllowed)
+        await finish(rig)
+    }
+    func testTheTerminalsMicsFollowTheSettingTooTheKeyBarsAndTheLineComposers() async throws {
+        for look in [Look.terminal, .nativeDark] {
+            let rig = try await makeRig(hardwareKeyboard: false, look: look)
+            let capture = try XCTUnwrap(descendants(KeyCaptureView.self, in: rig.host.view).first)
+            XCTAssertFalse(capture.bar.showsMic, "\(look): no mic key by default")
+            await setMic(rig, true, look: look, updated: 1_790_000_100)
+            await eventually("\(look): the key bar's mic comes, in place") { capture.bar.showsMic }
+            XCTAssertTrue(descendants(KeyCaptureView.self, in: rig.host.view).first === capture, "the bar is not rebuilt")
+            await setMic(rig, false, look: look, updated: 1_790_000_200)
+            await eventually("\(look): and goes") { !capture.bar.showsMic }
+            // The line composer: its mic beside Send likewise.
+            rig.model.preferLineComposer = true
+            await eventually("\(look): the line composer") { self.width(of: UITextField.self, in: rig) != nil }
+            try await Task.sleep(for: .milliseconds(300))
+            let off = try XCTUnwrap(width(of: UITextField.self, in: rig))
+            await setMic(rig, true, look: look, updated: 1_790_000_300)
+            await eventually("\(look): the line composer's mic beside Send") { (self.width(of: UITextField.self, in: rig) ?? off) < off - 40 }
+            await finish(rig)
+        }
+    }
+    /// Pictures of the key bar above the keyboard with the setting off and on, in Native and the terminal look. As the other held
+    /// pictures, with `RIWORK_NATIVE_SCREENSHOTS` set each state waits for a simulator screenshot (the keyboard is not in the app's
+    /// windows); skipped otherwise.
+    func testPicturesOfTheKeyBarWithTheMicSettingOffAndOn() async throws {
+        guard ProcessInfo.processInfo.environment["RIWORK_NATIVE_SCREENSHOTS"] != nil else { throw XCTSkip("Set RIWORK_NATIVE_SCREENSHOTS") }
+        let screen = UIScreen.main.bounds.size
+        for look in [Look.nativeDark, .nativeLight, .terminal] {
+            let rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            let capture = try XCTUnwrap(descendants(KeyCaptureView.self, in: rig.host.view).first)
+            _ = capture.becomeFirstResponder()
+            try await Task.sleep(for: .milliseconds(1200))
+            func toEnd() { capture.bar.scrollView.setContentOffset(CGPoint(x: max(0, capture.bar.scrollView.contentSize.width - capture.bar.scrollView.bounds.width), y: 0), animated: false) }
+            toEnd()
+            try await hold(named("keybar-mic-off", look))
+            await setMic(rig, true, look: look, updated: 1_790_000_100)
+            try await Task.sleep(for: .milliseconds(300))
+            toEnd()
+            try await hold(named("keybar-mic-on", look))
+            await finish(rig)
+        }
     }
 
     func testTheModelControlsDrawInEachLook() async throws {
