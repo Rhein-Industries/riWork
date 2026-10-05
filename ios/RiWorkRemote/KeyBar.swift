@@ -17,6 +17,8 @@ private final class KeyScrollView: UIScrollView {
 @MainActor final class KeyBarView: UIInputView {
     enum Action: Hashable {
         case key(TerminalKey), control, alt, shift, text(String), paste, attach, hide, hotkey(String), editHotkeys, palette, help, dictate
+        /// A choice from the paperclip key's menu (the key itself, `attach`, only opens the menu).
+        case attachFrom(AttachmentChoice)
         /// VoiceOver's "Lock" or "Release" on a modifier key, where a double tap cannot be made.
         case latch(ChordModifiers, ModifierLatch)
     }
@@ -175,6 +177,7 @@ private final class KeyScrollView: UIScrollView {
         key(.delete, named("Del", "delete.right"), "Delete"); key(.backspace, (nil, "delete.left"), "Backspace"); key(.enter, (nil, "return"), "Enter")
         add(.paste, title: nil, symbol: "doc.on.clipboard", label: "Paste", role: .plain)
         add(.attach, title: nil, symbol: "paperclip", label: "Send a photo or file", role: .plain)
+        if let paperclip = buttons[.attach] { giveMenu(paperclip) }
         addDivider()
         // The hotkey menu first: it reaches every hotkey, shortcut and key from the keyboard (also ⌘K).
         add(.palette, title: nil, symbol: "command", label: "Hotkey menu", role: .hotkey)
@@ -193,6 +196,16 @@ private final class KeyScrollView: UIScrollView {
     private func add(_ action: Action, title: String?, symbol: String?, label: String, role: Role, wide: Bool = true) {
         let button = makeButton(action, title: title, symbol: symbol, label: label, role: role, wide: wide)
         stack.addArrangedSubview(button)
+    }
+    /// The paperclip opens a menu of where the photo or file comes from, from the key itself (above the keyboard, not over the
+    /// screen); the keyboard stays up until a choice is made. In the look's casing, and with the camera only where there is one.
+    private func giveMenu(_ paperclip: UIButton) {
+        paperclip.menu = UIMenu(children: AttachmentChoice.available.map { choice in
+            UIAction(title: style.cased(choice.title), image: UIImage(systemName: choice.symbol)) { [weak self] _ in self?.tapped(.attachFrom(choice)) }
+        })
+        paperclip.showsMenuAsPrimaryAction = true
+        paperclip.preferredMenuElementOrder = .fixed
+        paperclip.accessibilityHint = "Sends a photo or a file to the Mac and pastes its path"
     }
     private func addDivider() {
         let holder = UIView()

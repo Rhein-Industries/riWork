@@ -80,12 +80,23 @@ struct ChatComposerField: UIViewRepresentable {
     var insertion: TextInsertion?
     var onPasteFiles: (() -> Bool)?
 
+    /// Space above and below the text inside the field.
+    static let verticalInset: CGFloat = 8
+    /// The text's font, at the text size `traits` ask for (the current one when nil).
+    static func font(_ style: DesktopStyle, _ traits: UITraitCollection? = nil) -> UIFont {
+        UIFontMetrics(forTextStyle: .callout).scaledFont(for: .systemFont(ofSize: 16 * CGFloat(style.scale)), compatibleWith: traits)
+    }
+    /// The height of the field holding one line; its last line is centred in the band this tall at the field's bottom.
+    static func lineBand(_ style: DesktopStyle, _ size: DynamicTypeSize) -> CGFloat {
+        font(style, UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(size))).lineHeight + 2 * verticalInset
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> ChatComposerTextView {
         let view = ChatComposerTextView()
         view.delegate = context.coordinator
         view.backgroundColor = .clear
-        view.textContainerInset = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 4)
+        view.textContainerInset = UIEdgeInsets(top: Self.verticalInset, left: 4, bottom: Self.verticalInset, right: 4)
         view.textContainer.lineFragmentPadding = 4
         view.isScrollEnabled = false
         view.adjustsFontForContentSizeCategory = true
@@ -111,8 +122,8 @@ struct ChatComposerField: UIViewRepresentable {
             coordinator.appliedStyle = style
             // Native's field is rounded: the text keeps clear of its ends.
             let side: CGFloat = style.native ? 10 : 4
-            view.textContainerInset = UIEdgeInsets(top: 8, left: side, bottom: 8, right: side)
-            view.font = UIFontMetrics(forTextStyle: .callout).scaledFont(for: .systemFont(ofSize: 16 * CGFloat(style.scale)))
+            view.textContainerInset = UIEdgeInsets(top: Self.verticalInset, left: side, bottom: Self.verticalInset, right: side)
+            view.font = Self.font(style)
             view.textColor = style.textUI
             view.tintColor = style.accentUI
             view.keyboardAppearance = style.colorScheme == .dark ? .dark : .default
@@ -167,8 +178,9 @@ struct ChatComposer: View {
     let interrupt: () -> Void
     let decide: (ChatDecision) -> Void
     /// The paperclip (a photo or a file goes to the Mac and its path into the message), and a paste of files.
-    var attach: (() -> Void)?
+    var attach: ((AttachmentChoice) -> Void)?
     var pasteFiles: (() -> Bool)?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var focused = false
     @State private var dictation = TextInsertion()
 
@@ -194,12 +206,11 @@ struct ChatComposer: View {
                 .padding(.horizontal, 12)
                 .accessibilityElement(children: .combine)
             }
-            HStack(alignment: .bottom, spacing: 4) {
+            // Every button is centred on the field's last line: on the field's middle while it holds one line, and beside the line
+            // being typed (at the bottom, as Messages does) once it grows.
+            HStack(alignment: .composerLine, spacing: 4) {
                 if let attach {
-                    Button(action: attach) { Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5)) }
-                        .buttonStyle(.plain).frame(width: style.pt(32), height: style.pt(44)).contentShape(Rectangle())
-                        .disabled(!connected)
-                        .accessibilityLabel("Send a photo or file").accessibilityHint("Sends it to the Mac and puts its path in the message")
+                    ComposerPaperclip(connected: connected, choose: attach).equatable()
                 }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
                                   isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, onKey: handle, onFocusChange: { focused = $0 },
@@ -211,6 +222,7 @@ struct ChatComposer: View {
                         }
                     }
                     .modifier(ComposerFieldSurface(focused: focused))
+                    .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, dynamicTypeSize)] d in d.height - band / 2 }
                 if state.isBusy {
                     Button(action: interrupt) { Image(systemName: "stop.circle.fill").font(.system(size: style.pt(24))).foregroundStyle(style.gold) }
                         .buttonStyle(.plain).frame(width: style.pt(44), height: style.pt(44)).contentShape(Rectangle())
@@ -242,6 +254,31 @@ struct ChatComposer: View {
         case .insertNewline, .none: break
         }
         return action
+    }
+}
+
+extension VerticalAlignment {
+    private enum ComposerLine: AlignmentID {
+        static func defaultValue(in d: ViewDimensions) -> CGFloat { d[VerticalAlignment.center] }
+    }
+    /// The middle of the composer field's last line. A button's is its own middle.
+    static let composerLine = VerticalAlignment(ComposerLine.self)
+}
+
+/// The composer's paperclip and its menu. Drawn again only when `connected` changes (or the look): the composer is redrawn with each
+/// change to the chat while it streams, and a menu whose view is redrawn while it is open stops taking taps on its items.
+private struct ComposerPaperclip: View, Equatable {
+    @Environment(\.desktopStyle) private var style
+    let connected: Bool
+    let choose: (AttachmentChoice) -> Void
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.connected == rhs.connected }
+    var body: some View {
+        AttachMenu(choose: choose) {
+            Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
+                .frame(width: style.pt(40), height: style.pt(44)).contentShape(Rectangle())
+        }
+        .disabled(!connected)
+        .accessibilityHint("Sends it to the Mac and puts its path in the message")
     }
 }
 

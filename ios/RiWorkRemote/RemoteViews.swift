@@ -584,7 +584,7 @@ struct SessionConsole: View {
     /// A dictated line waiting to be checked before it is typed into the shell (`TerminalDictationPanel`).
     @State private var dictatedLine: String?
     /// The photo or file picker (the key bar's paperclip, or the one beside the keyboard button or Send).
-    @State private var picking = false
+    @State private var picking: AttachmentChoice?
     @Environment(\.scenePhase) private var scenePhase
     /// Live pinch scale. A GestureState resets by itself if the gesture is cancelled; the size is committed (and the
     /// grid recomputed) only when the pinch ends.
@@ -637,7 +637,7 @@ struct SessionConsole: View {
         .sheet(item: $editor, onDismiss: { keyFocus.restoreAfterModalDismissal() }) {
             HotkeyEditorSheet(store: model.hotkeys, keyboard: model.keyboard, start: $0).desktopThemed(model.theme.style)
         }
-        .attachmentPicker(isPresented: $picking, onDone: { keyFocus.restoreAfterModalDismissal() }) { sources in
+        .attachmentPicker($picking, onDone: { keyFocus.restoreAfterModalDismissal() }) { sources in
             if let id = model.sessionID { model.attach(sources, to: .shell(id)) }
         }
         .onAppear { configureFocus(); keyFocus.shellReady(readyShell) }
@@ -665,12 +665,13 @@ struct SessionConsole: View {
         keyFocus.suspendForModal()
         editor = start
     }
-    /// Like the editor: the keyboard goes first and comes back when the picker is done.
-    private func openPicker() {
+    /// Like the editor: the keyboard goes first and comes back when the picker is done. The paperclip's menu leaves the keyboard up
+    /// until a choice is made, so a menu closed without one changes nothing.
+    private func openPicker(_ choice: AttachmentChoice) {
         palette.close()
         help.close()
         keyFocus.suspendForModal()
-        picking = true
+        picking = choice
     }
     /// A paste that found files or a lone picture: they go to the Mac and their paths into the shell. False leaves it to the text paste.
     private func pasteFiles() -> Bool {
@@ -804,7 +805,7 @@ struct SessionConsole: View {
             if model.state != .connected {
                 Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting).buttonStyle(DesktopButtonStyle(compact: true))
             }
-            AttachButton(action: openPicker).disabled(model.state != .connected || model.session?.alive != true)
+            AttachButton(choose: openPicker).equatable().disabled(model.state != .connected || model.session?.alive != true)
             Button(keyFocus.isActive ? "Hide keyboard" : "Show keyboard", systemImage: keyFocus.isActive ? "keyboard.chevron.compact.down" : "keyboard") {
                 if keyFocus.isActive { keyFocus.userDismiss() } else { keyFocus.focus() }
             }.labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: true))
@@ -820,7 +821,7 @@ struct SessionConsole: View {
                              label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
                              onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
                     .modifier(DesktopField())
-                AttachButton(compact: false, action: openPicker).disabled(model.state != .connected || model.session?.alive != true)
+                AttachButton(compact: false, choose: openPicker).equatable().disabled(model.state != .connected || model.session?.alive != true)
                 TerminalMicButton(isEnabled: model.canEditDraft, action: dictate)
                 Button("Send", systemImage: "arrow.up", action: send)
                     .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))

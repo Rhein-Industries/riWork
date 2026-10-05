@@ -134,4 +134,44 @@ actor UploadTransport: RemoteTransport {
         XCTAssertNil(model.attachments.task)
         await model.disconnect()
     }
+
+    // MARK: The paperclip's menu
+
+    private func style(native: Bool) -> DesktopStyle {
+        var theme = DesktopTheme.builtIn
+        theme.native = native
+        return DesktopStyle(theme)
+    }
+
+    func testTheChoicesOfferTheCameraOnlyWhereThereIsOne() {
+        let hasCamera = UIImagePickerController.isSourceTypeAvailable(.camera)
+        XCTAssertEqual(AttachmentChoice.available, hasCamera ? [.photos, .camera, .files] : [.photos, .files])
+        XCTAssertEqual(AttachmentChoice.photos.symbol, "photo.on.rectangle")
+        XCTAssertEqual(AttachmentChoice.camera.symbol, "camera")
+        XCTAssertEqual(AttachmentChoice.files.symbol, "folder")
+    }
+
+    /// The key bar's paperclip opens a menu from the key itself, not a dialog over the screen: sentence case under Native, capitals in
+    /// the terminal look, and the choice reaches the terminal as it is.
+    func testTheKeyBarPaperclipIsAMenuOnTheKey() throws {
+        for native in [true, false] {
+            let view = KeyCaptureView()
+            view.bar.style = style(native: native)
+            var chosen: [AttachmentChoice] = []
+            view.onAttach = { chosen.append($0) }
+            let paperclip = try XCTUnwrap(view.bar.buttons[.attach])
+            XCTAssertTrue(paperclip.showsMenuAsPrimaryAction)
+            let items = try XCTUnwrap(paperclip.menu).children.compactMap { $0 as? UIAction }
+            let titles = AttachmentChoice.available.map { native ? $0.title : $0.title.uppercased() }
+            XCTAssertEqual(items.map(\.title), titles)
+            XCTAssertEqual(items.first?.title, native ? "Photo library" : "PHOTO LIBRARY")
+            XCTAssertFalse(titles.contains { $0.contains("Mac") }, "no explanatory title")
+            // Pressing the key itself sends nothing: only a choice does.
+            view.bar.tapped(.attach)
+            XCTAssertEqual(chosen, [])
+            view.bar.tapped(.attachFrom(.files))
+            view.bar.tapped(.attachFrom(.photos))
+            XCTAssertEqual(chosen, [.files, .photos])
+        }
+    }
 }
