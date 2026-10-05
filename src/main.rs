@@ -9,6 +9,7 @@ mod cli_agents;
 mod codex_accounts;
 mod controls;
 mod cua;
+mod dictation;
 mod dock_menu;
 mod file_explorer;
 mod file_preview;
@@ -68,7 +69,7 @@ use std::{
 
 use activity::{ActivityTracker, AgentActivity, AgentState, ChatActivity};
 use chat::model::{ApprovalMode, NewChat, Provider};
-use chat_view::{ChatView, ChatViewEvent, HostConfig};
+use chat_view::{ChatView, ChatViewEvent, HostConfig, ToggleDictation};
 use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity,
@@ -997,6 +998,26 @@ fn chat_tab_text(
         Some(name) if !icon && !title.starts_with(name) => format!("{mark}{name} · {title}"),
         _ => format!("{mark}{title}"),
     }
+}
+
+/// The names and folders a chat of `project_id` is talked about with, for dictation: the
+/// project's name and root, and each of its worktrees' branch and folder.
+fn speech_context(state: &State, project_id: &str) -> (Vec<String>, Vec<String>) {
+    let mut names = Vec::new();
+    let mut paths = Vec::new();
+    if let Some(project) = state.projects.iter().find(|p| p.id == project_id) {
+        names.push(project.name.clone());
+        paths.push(project.root.display().to_string());
+    }
+    for worktree in state
+        .worktrees
+        .iter()
+        .filter(|w| w.project_id == project_id)
+    {
+        names.push(worktree.branch.clone());
+        paths.push(worktree.path.display().to_string());
+    }
+    (names, paths)
 }
 
 /// What a chat tab says on hover about its chat, such as "Working" or "Stopped".
@@ -6063,6 +6084,8 @@ impl Workspace {
     ) -> Tab {
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
+        let (names, paths) = speech_context(&self.state, &self.project_id);
+        view.update(cx, |view, _| view.set_speech_context(names, paths));
         cx.subscribe_in(
             &view,
             window,
@@ -10504,6 +10527,7 @@ fn main() {
             KeyBinding::new("cmd-alt-shift-c", OpenCodexChat, None),
             KeyBinding::new("cmd-alt-shift-l", OpenClaudeChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
+            KeyBinding::new("cmd-shift-space", ToggleDictation, Some("ChatView")),
         ]);
         cx.set_menus([
             Menu::new("RiWork").items([
@@ -13485,6 +13509,11 @@ mod chat_tab_tests {
                 "{keystroke} is bound twice"
             );
         }
+        // Dictation in a chat: its own key, bound only in a chat tab.
+        assert!(
+            keys.contains(&("cmd-shift-space".to_owned(), "Some(\"ChatView\"".to_owned())),
+            "{keys:?}"
+        );
         for chat in ["alt-cmd-shift-c", "alt-cmd-shift-l"] {
             assert!(
                 keys.iter().any(|(keystroke, _)| keystroke == chat),
@@ -13504,6 +13533,38 @@ mod chat_tab_tests {
                 "{terminal}"
             );
         }
+    }
+
+    #[test]
+    fn dictation_in_a_chat_knows_its_projects_names_and_branches() {
+        let project = |id: &str, name: &str, root: &str| -> store::Project {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "name": name, "root": root, "created_at": 0
+            }))
+            .unwrap()
+        };
+        let worktree = |project_id: &str, branch: &str, path: &str| -> store::Worktree {
+            serde_json::from_value(serde_json::json!({
+                "id": branch, "project_id": project_id, "branch": branch, "path": path,
+                "created_at": 0
+            }))
+            .unwrap()
+        };
+        let state = State {
+            projects: vec![
+                project("p1", "riWork", "/work/riWork"),
+                project("p2", "other", "/o"),
+            ],
+            worktrees: vec![
+                worktree("p1", "mac-chat-mic", "/work/riWork-mac-chat-mic"),
+                worktree("p2", "elsewhere", "/o2"),
+            ],
+            ..State::default()
+        };
+        let (names, paths) = speech_context(&state, "p1");
+        assert_eq!(names, ["riWork", "mac-chat-mic"]);
+        assert_eq!(paths, ["/work/riWork", "/work/riWork-mac-chat-mic"]);
+        assert_eq!(speech_context(&state, "gone"), (Vec::new(), Vec::new()));
     }
 
     #[test]

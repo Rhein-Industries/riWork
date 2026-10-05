@@ -1,14 +1,18 @@
 //! The chrome around the message list: the toolbar above it, and under it the banners, the
 //! approval bar, the questions and the message box.
 
+use std::time::Duration;
+
 use gpui::{
-    AnyElement, Context, ElementId, ElementInputHandler, FollowMode, HighlightStyle, MouseButton,
-    SharedString, Stateful, StyledText, canvas, deferred, div, list, prelude::*, px, relative, rgb,
+    Animation, AnimationExt, AnyElement, Context, ElementId, ElementInputHandler, FollowMode,
+    HighlightStyle, MouseButton, SharedString, Stateful, StyledText, canvas, deferred, div, list,
+    prelude::*, pulsating_between, px, relative, rgb,
 };
 
 use crate::{
     chat::model::{ApprovalKind, ApprovalMode, ChatState, Decision, Question},
     controls::{self, Button},
+    dictation::{self, Phase},
     icons::{self, Icon},
     project_settings::Input,
     theme,
@@ -684,6 +688,30 @@ impl ChatView {
                     ),
                 )
         };
+        // Why dictation stopped, with the way to System Settings when a permission is off.
+        if let Phase::Failed(problem) = self.dictation.phase() {
+            let settings = problem.settings_url();
+            return Some(
+                line(problem.message(), colors.gold)
+                    .children(settings.map(|url| {
+                        button(
+                            "chat-dictation-settings",
+                            "Open System Settings",
+                            Some(colors.cyan),
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            cx.open_url(url);
+                            view.dismiss_dictation(cx);
+                        }))
+                    }))
+                    .child(
+                        button("chat-dictation-dismiss", "Dismiss", None, look)
+                            .on_click(cx.listener(|view, _, _, cx| view.dismiss_dictation(cx))),
+                    )
+                    .into_any_element(),
+            );
+        }
         if let Some(notice) = &self.notice {
             return Some(
                 line(notice.clone(), colors.gold)
@@ -977,10 +1005,23 @@ impl ChatView {
     fn composer_box(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let running = self.running();
-        let hint = if running {
-            "⏎ send (steers the turn) · ⇧⏎ new line · ⌘. interrupt"
-        } else {
-            "⏎ send · ⇧⏎ new line"
+        let dictation = self.dictation.phase();
+        let hint = match dictation {
+            Phase::Preparing { note: Some(note) } => note.clone(),
+            Phase::Preparing { note: None } => "Getting the microphone ready…".to_owned(),
+            Phase::Listening { .. } => format!(
+                "Listening, recognized on this Mac · {} or the mic stops · ⎋ cancels",
+                dictation::SHORTCUT_LABEL
+            ),
+            Phase::Finishing { .. } => "Finishing what was heard…".to_owned(),
+            _ if running => format!(
+                "⏎ send (steers the turn) · ⇧⏎ new line · ⌘. interrupt · {} dictate",
+                dictation::SHORTCUT_LABEL
+            ),
+            _ => format!(
+                "⏎ send · ⇧⏎ new line · {} dictate",
+                dictation::SHORTCUT_LABEL
+            ),
         };
         div()
             .w_full()
@@ -1007,6 +1048,7 @@ impl ChatView {
                         look,
                         cx,
                     )))
+                    .child(widgets::beside_field(self.mic_button(look, cx)))
                     // Native's are round symbol buttons beside the field, as a message field
                     // has them; their keys are in the tooltips and the hint below. Send waits
                     // in grey until there is something to send.
@@ -1054,10 +1096,73 @@ impl ChatView {
             .child(
                 div()
                     .text_size(ui_text::text(9.0))
-                    .text_color(rgb(colors.muted))
+                    .text_color(rgb(if dictation.is_active() {
+                        colors.text
+                    } else {
+                        colors.muted
+                    }))
                     .child(hint),
             )
             .into_any_element()
+    }
+
+    /// The mic beside Send: click to dictate, click again to stop; ⌘⇧Space does the same. Native
+    /// draws it as the round buttons beside it: a mic, filled in the working color while it
+    /// listens and pulsing while it gets ready or settles. The colorful themes write it out.
+    fn mic_button(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
+        let colors = look.colors;
+        let phase = self.dictation.phase();
+        let key = dictation::SHORTCUT_LABEL;
+        let tooltip = match phase {
+            Phase::Listening { .. } => format!("Stop dictating · {key} · ⎋ cancels"),
+            Phase::Preparing { note: Some(note) } => note.clone(),
+            Phase::Preparing { .. } | Phase::Finishing { .. } => "Stop dictating".to_owned(),
+            Phase::Failed(_) => format!("Dictate again · {key}"),
+            Phase::Idle => format!("Dictate · {key}"),
+        };
+        let busy = matches!(phase, Phase::Preparing { .. } | Phase::Finishing { .. });
+        let listening = matches!(phase, Phase::Listening { .. });
+        let mic = if look.native {
+            let symbol = match phase {
+                Phase::Listening { .. } | Phase::Preparing { .. } | Phase::Finishing { .. } => {
+                    "mic.fill"
+                }
+                Phase::Failed(_) => "mic.slash",
+                Phase::Idle => "mic",
+            };
+            widgets::round_button("chat-dictate", symbol, tooltip, Button::Secondary, look)
+                .when(phase.is_active(), |mic| mic.text_color(rgb(colors.working)))
+        } else {
+            let label = match phase {
+                Phase::Listening { .. } => format!("● Stop  {key}"),
+                Phase::Preparing { .. } | Phase::Finishing { .. } => "Mic …".to_owned(),
+                _ => format!("Mic  {key}"),
+            };
+            button(
+                "chat-dictate",
+                label,
+                phase.is_active().then_some(colors.working),
+                look,
+            )
+            .child(tooltip::anchor(tooltip, TipLook::Control))
+        }
+        .when(listening, |mic| {
+            mic.bg(rgb(look.tint(colors.working, 0.18)))
+        })
+        .on_click(cx.listener(|view, _, _, cx| view.toggle_dictation(cx)));
+        if busy {
+            mic.with_animation(
+                "chat-dictate-busy",
+                Animation::new(Duration::from_millis(1000))
+                    .repeat()
+                    .with_easing(pulsating_between(0.35, 1.0))
+                    .with_max_fps(20.0),
+                |mic, level| mic.opacity(level),
+            )
+            .into_any_element()
+        } else {
+            mic.into_any_element()
+        }
     }
 
     /// A box that shows one of the inputs and takes the keys when it is the active one.

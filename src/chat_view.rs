@@ -41,6 +41,7 @@ use crate::{
 mod approval;
 mod cards;
 mod composer;
+mod dictate;
 mod diff;
 mod feed;
 mod host;
@@ -62,7 +63,7 @@ use feed::{Backoff, Feed, FeedMsg};
 use state::{Applied, ChatModel, provider_name};
 use widgets::Look;
 
-actions!(riwork_chat, [InterruptChat]);
+actions!(riwork_chat, [InterruptChat, ToggleDictation]);
 
 /// What a chat tab tells the window.
 pub enum ChatViewEvent {
@@ -176,6 +177,12 @@ pub struct ChatView {
     selection: Option<select::Selection>,
     /// What the window was last told, so it hears of changes only.
     announced: Option<Summary>,
+    /// Dictation into the message box.
+    dictation: dictate::Dictation,
+    /// The names and folders around the chat (project, worktrees and their branches), which
+    /// dictation listens for; set by the window.
+    speech_names: Vec<String>,
+    speech_paths: Vec<String>,
 }
 
 impl ChatView {
@@ -230,6 +237,9 @@ impl ChatView {
             caches: RefCell::new(Caches::default()),
             selection: None,
             announced: None,
+            dictation: dictate::Dictation::default(),
+            speech_names: Vec::new(),
+            speech_paths: Vec::new(),
         }
     }
 
@@ -255,6 +265,13 @@ impl ChatView {
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.field = Field::Composer;
         self.focus.focus(window, cx);
+    }
+
+    /// The names and folders around the chat that dictation should know: the project, its
+    /// worktrees and their branches.
+    pub fn set_speech_context(&mut self, names: Vec<String>, paths: Vec<String>) {
+        self.speech_names = names;
+        self.speech_paths = paths;
     }
 
     /// Stop the provider process. The chat and its history stay; the next message resumes it.
@@ -443,6 +460,10 @@ impl ChatView {
 
     fn interrupt_action(&mut self, _: &InterruptChat, _: &mut Window, cx: &mut Context<Self>) {
         self.interrupt(cx);
+    }
+
+    fn dictation_action(&mut self, _: &ToggleDictation, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_dictation(cx);
     }
 
     fn approve(&mut self, request_id: String, decision: Decision, cx: &mut Context<Self>) {
@@ -676,6 +697,11 @@ impl ChatView {
                 self.close_menu(cx);
                 return true;
             }
+            // ⎋ while dictating takes out what was dictated, and nothing else.
+            if self.dictation.phase().is_active() {
+                self.cancel_dictation(cx);
+                return true;
+            }
             let empty = self.composer.text.trim().is_empty();
             return match composer::escape(empty, &self.offered_to_key(event)) {
                 Some(decision) => {
@@ -748,6 +774,10 @@ impl ChatView {
             // The same as the key binding, for where the system takes the binding first.
             "." if mods.platform => {
                 self.interrupt(cx);
+                true
+            }
+            "space" if mods.platform && mods.shift => {
+                self.toggle_dictation(cx);
                 true
             }
             "v" if mods.platform => {
@@ -965,6 +995,7 @@ impl Render for ChatView {
             .key_context("ChatView")
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(Self::interrupt_action))
+            .on_action(cx.listener(Self::dictation_action))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|view, _, window, cx| {
