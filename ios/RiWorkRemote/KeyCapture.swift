@@ -66,6 +66,8 @@ enum TerminalFont {
     /// The hotkey help (⌘/), drawn by SwiftUI. It never takes the keyboard from this view.
     var help = HelpController() { didSet { help.onFire = { [weak self] in self?.helpFire($0) } } }
     var onEditHotkeys: (() -> Void)?
+    /// The bar's mic: start or stop a dictation.
+    var onDictate: (() -> Void)?
     var onNewHotkey: (() -> Void)?
     var onEditHotkey: ((Hotkey) -> Void)?
     /// Every key event that reaches the view, for the readout.
@@ -228,6 +230,7 @@ enum TerminalFont {
         case .editHotkeys: onEditHotkeys?()
         case .palette: togglePalette()
         case .help: toggleHelp()
+        case .dictate: onDictate?()
         }
     }
 
@@ -620,6 +623,8 @@ struct KeyCapture: UIViewRepresentable {
     var onNewHotkey: () -> Void = {}
     var onEditHotkey: (Hotkey) -> Void = { _ in }
     var onKeyEvent: (KeyEventRecord) -> Void = { _ in }
+    var dictation = KeyBarView.Dictation.idle
+    var onDictate: () -> Void = {}
     var onItems: ([KeyItem]) -> Bool
 
     func makeUIView(context: Context) -> KeyCaptureView {
@@ -646,6 +651,8 @@ struct KeyCapture: UIViewRepresentable {
         view.onNewHotkey = onNewHotkey
         view.onEditHotkey = onEditHotkey
         view.onKeyEvent = onKeyEvent
+        view.onDictate = onDictate
+        view.bar.setDictation(dictation)
         focus.view = view
     }
     static func dismantleUIView(_ view: KeyCaptureView, coordinator: ()) {

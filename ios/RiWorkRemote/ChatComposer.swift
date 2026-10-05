@@ -66,6 +66,8 @@ struct ChatComposerField: UIViewRepresentable {
     var maxLines = 6
     var onKey: (ChatKey) -> ChatKeyAction
     var onFocusChange: (Bool) -> Void = { _ in }
+    /// Where dictation puts its words: this view, at its caret.
+    var insertion: TextInsertion?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> ChatComposerTextView {
@@ -109,6 +111,7 @@ struct ChatComposerField: UIViewRepresentable {
         view.isEditable = isEnabled
         view.onKey = onKey
         view.answersApproval = answersApproval
+        insertion?.view = view
         if coordinator.lastFocusToken != focusToken {
             coordinator.lastFocusToken = focusToken
             // The view may not be in a window yet (the screen is still arriving): the next turn of the run loop is early enough.
@@ -152,6 +155,7 @@ struct ChatComposer: View {
     let interrupt: () -> Void
     let decide: (ChatDecision) -> Void
     @State private var focused = false
+    @State private var dictation = TextInsertion()
 
     private var placeholder: String {
         switch state {
@@ -177,7 +181,8 @@ struct ChatComposer: View {
             }
             HStack(alignment: .bottom, spacing: 4) {
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
-                                  isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, onKey: handle, onFocusChange: { focused = $0 })
+                                  isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, onKey: handle, onFocusChange: { focused = $0 },
+                                  insertion: dictation)
                     .overlay(alignment: .topLeading) {
                         if conversation.draft.isEmpty {
                             Text(placeholder).font(style.prose).foregroundStyle(style.muted).padding(.top, 8).padding(.leading, style.native ? 14 : 8)
@@ -191,6 +196,7 @@ struct ChatComposer: View {
                         .disabled(!connected)
                         .accessibilityLabel("Interrupt").accessibilityHint("Stops what \(provider.title) is doing now")
                 }
+                DictationButton(owner: .chat(conversation.id), insertion: dictation)
                 Button(action: send) {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: style.pt(28)))
                         .foregroundStyle(canSend ? style.accent : style.muted.opacity(0.6))
