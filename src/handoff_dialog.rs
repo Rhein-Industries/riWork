@@ -844,13 +844,13 @@ impl Render for HandoffDialog {
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.magenta))
-            // Native: a raised sheet with rounded corners, a hairline and a shadow.
+            // Native: a sheet with rounded corners, a hairline and a shadow, on the panels'
+            // grey so its segmented controls stand out as they do in Settings.
             .map(|dialog| {
                 controls::native(dialog, |dialog| {
                     dialog
                         .rounded(controls::radius(12.0))
                         .border_color(rgb(colors.divider))
-                        .bg(rgb(controls::raised(colors)))
                         .shadow_lg()
                 })
             })
