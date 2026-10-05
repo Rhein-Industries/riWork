@@ -98,6 +98,9 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
     }
     /// A label or title as the skin writes it. Written in sentence case; the terminal look shows it in capitals, as it always has.
     func cased(_ text: String) -> String { native ? text : text.uppercased() }
+    /// The desktop's dictation setting: the mics (chat composer, key bar, line composer) are shown only while it is on. Off by
+    /// default and with a desktop that predates the setting.
+    var mic: Bool { theme.mic }
     /// What a bar or a sheet is painted with: nothing on glass, so the system's glass shows through, else the background.
     var surface: Color { glass ? .clear : background }
 
@@ -268,5 +271,33 @@ extension View {
     /// own corners, and on iOS 26 its glass.
     @ViewBuilder func desktopSheetSurface(_ style: DesktopStyle) -> some View {
         if style.native { background(style.surface) } else { background(style.background).presentationCornerRadius(8) }
+    }
+    /// The fill of a row that can be chosen in a sheet's list (a kind, a model): a band across the sheet in the terminal look; in Native,
+    /// a rounded highlight set in from the sheet's edges, as iOS marks the chosen row. The whole width still takes the tap.
+    @ViewBuilder func desktopRowFill(_ style: DesktopStyle, selected: Bool) -> some View {
+        if style.native {
+            background(selected ? style.active : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous)).padding(.horizontal, 8).contentShape(Rectangle())
+        } else {
+            background(selected ? style.active : .clear).contentShape(Rectangle())
+        }
+    }
+    /// A sheet's list with the footer that holds its main button under it, the list clipped at the footer's rule so its last lines
+    /// never run under the footer's labels (on glass too, where the footer has no panel of its own).
+    @ViewBuilder func desktopSheetFooter<Footer: View>(_ style: DesktopStyle, @ViewBuilder footer: () -> Footer) -> some View {
+        if style.native { VStack(spacing: 0) { self.clipped(); footer() } } else { VStack(spacing: 0) { self; footer() } }
+    }
+}
+
+/// The keyboard's ring around what it is on in a sheet: square in the terminal look, rounded like the row in Native.
+struct DesktopRing: View {
+    @Environment(\.desktopStyle) private var style
+    var shown: Bool
+    var capsule = false
+    var body: some View {
+        Group {
+            if capsule && style.native { Capsule().stroke(style.accent, lineWidth: 2) }
+            else { RoundedRectangle(cornerRadius: style.native ? 10 : 0, style: .continuous).stroke(style.accent, lineWidth: 2) }
+        }
+        .opacity(shown ? 1 : 0).allowsHitTesting(false)
     }
 }

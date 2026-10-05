@@ -17,7 +17,7 @@ struct ChatModelChip: View {
     var body: some View {
         Button(action: open) {
             HStack(spacing: 4) {
-                Text(choices.chipTitle).font(style.mono(11, bold: true, relativeTo: .caption)).lineLimit(1).truncationMode(.tail)
+                Text(choices.chipTitle).font(style.face(11, bold: true, relativeTo: .caption)).lineLimit(1).truncationMode(.tail)
                 if choices.chipShowsFast { Image(systemName: "bolt.fill").font(.system(size: style.pt(10), weight: .bold)).foregroundStyle(style.gold).accessibilityHidden(true) }
                 Image(systemName: "chevron.up.chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
             }
@@ -25,6 +25,8 @@ struct ChatModelChip: View {
             .frame(minHeight: style.pt(40)).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Native: a glass capsule like the mode menu beside it (iOS 26).
+        .nativeGlass(style, in: Capsule())
         // The first to give way when the toolbar is full (a long model name, large text): the name is cut, the other controls are not.
         .layoutPriority(-1)
         .disabled(!enabled)
@@ -47,6 +49,31 @@ struct ChatEffortSegments: View {
     let choose: (Int, String) -> Void
 
     var body: some View {
+        if style.native { nativeBody } else { terminalBody }
+    }
+    /// Native: a segmented control as iOS draws one, the chosen segment a raised capsule in a capsule track.
+    private var nativeBody: some View {
+        HStack(spacing: 2) {
+            ForEach(Array(efforts.enumerated()), id: \.offset) { index, effort in
+                let chosen = effort == selected
+                Button { choose(index, effort) } label: {
+                    Text(ChatEffort.title(effort)).font(style.face(12, bold: chosen, relativeTo: .subheadline)).lineLimit(1).minimumScaleFactor(0.7)
+                        .padding(.horizontal, 2).frame(maxWidth: .infinity, minHeight: style.pt(38))
+                        .background { if chosen { Capsule().fill(chosenFill).shadow(color: .black.opacity(0.12), radius: 2, y: 1) } }
+                        .overlay { if ringed == index { Capsule().stroke(style.accent, lineWidth: 2) } }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain).disabled(!enabled)
+                .accessibilityLabel("\(ChatEffort.spoken(effort)) effort")
+                .accessibilityAddTraits(chosen ? .isSelected : [])
+            }
+        }
+        .padding(3).background(style.active, in: Capsule())
+        .accessibilityElement(children: .contain).accessibilityLabel("Effort")
+    }
+    /// The chosen segment stands out of the track: white on light, a lighter gray on dark, as in a system segmented control.
+    private var chosenFill: Color { style.colorScheme == .dark ? Color(uiColor: .systemGray3) : style.background }
+    private var terminalBody: some View {
         HStack(spacing: 0) {
             ForEach(Array(efforts.enumerated()), id: \.offset) { index, effort in
                 let chosen = effort == selected
@@ -69,7 +96,8 @@ struct ChatEffortSegments: View {
     }
 }
 
-/// The Fast switch, with its lightning glyph.
+/// The Fast switch, with its lightning glyph. In Native an on switch is the system green: Native's accent is black or white, and a
+/// switch in it is hard to tell on from off.
 struct ChatFastToggle: View {
     @Environment(\.desktopStyle) private var style
     @Binding var isOn: Bool
@@ -81,6 +109,7 @@ struct ChatFastToggle: View {
                 Text("Faster replies, at a higher usage rate.").font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
             }
         }
+        .tint(style.native ? Color(uiColor: .systemGreen) : style.accent)
         .disabled(!enabled)
         .accessibilityIdentifier("chat-fast-toggle")
         .accessibilityLabel("Fast").accessibilityHint("Faster replies, at a higher usage rate")
@@ -118,8 +147,7 @@ struct ChatModelSheet: View {
         let choices = choices
         VStack(spacing: 0) {
             WorkspaceBar(title: style.cased("Model")) { Button("Done", action: close).accessibilityHint("Closes the picker") }
-            ScrollView { content(choices) }.scrollBounceBehavior(.basedOnSize)
-            footer
+            ScrollView { content(choices) }.scrollBounceBehavior(.basedOnSize).desktopSheetFooter(style) { footer }
         }
         .desktopSheetSurface(style)
         .foregroundStyle(style.text).font(style.face(13, relativeTo: .body)).tint(style.accent)
@@ -166,7 +194,8 @@ struct ChatModelSheet: View {
             Text(text).font(style.system(.footnote)).fixedSize(horizontal: false, vertical: true)
         }
         .foregroundStyle(style.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.warning.opacity(0.1))
+        .background(style.warning.opacity(0.1), in: style.block())
+        .padding(.horizontal, style.native ? 8 : 0).padding(.top, style.native ? 8 : 0)
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently)
     }
 
@@ -178,10 +207,7 @@ struct ChatModelSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(option.name).font(style.face(14, bold: selected, relativeTo: .body)).lineLimit(1).truncationMode(.tail)
-                        if option.isDefault {
-                            Text(style.cased("Default")).font(style.mono(9, bold: true, relativeTo: .caption2)).foregroundStyle(style.muted)
-                                .padding(.horizontal, 4).padding(.vertical, 1).overlay(Rectangle().stroke(style.divider, lineWidth: 1))
-                        }
+                        if option.isDefault { defaultBadge }
                         if option.supportsFast { Image(systemName: "bolt.fill").font(.system(size: style.pt(10))).foregroundStyle(style.muted).accessibilityHidden(true) }
                     }
                     if !option.description.isEmpty {
@@ -191,14 +217,25 @@ struct ChatModelSheet: View {
                 Spacer(minLength: 4)
             }
             .padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: style.pt(52), alignment: .leading)
-            .background(selected ? style.active : .clear).contentShape(Rectangle())
             .overlay { ring(.model(index)) }
+            .desktopRowFill(style, selected: selected)
         }
         .buttonStyle(.plain).disabled(!connected)
         .accessibilityIdentifier("chat-model-\(option.id)")
         .accessibilityLabel(option.name + (option.isDefault ? ", default" : "") + (option.supportsFast ? ", has Fast" : ""))
         .accessibilityHint(option.description)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// The default model's tag: a framed label in capitals in the terminal look; a small gray capsule in Native.
+    @ViewBuilder private var defaultBadge: some View {
+        if style.native {
+            Text("Default").font(style.face(9, bold: true, relativeTo: .caption2)).foregroundStyle(style.muted)
+                .padding(.horizontal, 6).padding(.vertical, 1).background(style.active, in: Capsule())
+        } else {
+            Text(style.cased("Default")).font(style.mono(9, bold: true, relativeTo: .caption2)).foregroundStyle(style.muted)
+                .padding(.horizontal, 4).padding(.vertical, 1).overlay(Rectangle().stroke(style.divider, lineWidth: 1))
+        }
     }
 
     private var footer: some View {
@@ -211,7 +248,7 @@ struct ChatModelSheet: View {
             Button(action: close) { Text("Done").font(style.face(14, bold: true, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: style.pt(48)) }
                 .buttonStyle(DesktopButtonStyle(prominent: true)).padding(.horizontal, 12).padding(.bottom, 8)
         }
-        .background(style.panel)
+        .background(style.glass ? style.surface : style.panel)
     }
 
     // MARK: Ring and keys
@@ -219,7 +256,7 @@ struct ChatModelSheet: View {
     private var ringedEffort: Int? { keyboardInUse && cursor.stop == .effort ? cursor.effortIndex : nil }
     /// The ring around a row, shown while a keyboard drives the sheet. The efforts show theirs on a segment instead.
     private func ring(_ stop: ChatModelCursor.Stop) -> some View {
-        Rectangle().stroke(style.accent, lineWidth: 2).opacity(keyboardInUse && cursor.stop == stop ? 1 : 0).allowsHitTesting(false)
+        DesktopRing(shown: keyboardInUse && cursor.stop == stop)
     }
     /// A tap puts the ring where the finger is, so touch and keyboard agree.
     private func place(_ stop: ChatModelCursor.Stop, effort: Int? = nil) {

@@ -511,8 +511,8 @@ struct TerminalTabsView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Label { Text(session.title) } icon: {
                     Image(systemName: session.provider?.glyph ?? "point.3.connected.trianglepath.dotted").foregroundStyle(style.magenta)
-                }.font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
-                Text(opening == .needsUpdate ? "Update the Mac" : "Not ready").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
+                Text(opening == .needsUpdate ? "Update the Mac" : "Not ready").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
             }
             .tabChrome(selected: selected, waiting: false)
             .opacity(selected ? 1 : 0.7)
@@ -568,11 +568,24 @@ private struct NoteLine: View {
             }
             .font(style.system(.footnote)).foregroundStyle(style.muted)
             .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
-            .background(style.panel)
+            .modifier(NoteSurface())
         }
         .buttonStyle(.plain)
         .accessibilityHint("Dismisses the note")
         .onAppear { UIAccessibility.post(notification: .announcement, argument: text) }
+    }
+    /// A band of the panel color in the terminal look; in Native a rounded panel set in from the edges, on glass on iOS 26, as the
+    /// upload line is.
+    private struct NoteSurface: ViewModifier {
+        @Environment(\.desktopStyle) private var style
+        func body(content: Content) -> some View {
+            if style.native {
+                content.background(style.glass ? Color.clear : style.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .nativeGlass(style, in: RoundedRectangle(cornerRadius: 12, style: .continuous)).padding(.horizontal, 8).padding(.vertical, 4)
+            } else {
+                content.background(style.panel)
+            }
+        }
     }
 }
 
@@ -783,9 +796,14 @@ struct SessionConsole: View {
         // changes the terminal's size (and so never resizes the desktop). Content gets a matching bottom margin.
         .overlay(alignment: .bottom) { FloatingStatus(model: model) }
         .overlay(alignment: .bottom) {
-            TerminalDictationPanel(controller: .shared, review: $dictatedLine, canType: model.session?.alive == true, type: typeDictated,
-                                   done: { keyFocus.focus() })
+            // Dictation, and its review, exist only while the desktop's mic setting is on.
+            if style.mic {
+                TerminalDictationPanel(controller: .shared, review: $dictatedLine, canType: model.session?.alive == true, type: typeDictated,
+                                       done: { keyFocus.focus() })
+            }
         }
+        // The setting turned off: a line waiting to be checked goes with the mic, and does not come back with it.
+        .onChange(of: style.mic) { _, on in if !on { dictatedLine = nil } }
         // A file on its way to the Mac: at the top, clear of the chip and notices at the bottom.
         .overlay(alignment: .top) {
             if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)) {
@@ -907,7 +925,8 @@ struct SessionConsole: View {
                              onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
                     .modifier(DesktopField())
                 AttachButton(compact: false, choose: openPicker).equatable().disabled(model.state != .connected || model.session?.alive != true)
-                TerminalMicButton(isEnabled: model.canEditDraft, action: dictate)
+                // Only while the desktop's mic setting is on.
+                if style.mic { TerminalMicButton(isEnabled: model.canEditDraft, action: dictate) }
                 Button("Send", systemImage: "arrow.up", action: send)
                     .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))
                     .disabled(!canSubmit)

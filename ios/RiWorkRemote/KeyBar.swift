@@ -71,6 +71,7 @@ private final class KeyScrollView: UIScrollView {
     private var hideWidth: NSLayoutConstraint!, hideMinWidth: NSLayoutConstraint?, dividerInsets: [NSLayoutConstraint] = [], stackTrailing: NSLayoutConstraint!
     private var latches: [Action: ModifierLatch] = [.control: .off, .alt: .off, .shift: .off]
     private var dictation = Dictation.idle, dictateWidth: NSLayoutConstraint?
+    private var scrollBeforeMic: NSLayoutConstraint?, scrollBeforeHide: NSLayoutConstraint?
     private var repeatTask: Task<Void, Never>?
     private var didRepeat = false
     /// True while a held key sends itself again (not for its first press), so that it keeps the modifiers it started with.
@@ -297,17 +298,34 @@ private final class KeyScrollView: UIScrollView {
 
     /// The mic's state: listening is drawn like an armed modifier, getting ready and settling are dimmed.
     enum Dictation { case idle, busy, listening }
-    /// The mic sits between the scrolling row and Hide, fixed like Hide.
+    /// The mic sits between the scrolling row and Hide, fixed like Hide, while the desktop's mic setting is on (`DesktopStyle.mic`).
+    /// Off, it is hidden and the scrolling row reaches the divider before Hide instead: one of the two trailing constraints is active.
     private func addDictateButton() {
         let mic = makeButton(.dictate, title: nil, symbol: "mic", label: "Dictate", role: .plain)
         mic.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(mic)
         dictateWidth = mic.widthAnchor.constraint(equalToConstant: 44)
+        scrollBeforeMic = scroll.trailingAnchor.constraint(equalTo: mic.leadingAnchor)
+        scrollBeforeHide = scroll.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor)
         NSLayoutConstraint.activate([
-            scroll.trailingAnchor.constraint(equalTo: mic.leadingAnchor), mic.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor),
+            mic.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor),
             mic.topAnchor.constraint(equalTo: row.topAnchor), mic.bottomAnchor.constraint(equalTo: row.bottomAnchor), dictateWidth!
         ])
+        applyMic()
     }
+    /// Shows or takes away the mic as the desktop's setting says, in place: the row is not rebuilt.
+    private func applyMic() {
+        guard let mic = buttons[.dictate], let scrollBeforeMic, let scrollBeforeHide else { return }
+        let shown = style.mic
+        guard mic.isHidden == shown || scrollBeforeMic.isActive != shown || scrollBeforeHide.isActive == shown else { return }
+        mic.isHidden = !shown
+        // Deactivate first, so the two never hold at once.
+        (shown ? scrollBeforeHide : scrollBeforeMic).isActive = false
+        (shown ? scrollBeforeMic : scrollBeforeHide).isActive = true
+        setNeedsLayout()
+    }
+    /// The mic is in the bar (the desktop's mic setting is on).
+    var showsMic: Bool { buttons[.dictate].map { !$0.isHidden } ?? false }
     func setDictation(_ state: Dictation) {
         dictation = state
         guard let mic = buttons[.dictate] else { return }
@@ -342,6 +360,7 @@ private final class KeyScrollView: UIScrollView {
         }
         setLatches(control: latch(.control), alt: latch(.alt), shift: latch(.shift))
         setDictation(dictation)
+        applyMic()
     }
     /// Native on iOS 26 puts the row on glass, inset from the edges like the system's own bars; anything else takes it away.
     private func applyGlass() {

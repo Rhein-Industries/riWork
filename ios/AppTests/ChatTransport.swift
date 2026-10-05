@@ -52,6 +52,7 @@ actor ChatTransport: RemoteTransport {
     // MARK: Script
 
     func setFeature(_ on: Bool) { chatFeature = on }
+    func setAppearance(_ value: JSONValue?) { appearance = value }
     func setOrchestratorFeature(_ on: Bool) { orchestratorFeature = on }
     func setOrchestratorMode(_ mode: OrchestratorMode) { orchestratorMode = mode }
     func setNewOrchestratorsAreChats(_ on: Bool) { newOrchestratorsAreChats = on }

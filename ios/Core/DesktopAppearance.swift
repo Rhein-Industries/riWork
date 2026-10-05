@@ -73,8 +73,8 @@ public enum AppearanceError: Error, Equatable, LocalizedError, Sendable {
 
 /// What `appearance.get` returns: the desktop's current colors.
 ///
-/// `{"v":1,"updated_at":<unix>,"dark":<bool>,"palette":{…9 × "#rrggbb"},"terminal":{"background","foreground","palette":[16 × "#rrggbb"]},"native":true}`
-/// with `terminal` and `native` optional. Parsing is strict about what it uses; unknown extra fields are ignored.
+/// `{"v":1,"updated_at":<unix>,"dark":<bool>,"palette":{…9 × "#rrggbb"},"terminal":{"background","foreground","palette":[16 × "#rrggbb"]},"native":true,"mic":true}`
+/// with `terminal`, `native` and `mic` optional. Parsing is strict about what it uses; unknown extra fields are ignored.
 public struct DesktopAppearance: Sendable, Equatable, Codable {
     public static let version = 1
     public let updatedAt: UInt64
@@ -84,8 +84,11 @@ public struct DesktopAppearance: Sendable, Equatable, Codable {
     /// The desktop uses its Native skin: the interface is drawn the native way (system font, sentence case, glass). A desktop
     /// from before the flag never sends it, and one with another theme leaves it out; both mean the terminal look.
     public let native: Bool
-    public init(updatedAt: UInt64, dark: Bool, palette: DesktopPalette, terminal: TerminalColors? = nil, native: Bool = false) {
-        self.updatedAt = updatedAt; self.dark = dark; self.palette = palette; self.terminal = terminal; self.native = native
+    /// The desktop's dictation setting is on: the phone shows its mics. Sent only while it is on; a desktop from before the setting
+    /// never sends it, and both mean off.
+    public let mic: Bool
+    public init(updatedAt: UInt64, dark: Bool, palette: DesktopPalette, terminal: TerminalColors? = nil, native: Bool = false, mic: Bool = false) {
+        self.updatedAt = updatedAt; self.dark = dark; self.palette = palette; self.terminal = terminal; self.native = native; self.mic = mic
     }
 
     public init(json: JSONValue) throws {
@@ -125,6 +128,11 @@ public struct DesktopAppearance: Sendable, Equatable, Codable {
         case .bool(let value): native = value
         default: throw AppearanceError.invalid("native")
         }
+        switch json["mic"] {
+        case .null: mic = false
+        case .bool(let value): mic = value
+        default: throw AppearanceError.invalid("mic")
+        }
     }
 
     /// The wire shape, used for persistence so what is stored is validated by the same parser that reads the network.
@@ -141,14 +149,16 @@ public struct DesktopAppearance: Sendable, Equatable, Codable {
                                           "palette": .array(terminal.palette.map { .string($0.hex) })])
         }
         if native { fields["native"] = .bool(true) }
+        if mic { fields["mic"] = .bool(true) }
         return .object(fields)
     }
     public init(from decoder: any Decoder) throws { try self.init(json: try JSONValue(from: decoder)) }
     public func encode(to encoder: any Encoder) throws { try json.encode(to: encoder) }
 
-    /// The same colors and skin, whatever the publication time. A refresh that only bumps `updated_at` changes nothing on screen.
+    /// The same colors, skin and mic setting, whatever the publication time. A refresh that only bumps `updated_at` changes nothing
+    /// on screen; turning the mic setting on or off alone is a change.
     public func sameLook(as other: DesktopAppearance) -> Bool {
-        dark == other.dark && palette == other.palette && terminal == other.terminal && native == other.native
+        dark == other.dark && palette == other.palette && terminal == other.terminal && native == other.native && mic == other.mic
     }
 }
 

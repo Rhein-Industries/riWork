@@ -304,6 +304,9 @@ enum ConnectionState: Equatable {
         self.chatWaitMilliseconds = chatWaitMilliseconds
         self.chatIdleInterval = chatIdleInterval
         self.theme = ThemeStore(defaults: defaults)
+        // The desktop's mic setting, followed live: off, no dictation starts and one in progress is cancelled.
+        theme.onMicChange = { DictationController.shared.isAllowed = $0 }
+        DictationController.shared.isAllowed = theme.style.mic
         self.hotkeys = HotkeyStore(defaults: defaults)
         self.keyboard = KeyboardPrefs(defaults: defaults, hardware: hardwareKeyboard)
         self.cellMetrics = cellMetrics

@@ -58,6 +58,13 @@ final class DesktopThemeTests: XCTestCase {
             XCTAssertEqual(theme.muted, ThemeColor(fixed: palette.muted))
         }
     }
+    func testTheMicSettingComesOnlyFromTheDesktop() {
+        XCTAssertFalse(DesktopTheme.builtIn.mic, "no desktop: no mics")
+        XCTAssertFalse(DesktopTheme.resolve(Self.appearance()).mic, "a desktop without the setting: no mics")
+        let on = DesktopTheme.resolve(DesktopAppearance(updatedAt: 1, dark: true, palette: Self.appearance().palette, mic: true))
+        XCTAssertTrue(on.mic)
+        XCTAssertFalse(on.native, "the setting does not change the skin")
+    }
     func testTerminalColorsAreUsedWhenPresentAndPaletteWhenNot() {
         let with = DesktopTheme.resolve(Self.appearance(terminal: Self.terminal(background: 0x101010, foreground: 0xeeeeee)))
         XCTAssertEqual(with.terminalBackground, ThemeColor(fixed: RGB(0x101010)))

@@ -17,6 +17,8 @@ import RiWorkCore
     private(set) var appearance: DesktopAppearance?
     /// The desktop whose palette is shown.
     private(set) var shownDesktopID: String?
+    /// The shown desktop's mic setting turned on or off (`DesktopStyle.mic`).
+    @ObservationIgnored var onMicChange: ((Bool) -> Void)?
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var cache: [String: DesktopAppearance] = [:]
     /// The interface size every style is drawn at (see `InterfaceScale`).
@@ -82,6 +84,7 @@ import RiWorkCore
     private func apply(_ appearance: DesktopAppearance?) {
         let next = DesktopStyle(DesktopTheme.resolve(appearance), scale: scale)
         self.appearance = appearance
+        if next.mic != style.mic { onMicChange?(next.mic) }
         // An equal theme is not assigned: observers of `style` are not woken for nothing.
         if next != style { style = next }
     }

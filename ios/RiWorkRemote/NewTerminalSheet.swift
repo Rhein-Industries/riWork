@@ -17,8 +17,7 @@ struct NewTerminalSheet: View {
             WorkspaceBar(title: style.cased("New terminal")) {
                 Button("Cancel", action: sheet.cancel).accessibilityHint("Closes without opening a terminal")
             }
-            ScrollView { formContent }.scrollBounceBehavior(.basedOnSize)
-            footer
+            ScrollView { formContent }.scrollBounceBehavior(.basedOnSize).desktopSheetFooter(style) { footer }
         }
         .desktopSheetSurface(style)
         .foregroundStyle(style.text).font(style.face(13, relativeTo: .body)).tint(style.accent)
@@ -65,7 +64,7 @@ struct NewTerminalSheet: View {
             .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).accessibilityAddTraits(.isHeader)
     }
     private func ring(_ field: NewTerminalForm.Field) -> some View {
-        Rectangle().stroke(style.accent, lineWidth: 2).opacity(showFocus && sheet.form.focus == field ? 1 : 0).allowsHitTesting(false)
+        DesktopRing(shown: showFocus && sheet.form.focus == field, capsule: field == .create)
     }
 
     // MARK: Where
@@ -132,8 +131,8 @@ struct NewTerminalSheet: View {
                 Text(detail(kind)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
             }
             .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: style.pt(48), alignment: .leading)
-            .background(selected ? style.active : .clear).contentShape(Rectangle())
             .overlay { if selected { ring(.kind) } }
+            .desktopRowFill(style, selected: selected)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(kind.title).accessibilityHint(detail(kind))
@@ -149,6 +148,8 @@ struct NewTerminalSheet: View {
                     .font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
             }
         }
+        // Native's accent is black or white: the switch is the system green when on, so on and off are told apart.
+        .tint(style.native ? Color(uiColor: .systemGreen) : style.accent)
         .padding(.horizontal, 12).padding(.vertical, 6).frame(minHeight: style.pt(48))
         .overlay { ring(.unrestricted) }
         .padding(.top, 8)
@@ -160,7 +161,8 @@ struct NewTerminalSheet: View {
             Text(message.message).font(style.system(.footnote)).fixedSize(horizontal: false, vertical: true)
         }
         .foregroundStyle(style.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.warning.opacity(0.1))
+        .background(style.warning.opacity(0.1), in: style.block())
+        .padding(.horizontal, style.native ? 8 : 0)
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently)
         .padding(.top, 8)
     }
@@ -190,7 +192,7 @@ struct NewTerminalSheet: View {
             .overlay { ring(.create) }
             .padding(.horizontal, 12).padding(.bottom, 8)
             .accessibilityHint(sheet.unsupported ? sheet.unsupportedMessage : "Opens it on your Mac and switches to it")
-        }.background(style.panel)
+        }.background(style.glass ? style.surface : style.panel)
     }
 }
 
