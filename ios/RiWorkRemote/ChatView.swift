@@ -311,7 +311,11 @@ private struct ChatTranscriptList: View {
             ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height,
                           topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom)
         } action: { old, new in
-            if sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven) == .scrollToBottom {
+            let response = sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven)
+            // An animated jump can finish against a lazy stack's previous height while the approval/composer resizes.
+            // StickyBottom treats overscroll as following; it still needs correction to the newly measured content end.
+            let bottom = max(-new.topInset, new.contentHeight - new.viewportHeight + new.bottomInset)
+            if response == .scrollToBottom || (sticky.following && !userDriven && new.offset > bottom + 2) {
                 scheduleBottomCorrection()
             }
         }

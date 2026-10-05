@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import UIKit
+import Vision
 import RiWorkCore
 @testable import RiWorkRemote
 
@@ -292,8 +293,81 @@ import RiWorkCore
         XCTAssertEqual(scroll.contentOffset.y, offset, accuracy: 2, "streaming below does not pull a reader to the bottom")
         rig.model.conversation(chatID).jumpToEnd()
         await eventually("jump converges after lazy rows are measured", timeout: 3) {
-            scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom - scroll.contentOffset.y < 30
+            self.isAtValidBottom(scroll)
         }
+        assertValidBottom(scroll)
+        let text = try renderedTranscriptText(rig, scroll: scroll)
+        XCTAssertTrue(text.lowercased().contains("reader"), "the streamed tail is actually rendered, not an empty overscrolled viewport: \(text)")
+        await finish(rig)
+    }
+
+    private func transcriptScroll(_ rig: Rig) throws -> UIScrollView {
+        try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view)
+            .filter { $0.bounds.height > 100 && $0.contentSize.height > $0.bounds.height + 20 }
+            .max { $0.bounds.height < $1.bounds.height })
+    }
+    private func bottomOffset(_ scroll: UIScrollView) -> CGFloat {
+        max(-scroll.adjustedContentInset.top, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
+    }
+    private func isAtValidBottom(_ scroll: UIScrollView) -> Bool {
+        let offset = scroll.contentOffset.y
+        return scroll.bounds.height > 0 && offset >= -scroll.adjustedContentInset.top - 2
+            && offset <= bottomOffset(scroll) + 2 && abs(bottomOffset(scroll) - offset) <= 2
+    }
+    private func assertValidBottom(_ scroll: UIScrollView, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertGreaterThan(scroll.bounds.height, 0, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(scroll.contentOffset.y, -scroll.adjustedContentInset.top - 2, file: file, line: line)
+        XCTAssertLessThanOrEqual(scroll.contentOffset.y, bottomOffset(scroll) + 2, "no overscroll beyond the content end", file: file, line: line)
+        XCTAssertEqual(scroll.contentOffset.y, bottomOffset(scroll), accuracy: 2, "absolute bottom gap, including adjusted insets", file: file, line: line)
+    }
+    /// OCR the actual viewport pixels, not the model or off-screen accessibility nodes: blank content cannot pass this check.
+    private func renderedTranscriptText(_ rig: Rig, scroll: UIScrollView) throws -> String {
+        rig.window.layoutIfNeeded()
+        let visible = scroll.convert(scroll.bounds, to: rig.window).intersection(rig.window.bounds)
+        XCTAssertFalse(visible.isEmpty, "transcript has a visible viewport")
+        let image = UIGraphicsImageRenderer(size: visible.size).image { context in
+            context.cgContext.translateBy(x: -visible.minX, y: -visible.minY)
+            rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true)
+        }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+    }
+    func testApprovalArrivalKeepsLoadedChatTailVisible() async throws {
+        try await checkApprovalResize(jumpFirst: false)
+    }
+    func testJumpImmediatelyFollowedByApprovalResizeKeepsTailVisible() async throws {
+        try await checkApprovalResize(jumpFirst: true)
+    }
+    private func checkApprovalResize(jumpFirst: Bool) async throws {
+        let rig = try await makeRig(hardwareKeyboard: false, width: 375, height: 812)
+        let messages = (0..<12).map { index in
+            ChatEvent.itemCompleted(ChatItem(id: "reply-\(index)", status: .completed, body: .agentMessage(index == 11 ? "Latest reply remains visible." : "Reply \(index). This conversation has enough history to scroll.")))
+        }
+        await rig.transport.append(chatID, [.info(chat())] + messages)
+        _ = try await openChat(rig)
+        await eventually("fresh chat loaded") { rig.model.conversation(self.chatID).transcript.items.count == 12 }
+        try await Task.sleep(for: .milliseconds(400))
+        let scroll = try transcriptScroll(rig)
+        await eventually("fresh loaded chat at valid bottom") { self.isAtValidBottom(scroll) }
+        if jumpFirst {
+            scroll.setContentOffset(CGPoint(x: 0, y: -scroll.adjustedContentInset.top), animated: false)
+            try await Task.sleep(for: .milliseconds(300))
+            rig.model.conversation(chatID).jumpToEnd()
+        }
+        await rig.transport.append(chatID, [.approvalRequested(ChatApproval(requestID: "resize", kind: .command, title: "swift test --package-path ios", detail: "Run focused tests.", choices: [.accept, .acceptForSession, .decline, .cancel])), .state(.waiting)])
+        rig.model.conversation(chatID).draft = "Keep my draft\nand check the chat tail."
+        await eventually("approval arrives") { !rig.model.conversation(self.chatID).openApprovals.isEmpty }
+        try await Task.sleep(for: .milliseconds(500))
+        await eventually("approval and composer resize leave a valid bottom") { self.isAtValidBottom(scroll) }
+        assertValidBottom(scroll)
+        let text = try renderedTranscriptText(rig, scroll: scroll).lowercased()
+        XCTAssertTrue(text.contains("latest reply"), "rendered reply tail must remain visible: \(text)")
+        XCTAssertTrue(text.contains("waiting for you"), "rendered waiting status must remain visible: \(text)")
+        try reviewSnapshot(rig, name: jumpFirst ? "phone-jump-approval-resize" : "phone-fresh-approval-resize")
         await finish(rig)
     }
 
@@ -351,16 +425,32 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(600))
             try reviewSnapshot(rig, name: "\(tablet ? "tablet" : "phone")-\(name)-messages")
             let transcriptScroll = descendants(UIScrollView.self, in: rig.host.view)
-                .filter { $0.bounds.height > 100 && $0.contentSize.height > $0.bounds.height + 20 }
+                // The whole conversation can fit on iPad before an approval reduces its viewport.
+                .filter { $0.bounds.height > 100 }
                 .max { $0.bounds.height < $1.bounds.height }
-            transcriptScroll?.setContentOffset(CGPoint(x: 0, y: -(transcriptScroll?.adjustedContentInset.top ?? 0)), animated: false)
-            try await Task.sleep(for: .milliseconds(250))
+            let scrolledToStart = transcriptScroll.map { $0.contentSize.height > $0.bounds.height + 20 } ?? false
+            if scrolledToStart {
+                transcriptScroll?.setContentOffset(CGPoint(x: 0, y: -(transcriptScroll?.adjustedContentInset.top ?? 0)), animated: false)
+                try await Task.sleep(for: .milliseconds(250))
+            }
             try reviewSnapshot(rig, name: "\(tablet ? "tablet" : "phone")-\(name)-messages-start")
-            conversation.jumpToEnd()
+            if scrolledToStart { conversation.jumpToEnd() }
             await rig.transport.append(chatID, [.approvalRequested(ChatApproval(requestID: "review", kind: .command, title: "swift test --package-path ios", detail: "Run the focused chat tests.", choices: [.accept, .acceptForSession, .decline, .cancel])), .state(.waiting)])
             await eventually("approval shown") { !conversation.openApprovals.isEmpty }
             conversation.draft = "Please keep the current model\nand run the focused checks."
             try await Task.sleep(for: .milliseconds(400))
+            let scroll = try XCTUnwrap(transcriptScroll)
+            await eventually("review approval settles at valid bottom") { self.isAtValidBottom(scroll) }
+            assertValidBottom(scroll)
+            var rendered = ""
+            await eventually("review viewport paints its reply tail") {
+                rendered = (try? self.renderedTranscriptText(rig, scroll: scroll).lowercased()) ?? ""
+                return rendered.contains("waiting for you") && (category != .large || rendered.contains("read 328 lines"))
+            }
+            XCTAssertTrue(rendered.contains("waiting for you"), "review viewport renders its tail: \(rendered)")
+            if category == .large {
+                XCTAssertTrue(rendered.contains("read 328 lines"), "expanded tool tail remains visible: \(rendered)")
+            }
             try reviewSnapshot(rig, name: "\(tablet ? "tablet" : "phone")-\(name)-approval")
             if name == "dark" {
                 _ = field.becomeFirstResponder()
