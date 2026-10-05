@@ -34,8 +34,8 @@ pub const SILENCE_AFTER_SPEECH: Duration = Duration::from_millis(2_500);
 pub const SILENCE_BEFORE_SPEECH: Duration = Duration::from_secs(10);
 
 /// The shortcut that starts and stops dictation in a chat, as it is shown (main.rs binds it
-/// as `cmd-shift-space`).
-pub const SHORTCUT_LABEL: &str = "⌘⇧Space";
+/// as `ctrl-alt-d`).
+pub const SHORTCUT_LABEL: &str = "⌃⌥D";
 
 /// Why dictation could not go on.
 #[derive(Clone, Debug, PartialEq, Eq)]

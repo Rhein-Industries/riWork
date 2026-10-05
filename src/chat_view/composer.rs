@@ -169,11 +169,11 @@ mod tests {
     fn the_hint_names_dictation_only_while_the_mic_is_shown() {
         assert_eq!(
             hint(&Phase::Idle, false, true),
-            "⏎ send · ⇧⏎ new line · ⌘⇧Space dictate"
+            "⏎ send · ⇧⏎ new line · ⌃⌥D dictate"
         );
         assert_eq!(
             hint(&Phase::Idle, true, true),
-            "⏎ send (steers the turn) · ⇧⏎ new line · ⌘. interrupt · ⌘⇧Space dictate"
+            "⏎ send (steers the turn) · ⇧⏎ new line · ⌘. interrupt · ⌃⌥D dictate"
         );
         assert_eq!(hint(&Phase::Idle, false, false), "⏎ send · ⇧⏎ new line");
         assert_eq!(

@@ -204,7 +204,7 @@ pub struct Settings {
     pub interface_font: InterfaceFont,
     /// Microphone buttons for dictation: in the Mac's chat message boxes, and on the
     /// paired phone (its chats and terminals), which reads it from `appearance.json` as
-    /// `mic`. Off, the Mac's chats show no mic, ⌘⇧Space does nothing in them, and no speech
+    /// `mic`. Off, the Mac's chats show no mic, ⌃⌥D does nothing in them, and no speech
     /// helper runs or asks for a permission.
     pub dictation_mic: bool,
 }
@@ -2460,7 +2460,7 @@ impl SettingsPanel {
             .child(self.toggle_row(
                 Toggle::DictationMic,
                 "Show microphone buttons for dictation",
-                "Covers the mic in chat message boxes on this Mac (or ⌘⇧Space) and the mic buttons on a paired iPhone, in its chats and terminals. Speech is recognized on the device you speak to and stays there. Off hides them all.",
+                "Covers the mic in chat message boxes on this Mac (or ⌃⌥D) and the mic buttons on a paired iPhone, in its chats and terminals. Speech is recognized on the device you speak to and stays there. Off hides them all.",
                 settings.dictation_mic,
                 cx,
             ))

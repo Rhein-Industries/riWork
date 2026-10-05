@@ -1,4 +1,4 @@
-//! Dictation into the message box: the mic button and ⌘⇧Space start and stop it, ⎋ cancels it,
+//! Dictation into the message box: the mic button and ⌃⌥D start and stop it, ⎋ cancels it,
 //! the words appear at the caret as they are heard, and it stops by itself after a pause.
 //! Dictation never sends the message. The rules are `dictation::Machine`'s; this runs them
 //! against the helper process and the box. All of it is there only while Settings shows the
@@ -62,7 +62,7 @@ struct Active(Option<WeakEntity<ChatView>>);
 impl Global for Active {}
 
 impl ChatView {
-    /// The mic button and ⌘⇧Space: start a dictation into the message box, or stop the one that
+    /// The mic button and ⌃⌥D: start a dictation into the message box, or stop the one that
     /// runs and keep what was heard.
     pub(super) fn toggle_dictation(&mut self, cx: &mut Context<Self>) {
         if !self.accepts_input() || !mic_shown(cx) {

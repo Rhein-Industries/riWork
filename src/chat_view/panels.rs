@@ -1193,7 +1193,7 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// The mic beside Send: click to dictate, click again to stop; ⌘⇧Space does the same. Native
+    /// The mic beside Send: click to dictate, click again to stop; ⌃⌥D does the same. Native
     /// draws it as the round buttons beside it: a mic, filled in the working color while it
     /// listens and pulsing while it gets ready or settles. The colorful themes write it out.
     fn mic_button(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {

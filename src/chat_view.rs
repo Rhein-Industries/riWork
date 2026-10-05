@@ -475,7 +475,7 @@ impl ChatView {
         self.interrupt(cx);
     }
 
-    /// ⌘⇧Space. With the mic hidden the key is not this tab's: it goes on as if unbound.
+    /// ⌃⌥D. With the mic hidden the key is not this tab's: it goes on as if unbound.
     fn dictation_action(&mut self, _: &ToggleDictation, _: &mut Window, cx: &mut Context<Self>) {
         if dictate::mic_shown(cx) {
             self.toggle_dictation(cx);
@@ -821,7 +821,7 @@ impl ChatView {
                 self.interrupt(cx);
                 true
             }
-            "space" if mods.platform && mods.shift && dictate::mic_shown(cx) => {
+            "d" if mods.control && mods.alt && !mods.platform && dictate::mic_shown(cx) => {
                 self.toggle_dictation(cx);
                 true
             }

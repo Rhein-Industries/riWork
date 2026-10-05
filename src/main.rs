@@ -11123,7 +11123,7 @@ fn main() {
             KeyBinding::new("cmd-alt-shift-c", OpenCodexChat, None),
             KeyBinding::new("cmd-alt-shift-l", OpenClaudeChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
-            KeyBinding::new("cmd-shift-space", ToggleDictation, Some("ChatView")),
+            KeyBinding::new("ctrl-alt-d", ToggleDictation, Some("ChatView")),
         ]);
         cx.set_menus([
             Menu::new("RiWork").items([
@@ -14316,8 +14316,21 @@ mod chat_tab_tests {
         }
         // Dictation in a chat: its own key, bound only in a chat tab.
         assert!(
-            keys.contains(&("cmd-shift-space".to_owned(), "Some(\"ChatView\"".to_owned())),
+            keys.contains(&("alt-ctrl-d".to_owned(), "Some(\"ChatView\"".to_owned())),
             "{keys:?}"
+        );
+        // ⌃⌥D is nobody else's, and ⌘⇧D stays Split down in a chat as everywhere.
+        assert_eq!(
+            keys.iter()
+                .filter(|(keystroke, _)| keystroke == "alt-ctrl-d")
+                .count(),
+            1
+        );
+        assert!(keys.contains(&("cmd-shift-d".to_owned(), "None".to_owned())));
+        assert!(
+            !keys
+                .iter()
+                .any(|(keystroke, _)| keystroke == "cmd-shift-space")
         );
         for chat in ["alt-cmd-shift-c", "alt-cmd-shift-l"] {
             assert!(
