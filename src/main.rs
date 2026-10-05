@@ -8834,7 +8834,14 @@ impl Workspace {
                 .map(|panel| panel.clone().into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
             Some(TabContent::Panel(PanelKind::Settings)) => {
-                self.settings_panel.clone().into_any_element()
+                // Settings fills the pane. Keep its large tree out of the workspace's
+                // intrinsic-size passes; lay it out once at the pane's actual size.
+                // Its own notifications (including scrolling and global changes) still
+                // invalidate the cached view.
+                self.settings_panel
+                    .clone()
+                    .cached(gpui::StyleRefinement::default().size_full())
+                    .into_any_element()
             }
             Some(TabContent::Panel(PanelKind::Files)) => active_tab
                 .and_then(|tab| self.file_surfaces.get(&tab.id))

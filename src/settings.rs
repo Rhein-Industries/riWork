@@ -1092,6 +1092,28 @@ impl SettingsPanel {
             .detach();
         cx.observe_global::<CuaSetupState>(|_, cx| cx.notify())
             .detach();
+        // RemoteState also changes when polling is merely scheduled. Only the
+        // host rows and their error affect this panel; do not redraw for a tick.
+        let mut remote_rows = remote_service::hosts(cx);
+        let mut remote_error = cx
+            .global::<RemoteState>()
+            .tree()
+            .hosts_error()
+            .map(str::to_owned);
+        cx.observe_global::<RemoteState>(move |_, cx| {
+            let rows = remote_service::hosts(cx);
+            let error = cx
+                .global::<RemoteState>()
+                .tree()
+                .hosts_error()
+                .map(str::to_owned);
+            if rows != remote_rows || error != remote_error {
+                remote_rows = rows;
+                remote_error = error;
+                cx.notify();
+            }
+        })
+        .detach();
         cx.observe_global::<CodexAccountsState>(|view, cx| {
             view.sync_account_focus(cx);
             cx.notify();
