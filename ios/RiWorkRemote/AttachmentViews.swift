@@ -77,6 +77,9 @@ enum PasteboardAttachments {
 
 /// Where a photo or a file comes from: the Photos library, Files or the camera, offered as a dialog when `isPresented` is set. `onDone`
 /// runs once whatever was shown has gone, picked or not (the terminal gives the keyboard back then).
+///
+/// The dialog and the pickers exist only while one of them is wanted, on a background of their own: installed for good, the pickers'
+/// presenters take the keys and the keyboard from a chat's composer.
 struct AttachmentPicker: ViewModifier {
     @Binding var isPresented: Bool
     var onPick: ([AttachmentSource]) -> Void
@@ -84,10 +87,16 @@ struct AttachmentPicker: ViewModifier {
     @State private var photos = false
     @State private var files = false
     @State private var camera = false
-    @State private var selection: [PhotosPickerItem] = []
+
+    private var armed: Bool { isPresented || photos || files || camera }
 
     func body(content: Content) -> some View {
-        content
+        content.background {
+            if armed { presenters }
+        }
+    }
+    private var presenters: some View {
+        Color.clear
             .confirmationDialog("Send to the Mac", isPresented: $isPresented, titleVisibility: .visible) {
                 Button("Photo Library") { photos = true }
                 if UIImagePickerController.isSourceTypeAvailable(.camera) { Button("Take Photo") { camera = true } }
@@ -96,27 +105,24 @@ struct AttachmentPicker: ViewModifier {
             } message: {
                 Text("A terminal gets the file’s path the way its program takes a dropped file; a chat gets it in the message.")
             }
-            .photosPicker(isPresented: $photos, selection: $selection, maxSelectionCount: UploadLimits.maximumFiles, matching: .images, photoLibrary: .shared())
+            .photosPicker(isPresented: $photos, selection: picked, maxSelectionCount: UploadLimits.maximumFiles, matching: .images, photoLibrary: .shared())
             .fileImporter(isPresented: $files, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result, !urls.isEmpty { onPick(urls.map(AttachmentSource.file)) }
             }
             .fullScreenCover(isPresented: $camera) {
                 CameraPicker { data in onPick([.camera(data)]) }.ignoresSafeArea()
             }
-            .onChange(of: photos) { _, open in
-                guard !open else { return }
-                if !selection.isEmpty { onPick(selection.map(AttachmentSource.photo)); selection = [] }
-                finishSoon()
-            }
-            .onChange(of: files) { _, open in if !open { finishSoon() } }
-            .onChange(of: camera) { _, open in if !open { finishSoon() } }
-            .onChange(of: isPresented) { _, open in if !open { finishSoon() } }
+            .onDisappear(perform: finishSoon)
+    }
+    /// The photos chosen go out as the picker hands them over: the picker closes in the same moment, and with it these presenters.
+    private var picked: Binding<[PhotosPickerItem]> {
+        Binding(get: { [] }, set: { items in if !items.isEmpty { onPick(items.map(AttachmentSource.photo)) } })
     }
     /// The dialog's choice opens the next sheet right after the dialog closes: done only when nothing is open a moment later.
     private func finishSoon() {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
-            if !isPresented, !photos, !files, !camera { onDone() }
+            if !armed { onDone() }
         }
     }
 }
