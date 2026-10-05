@@ -21,6 +21,8 @@ struct ChatScreen: View {
     /// The height the screen has now. With the software keyboard up it is under half of the phone, and the bars above the composer must
     /// leave the transcript room, so what they may scroll is a share of it.
     @State private var height: CGFloat = 800
+    /// The photo or file picker of the composer's paperclip.
+    @State private var picking = false
 
     private var conversation: ChatConversation { model.chatConversations[chat.id] ?? ChatConversation(id: chat.id) }
     private var state: ChatState { model.chatState(chat) }
@@ -45,11 +47,16 @@ struct ChatScreen: View {
                 }
                 .id(question.requestID)
             }
+            if let activity = model.uploadActivity(for: .chat(chat.id)) {
+                UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
+            }
             ChatComposer(conversation: conversation, provider: chat.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
-                         send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } })
+                         send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
+                         attach: { picking = true }, pasteFiles: pasteFiles)
         }
         .background(style.background)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+        .attachmentPicker(isPresented: $picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
         .task(id: chat.id) { await model.followChat(chat.id) }
         .onAppear { requestFocus() }
         .onChange(of: chat.id) { _, _ in requestFocus() }
@@ -75,6 +82,13 @@ struct ChatScreen: View {
     private func requestFocus() {
         let context = KeyboardFocusContext(hardwareKeyboard: model.keyboard.hardware.isAttached)
         if KeyboardFocusPolicy.decide(setting: model.keyboard.focusSetting, context: context).shouldFocus { focusToken &+= 1 }
+    }
+    /// A paste of files or a lone picture in the composer: they go to the Mac and their paths into the message.
+    private func pasteFiles() -> Bool {
+        let sources = PasteboardAttachments.sources()
+        guard !sources.isEmpty else { return false }
+        model.attach(sources, to: .chat(chat.id))
+        return true
     }
 }
 

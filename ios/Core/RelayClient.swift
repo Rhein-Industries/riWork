@@ -27,11 +27,14 @@ public enum RequestValidation {
         case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events"]
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
+        case "upload.begin", "upload.chunk", "upload.finish", "upload.cancel", "shell.paste":
+            (required, optional) = UploadRequests.methods[method] ?? ([], [])
         default: throw RemoteError.protocolViolation("Unsupported operation.")
         }
         let keys = Set(params.keys)
         guard required.isSubset(of: keys), keys.isSubset(of: required.union(optional)) else { throw RemoteError.protocolViolation("Invalid request parameters.") }
-        for key in ["project_id", "worktree_id", "shell_id", "batch", "chat_id"] where params[key] != nil { try uuid(params[key]?.string) }
+        for key in ["project_id", "worktree_id", "shell_id", "batch", "chat_id", "upload"] where params[key] != nil { try uuid(params[key]?.string) }
+        try UploadRequests.validate(method: method, params: params, uuid: uuid)
         if method == "shell.keys" {
             guard case .array(let raw)? = params["items"] else { throw RemoteError.protocolViolation("Missing key items.") }
             try KeyItem.validate(batch: try raw.map { try KeyItem(json: $0) })
@@ -134,6 +137,8 @@ public actor RelayClient: RemoteTransport {
         case "chat.create": return max(base, .seconds(90))
         case "chat.command": return max(base, .seconds(60))
         case "chat.stop": return max(base, .seconds(30))
+        // A file for a shell first asks the CLI and the shell list; finishing hashes the whole file; a paste waits for the shell's lock.
+        case "upload.begin", "upload.finish", "shell.paste": return max(base, .seconds(30))
         case "chat.events":
             if case .number(let wait)? = params["wait_ms"], wait.isFinite, wait > 0 { return max(base, ChatLimits.timeout(waitMilliseconds: Int(min(wait, Double(ChatLimits.maximumWaitMilliseconds))))) }
             return base

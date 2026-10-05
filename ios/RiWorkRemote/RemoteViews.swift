@@ -583,6 +583,8 @@ struct SessionConsole: View {
     @State private var editor: HotkeyEditorStart?
     /// A dictated line waiting to be checked before it is typed into the shell (`TerminalDictationPanel`).
     @State private var dictatedLine: String?
+    /// The photo or file picker (the key bar's paperclip, or the one beside the keyboard button or Send).
+    @State private var picking = false
     @Environment(\.scenePhase) private var scenePhase
     /// Live pinch scale. A GestureState resets by itself if the gesture is cancelled; the size is committed (and the
     /// grid recomputed) only when the pinch ends.
@@ -622,6 +624,7 @@ struct SessionConsole: View {
                                    onEditHotkeys: { openEditor(.list) }, onNewHotkey: { openEditor(.new) }, onEditHotkey: { openEditor(.edit($0)) },
                                    onKeyEvent: { model.keyboard.events.record($0) },
                                    dictation: DictationController.shared.barState(for: .terminal), onDictate: dictate,
+                                   onAttach: openPicker, onPasteFiles: pasteFiles,
                                    onItems: { model.type($0) == .accepted })
                             .frame(width: 1, height: 1).accessibilityHidden(true)
                     }
@@ -633,6 +636,9 @@ struct SessionConsole: View {
         // The keyboard goes first (`openEditor`), so the editor is not competing with it for the screen, and comes back with the shell.
         .sheet(item: $editor, onDismiss: { keyFocus.restoreAfterModalDismissal() }) {
             HotkeyEditorSheet(store: model.hotkeys, keyboard: model.keyboard, start: $0).desktopThemed(model.theme.style)
+        }
+        .attachmentPicker(isPresented: $picking, onDone: { keyFocus.restoreAfterModalDismissal() }) { sources in
+            if let id = model.sessionID { model.attach(sources, to: .shell(id)) }
         }
         .onAppear { configureFocus(); keyFocus.shellReady(readyShell) }
         .onChange(of: model.sessionID) { _, _ in configureFocus() }
@@ -659,6 +665,20 @@ struct SessionConsole: View {
         keyFocus.suspendForModal()
         editor = start
     }
+    /// Like the editor: the keyboard goes first and comes back when the picker is done.
+    private func openPicker() {
+        palette.close()
+        help.close()
+        keyFocus.suspendForModal()
+        picking = true
+    }
+    /// A paste that found files or a lone picture: they go to the Mac and their paths into the shell. False leaves it to the text paste.
+    private func pasteFiles() -> Bool {
+        let sources = PasteboardAttachments.sources()
+        guard let id = model.sessionID, !sources.isEmpty else { return false }
+        model.attach(sources, to: .shell(id))
+        return true
+    }
     /// The iPad keeps the terminal it has always had (two axes, a follow toggle); the iPhone has `PhoneTerminal`.
     private var usesPhoneTerminal: Bool { UIDevice.current.userInterfaceIdiom != .pad }
     private var terminal: some View {
@@ -679,6 +699,12 @@ struct SessionConsole: View {
         .overlay(alignment: .bottom) {
             TerminalDictationPanel(controller: .shared, review: $dictatedLine, canType: model.session?.alive == true, type: typeDictated,
                                    done: { keyFocus.focus() })
+        }
+        // A file on its way to the Mac: at the top, clear of the chip and notices at the bottom.
+        .overlay(alignment: .top) {
+            if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)) {
+                UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
+            }
         }
         .onChange(of: model.sessionAutoSwitches) { _, _ in configureFocus(); keyFocus.shellReplacedWithoutTap() }
         .simultaneousGesture(TapGesture().onEnded { terminalTapped() })
@@ -778,6 +804,7 @@ struct SessionConsole: View {
             if model.state != .connected {
                 Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting).buttonStyle(DesktopButtonStyle(compact: true))
             }
+            AttachButton(action: openPicker).disabled(model.state != .connected || model.session?.alive != true)
             Button(keyFocus.isActive ? "Hide keyboard" : "Show keyboard", systemImage: keyFocus.isActive ? "keyboard.chevron.compact.down" : "keyboard") {
                 if keyFocus.isActive { keyFocus.userDismiss() } else { keyFocus.focus() }
             }.labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: true))
@@ -793,6 +820,7 @@ struct SessionConsole: View {
                              label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
                              onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
                     .modifier(DesktopField())
+                AttachButton(compact: false, action: openPicker).disabled(model.state != .connected || model.session?.alive != true)
                 TerminalMicButton(isEnabled: model.canEditDraft, action: dictate)
                 Button("Send", systemImage: "arrow.up", action: send)
                     .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))

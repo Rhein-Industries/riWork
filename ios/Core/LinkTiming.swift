@@ -49,6 +49,9 @@ public struct DesktopFeatures: Sendable, Equatable {
     /// The desktop has native chats and answers `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop` (`features.chat`).
     /// Without it the phone does not offer chats.
     public var chat = false
+    /// The desktop takes files from the phone (`features.upload`): `upload.*` and `shell.paste`. Without it the phone says the Mac needs
+    /// an update instead of sending one.
+    public var upload: UploadFeature?
     public init() {}
     public init(ready: JSONValue) {
         let features = ready["features"]
@@ -62,6 +65,7 @@ public struct DesktopFeatures: Sendable, Equatable {
             maximumInflatedBytes = min(LinkFrame.maximumInflatedBytes, count(.object(deflate)["max_inflated"]) ?? LinkFrame.maximumInflatedBytes)
         }
         if case .bool(true) = features["chat"] { chat = true }
+        upload = UploadFeature(features["upload"])
         if let lines = count(features["history_max_lines"]), lines >= 1 {
             historyMaximumLines = max(HistoryLimits.legacyMaximumPageLines, min(HistoryLimits.maximumPageLines, lines))
         }

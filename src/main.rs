@@ -52,6 +52,7 @@ mod theme;
 mod tooltip;
 mod ui_text;
 mod update;
+mod upload_inbox;
 mod usage;
 
 use std::{

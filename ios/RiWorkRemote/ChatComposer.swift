@@ -21,6 +21,16 @@ import RiWorkCore
     var onKey: (ChatKey) -> ChatKeyAction = { _ in .none }
     /// A request waits for the keys that answer it (and nothing is typed).
     var answersApproval = false
+    /// A paste that finds files or a lone picture sends them to the Mac (`PasteboardAttachments`); true when it took the paste.
+    var onPasteFiles: (() -> Bool)?
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), onPasteFiles != nil, PasteboardAttachments.available { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+    override func paste(_ sender: Any?) {
+        if let onPasteFiles, PasteboardAttachments.available, onPasteFiles() { return }
+        super.paste(sender)
+    }
     private lazy var typingCommands: [UIKeyCommand] = [
         Self.command("\r", [], action: #selector(fired(_:))),
         Self.command("\r", .shift, action: #selector(fired(_:)))
@@ -68,6 +78,7 @@ struct ChatComposerField: UIViewRepresentable {
     var onFocusChange: (Bool) -> Void = { _ in }
     /// Where dictation puts its words: this view, at its caret.
     var insertion: TextInsertion?
+    var onPasteFiles: (() -> Bool)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> ChatComposerTextView {
@@ -112,6 +123,7 @@ struct ChatComposerField: UIViewRepresentable {
         view.onKey = onKey
         view.answersApproval = answersApproval
         insertion?.view = view
+        view.onPasteFiles = onPasteFiles
         if coordinator.lastFocusToken != focusToken {
             coordinator.lastFocusToken = focusToken
             // The view may not be in a window yet (the screen is still arriving): the next turn of the run loop is early enough.
@@ -154,6 +166,9 @@ struct ChatComposer: View {
     let send: () -> Void
     let interrupt: () -> Void
     let decide: (ChatDecision) -> Void
+    /// The paperclip (a photo or a file goes to the Mac and its path into the message), and a paste of files.
+    var attach: (() -> Void)?
+    var pasteFiles: (() -> Bool)?
     @State private var focused = false
     @State private var dictation = TextInsertion()
 
@@ -180,9 +195,15 @@ struct ChatComposer: View {
                 .accessibilityElement(children: .combine)
             }
             HStack(alignment: .bottom, spacing: 4) {
+                if let attach {
+                    Button(action: attach) { Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5)) }
+                        .buttonStyle(.plain).frame(width: style.pt(32), height: style.pt(44)).contentShape(Rectangle())
+                        .disabled(!connected)
+                        .accessibilityLabel("Send a photo or file").accessibilityHint("Sends it to the Mac and puts its path in the message")
+                }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
                                   isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, onKey: handle, onFocusChange: { focused = $0 },
-                                  insertion: dictation)
+                                  insertion: dictation, onPasteFiles: pasteFiles)
                     .overlay(alignment: .topLeading) {
                         if conversation.draft.isEmpty {
                             Text(placeholder).font(style.prose).foregroundStyle(style.muted).padding(.top, 8).padding(.leading, style.native ? 14 : 8)

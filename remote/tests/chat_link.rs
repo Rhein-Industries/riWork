@@ -285,6 +285,11 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
         link::MIN_COMPRESS_BYTES
     );
     assert_eq!(phone.ready["features"]["history_max_lines"], 5000);
+    // Files from the phone need nothing of the CLI to be announced.
+    assert_eq!(
+        phone.ready["features"]["upload"],
+        riwork_remote::upload::features()
+    );
     assert_eq!(rig.calls("capabilities", "--json"), 1);
     // Believed once it said yes: a second phone does not ask again.
     drop(phone);

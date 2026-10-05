@@ -293,6 +293,36 @@ Typing anything gives ⏎ ⇧⏎ ⎋ ⌘⌫ back to the text; a decision the pro
 
 **Look.** The synced desktop theme (accent for the user's blocks and the selection, gold for waiting and warnings, the terminal palette's green and red for diffs), Dynamic Type and the interface scale, VoiceOver labels and values on every card ("Command: ls, exit 2, failed", "Expanded"), Reduce Motion (the indicator stops pulsing and the list jumps without animating). Prose is the system face; code, commands and chrome are Menlo.
 
+### Photos and files
+
+A photo or a file goes from the phone to a terminal or a chat on the Mac, where the agent reads it as if it had been
+dropped on the Mac's terminal (`Core/FileUpload.swift`, `RiWorkRemote/RemoteModel+Upload.swift`,
+`RiWorkRemote/AttachmentViews.swift`; the contract is the file upload extension of `docs/remote-protocol.md`).
+
+- **Paste.** When the pasteboard holds files or a picture alone, the terminal's Paste (the key bar's Paste, ⌘V on a
+  hardware keyboard, the edit menu) and a chat composer's paste send them instead of doing nothing. The rule is the
+  Mac's: files first, then text, then a picture alone, so text still pastes as typing. Only the pasteboard's types are
+  looked at before the paste, which never shows the paste prompt.
+- **Pick.** The paperclip on the key bar (keyboard up), beside the keyboard button (keyboard down), beside Send in the
+  line composer and at the left of a chat's composer offers **Photo Library** (`PhotosPicker`, which needs no library
+  permission), **Take Photo** (where there is a camera; the camera usage text covers it) and **Files**
+  (`fileImporter`, any type, several at once). The terminal's keyboard goes away for the picker and comes back after.
+- **What travels.** A photo from the library, the camera or the pasteboard becomes an upright JPEG of at most 4096
+  pixels on its longest side and without metadata, so its location stays on the phone; a PNG or GIF (a screenshot)
+  goes as it is. A file from Files goes as it is, except a picture no agent reads (HEIC, TIFF), which becomes JPEG.
+- **Where it goes.** For a terminal, the files are uploaded and then pasted into it with one `shell.paste` (their paths,
+  in the form the program in front takes a dropped file: Claude Code, Codex and Grok attach a picture, a shell gets the
+  escaped path). For a chat, their paths go at the end of the message being written, one per line; the agent reads them
+  with its tools when the message is sent (the chat drivers take text only, so nothing is attached).
+- **On the way.** A line over the terminal (at the top, so the terminal never changes size) or above the chat composer
+  shows the file, how far it is and **Cancel** (which tells the Mac to drop what it has); a failure stays there with the
+  reason and **Dismiss**. One sending at a time, at most 16 files. Chunks of 90 KiB go one after another; a link that
+  drops is waited for (up to 30 s) and the upload goes on where the Mac got to. A paste asked again after a lost answer
+  carries the same batch, so it never types twice; an `uncertain` one says to look at the terminal first.
+- **An older Mac.** A Mac whose `ready` has no `features.upload` is never sent anything: the line says RiWork on the Mac
+  needs an update. One that refuses the methods ("unsupported RPC method") is told apart the same way, and one whose
+  CLI cannot paste yet says so before the first byte.
+
 ### Direct typing, focus mode and text size
 
 When the desktop supports `shell.keys`, tapping the terminal opens the keyboard and
@@ -306,7 +336,7 @@ prediction off; return key "return"). A key bar sits on the keyboard, always 44 
 puts it: on top of the software keyboard, or alone at the bottom edge when a hardware keyboard is attached. It
 scrolls sideways: Esc, Tab, a sticky Ctrl (armed until the next letter, sent as `C-<letter>`), a sticky Alt (Meta,
 sent as `Escape` followed by the next key or text, readline style), arrows, Shift-Tab, Home, End, PgUp, PgDn, Delete,
-Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held) and Paste, then a ⌘ button that opens the hotkey menu, a ? button that opens the hotkey help and the hotkeys (those that
+Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held), Paste and a paperclip (see "Photos and files"), then a ⌘ button that opens the hotkey menu, a ? button that opens the hotkey help and the hotkeys (those that
 want a button), then the
 symbols that are awkward on the iOS keyboard (`` | / \ ~ - _ ` * & $ > < { } [ ] ; : ' " ``), then a "+" that opens the
 hotkey editor. Hide keyboard stays at the right end. The ends of the row are padded so the first and last key clear

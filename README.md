@@ -43,7 +43,10 @@ project or worktree, and create a new project in the default projects folder
 (the phone names it and never chooses a location). A running RiWork window adds
 a tab for a terminal started this way (or by `riwork shell create`) behind its
 current one, without taking focus, and lists a project made this way (or by
-`riwork project create`) in its Projects panel within a couple of seconds. Each device has independent endpoint secrets and revocable access; the
+`riwork project create`) in its Projects panel within a couple of seconds. A phone can
+also send a photo or a file to a terminal, whose program gets its path as from a drop on
+the terminal, or to a chat, whose message gets its path (see **Files from the phone**
+below). Each device has independent endpoint secrets and revocable access; the
 relay routes encrypted frames without session content or pairing secrets.
 
 ```sh
@@ -246,6 +249,7 @@ riwork shell cwd SHELL_UUID
 riwork shell metrics SHELL_UUID
 riwork shell send SHELL_UUID "pwd"
 riwork shell keys SHELL_UUID -- t:'git status' k:Enter
+riwork shell paste SHELL_UUID -- /absolute/path/to/screenshot.png
 riwork shell attach SHELL_UUID
 riwork shell attach SHELL_UUID --exec [--ignore-size] [--read-only]
 ```
@@ -261,6 +265,8 @@ Mouse-wheel and trackpad scrolling use tmux's scrollback. Codex, Grok, and Claud
 **Files dropped on a terminal.** Drag files or folders from Finder (a screenshot from the desktop, say) onto a shell, Codex, Claude, Grok, orchestrator or editor tab and their absolute paths are typed into it as Ghostty does it: a backslash before spaces and the other characters a shell reads specially (``\ ()[]{}<>"'`!#$&;|*?`` and tab), several paths separated by one space, nothing after the last and no Return. The text goes in as a paste (tmux `paste-buffer -p` into the tab's shell), bracketed when the program asked for bracketed paste, so Claude Code, Codex and Grok see pasted paths and attach dropped pictures (png, jpeg, gif, webp) as `[Image #1]`; other files stay paths. Claude Code and Grok take several paths in one paste. Codex attaches a paste only when it is a single picture's path, so a Codex tab gets one paste per path, with a space after each path that is not a picture. Which program is in front is read from the pane (`pane_current_command`, then the processes in the terminal's foreground, as for Codex installed by npm, which runs as `node`); an agent tab RiWork started counts as that agent until a shell is back in front. A thin outline in the theme's accent color marks the terminal under the drag; the drop selects that pane and gives its terminal the keys, and a terminal in copy mode leaves it first. A tab for another Mac's shell takes no drop, since a path on this Mac means nothing there, and text dragged from another app is not taken: the window accepts only files.
 
 **Copied files and pictures.** ⌘V in a local terminal pastes text through Ghostty as before. When the pasteboard holds files instead (⌘C on files in Finder), RiWork pastes their paths exactly as a drop would, for shells and agents alike; Ghostty alone would paste only the file's name. A picture copied with no file and no text (a screenshot taken with ⌃⇧⌘4, or Copy Image) turns ⌘V into Ctrl+V for Claude Code, Codex and Grok, the key with which each reads a picture from the pasteboard itself and attaches it; a shell gets nothing, as in Ghostty. Ctrl+V itself always reaches the program unchanged (neither RiWork, Ghostty nor RiWork's tmux binds it), so it works as each CLI documents: Claude Code attaches a copied picture but not a copied file; Codex and Grok attach a copied picture or a copied picture file. A tab for another Mac's shell keeps Ghostty's text paste.
+
+**Files from the phone.** A photo or a file sent from the iPhone app to a terminal is pasted the same way. The phone uploads it over the encrypted link (see [docs/remote-protocol.md](docs/remote-protocol.md), "File upload extension"); the connector keeps it in `RIWORK_HOME/uploads/SHELL_UUID/` (folders mode 700, files mode 600, under a name the connector makes, never the phone's) and runs `riwork shell paste SHELL_UUID -- FILE...`, which pastes the paths exactly as a drop of those files on that terminal would, chosen by the program in front: Claude Code and Grok get the escaped paths in one paste and attach a picture, Codex one paste per path and attaches a picture, a shell gets the escaped paths. No Return is added and the paste happens once, however often the phone asks again. `shell paste` takes 1 to 16 existing files by absolute path, refuses anything else before it touches the pane (an error that starts with `invalid_request:`, `not_found:`, `input_unavailable:` or `not_sent:` pasted nothing), and `capabilities --json` says `"shell_paste": true`. A file sent to a chat lands in `RIWORK_HOME/uploads/CHAT_UUID/` and its path goes into the message on the phone. Uploads are removed after a day, when their device is revoked, and when the shell is closed or the chat deleted.
 
 RiWork's tmux server always lives in tmux's default socket directory: an inherited `TMUX_TMPDIR` is ignored, so the app, the CLI, and a terminal that sets it all reach the same server. A project folder whose name tmux would misread (`C#Tools`, `#{…}`, or a name ending in `;`) starts its shells in that folder; if tmux still cannot start a shell in the requested folder, creation fails with an error instead of opening in your home directory. Variables that name a CLI profile (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`) and `RIWORK_CUA_DRIVER` are cleared from the server's environment when the app was started without them, so a value left by an earlier launch cannot reach a new session, and your own zsh startup files remain free to set them.
 

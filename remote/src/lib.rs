@@ -14,6 +14,7 @@ pub mod link;
 pub mod pty;
 pub mod relay;
 pub mod rpc;
+pub mod upload;
 pub mod viewport;
 
 pub const MAX_FRAME: usize = 262_144;

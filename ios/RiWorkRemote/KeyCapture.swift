@@ -68,6 +68,10 @@ enum TerminalFont {
     var onEditHotkeys: (() -> Void)?
     /// The bar's mic: start or stop a dictation.
     var onDictate: (() -> Void)?
+    /// The bar's paperclip, and a paste that finds files or a picture (`PasteboardAttachments`): both send them to the Mac. A paste
+    /// that is handled returns true; text is pasted as typing, as before.
+    var onAttach: (() -> Void)?
+    var onPasteFiles: (() -> Bool)?
     var onNewHotkey: (() -> Void)?
     var onEditHotkey: ((Hotkey) -> Void)?
     /// Every key event that reaches the view, for the readout.
@@ -196,9 +200,12 @@ enum TerminalFont {
 
     // MARK: Paste
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        action == #selector(paste(_:)) ? UIPasteboard.general.hasStrings : super.canPerformAction(action, withSender: sender)
+        action == #selector(paste(_:))
+            ? UIPasteboard.general.hasStrings || (onPasteFiles != nil && PasteboardAttachments.available)
+            : super.canPerformAction(action, withSender: sender)
     }
     override func paste(_ sender: Any?) {
+        if !palette.isOpen, let onPasteFiles, PasteboardAttachments.available, onPasteFiles() { return }
         guard let text = UIPasteboard.general.string else { return }
         if palette.isOpen { paletteText(text) } else { pasteText(text) }
     }
@@ -225,6 +232,7 @@ enum TerminalFont {
         case .latch(let modifier, let latch): mapper.setLatch(modifier, latch)
         case .text(let symbol): emit(mapper.insert(symbol))
         case .paste: paste(nil)
+        case .attach: onAttach?()
         case .hide: onUserHide?(); _ = resignFirstResponder()
         case .hotkey(let id): if let hotkey = (Hotkey.builtIn + hotkeys).first(where: { $0.id == id }) { emit(mapper.run(hotkey)) }
         case .editHotkeys: onEditHotkeys?()
@@ -625,6 +633,8 @@ struct KeyCapture: UIViewRepresentable {
     var onKeyEvent: (KeyEventRecord) -> Void = { _ in }
     var dictation = KeyBarView.Dictation.idle
     var onDictate: () -> Void = {}
+    var onAttach: () -> Void = {}
+    var onPasteFiles: () -> Bool = { false }
     var onItems: ([KeyItem]) -> Bool
 
     func makeUIView(context: Context) -> KeyCaptureView {
@@ -653,6 +663,8 @@ struct KeyCapture: UIViewRepresentable {
         view.onKeyEvent = onKeyEvent
         view.onDictate = onDictate
         view.bar.setDictation(dictation)
+        view.onAttach = onAttach
+        view.onPasteFiles = onPasteFiles
         focus.view = view
     }
     static func dismantleUIView(_ view: KeyCaptureView, coordinator: ()) {
@@ -662,5 +674,7 @@ struct KeyCapture: UIViewRepresentable {
         view.onActiveChange = nil
         view.onUserHide = nil
         view.onKeyEvent = nil
+        view.onAttach = nil
+        view.onPasteFiles = nil
     }
 }
