@@ -39,6 +39,18 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var historyError: String?
     var legacyLoading = false
     @ObservationIgnored var snapshotUnavailableGeneration: UUID?
+    @ObservationIgnored var resourceFallbackGeneration: UUID?
+    @ObservationIgnored var resourceBlockedGeneration: UUID?
+    func recoverResourceLimit(_ error: ChatControlError, connection: UUID) -> Bool {
+        guard case .resourceLimit = error else { return false }
+        guard resourceFallbackGeneration != connection, !feed.degradedReplay else {
+            resourceBlockedGeneration = connection; readError = error; return false
+        }
+        resourceFallbackGeneration = connection; snapshotUnavailableGeneration = connection
+        feed.beginDegradedReplay(); readError = nil; legacyLoading = true
+        notice = "This chat exceeds recent-history limits. Loading history with shortened large bodies; full content is on the Mac."
+        return true
+    }
     func install(_ snapshot: ChatSnapshotReply) {
         feed.install(snapshot)
         modelCatalogue = transcript.models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
@@ -66,8 +78,8 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         if outcome == .restarted { modelCatalogue = []; modelCatalogueRevision &+= 1 }
         else {
             for envelope in reply.events where envelope.seq > previousNext {
-                if case .models(let models) = envelope.event {
-                    modelCatalogue = models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
+                if case .models = envelope.event {
+                    modelCatalogue = transcript.models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
                 }
             }
         }
@@ -79,7 +91,12 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         return outcome
     }
     func setFollowing(_ on: Bool) { if following != on { following = on } }
-    func reset() { feed = ChatFeed(); modelCatalogue = []; modelCatalogueRevision &+= 1; answered = []; readError = nil }
+    func reset() {
+        let degraded = feed.degradedReplay
+        feed = ChatFeed()
+        if degraded { feed.beginDegradedReplay() }
+        modelCatalogue = []; modelCatalogueRevision &+= 1; answered = []; readError = nil
+    }
     /// The approvals still to be answered, first in line first: those that were just answered are already out of the way.
     var openApprovals: [ChatApproval] { transcript.approvals.filter { !answered.contains($0.requestID) } }
     var openQuestions: [ChatQuestion] { transcript.questions.filter { !answered.contains($0.requestID) } }
@@ -257,7 +274,8 @@ extension RemoteModel {
         conversation.setFollowing(true)
         defer { if conversation.follower == token { conversation.follower = nil; conversation.setFollowing(false) } }
         var backoff = LongPollBackoff()
-        while !Task.isCancelled, conversation.follower == token {
+        following: while !Task.isCancelled, conversation.follower == token {
+            if conversation.resourceBlockedGeneration == generation { return }
             guard chatFollowWanted, !conversation.gone else {
                 if conversation.gone { return }
                 try? await Task.sleep(for: chatIdleInterval)
@@ -283,8 +301,11 @@ extension RemoteModel {
                             conversation.gone = true; conversation.readError = failure
                             await refreshChatsQuietly(); return
                         }
+                        if case .resourceLimit = failure {
+                            if conversation.recoverResourceLimit(failure, connection: connection) { continue }
+                            return
+                        }
                         conversation.readError = failure
-                        if case RemoteError.rpc(let code, _) = error, code == "snapshot_limit" { return }
                         await noteLinkLossIfNeeded()
                         try? await Task.sleep(for: backoff.failure())
                         continue
@@ -293,12 +314,13 @@ extension RemoteModel {
             }
             let connection = generation
             let canWait = waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
-            let since = conversation.feed.next
+            let since = conversation.feed.next, pin = conversation.feed.historyCursor
             let request: ChatEventsRequest
-            do { request = try ChatEventsRequest(chatID: id, since: since, waitMilliseconds: canWait ? chatWaitMilliseconds : 0, maxEvents: conversation.feed.historyCursor == nil ? nil : 100, complete: conversation.feed.historyCursor != nil) } catch { return }
+            do { request = try ChatEventsRequest(chatID: id, since: since, waitMilliseconds: canWait ? chatWaitMilliseconds : 0, maxEvents: conversation.feed.historyCursor == nil && !conversation.feed.degradedReplay ? nil : 100, complete: conversation.feed.historyCursor != nil, bounded: conversation.feed.degradedReplay) } catch { return }
             do {
                 let reply = try await chatEventsFlight(request)
-                guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
+                guard !Task.isCancelled, conversation.follower == token, generation == connection,
+                      conversation.feed.next == since, conversation.feed.historyCursor == pin else { continue }
                 if let cursor = conversation.feed.historyCursor {
                     var ids = Set<String>()
                     for envelope in reply.events where envelope.seq > conversation.feed.next {
@@ -311,10 +333,13 @@ extension RemoteModel {
                     let missing = Array(ids).sorted()
                     for start in stride(from: 0, to: missing.count, by: 100) {
                         let base = try await client.chatSnapshot(chatID: id, cursor: cursor, itemIDs: Array(missing[start..<min(start + 100, missing.count)]))
-                        guard !Task.isCancelled, conversation.follower == token, generation == connection else { return }
+                        guard !Task.isCancelled, conversation.follower == token, generation == connection,
+                              conversation.feed.next == since, conversation.feed.historyCursor == pin else { continue following }
                         conversation.hydrate(base)
                     }
                 }
+                guard !Task.isCancelled, conversation.follower == token, generation == connection,
+                      conversation.feed.next == since, conversation.feed.historyCursor == pin else { continue }
                 conversation.readError = nil
                 backoff.success()
                 conversation.accept(reply, since: since)
@@ -337,13 +362,26 @@ extension RemoteModel {
                 return
             } catch ChatControlError.unsupported {
                 guard generation == connection, conversation.follower == token else { continue }
+                if conversation.feed.degradedReplay {
+                    conversation.resourceBlockedGeneration = connection
+                    conversation.readError = .failed("Update RiWork on the Mac to recover this large chat."); return
+                }
                 chatSupport = .unsupported
                 return
             } catch {
                 guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
+                guard conversation.feed.next == since, conversation.feed.historyCursor == pin else { continue }
                 if case RemoteError.rpc(let code, _) = error, code == "snapshot_expired" { conversation.reset(); continue }
                 if case ChatControlError.invalid(let reason) = error, reason.contains("cannot continue after") { conversation.reset(); continue }
-                conversation.readError = ChatControlError.from(error, operation: .events)
+                let failure = ChatControlError.from(error, operation: .events)
+                if case .resourceLimit = failure {
+                    if conversation.recoverResourceLimit(failure, connection: connection) { continue }
+                    return
+                }
+                if conversation.feed.degradedReplay, case .invalid = failure {
+                    conversation.resourceBlockedGeneration = connection; conversation.readError = failure; return
+                }
+                conversation.readError = failure
                 await noteLinkLossIfNeeded()
                 try? await Task.sleep(for: backoff.failure())
             }
@@ -365,8 +403,12 @@ extension RemoteModel {
             guard !Task.isCancelled, generation == connection, conversation.follower == follower, conversation.following else { return }
             conversation.prepend(page, before: before)
         } catch {
-            guard !Task.isCancelled, generation == connection, conversation.follower == follower else { return }
-            if case RemoteError.rpc(let code, _) = error, code == "snapshot_expired" {
+            guard !Task.isCancelled, generation == connection, conversation.follower == follower,
+                  conversation.feed.historyCursor == cursor else { return }
+            let failure = ChatControlError.from(error, operation: .events)
+            if case .resourceLimit = failure {
+                _ = conversation.recoverResourceLimit(failure, connection: connection)
+            } else if case RemoteError.rpc(let code, _) = error, code == "snapshot_expired" {
                 conversation.reset(); conversation.notice = "History changed on the Mac. Loading the current recent messages again."
             } else { conversation.historyError = "Can’t load older messages. Try again." }
         }

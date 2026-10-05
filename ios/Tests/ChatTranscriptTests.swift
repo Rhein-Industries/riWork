@@ -368,3 +368,36 @@ final class LatestFirstFeedTests: XCTestCase {
         XCTAssertEqual(feed.transcript.item("r5")?.body, .agentMessage("final"))
     }
 }
+
+extension LatestFirstFeedTests {
+    func testInterleavedHistoryHydrationAndLiveArrivalsCountOnlyNewIDs() {
+        var feed = ChatFeed(); feed.install(page([row(10000)]))
+        feed.hydrate(page([row(5)], more: false))
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 10001, event: .itemCompleted(row(5).item)), ChatEnvelope(seq: 10002, event: .itemStarted(row(10002).item)), ChatEnvelope(seq: 10003, event: .itemCompleted(row(10002).item))], next: 10003, more: false), since: 10000)
+        XCTAssertEqual(feed.itemArrivals, 2)
+        feed.prepend(page([row(5), row(6)], more: false), requestedBefore: 10000)
+        XCTAssertEqual(feed.itemArrivals, 2)
+        var sticky = StickyBottom(); sticky.contentChanged(end: 1, epoch: 0); sticky.stopFollowing(); sticky.contentChanged(end: feed.itemArrivals, epoch: 0)
+        XCTAssertEqual(sticky.pill?.newLines, 1)
+    }
+    func testShortenedReplayRetainsBoundedRecoveryPolicy() {
+        var feed = ChatFeed(); feed.install(page([row(10000)])); feed.beginDegradedReplay()
+        feed.accept(ChatEventsReply(chatID: "c", events: [], next: 100, more: false), since: 0)
+        XCTAssertEqual(feed.accept(ChatEventsReply(chatID: "c", events: [], next: 1, more: false), since: 100), .restarted)
+        XCTAssertTrue(feed.degradedReplay)
+        XCTAssertEqual(feed.next, 0)
+        XCTAssertTrue(feed.transcript.items.isEmpty)
+    }
+    func testExceptionalReplayKeepsCurrentControlsThroughItsCheckpoint() {
+        var feed = ChatFeed(); feed.install(page([row(10000)], controls: [.state(.waiting), .approvalRequested(ChatApproval(requestID: "current", kind: .command, title: "current", choices: [.accept])), .models([])]))
+        feed.beginDegradedReplay()
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 1, event: .state(.idle)), ChatEnvelope(seq: 2, event: .approvalResolved(requestID: "current", decision: .accept)), ChatEnvelope(seq: 3, event: .itemCompleted(row(5).item))], next: 3, more: true), since: 0)
+        XCTAssertEqual(feed.transcript.state, .waiting)
+        XCTAssertEqual(feed.transcript.approvals.first?.requestID, "current")
+        XCTAssertEqual(feed.itemArrivals, 1)
+        XCTAssertTrue(feed.degradedReplay)
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 10001, event: .approvalResolved(requestID: "current", decision: .accept)), ChatEnvelope(seq: 10002, event: .state(.running))], next: 10002, more: false), since: 3)
+        XCTAssertTrue(feed.transcript.approvals.isEmpty)
+        XCTAssertEqual(feed.transcript.state, .running)
+    }
+}

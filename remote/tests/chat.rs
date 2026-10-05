@@ -2087,3 +2087,54 @@ async fn complete_pages_reject_missing_events_and_unrepresented_cursor_advances(
         assert_eq!(code(&response), "cli_error", "{response}");
     }
 }
+
+#[tokio::test]
+async fn bounded_recovery_keeps_identity_and_controls_and_refuses_unrepresented_state() {
+    let f = Fixture::new();
+    let body = json!({"seq":1,"event":{"event":"item_completed","item":{"id":"stable","turn_id":"turn","status":"completed","body":{"type":"agent_message","text":noise(300_000,42)}}}});
+    f.says("events.json", &f.page(&[body], 1, true));
+    let reply = f
+        .call_deflating(
+            "chat.events",
+            json!({"chat_id":f.chat,"since":0,"wait_ms":0,"bounded":true}),
+        )
+        .await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["result"]["next"], 1);
+    let item = &reply["result"]["events"][0]["event"]["item"];
+    assert_eq!(item["id"], "stable");
+    assert_eq!(item["turn_id"], "turn");
+    assert_eq!(item["status"], "completed");
+    assert!(item["body"]["text"].as_str().unwrap().ends_with('…'));
+    assert!(f.calls_of("chat", "events")[0].contains(&"--bounded".into()));
+    let control = json!({"seq":2,"event":{"event":"approval_requested","approval":{"request_id":"exact-request","choices":["accept","decline"],"title":noise(300_000,42)}}});
+    f.says("events.json", &f.page(&[control.clone()], 2, false));
+    let reply = f
+        .call_deflating(
+            "chat.events",
+            json!({"chat_id":f.chat,"since":1,"wait_ms":0,"bounded":true}),
+        )
+        .await;
+    assert_eq!(code(&reply), "response_too_large", "{reply}");
+    f.says("events.json", &f.page(&[json!({"seq":2,"event":{"event":"approval_requested","approval":{"request_id":"exact-request","choices":["accept","decline"],"title":"complete control"}}})], 2, false));
+    let reply = f
+        .call(
+            "chat.events",
+            json!({"chat_id":f.chat,"since":1,"wait_ms":0,"bounded":true}),
+        )
+        .await;
+    assert_eq!(
+        reply["result"]["events"][0]["event"]["approval"]["title"],
+        "complete control"
+    );
+    assert_eq!(
+        code(
+            &f.call(
+                "chat.events",
+                json!({"chat_id":f.chat,"since":0,"wait_ms":0,"complete":true,"bounded":true})
+            )
+            .await
+        ),
+        "invalid_request"
+    );
+}

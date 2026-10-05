@@ -362,7 +362,7 @@ struct TerminalTabsView: View {
                 if let note = model.orchestratorNotice { NoteLine(text: note) { model.clearOrchestratorNotice() } }
             }
             if let chat = model.selectedChat {
-                ChatScreen(model: model, chat: chat, refocus: chatRefocus)
+                ChatScreen(model: model, chat: chat, refocus: chatRefocus).id(chat.id)
             } else if let blocked = model.selectedBlocked {
                 OrchestratorNotice(session: blocked.session, opening: blocked.opening)
             } else if model.sessionID == nil && openSessions.isEmpty {

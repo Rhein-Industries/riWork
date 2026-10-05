@@ -189,14 +189,29 @@ actor ChatTransport: RemoteTransport {
     /// `chat.events`: what is after `since` at once, else what arrives within the wait, else nothing.
     var snapshotsEnabled = false
     var snapshotGated = false
+    var historyGated = false
+    var boundedGateAfter: Int?
+    func gateHistory(_ on: Bool) { historyGated = on }
+    func gateBoundedReplay(after: Int?) { boundedGateAfter = after }
+    var resourceLimits = false
+    var completeSizeFailures = 0
+    func rejectedCompleteEvents() -> Int { completeSizeFailures }
+    var cappedLog = false
+    var historyExpired = false
+    func enforceResourceLimits(cappedLog: Bool = false) { resourceLimits = true; self.cappedLog = cappedLog }
+    func expireHistory() { historyExpired = true }
+    func truncate(_ id: String, to count: Int) { log[id] = Array((log[id] ?? []).prefix(count)) }
     func enableSnapshots(_ on: Bool = true) { snapshotsEnabled = on }
     func gateSnapshots(_ on: Bool) { snapshotGated = on }
     private func snapshot(_ params: [String: JSONValue]) async throws -> JSONValue {
         guard snapshotsEnabled else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
-        while snapshotGated { try await Task.sleep(for: .milliseconds(5)) }
+        while snapshotGated || (historyGated && params["before"] != nil) { try await Task.sleep(for: .milliseconds(5)) }
+        if cappedLog { throw RemoteError.rpc(code: "snapshot_limit", message: "snapshot file limit exceeded") }
+        if params["cursor"] != nil, historyExpired { historyExpired = false; throw RemoteError.rpc(code: "snapshot_expired", message: "snapshot expired") }
         let id = params["chat_id"]!.string!
         let all = log[id] ?? []
         let next = params["cursor"]?.string.flatMap(Int.init) ?? all.count
+        guard next <= all.count else { throw RemoteError.rpc(code: "snapshot_expired", message: "snapshot expired") }
         let before = params["before"].flatMap { if case .number(let n) = $0 { return UInt64(n) }; return nil } ?? UInt64.max
         let requested = params["item_ids"].flatMap { if case .array(let a) = $0 { return Set(a.compactMap(\.string)) }; return nil }
         var transcript = ChatTranscript(), orders: [String: UInt64] = [:]
@@ -221,7 +236,9 @@ actor ChatTransport: RemoteTransport {
         }
         let page = ChatSnapshotReply(chatID: id, cursor: String(next), next: UInt64(next), before: items.first.map { orders[$0.id]! } ?? 0,
             more: requested == nil && rows.count > items.count, items: items.map { ChatSnapshotRow(order: orders[$0.id]!, item: $0) }, controls: controls)
-        return try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(page))
+        let encoded = try JSONEncoder().encode(page)
+        if resourceLimits, encoded.count > 120_000 { throw RemoteError.rpc(code: "snapshot_limit", message: "snapshot response limit exceeded") }
+        return try JSONDecoder().decode(JSONValue.self, from: encoded)
     }
 
     private func events(_ params: [String: JSONValue]) async throws -> JSONValue {
@@ -232,13 +249,33 @@ actor ChatTransport: RemoteTransport {
         if chatsGone || (!chats.contains { $0.id == chat } && log[chat] == nil) { throw RemoteError.rpc(code: "not_found", message: "unknown chat") }
         if eventFailures > 0 { eventFailures -= 1; throw RemoteError.rpc(code: "cli_error", message: "the chat host is not answering") }
         let since = Int(sinceNumber)
+        while params["bounded"] == .bool(true), let bound = boundedGateAfter, since >= bound { try await Task.sleep(for: .milliseconds(5)) }
+        if since > (log[chat] ?? []).count { throw RemoteError.rpc(code: "invalid_request", message: "cannot continue after the current log") }
         let deadline = ContinuousClock.now + .milliseconds(Int(waitNumber))
         let limit: Int = { if case .number(let n)? = params["max_events"] { Int(n) } else { 500 } }()
         while true {
             guard connected else { throw RemoteError.disconnected }
             let all = log[chat] ?? []
             if all.count > since {
-                let page = Array(all[since..<min(all.count, since + limit)].enumerated())
+                var values: [JSONValue] = [], bytes = 0
+                for value in all[since..<min(all.count, since + limit)] {
+                    var represented = value
+                    if resourceLimits, try JSONEncoder().encode(value).count > 120_000 {
+                        if !values.isEmpty { break }
+                        if params["bounded"] == .bool(true), value["event"].string == "item_completed" || value["event"].string == "item_started" {
+                            guard case .object(var fields) = value, case .object(var item) = value["item"] else { throw RemoteError.rpc(code: "response_too_large", message: "invalid body") }
+                            item["body"] = .object(["type": .string("agent_message"), "text": .string("[Body shortened for remote size limits] " + String((value["item"]["body"]["text"].string ?? "").prefix(2048)) + "…")])
+                            fields["item"] = .object(item); represented = .object(fields)
+                        } else {
+                            if params["complete"] == .bool(true) { completeSizeFailures += 1 }
+                            throw RemoteError.rpc(code: "response_too_large", message: "complete event exceeds response limit")
+                        }
+                    }
+                    let size = try JSONEncoder().encode(represented).count
+                    if resourceLimits, bytes + size > 120_000, !values.isEmpty { break }
+                    values.append(represented); bytes += size
+                }
+                let page = Array(values.enumerated())
                 let more = since + page.count < all.count
                 return .object(["chat_id": .string(chat), "events": .array(page.map { .object(["seq": .number(Double(since + $0.offset + 1)), "event": $0.element]) }),
                                 "next": .number(Double(since + page.count)), "more": .bool(more)])

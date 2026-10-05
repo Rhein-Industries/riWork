@@ -1352,7 +1352,17 @@ pinned prefix again; this version does not maintain a persistent derived cache.
 An older connector, or a new connector with an older CLI, answers `invalid_request`
 with `unsupported RPC method`. The phone explicitly tells the reader to update the
 Mac and uses the legacy event replay for that connection. Other snapshot failures
-do not silently select full replay. A client using snapshot v1 also sends
+do not silently select full replay. A resource failure (`snapshot_limit` or
+`response_too_large`) selects one explicit degraded replay per connection. The
+phone retains its draft and authoritative controls through the prior live
+checkpoint while reconstructing bodies. Recovery asks `chat.events bounded:true`
+(1–100 events per phone page): identity, order and every non-body control remain
+exact; only item bodies/delta payloads may be shortened, with a visible notice.
+Whole events are still accounted for gaplessly. A control or identity that cannot
+fit is an explicit error, never skipped or shortened; recovery stops without an
+unchanged retry or advancing its cursor. `bounded` and `complete` are mutually
+exclusive and both are absent for legacy clients. Ordinary opens remain recent-first.
+A client using snapshot v1 also sends
 `complete:true` on `chat.events`: complete events are paged without truncating
 fields or skipping oversized events; an oversized single event is
 `response_too_large` and the client cursor remains unchanged. The optional boolean

@@ -49,6 +49,8 @@ public enum ChatControlError: Error, Equatable, Sendable, LocalizedError {
     case notConnected
     case busy
     case failed(String)
+    public enum Resource: String, Sendable { case snapshot = "snapshot_limit", response = "response_too_large" }
+    case resourceLimit(Resource, String)
 
     public static let unsupportedMessage = "Update RiWork on your Mac to use chats from the phone."
 
@@ -66,7 +68,7 @@ public enum ChatControlError: Error, Equatable, Sendable, LocalizedError {
         case .outcomeUnknown: "The connection dropped before the Mac answered. Refresh and look again."
         case .notConnected: "Connect to your Mac first."
         case .busy: "Another chat request is still running."
-        case .failed(let text): text
+        case .failed(let text), .resourceLimit(_, let text): text
         }
     }
     /// The request may have taken effect.
@@ -88,6 +90,7 @@ public enum ChatControlError: Error, Equatable, Sendable, LocalizedError {
             switch remote {
             case .rpc(let code, let message):
                 switch code {
+                case "snapshot_limit", "response_too_large": return .resourceLimit(Resource(rawValue: code)!, TerminalControlError.readable(message))
                 case "not_found": return .notFound(operation)
                 case "harness_unavailable":
                     if case .create(let provider) = operation { return .harnessUnavailable(provider) }
@@ -238,11 +241,14 @@ public struct ChatEventsRequest: Sendable, Equatable {
     /// Sent only when set; the desktop's default is 500.
     public let maxEvents: Int?
     public let complete: Bool
+    public let bounded: Bool
 
-    public init(chatID: String, since: UInt64, waitMilliseconds: Int, maxEvents: Int? = nil, complete: Bool = false) throws {
+    public init(chatID: String, since: UInt64, waitMilliseconds: Int, maxEvents: Int? = nil, complete: Bool = false, bounded: Bool = false) throws {
         guard NewTerminalRequest.isCanonicalUUID(chatID) else { throw ChatValidationError.invalidID }
         guard (0...ChatLimits.maximumWaitMilliseconds).contains(waitMilliseconds) else { throw ChatValidationError.invalidWait }
         if let maxEvents { guard (1...ChatLimits.maximumEvents).contains(maxEvents) else { throw ChatValidationError.invalidCount } }
+        guard !(complete && bounded) else { throw ChatValidationError.malformed }
+        self.bounded = bounded
         self.chatID = chatID; self.since = since; self.waitMilliseconds = waitMilliseconds; self.maxEvents = maxEvents; self.complete = complete
     }
     /// A request is a long poll when the desktop may hold it back: it takes one of the device's waiting slots.
@@ -251,11 +257,12 @@ public struct ChatEventsRequest: Sendable, Equatable {
     public var params: [String: JSONValue] {
         var params: [String: JSONValue] = ["chat_id": .string(chatID), "since": .number(Double(since)), "wait_ms": .number(Double(waitMilliseconds))]
         if complete { params["complete"] = .bool(true) }
+        if bounded { params["bounded"] = .bool(true) }
         if let maxEvents { params["max_events"] = .number(Double(maxEvents)) }
         return params
     }
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["chat_id", "since", "wait_ms", "max_events", "complete"]) else { throw ChatValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["chat_id", "since", "wait_ms", "max_events", "complete", "bounded"]) else { throw ChatValidationError.malformed }
         func whole(_ key: String, in range: ClosedRange<Double>) throws -> Int? {
             guard let value = params[key] else { return nil }
             guard case .number(let number) = value, number.isFinite, number.rounded() == number, range.contains(number) else { throw ChatValidationError.malformed }
@@ -263,12 +270,14 @@ public struct ChatEventsRequest: Sendable, Equatable {
         }
         guard case .string(let id)? = params["chat_id"], case .number(let since)? = params["since"], since.isFinite, since >= 0, since.rounded() == since,
               since < 9_007_199_254_740_992, let wait = try whole("wait_ms", in: 0...Double(ChatLimits.maximumWaitMilliseconds)) else { throw ChatValidationError.malformed }
-        if let raw = params["complete"], case .bool = raw {} else if params["complete"] != nil { throw ChatValidationError.malformed }
-        try self.init(chatID: id, since: UInt64(since), waitMilliseconds: wait, maxEvents: try whole("max_events", in: 1...Double(ChatLimits.maximumEvents)), complete: params["complete"] == .bool(true))
+        for key in ["complete", "bounded"] {
+            if let raw = params[key], case .bool = raw {} else if params[key] != nil { throw ChatValidationError.malformed }
+        }
+        try self.init(chatID: id, since: UInt64(since), waitMilliseconds: wait, maxEvents: try whole("max_events", in: 1...Double(ChatLimits.maximumEvents)), complete: params["complete"] == .bool(true), bounded: params["bounded"] == .bool(true))
     }
     public func parse(_ result: JSONValue) throws -> ChatEventsReply {
         let reply = try ChatEventsReply.parse(result, chatID: chatID)
-        if complete {
+        if complete || bounded {
             var last = since
             for envelope in reply.events {
                 guard last < UInt64.max, envelope.seq == last + 1 else { throw ChatControlError.unreadableReply }

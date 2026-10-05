@@ -1076,3 +1076,50 @@ fn snapshot_is_read_only_without_a_host_or_an_ensure_call() {
     assert!(!home.join("run").exists());
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[test]
+fn bounded_recovery_represents_bodies_and_never_shortens_or_skips_controls() {
+    let item = Item {
+        id: "stable".into(),
+        turn_id: Some("turn".into()),
+        status: ItemStatus::Completed,
+        presentation: Default::default(),
+        body: ItemBody::AgentMessage {
+            text: "x".repeat(200_000),
+        },
+    };
+    let mut source = Script::of([]);
+    source.steps.push_back(Ok(Poll::Event(envelope(
+        1,
+        ChatEvent::ItemCompleted { item },
+    ))));
+    source
+        .steps
+        .push_back(Ok(Poll::Event(envelope(2, usage_event(42)))));
+    let page = collect_bounded(&mut source, &plan(0, 10, 120_000)).unwrap();
+    assert_eq!(page.next, 2);
+    assert_eq!(page.events[0].event["item"]["id"], "stable");
+    assert_eq!(page.events[0].event["item"]["turn_id"], "turn");
+    assert_eq!(page.events[0].event["item"]["status"], "completed");
+    assert!(
+        page.events[0].event["item"]["body"]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with('…')
+    );
+    assert_eq!(page.events[1].event["usage"]["input_tokens"], 42);
+    let mut source = Script::of([]);
+    source.steps.push_back(Ok(Poll::Event(envelope(
+        1,
+        ChatEvent::State {
+            state: ChatState::Failed {
+                message: "x".repeat(200_000),
+            },
+        },
+    ))));
+    assert!(
+        collect_bounded(&mut source, &plan(0, 10, 120_000))
+            .unwrap_err()
+            .starts_with("response_too_large:")
+    );
+}

@@ -293,11 +293,19 @@ pub(super) struct EventsSpec {
     wait_ms: i64,
     max_events: u64,
     complete: bool,
+    bounded: bool,
 }
 pub(super) fn events_spec(params: &Value) -> std::result::Result<EventsSpec, Fault> {
     let object = fields(
         params,
-        &["chat_id", "since", "wait_ms", "max_events", "complete"],
+        &[
+            "chat_id",
+            "since",
+            "wait_ms",
+            "max_events",
+            "complete",
+            "bounded",
+        ],
     )?;
     let chat = chat_id(object)?;
     let since = number(object, "since")?.ok_or_else(|| invalid("since is required"))?;
@@ -309,12 +317,16 @@ pub(super) fn events_spec(params: &Value) -> std::result::Result<EventsSpec, Fau
     if !(1..=EVENTS_MAX).contains(&max_events) {
         return Err(invalid(format!("max_events must be 1..{EVENTS_MAX}")));
     }
+    if flag(object, "complete")? == Some(true) && flag(object, "bounded")? == Some(true) {
+        return Err(invalid("complete and bounded are exclusive"));
+    }
     Ok(EventsSpec {
         chat,
         since,
         wait_ms: wait_ms as i64,
         max_events,
         complete: flag(object, "complete")?.unwrap_or(false),
+        bounded: flag(object, "bounded")?.unwrap_or(false),
     })
 }
 /// How long the CLI may take for a `chat.events` that waits up to `wait_ms`: the wait plus
@@ -616,7 +628,7 @@ impl Page {
             let event = entry.get("event")?;
             // An event is an object with its tag; what is inside is the desktop's.
             if seq <= last
-                || (spec.complete && last.checked_add(1) != Some(seq))
+                || ((spec.complete || spec.bounded) && last.checked_add(1) != Some(seq))
                 || !event.get("event").is_some_and(Value::is_string)
             {
                 return None;
@@ -628,7 +640,10 @@ impl Page {
         let more = object.get("more")?.as_bool()?;
         // Not before the last event it returned, and a page that says there is more must have
         // moved the phone on, or it would ask for the same page again.
-        if next < last || (spec.complete && next != last) || (more && next == spec.since) {
+        if next < last
+            || ((spec.complete || spec.bounded) && next != last)
+            || (more && next == spec.since)
+        {
             return None;
         }
         Some(Self {
@@ -677,6 +692,59 @@ fn cut_strings(value: &mut Value, cap: usize) {
         _ => {}
     }
 }
+/// Bounded recovery keeps all non-body state exact. An unrepresentable control fails closed.
+fn shorten_body(event: &mut Value, cap: usize) -> bool {
+    match event["event"].as_str() {
+        Some("item_started" | "item_completed") => {
+            cut_strings(&mut event["item"]["body"], cap);
+            if cap == MIN_CUT {
+                event["item"]["body"] = json!({"type":"agent_message", "text":"[Body omitted for remote size limits. Open on the Mac for full content.]"});
+            }
+            true
+        }
+        Some("item_delta") => {
+            cut_strings(&mut event["delta"], cap);
+            true
+        }
+        _ => false,
+    }
+}
+fn fit_bounded_page(
+    request: &str,
+    mut page: Page,
+    compress: bool,
+) -> std::result::Result<Value, Fault> {
+    loop {
+        if let Some(result) = sealed(request, &page, compress)? {
+            return Ok(result);
+        }
+        if page.events.len() > 1 {
+            page.events.truncate(page.events.len() / 2);
+            page.next = page.last_seq().unwrap();
+            page.more = true;
+            continue;
+        }
+        if let Some(entry) = page.events.first().cloned() {
+            let mut cap = 64 * 1024;
+            while cap >= MIN_CUT {
+                let mut shrunk = entry.clone();
+                if !shorten_body(&mut shrunk["event"], cap) {
+                    break;
+                }
+                page.events[0] = shrunk;
+                if let Some(result) = sealed(request, &page, compress)? {
+                    return Ok(result);
+                }
+                cap /= 2;
+            }
+        }
+        return Err(Fault::new(
+            "response_too_large",
+            "event cannot be represented without losing identity or controls",
+        ));
+    }
+}
+
 /// The `chat.events` result for `page` if, with the rest of the reply to `request`, it fits
 /// one sealed frame the way the connection will seal it (`compress`: deflated, as the session
 /// opted in, or plain JSON); `None` if it does not.
@@ -1064,6 +1132,9 @@ impl Rpc {
         if spec.complete {
             args.push("--complete".into());
         }
+        if spec.bounded {
+            args.push("--bounded".into());
+        }
         let cli = self
             .read_capped(args, events_limit(spec.wait_ms), reply_limit)
             .await
@@ -1085,6 +1156,8 @@ impl Rpc {
         tokio::task::spawn_blocking(move || {
             if spec.complete {
                 fit_complete_page(&request, page, compress)
+            } else if spec.bounded {
+                fit_bounded_page(&request, page, compress)
             } else {
                 fit_page(&request, page, compress)
             }

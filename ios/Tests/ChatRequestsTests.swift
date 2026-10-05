@@ -301,3 +301,15 @@ extension LatestFirstRequestTests {
         XCTAssertEqual(try request.parse(page([], next: 100)).next, 100)
     }
 }
+
+extension LatestFirstRequestTests {
+    func testResourceFailuresStayStructuredAndBoundedRecoveryIsGapless() throws {
+        XCTAssertEqual(ChatControlError.from(RemoteError.rpc(code: "snapshot_limit", message: "limit"), operation: .events), .resourceLimit(.snapshot, "limit"))
+        XCTAssertEqual(ChatControlError.from(RemoteError.rpc(code: "response_too_large", message: "large"), operation: .events), .resourceLimit(.response, "large"))
+        let request = try ChatEventsRequest(chatID: id, since: 100, waitMilliseconds: 0, bounded: true)
+        try RequestValidation.validate(method: "chat.events", params: request.params, id: id)
+        XCTAssertEqual(try ChatEventsRequest(params: request.params), request)
+        XCTAssertThrowsError(try ChatEventsRequest(chatID: id, since: 0, waitMilliseconds: 0, complete: true, bounded: true))
+        XCTAssertThrowsError(try request.parse(.object(["chat_id":.string(id),"events":.array([]),"next":.number(101),"more":.bool(false)])))
+    }
+}

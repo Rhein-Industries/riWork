@@ -147,6 +147,8 @@ waits up to --wait-ms (up to 25000) for the first, then collects for 50 ms; it
 returns at once for events that are already there. Pass `next` as --since to continue;
 `more` says the page was cut short. An event too big for a page alone has its long
 strings cut unless --complete requests lossless events (an oversized event is an error).
+For exceptional resource recovery, --bounded shortens item bodies only, preserves
+identity and controls, and fails without advancing past an unrepresentable event.
 chat snapshot UUID --json reads current full items and controls directly from disk without
 starting a host. --max is 1–100 (default 50); --max-bytes bounds the complete response.
 Use its cursor and before with --cursor TOKEN --before ORDER to page older full items.
@@ -2021,6 +2023,8 @@ fn chat_client_command(
         "events" => {
             let started = std::time::Instant::now();
             let complete = take_flag(&mut args, "--complete");
+            let bounded = take_flag(&mut args, "--bounded");
+            if complete && bounded { return Err("--complete and --bounded are exclusive".into()); }
             let options = parse_events_arguments(args)?;
             let socket = ensure(home)?;
             let id = resolve_chat(&mut Client::connect(&socket)?, &options.chat)?;
@@ -2036,6 +2040,8 @@ fn chat_client_command(
             // took long to start does not stretch it.
             let collect = if complete {
                 chat_remote::collect_complete
+            } else if bounded {
+                chat_remote::collect_bounded
             } else {
                 chat_remote::collect
             };

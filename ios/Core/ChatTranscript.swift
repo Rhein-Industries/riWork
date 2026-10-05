@@ -76,6 +76,15 @@ public struct ChatTranscript: Sendable, Equatable {
         }
     }
 
+    /// Preserve already-authoritative controls while exceptional replay reconstructs older bodies.
+    fileprivate func controlsOnly() -> ChatTranscript {
+        var value = self; value.items = []; value.index = [:]; return value
+    }
+    fileprivate mutating func restoreControls(_ value: ChatTranscript) {
+        info = value.info; state = value.state; approvals = value.approvals; questions = value.questions
+        usage = value.usage; models = value.models; turnID = value.turnID
+    }
+
     /// Merge only missing historical rows; live rows and controls remain authoritative.
     public mutating func mergeHistory(_ rows: [ChatSnapshotRow], orders: [String: UInt64]) {
         for row in rows where index[row.item.id] == nil { apply(.itemCompleted(row.item)) }
@@ -162,6 +171,8 @@ public struct ChatFeed: Sendable, Equatable {
     // never to the live controls; replaying a page therefore cannot resolve a new request.
     private var deferred: [ChatEvent] = []
     private var deferredBytes = 0
+    public private(set) var degradedReplay = false
+    private var recoveryThrough: UInt64 = 0
 
     public init() {}
 
@@ -172,6 +183,12 @@ public struct ChatFeed: Sendable, Equatable {
         for event in snapshot.controls { transcript.apply(event) }
         for row in snapshot.items { orders[row.item.id] = row.order }
         transcript.mergeHistory(snapshot.items, orders: orders)
+    }
+
+    public mutating func beginDegradedReplay() {
+        let controls = transcript.controlsOnly(), checkpoint = next, arrivals = itemArrivals
+        self = ChatFeed(); transcript = controls; recoveryThrough = checkpoint
+        itemArrivals = arrivals; degradedReplay = true
     }
 
     public func hasItem(_ id: String) -> Bool { transcript.item(id) != nil || hidden.item(id) != nil }
@@ -204,6 +221,12 @@ public struct ChatFeed: Sendable, Equatable {
         deferredBytes = deferred.reduce(0) { $0 + ((try? JSONEncoder().encode($1).count) ?? 0) }
     }
 
+    private mutating func restart() {
+        let degraded = degradedReplay
+        self = ChatFeed()
+        if degraded { beginDegradedReplay() }
+    }
+
     public enum Outcome: Sendable, Equatable {
         /// This many events were folded in.
         case applied(Int)
@@ -216,12 +239,13 @@ public struct ChatFeed: Sendable, Equatable {
     @discardableResult
     public mutating func accept(_ reply: ChatEventsReply, since: UInt64) -> Outcome {
         if reply.next < since {
-            self = ChatFeed()
+            restart()
             return .restarted
         }
         var applied = 0
         for envelope in reply.events where envelope.seq > next {
             if let event = envelope.event {
+                let protectedControls = envelope.seq <= recoveryThrough ? transcript.controlsOnly() : nil
                 if historyCursor != nil {
                     switch event {
                     case .itemStarted(let item), .itemCompleted(let item):
@@ -234,7 +258,7 @@ public struct ChatFeed: Sendable, Equatable {
                 }
                 switch event {
                 case .itemStarted(let item), .itemCompleted(let item):
-                    if !hasItem(item.id) { itemArrivals += 1 }
+                    if !hasItem(item.id), envelope.seq > recoveryThrough { itemArrivals += 1 }
                     if hidden.item(item.id) != nil && transcript.item(item.id) == nil { hidden.apply(event) }
                     else { transcript.apply(event) }
                 case .itemDelta(let id, _):
@@ -243,12 +267,13 @@ public struct ChatFeed: Sendable, Equatable {
                 default:
                     hidden.apply(event); transcript.apply(event)
                 }
+                if let protectedControls { transcript.restoreControls(protectedControls) }
                 applied += 1
             } else { skipped += 1 }
             next = envelope.seq
         }
         if hidden.items.count > 1000 || deferred.count > 10_000 || deferredBytes > 8 * 1024 * 1024 {
-            self = ChatFeed(); return .restarted
+            restart(); return .restarted
         }
         next = max(next, reply.next)
         loaded = true

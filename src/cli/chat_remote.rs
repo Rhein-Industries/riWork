@@ -196,7 +196,7 @@ impl Source for Subscription {
 }
 
 /// One entry of a page.
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub(super) struct Entry {
     pub seq: u64,
     pub event: Value,
@@ -306,6 +306,40 @@ pub(super) fn shrink(entry: &Entry, budget: usize) -> Option<Entry> {
     }
 }
 
+/// Exceptional recovery may shorten bodies, never identity, order or actionable controls.
+fn shorten_body(event: &mut Value, cap: usize) -> bool {
+    match event["event"].as_str() {
+        Some("item_started" | "item_completed") => {
+            cut_strings(&mut event["item"]["body"], cap);
+            if cap == MIN_CUT {
+                event["item"]["body"] = serde_json::json!({"type":"agent_message", "text":"[Body omitted for remote size limits. Open on the Mac for full content.]"});
+            }
+            true
+        }
+        Some("item_delta") => {
+            cut_strings(&mut event["delta"], cap);
+            true
+        }
+        _ => false,
+    }
+}
+fn shrink_body(entry: &Entry, budget: usize) -> Option<Entry> {
+    let mut cap = (budget / 4).max(MIN_CUT);
+    loop {
+        let mut shrunk = entry.clone();
+        if !shorten_body(&mut shrunk.event, cap) {
+            return None;
+        }
+        if entry_bytes(&shrunk) <= budget {
+            return Some(shrunk);
+        }
+        if cap == MIN_CUT {
+            return None;
+        }
+        cap = (cap / 2).max(MIN_CUT);
+    }
+}
+
 /// Collects a page from `source`.
 ///
 /// - The first event is waited for until `plan.first_by`; none by then is an
@@ -318,12 +352,20 @@ pub(super) fn shrink(entry: &Entry, budget: usize) -> Option<Entry> {
 ///   dropped when nothing helps, so the page can always move on: it counts
 ///   as read.
 pub(super) fn collect(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
-    collect_page(source, plan, false)
+    collect_page(source, plan, false, false)
 }
 pub(super) fn collect_complete(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
-    collect_page(source, plan, true)
+    collect_page(source, plan, true, false)
 }
-fn collect_page(source: &mut impl Source, plan: &Plan, complete: bool) -> Result<Page, String> {
+pub(super) fn collect_bounded(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
+    collect_page(source, plan, false, true)
+}
+fn collect_page(
+    source: &mut impl Source,
+    plan: &Plan,
+    complete: bool,
+    bounded: bool,
+) -> Result<Page, String> {
     let budget = plan.max_bytes.saturating_sub(fixed_bytes(&plan.chat_id));
     let mut page = Page {
         chat_id: plan.chat_id.clone(),
@@ -376,9 +418,17 @@ fn collect_page(source: &mut impl Source, plan: &Plan, complete: bool) -> Result
                                 .into(),
                         );
                     }
-                    match shrink(&entry, budget) {
+                    let fitted = if bounded {
+                        shrink_body(&entry, budget)
+                    } else {
+                        shrink(&entry, budget)
+                    };
+                    match fitted {
                         Some(shrunk) => entry = shrunk,
                         None => {
+                            if bounded {
+                                return Err("response_too_large: event cannot be represented without losing identity or controls".into());
+                            }
                             // Hopeless: read past it.
                             window_end.get_or_insert(Instant::now() + BATCH_WINDOW);
                             read += 1;

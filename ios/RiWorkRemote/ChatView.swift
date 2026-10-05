@@ -321,6 +321,9 @@ private final class ChatHistoryViewport {
     var frames: [String: CGRect] = [:]
     var anchor: (id: String, y: CGFloat)?
     var correction: Task<Void, Never>?
+    var correctionToken: UUID?
+    var pageInstalled = false
+    var waitingForPage = false
 }
 
 private struct ChatTranscriptList: View {
@@ -360,7 +363,10 @@ private struct ChatTranscriptList: View {
                 ForEach(transcript.items) { item in
                     ChatItemRow(item: item, provider: provider, open: open(for: item), toggle: toggle).equatable()
                         .id(item.id)
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in viewport.frames[item.id] = frame }
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in
+                            viewport.frames[item.id] = frame
+                            if preservingHistory, viewport.pageInstalled || viewport.waitingForPage { scheduleHistoryCorrection(proxy) }
+                        }
                         .onDisappear { viewport.frames[item.id] = nil }
                 }
                 if state == .running || state == .waiting || state == .starting { workingRow }
@@ -377,7 +383,10 @@ private struct ChatTranscriptList: View {
         .scrollDismissesKeyboard(hardwareKeyboard ? .never : .interactively)
         .onScrollPhaseChange { _, phase in
             userDriven = phase == .interacting || phase == .decelerating
-            if userDriven { sticky.stopFollowing(); bottomCorrection?.cancel(); bottomCorrection = nil }
+            if userDriven {
+                cancelHistoryAnchor()
+                sticky.stopFollowing(); bottomCorrection?.cancel(); bottomCorrection = nil
+            }
         }
         .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
             ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height,
@@ -386,7 +395,7 @@ private struct ChatTranscriptList: View {
             viewport.metrics = new
             if userDriven, new.offset + new.topInset < 100, conversation.feed.hasOlder { pageOlder(proxy) }
             if preservingHistory {
-                scheduleHistoryCorrection()
+                if viewport.pageInstalled || viewport.waitingForPage { scheduleHistoryCorrection(proxy) }
                 return
             }
             let response = sticky.metricsChanged(from: !userDriven && bottomCorrection != nil ? nil : old, to: new, lineHeight: 24, userDriven: userDriven)
@@ -403,7 +412,7 @@ private struct ChatTranscriptList: View {
         .onChange(of: conversation.feed.loaded) { _, loaded in if loaded && !userDriven { jump(proxy) } }
         .overlay(alignment: .bottomTrailing) { pill(proxy) }
         .accessibilityLabel("\(provider.chatTitle) conversation")
-        .onDisappear { viewport.correction?.cancel(); viewport.correction = nil; paging?.cancel(); paging = nil; bottomCorrection?.cancel(); bottomCorrection = nil }
+        .onDisappear { cancelHistoryAnchor(); paging?.cancel(); paging = nil; bottomCorrection?.cancel(); bottomCorrection = nil }
         }
     }
 
@@ -414,45 +423,58 @@ private struct ChatTranscriptList: View {
         sticky.stopFollowing()
         bottomCorrection?.cancel(); bottomCorrection = nil
         paging = Task { @MainActor in
-            defer {
-                preservingHistory = false; viewport.anchor = nil
-                viewport.correction?.cancel(); viewport.correction = nil; paging = nil
-            }
+            defer { paging = nil }
+            let requestedBefore = conversation.feed.before, pin = conversation.feed.historyCursor
             while userDriven && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
             guard !Task.isCancelled else { return }
+            captureHistoryAnchor()
+            viewport.waitingForPage = true
             await loadOlder {
                 // A response may arrive during a new drag. Wait before mutation, then
                 // capture the reader's current point, not the point at request time.
                 while userDriven && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
                 guard !Task.isCancelled else { return }
-                let height = CGFloat(viewport.metrics?.viewportHeight ?? 0)
-                viewport.anchor = viewport.frames.filter { $0.value.maxY > 0 && $0.value.minY < height }
-                    .min { $0.value.minY < $1.value.minY }.map { (id: $0.key, y: $0.value.minY) }
-                preservingHistory = true
+                captureHistoryAnchor()
+                viewport.waitingForPage = false
+                viewport.pageInstalled = false
             }
+            guard conversation.feed.historyCursor == pin, conversation.feed.before != requestedBefore else { cancelHistoryAnchor(); return }
+            viewport.pageInstalled = true
             if let anchor = viewport.anchor, !Task.isCancelled {
                 // Resolve the same lazy row by stable identity before restoring its
                 // fractional position; estimated content height is not an anchor.
-                try? await Task.sleep(for: .milliseconds(16))
+                await Task.yield()
                 guard !Task.isCancelled, !userDriven else { return }
                 proxy.scrollTo(anchor.id, anchor: .top)
-                try? await Task.sleep(for: .milliseconds(32))
-                guard !Task.isCancelled, !userDriven else { return }
-                proxy.scrollTo(anchor.id, anchor: .top)
-                scheduleHistoryCorrection()
+                scheduleHistoryCorrection(proxy)
             }
-            try? await Task.sleep(for: .milliseconds(250))
+            // The anchor remains tied to this installed page through later lazy-row
+            // measurements. A gesture, jump, next page or disappearance replaces it.
         }
     }
 
-    private func scheduleHistoryCorrection() {
+    private func captureHistoryAnchor() {
+        let height = CGFloat(viewport.metrics?.viewportHeight ?? 0)
+        viewport.anchor = viewport.frames.filter { $0.value.maxY > 0 && $0.value.minY < height }
+            .min { $0.value.minY < $1.value.minY }.map { (id: $0.key, y: $0.value.minY) }
+        preservingHistory = viewport.anchor != nil
+    }
+    private func cancelHistoryAnchor() {
+        preservingHistory = false; viewport.anchor = nil; viewport.pageInstalled = false; viewport.waitingForPage = false
+        viewport.correction?.cancel(); viewport.correction = nil; viewport.correctionToken = nil
+    }
+    private func scheduleHistoryCorrection(_ proxy: ScrollViewProxy) {
         guard viewport.correction == nil else { return }
+        let token = UUID(); viewport.correctionToken = token
         viewport.correction = Task { @MainActor in
+            // Defer input until after the current layout callback, not as a completion deadline.
             try? await Task.sleep(for: .milliseconds(16))
-            defer { viewport.correction = nil }
-            guard !Task.isCancelled, preservingHistory, !userDriven,
-                  let metrics = viewport.metrics, let anchor = viewport.anchor,
-                  let frame = viewport.frames[anchor.id] else { return }
+            defer { if viewport.correctionToken == token { viewport.correction = nil; viewport.correctionToken = nil } }
+            guard !Task.isCancelled, preservingHistory, viewport.pageInstalled || viewport.waitingForPage, !userDriven,
+                  let metrics = viewport.metrics, let anchor = viewport.anchor else { return }
+            guard let frame = viewport.frames[anchor.id], frame.maxY > 0, frame.minY < CGFloat(metrics.viewportHeight) else {
+                proxy.scrollTo(anchor.id, anchor: .top); return
+            }
             let delta = frame.minY - anchor.y
             if abs(delta) > 0.5 { position.scrollTo(y: CGFloat(metrics.offset) + delta) }
         }
@@ -492,6 +514,7 @@ private struct ChatTranscriptList: View {
         }
     }
     private func jump(_ proxy: ScrollViewProxy) {
+        cancelHistoryAnchor()
         sticky.jumpToBottom()
         proxy.scrollTo(Self.end, anchor: .bottom)
         scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }

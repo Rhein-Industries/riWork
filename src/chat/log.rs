@@ -874,6 +874,44 @@ mod snapshot_tests {
         assert!(!targeted.more);
     }
     #[test]
+    fn newest_200kb_and_aggregate_bases_or_controls_report_limits_without_partial_state() {
+        let mut f = Fixture::new();
+        f.row("newest", &"x".repeat(200_000));
+        assert_eq!(
+            read_snapshot(&f.home, &f.id, None, u64::MAX, 50, 120_000, &[])
+                .err()
+                .unwrap(),
+            "snapshot response limit exceeded"
+        );
+        let mut f = Fixture::new();
+        f.row("a", &"a".repeat(70_000));
+        f.row("b", &"b".repeat(70_000));
+        let initial = f.read(None, u64::MAX, 50);
+        assert_eq!(initial.items.len(), 1);
+        assert!(
+            read_snapshot(
+                &f.home,
+                &f.id,
+                Some(&initial.cursor),
+                u64::MAX,
+                50,
+                120_000,
+                &["a".into(), "b".into()]
+            )
+            .is_err()
+        );
+        let mut f = Fixture::new();
+        for n in 0..200 {
+            f.event(json!({"event":"approval_requested","approval":{"request_id":format!("request-{n}"),"kind":"command","title":"x".repeat(1000),"choices":["accept","decline"]}}));
+        }
+        assert_eq!(
+            read_snapshot(&f.home, &f.id, None, u64::MAX, 50, 120_000, &[])
+                .err()
+                .unwrap(),
+            "snapshot response limit exceeded"
+        );
+    }
+    #[test]
     fn partial_tail_validation_replacement_and_resource_limits_fail_closed() {
         let mut f = Fixture::new();
         f.row("a", "hello");

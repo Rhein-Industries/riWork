@@ -26,7 +26,7 @@ public enum RequestValidation {
         case "chats.list": required = []; optional = ["project_id"]
         case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "title"]
         case "chat.snapshot": required = ["chat_id"]; optional = ["cursor", "before", "limit", "item_ids"]
-        case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events", "complete"]
+        case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events", "complete", "bounded"]
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
         case "upload.begin", "upload.chunk", "upload.finish", "upload.cancel", "shell.paste":

@@ -406,6 +406,209 @@ import RiWorkCore
         await finish(rig)
     }
 
+    func testLatestFirstGatedPageIgnoresLiveBottomGrowthAndFollowsReaderAndLateLayout() async throws {
+        let screen = UIScreen.main.bounds.size
+        let rig = try await makeRig(width: screen.width, height: screen.height, look: .nativeLight)
+        rig.host.traitOverrides.preferredContentSizeCategory = .accessibilityExtraLarge
+        await rig.transport.enableSnapshots()
+        let rows: [ChatEvent] = (0..<300).map { n in
+            let body: ChatItemBody = n % 5 == 4
+                ? .command(command: "synthetic command \(n)", cwd: "/fixture", output: String(repeating: "Expanded output \(n)\n", count: 12), exitCode: 0)
+                : .agentMessage("Message \(n). " + String(repeating: "A paragraph with heterogeneous height. ", count: n % 3 + 1))
+            return .itemCompleted(ChatItem(id: "hetero-\(n)", status: .completed, body: body))
+        }
+        await rig.transport.append(chatID, [.info(chat())] + rows)
+        let field = try await openChat(rig), conversation = rig.model.conversation(chatID)
+        await eventually("recent window loaded") { conversation.transcript.items.count == 50 }
+        conversation.draft = "gated draft"; conversation.expanded.insert("hetero-254")
+        rig.window.endEditing(true)
+        try await Task.sleep(for: .milliseconds(350))
+        let list = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).filter { $0 !== field && $0.bounds.height > 100 && $0.contentSize.height > $0.bounds.height + 500 }.max { $0.contentSize.height < $1.contentSize.height })
+        await rig.transport.gateHistory(true)
+        list.delegate?.scrollViewWillBeginDragging?(list)
+        try await Task.sleep(for: .milliseconds(100))
+        list.setContentOffset(CGPoint(x: 0, y: 20), animated: false)
+        try await Task.sleep(for: .milliseconds(150))
+        list.delegate?.scrollViewDidEndDragging?(list, willDecelerate: false)
+        await eventually("history request gated") { conversation.historyLoading }
+        let readerMessage = try firstRenderedMessage(rig, scroll: list)
+        let beforeGrowth = try renderedMessageTop(readerMessage, rig: rig, scroll: list)
+        await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "bottom-live", status: .completed, body: .agentMessage(String(repeating: "New bottom paragraph. ", count: 30))))])
+        await eventually("one independent live arrival") { conversation.feed.itemArrivals == 51 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(try renderedMessageTop(readerMessage, rig: rig, scroll: list), beforeGrowth, accuracy: 4, "bottom growth while the page waits must not move the reader")
+        list.delegate?.scrollViewWillBeginDragging?(list)
+        list.setContentOffset(CGPoint(x: 0, y: 28), animated: false)
+        try await Task.sleep(for: .milliseconds(120))
+        let movedMessage = try firstRenderedMessage(rig, scroll: list)
+        let movedAnchor = try renderedMessageTop(movedMessage, rig: rig, scroll: list)
+        await rig.transport.gateHistory(false)
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(conversation.transcript.items.count, 51, "page installation waits for this new gesture")
+        list.delegate?.scrollViewDidEndDragging?(list, willDecelerate: false)
+        await eventually("page installed with the live row retained") { conversation.transcript.items.count == 101 }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(try renderedMessageTop(movedMessage, rig: rig, scroll: list), movedAnchor, accuracy: 4)
+        XCTAssertEqual(conversation.feed.itemArrivals, 51, "the 50 older rows add no unread arrivals")
+        // A newly prepended card measures again well after the former timer deadline.
+        conversation.expanded.insert("hetero-249")
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(try renderedMessageTop(movedMessage, rig: rig, scroll: list), movedAnchor, accuracy: 4, "late expansion above the anchor preserves its within-row position")
+        XCTAssertEqual(conversation.draft, "gated draft")
+        try snapshot(rig, name: "latest-first-gated-large-text")
+        await finish(rig)
+    }
+
+    func testLatestFirstCachedChatSwitchCancelsPagingAndResetsScrollWithoutLosingDrafts() async throws {
+        let otherID = "dddddddd-1111-4111-8111-111111111111"
+        let other = ChatInfo(id: otherID, provider: .claude, projectID: project, cwd: "/fixture", title: "Cached other", createdAtUnix: 11, approvalMode: .supervised, state: .idle)
+        let screen = UIScreen.main.bounds.size
+        let rig = try await makeRig(chats: [chat(), other], width: screen.width, height: screen.height, look: .nativeLight)
+        await rig.transport.enableSnapshots()
+        await rig.transport.append(chatID, [.info(chat())] + (0..<300).map { .itemCompleted(ChatItem(id: "cached-\($0)", status: .completed, body: .agentMessage("Message \($0). A complete cached message."))) })
+        await rig.transport.append(otherID, [.info(other), .itemCompleted(ChatItem(id: "other-cached", status: .completed, body: .agentMessage("Other latest 999.")))])
+        _ = try await openChat(rig)
+        let first = rig.model.conversation(chatID); first.draft = "draft A"
+        await eventually("A cached") { first.feed.loaded }
+        rig.model.selectChat(otherID)
+        let second = rig.model.conversation(otherID); second.draft = "draft B"
+        await eventually("B cached") { second.feed.loaded && !first.following }
+        _ = try await openChat(rig)
+        let field = try XCTUnwrap(composer(rig))
+        try await Task.sleep(for: .milliseconds(250))
+        let list = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).filter { $0 !== field && $0.bounds.height > 20 && $0.contentSize.height > $0.bounds.height + 500 }.max { $0.contentSize.height < $1.contentSize.height })
+        await rig.transport.gateHistory(true)
+        list.delegate?.scrollViewWillBeginDragging?(list); list.setContentOffset(CGPoint(x: 0, y: 20), animated: false)
+        try await Task.sleep(for: .milliseconds(100)); list.delegate?.scrollViewDidEndDragging?(list, willDecelerate: false)
+        await eventually("A has a gated page") { first.historyLoading }
+        rig.model.selectChat(otherID)
+        await eventually("cached B owns the follower") { second.following && !first.following }
+        await rig.transport.gateHistory(false)
+        await eventually("A page cancellation settles") { !first.historyLoading }
+        XCTAssertEqual(first.transcript.items.count, 50)
+        XCTAssertEqual(second.transcript.items.map(\.id), ["other-cached"])
+        _ = try await openChat(rig)
+        try await Task.sleep(for: .milliseconds(300))
+        let reopenedField = try XCTUnwrap(composer(rig))
+        let reopened = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).filter { $0 !== reopenedField && $0.bounds.height > 20 && $0.contentSize.height > $0.bounds.height + 500 }.max { $0.contentSize.height < $1.contentSize.height })
+        assertValidBottom(reopened)
+        XCTAssertTrue(try renderedTranscriptText(rig, scroll: reopened).contains("299"))
+        XCTAssertEqual(reopenedField.text, "draft A"); XCTAssertEqual(second.draft, "draft B")
+        let bootstraps = await rig.transport.params(of: "chat.snapshot").filter { $0["cursor"] == nil }
+        XCTAssertEqual(bootstraps.count, 2, "cached switches must not replay or bootstrap again")
+        await finish(rig)
+    }
+
+    func testLatestFirstResourceRecoveryIsOnceBoundedAndKeepsActionableState() async throws {
+        let screen = UIScreen.main.bounds.size
+        for scenario in ["newest", "controls", "capped", "live", "hydration"] {
+            let rig = try await makeRig(width: screen.width, height: screen.height, look: .nativeLight)
+            await rig.transport.enableSnapshots(); await rig.transport.enforceResourceLimits(cappedLog: scenario == "capped")
+            let large = ChatItem(id: "large", status: .completed, body: .agentMessage(String(repeating: "x", count: 200_000)))
+            var initial: [ChatEvent] = [.info(chat()), approval("older-action"), .models(models), .usage(ChatUsage(inputTokens: 42))]
+            if scenario == "newest" { initial.append(.itemCompleted(large)) }
+            if scenario == "controls" {
+                initial += (0..<200).map { .approvalRequested(ChatApproval(requestID: "action-\($0)", kind: .command, title: String(repeating: "a", count: 1000), choices: [.accept, .decline])) }
+            }
+            if scenario == "hydration" {
+                initial += ["old-a", "old-b"].map { .itemCompleted(ChatItem(id: $0, status: .completed, body: .agentMessage(String(repeating: "b", count: 70_000)))) }
+            }
+            if scenario != "newest" { initial += (0..<(scenario == "live" ? 180 : 60)).map { .itemCompleted(ChatItem(id: "small-\($0)", status: .completed, body: .agentMessage("Complete small \($0)"))) } }
+            await rig.transport.append(chatID, initial)
+            let conversation = rig.model.conversation(chatID); conversation.draft = "resource draft"
+            _ = try await openChat(rig)
+            await eventually("\(scenario): initial load") { conversation.feed.loaded }
+            if scenario == "live" {
+                await rig.transport.gateBoundedReplay(after: 1)
+                await rig.transport.append(chatID, [.models([models[1]])])
+                await eventually("current catalogue received before recovery") { conversation.modelCatalogue == [self.models[1]] }
+                await rig.transport.append(chatID, [.itemCompleted(large), approval("behind-large"), .state(.waiting)])
+            } else if scenario == "hydration" {
+                await rig.transport.append(chatID, [.itemDelta(itemID: "old-a", delta: .text(" LIVE A")), .itemDelta(itemID: "old-b", delta: .text(" LIVE B")), approval("behind-large"), .state(.waiting)])
+            }
+            if scenario == "live" {
+                await eventually("historical first replay page is held at its checkpoint") { conversation.feed.degradedReplay && conversation.feed.next == 100 }
+                XCTAssertEqual(conversation.modelCatalogue, [models[1]], "historical Models must not replace the authoritative live catalogue")
+                XCTAssertEqual(conversation.transcript.models, [models[1]])
+                XCTAssertEqual(conversation.openApprovals.first?.requestID, "older-action")
+                await rig.transport.gateBoundedReplay(after: nil)
+            }
+            await eventually("\(scenario): exceptional recovery completes") { conversation.feed.degradedReplay && !conversation.legacyLoading }
+            XCTAssertEqual(conversation.draft, "resource draft")
+            XCTAssertEqual(conversation.openApprovals.first?.requestID, "older-action")
+            XCTAssertEqual(conversation.modelCatalogue.count, scenario == "live" ? 1 : 2); XCTAssertEqual(conversation.transcript.usage?.inputTokens, 42)
+            XCTAssertTrue(conversation.notice?.contains("shortened") == true)
+            let calls = await rig.transport.params(of: "chat.snapshot")
+            XCTAssertEqual(calls.filter { $0["cursor"] == nil }.count, 1, "\(scenario): no unchanged bootstrap retries")
+            if scenario == "controls" { XCTAssertEqual(conversation.openApprovals.count, 201) }
+            if scenario == "newest" || scenario == "live" {
+                if case .agentMessage(let body) = conversation.transcript.item("large")?.body { XCTAssertLessThan(body.utf8.count, 120_000); XCTAssertTrue(body.contains("shortened")) } else { XCTFail("represented newest row missing") }
+            }
+            if scenario == "live" || scenario == "hydration" {
+                XCTAssertTrue(conversation.openApprovals.contains { $0.requestID == "behind-large" }); XCTAssertEqual(conversation.transcript.state, .waiting)
+            }
+            if scenario == "hydration" {
+                XCTAssertEqual(calls.filter { $0["item_ids"] != nil }.count, 1)
+                XCTAssertEqual(conversation.transcript.item("old-a")?.body, .agentMessage(String(repeating: "b", count: 70_000) + " LIVE A"))
+            }
+            let polls = await rig.transport.params(of: "chat.events")
+            XCTAssertTrue(polls.contains { $0["bounded"] == .bool(true) })
+            if scenario == "live" {
+                let rejections = await rig.transport.rejectedCompleteEvents()
+                XCTAssertEqual(rejections, 1, "only one deterministic complete-event size failure, distinct from idle polls")
+            }
+            if scenario == "capped" {
+                await rig.transport.truncate(chatID, to: 1)
+                await eventually("shortening during degraded replay retains its safe policy") { conversation.feed.loaded && conversation.feed.next == 1 && conversation.feed.degradedReplay }
+                XCTAssertEqual(conversation.draft, "resource draft")
+            }
+            if scenario == "newest" {
+                rig.window.endEditing(true)
+                let field = try XCTUnwrap(composer(rig))
+                let list = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).filter { $0 !== field && $0.bounds.height > 20 }.max { $0.contentSize.height < $1.contentSize.height })
+                await eventually("represented body has settled at the bottom") { abs(list.contentOffset.y - self.bottomOffset(list)) < 2 && list.contentSize.height > 0 }
+                try await Task.sleep(for: .milliseconds(350))
+                await eventually("resource viewport remains at measured bottom after keyboard layout") { abs(list.contentOffset.y - self.bottomOffset(list)) < 2 }
+                print("LATEST_FIRST_RESOURCE_VIEWPORT frame=\(list.convert(list.bounds, to: rig.window)) offset=\(list.contentOffset) content=\(list.contentSize) window=\(rig.window.bounds)")
+                try snapshot(rig, name: "latest-first-resource-recovery")
+            }
+            await finish(rig)
+        }
+        // An individually unrepresentable control stops once, preserving its cursor.
+        let rig = try await makeRig()
+        await rig.transport.enableSnapshots(); await rig.transport.enforceResourceLimits()
+        await rig.transport.append(chatID, [.info(chat()), .approvalRequested(ChatApproval(requestID: "unrepresented", kind: .command, title: String(repeating: "c", count: 200_000), choices: [.accept]))])
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("bounded control failure stops its follower") { conversation.readError != nil && !conversation.following }
+        let count = await rig.transport.count("chat.events"), cursor = conversation.feed.next
+        try await Task.sleep(for: .milliseconds(350))
+        let afterWait = await rig.transport.count("chat.events")
+        XCTAssertEqual(afterWait, count)
+        XCTAssertEqual(cursor, 1, "never acknowledge the unrepresented approval")
+        rig.model.deselectChat(); rig.model.selectChat(chatID)
+        try await Task.sleep(for: .milliseconds(100))
+        let afterReopen = await rig.transport.count("chat.events")
+        XCTAssertEqual(afterReopen, count)
+        await finish(rig)
+    }
+
+    func testLatestFirstExpiryAndTruncationStillRebootstrap() async throws {
+        let rig = try await makeRig(); await rig.transport.enableSnapshots()
+        await rig.transport.append(chatID, [.info(chat())] + (0..<60).map { .itemCompleted(ChatItem(id: "expire-\($0)", status: .completed, body: .agentMessage("Full \($0)"))) })
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID); conversation.draft = "expiry draft"
+        await eventually("loaded before expiry") { conversation.feed.next == 61 }
+        await rig.transport.expireHistory(); await rig.model.loadOlderChat(chatID)
+        await eventually("expired pin installs a fresh snapshot") { await rig.transport.params(of: "chat.snapshot").filter { $0["cursor"] == nil }.count == 2 && conversation.feed.loaded }
+        await rig.transport.truncate(chatID, to: 2)
+        await eventually("shortened log installs its current prefix") { conversation.feed.next == 2 && conversation.feed.loaded }
+        XCTAssertEqual(conversation.transcript.items.map(\.id), ["expire-0"])
+        XCTAssertEqual(conversation.draft, "expiry draft")
+        XCTAssertFalse(conversation.feed.degradedReplay)
+        await finish(rig)
+    }
+
     // MARK: Pictures
 
     /// Draws the screen at phone size and checks it is not blank. With `RIWORK_CHAT_SNAPSHOTS` set to a directory the pictures are kept
@@ -463,6 +666,12 @@ import RiWorkCore
         XCTAssertLessThanOrEqual(scroll.contentOffset.y, bottomOffset(scroll) + 2, "no overscroll beyond the content end", file: file, line: line)
         XCTAssertEqual(scroll.contentOffset.y, bottomOffset(scroll), accuracy: 2, "absolute bottom gap, including adjusted insets", file: file, line: line)
     }
+    private func firstRenderedMessage(_ rig: Rig, scroll: UIScrollView) throws -> String {
+        let text = try renderedTranscriptText(rig, scroll: scroll)
+        let range = try XCTUnwrap(text.range(of: "Message [0-9]+", options: .regularExpression), "a stable message is actually visible")
+        return String(text[range])
+    }
+
     /// OCR the actual viewport pixels, not the model or off-screen accessibility nodes: blank content cannot pass this check.
     private func renderedMessageTop(_ message: String, rig: Rig, scroll: UIScrollView) throws -> CGFloat {
         rig.window.layoutIfNeeded()
@@ -473,7 +682,9 @@ import RiWorkCore
         }
         let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate
         try VNImageRequestHandler(cgImage: try XCTUnwrap(image.cgImage), options: [:]).perform([request])
-        let match = try XCTUnwrap(request.results?.first { $0.topCandidates(1).first?.string.contains(message) == true }, "message \(message) is actually visible")
+        let observation = request.results?.first { $0.topCandidates(1).first?.string.contains(message) == true }
+        if observation == nil { print("LATEST_FIRST_OCR_MISSING message=\(message) viewport=\(visible) offset=\(scroll.contentOffset) size=\(scroll.contentSize) text=\(request.results?.compactMap { $0.topCandidates(1).first?.string } ?? [])") }
+        let match = try XCTUnwrap(observation, "message \(message) is actually visible")
         return (1 - match.boundingBox.maxY) * visible.height
     }
 
