@@ -112,6 +112,22 @@ pub fn tab_title(scope: &OrchestratorScope) -> &'static str {
     }
 }
 
+/// A tab's title as the tab strip shows it: an orchestrator's in sentence case under Native
+/// ("G·Orch · Global", as Native's status bar says G·Orch), any other title as it is.
+pub fn shown_tab_title(title: &str) -> String {
+    let scopes = [
+        OrchestratorScope::Global,
+        OrchestratorScope::Project {
+            project_id: String::new(),
+        },
+    ];
+    if scopes.iter().any(|scope| tab_title(scope) == title) {
+        crate::ui_text::quiet(title).to_string()
+    } else {
+        title.to_owned()
+    }
+}
+
 /// The chat orchestrators there are, oldest first.
 pub fn chat_orchestrators(host: &ChatHost) -> Vec<ChatInfo> {
     running_chat_orchestrators(host).unwrap_or_else(|| saved_chat_orchestrators(host))

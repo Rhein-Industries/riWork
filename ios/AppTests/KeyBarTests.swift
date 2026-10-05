@@ -40,7 +40,7 @@ import RiWorkCore
         let bar = makeBar()
         let named: [TerminalKey] = [.escape, .tab, .backTab, .left, .up, .down, .right, .home, .end, .pageUp, .pageDown, .delete, .backspace, .enter]
         for key in named { XCTAssertNotNil(bar.buttons[.key(key)], key.name) }
-        for action in [KeyBarView.Action.control, .alt, .paste, .hide, .editHotkeys, .palette, .help] { XCTAssertNotNil(bar.buttons[action], "\(action)") }
+        for action in [KeyBarView.Action.control, .alt, .shift, .paste, .hide, .editHotkeys, .palette, .help] { XCTAssertNotNil(bar.buttons[action], "\(action)") }
         for symbol in ["|", "/", "\\", "~", "-", "_", "`", "*", "&", "$", ">", "<", "{", "}", "[", "]", ";", ":", "'", "\""] {
             XCTAssertNotNil(bar.buttons[.text(symbol)], symbol)
         }
@@ -57,7 +57,7 @@ import RiWorkCore
     func testTheOrderIsSpecialKeysThenHotkeysThenSymbolsAndTheEditorLast() throws {
         let bar = makeBar()
         layout(bar)
-        let order: [KeyBarView.Action] = [.key(.escape), .key(.tab), .control, .alt, .key(.left), .key(.right), .paste, .palette, .help, .hotkey(Hotkey.builtIn[0].id),
+        let order: [KeyBarView.Action] = [.key(.escape), .key(.tab), .control, .alt, .shift, .key(.left), .key(.right), .paste, .palette, .help, .hotkey(Hotkey.builtIn[0].id),
                                           .hotkey(Hotkey.builtIn.last!.id), .text("|"), .text("\""), .editHotkeys]
         let xs = try order.map { try frame($0, in: bar).minX }
         XCTAssertEqual(xs, xs.sorted(), "left to right in this order")
@@ -194,7 +194,7 @@ import RiWorkCore
         XCTAssertEqual(bar.buttons[.key(.escape)]?.configuration?.baseForegroundColor, light.textUI)
         XCTAssertEqual(bar.buttons[.hotkey(Hotkey.builtIn[0].id)]?.configuration?.baseForegroundColor, light.magentaUI, "hotkeys carry the secondary accent")
         XCTAssertEqual(bar.buttons[.editHotkeys]?.configuration?.baseForegroundColor, light.mutedUI)
-        bar.setArmed(control: true, alt: false)
+        bar.setLatches(control: .once, alt: .off, shift: .off)
         XCTAssertEqual(bar.buttons[.control]?.configuration?.baseForegroundColor, light.accentUI)
         bar.style = .builtIn
         bar.style = light
@@ -214,7 +214,7 @@ import RiWorkCore
         XCTAssertEqual(got.items, KeyBarView.symbols.map { .text($0) })
         for item in got.items { XCTAssertNoThrow(try item.validate(), "\(item)") }
     }
-    func testAltThenAKeySendsEscapeThenTheKeyAndShowsItIsArmed() {
+    func testAltThenAKeySendsItsAltFormAndShowsItIsArmed() {
         let (view, got) = makeView()
         let alt = view.bar.buttons[.alt]!
         view.bar.tapped(.alt)
@@ -222,7 +222,7 @@ import RiWorkCore
         XCTAssertTrue(alt.isSelected)
         XCTAssertEqual(alt.accessibilityValue, "armed")
         view.bar.tapped(.key(.left))
-        XCTAssertEqual(got.items, [.key(.escape), .key(.left)])
+        XCTAssertEqual(got.items, [.key(.escape), .text("[1;3D")], "Alt+Left as xterm sends it")
         XCTAssertFalse(alt.isSelected, "one key only")
         view.bar.tapped(.alt)
         view.insertText("b")

@@ -142,6 +142,32 @@ final class AppearanceTests: XCTestCase {
         XCTAssertFalse(native.sameLook(as: plain))
         XCTAssertTrue(native.sameLook(as: try appearance(withNative(appearanceJSON(updatedAt: "200"), "true"))))
     }
+    /// The document with `"mic":<value>` added at the end.
+    private func withMic(_ document: String, _ value: String) -> String { String(document.dropLast()) + ",\"mic\":\(value)}" }
+    func testTheMicSettingIsOptionalAndOffWhenMissing() throws {
+        // A desktop from before the setting sends none, and one with the setting off leaves it out: off.
+        XCTAssertFalse(try appearance(appearanceJSON()).mic)
+        XCTAssertTrue(try appearance(withMic(appearanceJSON(terminal: terminalJSON()), "true")).mic)
+        XCTAssertFalse(try appearance(withMic(appearanceJSON(), "false")).mic)
+        XCTAssertFalse(try appearance(withMic(appearanceJSON(), "null")).mic)
+        let both = try appearance(withMic(withNative(appearanceJSON(), "true"), "true"))
+        XCTAssertTrue(both.native && both.mic, "independent of the skin")
+        XCTAssertFalse(try appearance(withNative(appearanceJSON(), "true")).mic)
+        for bad in ["\"true\"", "1", "0", "{}", "[]"] { assertInvalid(withMic(appearanceJSON(), bad), field: "mic", bad) }
+    }
+    func testTheMicSettingIsKeptThroughStorageAndWrittenOnlyWhenOn() throws {
+        let on = try appearance(withMic(appearanceJSON(), "true"))
+        XCTAssertEqual(on.json["mic"], .bool(true))
+        XCTAssertEqual(try DesktopAppearance(json: on.json), on)
+        XCTAssertEqual(try JSONDecoder().decode(DesktopAppearance.self, from: try JSONEncoder().encode(on)), on)
+        XCTAssertEqual(try appearance(appearanceJSON()).json["mic"], .null, "off, the stored shape is what it was before the setting")
+    }
+    func testTurningTheMicSettingOnOrOffAloneIsAChange() throws {
+        let off = try appearance(appearanceJSON(updatedAt: "100")), on = try appearance(withMic(appearanceJSON(updatedAt: "100"), "true"))
+        XCTAssertFalse(off.sameLook(as: on))
+        XCTAssertFalse(on.sameLook(as: off))
+        XCTAssertTrue(on.sameLook(as: try appearance(withMic(appearanceJSON(updatedAt: "200"), "true"))))
+    }
     func testContrastRatioMatchesWCAG() {
         XCTAssertEqual(RGB(0x000000).contrast(with: RGB(0xffffff)), 21, accuracy: 0.001)
         XCTAssertEqual(RGB(0x123456).contrast(with: RGB(0x123456)), 1, accuracy: 0.001)

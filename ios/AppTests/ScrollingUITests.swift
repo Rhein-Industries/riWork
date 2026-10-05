@@ -362,6 +362,23 @@ import RiWorkCore
         }
     }
 
+    func testAFullScreenProgramWithMoreRowsThanFitStaysInsideThePane() async throws {
+        // 80 rows from the desktop, more than any iPhone has room for: what happens while the keyboard comes up and the desktop has
+        // not followed the smaller pane yet. The screen stays the height it was given, so the header stays below the status bar and
+        // the last rows above the bottom, and the pane does not measure itself 80 rows tall and ask the desktop for that.
+        try await withScreen(ScriptedScrollback(history: 100, rows: 80), alternate: false) { s in
+            await s.transport.setAlternate(true)
+            await eventually("the program's screen") { s.model.alternateScreen }
+            await settle(s, 500)
+            let area = try XCTUnwrap(s.model.terminalArea)
+            let bounds = s.host.view.bounds, safe = s.host.view.safeAreaInsets
+            XCTAssertLessThan(Double(area.height), Double(bounds.height - safe.top - safe.bottom), "the pane is inside the safe area")
+            XCTAssertLessThan(Double(area.height), 80 * lineHeight, "not as tall as the desktop's screen")
+            let rows = try XCTUnwrap(s.model.terminalViewport?.rows)
+            XCTAssertLessThan(rows, 80, "the desktop is asked for the rows that fit")
+        }
+    }
+
     // MARK: size changes
 
     func testAChangeOfTextSizeKeepsTheLineAtTheTopOfTheView() async throws {

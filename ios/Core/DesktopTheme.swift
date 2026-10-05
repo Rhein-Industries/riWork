@@ -33,6 +33,9 @@ public struct DesktopTheme: Sendable, Equatable {
     public var isSynced: Bool { dark != nil }
     /// The desktop uses its Native skin, so the interface is drawn the native way. False while built in.
     public var native = false
+    /// The desktop's setting for dictation: the phone shows its mics (chat composer, key bar, line composer) only while it is on. Off
+    /// while built in, as with a desktop that predates the setting.
+    public var mic = false
     public var warning: ThemeColor { gold }
 
     /// Below this WCAG contrast ratio a synced foreground is not trusted against its background.
@@ -99,6 +102,6 @@ public struct DesktopTheme: Sendable, Equatable {
             gold: fixed(guarded(p.gold, builtIn: builtIn.gold)), error: fixed(guarded(builtIn.error, builtIn: builtIn.error)),
             terminalBackground: fixed(background), terminalForeground: fixed(foreground), terminalCursor: fixed(foreground),
             ansi: (appearance.terminal?.palette ?? TerminalRenderColors.fallbackAnsi(dark: appearance.dark)).map(fixed),
-            dark: appearance.dark, native: appearance.native)
+            dark: appearance.dark, native: appearance.native, mic: appearance.mic)
     }
 }

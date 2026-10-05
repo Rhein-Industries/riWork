@@ -1,0 +1,177 @@
+import XCTest
+import UIKit
+import RiWorkCore
+@testable import RiWorkRemote
+
+/// A desktop that takes files the way the connector does (or, `old`, one from before uploads), and records what it was asked.
+actor UploadTransport: RemoteTransport {
+    var connected = false
+    var old = false
+    var calls: [(method: String, params: [String: JSONValue])] = []
+    var received: [String: Data] = [:]
+    func setOld(_ on: Bool) { old = on }
+    func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing { connected = true; return pairing }
+    func disconnect() async { connected = false }
+    func isConnected() async -> Bool { connected }
+    func desktopFeatures() async -> DesktopFeatures {
+        old ? DesktopFeatures() : DesktopFeatures(ready: .object(["features": .object(["upload": .object([
+            "max_bytes": .number(1_000_000), "chunk_bytes": .number(92_160), "quota_bytes": .number(4_000_000), "max_files": .number(16)])])]))
+    }
+    func methods() -> [String] { calls.map(\.method).filter { $0.hasPrefix("upload.") || $0 == "shell.paste" } }
+    func pasted() -> [[String: JSONValue]] { calls.filter { $0.method == "shell.paste" }.map(\.params) }
+    func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue {
+        guard connected else { throw RemoteError.disconnected }
+        try RequestValidation.validate(method: method, params: params, id: id)
+        calls.append((method, params))
+        let upload = params["upload"]?.string ?? ""
+        let path = "/Users/me/.local/share/riwork/uploads/x/photo-0a1b2c3d.jpg"
+        switch method {
+        case "projects.list", "worktrees.list", "orchestrators.list", "shells.list":
+            return .object([String(method.split(separator: ".")[0]): .array([])])
+        case "shell.resize.clear": return .object(["shell_id": params["shell_id"] ?? .null, "status": .string("cleared")])
+        case "appearance.get": throw RemoteError.rpc(code: "not_found", message: "appearance not published")
+        case _ where old: throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method")
+        case "upload.begin":
+            received[upload] = Data()
+            return .object(["upload": .string(upload), "status": .string("partial"), "received": .number(0)])
+        case "upload.chunk":
+            var base64 = params["data"]!.string!.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            while base64.count % 4 != 0 { base64 += "=" }
+            received[upload, default: Data()].append(Data(base64Encoded: base64)!)
+            return .object(["upload": .string(upload), "status": .string("partial"), "received": .number(Double(received[upload]!.count))])
+        case "upload.finish":
+            return .object(["upload": .string(upload), "status": .string("complete"), "received": .number(Double(received[upload]!.count)), "path": .string(path)])
+        case "shell.paste":
+            return .object(["shell_id": params["shell_id"]!, "batch": params["batch"]!, "status": .string("sent")])
+        default: throw RemoteError.protocolViolation("Unknown method \(method)")
+        }
+    }
+}
+
+@MainActor final class AttachmentAppTests: XCTestCase {
+    private let shell = "44444444-4444-4444-8444-444444444444"
+    private let chat = "55555555-5555-4555-8555-555555555555"
+    private var defaultsNames: [String] = []
+
+    override func tearDown() async throws {
+        for name in defaultsNames { UserDefaults().removePersistentDomain(forName: name) }
+        defaultsNames = []
+    }
+    private func connected(old: Bool = false) async throws -> (RemoteModel, UploadTransport) {
+        let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+        let pairing = try Pairing.parse("""
+        {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+        """)
+        let desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+        try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+        let name = "com.riwork.tests.attach.\(UUID().uuidString)"
+        defaultsNames.append(name)
+        let transport = UploadTransport()
+        await transport.setOld(old)
+        let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: name)!)
+        await model.connect()
+        XCTAssertEqual(model.state, .connected)
+        await settle { model.desktopFeatures.upload != nil || old }
+        return (model, transport)
+    }
+    private func settle(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(condition(), file: file, line: line)
+    }
+    private func photo() -> Data {
+        UIGraphicsImageRenderer(size: CGSize(width: 30, height: 20)).jpegData(withCompressionQuality: 0.9) { context in
+            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 15, height: 20))
+        }
+    }
+
+    func testAPhotoForATerminalIsSentThenPastedAndTheLineGoesAway() async throws {
+        let (model, transport) = try await connected()
+        model.attach([.camera(photo())], to: .shell(shell))
+        XCTAssertNotNil(model.uploadActivity(for: .shell(shell)), "shown at once")
+        XCTAssertNil(model.uploadActivity(for: .chat(chat)), "only where it goes")
+        await settle { model.attachments.task == nil }
+        XCTAssertNil(model.attachments.activity)
+        let methods = await transport.methods()
+        XCTAssertEqual(methods, ["upload.begin", "upload.chunk", "upload.finish", "shell.paste"])
+        let pasted = await transport.pasted()
+        XCTAssertEqual(pasted.first?["shell_id"], .string(shell))
+        XCTAssertEqual(pasted.first?["uploads"]?.array.count, 1)
+        await model.disconnect()
+    }
+
+    func testAPhotoForAChatPutsItsPathInTheDraft() async throws {
+        let (model, transport) = try await connected()
+        let conversation = ChatConversation(id: chat)
+        conversation.draft = "What is in this picture?"
+        model.chatConversations[chat] = conversation
+        model.attach([.camera(photo())], to: .chat(chat))
+        await settle { model.attachments.task == nil }
+        XCTAssertEqual(conversation.draft, "What is in this picture?\n/Users/me/.local/share/riwork/uploads/x/photo-0a1b2c3d.jpg\n")
+        let methods = await transport.methods()
+        XCTAssertFalse(methods.contains("shell.paste"), "a chat gets the path, nothing is typed")
+        await model.disconnect()
+    }
+
+    func testAMacTooOldToTakeFilesSaysSoAndNothingIsSent() async throws {
+        let (model, transport) = try await connected(old: true)
+        model.attach([.camera(photo())], to: .shell(shell))
+        let activity = try XCTUnwrap(model.uploadActivity(for: .shell(shell)))
+        guard case .failed(let message) = activity.phase else { return XCTFail("\(activity)") }
+        XCTAssertTrue(message.contains("Update RiWork on the Mac"), message)
+        let methods = await transport.methods()
+        XCTAssertTrue(methods.isEmpty)
+        model.dismissUploadFailure()
+        XCTAssertNil(model.attachments.activity)
+        await model.disconnect()
+    }
+
+    func testCancellingStopsAndClearsTheLine() async throws {
+        let (model, _) = try await connected()
+        model.attach([.camera(photo())], to: .shell(shell))
+        model.cancelUpload()
+        XCTAssertNil(model.attachments.activity)
+        XCTAssertNil(model.attachments.task)
+        await model.disconnect()
+    }
+
+    // MARK: The paperclip's menu
+
+    private func style(native: Bool) -> DesktopStyle {
+        var theme = DesktopTheme.builtIn
+        theme.native = native
+        return DesktopStyle(theme)
+    }
+
+    func testTheChoicesOfferTheCameraOnlyWhereThereIsOne() {
+        let hasCamera = UIImagePickerController.isSourceTypeAvailable(.camera)
+        XCTAssertEqual(AttachmentChoice.available, hasCamera ? [.photos, .camera, .files] : [.photos, .files])
+        XCTAssertEqual(AttachmentChoice.photos.symbol, "photo.on.rectangle")
+        XCTAssertEqual(AttachmentChoice.camera.symbol, "camera")
+        XCTAssertEqual(AttachmentChoice.files.symbol, "folder")
+    }
+
+    /// The key bar's paperclip opens a menu from the key itself, not a dialog over the screen: sentence case under Native, capitals in
+    /// the terminal look, and the choice reaches the terminal as it is.
+    func testTheKeyBarPaperclipIsAMenuOnTheKey() throws {
+        for native in [true, false] {
+            let view = KeyCaptureView()
+            view.bar.style = style(native: native)
+            var chosen: [AttachmentChoice] = []
+            view.onAttach = { chosen.append($0) }
+            let paperclip = try XCTUnwrap(view.bar.buttons[.attach])
+            XCTAssertTrue(paperclip.showsMenuAsPrimaryAction)
+            let items = try XCTUnwrap(paperclip.menu).children.compactMap { $0 as? UIAction }
+            let titles = AttachmentChoice.available.map { native ? $0.title : $0.title.uppercased() }
+            XCTAssertEqual(items.map(\.title), titles)
+            XCTAssertEqual(items.first?.title, native ? "Photo library" : "PHOTO LIBRARY")
+            XCTAssertFalse(titles.contains { $0.contains("Mac") }, "no explanatory title")
+            // Pressing the key itself sends nothing: only a choice does.
+            view.bar.tapped(.attach)
+            XCTAssertEqual(chosen, [])
+            view.bar.tapped(.attachFrom(.files))
+            view.bar.tapped(.attachFrom(.photos))
+            XCTAssertEqual(chosen, [.files, .photos])
+        }
+    }
+}

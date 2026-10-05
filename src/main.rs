@@ -9,6 +9,7 @@ mod cli_agents;
 mod codex_accounts;
 mod controls;
 mod cua;
+mod dictation;
 mod dock_menu;
 mod file_explorer;
 mod file_preview;
@@ -56,6 +57,7 @@ mod theme;
 mod tooltip;
 mod ui_text;
 mod update;
+mod upload_inbox;
 mod usage;
 
 use std::{
@@ -71,7 +73,7 @@ use std::{
 
 use activity::{ActivityTracker, AgentActivity, AgentState, ChatActivity};
 use chat::model::{ApprovalMode, ChatInfo, NewChat, OrchestratorScope, Provider};
-use chat_view::{ChatView, ChatViewEvent, HostConfig};
+use chat_view::{ChatView, ChatViewEvent, HostConfig, ToggleDictation};
 use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity,
@@ -1021,6 +1023,26 @@ fn chat_tab_text(
         Some(name) if !icon && !title.starts_with(name) => format!("{mark}{name} · {title}"),
         _ => format!("{mark}{title}"),
     }
+}
+
+/// The names and folders a chat of `project_id` is talked about with, for dictation: the
+/// project's name and root, and each of its worktrees' branch and folder.
+fn speech_context(state: &State, project_id: &str) -> (Vec<String>, Vec<String>) {
+    let mut names = Vec::new();
+    let mut paths = Vec::new();
+    if let Some(project) = state.projects.iter().find(|p| p.id == project_id) {
+        names.push(project.name.clone());
+        paths.push(project.root.display().to_string());
+    }
+    for worktree in state
+        .worktrees
+        .iter()
+        .filter(|w| w.project_id == project_id)
+    {
+        names.push(worktree.branch.clone());
+        paths.push(worktree.path.display().to_string());
+    }
+    (names, paths)
 }
 
 /// What a chat tab says on hover about its chat, such as "Working" or "Stopped".
@@ -6429,6 +6451,8 @@ impl Workspace {
     ) -> Tab {
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
+        let (names, paths) = speech_context(&self.state, &self.project_id);
+        view.update(cx, |view, _| view.set_speech_context(names, paths));
         cx.subscribe_in(
             &view,
             window,
@@ -7584,7 +7608,7 @@ impl Workspace {
                 _ => match tab.chat().map(|view| view.read(cx).summary()) {
                     Some(summary) => chat_tab_text(
                         summary.provider,
-                        &summary.title,
+                        &orchestrators::shown_tab_title(&summary.title),
                         summary.activity,
                         self.settings.panel_tab_icons,
                     ),
@@ -7592,7 +7616,11 @@ impl Workspace {
                         let shell = tab
                             .shell_id()
                             .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
-                        codex_tab_title(&tab.title, shell, &account_numbers)
+                        codex_tab_title(
+                            &orchestrators::shown_tab_title(&tab.title),
+                            shell,
+                            &account_numbers,
+                        )
                     }
                 },
             })
@@ -7621,13 +7649,19 @@ impl Workspace {
             let close = ui_text::space_f32(6.0 + NATIVE_TAB_CLOSE) - ui_text::space_f32(4.0);
             let words: f32 = titles
                 .iter()
+                .zip(&pane.tabs)
                 .enumerate()
-                .map(|(index, title)| {
+                .map(|(index, (title, tab))| {
                     // Native keeps every closable tab's X in place, shown or not.
                     let shown_close = (native || index == pane.active) && tab_can_close;
+                    // A chat tab that shows its agent's mark is that much wider.
+                    let mark = self.settings.panel_tab_icons
+                        && tab
+                            .chat()
+                            .is_some_and(|view| view.read(cx).summary().provider.is_some());
                     ui_text::space_f32(16.0)
                         + 1.0
-                        + native_label_width(title, cx)
+                        + native_tab_words(native_label_width(title, cx), mark)
                         + if shown_close { close } else { 0.0 }
                 })
                 .sum();
@@ -7822,7 +7856,7 @@ impl Workspace {
                                         Some(provider) => div()
                                             .flex()
                                             .items_center()
-                                            .gap(ui_text::space(5.0))
+                                            .gap(ui_text::space(CHAT_MARK_GAP))
                                             .child(icons::icon(Icon::Provider(provider), tab_color))
                                             .child(display_title.clone())
                                             .into_any_element(),
@@ -10055,6 +10089,17 @@ impl Render for Workspace {
                     .p(ui_text::space(8.0))
                     .bg(rgb(colors.panel_active))
                     .text_color(rgb(colors.gold))
+                    // Native: a raised rounded note with a hairline, as its menus are.
+                    .map(|note| {
+                        controls::native(note, |note| {
+                            note.px(ui_text::space(10.0))
+                                .rounded(controls::radius(controls::MENU_RADIUS))
+                                .border_1()
+                                .border_color(rgb(colors.divider))
+                                .bg(rgb(controls::raised(colors)))
+                                .shadow_md()
+                        })
+                    })
                     .child(notice.clone())
             }))
             .children(
@@ -10163,6 +10208,20 @@ fn native_label_width(label: &str, cx: &App) -> f32 {
         .sum::<f32>()
         .ceil()
 }
+
+/// How wide a Native tab's label is: its `words` (`native_label_width`) and, for a chat tab
+/// that shows its agent's `mark`, the mark and the gap the tab leaves after it.
+fn native_tab_words(words: f32, mark: bool) -> f32 {
+    if mark {
+        words + CHAT_MARK_SIDE * ui_text::scale() + ui_text::space_f32(CHAT_MARK_GAP)
+    } else {
+        words
+    }
+}
+
+/// A chat tab's agent mark: an icon's box (`icons::icon`), and the gap before its title.
+const CHAT_MARK_SIDE: f32 = 14.0;
+const CHAT_MARK_GAP: f32 = 5.0;
 
 /// A menu row's symbol: muted, or primary for a check mark. Native draws it at the size of
 /// the row's text.
@@ -11064,6 +11123,7 @@ fn main() {
             KeyBinding::new("cmd-alt-shift-c", OpenCodexChat, None),
             KeyBinding::new("cmd-alt-shift-l", OpenClaudeChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
+            KeyBinding::new("ctrl-alt-d", ToggleDictation, Some("ChatView")),
         ]);
         cx.set_menus([
             Menu::new("RiWork").items([
@@ -12906,6 +12966,21 @@ mod main_pane_tests {
             ),
             "● P·ORCH · PROJECT"
         );
+        // The colorful themes show the titles as they are, and so does Native any other
+        // chat's; Native's own words for the orchestrators' are in its sentence case.
+        assert_eq!(
+            orchestrators::shown_tab_title("G·ORCH · GLOBAL"),
+            "G·ORCH · GLOBAL"
+        );
+        assert_eq!(orchestrators::shown_tab_title("FIX CI"), "FIX CI");
+        assert_eq!(
+            ui_text::sentence_case(title(OrchestratorScope::Global)),
+            "G·Orch · Global"
+        );
+        assert_eq!(
+            ui_text::sentence_case(title(orchestrators::scope_of(Some("p1")))),
+            "P·Orch · Project"
+        );
     }
 
     #[test]
@@ -14046,6 +14121,13 @@ mod main_pane_tests {
 mod native_bar_tests {
     use super::*;
 
+    #[test]
+    fn a_chat_tab_with_its_agents_mark_is_measured_with_the_mark() {
+        // Off the UI thread the text is at its design size: the 14 px icon and a 5 px gap.
+        assert_eq!(native_tab_words(60.0, false), 60.0);
+        assert_eq!(native_tab_words(60.0, true), 60.0 + 14.0 + 5.0);
+    }
+
     /// What a Native navigation bar of five symbol tabs and no close marks shows when its
     /// tabs have `room` with neither the lock nor the focus button.
     fn navigation_bar(room: f32) -> (bool, bool, f32) {
@@ -14232,6 +14314,24 @@ mod chat_tab_tests {
                 "{keystroke} is bound twice"
             );
         }
+        // Dictation in a chat: its own key, bound only in a chat tab.
+        assert!(
+            keys.contains(&("alt-ctrl-d".to_owned(), "Some(\"ChatView\"".to_owned())),
+            "{keys:?}"
+        );
+        // ⌃⌥D is nobody else's, and ⌘⇧D stays Split down in a chat as everywhere.
+        assert_eq!(
+            keys.iter()
+                .filter(|(keystroke, _)| keystroke == "alt-ctrl-d")
+                .count(),
+            1
+        );
+        assert!(keys.contains(&("cmd-shift-d".to_owned(), "None".to_owned())));
+        assert!(
+            !keys
+                .iter()
+                .any(|(keystroke, _)| keystroke == "cmd-shift-space")
+        );
         for chat in ["alt-cmd-shift-c", "alt-cmd-shift-l"] {
             assert!(
                 keys.iter().any(|(keystroke, _)| keystroke == chat),
@@ -14251,6 +14351,38 @@ mod chat_tab_tests {
                 "{terminal}"
             );
         }
+    }
+
+    #[test]
+    fn dictation_in_a_chat_knows_its_projects_names_and_branches() {
+        let project = |id: &str, name: &str, root: &str| -> store::Project {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "name": name, "root": root, "created_at": 0
+            }))
+            .unwrap()
+        };
+        let worktree = |project_id: &str, branch: &str, path: &str| -> store::Worktree {
+            serde_json::from_value(serde_json::json!({
+                "id": branch, "project_id": project_id, "branch": branch, "path": path,
+                "created_at": 0
+            }))
+            .unwrap()
+        };
+        let state = State {
+            projects: vec![
+                project("p1", "riWork", "/work/riWork"),
+                project("p2", "other", "/o"),
+            ],
+            worktrees: vec![
+                worktree("p1", "mac-chat-mic", "/work/riWork-mac-chat-mic"),
+                worktree("p2", "elsewhere", "/o2"),
+            ],
+            ..State::default()
+        };
+        let (names, paths) = speech_context(&state, "p1");
+        assert_eq!(names, ["riWork", "mac-chat-mic"]);
+        assert_eq!(paths, ["/work/riWork", "/work/riWork-mac-chat-mic"]);
+        assert_eq!(speech_context(&state, "gone"), (Vec::new(), Vec::new()));
     }
 
     #[test]

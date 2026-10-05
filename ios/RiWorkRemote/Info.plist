@@ -36,9 +36,13 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>Scan a pairing code from your RiWork desktop.</string>
+	<string>Scan a pairing code from your RiWork desktop, or take a photo to send to a terminal or chat on it.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to a RiWork relay on your local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Dictate commands and messages. Your voice is recognized on this iPhone and is not sent anywhere.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Turn what you dictate into text on this iPhone, using words from the session on screen.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

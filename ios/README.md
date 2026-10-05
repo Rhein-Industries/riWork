@@ -28,7 +28,23 @@ RiWork colors apply.
 **Native.** A desktop using its Native skin also sends `"native": true` (left out otherwise, and by desktops from before
 the flag). The phone then sets its interface in SF Pro and sentence case, shows the key bar's named keys as SF Symbols,
 and on iOS 26 puts the workspace bar's controls, prominent buttons, the key bar and sheets on Liquid Glass; terminal text,
-typed keys and the command field stay in Menlo. Switching Native on or off is picked up like any color change.
+typed keys and the command field stay in Menlo. A chat follows too: its tabs, toolbar, cards and bars are set in SF Pro, cards,
+code blocks, diffs and the request and question bars are rounded, what you sent is a bubble on the right, links are the
+system blue, and on iOS 26 the chat's toolbar controls, the composer's field and the request buttons are on glass; commands,
+code, diffs, paths and output stay in Menlo. The chat's model chip is a glass capsule beside the mode menu, the model sheet and the
+New terminal sheet mark the chosen row with a rounded highlight, draw the efforts as a segmented control and the Fast and Unrestricted
+switches in the system green (Native's accent is black or white), and status lines, notes and the orchestrator's tab follow the same
+family; the question bar has Send in its header, and over a short screen (the keyboard up) it gives up scrolling room so the
+transcript keeps its last message whole, cutting its answers between rows rather than through one. Switching Native on or off is
+picked up like any color change.
+
+**Mic.** Dictation is a setting on the Mac, off by default: while it is on the desktop also sends `"mic": true` (left out otherwise,
+and by desktops from before the setting; any other value makes the document invalid, as for `native`). It is read, stored with the
+palette and followed like the Native flag, and turning it on or off alone counts as a change, so it applies live on connect, on
+coming back to the foreground and on the periodic refresh. Off, the phone has no mic anywhere: none in a chat's composer (the row
+closes up around the field), none in the key bar (the scrolling row runs up to Hide), none beside the line composer's Send, and no
+dictation panel over the terminal; no dictation starts, so neither the microphone nor speech recognition is asked for, and one in
+progress is cancelled the moment the setting turns off. On, dictation works as described under the key bar and the chat composer.
 
 ## Open, build and install
 
@@ -281,7 +297,7 @@ A desktop that says `ready.features.chat` (the `riwork` CLI reports `"chat": tru
 - **Reasoning** is one collapsed line. **Commands** show `$ command`, a status glyph and the exit code; opened, their working directory and the last 80 lines of output (and how many were left out), with Copy; a running command shows its last three lines without opening. **Edits** show the files with +/- counts; a file opens to a monospace **diff** (added green, removed red, hunk headers muted, from the synced terminal palette) of at most 2000 lines. **Tools** show `server · tool` and the most telling input; opened, the input and the result. **Plans** and **to-dos** are checklists. **Web searches**, the **compaction** divider and **notices** (info, warning, error) are single rows.
 - The **approval bar** is pinned above the composer: what is asked (the command, the files, the tool), details on demand, and the buttons the provider offers, in its order: **Allow**, **Allow for session**, **Deny**, **Stop** (Stop is the decision `cancel`: deny and end the turn). A button leaves the bar at once; if the desktop says the request was answered already, that is said quietly above the composer. A request whose answer was lost (timeout) comes back to the bar, and the events say what happened. VoiceOver announces a new request.
 - **Questions** (`AskUserQuestion`, `item/tool/requestUserInput`) are option buttons per question (one, or any for a multiple-choice one) with a field for an answer of your own; **Send answer** is on when every question has one (`ChatAnswerForm`, tested).
-- The **composer** is a multi-line text view that grows to six lines, with Send and, while a turn runs, **Interrupt**. What is typed is kept per chat; a message that did not go through comes back into the composer, and nothing sends a message twice by itself.
+- The **composer** is a multi-line text view that grows to six lines, with Send and, while a turn runs, **Interrupt**, and, while the Mac's mic setting is on (see **Mic** above), a **mic** that dictates into it on the phone. What is typed is kept per chat; a message that did not go through comes back into the composer, and nothing sends a message twice by itself.
 
 **Keyboard** (a Clicks or any hardware keyboard; the composer takes the keyboard when the chat opens, by the same rule as the terminal, "Focus keyboard when a shell opens": with a hardware keyboard attached by default). Return and Shift-Return are `UIKeyCommand`s of the composer with priority over the system, and `ChatKeyRouter` (`Core/ChatPresentation.swift`, pure and tested) says what each means from what is on the screen now:
 
@@ -309,6 +325,36 @@ Typing anything gives ⏎ ⇧⏎ ⎋ ⌘⌫ back to the text; a decision the pro
 
 **Look.** The synced desktop theme (accent for the user's blocks and the selection, gold for waiting and warnings, the terminal palette's green and red for diffs), Dynamic Type and the interface scale, VoiceOver labels and values on every card ("Command: ls, exit 2, failed", "Expanded"), Reduce Motion (the indicator stops pulsing and the list jumps without animating). Prose is the system face; code, commands and chrome are Menlo.
 
+### Photos and files
+
+A photo or a file goes from the phone to a terminal or a chat on the Mac, where the agent reads it as if it had been
+dropped on the Mac's terminal (`Core/FileUpload.swift`, `RiWorkRemote/RemoteModel+Upload.swift`,
+`RiWorkRemote/AttachmentViews.swift`; the contract is the file upload extension of `docs/remote-protocol.md`).
+
+- **Paste.** When the pasteboard holds files or a picture alone, the terminal's Paste (the key bar's Paste, ⌘V on a
+  hardware keyboard, the edit menu) and a chat composer's paste send them instead of doing nothing. The rule is the
+  Mac's: files first, then text, then a picture alone, so text still pastes as typing. Only the pasteboard's types are
+  looked at before the paste, which never shows the paste prompt.
+- **Pick.** The paperclip on the key bar (keyboard up), beside the keyboard button (keyboard down), beside Send in the
+  line composer and at the left of a chat's composer offers **Photo Library** (`PhotosPicker`, which needs no library
+  permission), **Take Photo** (where there is a camera; the camera usage text covers it) and **Files**
+  (`fileImporter`, any type, several at once). The terminal's keyboard goes away for the picker and comes back after.
+- **What travels.** A photo from the library, the camera or the pasteboard becomes an upright JPEG of at most 4096
+  pixels on its longest side and without metadata, so its location stays on the phone; a PNG or GIF (a screenshot)
+  goes as it is. A file from Files goes as it is, except a picture no agent reads (HEIC, TIFF), which becomes JPEG.
+- **Where it goes.** For a terminal, the files are uploaded and then pasted into it with one `shell.paste` (their paths,
+  in the form the program in front takes a dropped file: Claude Code, Codex and Grok attach a picture, a shell gets the
+  escaped path). For a chat, their paths go at the end of the message being written, one per line; the agent reads them
+  with its tools when the message is sent (the chat drivers take text only, so nothing is attached).
+- **On the way.** A line over the terminal (at the top, so the terminal never changes size) or above the chat composer
+  shows the file, how far it is and **Cancel** (which tells the Mac to drop what it has); a failure stays there with the
+  reason and **Dismiss**. One sending at a time, at most 16 files. Chunks of 90 KiB go one after another; a link that
+  drops is waited for (up to 30 s) and the upload goes on where the Mac got to. A paste asked again after a lost answer
+  carries the same batch, so it never types twice; an `uncertain` one says to look at the terminal first.
+- **An older Mac.** A Mac whose `ready` has no `features.upload` is never sent anything: the line says RiWork on the Mac
+  needs an update. One that refuses the methods ("unsupported RPC method") is told apart the same way, and one whose
+  CLI cannot paste yet says so before the first byte.
+
 ### Direct typing, focus mode and text size
 
 When the desktop supports `shell.keys`, tapping the terminal opens the keyboard and
@@ -322,7 +368,7 @@ prediction off; return key "return"). A key bar sits on the keyboard, always 44 
 puts it: on top of the software keyboard, or alone at the bottom edge when a hardware keyboard is attached. It
 scrolls sideways: Esc, Tab, a sticky Ctrl (armed until the next letter, sent as `C-<letter>`), a sticky Alt (Meta,
 sent as `Escape` followed by the next key or text, readline style), arrows, Shift-Tab, Home, End, PgUp, PgDn, Delete,
-Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held) and Paste, then a ⌘ button that opens the hotkey menu, a ? button that opens the hotkey help and the hotkeys (those that
+Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held), Paste and a paperclip (see "Photos and files"), then a ⌘ button that opens the hotkey menu, a ? button that opens the hotkey help and the hotkeys (those that
 want a button), then the
 symbols that are awkward on the iOS keyboard (`` | / \ ~ - _ ` * & $ > < { } [ ] ; : ' " ``), then a "+" that opens the
 hotkey editor. Hide keyboard stays at the right end. The ends of the row are padded so the first and last key clear

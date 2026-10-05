@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>dev.riwork.shell.speech</string>
+    <key>CFBundleName</key><string>riwork-speech</string>
+    <key>NSMicrophoneUsageDescription</key><string>RiWork listens to the microphone while you dictate a chat message.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>RiWork turns what you dictate into text on this Mac.</string>
+</dict>
+</plist>

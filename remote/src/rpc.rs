@@ -27,6 +27,7 @@ use tokio::{
 
 mod chat;
 mod orchestrator;
+mod upload;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1084,12 +1085,15 @@ pub struct Rpc {
     /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
     /// once run it once.
     asking_chat: tokio::sync::Mutex<()>,
+    /// Whether the CLI said it has `shell paste` (see `require_shell_paste`).
+    shell_paste: AtomicBool,
+    /// Files the phones sent (see `crate::upload`).
+    uploads: Arc<crate::upload::Uploads>,
 }
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
         Self {
             cli,
-            storage,
             input_locks: Mutex::new(BTreeMap::new()),
             history_cap: AtomicU32::new(HISTORY_PAGE_MAX),
             cli_checks_shells: tokio::sync::OnceCell::new(),
@@ -1097,6 +1101,9 @@ impl Rpc {
             chat: AtomicBool::new(false),
             orchestrator_create: AtomicBool::new(false),
             asking_chat: tokio::sync::Mutex::new(()),
+            shell_paste: AtomicBool::new(false),
+            uploads: Arc::new(crate::upload::Uploads::new(storage.dir.clone())),
+            storage,
         }
     }
     /// The most lines a `shell.history` page may have right now (announced in `ready`).
@@ -1805,6 +1812,27 @@ impl Rpc {
             "chat.stop" => {
                 let spec = chat::stop_spec(&r.params)?;
                 self.chat_stop(device, spec).await
+            }
+            // Files from the phone; see `upload`.
+            "upload.begin" => {
+                let spec = upload::begin_spec(r)?;
+                self.upload_begin(device, spec).await
+            }
+            "upload.chunk" => {
+                let chunk = upload::chunk_spec(r)?;
+                self.upload_chunk(device, chunk).await
+            }
+            "upload.finish" => {
+                let id = upload::one_spec(r)?;
+                self.upload_finish(device, id).await
+            }
+            "upload.cancel" => {
+                let id = upload::one_spec(r)?;
+                self.upload_cancel(device, id).await
+            }
+            "shell.paste" => {
+                let spec = upload::paste_spec(r)?;
+                self.shell_paste(device, spec).await
             }
             // A desktop device's terminal streams; see `pty`.
             "pty.open" => {

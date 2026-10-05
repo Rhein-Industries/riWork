@@ -43,13 +43,16 @@ actor ChatTransport: RemoteTransport {
     var orchestratorEntries: [JSONValue] = []
     /// What the host does about a command: the events it appends.
     var onCommand: (@Sendable (String, ChatCommand) -> [ChatEvent])?
+    /// What `appearance.get` gives; nil is "not published", and the built-in look.
+    var appearance: JSONValue?
     private var created = 0
 
-    init(chats: [ChatInfo] = []) { self.chats = chats }
+    init(chats: [ChatInfo] = [], appearance: JSONValue? = nil) { self.chats = chats; self.appearance = appearance }
 
     // MARK: Script
 
     func setFeature(_ on: Bool) { chatFeature = on }
+    func setAppearance(_ value: JSONValue?) { appearance = value }
     func setOrchestratorFeature(_ on: Bool) { orchestratorFeature = on }
     func setOrchestratorMode(_ mode: OrchestratorMode) { orchestratorMode = mode }
     func setNewOrchestratorsAreChats(_ on: Bool) { newOrchestratorsAreChats = on }
@@ -110,7 +113,9 @@ actor ChatTransport: RemoteTransport {
         case "shell.output": return .object(["shell_id": params["shell_id"]!, "output": .string("screen")])
         case "shell.resize": return .object(["shell_id": params["shell_id"]!, "columns": params["columns"]!, "rows": params["rows"]!])
         case "shell.resize.clear": return .object(["shell_id": params["shell_id"]!, "status": .string("cleared")])
-        case "appearance.get": throw RemoteError.rpc(code: "not_found", message: "appearance not published")
+        case "appearance.get":
+            if let appearance { return appearance }
+            throw RemoteError.rpc(code: "not_found", message: "appearance not published")
         case "chats.list":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
             return .object(["chats": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(chats))])

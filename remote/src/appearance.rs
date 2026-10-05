@@ -67,6 +67,10 @@ struct Document {
     /// sees the same document as before.
     #[serde(default, skip_serializing_if = "is_false")]
     native: bool,
+    /// The desktop's setting shows microphone buttons for dictation, so the phone shows
+    /// all of its mics. Sent only when true; missing means off.
+    #[serde(default, skip_serializing_if = "is_false")]
+    mic: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -74,7 +78,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 /// The document re-serialized in the contract's shape (lowercase colors, known
-/// fields only, `native` only when true), or None when it is over 16 KiB or not
+/// fields only, `native` and `mic` only when true), or None when it is over 16 KiB or not
 /// a version 1 document.
 pub fn validate(bytes: &[u8]) -> Option<Value> {
     if bytes.len() > MAX_BYTES {

@@ -6,17 +6,21 @@ private final class KeyScrollView: UIScrollView {
     override func touchesShouldCancel(in view: UIView) -> Bool { true }
 }
 
-/// The key row on the keyboard: special keys, Ctrl and Alt, symbols that are awkward on the iOS keyboard, and hotkeys.
+/// The key row on the keyboard: special keys, Ctrl, Alt and Shift, symbols that are awkward on the iOS keyboard, and hotkeys.
 /// It is the input accessory view, and always 44 pt tall, exactly where iOS puts it:
 /// - above the software keyboard, or
 /// - alone at the bottom edge of the screen when a hardware keyboard is attached (iOS hides the software keyboard then).
 ///
 /// The row scrolls. Its ends are padded (`KeyBarGeometry`) so that, scrolled fully left or right, the first and the last key are
-/// clear of the display's rounded corners. Hide stays put at the trailing end, so it is always within reach; everything else,
-/// including the "+" that opens the hotkey editor at the very end, is in the scrolling part.
+/// clear of the display's rounded corners. Hide stays put at the trailing end, with the dictation mic just before it, so both are always
+/// within reach; everything else, including the "+" that opens the hotkey editor at the very end, is in the scrolling part.
 @MainActor final class KeyBarView: UIInputView {
     enum Action: Hashable {
-        case key(TerminalKey), control, alt, text(String), paste, hide, hotkey(String), editHotkeys, palette, help
+        case key(TerminalKey), control, alt, shift, text(String), paste, attach, hide, hotkey(String), editHotkeys, palette, help, dictate
+        /// A choice from the paperclip key's menu (the key itself, `attach`, only opens the menu).
+        case attachFrom(AttachmentChoice)
+        /// VoiceOver's "Lock" or "Release" on a modifier key, where a double tap cannot be made.
+        case latch(ChordModifiers, ModifierLatch)
     }
     private enum Role { case plain, hotkey, muted }
 
@@ -65,9 +69,13 @@ private final class KeyScrollView: UIScrollView {
     private var roles: [Action: Role] = [:]
     private var stackLeading: NSLayoutConstraint!, hideTrailing: NSLayoutConstraint!
     private var hideWidth: NSLayoutConstraint!, hideMinWidth: NSLayoutConstraint?, dividerInsets: [NSLayoutConstraint] = [], stackTrailing: NSLayoutConstraint!
-    private var controlArmed = false, altArmed = false
+    private var latches: [Action: ModifierLatch] = [.control: .off, .alt: .off, .shift: .off]
+    private var dictation = Dictation.idle, dictateWidth: NSLayoutConstraint?
+    private var scrollBeforeMic: NSLayoutConstraint?, scrollBeforeHide: NSLayoutConstraint?
     private var repeatTask: Task<Void, Never>?
     private var didRepeat = false
+    /// True while a held key sends itself again (not for its first press), so that it keeps the modifiers it started with.
+    private(set) var isRepeating = false
     private var keyboardObservers: [any NSObjectProtocol] = []
 
     init() {
@@ -108,7 +116,7 @@ private final class KeyScrollView: UIScrollView {
             row.topAnchor.constraint(equalTo: topAnchor, constant: 1), bottomAnchor.constraint(equalTo: row.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: row.leadingAnchor), scroll.topAnchor.constraint(equalTo: row.topAnchor), scroll.bottomAnchor.constraint(equalTo: row.bottomAnchor),
             hideDividerTop, hideDividerBottom,
-            hideDivider.widthAnchor.constraint(equalToConstant: 1), scroll.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor),
+            hideDivider.widthAnchor.constraint(equalToConstant: 1),
             stackLeading, stackTrailing,
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor), stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)
@@ -122,6 +130,7 @@ private final class KeyScrollView: UIScrollView {
             hideTrailing, hide.leadingAnchor.constraint(equalTo: hideDivider.trailingAnchor), hide.topAnchor.constraint(equalTo: row.topAnchor),
             hide.bottomAnchor.constraint(equalTo: row.bottomAnchor), hideWidth
         ])
+        addDictateButton()
         rebuild()
         restyle()
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: KeyBarView, _) in view.restyle() }
@@ -138,6 +147,8 @@ private final class KeyScrollView: UIScrollView {
             hide.configuration?.image = UIImage(systemName: "keyboard.chevron.compact.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14 * CGFloat(style.scale), weight: .regular))
             hideMinWidth?.constant = unit(40)
         }
+        dictateWidth?.constant = unit(44)
+        setDictation(dictation)
         rebuild()
         invalidateIntrinsicContentSize()
         setNeedsLayout()
@@ -148,22 +159,26 @@ private final class KeyScrollView: UIScrollView {
     /// Special keys, then the hotkey menu and help buttons and the built-in and added hotkeys, then symbols, then the hotkey editor's "+" at the very end.
     private func rebuild() {
         for view in stack.arrangedSubviews { stack.removeArrangedSubview(view); view.removeFromSuperview() }
-        let hide = buttons[.hide]
+        let hide = buttons[.hide], dictate = buttons[.dictate]
         buttons = [:]; roles = [:]; dividers = []
         if let hide { buttons[.hide] = hide; roles[.hide] = .plain }
+        if let dictate { buttons[.dictate] = dictate; roles[.dictate] = .plain }
         // Native draws the named keys as the symbols macOS uses for them; the terminal look spells them out.
         func named(_ title: String, _ symbol: String) -> (String?, String?) { style.native ? (nil, symbol) : (title, nil) }
         func key(_ key: TerminalKey, _ face: (String?, String?), _ label: String) {
             add(.key(key), title: face.0, symbol: face.1, label: label, role: .plain)
         }
         key(.escape, named("Esc", "escape"), "Escape"); key(.tab, named("Tab", "arrow.right.to.line"), "Tab")
-        let control = named("Ctrl", "control"), alt = named("Alt", "option")
+        let control = named("Ctrl", "control"), alt = named("Alt", "option"), shift = named("Shift", "shift")
         add(.control, title: control.0, symbol: control.1, label: "Control", role: .plain); add(.alt, title: alt.0, symbol: alt.1, label: "Alt", role: .plain)
+        add(.shift, title: shift.0, symbol: shift.1, label: "Shift", role: .plain)
         key(.left, (nil, "arrow.left"), "Left arrow"); key(.up, (nil, "arrow.up"), "Up arrow"); key(.down, (nil, "arrow.down"), "Down arrow"); key(.right, (nil, "arrow.right"), "Right arrow")
         key(.backTab, named("⇧Tab", "arrow.left.to.line"), "Shift Tab"); key(.home, named("Home", "arrow.up.left"), "Home"); key(.end, named("End", "arrow.down.right"), "End")
         key(.pageUp, named("PgUp", "chevron.up.2"), "Page up"); key(.pageDown, named("PgDn", "chevron.down.2"), "Page down")
         key(.delete, named("Del", "delete.right"), "Delete"); key(.backspace, (nil, "delete.left"), "Backspace"); key(.enter, (nil, "return"), "Enter")
         add(.paste, title: nil, symbol: "doc.on.clipboard", label: "Paste", role: .plain)
+        add(.attach, title: nil, symbol: "paperclip", label: "Send a photo or file", role: .plain)
+        if let paperclip = buttons[.attach] { giveMenu(paperclip) }
         addDivider()
         // The hotkey menu first: it reaches every hotkey, shortcut and key from the keyboard (also ⌘K).
         add(.palette, title: nil, symbol: "command", label: "Hotkey menu", role: .hotkey)
@@ -182,6 +197,16 @@ private final class KeyScrollView: UIScrollView {
     private func add(_ action: Action, title: String?, symbol: String?, label: String, role: Role, wide: Bool = true) {
         let button = makeButton(action, title: title, symbol: symbol, label: label, role: role, wide: wide)
         stack.addArrangedSubview(button)
+    }
+    /// The paperclip opens a menu of where the photo or file comes from, from the key itself (above the keyboard, not over the
+    /// screen); the keyboard stays up until a choice is made. In the look's casing, and with the camera only where there is one.
+    private func giveMenu(_ paperclip: UIButton) {
+        paperclip.menu = UIMenu(children: AttachmentChoice.available.map { choice in
+            UIAction(title: style.cased(choice.title), image: UIImage(systemName: choice.symbol)) { [weak self] _ in self?.tapped(.attachFrom(choice)) }
+        })
+        paperclip.showsMenuAsPrimaryAction = true
+        paperclip.preferredMenuElementOrder = .fixed
+        paperclip.accessibilityHint = "Sends a photo or a file to the Mac and pastes its path"
     }
     private func addDivider() {
         let holder = UIView()
@@ -224,18 +249,29 @@ private final class KeyScrollView: UIScrollView {
         return button
     }
 
-    /// Ctrl and Alt are sticky: they stay highlighted until the next key uses them.
-    func setArmed(control: Bool, alt: Bool) {
-        controlArmed = control; altArmed = alt
-        for (action, armed) in [(Action.control, control), (Action.alt, alt)] {
+    /// Ctrl, Alt and Shift are sticky. Armed for the next key, a modifier is tinted (the accent on the highlight color); locked,
+    /// it is filled with the accent. The same in the terminal look and under Native.
+    func setLatches(control: ModifierLatch, alt: ModifierLatch, shift: ModifierLatch) {
+        latches = [.control: control, .alt: alt, .shift: shift]
+        for (action, modifier) in [(Action.control, ChordModifiers.control), (.alt, .alt), (.shift, .shift)] {
             guard let button = buttons[action] else { continue }
-            button.configuration?.baseForegroundColor = armed ? style.accentUI : style.textUI
-            button.configuration?.background.backgroundColor = armed ? style.activeUI : .clear
-            button.isSelected = armed
-            button.accessibilityValue = armed ? "armed" : "not armed"
-            button.accessibilityTraits = armed ? [.button, .selected] : .button
+            let state = latch(action)
+            button.configuration?.baseForegroundColor = state == .locked ? style.backgroundUI : state == .once ? style.accentUI : style.textUI
+            button.configuration?.background.backgroundColor = state == .locked ? style.accentUI : state == .once ? style.activeUI : .clear
+            // Inset from the bar's edges, so that on glass the highlight stays inside the capsule; round under Native, square-ish in the terminal look.
+            button.configuration?.background.backgroundInsets = NSDirectionalEdgeInsets(top: unit(6), leading: unit(1), bottom: unit(6), trailing: unit(1))
+            button.configuration?.background.cornerRadius = style.native ? unit(15) : unit(5)
+            button.isSelected = state != .off
+            button.accessibilityValue = state == .locked ? "locked" : state == .once ? "armed" : "not armed"
+            button.accessibilityTraits = state == .off ? .button : [.button, .selected]
+            button.accessibilityHint = "Applies to the next key. Double-tap to lock."
+            let lock = state != .locked
+            button.accessibilityCustomActions = [UIAccessibilityCustomAction(name: lock ? "Lock" : "Release") { [weak self] _ in
+                self?.onAction?(.latch(modifier, lock ? .locked : .off)); return true
+            }]
         }
     }
+    func latch(_ action: Action) -> ModifierLatch { latches[action] ?? .off }
     /// Programmatic press, used by the buttons and by tests.
     func tapped(_ action: Action) {
         // A key that already repeated while held is not sent once more on release.
@@ -248,13 +284,58 @@ private final class KeyScrollView: UIScrollView {
         repeatTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
             while !Task.isCancelled, let self {
+                self.isRepeating = self.didRepeat
                 self.didRepeat = true
                 self.onAction?(action)
+                self.isRepeating = false
                 try? await Task.sleep(for: .milliseconds(70))
             }
         }
     }
-    private func endRepeat() { repeatTask?.cancel(); repeatTask = nil }
+    private func endRepeat() { repeatTask?.cancel(); repeatTask = nil; isRepeating = false }
+
+    // MARK: Dictation
+
+    /// The mic's state: listening is drawn like an armed modifier, getting ready and settling are dimmed.
+    enum Dictation { case idle, busy, listening }
+    /// The mic sits between the scrolling row and Hide, fixed like Hide, while the desktop's mic setting is on (`DesktopStyle.mic`).
+    /// Off, it is hidden and the scrolling row reaches the divider before Hide instead: one of the two trailing constraints is active.
+    private func addDictateButton() {
+        let mic = makeButton(.dictate, title: nil, symbol: "mic", label: "Dictate", role: .plain)
+        mic.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(mic)
+        dictateWidth = mic.widthAnchor.constraint(equalToConstant: 44)
+        scrollBeforeMic = scroll.trailingAnchor.constraint(equalTo: mic.leadingAnchor)
+        scrollBeforeHide = scroll.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor)
+        NSLayoutConstraint.activate([
+            mic.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor),
+            mic.topAnchor.constraint(equalTo: row.topAnchor), mic.bottomAnchor.constraint(equalTo: row.bottomAnchor), dictateWidth!
+        ])
+        applyMic()
+    }
+    /// Shows or takes away the mic as the desktop's setting says, in place: the row is not rebuilt.
+    private func applyMic() {
+        guard let mic = buttons[.dictate], let scrollBeforeMic, let scrollBeforeHide else { return }
+        let shown = style.mic
+        guard mic.isHidden == shown || scrollBeforeMic.isActive != shown || scrollBeforeHide.isActive == shown else { return }
+        mic.isHidden = !shown
+        // Deactivate first, so the two never hold at once.
+        (shown ? scrollBeforeHide : scrollBeforeMic).isActive = false
+        (shown ? scrollBeforeMic : scrollBeforeHide).isActive = true
+        setNeedsLayout()
+    }
+    /// The mic is in the bar (the desktop's mic setting is on).
+    var showsMic: Bool { buttons[.dictate].map { !$0.isHidden } ?? false }
+    func setDictation(_ state: Dictation) {
+        dictation = state
+        guard let mic = buttons[.dictate] else { return }
+        let symbol = state == .idle ? "mic" : "mic.fill"
+        mic.configuration?.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14 * CGFloat(style.scale), weight: .regular))
+        mic.configuration?.baseForegroundColor = state == .listening ? style.accentUI : (state == .busy ? style.mutedUI : style.textUI)
+        mic.configuration?.background.backgroundColor = state == .listening ? style.activeUI : .clear
+        mic.accessibilityLabel = state == .idle ? "Dictate" : "Stop dictation"
+        mic.accessibilityValue = state == .listening ? "Listening" : nil
+    }
 
     // MARK: Look
 
@@ -277,7 +358,9 @@ private final class KeyScrollView: UIScrollView {
             case .muted: button.configuration?.baseForegroundColor = style.mutedUI
             }
         }
-        setArmed(control: controlArmed, alt: altArmed)
+        setLatches(control: latch(.control), alt: latch(.alt), shift: latch(.shift))
+        setDictation(dictation)
+        applyMic()
     }
     /// Native on iOS 26 puts the row on glass, inset from the edges like the system's own bars; anything else takes it away.
     private func applyGlass() {

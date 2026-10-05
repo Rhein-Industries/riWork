@@ -8,6 +8,7 @@ agreement with the iOS worker.
 
 - 2026-10-05: Additive chat orchestrators and orchestrator creation, no new error code. `orchestrators.list` (and `shells.list`) entries gain optional `mode` (`terminal|chat`) and, for an orchestrator that runs as a chat, `chat_id` (equal to `id`) and `provider` (`codex|claude`), so the phone can open it as a chat tab with the existing `chats.list`, `chat.events` and `chat.command` methods; the `shell.*` methods on a chat orchestrator's id are `invalid_request`; see "Chat orchestrators" under "Chat extension" below. A desktop without chat orchestrators leaves the fields out and an older phone ignores them; the connector checks each field's shape, leaves a malformed one out, and passes `chat_id` and `provider` only for an entry whose `mode` is `chat`. A project's orchestrator that runs as a chat also counts in that project's `agents` and `last_activity_unix` of `projects.list`, as a terminal one does. One new method, `orchestrator.create` (`{}` or `{"project_id":"UUID"}`), makes the global or a project's orchestrator, in the mode the desktop's "Orchestrator runs as" setting says, or returns the one that exists (`created` false); it runs in the ordered lane and a creation is not cut short when the phone's session ends, and `features.orchestrator_create` in `ready` says the installed CLI has it; see "Orchestrator creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates `orchestrator.create` answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.orchestrator_create` out.
 - 2026-10-05: Additive, in the same "Chat extension": the models a chat can use and the provider's fast mode. A new `models` event (`models`: a list of `{id, name, description, efforts, default_effort, supports_fast, is_default}`, sent by the agent's driver once after it starts and again if the list changes, so it is in the chat's history like any event), `fast` on `ChatInfo` (the person's choice, a boolean, absent in a chat from before it), an optional `fast` boolean in `chat.create`, and an optional `fast` boolean in the `configure` command. A model's `id` is what `model` takes; `efforts` are the efforts that model takes; `supports_fast` says whether the toggle belongs to it. No new method and no new error code. A desktop from before it refuses `fast` as an unknown field (`invalid_request`) and never sends a `models` event; a client that has seen none offers a text field for the model and the usual efforts, as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
+- 2026-10-05: Additive file upload extension: four methods that carry a file from the phone into the inbox of a shell or a chat on the desktop, in chunks over the encrypted link (`upload.begin`, `upload.chunk`, `upload.finish`, `upload.cancel`), and `shell.paste`, which pastes finished uploads into their shell the way a drop of those files on its terminal would, exactly once per batch UUID like `shell.keys`; `features.upload` in `ready`; and the error code `upload_limit`. An upload resumes where it stopped after the link drops, is checked against the SHA-256 the phone announced, and is placed whole or not at all, under a name the desktop makes. The desktop holds the limits (a file, a device's quota, uploads under way) and removes old uploads, a closed shell's, a deleted chat's and a revoked device's. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method" and sends no `features.upload`; see "File upload extension" below.
 - 2026-10-04: Additive chat extension: five methods that let the phone follow and drive the desktop's Codex and Claude chats (the chat host, `riwork chat ...`), `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop`, and `features.chat` in `ready`. `chat.events` is a long poll (`wait_ms` up to 25 000, counted with the waits of `shell.output`) that returns the events after a cursor, batched, in a page cut to fit one reply; `chat.create`, `chat.command` and `chat.stop` run in the ordered lane and a creation is not cut short when the phone's session ends. The chat JSON is the desktop's own (`src/chat/model.rs`); the phone decodes it leniently. No new error code. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.chat` out; see "Chat extension" below.
 - 2026-10-03: Additive, in the same "Activity and recency extension": `projects.list` entries gain optional `last_activity_unix` (Unix seconds: when the newest of the project's shells last had output) and `shells.list` / `orchestrators.list` entries gain optional `last_activity_unix` (when that shell last had output, from tmux), so the phone's "Recent" project order can follow shell activity instead of file edits. No new method and no new error code. A desktop that cannot supply it leaves it out, an older phone ignores it, and the connector checks it is a non-negative integer and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-03: Additive activity and recency extension, no new method and no new error code: `projects.list` entries gain optional `last_edited_unix` (when the desktop app last saw a file of the project change, Unix seconds) and `agents` (`{"working":n,"waiting":n}` and additively `"done":n`: the project's agent shells by state), and `shells.list` / `orchestrators.list` entries gain optional `activity` (`working|waiting|done|unknown|exited`), `activity_since_unix`, `subagents_working` and additively `subagent_kinds`, so the phone can sort recent projects and show whether a Codex or Claude is working, with its subagents. See "Activity and recency extension" below. A field the desktop cannot supply is simply absent, so an older desktop or CLI answers exactly as before and an older phone ignores them; the connector checks each new field's shape and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -182,6 +183,11 @@ unsolicited response except handshake `ready`.
 | `chat.events` | `{"chat_id":"UUID","since":0,"wait_ms":25000}` optionally `"max_events":500` (Chat) | `{"chat_id":"UUID","events":[{"seq":1,"event":ChatEvent}],"next":1,"more":false}` |
 | `chat.command` | `{"chat_id":"UUID","command":ChatCommand}` (Chat) | `{"status":"ok"}` |
 | `chat.stop` | `{"chat_id":"UUID"}` (Chat) | `{"status":"stopped"}` |
+| `upload.begin` | `{"upload":"UUID","shell_id":"UUID","name":"IMG_0001.jpg","size":123456,"sha256":"HEX"}` or `"chat_id"` instead of `"shell_id"`, optionally `"type":"image/jpeg"` (File upload) | `{"upload":"UUID","status":"partial\|complete","received":0,"chunk_bytes":92160}` plus `"path","name"` when complete |
+| `upload.chunk` | `{"upload":"UUID","offset":0,"data":"BASE64URL"}` (File upload) | `{"upload":"UUID","status":"partial\|complete","received":92160}` |
+| `upload.finish` | `{"upload":"UUID"}` (File upload) | `{"upload":"UUID","status":"complete","received":123456,"path":"/…/uploads/UUID/IMG_0001-1a2b3c4d.jpg","name":"IMG_0001-1a2b3c4d.jpg"}` |
+| `upload.cancel` | `{"upload":"UUID"}` (File upload) | `{"upload":"UUID","status":"cancelled","received":0}`, or the `complete` answer for a finished one |
+| `shell.paste` | `{"shell_id":"UUID","batch":"UUID","uploads":["UUID"]}` (File upload) | `{"shell_id":"UUID","batch":"UUID","status":"sent\|duplicate\|uncertain"}` |
 
 Project fields: `id,name,root` strings; `created_at` Unix seconds number; and, optionally,
 `last_edited_unix`, `last_activity_unix` and `agents` (see "Activity and recency extension").
@@ -732,6 +738,14 @@ repeated freely. Result:
   colors" option. It is omitted when the desktop could not read its terminal colors.
 - `dark` is true when the palette background is dark: its relative luminance
   (WCAG, on the linearized sRGB channels) is below 0.5.
+- `native` (optional, `true` only) says the desktop draws with its Native skin;
+  `mic` (optional, `true` only) says the desktop's setting "Show microphone
+  buttons for dictation" is on, so the phone shows all of its dictation mics (the
+  chat composers' and the terminal key bar's); without it the phone shows none. Each is written only while true: a missing field
+  means off, and a document without them is byte for byte what a desktop from
+  before them writes. Both validators accept `true` or `false` and reject any other
+  type; the connector passes them through. Switching either counts as a change
+  even when no color moves.
 - `updated_at` is Unix seconds of the last change to the colors. It does not move
   when the desktop restarts with the same colors. There is no push: a client reads
   the object again when it wants to follow later changes, and compares the object
@@ -1559,6 +1573,121 @@ riwork CLI cannot create orchestrators from the phone; update RiWork". A connect
 the extension answers `invalid_request` "unsupported RPC method". The connector's tests are
 `remote/tests/orchestrator_create.rs` and `remote/tests/chat_link.rs`.
 
+### File upload extension (v1 and v2, 2026-10-05)
+
+Additive and compatible: five new methods, one new `ready` feature and one new error code,
+`upload_limit`. No change to the handshake, envelopes, fixtures or any existing method; it
+applies to protocol v1 and v2 sessions alike. A client that never calls the methods is
+unaffected. The iOS side is built against this text.
+
+A photo or a file goes from the phone to the desktop and is then given to a shell or a chat
+the way a file dropped on the desktop's terminal would be: the shell gets the file's path,
+pasted in the form its program takes a dropped file ("Files dropped on a terminal" in the root
+README: Claude Code and Grok attach a pasted picture's path, Codex a paste that is one
+picture's path, a shell gets the path shell-escaped), and a chat gets the path in the message
+the person is writing.
+
+**Feature detection.** `ready.features.upload` says the desktop takes files, with its limits:
+
+```json
+{"max_bytes":52428800,"chunk_bytes":92160,"quota_bytes":209715200,"max_files":16}
+```
+
+`max_bytes` is the largest file, `chunk_bytes` the most data one `upload.chunk` carries,
+`quota_bytes` what one device may keep on the desktop at once (partial and complete uploads
+together) and `max_files` the uploads one `shell.paste` takes. A phone that finds no
+`features.upload` sends no upload and tells the person the desktop needs an update; a
+connector that predates the extension answers every method below `invalid_request`
+"unsupported RPC method". The feature needs nothing of the CLI; pasting into a shell does
+(below).
+
+**`upload.begin`** starts an upload, or says where one stands:
+
+```json
+{"upload":"UUID","shell_id":"UUID","name":"IMG_0001.jpg","size":1843200,"type":"image/jpeg","sha256":"64 lowercase hex digits"}
+{"upload":"UUID","chat_id":"UUID","name":"notes.pdf","size":20480,"sha256":"..."}
+```
+
+- `upload` is a UUID the phone chooses for this file. Exactly one of `shell_id` and
+  `chat_id`, a full lowercase UUID: the shell or chat the file is for. Nothing else names
+  where the file goes; the phone never sends a path.
+- `name` (1 to 255 bytes, no control characters) is the file's name on the phone. It is
+  never used as a path: the desktop keeps only the ASCII letters, digits, `-` and `_` of its
+  stem (at most 40; anything else becomes `-`), adds eight random hex digits and a lowercase
+  extension of at most ten letters and digits (from `name`, or from `type` when `name` has
+  none), so `../../.ssh/authorized_keys` arrives as `authorized_keys-1a2b3c4d`, and an
+  existing file is never replaced.
+- `size` (1 to `max_bytes`), `sha256` of the whole file, and optionally `type`, a media
+  type (`type/subtype`, at most 127 bytes) used only for the extension.
+- For a shell, the desktop first checks that its CLI can paste (`riwork capabilities --json`
+  has `"shell_paste": true`, else `cli_error` "… update RiWork") and that the shell exists
+  and is alive (`not_found`), so the phone learns it before the first byte. A chat is not
+  looked up: its id only names the inbox.
+- The same `upload` again with the same `shell_id` or `chat_id`, `size` and `sha256` answers
+  where it stands (`received`, or the `complete` answer), which is how a phone resumes after
+  its link dropped; with anything else it is `invalid_request`.
+- `upload_limit` when the file is larger than `max_bytes`, when the device already has four
+  uploads under way, or when the quota would be passed even after the desktop has removed this
+  device's oldest complete uploads to make room (partial ones are never removed for room).
+
+Result `{"upload":"UUID","status":"partial","received":0,"chunk_bytes":92160}`.
+
+**`upload.chunk`** adds data at `offset`:
+`{"upload":"UUID","offset":92160,"data":"unpadded URL-safe base64"}` with 1 to
+`chunk_bytes` bytes of data. `offset` must not be past what the desktop has (`received`,
+else `invalid_request`), and the data must not go past `size`. Data the desktop has already
+(a chunk whose answer was lost) is not written again; a chunk that overlaps the end adds what
+is new. A phone sends one chunk at a time and waits for its answer. Result
+`{"upload":"UUID","status":"partial","received":N}`; `not_found` for an upload the desktop
+does not know or that expired (begin it again).
+
+**`upload.finish`** `{"upload":"UUID"}`: with all `size` bytes there, the desktop compares
+their SHA-256 with `sha256`, and only then puts the file, whole, into its inbox and answers
+`{"upload":"UUID","status":"complete","received":SIZE,"path":"/abs/path","name":"file
+name"}`. A file whose hash differs is removed (`invalid_request` "… arrived damaged …"):
+all or nothing. Finishing a complete upload answers the same again. `path` is where the file
+is on the desktop: for a chat the phone puts it into the message; for a shell it is
+informational (the paste names uploads, not paths).
+
+**`upload.cancel`** `{"upload":"UUID"}` removes a partial upload and answers
+`{"upload":"UUID","status":"cancelled","received":0}` (also for one it does not know); a
+complete one is left to its inbox and answered as complete.
+
+**`shell.paste`** `{"shell_id":"UUID","batch":"UUID","uploads":["UUID",…]}` pastes 1 to
+`max_files` different complete uploads of this device for this very shell into it, in that
+order, without Return, as `riwork shell paste SHELL -- FILE...` does (the paste a drop of those
+files on the desktop's terminal makes, chosen by the program in front). It is delivered once
+per (device, `batch`) with the ledger, locks and answers of `shell.keys`: `sent`,
+`duplicate` (this batch was pasted; nothing is pasted again) or `uncertain` (an earlier
+attempt began and its outcome is unknown; nothing is pasted again, and the phone must look at
+the terminal before it pastes the files under a new batch). `invalid_request`, `not_found` and
+`input_unavailable` mean nothing was pasted and the batch is not recorded; a `cli_error` after
+the CLI began leaves it pending. An upload that is not complete, or that was sent for another
+shell or for a chat, is `invalid_request`; one this device does not have is `not_found`.
+
+**On the desktop.** A partial upload lives in the connector's private directory
+(`remote/uploads/DEVICE/UPLOAD.part`, mode 600); a complete one in
+`RIWORK_HOME/uploads/TARGET/NAME`, `TARGET` the shell's or chat's UUID (folders mode 700,
+files mode 600). The connector keeps a ledger per device (`uploads-DEVICE.json`, mode 600) of
+what each device sent, and removes a partial upload with no chunk for an hour, a complete one
+after a day, the files of a device that is revoked (by the `revoke` command, and by a running
+connector within a tick) or no longer paired, and files in the inboxes that no ledger knows
+once they are a day old. It sweeps when it starts and every hour, and expires a device's
+uploads before each new one. Closing a shell (`riwork shell close`, `shell.close`) and deleting
+a chat remove that shell's or chat's inbox. Nothing on the desktop opens, runs or logs a file;
+the agent in the shell or chat reads it when it is told to.
+
+Scheduling. `upload.begin`, `upload.chunk`, `upload.finish` and `upload.cancel` are reads as
+far as `lanes.rs` goes (one of the three shared slots, never a wait slot), so a long upload
+never holds up typing; `shell.paste` is in the ordered lane with `shell.keys`. Request
+timeouts: `upload.begin`, `upload.finish` and `shell.paste` about 30 s (a begin for a shell asks
+the CLI, a finish hashes the file), `upload.chunk` the usual.
+
+Security. A paired device can already type into every shell, so this adds little authority,
+but it is validated as strictly as the rest: every field before anything is written, every
+limit on the desktop (never only on the phone), no name from the phone in a path, files private
+to the desktop user, and a paste names only this device's own finished uploads for that shell.
+
 ## Fixtures and change log
 
 `remote/fixtures/v1.json` supplies deterministic PSK, UUIDs, nonces, proof MACs,
@@ -1733,6 +1862,15 @@ ready response. Values are test-only and must never provision production devices
   before it refuses `fast` (`invalid_request`, unknown field) and never sends `models`;
   a phone then falls back to a text field for the model. Needs the iOS worker's
   agreement; the iOS side implements the same text.
+- 2026-10-05: additive and backward compatible. File upload extension: `upload.begin`
+  (`upload`, `shell_id` or `chat_id`, `name`, `size`, `sha256`, optional `type`),
+  `upload.chunk` (`upload`, `offset`, base64url `data` of at most `chunk_bytes`),
+  `upload.finish`, `upload.cancel` and `shell.paste` (`shell_id`, `batch`, `uploads`; once per
+  batch, `sent|duplicate|uncertain`); `ready.features.upload` (`max_bytes`, `chunk_bytes`,
+  `quota_bytes`, `max_files`) and the error code `upload_limit`. Files land in
+  `RIWORK_HOME/uploads/TARGET/` under a name the desktop makes. A client that never calls the
+  methods is unaffected, and an older desktop answers `invalid_request` "unsupported RPC
+  method". Needs the iOS worker's agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

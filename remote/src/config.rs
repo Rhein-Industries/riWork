@@ -209,7 +209,7 @@ pub fn validate_url(raw: &str, dev: bool) -> Result<()> {
     Ok(())
 }
 
-fn private_dir(path: &Path) -> Result<()> {
+pub(crate) fn private_dir(path: &Path) -> Result<()> {
     if path.exists() {
         let m = fs::symlink_metadata(path)?;
         ensure!(
@@ -236,7 +236,7 @@ fn private_dir(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn options() -> OpenOptions {
+pub(crate) fn options() -> OpenOptions {
     let mut o = OpenOptions::new();
     #[cfg(unix)]
     {
@@ -617,7 +617,10 @@ impl Storage {
         d.pairing.root_key = None;
         d.pairing.relay_token.clear();
         d.desktop_token.clear();
-        self.save(&c)
+        self.save(&c)?;
+        // What the device sent goes with it (a running connector does the same within a tick).
+        crate::upload::Uploads::new(self.dir.clone()).forget_device(id);
+        Ok(())
     }
     pub fn fresh_device(&self, id: &str) -> Result<Option<Device>> {
         Ok(self

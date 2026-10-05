@@ -151,6 +151,33 @@ final class StickyBottomTests: XCTestCase {
     }
 }
 
+final class AlternateRowsTests: XCTestCase {
+    func testWholeRowsFitAndAtLeastOne() {
+        XCTAssertEqual(AlternateRows.fitting(height: 340, lineHeight: 17), 20)
+        XCTAssertEqual(AlternateRows.fitting(height: 339.9, lineHeight: 17), 19)
+        XCTAssertEqual(AlternateRows.fitting(height: 5, lineHeight: 17), 1)
+        XCTAssertEqual(AlternateRows.fitting(height: -20, lineHeight: 17), 1)
+        XCTAssertEqual(AlternateRows.fitting(height: .infinity, lineHeight: 17), 1)
+    }
+
+    func testAScreenThatFitsIsDrawnWhole() {
+        XCTAssertEqual(AlternateRows.shown(count: 24, fitting: 24, cursor: 23), 0..<24)
+        XCTAssertEqual(AlternateRows.shown(count: 10, fitting: 24, cursor: nil), 0..<10)
+        XCTAssertEqual(AlternateRows.shown(count: 0, fitting: 24, cursor: nil), 0..<0)
+    }
+
+    func testATallerScreenKeepsTheCursorInViewMovingAsFewRowsOffTheTopAsPossible() {
+        // The keyboard came up: 44 rows from the desktop, room for 24. A prompt at the bottom stays in view.
+        XCTAssertEqual(AlternateRows.shown(count: 44, fitting: 24, cursor: 43), 20..<44)
+        XCTAssertEqual(AlternateRows.shown(count: 44, fitting: 24, cursor: 30), 7..<31)
+        // A cursor that is in view from the top leaves the top where it is (vim's first line).
+        XCTAssertEqual(AlternateRows.shown(count: 44, fitting: 24, cursor: 2), 0..<24)
+        XCTAssertEqual(AlternateRows.shown(count: 44, fitting: 24, cursor: 99), 20..<44)
+        // No cursor: the bottom rows, where programs keep their status and prompt.
+        XCTAssertEqual(AlternateRows.shown(count: 44, fitting: 24, cursor: nil), 20..<44)
+    }
+}
+
 final class SwipePagerTests: XCTestCase {
     func testADragOfEightyPercentOfTheViewSendsOnePageKey() {
         var pager = SwipePager()

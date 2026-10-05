@@ -13,6 +13,7 @@ use gpui::{
 
 use crate::{
     codex_accounts,
+    controls::{self, Button},
     handoff::{self, Context as Passing, Kind, Outcome, Request},
     project_settings::{Input, impl_input_handler, input_content},
     sessions::HarnessKind,
@@ -506,6 +507,18 @@ impl HandoffDialog {
             } else {
                 colors.muted
             }))
+            // Native: a segment of the line's segmented control, raised when chosen.
+            .map(|chip| {
+                controls::native(chip, |chip| {
+                    controls::segment(chip, selected, colors)
+                        .when(!enabled, |chip| chip.text_color(rgb(colors.divider)))
+                        .when(enabled && !selected, |chip| {
+                            chip.hover(move |style| {
+                                style.bg(rgb(controls::segment_hover(false, colors)))
+                            })
+                        })
+                })
+            })
             .when(enabled, |chip| {
                 chip.cursor_pointer()
                     .on_click(cx.listener(move |dialog, _, _, cx| on_click(dialog, cx)))
@@ -533,6 +546,11 @@ impl HandoffDialog {
                 div()
                     .text_size(ui_text::text(9.0))
                     .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+                    // Native names a line like a form's label: semibold, in sentence case.
+                    .when(ui_text::is_native(), |name| {
+                        name.text_size(ui_text::text(10.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                    })
                     .child(ui_text::cased(name)),
             )
             .child(content)
@@ -546,7 +564,21 @@ impl HandoffDialog {
             .into_any_element()
     }
 
-    fn chips(&self, chips: Vec<AnyElement>) -> AnyElement {
+    /// One line's choices: Native sets them in a segmented control's track, which wraps
+    /// like the colorful themes' row when there are more than fit (Codex accounts).
+    fn chips(&self, chips: Vec<AnyElement>, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme::palette(cx);
+        if ui_text::is_native() {
+            return div()
+                .flex()
+                .child(
+                    controls::segments(colors)
+                        .flex_shrink_1()
+                        .flex_wrap()
+                        .children(chips),
+                )
+                .into_any_element();
+        }
         div()
             .flex()
             .flex_wrap()
@@ -566,6 +598,31 @@ impl HandoffDialog {
     ) -> AnyElement {
         let colors = theme::palette(cx);
         let disabled = self.busy.is_some() && primary;
+        if ui_text::is_native() {
+            // Capsules: the hand off filled with the primary color, Cancel grey, the
+            // keyboard's button ringed, and no return key after the label.
+            let kind = match (primary, disabled) {
+                (_, true) => Button::Disabled,
+                (true, false) => Button::Primary,
+                (false, false) => Button::Secondary,
+            };
+            return controls::button(
+                div()
+                    .id(id)
+                    .py(ui_text::space(5.0))
+                    .child(label.trim_end_matches(['↵', ' '])),
+                kind,
+                colors,
+            )
+            .when(focused, |button| button.border_color(rgb(colors.focus)))
+            .when(!disabled, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(kind.hover(colors))))
+            })
+            .on_click(cx.listener(move |dialog, _, _, cx| dialog.press(row, cx)))
+            .into_any_element();
+        }
         div()
             .id(id)
             .px(ui_text::space(12.0))
@@ -640,7 +697,7 @@ impl Render for HandoffDialog {
                     )
                 })
                 .collect();
-            self.line(Row::Target, "Open it as a", self.chips(chips), cx)
+            self.line(Row::Target, "Open it as a", self.chips(chips, cx), cx)
         };
         let agent = {
             let chips = [HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok]
@@ -660,7 +717,7 @@ impl Render for HandoffDialog {
                     )
                 })
                 .collect();
-            self.line(Row::Agent, "Agent", self.chips(chips), cx)
+            self.line(Row::Agent, "Agent", self.chips(chips, cx), cx)
         };
         let model = {
             let active = self.active == Row::Model && focused && !busy;
@@ -700,7 +757,7 @@ impl Render for HandoffDialog {
                     entity.clone(),
                     colors,
                 ))
-                .children((!suggestions.is_empty()).then(|| self.chips(suggestions)))
+                .children((!suggestions.is_empty()).then(|| self.chips(suggestions, cx)))
                 .into_any_element();
             self.line(Row::Model, "Model", content, cx)
         };
@@ -722,7 +779,7 @@ impl Render for HandoffDialog {
                     )
                 })
                 .collect();
-            self.line(Row::Account, "Codex account", self.chips(chips), cx)
+            self.line(Row::Account, "Codex account", self.chips(chips, cx), cx)
         });
         let context = self.choices.askable.then(|| {
             let chips = [Passing::Transcript, Passing::Summary]
@@ -741,7 +798,7 @@ impl Render for HandoffDialog {
                     )
                 })
                 .collect();
-            self.line(Row::Context, "What it reads", self.chips(chips), cx)
+            self.line(Row::Context, "What it reads", self.chips(chips, cx), cx)
         });
         let note = {
             let active = self.active == Row::Note && focused && !busy;
@@ -787,13 +844,29 @@ impl Render for HandoffDialog {
             .bg(rgb(colors.panel))
             .border_1()
             .border_color(rgb(colors.magenta))
+            // Native: a sheet with rounded corners, a hairline and a shadow, on the panels'
+            // grey so its segmented controls stand out as they do in Settings.
+            .map(|dialog| {
+                controls::native(dialog, |dialog| {
+                    dialog
+                        .rounded(controls::radius(12.0))
+                        .border_color(rgb(colors.divider))
+                        .shadow_lg()
+                })
+            })
             .text_color(rgb(colors.text))
             .text_size(ui_text::text(11.0))
-            .child(
+            .child(if ui_text::is_native() {
+                // A title in semibold, as a panel's; the ellipsis belongs to the menu item.
+                div()
+                    .text_size(ui_text::text(controls::TITLE_TEXT))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("Hand off")
+            } else {
                 div()
                     .text_color(rgb(colors.cyan))
-                    .child(ui_text::cased("Hand off…").to_string()),
-            )
+                    .child(ui_text::cased("Hand off…").to_string())
+            })
             .child(
                 div()
                     .text_color(rgb(colors.muted))

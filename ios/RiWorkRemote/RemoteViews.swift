@@ -486,11 +486,11 @@ struct TerminalTabsView: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Label { Text(ChatTabs.title(chat)) } icon: { Image(systemName: chat.provider.glyph).foregroundStyle(style.accent) }
-                        .font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
+                        .font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
                     ActivityIndicator(activity: activity)
                     if case .failed = state { Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).foregroundStyle(style.error).accessibilityHidden(true) }
                 }
-                Text(ChatTabs.detail(chat, branch: branch)).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                Text(ChatTabs.detail(chat, branch: branch)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
             }
             .tabChrome(selected: selected, waiting: activity == .waiting)
             .opacity(state == .stopped && !selected ? 0.6 : 1)
@@ -511,8 +511,8 @@ struct TerminalTabsView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Label { Text(session.title) } icon: {
                     Image(systemName: session.provider?.glyph ?? "point.3.connected.trianglepath.dotted").foregroundStyle(style.magenta)
-                }.font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
-                Text(opening == .needsUpdate ? "Update the Mac" : "Not ready").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
+                Text(opening == .needsUpdate ? "Update the Mac" : "Not ready").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
             }
             .tabChrome(selected: selected, waiting: false)
             .opacity(selected ? 1 : 0.7)
@@ -568,11 +568,24 @@ private struct NoteLine: View {
             }
             .font(style.system(.footnote)).foregroundStyle(style.muted)
             .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
-            .background(style.panel)
+            .modifier(NoteSurface())
         }
         .buttonStyle(.plain)
         .accessibilityHint("Dismisses the note")
         .onAppear { UIAccessibility.post(notification: .announcement, argument: text) }
+    }
+    /// A band of the panel color in the terminal look; in Native a rounded panel set in from the edges, on glass on iOS 26, as the
+    /// upload line is.
+    private struct NoteSurface: ViewModifier {
+        @Environment(\.desktopStyle) private var style
+        func body(content: Content) -> some View {
+            if style.native {
+                content.background(style.glass ? Color.clear : style.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .nativeGlass(style, in: RoundedRectangle(cornerRadius: 12, style: .continuous)).padding(.horizontal, 8).padding(.vertical, 4)
+            } else {
+                content.background(style.panel)
+            }
+        }
     }
 }
 
@@ -666,6 +679,10 @@ struct SessionConsole: View {
     /// The hotkey help (⌘/): a reference over the terminal that leaves the keyboard where it is.
     @State private var help = HelpController()
     @State private var editor: HotkeyEditorStart?
+    /// A dictated line waiting to be checked before it is typed into the shell (`TerminalDictationPanel`).
+    @State private var dictatedLine: String?
+    /// The photo or file picker (the key bar's paperclip, or the one beside the keyboard button or Send).
+    @State private var picking: AttachmentChoice?
     @Environment(\.scenePhase) private var scenePhase
     /// Live pinch scale. A GestureState resets by itself if the gesture is cancelled; the size is committed (and the
     /// grid recomputed) only when the pinch ends.
@@ -704,6 +721,8 @@ struct SessionConsole: View {
                                    shortcuts: model.hotkeys.shortcuts, palette: palette, help: help,
                                    onEditHotkeys: { openEditor(.list) }, onNewHotkey: { openEditor(.new) }, onEditHotkey: { openEditor(.edit($0)) },
                                    onKeyEvent: { model.keyboard.events.record($0) },
+                                   dictation: DictationController.shared.barState(for: .terminal), onDictate: dictate,
+                                   onAttach: openPicker, onPasteFiles: pasteFiles,
                                    onItems: { model.type($0) == .accepted })
                             .frame(width: 1, height: 1).accessibilityHidden(true)
                     }
@@ -715,6 +734,9 @@ struct SessionConsole: View {
         // The keyboard goes first (`openEditor`), so the editor is not competing with it for the screen, and comes back with the shell.
         .sheet(item: $editor, onDismiss: { keyFocus.restoreAfterModalDismissal() }) {
             HotkeyEditorSheet(store: model.hotkeys, keyboard: model.keyboard, start: $0).desktopThemed(model.theme.style)
+        }
+        .attachmentPicker($picking, onDone: { keyFocus.restoreAfterModalDismissal() }) { sources in
+            if let id = model.sessionID { model.attach(sources, to: .shell(id)) }
         }
         .onAppear { configureFocus(); keyFocus.shellReady(readyShell) }
         .onChange(of: model.sessionID) { _, _ in configureFocus() }
@@ -741,6 +763,21 @@ struct SessionConsole: View {
         keyFocus.suspendForModal()
         editor = start
     }
+    /// Like the editor: the keyboard goes first and comes back when the picker is done. The paperclip's menu leaves the keyboard up
+    /// until a choice is made, so a menu closed without one changes nothing.
+    private func openPicker(_ choice: AttachmentChoice) {
+        palette.close()
+        help.close()
+        keyFocus.suspendForModal()
+        picking = choice
+    }
+    /// A paste that found files or a lone picture: they go to the Mac and their paths into the shell. False leaves it to the text paste.
+    private func pasteFiles() -> Bool {
+        let sources = PasteboardAttachments.sources()
+        guard let id = model.sessionID, !sources.isEmpty else { return false }
+        model.attach(sources, to: .shell(id))
+        return true
+    }
     /// The iPad keeps the terminal it has always had (two axes, a follow toggle); the iPhone has `PhoneTerminal`.
     private var usesPhoneTerminal: Bool { UIDevice.current.userInterfaceIdiom != .pad }
     private var terminal: some View {
@@ -758,6 +795,21 @@ struct SessionConsole: View {
         // The chip and notices float over the pane instead of taking room from it, so they appearing or vanishing never
         // changes the terminal's size (and so never resizes the desktop). Content gets a matching bottom margin.
         .overlay(alignment: .bottom) { FloatingStatus(model: model) }
+        .overlay(alignment: .bottom) {
+            // Dictation, and its review, exist only while the desktop's mic setting is on.
+            if style.mic {
+                TerminalDictationPanel(controller: .shared, review: $dictatedLine, canType: model.session?.alive == true, type: typeDictated,
+                                       done: { keyFocus.focus() })
+            }
+        }
+        // The setting turned off: a line waiting to be checked goes with the mic, and does not come back with it.
+        .onChange(of: style.mic) { _, on in if !on { dictatedLine = nil } }
+        // A file on its way to the Mac: at the top, clear of the chip and notices at the bottom.
+        .overlay(alignment: .top) {
+            if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)) {
+                UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
+            }
+        }
         .onChange(of: model.sessionAutoSwitches) { _, _ in configureFocus(); keyFocus.shellReplacedWithoutTap() }
         .simultaneousGesture(TapGesture().onEnded { terminalTapped() })
         .simultaneousGesture(magnify)
@@ -856,6 +908,7 @@ struct SessionConsole: View {
             if model.state != .connected {
                 Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting).buttonStyle(DesktopButtonStyle(compact: true))
             }
+            AttachButton(choose: openPicker).equatable().disabled(model.state != .connected || model.session?.alive != true)
             Button(keyFocus.isActive ? "Hide keyboard" : "Show keyboard", systemImage: keyFocus.isActive ? "keyboard.chevron.compact.down" : "keyboard") {
                 if keyFocus.isActive { keyFocus.userDismiss() } else { keyFocus.focus() }
             }.labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: true))
@@ -871,6 +924,9 @@ struct SessionConsole: View {
                              label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
                              onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
                     .modifier(DesktopField())
+                AttachButton(compact: false, choose: openPicker).equatable().disabled(model.state != .connected || model.session?.alive != true)
+                // Only while the desktop's mic setting is on.
+                if style.mic { TerminalMicButton(isEnabled: model.canEditDraft, action: dictate) }
                 Button("Send", systemImage: "arrow.up", action: send)
                     .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))
                     .disabled(!canSubmit)
@@ -884,6 +940,19 @@ struct SessionConsole: View {
         }.padding(8).background(style.panel).overlay(alignment: .top) { DesktopRule() }
     }
     private var canSubmit: Bool { model.canSend && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// The mic (key bar or line composer): the line goes to a field to be checked first, never straight to the shell.
+    private func dictate() {
+        DictationController.shared.toggle(for: .terminal) { [model] text in
+            let line = DictatedText.forTerminal(text)
+            if model.directTyping { dictatedLine = DictatedText.joined(dictatedLine ?? "", line) }
+            else { model.draft = DictatedText.joined(model.draft, line) }
+        }
+    }
+    /// A checked dictated line, typed into the shell.
+    private func typeDictated(_ line: String, submit: Bool) {
+        let items: [KeyItem] = submit ? [.text(line), .key(.enter)] : [.text(line)]
+        if model.type(items) != .accepted { model.error = "The dictated line could not be typed into this terminal." }
+    }
     private func send() {
         guard let selectedID = model.sessionID else { return }
         let line = model.draft

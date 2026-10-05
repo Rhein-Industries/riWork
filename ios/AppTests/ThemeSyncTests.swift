@@ -158,6 +158,54 @@ private final class Flag: @unchecked Sendable {
         XCTAssertTrue(relaunched.style.native)
     }
 
+    /// The palette with the desktop's mic setting on (`"mic": true`), or as sent with it off (no field).
+    private func micWire(_ on: Bool, updated: Double) -> JSONValue {
+        guard on, case .object(var fields) = wire(updated: updated) else { return wire(updated: updated) }
+        fields["mic"] = .bool(true)
+        return .object(fields)
+    }
+    func testFollowsTheDesktopsMicSettingLiveOnTheRefreshOnForegroundAndOnConnect() async throws {
+        let keychain = try makeStore(); defer { try? keychain.delete() }
+        let defaults = scratchDefaults()
+        let transport = FixtureTransport()
+        // A desktop that predates the setting: off.
+        await transport.setAppearance(.ok(wire()))
+        let model = makeModel(transport, keychain, defaults: defaults, refresh: .milliseconds(40), gap: .zero)
+        await model.connect()
+        await eventually("first palette") { model.theme.appearance != nil }
+        XCTAssertFalse(model.theme.style.mic)
+        XCTAssertFalse(DictationController.shared.isAllowed, "no dictation while it is off")
+        // Turned on with the very same colors: still a change, picked up by the periodic refresh, without a reconnect.
+        await transport.setAppearance(.ok(micWire(true, updated: 1_790_000_100)))
+        await eventually("on, live") { model.theme.style.mic }
+        XCTAssertTrue(DictationController.shared.isAllowed)
+        XCTAssertEqual(model.theme.style.theme.accent, fixed("#55e6dc"), "the colors are untouched")
+        // Off again: the periodic refresh again.
+        await transport.setAppearance(.ok(micWire(false, updated: 1_790_000_200)))
+        await eventually("off, live") { !model.theme.style.mic }
+        XCTAssertFalse(DictationController.shared.isAllowed)
+        await model.disconnect()
+        // While away the desktop turns it on: coming back to the foreground (a reconnect) picks it up.
+        let eager = makeModel(transport, keychain, defaults: defaults, gap: .zero)
+        await transport.setAppearance(.ok(micWire(true, updated: 1_790_000_300)))
+        await eager.connect()
+        await eventually("on connect") { eager.theme.style.mic }
+        await transport.setAppearance(.ok(micWire(false, updated: 1_790_000_400)))
+        await eager.appDidBecomeActive()
+        XCTAssertFalse(eager.theme.style.mic, "on coming back to the foreground")
+        // What is stored follows, so a relaunch starts with the last setting before the first answer.
+        await transport.setAppearance(.ok(micWire(true, updated: 1_790_000_500)))
+        await eager.fetchAppearance()
+        XCTAssertTrue(eager.theme.style.mic)
+        await eager.disconnect()
+        let relaunched = ThemeStore(defaults: defaults)
+        relaunched.showInitial(selected: routeA, existing: [routeA])
+        XCTAssertTrue(relaunched.style.mic)
+        XCTAssertTrue(try XCTUnwrap(storedText(defaults, routeA)).contains("\"mic\":true"))
+        // A fresh model starts from no setting until its desktop says.
+        _ = makeModel(FixtureTransport(), keychain, defaults: scratchDefaults())
+        XCTAssertFalse(DictationController.shared.isAllowed)
+    }
     func testRefreshesPeriodicallyWhileConnectedAndPicksUpChanges() async throws {
         let keychain = try makeStore(); defer { try? keychain.delete() }
         let defaults = scratchDefaults()
