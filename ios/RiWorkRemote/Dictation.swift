@@ -262,7 +262,7 @@ struct DictationButton: View {
                 Button { controller.cancel() } label: {
                     Image(systemName: "xmark.circle").font(.system(size: style.pt(20))).foregroundStyle(style.muted)
                 }
-                .buttonStyle(.plain).frame(width: style.pt(36), height: style.pt(44)).contentShape(Rectangle())
+                .buttonStyle(.plain).frame(width: style.pt(40), height: style.pt(44)).contentShape(Rectangle())
                 .accessibilityLabel("Cancel dictation").accessibilityHint("Takes out what was dictated")
                 .transition(.opacity)
             }
