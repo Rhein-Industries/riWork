@@ -806,6 +806,7 @@ impl ChatView {
                     div()
                         .flex()
                         .flex_wrap()
+                        .items_center()
                         .gap(ui_text::space(6.0))
                         .children(pending.choices.iter().map(|decision| {
                             let decision: Decision = *decision;
@@ -882,12 +883,13 @@ impl ChatView {
                             .child(prompt.question.clone()),
                     )
                     .child(
-                        div().flex().flex_wrap().gap(ui_text::space(6.0)).children(
-                            prompt
-                                .options
-                                .iter()
-                                .enumerate()
-                                .map(|(option_at, option)| {
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(ui_text::space(6.0))
+                            .children(prompt.options.iter().enumerate().map(
+                                |(option_at, option)| {
                                     let chosen = picked.contains(&option_at);
                                     let label = if chosen {
                                         format!("✓ {}", option.label)
@@ -912,8 +914,8 @@ impl ChatView {
                                         view.pick(prompt_at, option_at, cx);
                                     }))
                                     .into_any_element()
-                                }),
-                        ),
+                                },
+                            )),
                     )
                     .children(
                         prompt
@@ -991,6 +993,8 @@ impl ChatView {
             .border_color(rgb(colors.divider))
             .bg(rgb(colors.panel))
             .child(
+                // The buttons keep to the bottom, each centered on the box's last line (see
+                // `widgets::beside_field`), so they share one center line with the box.
                 div()
                     .w_full()
                     .flex()
@@ -1007,25 +1011,27 @@ impl ChatView {
                     // has them; their keys are in the tooltips and the hint below. Send waits
                     // in grey until there is something to send.
                     .children(running.then(|| {
-                        if look.native {
-                            widgets::round_button(
-                                "chat-interrupt",
-                                "stop.fill",
-                                "Interrupt · ⌘.",
-                                Button::Secondary,
-                                look,
-                            )
-                        } else {
-                            button(
-                                "chat-interrupt",
-                                "Interrupt  ⌘.",
-                                Some(look.diff.removed),
-                                look,
-                            )
-                        }
-                        .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx)))
+                        widgets::beside_field(
+                            if look.native {
+                                widgets::round_button(
+                                    "chat-interrupt",
+                                    "stop.fill",
+                                    "Interrupt · ⌘.",
+                                    Button::Secondary,
+                                    look,
+                                )
+                            } else {
+                                button(
+                                    "chat-interrupt",
+                                    "Interrupt  ⌘.",
+                                    Some(look.diff.removed),
+                                    look,
+                                )
+                            }
+                            .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx))),
+                        )
                     }))
-                    .child(
+                    .child(widgets::beside_field(
                         if look.native {
                             let empty = composer::message(&self.composer.text).is_none();
                             widgets::round_button(
@@ -1043,7 +1049,7 @@ impl ChatView {
                             button("chat-send", "Send  ⏎", Some(colors.cyan), look)
                         }
                         .on_click(cx.listener(|view, _, _, cx| view.send_message(cx))),
-                    ),
+                    )),
             )
             .child(
                 div()
@@ -1147,7 +1153,7 @@ impl ChatView {
                 })
                 .when(active, |field| field.border_color(rgb(colors.focus)))
         })
-        .text_size(ui_text::text(12.0))
+        .text_size(ui_text::text(widgets::FIELD_TEXT))
         .text_color(rgb(if input.text.is_empty() {
             colors.muted
         } else {
@@ -1167,7 +1173,7 @@ impl ChatView {
                 .id(id(format!("{name}-text")))
                 .w_full()
                 .px(ui_text::space(8.0))
-                .py(ui_text::space(6.0))
+                .py(ui_text::space(widgets::FIELD_PAD_Y))
                 .when(tall, |area| {
                     area.max_h(ui_text::space(180.0))
                         .overflow_y_scroll()
