@@ -1447,7 +1447,7 @@ async fn an_events_page_is_what_the_cli_collected_checked_against_the_request() 
         async move {
             f.says("events.json", &page);
             let response = ask(10, 500).await;
-            assert_eq!(code(&response), "cli_error", "{page}: {response}");
+            assert_eq!(code(&response), "invalid_reply", "{page}: {response}");
         }
     };
     // Another chat's page.
@@ -1461,7 +1461,7 @@ async fn an_events_page_is_what_the_cli_collected_checked_against_the_request() 
     // More events than asked for.
     f.says("events.json", &f.page(&events(11, 3), 13, false));
     let response = ask(10, 2).await;
-    assert_eq!(code(&response), "cli_error", "{response}");
+    assert_eq!(code(&response), "invalid_reply", "{response}");
     // A cursor before what the page holds, or a cut page that does not move on.
     bad(f.page(&two, 11, false)).await;
     bad(f.page(&[], 9, false)).await;
@@ -2072,19 +2072,21 @@ async fn lossless_events_are_additive_and_do_not_truncate_or_skip_state() {
 #[tokio::test]
 async fn complete_pages_reject_missing_events_and_unrepresented_cursor_advances() {
     let f = Fixture::new();
-    for (seqs, next) in [(vec![2], 2), (vec![1, 1], 1), (vec![1], 3), (vec![], 1)] {
-        let events: Vec<_> = seqs
-            .into_iter()
-            .map(|seq| json!({"seq":seq,"event":{"event":"state","state":"idle"}}))
-            .collect();
-        f.says("events.json", &f.page(&events, next, false));
-        let response = f
-            .call(
-                "chat.events",
-                json!({"chat_id":f.chat,"since":0,"wait_ms":0,"complete":true}),
-            )
-            .await;
-        assert_eq!(code(&response), "cli_error", "{response}");
+    for mode in ["complete", "bounded"] {
+        for (seqs, next) in [(vec![2], 2), (vec![1, 1], 1), (vec![1], 3), (vec![], 1)] {
+            let events: Vec<_> = seqs
+                .into_iter()
+                .map(|seq| json!({"seq":seq,"event":{"event":"state","state":"idle"}}))
+                .collect();
+            f.says("events.json", &f.page(&events, next, false));
+            let response = f
+                .call(
+                    "chat.events",
+                    json!({"chat_id":f.chat,"since":0,"wait_ms":0,(mode):true}),
+                )
+                .await;
+            assert_eq!(code(&response), "invalid_reply", "{response}");
+        }
     }
 }
 

@@ -593,6 +593,48 @@ import RiWorkCore
         await finish(rig)
     }
 
+    func testLatestFirstMalformedDegradedRepliesBlockReopenButTransientFailuresRecover() async throws {
+        for failure in [ChatTransport.BoundedReplyFailure.advancingEmptyPage, .connectorInvalidPage, .transientCLI, .transientNetwork] {
+            let rig = try await makeRig()
+            await rig.transport.enableSnapshots(); await rig.transport.enforceResourceLimits(cappedLog: true)
+            await rig.transport.failBoundedReplies(failure)
+            let initial: [ChatEvent] = [.info(chat()), approval("current-control"), .state(.waiting), .usage(ChatUsage(inputTokens: 42)), .models(models)]
+            await rig.transport.append(chatID, initial)
+            let conversation = rig.model.conversation(chatID); conversation.draft = "protocol draft"
+            _ = try await openChat(rig)
+            await eventually("represented controls reach the recovery cursor") { conversation.feed.next == UInt64(initial.count) }
+            switch failure {
+            case .advancingEmptyPage, .connectorInvalidPage:
+                await eventually("malformed recovery blocks this connection") { conversation.readError == .unreadableReply && !conversation.following }
+                XCTAssertNotNil(conversation.resourceBlockedGeneration)
+                let failures = await rig.transport.boundedFailures()
+                XCTAssertEqual(failures, 1)
+                let count = await rig.transport.count("chat.events")
+                try await Task.sleep(for: .milliseconds(350))
+                let afterWait = await rig.transport.count("chat.events")
+                XCTAssertEqual(afterWait, count, "no unchanged deterministic retry")
+                rig.model.deselectChat(); rig.model.selectChat(chatID)
+                try await Task.sleep(for: .milliseconds(150))
+                let afterReopen = await rig.transport.count("chat.events")
+                XCTAssertEqual(afterReopen, count, "same connection cannot repeat the malformed page")
+                XCTAssertEqual(conversation.feed.next, UInt64(initial.count), "never advance over unrepresented state")
+                XCTAssertEqual(conversation.transcript.state, .waiting)
+            case .transientCLI, .transientNetwork:
+                await eventually("transient failure was delivered") { await rig.transport.boundedFailures() == 1 }
+                await rig.transport.append(chatID, [.state(.running)])
+                await eventually("backoff retries and applies the next live state") { conversation.feed.next == UInt64(initial.count + 1) && conversation.readError == nil }
+                XCTAssertNil(conversation.resourceBlockedGeneration)
+                XCTAssertTrue(conversation.following)
+                XCTAssertEqual(conversation.transcript.state, .running)
+            }
+            XCTAssertEqual(conversation.openApprovals.first?.requestID, "current-control")
+            XCTAssertEqual(conversation.transcript.usage?.inputTokens, 42)
+            XCTAssertEqual(conversation.modelCatalogue, models)
+            XCTAssertEqual(conversation.draft, "protocol draft")
+            await finish(rig)
+        }
+    }
+
     func testLatestFirstExpiryAndTruncationStillRebootstrap() async throws {
         let rig = try await makeRig(); await rig.transport.enableSnapshots()
         await rig.transport.append(chatID, [.info(chat())] + (0..<60).map { .itemCompleted(ChatItem(id: "expire-\($0)", status: .completed, body: .agentMessage("Full \($0)"))) })
@@ -1426,5 +1468,55 @@ import RiWorkCore
             try snapshot(rig, name: named("chat-orchestrator-update-the-mac", look))
             await finish(rig)
         }
+    }
+}
+
+/// Exercises the production alignment helper at its real yield, without copying view methods.
+@MainActor final class HistoryAnchorAlignmentTests: XCTestCase {
+    func testCompletedGestureDuringYieldCannotAlignCapturedRow() async {
+        let viewport = ChatHistoryViewport()
+        viewport.anchor = ("reader", -18); viewport.pageInstalled = true
+        var preserving = true, userDriven = false
+        var calls: [String] = []
+        let aligned = await viewport.alignInstalledAnchor(while: { preserving && !userDriven }, yield: {
+            let input = Task { @MainActor in
+                userDriven = true; preserving = false
+                viewport.anchor = nil; viewport.pageInstalled = false
+                userDriven = false // the gesture has completed before alignment resumes
+            }
+            await Task.yield()
+            await input.value
+        }, scroll: { calls.append($0) })
+        XCTAssertFalse(userDriven); XCTAssertFalse(aligned); XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testJumpDuringYieldRemainsTheFinalAlignment() async {
+        let viewport = ChatHistoryViewport()
+        viewport.anchor = ("reader", -18); viewport.pageInstalled = true
+        var preserving = true
+        var calls: [String] = []
+        let aligned = await viewport.alignInstalledAnchor(while: { preserving }, yield: {
+            let input = Task { @MainActor in
+                preserving = false; viewport.anchor = nil; viewport.pageInstalled = false
+                calls.append("latest")
+            }
+            await Task.yield()
+            await input.value
+        }, scroll: { calls.append($0) })
+        XCTAssertFalse(aligned); XCTAssertEqual(calls, ["latest"])
+    }
+
+    func testIdenticalRecaptureInvalidatesLifetimeAndCurrentCaptureCanAlign() async {
+        let viewport = ChatHistoryViewport()
+        viewport.anchor = ("reader", -18); viewport.pageInstalled = true
+        var calls: [String] = []
+        let stale = await viewport.alignInstalledAnchor(while: { true }, yield: {
+            let input = Task { @MainActor in viewport.anchor = ("reader", -18) }
+            await Task.yield()
+            await input.value
+        }, scroll: { calls.append($0) })
+        XCTAssertFalse(stale); XCTAssertTrue(calls.isEmpty)
+        let current = await viewport.alignInstalledAnchor(while: { true }, scroll: { calls.append($0) })
+        XCTAssertTrue(current); XCTAssertEqual(calls, ["reader"])
     }
 }

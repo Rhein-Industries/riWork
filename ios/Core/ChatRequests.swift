@@ -95,6 +95,7 @@ public enum ChatControlError: Error, Equatable, Sendable, LocalizedError {
                 case "harness_unavailable":
                     if case .create(let provider) = operation { return .harnessUnavailable(provider) }
                     return .failed(TerminalControlError.readable(message))
+                case "invalid_reply": return .unreadableReply
                 case "invalid_request": return .invalid(TerminalControlError.readable(message))
                 case "outcome_unknown": return .outcomeUnknown(operation)
                 default: return .failed(TerminalControlError.readable(message))

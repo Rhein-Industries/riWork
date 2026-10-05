@@ -313,3 +313,15 @@ extension LatestFirstRequestTests {
         XCTAssertThrowsError(try request.parse(.object(["chat_id":.string(id),"events":.array([]),"next":.number(101),"more":.bool(false)])))
     }
 }
+
+extension LatestFirstRequestTests {
+    func testMalformedBoundedReplyAndConnectorRefusalStayTypedWithoutMakingCLIErrorsFatal() throws {
+        let request = try ChatEventsRequest(chatID: id, since: 4, waitMilliseconds: 0, bounded: true)
+        XCTAssertThrowsError(try request.parse(.object(["chat_id": .string(id), "events": .array([]), "next": .number(5), "more": .bool(false)]))) { error in
+            XCTAssertEqual(error as? ChatControlError, .unreadableReply)
+        }
+        XCTAssertEqual(ChatControlError.from(RemoteError.rpc(code: "invalid_reply", message: "invalid page"), operation: .events), .unreadableReply)
+        XCTAssertEqual(ChatControlError.from(RemoteError.rpc(code: "cli_error", message: "host unavailable"), operation: .events), .failed("host unavailable"))
+        XCTAssertEqual(ChatControlError.from(RemoteError.timeout, operation: .events), .outcomeUnknown(.events))
+    }
+}

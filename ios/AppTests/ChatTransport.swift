@@ -193,6 +193,11 @@ actor ChatTransport: RemoteTransport {
     var boundedGateAfter: Int?
     func gateHistory(_ on: Bool) { historyGated = on }
     func gateBoundedReplay(after: Int?) { boundedGateAfter = after }
+    enum BoundedReplyFailure { case advancingEmptyPage, connectorInvalidPage, transientCLI, transientNetwork }
+    var boundedReplyFailure: BoundedReplyFailure?
+    var boundedReplyFailures = 0
+    func failBoundedReplies(_ failure: BoundedReplyFailure) { boundedReplyFailure = failure; boundedReplyFailures = 0 }
+    func boundedFailures() -> Int { boundedReplyFailures }
     var resourceLimits = false
     var completeSizeFailures = 0
     func rejectedCompleteEvents() -> Int { completeSizeFailures }
@@ -249,6 +254,22 @@ actor ChatTransport: RemoteTransport {
         if chatsGone || (!chats.contains { $0.id == chat } && log[chat] == nil) { throw RemoteError.rpc(code: "not_found", message: "unknown chat") }
         if eventFailures > 0 { eventFailures -= 1; throw RemoteError.rpc(code: "cli_error", message: "the chat host is not answering") }
         let since = Int(sinceNumber)
+        if params["bounded"] == .bool(true), since > 0, let failure = boundedReplyFailure {
+            switch failure {
+            case .advancingEmptyPage:
+                boundedReplyFailures += 1
+                return .object(["chat_id": .string(chat), "events": .array([]), "next": .number(Double(since + 1)), "more": .bool(false)])
+            case .connectorInvalidPage:
+                boundedReplyFailures += 1
+                throw RemoteError.rpc(code: "invalid_reply", message: "CLI returned a page of events that does not fit the request")
+            case .transientCLI, .transientNetwork:
+                if boundedReplyFailures == 0 {
+                    boundedReplyFailures += 1
+                    if case .transientCLI = failure { throw RemoteError.rpc(code: "cli_error", message: "the chat host is not answering") }
+                    throw RemoteError.timeout
+                }
+            }
+        }
         while params["bounded"] == .bool(true), let bound = boundedGateAfter, since >= bound { try await Task.sleep(for: .milliseconds(5)) }
         if since > (log[chat] ?? []).count { throw RemoteError.rpc(code: "invalid_request", message: "cannot continue after the current log") }
         let deadline = ContinuousClock.now + .milliseconds(Int(waitNumber))

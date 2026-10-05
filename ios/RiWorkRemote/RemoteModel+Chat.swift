@@ -378,8 +378,12 @@ extension RemoteModel {
                     if conversation.recoverResourceLimit(failure, connection: connection) { continue }
                     return
                 }
-                if conversation.feed.degradedReplay, case .invalid = failure {
-                    conversation.resourceBlockedGeneration = connection; conversation.readError = failure; return
+                if conversation.feed.degradedReplay {
+                    switch failure {
+                    case .invalid, .unreadableReply:
+                        conversation.resourceBlockedGeneration = connection; conversation.readError = failure; return
+                    default: break
+                    }
                 }
                 conversation.readError = failure
                 await noteLinkLossIfNeeded()

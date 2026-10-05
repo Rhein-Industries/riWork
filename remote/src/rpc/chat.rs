@@ -1149,7 +1149,10 @@ impl Rpc {
                 }
             })?;
         let page = Page::parse(&spec, &cli).ok_or_else(|| {
-            cli_fault("CLI returned a page of events that does not fit the request")
+            Fault::new(
+                "invalid_reply",
+                "CLI returned a page of events that does not fit the request",
+            )
         })?;
         // Deflating a page of megabytes, more than once, is not for a thread that serves others.
         let (request, compress) = (request.to_owned(), reply_limit > MAX_PLAINTEXT);

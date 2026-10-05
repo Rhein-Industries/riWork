@@ -316,14 +316,29 @@ private struct StatusLineSurface: ViewModifier {
 /// The transcript, newest at the bottom. It follows the bottom while the chat streams and the reader is there; scrolled up, it stays
 /// where it is and a pill takes the reader back (`StickyBottom`, the rule the terminal follows too).
 /// Geometry bookkeeping does not invalidate the view on every scroll frame.
-private final class ChatHistoryViewport {
+@MainActor final class ChatHistoryViewport {
     var metrics: ScrollMetrics?
     var frames: [String: CGRect] = [:]
-    var anchor: (id: String, y: CGFloat)?
+    var anchor: (id: String, y: CGFloat)? { didSet { anchorGeneration = UUID() } }
+    private var anchorGeneration = UUID()
     var correction: Task<Void, Never>?
     var correctionToken: UUID?
     var pageInstalled = false
     var waitingForPage = false
+
+    /// The page's explicit alignment must belong to the same capture after layout yields.
+    /// A completed gesture, jump or identical recapture invalidates the old lifetime.
+    func alignInstalledAnchor(while allowed: () -> Bool,
+                              yield: () async -> Void = { await Task.yield() },
+                              scroll: (String) -> Void) async -> Bool {
+        guard let anchor, pageInstalled, !Task.isCancelled else { return false }
+        let generation = anchorGeneration
+        await yield()
+        guard !Task.isCancelled, allowed(), pageInstalled, anchorGeneration == generation,
+              self.anchor?.id == anchor.id, self.anchor?.y == anchor.y else { return false }
+        scroll(anchor.id)
+        return true
+    }
 }
 
 private struct ChatTranscriptList: View {
@@ -440,14 +455,10 @@ private struct ChatTranscriptList: View {
             }
             guard conversation.feed.historyCursor == pin, conversation.feed.before != requestedBefore else { cancelHistoryAnchor(); return }
             viewport.pageInstalled = true
-            if let anchor = viewport.anchor, !Task.isCancelled {
-                // Resolve the same lazy row by stable identity before restoring its
-                // fractional position; estimated content height is not an anchor.
-                await Task.yield()
-                guard !Task.isCancelled, !userDriven else { return }
-                proxy.scrollTo(anchor.id, anchor: .top)
-                scheduleHistoryCorrection(proxy)
+            let aligned = await viewport.alignInstalledAnchor(while: { preservingHistory && !userDriven }) { id in
+                proxy.scrollTo(id, anchor: .top)
             }
+            if aligned { scheduleHistoryCorrection(proxy) }
             // The anchor remains tied to this installed page through later lazy-row
             // measurements. A gesture, jump, next page or disappearance replaces it.
         }
@@ -500,7 +511,7 @@ private struct ChatTranscriptList: View {
         }
     }
     private static let end = "chat-transcript-end"
-    private static let space = "chat-transcript-space"
+    nonisolated private static let space = "chat-transcript-space"
 
     private func open(for item: ChatItem) -> Set<String> {
         guard !conversation.expanded.isEmpty else { return [] }

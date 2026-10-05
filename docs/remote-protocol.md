@@ -1360,7 +1360,10 @@ checkpoint while reconstructing bodies. Recovery asks `chat.events bounded:true`
 exact; only item bodies/delta payloads may be shortened, with a visible notice.
 Whole events are still accounted for gaplessly. A control or identity that cannot
 fit is an explicit error, never skipped or shortened; recovery stops without an
-unchanged retry or advancing its cursor. `bounded` and `complete` are mutually
+unchanged retry or advancing its cursor. Malformed represented pages are
+`invalid_reply` (distinct from transient `cli_error` failures); degraded replay
+stops for this typed refusal or local decoder rejection and retains its cursor,
+controls and draft through same-connection reopening. `bounded` and `complete` are mutually
 exclusive and both are absent for legacy clients. Ordinary opens remain recent-first.
 A client using snapshot v1 also sends
 `complete:true` on `chat.events`: complete events are paged without truncating
