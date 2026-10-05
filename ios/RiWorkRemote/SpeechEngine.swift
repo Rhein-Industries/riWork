@@ -193,6 +193,7 @@ final class BufferConverter: @unchecked Sendable {
             let (stream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
             input = continuation
             try await analyzer.start(inputSequence: stream)
+            guard !cancelled else { await analyzer.cancelAndFinishNow(); return }
             let converter = format.map { BufferConverter(from: microphone.inputFormat, to: $0) }
             try microphone.start { buffer in
                 guard let converted = converter.map({ $0.convert(buffer) }) ?? buffer else { return }
