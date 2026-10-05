@@ -518,10 +518,12 @@ import RiWorkCore
             await finish(rig)
         }
     }
-    /// The transcript's scroll view: the highest wide one on the chat screen under the tab strip (the bars' own scrolls are below it).
+    /// The transcript's scroll view: from the top of the chat screen the wide scroll views are the tab strip, the transcript, and then
+    /// those of the bars over the composer. (Over the keyboard the transcript can be shorter than a bar's, so size does not tell.)
     private func transcriptScroll(_ rig: Rig) -> UIScrollView? {
-        descendants(UIScrollView.self, in: rig.host.view).filter { !($0 is UITextView) && $0.bounds.width > 300 && $0.bounds.height >= 50 && $0.window != nil }
-            .min { $0.convert($0.bounds, to: nil).minY < $1.convert($1.bounds, to: nil).minY }
+        let wide = descendants(UIScrollView.self, in: rig.host.view).filter { !($0 is UITextView) && $0.bounds.width > 300 && $0.window != nil }
+            .sorted { $0.convert($0.bounds, to: nil).minY < $1.convert($1.bounds, to: nil).minY }
+        return wide.count >= 2 ? wide[1] : nil
     }
     private func questionAndStatusLines(_ look: Look, height: CGFloat = 874, name: String = "chat-question-failed") async throws -> Rig {
         let rig = try await makeRig(chats: [chat(state: .failed("the process exited with status 1"))], height: height, look: look)
@@ -650,6 +652,8 @@ import RiWorkCore
     /// Sends a ⌘ shortcut of the screen up the responder chain, as a key press does.
     private func shortcut(_ rig: Rig, _ input: String) throws {
         let command = try XCTUnwrap((rig.host.keyCommands ?? []).first { $0.input?.lowercased() == input && $0.modifierFlags == .command }, "⌘\(input)")
+        // A key press starts at the first responder: the composer, which takes the keyboard with the chat.
+        if let composer = composer(rig), !composer.isFirstResponder { _ = composer.becomeFirstResponder() }
         XCTAssertTrue(UIApplication.shared.sendAction(try XCTUnwrap(command.action), to: nil, from: command, for: nil))
     }
     /// With `RIWORK_NATIVE_SCREENSHOTS` set to a directory: leaves `<name>.ready` there and waits for `<name>.png`, which whoever drives
@@ -833,6 +837,12 @@ import RiWorkCore
             // Shell, Codex, Claude, Grok, Codex chat, Claude chat.
             press(UIKeyCommand.inputDownArrow, times: 5)
             try await Task.sleep(for: .milliseconds(700))
+            // The model section is under the kinds: scrolled to, as a thumb would.
+            if let presented = rig.host.presentedViewController,
+               let list = descendants(UIScrollView.self, in: presented.view).max(by: { $0.contentSize.height < $1.contentSize.height }) {
+                list.setContentOffset(CGPoint(x: 0, y: max(0, list.contentSize.height - list.bounds.height + list.adjustedContentInset.bottom)), animated: false)
+                try await Task.sleep(for: .milliseconds(300))
+            }
             try snapshot(rig, name: named("new-chat-sheet-model", look))
             try await hold(named("new-chat-sheet-model", look))
             press(UIKeyCommand.inputDownArrow)

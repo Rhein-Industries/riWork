@@ -60,7 +60,7 @@ struct ChatScreen: View {
                          attach: { picking = $0 }, pasteFiles: pasteFiles)
         }
         .background(style.background)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0; squeeze = 0 }
         .attachmentPicker($picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
         .task(id: chat.id) { await model.followChat(chat.id) }
         .onAppear { requestFocus() }
@@ -95,12 +95,14 @@ struct ChatScreen: View {
     /// The least of the transcript that stays on screen above a request or question bar: the last message, at one line.
     private var leastTranscript: CGFloat { style.pt(48) }
     /// In Native, where the bars are taller, a bar over a short screen (the keyboard up) gives up scrolling room until the transcript
-    /// keeps `leastTranscript`, and takes it back as the screen grows again. Each new height moves the bar by the difference, so it
-    /// settles at once; the terminal look keeps its bars as they were.
+    /// keeps `leastTranscript`; the terminal look keeps its bars as they were. It only ever gives more up, and starts over when the
+    /// screen's height changes: a bar cuts its answers between rows, so its height moves in steps, and taking room back as the
+    /// transcript grows would swing between two steps without end.
     private func transcriptChanged(_ transcript: CGFloat, barShown: Bool) {
         guard style.native, barShown else { if squeeze != 0 { squeeze = 0 }; return }
-        let next = min(max(0, squeeze + leastTranscript - transcript), height * 0.3)
-        if abs(next - squeeze) >= 1 { squeeze = next }
+        guard transcript < leastTranscript - 0.5 else { return }
+        let next = min(squeeze + leastTranscript - transcript, height * 0.3)
+        if next - squeeze >= 1 { squeeze = next }
     }
     private func decide(_ approval: ChatApproval, _ decision: ChatDecision) {
         Task { await model.decideChatApproval(chat.id, approval, decision) }
@@ -392,7 +394,11 @@ private struct ChatTranscriptList: View {
             // so the last message is not left a few points under the bar that came up.
             let response = sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven)
             let settle = sticky.following && !userDriven && new.resized(since: old) && new.distanceFromBottom > 0.5
-            if response == .scrollToBottom || settle { proxy.scrollTo(Self.end, anchor: .bottom) }
+            if response == .scrollToBottom || settle {
+                proxy.scrollTo(Self.end, anchor: .bottom)
+                // A lazy list may still be measuring the rows it just brought in: once more when this layout pass is over.
+                DispatchQueue.main.async { if sticky.following { proxy.scrollTo(Self.end, anchor: .bottom) } }
+            }
         }
         .onChange(of: transcript.items.count) { _, count in sticky.contentChanged(end: count, epoch: 0) }
         .onChange(of: conversation.jumps) { _, _ in jump() }
