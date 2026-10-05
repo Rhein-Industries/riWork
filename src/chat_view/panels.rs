@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, ElementId, ElementInputHandler, FollowMode,
-    HighlightStyle, MouseButton, SharedString, Stateful, StyledText, canvas, deferred, div, list,
-    prelude::*, pulsating_between, px, relative, rgb,
+    HighlightStyle, MouseButton, PathBuilder, SharedString, Stateful, StyledText, canvas, deferred,
+    div, list, point, prelude::*, pulsating_between, px, relative, rgb, transparent_black,
 };
 
 use crate::{
@@ -29,6 +29,44 @@ use super::{
 
 fn id(parts: impl Into<String>) -> ElementId {
     ElementId::Name(SharedString::from(parts.into()))
+}
+
+/// Continuous corners: the repeated control at each corner gives the cubic zero
+/// curvature at its straight-edge joins, rather than a circular arc's abrupt join.
+fn composer_path(path: &mut PathBuilder, bounds: gpui::Bounds<gpui::Pixels>, radius: gpui::Pixels) {
+    let left = bounds.left();
+    let right = bounds.right();
+    let top = bounds.top();
+    let bottom = bounds.bottom();
+    let radius = radius
+        .min(bounds.size.width / 2.0)
+        .min(bounds.size.height / 2.0);
+    path.move_to(point(left + radius, top));
+    path.line_to(point(right - radius, top));
+    path.cubic_bezier_to(
+        point(right, top + radius),
+        point(right, top),
+        point(right, top),
+    );
+    path.line_to(point(right, bottom - radius));
+    path.cubic_bezier_to(
+        point(right - radius, bottom),
+        point(right, bottom),
+        point(right, bottom),
+    );
+    path.line_to(point(left + radius, bottom));
+    path.cubic_bezier_to(
+        point(left, bottom - radius),
+        point(left, bottom),
+        point(left, bottom),
+    );
+    path.line_to(point(left, top + radius));
+    path.cubic_bezier_to(
+        point(left + radius, top),
+        point(left, top),
+        point(left, top),
+    );
+    path.close();
 }
 
 /// The headline of a tab with no chat to show, in the signal color when something `failed`.
@@ -1354,14 +1392,51 @@ impl ChatView {
             .border_1()
             .border_color(rgb(if active { colors.cyan } else { colors.divider }))
             .bg(rgb(colors.bg));
-        // Native's is its rounded text field, the message box rounded like a card, with the
-        // focus color around the one that takes the keys.
+        let composer_surface = (field == Field::Composer).then(|| {
+            let radius = ui_text::space(16.0);
+            let outline = if active {
+                if look.native {
+                    colors.focus
+                } else {
+                    colors.cyan
+                }
+            } else {
+                colors.divider
+            };
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    // Inset the stroke center so its outer edge stays inside the field.
+                    let bounds = bounds.inset(px(0.5));
+                    if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
+                        return;
+                    }
+                    for (mut path, color) in [
+                        (PathBuilder::fill(), colors.bg),
+                        (PathBuilder::stroke(px(1.0)), outline),
+                    ] {
+                        composer_path(&mut path, bounds, radius);
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, rgb(color));
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .inset_0()
+        });
         controls::native(field_box, |field| {
             controls::field(field, colors)
                 .when(tall, |field| {
                     field.rounded(controls::radius(controls::ROW_RADIUS))
                 })
                 .when(active, |field| field.border_color(rgb(colors.focus)))
+        })
+        .when(field == Field::Composer, |field| {
+            // Keep the existing border's layout space and all input/hit-test behavior.
+            field
+                .bg(transparent_black())
+                .border_color(transparent_black())
         })
         .text_size(ui_text::text(widgets::FIELD_TEXT))
         .text_color(rgb(if input.text.is_empty() {
@@ -1378,6 +1453,7 @@ impl ChatView {
                 cx.notify();
             }),
         )
+        .children(composer_surface)
         .child(
             div()
                 .id(id(format!("{name}-text")))
@@ -1399,6 +1475,34 @@ impl ChatView {
 mod tests {
     use super::*;
     use crate::chat::model::{QuestionOption, QuestionPrompt};
+
+    #[test]
+    fn composer_corners_tessellate_within_resized_bounds() {
+        for (width, height, radius) in [
+            (500.0, 30.0, 16.0),
+            (180.0, 180.0, 16.0),
+            (240.0, 270.0, 24.0),
+            (12.0, 30.0, 24.0),
+        ] {
+            let bounds =
+                gpui::Bounds::new(point(px(40.0), px(60.0)), gpui::size(px(width), px(height)));
+            for mut builder in [PathBuilder::fill(), PathBuilder::stroke(px(1.0))] {
+                composer_path(&mut builder, bounds.inset(px(0.5)), px(radius));
+                let path = builder
+                    .build()
+                    .expect("continuous composer path tessellates");
+                assert!(!path.vertices.is_empty());
+                for vertex in path.vertices {
+                    let x = f32::from(vertex.xy_position.x);
+                    let y = f32::from(vertex.xy_position.y);
+                    assert!(x.is_finite() && y.is_finite());
+                    // Allow only tessellator floating-point error at the outer stroke edge.
+                    assert!((39.99..=40.01 + width).contains(&x));
+                    assert!((59.99..=60.01 + height).contains(&y));
+                }
+            }
+        }
+    }
 
     fn prompt(question: &str, options: &[&str], multi_select: bool) -> QuestionPrompt {
         QuestionPrompt {
