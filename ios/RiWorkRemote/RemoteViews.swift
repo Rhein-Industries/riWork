@@ -805,7 +805,7 @@ struct SessionConsole: View {
             if model.state != .connected {
                 Button("Reconnect") { Task { await model.connect() } }.disabled(model.state == .connecting).buttonStyle(DesktopButtonStyle(compact: true))
             }
-            AttachButton(choose: openPicker).disabled(model.state != .connected || model.session?.alive != true)
+            AttachButton(choose: openPicker).equatable().disabled(model.state != .connected || model.session?.alive != true)
             Button(keyFocus.isActive ? "Hide keyboard" : "Show keyboard", systemImage: keyFocus.isActive ? "keyboard.chevron.compact.down" : "keyboard") {
                 if keyFocus.isActive { keyFocus.userDismiss() } else { keyFocus.focus() }
             }.labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: true))
@@ -821,7 +821,7 @@ struct SessionConsole: View {
                              label: "Continuation prompt or terminal command", onSubmit: { if canSubmit { send() } },
                              onRejectedInput: { model.error = "Paste one line at a time. Multi-line input is not sent." })
                     .modifier(DesktopField())
-                AttachButton(compact: false, choose: openPicker).disabled(model.state != .connected || model.session?.alive != true)
+                AttachButton(compact: false, choose: openPicker).equatable().disabled(model.state != .connected || model.session?.alive != true)
                 TerminalMicButton(isEnabled: model.canEditDraft, action: dictate)
                 Button("Send", systemImage: "arrow.up", action: send)
                     .labelStyle(.titleAndIcon).buttonStyle(DesktopButtonStyle(prominent: true))

@@ -196,12 +196,7 @@ struct ChatComposer: View {
             }
             HStack(alignment: .bottom, spacing: 4) {
                 if let attach {
-                    AttachMenu(choose: attach) {
-                        Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
-                            .frame(width: style.pt(32), height: style.pt(44)).contentShape(Rectangle())
-                    }
-                    .disabled(!connected)
-                    .accessibilityHint("Sends it to the Mac and puts its path in the message")
+                    ComposerPaperclip(connected: connected, choose: attach).equatable()
                 }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
                                   isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, onKey: handle, onFocusChange: { focused = $0 },
@@ -244,6 +239,23 @@ struct ChatComposer: View {
         case .insertNewline, .none: break
         }
         return action
+    }
+}
+
+/// The composer's paperclip and its menu. Drawn again only when `connected` changes (or the look): the composer is redrawn with each
+/// change to the chat while it streams, and a menu whose view is redrawn while it is open stops taking taps on its items.
+private struct ComposerPaperclip: View, Equatable {
+    @Environment(\.desktopStyle) private var style
+    let connected: Bool
+    let choose: (AttachmentChoice) -> Void
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.connected == rhs.connected }
+    var body: some View {
+        AttachMenu(choose: choose) {
+            Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
+                .frame(width: style.pt(32), height: style.pt(44)).contentShape(Rectangle())
+        }
+        .disabled(!connected)
+        .accessibilityHint("Sends it to the Mac and puts its path in the message")
     }
 }
 

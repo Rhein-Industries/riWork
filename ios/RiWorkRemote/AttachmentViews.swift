@@ -241,10 +241,12 @@ struct AttachMenu<Label: View>: View {
     }
 }
 
-/// The paperclip of the terminal's bars, in their button style.
-struct AttachButton: View {
+/// The paperclip of the terminal's bars, in their button style. Equatable on its look alone, for `.equatable()`: a menu whose view is
+/// redrawn while it is open (the bars are redrawn as the terminal changes) stops taking taps on its items.
+struct AttachButton: View, Equatable {
     var compact = true
     let choose: (AttachmentChoice) -> Void
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.compact == rhs.compact }
     var body: some View {
         AttachMenu(choose: choose) { Image(systemName: "paperclip") }
             .menuStyle(.button).buttonStyle(DesktopButtonStyle(compact: compact))
