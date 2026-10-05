@@ -102,50 +102,70 @@ private struct ChatToolbar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
-                Menu {
-                    Picker("Approval mode", selection: Binding(get: { shownMode }, set: { mode in Task { await model.setChatMode(chat.id, mode) } })) {
-                        ForEach(ChatApprovalMode.allCases) { mode in Label("\(mode.title) · \(mode.detail)", systemImage: icon(mode)).tag(mode) }
+                if style.native {
+                    // Native: the controls on glass (iOS 26), as the workspace bar has them.
+                    modeMenu.nativeGlass(style, in: Capsule())
+                    Spacer(minLength: 4)
+                    NativeGlassGroup(style: style) {
+                        compactButton.nativeGlass(style, in: Capsule())
+                        optionsMenu.nativeGlass(style, in: Capsule())
                     }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: icon(shownMode)).accessibilityHidden(true)
-                        Text(shownMode.title).font(style.mono(11, bold: true, relativeTo: .caption))
-                        Image(systemName: "chevron.up.chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
-                    }
-                    .foregroundStyle(shownMode == .full ? style.gold : style.text).padding(.horizontal, 8)
-                    .frame(minHeight: style.pt(40)).contentShape(Rectangle())
+                } else {
+                    modeMenu
+                    Spacer(minLength: 4)
+                    compactButton
+                    optionsMenu
                 }
-                .disabled(!connected)
-                .accessibilityLabel("Approval mode").accessibilityValue("\(shownMode.title), \(shownMode.detail)")
-                .accessibilityHint("Choose Supervised, Auto-edit, Full or Plan")
-                Spacer(minLength: 4)
-                Button { Task { await model.compactChat(chat.id) } } label: {
-                    Label("Compact", systemImage: "arrow.down.right.and.arrow.up.left").labelStyle(.titleAndIcon).font(style.mono(11, relativeTo: .caption))
-                }
-                .disabled(!connected || state.isBusy || state == .starting)
-                .accessibilityHint("Summarizes the conversation to free up context")
-                Menu {
-                    Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }
-                    Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }
-                        .disabled(!connected || state == .stopped)
-                    if let id = chat.providerThreadID { Button("Copy session id", systemImage: "doc.on.doc") { UIPasteboard.general.string = id } }
-                } label: { Label("Chat options", systemImage: "ellipsis") }
-                    .labelStyle(.iconOnly).frame(minWidth: style.pt(40), minHeight: style.pt(40))
             }
             .buttonStyle(DesktopButtonStyle(compact: true))
-            .padding(.horizontal, 4)
+            .padding(.horizontal, style.native ? 6 : 4).padding(.vertical, style.glass ? 4 : 0)
             if let meter, let text = meter.text {
                 HStack(spacing: 8) {
                     if let fraction = meter.contextFraction { ContextBar(fraction: fraction) }
-                    Text(text).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.75)
+                    Text(text).font(style.face(10, relativeTo: .caption2)).monospacedDigit().foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.75)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12).padding(.bottom, 4)
                 .accessibilityElement(children: .ignore).accessibilityLabel("Usage").accessibilityValue(meter.spoken ?? text)
             }
-            DesktopRule()
+            if !style.glass { DesktopRule() }
         }
-        .background(style.panel)
+        .background(style.glass ? style.surface : style.panel)
+    }
+
+    private var modeMenu: some View {
+        Menu {
+            Picker("Approval mode", selection: Binding(get: { shownMode }, set: { mode in Task { await model.setChatMode(chat.id, mode) } })) {
+                ForEach(ChatApprovalMode.allCases) { mode in Label("\(mode.title) · \(mode.detail)", systemImage: icon(mode)).tag(mode) }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: icon(shownMode)).accessibilityHidden(true)
+                Text(shownMode.title).font(style.face(11, bold: true, relativeTo: .caption))
+                Image(systemName: "chevron.up.chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
+            }
+            .foregroundStyle(shownMode == .full ? style.gold : style.text).padding(.horizontal, 8)
+            .frame(minHeight: style.pt(40)).contentShape(Rectangle())
+        }
+        .disabled(!connected)
+        .accessibilityLabel("Approval mode").accessibilityValue("\(shownMode.title), \(shownMode.detail)")
+        .accessibilityHint("Choose Supervised, Auto-edit, Full or Plan")
+    }
+    private var compactButton: some View {
+        Button { Task { await model.compactChat(chat.id) } } label: {
+            Label("Compact", systemImage: "arrow.down.right.and.arrow.up.left").labelStyle(.titleAndIcon).font(style.face(11, relativeTo: .caption))
+        }
+        .disabled(!connected || state.isBusy || state == .starting)
+        .accessibilityHint("Summarizes the conversation to free up context")
+    }
+    private var optionsMenu: some View {
+        Menu {
+            Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }
+            Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }
+                .disabled(!connected || state == .stopped)
+            if let id = chat.providerThreadID { Button("Copy session id", systemImage: "doc.on.doc") { UIPasteboard.general.string = id } }
+        } label: { Label("Chat options", systemImage: "ellipsis") }
+            .labelStyle(.iconOnly).frame(minWidth: style.pt(40), minHeight: style.pt(40))
     }
 }
 
@@ -178,11 +198,11 @@ private struct ChatStatusLines: View {
         VStack(spacing: 0) {
             if conversation.gone {
                 line(icon: "questionmark.folder", text: "This chat is gone from the Mac.", tint: style.warning) {
-                    Button("Back") { model.deselectChat() }.buttonStyle(DesktopButtonStyle(compact: true))
+                    Button("Back") { model.deselectChat() }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule())
                 }
             } else if model.state != .connected {
                 line(icon: "wifi.slash", text: model.state == .connecting ? "Connecting…" : "Not connected. Your chat is kept; it carries on when the link is back.", tint: style.warning) {
-                    if model.state != .connecting { Button("Reconnect") { Task { await model.connect() } }.buttonStyle(DesktopButtonStyle(compact: true)) }
+                    if model.state != .connecting { Button("Reconnect") { Task { await model.connect() } }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule()) }
                 }
             } else if conversation.readError != nil {
                 line(icon: "arrow.triangle.2.circlepath", text: "Can’t read this chat right now. Trying again…", tint: style.warning) { EmptyView() }
@@ -190,7 +210,7 @@ private struct ChatStatusLines: View {
             if let banner {
                 line(icon: icon(banner), text: banner.text, tint: tint(banner), working: { if case .starting = banner { true } else { false } }()) {
                     if case .failed(_, let retry?) = banner {
-                        Button("Retry") { Task { await model.sendChatMessage(chat.id, retry) } }.buttonStyle(DesktopButtonStyle(compact: true))
+                        Button("Retry") { Task { await model.sendChatMessage(chat.id, retry) } }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule())
                             .disabled(model.state != .connected || conversation.sending)
                             .accessibilityHint("Sends your last message again")
                     }
@@ -302,7 +322,7 @@ private struct ChatTranscriptList: View {
     private var workingRow: some View {
         HStack(spacing: 8) {
             ActivityIndicator(activity: state == .waiting ? .waiting : .working)
-            Text(state == .waiting ? "Waiting for you" : (state == .starting ? "Starting…" : "Working…")).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted)
+            Text(state == .waiting ? "Waiting for you" : (state == .starting ? "Starting…" : "Working…")).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .accessibilityElement(children: .combine).accessibilityLabel(state == .waiting ? "Waiting for you" : "Working")
@@ -310,9 +330,18 @@ private struct ChatTranscriptList: View {
     @ViewBuilder private var pill: some View {
         if let pill = sticky.pill {
             Button(action: jump) {
-                Text(pill.newLines > 0 ? "↓ Latest · \(pill.newLines) new" : "↓ Latest").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
-                    .padding(.horizontal, 12).frame(minHeight: style.pt(30)).background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(style.divider, lineWidth: 1)).contentShape(Capsule())
+                if style.native {
+                    // Native: the arrow is a symbol, and the pill is glass on iOS 26, material before.
+                    Label(pill.newLines > 0 ? "Latest · \(pill.newLines) new" : "Latest", systemImage: "arrow.down").labelStyle(.titleAndIcon)
+                        .font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                        .padding(.horizontal, 12).frame(minHeight: style.pt(34))
+                        .background { if !style.glass { Capsule().fill(.ultraThinMaterial) } }
+                        .nativeGlass(style, in: Capsule()).contentShape(Capsule())
+                } else {
+                    Text(pill.newLines > 0 ? "↓ Latest · \(pill.newLines) new" : "↓ Latest").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                        .padding(.horizontal, 12).frame(minHeight: style.pt(30)).background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(style.divider, lineWidth: 1)).contentShape(Capsule())
+                }
             }
             .buttonStyle(.plain).padding(.trailing, 10).padding(.bottom, 8).transition(.opacity)
             .accessibilityLabel(pill.newLines > 0 ? "Jump to latest, \(pill.newLines) new" : "Jump to latest")

@@ -259,9 +259,10 @@ struct NativeGlassGroup<Content: View>: View {
 }
 
 extension View {
-    /// Liquid Glass in `shape` while the style is on glass (Native on iOS 26); otherwise the view as it is.
-    @ViewBuilder func nativeGlass<S: Shape>(_ style: DesktopStyle, in shape: S) -> some View {
-        if #available(iOS 26, *), style.glass { glassEffect(.regular.interactive(), in: shape) } else { self }
+    /// Liquid Glass in `shape` while the style is on glass (Native on iOS 26); otherwise the view as it is. A field to type in is
+    /// not `interactive`: its glass stays still under a finger that selects text.
+    @ViewBuilder func nativeGlass<S: Shape>(_ style: DesktopStyle, in shape: S, interactive: Bool = true) -> some View {
+        if #available(iOS 26, *), style.glass { glassEffect(.regular.interactive(interactive), in: shape) } else { self }
     }
     /// A sheet's surface and corners: the background with small square corners in the terminal look; in Native, the system's
     /// own corners, and on iOS 26 its glass.
