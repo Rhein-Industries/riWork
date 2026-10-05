@@ -226,7 +226,10 @@ at most the reply limit less 1 KiB of JSON (128 KiB, or 2 MiB for a session that
 page until the reply fits one sealed frame the way `connector.rs` will seal it (`link::encode_reply`), setting
 `more` and `next` for the cut (one event that is more than a frame by itself has its long strings cut, as the CLI cuts them for a page). `tests/chat.rs` runs the RPCs against a stub CLI (an ignored test drives the real
 CLI and its chat host in a throwaway home with `RIWORK_TEST_CLI`); `tests/chat_link.rs` runs a real relay and the
-real connector binary for `features.chat`, the lanes and the sealing of a page.
+real connector binary for `features.chat`, the lanes and the sealing of a page. `chat.options` is a plain read of
+`riwork chat options --json`, the models and efforts the desktop's chat tabs offer per provider; the connector
+passes on only the `codex` and `claude` lists, each name one a `configure` could send, and tells the phone to
+update RiWork when the CLI predates it.
 
 `upload.begin`, `upload.chunk`, `upload.finish`, `upload.cancel` and `shell.paste` take a photo or a file
 from the phone and give it to a shell or a chat (the contract is in [remote-protocol.md](../docs/remote-protocol.md),

@@ -1728,6 +1728,10 @@ impl Rpc {
                 let spec = chat::stop_spec(&r.params)?;
                 self.chat_stop(device, spec).await
             }
+            "chat.options" => {
+                chat::options_spec(&r.params)?;
+                self.chat_options().await
+            }
             // Files from the phone; see `upload`.
             "upload.begin" => {
                 let spec = upload::begin_spec(r)?;

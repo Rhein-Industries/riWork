@@ -1,7 +1,7 @@
 import XCTest
 @testable import RiWorkCore
 
-/// The five chat requests: what leaves the phone, what is refused before it does, and what an answer must look like to be believed.
+/// The six chat requests: what leaves the phone, what is refused before it does, and what an answer must look like to be believed.
 final class ChatRequestsTests: XCTestCase {
     private let project = "11111111-1111-4111-8111-111111111111"
     private let tree = "33333333-3333-4333-8333-333333333333"
@@ -236,5 +236,70 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertTrue(ChatControlError.outcomeUnknown(.create(.codex)).message.contains("may or may not have been created"))
         XCTAssertTrue(ChatControlError.outcomeUnknown(.command).message.contains("may or may not have gone through"))
         XCTAssertEqual(ChatControlError.notFound(.create(.codex)).message, "That project or worktree no longer exists on the Mac. Refresh and try again.")
+    }
+
+    // MARK: chat.options and configure
+
+    func testTheOptionsAreReadPerProviderAndWhatCannotBeSentBackIsLeftOut() throws {
+        let desktop = try value(#"{"providers":{"codex":{"models":[],"efforts":["low","medium","high","xhigh"]},"claude":{"models":["opus","sonnet","haiku"],"efforts":["low","medium","high","xhigh","max"]}}}"#)
+        let options = try ChatOptionsRequest().parse(desktop)
+        XCTAssertEqual(options[.claude], ChatOptions.Choices(models: ["opus", "sonnet", "haiku"], efforts: ["low", "medium", "high", "xhigh", "max"]))
+        XCTAssertEqual(options[.codex], ChatOptions.Choices(models: [], efforts: ["low", "medium", "high", "xhigh"]))
+        XCTAssertEqual(ChatOptionsRequest().params, [:])
+        // A provider the phone does not know, a list that is not one, names it could not send and repeats are left out, not fatal.
+        let odd = try ChatOptions.parse(value(#"{"providers":{"grok":{"models":["g"]},"claude":{"models":["opus",7,""," ","a\nb","opus"],"efforts":"max"}},"v":2}"#))
+        XCTAssertNil(odd[.codex])
+        XCTAssertEqual(odd[.claude], ChatOptions.Choices(models: ["opus"], efforts: []))
+        XCTAssertEqual(odd.providers.count, 1)
+        let long = try ChatOptions.parse(value("{\"providers\":{\"codex\":{\"models\":[\"\(String(repeating: "m", count: 101))\"],\"efforts\":[\"\(String(repeating: "e", count: 33))\"]}}}"))
+        XCTAssertEqual(long[.codex], ChatOptions.Choices())
+        // Without providers it is not an answer.
+        for wrong in [#"{}"#, #"{"providers":[]}"#, #"[]"#] {
+            XCTAssertThrowsError(try ChatOptions.parse(value(wrong))) { XCTAssertEqual($0 as? ChatControlError, .unreadableReply) }
+        }
+        XCTAssertNoThrow(try RequestValidation.validate(method: "chat.options", params: [:], id: requestID))
+        XCTAssertThrowsError(try RequestValidation.validate(method: "chat.options", params: ["provider": .string("codex")], id: requestID))
+        XCTAssertThrowsError(try ChatOptionsRequest(params: ["x": .null]))
+    }
+
+    func testTheModelMenuHasTheChatsOwnChoiceTickedEvenWhenTheDesktopDoesNotListIt() {
+        let claude = ChatOptions.Choices(models: ["opus", "sonnet", "haiku"], efforts: ["low", "high", "max"])
+        let listed = ChatModelMenu(choices: claude, model: "sonnet", effort: "high")
+        XCTAssertEqual(listed.models, ["opus", "sonnet", "haiku"])
+        XCTAssertEqual(listed.efforts, ["low", "high", "max"])
+        XCTAssertEqual(listed.title, "sonnet"); XCTAssertEqual(listed.detail, "high")
+        XCTAssertEqual(listed.spoken, "sonnet, effort high")
+        // A name typed on the Mac, or the full name the agent reported, is added at the end with its tick.
+        let typed = ChatModelMenu(choices: claude, model: "claude-sonnet-4-5", effort: "medium")
+        XCTAssertEqual(typed.models, ["opus", "sonnet", "haiku", "claude-sonnet-4-5"])
+        XCTAssertEqual(typed.efforts, ["low", "high", "max", "medium"])
+        // Codex lists no model: only the chat's own, once it has one.
+        let codex = ChatOptions.Choices(models: [], efforts: ["low", "medium"])
+        XCTAssertEqual(ChatModelMenu(choices: codex, model: nil, effort: nil).models, [])
+        XCTAssertEqual(ChatModelMenu(choices: codex, model: nil, effort: nil).title, "Model")
+        XCTAssertEqual(ChatModelMenu(choices: codex, model: nil, effort: nil).spoken, "Not chosen")
+        XCTAssertNil(ChatModelMenu(choices: codex, model: nil, effort: nil).detail)
+        XCTAssertEqual(ChatModelMenu(choices: codex, model: "gpt-5.5", effort: nil).models, ["gpt-5.5"])
+        // No effort list, no effort: a chat's own effort alone is no choice.
+        let none = ChatModelMenu(choices: ChatOptions.Choices(models: ["opus"]), model: "opus", effort: "high")
+        XCTAssertEqual(none.efforts, []); XCTAssertNil(none.detail)
+    }
+
+    func testAConfigureCarriesASendableModelOrEffortAndNeverNothing() throws {
+        XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .configure(model: "opus")).params["command"], try value(#"{"command":"configure","model":"opus"}"#))
+        XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .configure(effort: "max")).params["command"], try value(#"{"command":"configure","effort":"max"}"#))
+        XCTAssertNoThrow(try ChatCommandRequest(chatID: chat, command: .configure(model: String(repeating: "m", count: 100), effort: String(repeating: "e", count: 32))))
+        XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure(model: String(repeating: "m", count: 101)))) {
+            XCTAssertEqual($0 as? ChatValidationError, .textTooLong(field: "model", limit: 100))
+        }
+        XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure(effort: String(repeating: "e", count: 33))))
+        for wrong: ChatCommand in [.configure(), .configure(model: " "), .configure(model: "a\nb"), .configure(effort: "")] {
+            XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: wrong), "\(wrong)")
+        }
+        // What is typed is trimmed, as the Mac's field trims it, and nothing that cannot be sent is offered.
+        XCTAssertEqual(ChatSetting.typedModel("  gpt-5.5 \n"), "gpt-5.5")
+        XCTAssertNil(ChatSetting.typedModel("   "))
+        XCTAssertNil(ChatSetting.typedModel("a\tb"))
+        XCTAssertNil(ChatSetting.typedModel(String(repeating: "m", count: 101)))
     }
 }

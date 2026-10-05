@@ -8,6 +8,7 @@
 //!   app-server` over JSON-RPC, `claude` over stream-json). `codex` and
 //!   `claude` are the two drivers; `child` is what they share (the process in
 //!   its own group, a size-capped line reader).
+//! - `choices` lists the models and efforts a chat is offered, per provider.
 //! - `client` is the blocking client a window and the CLI use to reach it.
 //! - `wire` is the line protocol of the chat host (`riwork chat serve`), the
 //!   background process that owns the provider processes so chats keep running
@@ -19,6 +20,7 @@
 #![allow(dead_code)]
 
 pub mod child;
+pub mod choices;
 pub mod claude;
 pub mod client;
 pub mod codex;
