@@ -243,6 +243,74 @@ import RiWorkCore
         await finish(rig)
     }
 
+    func testCreationReadsProviderCatalogueWithoutStartingOrChangingAChat() async throws {
+        let rig = try await connected()
+        await rig.transport.append(chatID, [.info(chat()), .models(list)])
+        let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
+        sheet.select(kind: .codexChat)
+        await sheet.loadChatModels()
+        XCTAssertEqual(sheet.form.chatModels[.codex], list)
+        XCTAssertNil(sheet.chatModelsError)
+        XCTAssertFalse(sheet.loadingChatModels)
+        XCTAssertFalse(rig.model.conversation(chatID).following)
+        sheet.chooseChatModel(gpt)
+        sheet.chooseChatEffort("xhigh")
+        sheet.setChatFast(true)
+        sheet.chooseChatModel(mini)
+        XCTAssertEqual(sheet.form.chatChoice?.chosen, mini)
+        XCTAssertEqual(sheet.form.chatChoice?.selectedEffort, "low")
+        XCTAssertFalse(sheet.form.chatChoice?.fastIsOn ?? true)
+        let created = await rig.transport.count("chat.create")
+        let commands = await rig.transport.commands()
+        XCTAssertEqual(created, 0)
+        XCTAssertTrue(commands.isEmpty)
+        sheet.create()
+        let params = await createdParams(rig)
+        XCTAssertEqual(params?["model"], .string(mini.id))
+        XCTAssertEqual(params?["effort"], .string("low"))
+        XCTAssertNil(params?["fast"])
+        await finish(rig)
+    }
+
+    func testCatalogueFailureCanBeRetriedAndNeverUsesAnotherProvider() async throws {
+        let rig = try await connected()
+        await rig.transport.append(chatID, [.models(list)])
+        let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
+        sheet.select(kind: .claudeChat)
+        await sheet.loadChatModels()
+        XCTAssertNotNil(sheet.chatModelsError)
+        XCTAssertNil(sheet.form.chatModels[.claude])
+        sheet.select(kind: .codexChat)
+        await rig.transport.failEvents(1)
+        await sheet.loadChatModels()
+        XCTAssertNotNil(sheet.chatModelsError)
+        XCTAssertFalse(sheet.loadingChatModels)
+        await sheet.loadChatModels()
+        XCTAssertNil(sheet.chatModelsError)
+        XCTAssertEqual(sheet.form.chatModels[.codex], list)
+        let commands = await rig.transport.commands()
+        XCTAssertTrue(commands.isEmpty)
+        await finish(rig)
+    }
+
+    func testPickerLoadsCatalogueForAnUnfollowedChatAndPreservesCompatibleSettings() async throws {
+        let info = chat(model: gpt.id, effort: "medium", fast: true)
+        let rig = try await connected(chats: [info])
+        await rig.transport.append(chatID, [.info(info), .models(list)])
+        let catalogue = try await rig.model.availableChatModels(provider: info.provider, chat: info)
+        rig.model.conversation(chatID).modelCatalogue = catalogue
+        XCTAssertEqual(rig.model.conversation(chatID).modelChoices(fallback: info).current?.name, gpt.name)
+        let compatible = ChatModelOption(id: "compatible", name: "Compatible", efforts: ["medium"], supportsFast: true)
+        rig.model.conversation(chatID).modelCatalogue.append(compatible)
+        let failure = await rig.model.chooseChatModel(info, .model(compatible.id))
+        XCTAssertNil(failure)
+        let commands = await rig.transport.commands()
+        XCTAssertEqual(commands, [configure(["model": .string(compatible.id)])])
+        XCTAssertEqual(rig.model.conversation(chatID).modelChoices(fallback: info).selectedEffort, "medium")
+        XCTAssertTrue(rig.model.conversation(chatID).modelChoices(fallback: info).fastIsOn)
+        await finish(rig)
+    }
+
     // MARK: A new chat
 
     private func createdParams(_ rig: Rig) async -> [String: JSONValue]? {
@@ -475,19 +543,19 @@ import RiWorkCore
     }
     private func commandKeys(_ screen: Screen) -> [String] { (screen.host.keyCommands ?? []).filter { $0.modifierFlags == .command }.compactMap { $0.input?.lowercased() } }
 
-    func testCommandMOpensThePickerOnlyWhereThereIsAListAndNothingElseUsesIt() async throws {
+    func testCommandMOffersThePickerWhileLoadingOrMissingModelsAndNothingElseUsesIt() async throws {
         let screen = try await screen()
         let rig = screen.rig
         rig.model.selectChat(chatID)
         await eventually("the chat screen is up") { !self.descendants(ChatComposerTextView.self, in: screen.host.view).isEmpty && rig.model.conversation(self.chatID).following }
-        XCTAssertFalse(commandKeys(screen).contains("m"), "an older Mac: no list, no picker, no shortcut")
+        XCTAssertTrue(commandKeys(screen).contains("m"), "the picker remains accessible to show loading and retry before a list arrives")
         // The terminal's own shortcuts are not on this screen; ⌘M is not one of the hotkey menu's, the help's or the Clicks template's.
         await rig.transport.append(chatID, [.info(chat(model: "gpt-5.5")), .models(list)])
         await eventually("⌘M is there with a list") { self.commandKeys(screen).contains("m") }
         for taken in ["k", ",", "/"] { XCTAssertFalse(commandKeys(screen).contains(taken), taken) }
         XCTAssertTrue(commandKeys(screen).contains("n"), "⌘N, a new terminal or chat, still works")
         await rig.transport.append(chatID, [.models([])])
-        await eventually("and gone when the list is") { !self.commandKeys(screen).contains("m") }
+        await eventually("still available to retry an empty list") { self.commandKeys(screen).contains("m") }
         await finish(screen)
     }
     func testCommandMOpensTheSheetAndClosingItGivesTheComposerTheKeyboardBack() async throws {

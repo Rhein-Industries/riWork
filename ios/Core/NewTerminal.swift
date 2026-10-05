@@ -371,6 +371,7 @@ public struct NewTerminalForm: Equatable, Sendable {
     public private(set) var orchestratorMode: NewOrchestratorMode = .desktop
     public var focus = Field.kind
     /// The model, effort and Fast of a new Codex or Claude chat, per provider (`NewChatChoice`); a provider with none is the default.
+    public var chatModels: [ChatProvider: [ChatModelOption]] = [:]
     public var chatChoices: [ChatProvider: NewChatChoice] = [:]
 
     public init(targets: [NewTerminalTarget], targetIndex: Int = 0, kind: NewTerminalKind = .standard, kinds: [NewTerminalKind] = NewTerminalKind.terminalKinds) {

@@ -72,7 +72,7 @@ struct ChatScreen: View {
         .background {
             Button("Choose model") { showModels = true }
                 .keyboardShortcut("m", modifiers: .command)
-                .disabled(!connected || !conversation.modelChoices(fallback: info).isAvailable)
+                .disabled(!connected)
                 .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
         .sheet(isPresented: $showModels, onDismiss: requestFocus) {
@@ -99,9 +99,6 @@ private struct ChatToolbar: View {
     let conversation: ChatConversation
     let state: ChatState
     @Binding var showModels: Bool
-
-    @State private var choosingModel = false
-    @State private var modelName = ""
 
     private var shownMode: ChatApprovalMode { conversation.pendingMode ?? chat.approvalMode }
     private var choices: ChatModelChoices { conversation.modelChoices(fallback: chat) }
@@ -135,8 +132,8 @@ private struct ChatToolbar: View {
                 .disabled(!connected)
                 .accessibilityLabel("Approval mode").accessibilityValue("\(shownMode.title), \(shownMode.detail)")
                 .accessibilityHint("Choose Supervised, Auto-edit, Full or Plan")
-                // The model, with a bolt when Fast is on. A desktop that sends no list of models has no chip: the toolbar is as it was.
-                if choices.isAvailable { ChatModelChip(choices: choices, enabled: connected) { showModels = true } }
+                // The same picker handles the model chip, menu and keyboard shortcut.
+                ChatModelChip(choices: choices, enabled: connected) { showModels = true }
                 Spacer(minLength: 4)
                 Button { Task { await model.compactChat(chat.id) } } label: {
                     Label("Compact", systemImage: "arrow.down.right.and.arrow.up.left").labelStyle(.titleAndIcon).font(style.mono(11, relativeTo: .caption))
@@ -145,8 +142,7 @@ private struct ChatToolbar: View {
                 .accessibilityHint("Summarizes the conversation to free up context")
                 Menu {
                     Button("Change model", systemImage: "cpu") {
-                        modelName = chat.model ?? ""
-                        choosingModel = true
+                        showModels = true
                     }
                     .disabled(!connected || state.isBusy || state == .starting)
                     Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }
@@ -158,18 +154,6 @@ private struct ChatToolbar: View {
             }
             .buttonStyle(DesktopButtonStyle(compact: true))
             .padding(.horizontal, 4)
-            HStack {
-                Button {
-                    modelName = chat.model ?? ""
-                    choosingModel = true
-                } label: {
-                    Label(chat.model ?? "Provider default model", systemImage: "cpu")
-                        .font(style.mono(10, relativeTo: .caption2)).lineLimit(1)
-                }
-                .buttonStyle(.plain).disabled(!connected || state.isBusy || state == .starting)
-                .accessibilityLabel("Change model").accessibilityValue(chat.model ?? "Provider default")
-                Spacer(minLength: 0)
-            }.foregroundStyle(style.muted).padding(.horizontal, 12).padding(.bottom, 4)
             if let meter, let text = meter.text {
                 HStack(spacing: 8) {
                     if let fraction = meter.contextFraction { ContextBar(fraction: fraction) }
@@ -182,15 +166,6 @@ private struct ChatToolbar: View {
             DesktopRule()
         }
         .background(style.panel)
-        .alert("Chat model", isPresented: $choosingModel) {
-            TextField("Model name", text: $modelName).textInputAutocapitalization(.never).autocorrectionDisabled()
-            Button("Cancel", role: .cancel) {}
-            Button("Apply") {
-                Task { await model.setChatModel(chat.id, modelName) }
-            }.disabled(modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } message: {
-            Text("Enter a model name supported by \(chat.provider.title). It applies to the next message.")
-        }
     }
 }
 

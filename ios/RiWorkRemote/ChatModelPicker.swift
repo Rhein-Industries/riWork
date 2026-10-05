@@ -102,6 +102,8 @@ struct ChatModelSheet: View {
     let close: () -> Void
     @State private var cursor: ChatModelCursor
     @State private var keyboardInUse: Bool
+    @State private var loadingModels = false
+    @State private var modelsError: String?
 
     init(model: RemoteModel, chat: ChatInfo, close: @escaping () -> Void) {
         self.model = model; self.chat = chat; self.close = close
@@ -126,6 +128,7 @@ struct ChatModelSheet: View {
         .background { KeyCommandHost(active: true, actions: keyActions).frame(width: 1, height: 1).accessibilityHidden(true) }
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .onChange(of: choices) { _, fresh in cursor.reconcile(with: fresh) }
+        .task { await loadModels() }
     }
 
     private func content(_ choices: ChatModelChoices) -> some View {
@@ -133,7 +136,13 @@ struct ChatModelSheet: View {
             if let notice = conversation.notice { messageRow(notice, icon: "exclamationmark.triangle") }
             else if !connected { messageRow("Not connected. Choose again when the link is back.", icon: "wifi.slash") }
             sectionLabel("Model")
-            if choices.models.isEmpty { Text("This chat has no models to choose from.").font(style.system(.footnote)).foregroundStyle(style.muted).padding(12) }
+            if loadingModels { ProgressView("Loading models…").padding(12) }
+            if let error = modelsError, choices.models.isEmpty {
+                messageRow(error, icon: "exclamationmark.triangle")
+                Button("Retry model list") { Task { await loadModels() } }.padding(12).disabled(loadingModels || !connected)
+            }
+            Text("Current model: \(choices.current?.name ?? choices.modelID ?? "Provider default")")
+                .font(style.system(.caption)).foregroundStyle(style.muted).padding(.horizontal, 12)
             ForEach(Array(choices.models.enumerated()), id: \.element.id) { index, option in modelRow(index, option, choices) }
             if !choices.efforts.isEmpty {
                 sectionLabel("Effort")
@@ -154,6 +163,15 @@ struct ChatModelSheet: View {
             }
         }
         .padding(.bottom, 8)
+    }
+
+    private func loadModels() async {
+        guard !loadingModels else { return }
+        loadingModels = true; modelsError = nil
+        defer { loadingModels = false }
+        do { conversation.modelCatalogue = try await model.availableChatModels(provider: chat.provider, chat: chat) }
+        catch is CancellationError { }
+        catch { modelsError = ChatControlError.from(error, operation: .list).message }
     }
 
     private func sectionLabel(_ text: String) -> some View {

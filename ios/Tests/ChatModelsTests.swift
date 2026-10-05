@@ -273,4 +273,27 @@ final class ChatModelsTests: XCTestCase {
         tapped.place(.fast, in: choices(model: "bare"))
         XCTAssertEqual(tapped.stop, .model(0), "Fast is not there for this model")
     }
+    func testCreationKeyboardSelectsCatalogueRowsAndKeepsCompatibleEffortAndFast() throws {
+        var form = NewTerminalForm(targets: [], kind: .codexChat, kinds: NewTerminalKind.offered(chats: true))
+        form.chatModels[.codex] = list
+        form.focus = .chatModel
+        form.handle(.down)
+        XCTAssertEqual(form.chatChoice?.chosen, gpt)
+        form.selectChatEffort("medium")
+        form.setChatFast(true)
+        form.selectChatModel(gpt)
+        XCTAssertEqual(form.chatChoice?.selectedEffort, "medium")
+        XCTAssertTrue(form.chatChoice?.fastIsOn ?? false)
+        form.handle(.down)
+        XCTAssertEqual(form.chatChoice?.chosen, mini)
+        XCTAssertEqual(form.chatChoice?.selectedEffort, "medium")
+        XCTAssertFalse(form.chatChoice?.fastIsOn ?? true)
+        form.handle(.down)
+        XCTAssertEqual(form.chatChoice?.chosen, bare)
+        form.handle(.down)
+        XCTAssertNil(form.chatChoice?.chosen)
+        form.selectChatModel(ChatModelOption(id: "invented", name: "Invented"))
+        XCTAssertNil(form.chatChoice?.chosen)
+    }
+
 }

@@ -13,6 +13,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     /// The transcript and how far into the desktop's event log it has read.
     private(set) var feed = ChatFeed()
     var transcript: ChatTranscript { feed.transcript }
+    var modelCatalogue: [ChatModelOption] = []
     /// What the person has typed and not sent. Kept per chat, so changing tabs loses nothing.
     var draft = ""
     /// The cards the person opened (command output, diffs, reasoning), by item id. Kept here because rows come and go as the list scrolls.
@@ -46,7 +47,14 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     /// Takes in an answer to a request made with `since`. A mode that was asked for and has now arrived is no longer pending.
     @discardableResult
     func accept(_ reply: ChatEventsReply, since: UInt64) -> ChatFeed.Outcome {
+        let previousNext = feed.next
         let outcome = feed.accept(reply, since: since)
+        if outcome == .restarted { modelCatalogue = [] }
+        else {
+            for envelope in reply.events where envelope.seq > previousNext {
+                if case .models(let models) = envelope.event { modelCatalogue = models }
+            }
+        }
         if let pending = pendingMode, transcript.info?.approvalMode == pending { pendingMode = nil }
         settleModelChoice()
         // A request the desktop has resolved needs no hiding any more; one it has asked again does.
@@ -55,7 +63,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         return outcome
     }
     func setFollowing(_ on: Bool) { if following != on { following = on } }
-    func reset() { feed = ChatFeed(); answered = []; readError = nil }
+    func reset() { feed = ChatFeed(); modelCatalogue = []; answered = []; readError = nil }
     /// The approvals still to be answered, first in line first: those that were just answered are already out of the way.
     var openApprovals: [ChatApproval] { transcript.approvals.filter { !answered.contains($0.requestID) } }
     var openQuestions: [ChatQuestion] { transcript.questions.filter { !answered.contains($0.requestID) } }
@@ -385,20 +393,6 @@ extension RemoteModel {
     @discardableResult
     func compactChat(_ chatID: String) async -> ChatControlError? {
         let failure = await sendChatCommand(chatID, .compact)
-        conversation(chatID).notice = failure?.message
-        return failure
-    }
-    /// The desktop confirms the model through its info event; errors stay in the chat.
-    @discardableResult
-    func setChatModel(_ chatID: String, _ name: String) async -> ChatControlError? {
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name.utf8.count <= ChatLimits.modelBytes,
-              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-            let failure = ChatControlError.failed("Enter a model name on one line, up to \(ChatLimits.modelBytes) bytes.")
-            conversation(chatID).notice = failure.message
-            return failure
-        }
-        let failure = await sendChatCommand(chatID, .configure(model: name))
         conversation(chatID).notice = failure?.message
         return failure
     }

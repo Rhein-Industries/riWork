@@ -9,7 +9,10 @@ extension ChatConversation {
     /// What the picker shows for this chat: the transcript's models and the chat's own model, effort and Fast, with a choice that was
     /// sent and has not come back yet laid over them. `fallback` is the tab list's entry, until the chat has told its own.
     func modelChoices(fallback: ChatInfo?) -> ChatModelChoices {
-        ChatModelChoices(transcript: transcript, fallback: fallback, pending: pendingModel)
+        let info = transcript.info ?? fallback
+        return ChatModelChoices(models: transcript.models.isEmpty ? modelCatalogue : transcript.models,
+                                model: pendingModel?.model ?? info?.model, effort: pendingModel?.effort ?? info?.effort,
+                                fast: pendingModel?.fast ?? info?.fast ?? false)
     }
     /// The chat's own word (an `info` event) has what was asked for: the choice no longer needs showing from here.
     func settleModelChoice() {
@@ -79,5 +82,75 @@ extension NewTerminalSheetModel {
         keyboardInUse = false; chatError = nil
         edit(&form)
         form.focus = form.fields.contains(field) ? field : .kind
+    }
+}
+
+extension RemoteModel {
+    /// Reuses the provider's Models events. Reading a catalogue never starts a chat or sends a command.
+    /// New chats use an existing chat of the same provider and project, including its orchestrator.
+    func availableChatModels(provider: ChatProvider, chat: ChatInfo? = nil) async throws -> [ChatModelOption] {
+        guard state == .connected else { throw ChatControlError.notConnected }
+        let token = generation
+        let project = projectID
+        let candidates: [ChatInfo]
+        if let chat { candidates = [chat] }
+        else {
+            let listed = try await client.listChats(ChatListRequest(projectID: project))
+            var seen = Set<String>()
+            candidates = (listed + tabs.compactMap(\.chatInfo))
+                .filter { $0.provider == provider && $0.projectID == project && seen.insert($0.id).inserted }
+                .sorted { $0.createdAtUnix > $1.createdAtUnix }
+        }
+        var lastError: (any Error)?
+        for candidate in candidates {
+            try Task.checkCancellation()
+            guard generation == token, projectID == project else { throw CancellationError() }
+            if let conversation = chatConversations[candidate.id], !conversation.transcript.models.isEmpty {
+                return conversation.transcript.models
+            }
+            do {
+                var since: UInt64 = 0
+                for _ in 0..<20 {
+                    let reply = try await client.chatEvents(ChatEventsRequest(chatID: candidate.id, since: since, waitMilliseconds: 0, maxEvents: 500))
+                    try Task.checkCancellation()
+                    guard generation == token, projectID == project else { throw CancellationError() }
+                    let catalogue = reply.events.compactMap { envelope -> [ChatModelOption]? in
+                        if case .models(let models) = envelope.event { return models }
+                        return nil
+                    }.last
+                    if let catalogue, !catalogue.isEmpty { return catalogue }
+                    guard reply.more, reply.next > since else { break }
+                    since = reply.next
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { lastError = error }
+        }
+        if let lastError { throw lastError }
+        throw ChatControlError.failed("No model list is available yet. Start a chat with the provider default, then reopen Model after it connects. If a connected chat still has no list, update RiWork on your Mac and retry.")
+    }
+}
+
+extension NewTerminalSheetModel {
+    func loadChatModels() async {
+        guard let provider = form.kind.chatProvider else { return }
+        let token = UUID()
+        catalogueRequest = token
+        loadingChatModels = true; chatModelsError = nil
+        defer { if catalogueRequest == token { loadingChatModels = false } }
+        do {
+            let models = try await model.availableChatModels(provider: provider)
+            guard catalogueRequest == token, form.kind.chatProvider == provider else { return }
+            form.chatModels[provider] = models
+        } catch is CancellationError { }
+        catch {
+            guard catalogueRequest == token, form.kind.chatProvider == provider else { return }
+            chatModelsError = ChatControlError.from(error, operation: .list).message
+        }
+    }
+    func chooseChatModel(_ option: ChatModelOption) {
+        guard !busy else { return }
+        keyboardInUse = false; chatError = nil
+        form.selectChatModel(option)
+        form.focus = .chatModel
     }
 }

@@ -100,6 +100,18 @@ extension NewTerminalForm {
 
     /// Chooses the last model used (or the default) for the chat kind that is selected.
     public mutating func selectChatModel(last: Bool) { change { if last { $0.useLastModel() } else { $0.useDefault() } } }
+    public mutating func selectChatModel(_ option: ChatModelOption) {
+        guard let provider = kind.chatProvider, chatModels[provider]?.contains(where: { $0.id == option.id }) == true else { return }
+        let models = chatModels[provider] ?? []
+        change { choice in
+            let choices = ChatModelChoices(models: models, model: choice.requestedModel, effort: choice.effort, fast: choice.fast)
+            if let configuration = choices.configuration(for: .model(option.id)) {
+                choice = choice.remembering(choices.applying(configuration))
+            } else {
+                choice.model = option; choice.usesModel = true
+            }
+        }
+    }
     public mutating func selectChatEffort(_ effort: String) { change { $0.choose(effort: effort) } }
     public mutating func setChatFast(_ on: Bool) { change { $0.setFast(on) } }
 
@@ -116,8 +128,16 @@ extension NewTerminalForm {
     mutating func handleChat(_ key: Key) -> Bool {
         guard let choice = chatChoice else { return false }
         switch (focus, key) {
-        case (.chatModel, .up): change { $0.useDefault() }; return true
-        case (.chatModel, .down): change { $0.useLastModel() }; return true
+        case (.chatModel, .up), (.chatModel, .down):
+            let models = kind.chatProvider.flatMap { chatModels[$0] } ?? []
+            guard !models.isEmpty else {
+                change { if key == .up { $0.useDefault() } else { $0.useLastModel() } }
+                return true
+            }
+            let index = choice.chosen.flatMap { chosen in models.firstIndex { $0.id == chosen.id } }.map { $0 + 1 } ?? 0
+            let next = (index + (key == .down ? 1 : -1) + models.count + 1) % (models.count + 1)
+            if next == 0 { change { $0.useDefault() } } else { selectChatModel(models[next - 1]) }
+            return true
         case (.chatEffort, .up), (.chatEffort, .down):
             let efforts = choice.efforts
             guard let at = choice.selectedEffort.flatMap({ efforts.firstIndex(of: $0) }) else { return true }
