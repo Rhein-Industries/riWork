@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-05: Additive, in the same "Chat extension": `chat.options` (no params) answers the models and reasoning efforts the desktop offers a chat of each provider, the lists its chat tabs show, so the phone can offer a model and an effort; they are set with the existing `configure` command of `chat.command`, which is unchanged. A plain read, never waiting. No new error code and no new `ready` feature. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it `cli_error` "... update RiWork"; the phone then offers no model or effort. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; see "Chat extension" below.
 - 2026-10-05: Additive file upload extension: four methods that carry a file from the phone into the inbox of a shell or a chat on the desktop, in chunks over the encrypted link (`upload.begin`, `upload.chunk`, `upload.finish`, `upload.cancel`), and `shell.paste`, which pastes finished uploads into their shell the way a drop of those files on its terminal would, exactly once per batch UUID like `shell.keys`; `features.upload` in `ready`; and the error code `upload_limit`. An upload resumes where it stopped after the link drops, is checked against the SHA-256 the phone announced, and is placed whole or not at all, under a name the desktop makes. The desktop holds the limits (a file, a device's quota, uploads under way) and removes old uploads, a closed shell's, a deleted chat's and a revoked device's. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method" and sends no `features.upload`; see "File upload extension" below.
 - 2026-10-04: Additive chat extension: five methods that let the phone follow and drive the desktop's Codex and Claude chats (the chat host, `riwork chat ...`), `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop`, and `features.chat` in `ready`. `chat.events` is a long poll (`wait_ms` up to 25 000, counted with the waits of `shell.output`) that returns the events after a cursor, batched, in a page cut to fit one reply; `chat.create`, `chat.command` and `chat.stop` run in the ordered lane and a creation is not cut short when the phone's session ends. The chat JSON is the desktop's own (`src/chat/model.rs`); the phone decodes it leniently. No new error code. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.chat` out; see "Chat extension" below.
 - 2026-10-03: Additive, in the same "Activity and recency extension": `projects.list` entries gain optional `last_activity_unix` (Unix seconds: when the newest of the project's shells last had output) and `shells.list` / `orchestrators.list` entries gain optional `last_activity_unix` (when that shell last had output, from tmux), so the phone's "Recent" project order can follow shell activity instead of file edits. No new method and no new error code. A desktop that cannot supply it leaves it out, an older phone ignores it, and the connector checks it is a non-negative integer and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -1186,7 +1187,8 @@ shell and its own orchestrator and not the global one).
 Additive and compatible, like the extensions before it: five new methods and one new
 `ready` feature. No new error code and no change to the handshake, envelopes, fixtures
 or any existing method; it applies to protocol v1 and v2 sessions alike. A client that
-never calls the methods is unaffected. The iOS side is built against this text.
+never calls the methods is unaffected. The iOS side is built against this text. A sixth
+method, `chat.options`, was added on 2026-10-05 in the same way.
 
 A *chat* is a conversation with Codex or Claude that the desktop drives through the
 agent's structured interface instead of its terminal: the chat host (`riwork chat
@@ -1360,6 +1362,36 @@ that says so (the command may have been taken: read the chat's events); a client
 should allow about 90.
 `invalid_request` and `not_found` as for the other methods.
 
+A `configure` never needs the chat to be idle. The desktop takes it during a turn too: Codex
+uses the new settings from its next turn; Claude is asked to change its model at once and, for
+an effort, is restarted on its own conversation once the turn is over. A chat that is stopped
+keeps them for when it starts again. The new values arrive as an `info` event, on the desktop
+and on every phone that follows the chat. A model or an effort the agent refuses is said in
+the chat (a `notice` item, or a failed turn), not in the answer to the command.
+
+**`chat.options`** (added 2026-10-05) answers the models and reasoning efforts the desktop
+offers a chat, per provider: the lists of the Model and Effort pop-ups of its chat tabs. Params
+`{}`; any field is `invalid_request`. Result:
+
+```json
+{"providers":{"codex":{"models":[],"efforts":["low","medium","high","xhigh"]},
+              "claude":{"models":["opus","sonnet","haiku"],"efforts":["low","medium","high","xhigh","max"]}}}
+```
+
+- `models` and `efforts` are in the order the desktop lists them, each at most 64 names, every
+  one a value a `configure` may send (one line, not blank, at most 100 and 32 characters).
+  `models` may be empty: the desktop lists no Codex model by name, because Codex model names
+  change often, and its tab offers a typed name instead. Any other model name may be sent; the
+  agent judges it, as it judges a name typed on the desktop.
+- A provider may be missing; a client offers no list for it. The connector passes on only
+  `codex` and `claude` and only these two lists, and answers `cli_error` for a CLI answer that
+  does not fit them.
+- The lists change only with the desktop's version: a client may ask once per connection.
+- It runs `riwork chat options --json`, which starts no chat host. A connector from before it
+  answers `invalid_request` "unsupported RPC method"; with an older CLI it answers `cli_error`
+  "the installed riwork CLI does not list chat models; update RiWork". Either way the phone
+  offers no model or effort and chats work as before.
+
 **`chat.stop`** stops the chat's agent process and keeps its history. Params
 `{"chat_id":"UUID"}`, result `{"status":"stopped"}`. A chat that is stopped, or a desktop
 with no chat host running (nothing runs), answers `stopped` too; an unknown chat is
@@ -1379,7 +1411,7 @@ the other methods:
   value (`chat new --provider P --project ID --mode M [--model=X] [--effort=X]
   [--title=X] --json`, `chat events ID --since N --wait-ms N --max N --max-bytes N
   --json`, `chat command ID --command-json JSON --json`, `chat stop ID --json`, `chat
-  list [--project ID] --json`). Nothing is concatenated into a shell string. Free text
+  list [--project ID] --json`, `chat options --json`). Nothing is concatenated into a shell string. Free text
   uses the `--name=VALUE` form so that a value that begins with `-` stays a value, and a
   command is rebuilt from the validated fields as one JSON argument, so nothing the
   connector did not check can travel in it.
@@ -1409,8 +1441,8 @@ runs it in a task that outlives the request; when the connector ends the connect
 any other reason (revocation, a relay error) the CLI is not killed, only the answer is
 lost. `chat.events` with a `wait_ms` above 0 is a long poll: it takes one of the three
 shared slots and one of the two wait slots, like a waiting `shell.output`, and is ended,
-with its CLI, when the session does. With `wait_ms` 0, and `chats.list`, it is a plain
-read. A client's timeout for `chat.events` should be `wait_ms` plus about 10 seconds
+with its CLI, when the session does. With `wait_ms` 0, and `chats.list` and `chat.options`, it is
+a plain read. A client's timeout for `chat.events` should be `wait_ms` plus about 10 seconds
 (starting the chat host on demand is the rest), about 90 seconds for `chat.create` and
 `chat.command`, and about 30 for `chat.stop`.
 
@@ -1705,6 +1737,12 @@ ready response. Values are test-only and must never provision production devices
   `RIWORK_HOME/uploads/TARGET/` under a name the desktop makes. A client that never calls the
   methods is unaffected, and an older desktop answers `invalid_request` "unsupported RPC
   method". Needs the iOS worker's agreement; the iOS side implements the same text.
+- 2026-10-05: additive and backward compatible. Chat extension: `chat.options` (params `{}`)
+  answers `{"providers":{"codex"|"claude":{"models":[..],"efforts":[..]}}}`, the models and
+  efforts the desktop's chat tabs offer, from `riwork chat options --json`. A plain read.
+  Choosing one is the existing `configure` command. An older connector answers
+  `invalid_request` "unsupported RPC method", an older CLI `cli_error` "... update RiWork",
+  and the phone then offers no model or effort. The iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),
