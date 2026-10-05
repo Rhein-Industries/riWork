@@ -78,6 +78,14 @@ fn text<'a>(
         Some(_) => Err(invalid(format!("{name} must be a string"))),
     }
 }
+/// A boolean field: absent is `None`; null and every other type are refused.
+fn flag(object: &Map<String, Value>, name: &str) -> std::result::Result<Option<bool>, Fault> {
+    match object.get(name) {
+        None => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(invalid(format!("{name} must be a boolean"))),
+    }
+}
 fn required<'a>(object: &'a Map<String, Value>, name: &str) -> std::result::Result<&'a str, Fault> {
     text(object, name)?.ok_or_else(|| invalid(format!("{name} is required")))
 }
@@ -158,6 +166,7 @@ pub(super) struct NewSpec {
     mode: &'static str,
     model: Option<String>,
     effort: Option<String>,
+    fast: bool,
     title: Option<String>,
 }
 pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
@@ -170,6 +179,7 @@ pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
             "approval_mode",
             "model",
             "effort",
+            "fast",
             "title",
         ],
     )?;
@@ -192,6 +202,7 @@ pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
         mode: text(object, "approval_mode")?.map_or(Ok("supervised"), mode)?,
         model: label("model", text(object, "model")?, MODEL_MAX_CHARS)?,
         effort: label("effort", text(object, "effort")?, EFFORT_MAX_CHARS)?,
+        fast: flag(object, "fast")?.unwrap_or(false),
         title: label("title", text(object, "title")?, TITLE_MAX_CHARS)?,
     })
 }
@@ -222,6 +233,9 @@ fn new_args(spec: &NewSpec) -> Vec<String> {
         if let Some(value) = value {
             args.push(format!("--{name}={value}"));
         }
+    }
+    if spec.fast {
+        args.push("--fast".into());
     }
     args
 }
@@ -301,7 +315,7 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
         "interrupt" | "compact" | "stop" => &["command"],
         "approve" => &["command", "request_id", "decision"],
         "answer" => &["command", "request_id", "answers"],
-        "configure" => &["command", "model", "effort", "approval_mode"],
+        "configure" => &["command", "model", "effort", "approval_mode", "fast"],
         _ => {
             return Err(invalid(
                 "command.command must be send, interrupt, approve, answer, configure, compact or stop",
@@ -340,11 +354,13 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
             let model = label("model", text(object, "model")?, MODEL_MAX_CHARS)?;
             let effort = label("effort", text(object, "effort")?, EFFORT_MAX_CHARS)?;
             let approval_mode = text(object, "approval_mode")?.map(mode).transpose()?;
+            let fast = flag(object, "fast")?;
             let mut changes = Map::from_iter([("command".to_owned(), json!("configure"))]);
             for (name, value) in [
                 ("model", model.map(Value::from)),
                 ("effort", effort.map(Value::from)),
                 ("approval_mode", approval_mode.map(Value::from)),
+                ("fast", fast.map(Value::from)),
             ] {
                 if let Some(value) = value {
                     changes.insert(name.to_owned(), value);
@@ -352,7 +368,7 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
             }
             if changes.len() == 1 {
                 return Err(invalid(
-                    "configure needs a model, an effort or an approval_mode",
+                    "configure needs a model, an effort, an approval_mode or fast",
                 ));
             }
             Value::Object(changes)
@@ -492,8 +508,8 @@ fn chat_info(value: &Value) -> bool {
             .is_some_and(|state| state.get("state").is_some_and(|name| name.is_string()))
 }
 /// The `chat.create` result for the chat the CLI printed, or `None` if it is not the chat
-/// that was asked for: the provider, the project or worktree, the mode, and the model and
-/// effort when they were sent.
+/// that was asked for: the provider, the project or worktree, the mode, and the model,
+/// effort and fast mode when they were sent.
 fn new_result(spec: &NewSpec, cli: &Value) -> Option<Value> {
     let text = |name: &str| cli.get(name).and_then(Value::as_str);
     let in_target = match &spec.target {
@@ -510,7 +526,8 @@ fn new_result(spec: &NewSpec, cli: &Value) -> Option<Value> {
         && in_target
         && text("approval_mode") == Some(spec.mode)
         && same("model", &spec.model)
-        && same("effort", &spec.effort))
+        && same("effort", &spec.effort)
+        && (!spec.fast || cli.get("fast") == Some(&Value::Bool(true))))
     .then(|| json!({ "chat": cli }))
 }
 
@@ -665,14 +682,25 @@ impl Rpc {
     /// at the same time run the CLI once: the others wait for the answer, within their own
     /// `limit`.
     async fn chat_known(&self, limit: Duration) -> std::result::Result<bool, Fault> {
-        if self.chat.load(Ordering::Relaxed) {
+        self.capability_known(&self.chat, limit).await
+    }
+    /// Whether `flag`, one of the booleans of this `Rpc` that remember a yes from
+    /// `riwork capabilities --json`, is set, asking the CLI if it is not (see `chat_known`).
+    /// One answer sets every flag it says yes to, so the questions of a handshake cost one
+    /// run of the CLI between them.
+    pub(super) async fn capability_known(
+        &self,
+        flag: &AtomicBool,
+        limit: Duration,
+    ) -> std::result::Result<bool, Fault> {
+        if flag.load(Ordering::Relaxed) {
             return Ok(true);
         }
         let started = std::time::Instant::now();
         let Ok(_asking) = timeout(limit, self.asking_chat.lock()).await else {
             return Err(cli_fault("RiWork CLI timeout"));
         };
-        if self.chat.load(Ordering::Relaxed) {
+        if flag.load(Ordering::Relaxed) {
             return Ok(true);
         }
         let asked = self
@@ -681,19 +709,25 @@ impl Rpc {
                 limit.saturating_sub(started.elapsed()),
             )
             .await;
-        let yes = match asked {
+        match asked {
             Ok(data) => {
                 let reply = serde_json::from_slice::<Value>(&data).unwrap_or(Value::Null);
-                reply.get("v") == Some(&json!(1)) && reply.get("chat") == Some(&Value::Bool(true))
+                if reply.get("v") == Some(&json!(1)) {
+                    for (flag, name) in [
+                        (&self.chat, "chat"),
+                        (&self.orchestrator_create, "orchestrator_create"),
+                    ] {
+                        if reply.get(name) == Some(&Value::Bool(true)) {
+                            flag.store(true, Ordering::Relaxed);
+                        }
+                    }
+                }
+                Ok(flag.load(Ordering::Relaxed))
             }
             // It ran and refused the question: a CLI from before `capabilities`.
-            Err(e) if e.to_string().starts_with("RiWork CLI failed") => false,
-            Err(e) => return Err(cli_fault(e)),
-        };
-        if yes {
-            self.chat.store(true, Ordering::Relaxed);
+            Err(e) if e.to_string().starts_with("RiWork CLI failed") => Ok(false),
+            Err(e) => Err(cli_fault(e)),
         }
-        Ok(yes)
     }
     /// What `ready` announces as `features.chat`. The question is short: a CLI that does not
     /// answer within a few seconds does not delay the handshake any longer (the phone gives
@@ -721,7 +755,7 @@ impl Rpc {
     }
     /// The device may still act: it was authorized when the request started, and a request
     /// that waited in the ordered lane may have been revoked since.
-    fn still_authorized(&self, device: &str) -> std::result::Result<(), Fault> {
+    pub(super) fn still_authorized(&self, device: &str) -> std::result::Result<(), Fault> {
         if self.storage.authorized(device).map_err(cli_fault)? {
             Ok(())
         } else {
@@ -1013,5 +1047,72 @@ mod tests {
         assert_eq!(label("title", Some("   "), 200).unwrap(), None);
         assert_eq!(label("title", None, 200).unwrap(), None);
         assert!(label("title", Some("a\u{85}b"), 200).is_err());
+    }
+
+    const PROJECT: &str = "11111111-2222-4333-8444-555555555555";
+
+    #[test]
+    fn fast_is_a_boolean_that_becomes_the_cli_flag_only_when_on() {
+        let spec = |extra: Value| {
+            let mut params = json!({"provider": "codex", "project_id": PROJECT});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            new_spec(&params)
+        };
+        let args = |spec: &NewSpec| new_args(spec);
+        assert!(!spec(json!({})).unwrap().fast);
+        assert!(!spec(json!({"fast": false})).unwrap().fast);
+        let fast = spec(json!({"fast": true, "model": "gpt-5.5"})).unwrap();
+        assert!(fast.fast);
+        let argv = args(&fast);
+        assert_eq!(argv.last().map(String::as_str), Some("--fast"));
+        assert!(argv.contains(&"--model=gpt-5.5".to_owned()));
+        assert!(!args(&spec(json!({"fast": false})).unwrap()).contains(&"--fast".to_owned()));
+        // Nothing but a boolean: null, numbers, strings.
+        for bad in [json!(null), json!(1), json!("true"), json!([true])] {
+            let fault = spec(json!({"fast": bad})).unwrap_err();
+            assert_eq!(fault.code, "invalid_request");
+            assert!(
+                fault.message.contains("fast must be a boolean"),
+                "{}",
+                fault.message
+            );
+        }
+    }
+
+    #[test]
+    fn configure_takes_fast_alone_or_with_the_rest_and_nothing_else_counts_as_a_change() {
+        let configure = |fields: Value| {
+            let mut command = json!({"command": "configure"});
+            command
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            command_json(&command)
+        };
+        assert_eq!(
+            configure(json!({"fast": true})).unwrap(),
+            json!({"command": "configure", "fast": true})
+        );
+        assert_eq!(
+            configure(json!({"fast": false, "effort": "low"})).unwrap(),
+            json!({"command": "configure", "effort": "low", "fast": false})
+        );
+        // No change at all, and a blank model that is left out, are still nothing.
+        assert!(configure(json!({})).is_err());
+        assert!(configure(json!({"model": "  "})).is_err());
+        for bad in [json!(null), json!(0), json!("on")] {
+            assert!(configure(json!({"fast": bad})).is_err(), "{bad}");
+        }
+        // Only a configure has it.
+        let fault =
+            command_json(&json!({"command": "send", "text": "hi", "fast": true})).unwrap_err();
+        assert!(
+            fault.message.contains("unknown field fast"),
+            "{}",
+            fault.message
+        );
     }
 }

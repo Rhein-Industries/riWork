@@ -7,16 +7,16 @@
 //!
 //! - `Ordered`: `shell.keys`, `shell.input`, `shell.resize`,
 //!   `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`,
-//!   `chat.create`, `chat.command`, `chat.stop` and `shell.paste`.
+//!   `orchestrator.create`, `chat.create`, `chat.command`, `chat.stop` and `shell.paste`.
 //!   One at a time, in arrival order. This is what keeps the batch ledger, the
 //!   viewport and the order of typed text intact. Creating and closing a
-//!   terminal, and creating a project, change what exists, and a request that
+//!   terminal, and creating a project or an orchestrator, change what exists, and a request that
 //!   ends half way (a session started but not yet written down, one killed but
 //!   still listed, or a project folder made but not registered) is worse than a
 //!   slow one, so a session ending does not cut them short either; typing waits
 //!   behind them. (A creation also keeps its CLI alive when the connection
-//!   itself is torn down: see `Rpc::create`, `Rpc::create_project` and
-//!   `Rpc::chat_create`.) A message, an approval or a stop for a chat is typing
+//!   itself is torn down: see `Rpc::create`, `Rpc::create_project`,
+//!   `Rpc::orchestrator_create` and `Rpc::chat_create`.) A message, an approval or a stop for a chat is typing
 //!   of a kind: it is carried out in the order it was sent.
 //! - `LongPoll`: a `shell.output` that waits for a change, and a `chat.events`
 //!   that waits for an event (any `wait_ms` above 0). At most two.
@@ -88,8 +88,17 @@ pub fn classify(request: &Value) -> Lane {
     let params = request.get("params");
     match request.get("method").and_then(Value::as_str) {
         Some(
-            "shell.keys" | "shell.input" | "shell.resize" | "shell.resize.clear" | "shell.create"
-            | "shell.close" | "project.create" | "chat.create" | "chat.command" | "chat.stop"
+            "shell.keys"
+            | "shell.input"
+            | "shell.resize"
+            | "shell.resize.clear"
+            | "shell.create"
+            | "shell.close"
+            | "project.create"
+            | "orchestrator.create"
+            | "chat.create"
+            | "chat.command"
+            | "chat.stop"
             | "shell.paste",
         ) => Lane::Ordered,
         Some("pty.open") => Lane::Attach,
@@ -286,6 +295,30 @@ mod tests {
     }
 
     #[test]
+    fn creating_an_orchestrator_is_ordered_and_never_cut_short() {
+        // Whatever the params look like, even none: validation answers it.
+        for params in [json!({}), json!({"project_id":"p"}), json!(null)] {
+            let lane = classify(&request("orchestrator.create", params));
+            assert_eq!(lane, Lane::Ordered);
+            assert!(!lane.cancellable());
+        }
+        // Only the exact name: look-alikes are plain reads.
+        for method in [
+            "orchestrator.creates",
+            "orchestrators.create",
+            "orchestrator",
+            "Orchestrator.create",
+            "orchestrators.list",
+        ] {
+            assert_eq!(
+                classify(&request(method, json!({}))),
+                Lane::Read,
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
     fn chat_changes_are_ordered_and_never_cut_short_and_chat_reads_are_shared() {
         // Whatever the params look like, even none: validation answers it.
         for method in ["chat.create", "chat.command", "chat.stop"] {
@@ -376,6 +409,7 @@ mod tests {
             "shell.create",
             "shell.close",
             "project.create",
+            "orchestrator.create",
             "chat.create",
             "chat.command",
             "chat.stop",

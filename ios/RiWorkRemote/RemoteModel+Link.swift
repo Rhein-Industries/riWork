@@ -37,6 +37,7 @@ extension RemoteModel {
         guard generation == token else { return }
         desktopFeatures = features
         chatSupport = features.chat ? .supported : .unsupported
+        orchestratorCreateSupport = features.orchestratorCreate ? .supported : .unsupported
         historyLineLimit = features.historyMaximumLines
         compressionAgreed = await client.compressionActive()
         // The desktop's answer to the opt-in is on its way (the transport asked as soon as the session began): look again shortly.

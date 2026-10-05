@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
+    orchestrators::{self, Orchestrator},
     schedule_service::{
         CreateRequest, RepeatChange, ScheduleError, ScheduleKey, ScheduleService, ScopeInput,
         UpdateRequest,
@@ -567,34 +568,77 @@ fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
         }
         "riwork_orchestrator_status" => {
             let manager = SessionManager::open_default()?;
-            let session = selected_orchestrator(&manager, optional_str(args, "project_id")?)?;
-            Ok(json!({"session":session}))
+            let project_id = orchestrator_project(optional_str(args, "project_id")?)?;
+            orchestrator_status(&manager, project_id.as_deref())
         }
         "riwork_orchestrator_output" => {
             let manager = SessionManager::open_default()?;
-            let session = selected_orchestrator(&manager, optional_str(args, "project_id")?)?
-                .ok_or("No orchestrator shell exists")?;
+            let project_id = orchestrator_project(optional_str(args, "project_id")?)?;
             let lines = optional_usize(args, "lines")?
                 .unwrap_or(200)
                 .clamp(1, 100_000);
-            let output = manager.capture(&session.id, lines)?;
-            Ok(json!({"shell_id":session.id,"output":output}))
+            orchestrator_output(&manager, project_id.as_deref(), lines)
         }
         _ => Err(format!("Unknown RiWork tool '{name}'")),
     }
 }
 
+/// The project a tool names, by the exact id the store knows it under.
+fn orchestrator_project(selector: Option<&str>) -> Result<Option<String>, String> {
+    selector
+        .map(|selector| {
+            Ok(Store::open_default()?
+                .snapshot()?
+                .project(selector)?
+                .id
+                .clone())
+        })
+        .transpose()
+}
+
+/// The orchestrator of a scope, whichever way it runs. Looking starts no chat host.
 fn selected_orchestrator(
     manager: &SessionManager,
-    project_selector: Option<&str>,
-) -> Result<Option<crate::sessions::ShellSession>, String> {
-    match project_selector {
-        Some(selector) => {
-            let state = Store::open_default()?.snapshot()?;
-            let project = state.project(selector)?;
-            manager.orchestrator_get_for_project(&project.id)
+    home: &Path,
+    project_id: Option<&str>,
+) -> Result<Option<Orchestrator>, String> {
+    let host = orchestrators::ChatHost {
+        home,
+        ensure: &orchestrators::system_ensure,
+    };
+    orchestrators::find(manager, &host, &orchestrators::scope_of(project_id))
+}
+
+/// `riwork_orchestrator_status`: the orchestrator as `riwork orchestrator status --json`
+/// shows it (`null` when the scope has none), with its `mode`.
+fn orchestrator_status(
+    manager: &SessionManager,
+    project_id: Option<&str>,
+) -> Result<Value, String> {
+    let home = manager.state_home();
+    let found = selected_orchestrator(manager, home, project_id)?;
+    Ok(json!({"session": found.map(|found| orchestrators::entry(home, &found))}))
+}
+
+/// `riwork_orchestrator_output`: the pane and scrollback of a terminal orchestrator, or the
+/// conversation of a chat orchestrator as plain text, in the same fields.
+fn orchestrator_output(
+    manager: &SessionManager,
+    project_id: Option<&str>,
+    lines: usize,
+) -> Result<Value, String> {
+    let home = manager.state_home();
+    let found =
+        selected_orchestrator(manager, home, project_id)?.ok_or("No orchestrator shell exists")?;
+    match found {
+        Orchestrator::Terminal(session) => {
+            let output = manager.capture(&session.id, lines)?;
+            Ok(json!({"shell_id":session.id,"output":output}))
         }
-        None => manager.orchestrator_get(),
+        Orchestrator::Chat(chat) => {
+            let output = orchestrators::output(home, &chat, lines)?.join("\n");
+            Ok(json!({"shell_id":chat.id,"mode":"chat","chat_id":chat.id,"output":output}))
+        }
     }
 }
 
@@ -770,7 +814,8 @@ fn schedule_tool(
         "created_at":{"type":"integer","minimum":0},"command":{"type":["string","null"]},
         "harness":{"type":"string","enum":["codex","claude"]},
         "codex_home":{"type":["string","null"]},"pane_identity":{"type":"string"},
-        "provider_session":{"type":"string"}
+        "provider_session":{"type":"string"},
+        "chat":{"type":"object","properties":{"codex_account_id":{"type":["string","null"]}}}
     },"required":["scope","shell_id","created_at","command","harness","codex_home","pane_identity","provider_session"]});
     let run = json!({"type":["object","null"],"properties":{
         "due_at":{"type":"integer","minimum":0},"observed_at":{"type":"integer","minimum":0},
@@ -952,7 +997,7 @@ fn tools() -> Vec<Value> {
         tool(
             "riwork_orchestrator_status",
             "Read orchestrator status",
-            "Read an orchestrator shell and its live state, if present. Omit project_id for the global orchestrator; set a project selector for that project's orchestrator.",
+            "Read an orchestrator and its live state, if present: a terminal session, or a chat (its entry has mode chat, chat_id, provider and state). Omit project_id for the global orchestrator; set a project selector for that project's orchestrator.",
             json!({"project_id":{"type":"string"}}),
             &[],
             true,
@@ -960,7 +1005,7 @@ fn tools() -> Vec<Value> {
         tool(
             "riwork_orchestrator_output",
             "Read orchestrator output",
-            "Read current tmux pane and scrollback of an orchestrator shell. Omit project_id for the global orchestrator; set a project selector for a project's orchestrator.",
+            "Read the current tmux pane and scrollback of a terminal orchestrator, or the last lines of a chat orchestrator's conversation as plain text. Omit project_id for the global orchestrator; set a project selector for a project's orchestrator.",
             json!({"project_id":{"type":"string"},"lines":{"type":"integer","minimum":1,"maximum":100000}}),
             &[],
             true,
@@ -988,6 +1033,107 @@ mod tests {
 
     fn reply(message: &Value) -> Option<Value> {
         handle_line(message.to_string().as_bytes())
+    }
+
+    #[test]
+    fn orchestrator_tools_read_a_chat_orchestrator_the_way_they_read_a_terminal_one() {
+        use crate::chat::client::socket_path;
+        use crate::chat::model::{ChatCommand, ChatState, Provider};
+        use crate::chat::testing::TestHost;
+        use crate::settings::OrchestratorRuns;
+
+        fn in_process(home: &Path) -> Result<std::path::PathBuf, String> {
+            Ok(socket_path(home))
+        }
+
+        /// Ends the tmux server the terminal orchestrator below starts.
+        struct Server(SessionManager);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                self.0.kill_server();
+            }
+        }
+
+        let host = TestHost::new();
+        let manager = SessionManager::at(host.home.clone()).unwrap();
+        let _server = Server(manager.clone());
+        // Nothing yet: status says so, output cannot read it.
+        assert_eq!(
+            orchestrator_status(&manager, None).unwrap(),
+            json!({"session": null})
+        );
+        assert_eq!(
+            orchestrator_output(&manager, None, 10).unwrap_err(),
+            "No orchestrator shell exists"
+        );
+
+        let chat_host = orchestrators::ChatHost {
+            home: &host.home,
+            ensure: &in_process,
+        };
+        let (made, created) = orchestrators::create(
+            &manager,
+            &chat_host,
+            &crate::chat::model::OrchestratorScope::Global,
+            None,
+            host.home.clone(),
+            None,
+            OrchestratorRuns::Chat(Provider::Codex),
+        )
+        .unwrap();
+        assert!(created);
+        let Orchestrator::Chat(chat) = made else {
+            panic!("a chat was asked for");
+        };
+        host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+        host.client()
+            .command(
+                &chat.id,
+                ChatCommand::Send {
+                    text: "what is open?".into(),
+                },
+            )
+            .unwrap();
+        host.wait_for_log(&chat.id, |log| {
+            log.iter()
+                .filter(|e| matches!(e.event, crate::chat::model::ChatEvent::TurnCompleted { .. }))
+                .count()
+                == 2
+        });
+
+        // The status is the chat's entry: its mode, its chat, its state.
+        let status = orchestrator_status(&manager, None).unwrap();
+        let session = &status["session"];
+        assert_eq!(session["id"], chat.id);
+        assert_eq!(session["mode"], "chat");
+        assert_eq!(session["chat_id"], chat.id);
+        assert_eq!(session["provider"], "codex");
+        assert_eq!(session["kind"], "orchestrator");
+        assert_eq!(session["state"], "idle");
+        // A project's orchestrator is another scope.
+        assert_eq!(
+            orchestrator_status(&manager, Some("11111111-1111-4111-8111-111111111111")).unwrap(),
+            json!({"session": null})
+        );
+        // The output is the conversation as text, in the fields a terminal's has.
+        let output = orchestrator_output(&manager, None, 2).unwrap();
+        assert_eq!(output["shell_id"], chat.id);
+        assert_eq!(output["mode"], "chat");
+        assert_eq!(
+            output["output"],
+            "user: what is open?\nagent: echo: what is open?"
+        );
+
+        // A terminal orchestrator in another scope says it is one.
+        let project = "22222222-2222-4222-8222-222222222222";
+        let root = host.home.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let terminal = manager
+            .orchestrator_create_for_project(project.into(), root, Some("sleep 600".into()))
+            .unwrap();
+        let status = orchestrator_status(&manager, Some(project)).unwrap();
+        assert_eq!(status["session"]["id"], terminal.id.as_str());
+        assert_eq!(status["session"]["mode"], "terminal");
     }
 
     #[test]

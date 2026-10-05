@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
-    /// Start a chat. The result is its `ChatInfo`.
+    /// Start a chat. The result is its `ChatInfo`. A chat that makes itself an
+    /// orchestrator of a scope that has one is refused (`ORCHESTRATOR_EXISTS`).
     Create { id: String, chat: NewChat },
     /// All chats the host knows, running or not. The result is `[ChatInfo]`.
     List { id: String },

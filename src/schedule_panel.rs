@@ -1,5 +1,6 @@
 //! Compact scheduling tab, using RiWork's existing GPUI input and palette.
 use crate::{
+    chat::model::ChatInfo,
     controls,
     layouts::PanelKind,
     project_settings::{Input, impl_input_handler, input_content},
@@ -73,6 +74,8 @@ pub struct SchedulePanel {
     workspace_id: Option<String>,
     state: State,
     targets: Vec<ShellSession>,
+    /// The orchestrators that run as chats: targets of the app and project scopes.
+    chats: Vec<ChatInfo>,
     rows: Vec<Schedule>,
     editor: Option<Editor>,
     controls: Vec<Control>,
@@ -115,6 +118,7 @@ impl SchedulePanel {
             workspace_id,
             state: State::default(),
             targets: vec![],
+            chats: vec![],
             rows: vec![],
             editor: None,
             controls: vec![],
@@ -147,6 +151,7 @@ impl SchedulePanel {
                 store.snapshot()?,
                 sessions.sample(false)?.shells,
                 schedules.list()?,
+                schedules.chat_orchestrators(),
             ))
         });
         cx.spawn(async move |this, cx| {
@@ -155,15 +160,18 @@ impl SchedulePanel {
                 panel.refreshing = false;
                 // Nearly every second finds everything as it was.
                 let changed = match result {
-                    Ok((state, targets, rows)) => {
+                    Ok((state, targets, rows, chats)) => {
                         let rows: Vec<_> = rows
                             .into_iter()
                             .filter(|s| s.target.scope.visible(&panel.project_id))
                             .collect();
-                        let changed =
-                            panel.state != state || panel.targets != targets || panel.rows != rows;
+                        let changed = panel.state != state
+                            || panel.targets != targets
+                            || panel.chats != chats
+                            || panel.rows != rows;
                         panel.state = state;
                         panel.targets = targets;
+                        panel.chats = chats;
                         panel.rows = rows;
                         changed
                     }
@@ -439,11 +447,12 @@ impl SchedulePanel {
         let store = self.store.clone();
         let sessions = self.sessions.clone();
         let schedules = self.schedules.clone();
+        let chats = self.chats.clone();
         let work = cx.background_executor().spawn(async move {
             let state = store.snapshot()?;
             let target = match pinned {
                 Some(target) => target,
-                None => Target::bind(scope, &state, &sessions, &id)?,
+                None => Target::bind_any(scope, &state, &sessions, &chats, &id)?,
             };
             // Retain a pinned identity on edit; only an explicit target click rebinds it.
             schedules
@@ -744,6 +753,16 @@ impl Render for SchedulePanel {
                 })
                 .cloned()
                 .collect();
+            let chats: Vec<_> = self
+                .chats
+                .iter()
+                .filter(|chat| {
+                    scope
+                        .as_ref()
+                        .is_ok_and(|scope| scope.matches_chat(&self.state, chat))
+                })
+                .cloned()
+                .collect();
             let mut choices = div().flex().flex_col().gap(ui_text::space(5.0)).child(
                 div()
                     .text_color(rgb(colors.muted))
@@ -752,7 +771,7 @@ impl Render for SchedulePanel {
                         "Existing target · Click to explicitly bind this session",
                     )),
             );
-            if targets.is_empty() {
+            if targets.is_empty() && chats.is_empty() {
                 choices = choices.child(div().text_color(rgb(colors.gold)).child(scope.as_ref().err().cloned().unwrap_or("No live Codex or Claude session in this scope. Open one separately, complete a turn, then return here.".into())));
             }
             for target in targets {
@@ -760,6 +779,19 @@ impl Render for SchedulePanel {
                     format!("{} · {}", target.harness.unwrap().program(), target.id),
                     Control::Target(target.id.clone()),
                     selected.as_ref() == Some(&target.id),
+                    window,
+                    cx,
+                ));
+            }
+            for chat in chats {
+                choices = choices.child(self.button(
+                    format!(
+                        "{} chat · {}",
+                        schedules::chat_harness(chat.provider).program(),
+                        chat.id
+                    ),
+                    Control::Target(chat.id.clone()),
+                    selected.as_ref() == Some(&chat.id),
                     window,
                     cx,
                 ));

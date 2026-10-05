@@ -22,8 +22,9 @@ public enum RequestValidation {
         case "shell.create": required = ["kind"]; optional = ["project_id", "worktree_id", "unrestricted", "command"]
         case "shell.close": required = ["shell_id"]; optional = []
         case "project.create": required = ["name"]; optional = ["git"]
+        case "orchestrator.create": required = []; optional = ["project_id"]
         case "chats.list": required = []; optional = ["project_id"]
-        case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "title"]
+        case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "title"]
         case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events"]
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
@@ -57,6 +58,9 @@ public enum RequestValidation {
         }
         if method == "project.create" {
             do { _ = try NewProjectRequest(params: params) } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
+        }
+        if method == "orchestrator.create" {
+            do { _ = try NewOrchestratorRequest(params: params) } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
         }
         do {
             switch method {
@@ -132,6 +136,8 @@ public actor RelayClient: RemoteTransport {
         case "shell.close": return max(base, .seconds(30))
         // The desktop makes the folder, runs `git init` and registers it (the connector gives its CLI 60 s).
         case "project.create": return max(base, .seconds(90))
+        // An orchestrator that is not there yet is started like any agent: the answer can take 20 to 30 s.
+        case "orchestrator.create": return max(base, .seconds(90))
         // A chat starts its agent (and the chat host, if it is not running yet); a message to a stopped chat resumes it first. Like
         // `shell.create`, the answer can take a while, and a timeout here tears the whole connection down.
         case "chat.create": return max(base, .seconds(90))

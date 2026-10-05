@@ -12,6 +12,8 @@ public struct ChatTranscript: Sendable, Equatable {
     public private(set) var approvals: [ChatApproval] = []
     public private(set) var questions: [ChatQuestion] = []
     public private(set) var usage: ChatUsage?
+    /// The models the provider offers, empty until its driver has said (an older driver, or an older desktop, never does).
+    public private(set) var models: [ChatModelOption] = []
     public private(set) var turnID: String?
     /// Where each item is, by id, so a delta finds its item without a search.
     private var index: [String: Int] = [:]
@@ -69,6 +71,8 @@ public struct ChatTranscript: Sendable, Equatable {
             questions.removeAll { $0.requestID == requestID }
         case .usage(let usage):
             self.usage = usage
+        case .models(let models):
+            self.models = models
         }
     }
 

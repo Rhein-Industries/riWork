@@ -17,5 +17,7 @@ edition = "2024"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 TOML
-cargo run --quiet --manifest-path "$work/Cargo.toml" > "$here/../Tests/Fixtures/chat-serde.json"
+# Into a temporary file first, so a failed build leaves the fixture as it was.
+cargo run --quiet --manifest-path "$work/Cargo.toml" > "$work/chat-serde.json"
+mv "$work/chat-serde.json" "$here/../Tests/Fixtures/chat-serde.json"
 echo "wrote ios/Tests/Fixtures/chat-serde.json"

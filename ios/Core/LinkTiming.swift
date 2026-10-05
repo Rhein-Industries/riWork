@@ -52,6 +52,9 @@ public struct DesktopFeatures: Sendable, Equatable {
     /// The desktop takes files from the phone (`features.upload`): `upload.*` and `shell.paste`. Without it the phone says the Mac needs
     /// an update instead of sending one.
     public var upload: UploadFeature?
+    /// The desktop answers `orchestrator.create` (`features.orchestrator_create`), which opens the project's orchestrator or the global
+    /// one, starting it if it is not there. Without it the phone does not offer to.
+    public var orchestratorCreate = false
     public init() {}
     public init(ready: JSONValue) {
         let features = ready["features"]
@@ -66,6 +69,7 @@ public struct DesktopFeatures: Sendable, Equatable {
         }
         if case .bool(true) = features["chat"] { chat = true }
         upload = UploadFeature(features["upload"])
+        if case .bool(true) = features["orchestrator_create"] { orchestratorCreate = true }
         if let lines = count(features["history_max_lines"]), lines >= 1 {
             historyMaximumLines = max(HistoryLimits.legacyMaximumPageLines, min(HistoryLimits.maximumPageLines, lines))
         }

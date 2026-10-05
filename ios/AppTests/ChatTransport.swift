@@ -12,12 +12,21 @@ actor ChatTransport: RemoteTransport {
         let at: ContinuousClock.Instant
     }
     enum CreateMode { case ok, unsupported, notFound, timeout, harness, gated }
+    /// What `orchestrator.create` does: the host opens (or starts) the orchestrator, refuses, goes quiet, answers with something else, or
+    /// holds the answer until the test lets go.
+    enum OrchestratorMode { case ok, unsupported, notFound, timeout, garbled, gated }
     static let project = "11111111-1111-4111-8111-111111111111"
     static let shell = "44444444-4444-4444-8444-444444444444"
 
     var connected = false
     var connections = 0
     var chatFeature = true
+    /// `ready.features.orchestrator_create`.
+    var orchestratorFeature = false
+    var orchestratorMode = OrchestratorMode.ok
+    /// A new orchestrator runs as a chat (`mode: "chat"` with a `chat_id`) rather than in a terminal.
+    var newOrchestratorsAreChats = true
+    private var orchestratorsMade = 0
     var calls: [Call] = []
     /// The chats `chats.list` gives, as the wire has them.
     var chats: [ChatInfo] = []
@@ -30,6 +39,8 @@ actor ChatTransport: RemoteTransport {
     var gatedCommands = false
     /// `chat.events` answers `not_found`.
     var chatsGone = false
+    /// The entries `orchestrators.list` gives, as the wire has them (none unless a test says).
+    var orchestratorEntries: [JSONValue] = []
     /// What the host does about a command: the events it appends.
     var onCommand: (@Sendable (String, ChatCommand) -> [ChatEvent])?
     /// What `appearance.get` gives; nil is "not published", and the built-in look.
@@ -41,12 +52,17 @@ actor ChatTransport: RemoteTransport {
     // MARK: Script
 
     func setFeature(_ on: Bool) { chatFeature = on }
+    func setOrchestratorFeature(_ on: Bool) { orchestratorFeature = on }
+    func setOrchestratorMode(_ mode: OrchestratorMode) { orchestratorMode = mode }
+    func setNewOrchestratorsAreChats(_ on: Bool) { newOrchestratorsAreChats = on }
     func setCreateMode(_ mode: CreateMode) { createMode = mode }
     func failEvents(_ count: Int) { eventFailures = count }
     func failCommand(_ error: RemoteError?) { commandError = error }
     func gateCommands(_ on: Bool) { gatedCommands = on }
     func setGone(_ gone: Bool) { chatsGone = gone }
     func setChats(_ list: [ChatInfo]) { chats = list }
+    /// The orchestrators, each a JSON object as the desktop writes it.
+    func setOrchestrators(_ entries: [String]) { orchestratorEntries = entries.map { (try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))) ?? .null } }
     func handleCommands(_ handler: (@Sendable (String, ChatCommand) -> [ChatEvent])?) { onCommand = handler }
     func drop() { connected = false }
     func append(_ chat: String, _ events: [ChatEvent]) {
@@ -75,7 +91,10 @@ actor ChatTransport: RemoteTransport {
     func disconnect() async { connected = false }
     func isConnected() async -> Bool { connected }
     func desktopFeatures() async -> DesktopFeatures {
-        chatFeature ? DesktopFeatures(ready: .object(["features": .object(["chat": .bool(true)])])) : DesktopFeatures()
+        var features: [String: JSONValue] = [:]
+        if chatFeature { features["chat"] = .bool(true) }
+        if orchestratorFeature { features["orchestrator_create"] = .bool(true) }
+        return features.isEmpty ? DesktopFeatures() : DesktopFeatures(ready: .object(["features": .object(features)]))
     }
 
     func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue {
@@ -86,7 +105,7 @@ actor ChatTransport: RemoteTransport {
         case "projects.list":
             return .object(["projects": try JSONDecoder().decode(JSONValue.self, from: Data("[{\"id\":\"\(Self.project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}]".utf8))])
         case "worktrees.list": return .object(["worktrees": .array([])])
-        case "orchestrators.list": return .object(["orchestrators": .array([])])
+        case "orchestrators.list": return .object(["orchestrators": .array(orchestratorEntries)])
         case "shells.list":
             let entry = "[{\"id\":\"\(Self.shell)\",\"project_id\":\"\(Self.project)\",\"kind\":\"project\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":5}]"
             return .object(["shells": try JSONDecoder().decode(JSONValue.self, from: Data(entry.utf8))])
@@ -124,7 +143,42 @@ actor ChatTransport: RemoteTransport {
             if let chat = params["chat_id"]?.string, let command = try? params["command"]?.decode(ChatCommand.self), let onCommand { append(chat, onCommand(chat, command)) }
             return .object(["status": .string("ok")])
         case "chat.stop": return .object(["status": .string("stopped")])
+        case "orchestrator.create":
+            guard orchestratorFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            return try await createOrchestrator(params)
         default: throw RemoteError.protocolViolation("Unknown method \(method)")
+        }
+    }
+
+    /// `orchestrator.create`: the orchestrator of the scope if the host has one (`created: false`), otherwise a new one.
+    private func createOrchestrator(_ params: [String: JSONValue]) async throws -> JSONValue {
+        while orchestratorMode == .gated { try await Task.sleep(for: .milliseconds(3)) }
+        switch orchestratorMode {
+        case .unsupported: throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method")
+        case .notFound: throw RemoteError.rpc(code: "not_found", message: "project not found")
+        case .timeout: throw RemoteError.timeout
+        case .garbled: return .object(["orchestrator": .object(["id": .string("nope")]), "created": .bool(true)])
+        case .ok, .gated:
+            let project = params["project_id"]?.string
+            if let existing = orchestratorEntries.first(where: { entry in
+                guard entry["kind"].string == "orchestrator" else { return false }
+                return entry["project_id"].string == project
+            }) {
+                return .object(["orchestrator": existing, "created": .bool(false)])
+            }
+            orchestratorsMade += 1
+            let id = String(format: "aaaaaaaa-0000-4000-8000-%012d", orchestratorsMade)
+            let chat = String(format: "cccccccc-0000-4000-8000-%012d", 500 + orchestratorsMade)
+            var entry: [String: JSONValue] = [
+                "id": .string(id), "project_id": project.map { .string($0) } ?? .null, "worktree_id": .null, "kind": .string("orchestrator"),
+                "cwd": .string("/fixture"), "harness": .null, "alive": .bool(true), "created_at_unix": .number(Double(40 + orchestratorsMade))
+            ]
+            if newOrchestratorsAreChats {
+                entry["mode"] = .string("chat"); entry["chat_id"] = .string(chat); entry["provider"] = .string("claude")
+                log[chat] = log[chat] ?? []
+            }
+            orchestratorEntries.append(.object(entry))
+            return .object(["orchestrator": .object(entry), "created": .bool(true)])
         }
     }
 

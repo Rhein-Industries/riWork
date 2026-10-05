@@ -51,7 +51,7 @@ import RiWorkCore
     private struct Rig {
         let model: RemoteModel, transport: ChatTransport, window: UIWindow, host: UIHostingController<AnyView>, keychain: KeychainStore
     }
-    private func makeRig(chats: [ChatInfo]? = nil, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal) async throws -> Rig {
+    private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal) async throws -> Rig {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show a chat in") }
         let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
         let pairing = try Pairing.parse("""
@@ -63,6 +63,9 @@ import RiWorkCore
         let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
         defaultsNames.append(suite)
         let transport = ChatTransport(chats: chats ?? [chat()], appearance: appearance(look))
+        await transport.setFeature(chatFeature)
+        await transport.setOrchestratorFeature(orchestratorCreate)
+        await transport.setOrchestrators(orchestrators)
         let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300, chatIdleInterval: .milliseconds(20),
                                 hardwareKeyboard: HardwareKeyboardMonitor(probe: { hardwareKeyboard }))
         await model.connect()
@@ -489,6 +492,72 @@ import RiWorkCore
             try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("new-chat-sheet.png"))
         }
         XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Codex chat", "Claude chat"])
+        await finish(rig)
+    }
+
+    // MARK: An orchestrator that runs as a chat
+
+    private let orchestratorID = "aaaaaaaa-1111-4111-8111-111111111111"
+    /// The project's orchestrator as `orchestrators.list` gives it when the Mac runs it as a chat (its id is not the chat's).
+    private var chatOrchestrator: String {
+        "{\"id\":\"\(orchestratorID)\",\"project_id\":\"\(project)\",\"worktree_id\":null,\"kind\":\"orchestrator\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":3,\"mode\":\"chat\",\"chat_id\":\"\(chatID)\",\"provider\":\"claude\",\"activity\":\"working\"}"
+    }
+    func testAChatOrchestratorOpensTheChatScreenForItsChatAndTheTerminalGoesAway() async throws {
+        let rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator])
+        XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, ChatTransport.shell], "its tab sits in the strip, first")
+        XCTAssertFalse(descendants(KeyCaptureView.self, in: rig.host.view).isEmpty)
+        await rig.transport.append(chatID, [.state(.running), .itemStarted(ChatItem(id: "a", turnID: "t1", status: .completed, body: .agentMessage("Three workers are running; the build is green.")))])
+        rig.model.chooseOrchestrator(rig.model.tabs[0])
+        await eventually("the chat screen is up for the chat id") { self.composer(rig) != nil && rig.model.conversation(self.chatID).following }
+        XCTAssertTrue(descendants(KeyCaptureView.self, in: rig.host.view).isEmpty, "no terminal behind it")
+        XCTAssertFalse(rig.model.terminalVisible)
+        try await Task.sleep(for: .milliseconds(300))
+        try snapshot(rig, name: "chat-orchestrator-tab")
+        let asked = await rig.transport.params(of: "chat.events").compactMap { $0["chat_id"]?.string }
+        XCTAssertEqual(Set(asked), [chatID])
+        let shells = await rig.transport.params(of: "shell.output").compactMap { $0["shell_id"]?.string }
+        XCTAssertFalse(shells.contains(orchestratorID))
+        // A terminal tab brings the terminal back, and takes the composer away.
+        await rig.model.chooseSession(try XCTUnwrap(rig.model.openSessions.first))
+        await eventually("the terminal is back") { !self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty && self.composer(rig) == nil }
+        XCTAssertTrue(rig.model.terminalVisible)
+        await finish(rig)
+    }
+    func testAChatOrchestratorOnAnOlderMacShowsNeitherAChatNorATerminal() async throws {
+        let rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator], chatFeature: false)
+        rig.model.chooseOrchestrator(rig.model.tabs[0])
+        await eventually("the terminal is released") { self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty && !rig.model.terminalVisible }
+        XCTAssertNil(composer(rig), "and there is no chat to type into")
+        XCTAssertNotNil(rig.model.selectedBlocked)
+        try await Task.sleep(for: .milliseconds(300))
+        try snapshot(rig, name: "chat-orchestrator-update-the-mac")
+        let calls = await rig.transport.count("chat.events") + rig.transport.count("chats.list")
+        XCTAssertEqual(calls, 0)
+        await finish(rig)
+    }
+
+    func testTheNewTerminalSheetOffersTheOrchestratorsWhereTheMacOpensThemAndTheirRowsHaveNoWorktree() async throws {
+        let rig = try await makeRig(orchestratorCreate: true)
+        let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
+        let host = UIHostingController(rootView: NewTerminalSheet(sheet: sheet).desktopThemed(rig.model.theme.style).frame(width: 402, height: 640))
+        let window = UIWindow(windowScene: try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene))
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 640)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        windows.append(window)
+        sheet.select(kind: .projectOrchestrator)
+        try await Task.sleep(for: .milliseconds(300))
+        window.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+        if let directory = ProcessInfo.processInfo.environment["RIWORK_CHAT_SNAPSHOTS"], let data = image.pngData() {
+            try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("new-orchestrator-sheet.png"))
+        }
+        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Codex chat", "Claude chat", "Project orchestrator", "Global orchestrator"])
+        XCTAssertFalse(sheet.form.fields.contains(.target))
+        // The keyboard reaches both rows from the kind list, and Return opens.
+        sheet.press(.down)
+        XCTAssertEqual(sheet.form.kind, .globalOrchestrator)
         await finish(rig)
     }
 }

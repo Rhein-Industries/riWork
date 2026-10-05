@@ -302,7 +302,7 @@ struct TerminalTabsView: View {
     /// Counts times the New terminal sheet went away: a chat on screen takes the keyboard back for its composer.
     @State private var chatRefocus = 0
     private var openSessions: [RemoteSession] { model.openSessions }
-    private var focused: Bool { model.focusMode && model.sessionID != nil && !model.chatIsOnScreen }
+    private var focused: Bool { model.focusMode && model.sessionID != nil && !model.terminalCovered }
     var body: some View {
         let _ = Perf.count("body.TerminalTabsView")
         VStack(spacing: 0) {
@@ -315,15 +315,20 @@ struct TerminalTabsView: View {
                         .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
                         .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
                     Button("Focus mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.setFocusMode(true) }
-                        .labelStyle(.iconOnly).disabled(model.sessionID == nil || model.chatIsOnScreen)
+                        .labelStyle(.iconOnly).disabled(model.sessionID == nil || model.terminalCovered)
                     Button("Session info", systemImage: "info.circle") {
                         if let chat = model.selectedChat {
                             let info = model.chatConversations[chat.id]?.transcript.info ?? chat
-                            sessionInfo = SessionInfo(id: chat.id, title: ChatTabs.title(info), cwd: info.cwd, kind: "\(info.provider.chatTitle) · \(info.approvalMode.title)", activity: model.chatState(chat).spokenActivity, since: nil)
+                            // An orchestrator that runs as a chat keeps its name, and says which chat it is by the chat's id.
+                            let orchestrator = model.orchestrator(ofChat: chat.id)
+                            sessionInfo = SessionInfo(id: chat.id, title: orchestrator?.title ?? ChatTabs.title(info), cwd: info.cwd,
+                                                      kind: "\(info.provider.chatTitle) · \(info.approvalMode.title)", activity: model.chatState(chat).spokenActivity, since: nil)
+                        } else if let blocked = model.selectedBlocked {
+                            sessionInfo = SessionInfo(id: blocked.session.id, title: blocked.session.title, cwd: blocked.session.cwd, kind: blocked.session.kind, activity: nil, since: nil)
                         } else if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind, activity: session.activitySummary, since: session.activity_since_unix) }
-                    }.labelStyle(.iconOnly).disabled(model.sessionID == nil && !model.chatIsOnScreen)
+                    }.labelStyle(.iconOnly).disabled(model.sessionID == nil && !model.terminalCovered)
                     Menu {
-                        if !model.chatIsOnScreen {
+                        if !model.terminalCovered {
                             if UIDevice.current.userInterfaceIdiom == .pad { Toggle("Follow output", isOn: $followOutput) }
                             else { Button("Jump to latest output", systemImage: "arrow.down.to.line") { model.jumpToLatest() } }
                             Button("Display…", systemImage: "textformat.size") { showingDisplay = true }
@@ -340,7 +345,12 @@ struct TerminalTabsView: View {
                             Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                         }
                         Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-                        if !model.chatIsOnScreen, let session = model.session, model.canClose(session) {
+                        // The project's own orchestrator is a row of the New terminal sheet; the global one is here too, a tap away.
+                        if model.orchestratorsOffered {
+                            Button("Global orchestrator", systemImage: "globe") { openGlobalOrchestrator() }
+                                .disabled(model.state != .connected || model.creatingOrchestrator)
+                        }
+                        if !model.terminalCovered, let session = model.session, model.canClose(session) {
                             Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
                         }
                         Divider()
@@ -348,10 +358,13 @@ struct TerminalTabsView: View {
                         else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
                     } label: { Label("Terminal tabs and connection", systemImage: "ellipsis") }.labelStyle(.iconOnly)
                 }
-                if !openSessions.isEmpty || !model.projectChats.isEmpty { tabStrip }
+                if !model.tabs.isEmpty { tabStrip }
+                if let note = model.orchestratorNotice { NoteLine(text: note) { model.clearOrchestratorNotice() } }
             }
             if let chat = model.selectedChat {
                 ChatScreen(model: model, chat: chat, refocus: chatRefocus)
+            } else if let blocked = model.selectedBlocked {
+                OrchestratorNotice(session: blocked.session, opening: blocked.opening)
             } else if model.sessionID == nil && openSessions.isEmpty {
                 VStack {
                     VStack(alignment: .leading, spacing: 12) {
@@ -390,12 +403,12 @@ struct TerminalTabsView: View {
         // The terminal is released (its long poll, its pinned size) the moment a chat takes the screen, and picked up again when a terminal tab does.
         .onAppear { onScreen = true; syncTerminalVisible(); openRequestedNewTerminal() }
         .onDisappear { onScreen = false; syncTerminalVisible(); if model.newTerminalRequestedProject == project.id { model.newTerminalRequestedProject = nil } }
-        .onChange(of: model.selectedChatID) { _, _ in syncTerminalVisible() }
+        .onChange(of: model.terminalCovered) { _, _ in syncTerminalVisible() }
         .onChange(of: model.newTerminalRequestedProject) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.projectID) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.state) { _, _ in openRequestedNewTerminal() }
     }
-    private func syncTerminalVisible() { model.setTerminalVisible(onScreen && !model.chatIsOnScreen) }
+    private func syncTerminalVisible() { model.setTerminalVisible(onScreen && !model.terminalCovered) }
     private func openNewTerminal() {
         guard newTerminal == nil, model.state == .connected, model.projectID == project.id, let sheet = NewTerminalSheetModel(model: model) else { return }
         let binding = $newTerminal
@@ -408,6 +421,11 @@ struct TerminalTabsView: View {
         model.newTerminalRequestedProject = nil
         openNewTerminal()
     }
+    /// Opens the global orchestrator (starting it if the Mac has none). Sent once; what went wrong is said in the status line.
+    private func openGlobalOrchestrator() {
+        guard let request = try? NewOrchestratorRequest(projectID: nil) else { return }
+        Task { if let failure = await model.createOrchestrator(request) { model.error = failure.message } }
+    }
     private func close(_ session: RemoteSession) {
         Task { if let failure = await model.closeTerminal(session) { model.error = failure.message } }
     }
@@ -415,44 +433,55 @@ struct TerminalTabsView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
-                    ForEach(openSessions) { session in
-                        let selected = !model.chatIsOnScreen && model.sessionID == session.id
-                        Button { Task { await model.chooseSession(session) } } label: {
-                            VStack(alignment: .leading, spacing: 1) {
-                                // Orchestrators carry the secondary accent, as they do on the desktop.
-                                HStack(spacing: 6) {
-                                    Label { Text(session.title) } icon: {
-                                        Image(systemName: session.kind == "orchestrator" ? "point.3.connected.trianglepath.dotted" : "terminal")
-                                            .foregroundStyle(session.kind == "orchestrator" ? style.magenta : style.text)
-                                    }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
-                                    ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
-                                }
-                                Text(tabDetail(session)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
-                            }
-                            .tabChrome(selected: selected, waiting: session.shownActivity == .waiting)
+                    ForEach(model.tabs) { tab in
+                        switch tab {
+                        case .terminal(let session): terminalTab(session)
+                        case .chat(let chat): chatTab(chat)
+                        case .orchestratorChat(let session, let chat): chatTab(chat, orchestrator: session)
+                        case .unavailable(let session, let opening): unavailableTab(session, opening)
                         }
-                        .buttonStyle(.plain).id(session.id)
-                        .accessibilityLabel(["\(session.title), \(session.shortID)", session.activitySummary].compactMap { $0 }.joined(separator: ", "))
-                        .accessibilityAddTraits(selected ? .isSelected : [])
-                        .contextMenu {
-                            Button("New terminal", systemImage: "plus") { openNewTerminal() }
-                            if model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
-                        }
-                        .accessibilityAction(named: "Close terminal") { if model.canClose(session) { closing = session } }
                     }
-                    ForEach(model.projectChats) { chat in chatTab(chat) }
                 }
             }.scrollIndicators(.hidden)
-                .onChange(of: model.sessionID) { _, id in if let id, !model.chatIsOnScreen { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+                .onChange(of: model.sessionID) { _, id in if let id, !model.terminalCovered { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
                 .onChange(of: model.selectedChatID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+                .onChange(of: model.selectedBlockedID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
         }
     }
-    /// A chat's tab, beside the terminals': its provider's glyph, its name and the same activity indicator.
-    private func chatTab(_ chat: ChatInfo) -> some View {
+    /// A terminal's tab: a shell, an agent, or an orchestrator that runs in a terminal.
+    private func terminalTab(_ session: RemoteSession) -> some View {
+        let selected = !model.terminalCovered && model.sessionID == session.id
+        return Button { Task { await model.chooseSession(session) } } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                // Orchestrators carry the secondary accent, as they do on the desktop.
+                HStack(spacing: 6) {
+                    Label { Text(session.title) } icon: {
+                        Image(systemName: session.kind == "orchestrator" ? "point.3.connected.trianglepath.dotted" : "terminal")
+                            .foregroundStyle(session.kind == "orchestrator" ? style.magenta : style.text)
+                    }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
+                    ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
+                }
+                Text(tabDetail(session)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+            }
+            .tabChrome(selected: selected, waiting: session.shownActivity == .waiting)
+        }
+        .buttonStyle(.plain).id(session.id)
+        .accessibilityLabel(["\(session.title), \(session.shortID)", session.activitySummary].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .contextMenu {
+            Button("New terminal", systemImage: "plus") { openNewTerminal() }
+            if model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
+        }
+        .accessibilityAction(named: "Close terminal") { if model.canClose(session) { closing = session } }
+    }
+    /// A chat's tab, beside the terminals': its provider's glyph, its name and the same activity indicator. An orchestrator that runs
+    /// as a chat has this look too, under the orchestrator's name ("Project orchestrator", already the chat's title here); it is
+    /// opened by its chat's id.
+    private func chatTab(_ chat: ChatInfo, orchestrator: RemoteSession? = nil) -> some View {
         let selected = model.selectedChatID == chat.id
         let activity = model.chatActivity(chat)
         let state = model.chatState(chat)
-        let branch = model.worktrees.first(where: { $0.id == chat.worktreeID })?.branch
+        let branch = model.worktrees.first(where: { $0.id == (orchestrator?.worktree_id ?? chat.worktreeID) })?.branch
         return Button { model.selectChat(chat.id) } label: {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
@@ -473,6 +502,24 @@ struct TerminalTabsView: View {
             Button("New terminal", systemImage: "plus") { openNewTerminal() }
             Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }.disabled(state == .stopped || model.state != .connected)
         }
+    }
+    /// An orchestrator that runs as a chat the phone cannot open: its tab says what it is, and choosing it says why it is shut.
+    private func unavailableTab(_ session: RemoteSession, _ opening: SessionOpening) -> some View {
+        let selected = model.selectedBlockedID == session.id
+        let headline = opening.notice?.headline ?? session.title
+        return Button { model.chooseOrchestrator(.unavailable(session, opening)) } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                Label { Text(session.title) } icon: {
+                    Image(systemName: session.provider?.glyph ?? "point.3.connected.trianglepath.dotted").foregroundStyle(style.magenta)
+                }.font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
+                Text(opening == .needsUpdate ? "Update the Mac" : "Not ready").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+            }
+            .tabChrome(selected: selected, waiting: false)
+            .opacity(selected ? 1 : 0.7)
+        }
+        .buttonStyle(.plain).id(session.id)
+        .accessibilityLabel("\(session.title), \(headline)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
     private func tabDetail(_ session: RemoteSession) -> String {
         if let tree = model.worktrees.first(where: { $0.id == session.worktree_id }) { return "\(tree.branch) · \(session.shortID)" }
@@ -506,6 +553,44 @@ private struct TabChrome: ViewModifier {
 }
 private extension View {
     func tabChrome(selected: Bool, waiting: Bool) -> some View { modifier(TabChrome(selected: selected, waiting: waiting)) }
+}
+
+/// A short note under the tab strip that goes by itself ("Project orchestrator is already running."); a tap takes it away.
+private struct NoteLine: View {
+    @Environment(\.desktopStyle) private var style
+    let text: String
+    let dismiss: () -> Void
+    var body: some View {
+        Button(action: dismiss) {
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle").accessibilityHidden(true)
+                Text(text).lineLimit(2)
+            }
+            .font(style.system(.footnote)).foregroundStyle(style.muted)
+            .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
+            .background(style.panel)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Dismisses the note")
+        .onAppear { UIAccessibility.post(notification: .announcement, argument: text) }
+    }
+}
+
+/// In place of an orchestrator that runs as a chat when there is no chat to open: the RiWork on the Mac has none to offer
+/// ("Update the Mac to open this orchestrator"), or the entry did not say which chat it is. The terminal is not tried.
+private struct OrchestratorNotice: View {
+    @Environment(\.desktopStyle) private var style
+    let session: RemoteSession
+    let opening: SessionOpening
+    var body: some View {
+        let notice = opening.notice
+        VStack(alignment: .leading, spacing: 12) {
+            Label(style.cased(notice?.headline ?? session.title), systemImage: "arrow.down.app").font(style.face(14, bold: true, relativeTo: .headline))
+            Text(notice?.detail ?? "").foregroundStyle(style.muted)
+        }
+        .accessibilityElement(children: .combine)
+        .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
 }
 
 struct SessionInfo: Identifiable {

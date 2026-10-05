@@ -233,9 +233,11 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         provider_thread_id: Some(thread_id.into()),
         model: config.model.clone(),
         effort: config.effort.clone(),
+        fast: config.fast,
         approval_mode: config.approval_mode,
         codex_account_id: None,
         state: ChatState::Idle,
+        orchestrator: None,
     }
 }
 
@@ -251,6 +253,7 @@ fn fake_config(
         approval_mode: info.approval_mode,
         model: info.model.clone(),
         effort: info.effort.clone(),
+        fast: info.fast,
         resume,
         extra_args: Vec::new(),
         env: Vec::new(),
@@ -262,8 +265,9 @@ fn fake_account(
     _home: &Path,
     provider: Provider,
     _project: Option<&str>,
+    requested: Option<&str>,
 ) -> Result<Option<String>, String> {
-    Ok((provider == Provider::Codex).then(|| "account-a".to_owned()))
+    Ok((provider == Provider::Codex).then(|| requested.unwrap_or("account-a").to_owned()))
 }
 
 pub fn fake_providers() -> Providers {
@@ -357,10 +361,13 @@ impl TestHost {
             project_id: None,
             worktree_id: None,
             cwd: self.work(),
+            codex_account_id: None,
             title: None,
             approval_mode: ApprovalMode::Supervised,
             model: None,
             effort: None,
+            orchestrator: None,
+            fast: false,
         }
     }
 

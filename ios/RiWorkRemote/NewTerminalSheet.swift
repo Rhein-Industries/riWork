@@ -38,6 +38,15 @@ struct NewTerminalSheet: View {
                 ForEach(sheet.form.kinds) { kindRow($0) }
             }
             .accessibilityElement(children: .contain).accessibilityLabel("Terminal kind")
+            if sheet.form.kind.isOrchestrator {
+                Picker("Orchestrator runs as", selection: Binding(get: { sheet.form.orchestratorMode }, set: { sheet.setOrchestratorMode($0) })) {
+                    ForEach(NewOrchestratorMode.allCases) { Text($0.title).tag($0) }
+                }
+                .padding(12).overlay { ring(.orchestratorMode) }.disabled(sheet.busy)
+                Text("Applies when starting a new orchestrator. An existing one opens in its current mode. Chat uses the Mac’s chat provider.")
+                    .font(style.system(.caption)).foregroundStyle(style.muted).padding(.horizontal, 12)
+            }
+            if sheet.form.kind.isChat { NewChatModelSection(sheet: sheet) }
             if sheet.form.kind.isAgent { unrestrictedRow }
             if let problem = sheet.problem { messageRow(problem) }
         }
@@ -63,20 +72,24 @@ struct NewTerminalSheet: View {
 
     @ViewBuilder private var targetRow: some View {
         let form = sheet.form
+        // An orchestrator belongs to the project (not to one of its worktrees) or to none, so there is nothing to choose for it.
+        let scoped = form.kind.isOrchestrator
+        let title = form.kind == .globalOrchestrator ? "All projects" : ((scoped ? form.target?.projectName : form.target?.title) ?? "No project")
+        let choosable = form.targets.count > 1 && !scoped
         let content = HStack(spacing: 10) {
-            Image(systemName: "folder").frame(width: style.pt(22)).foregroundStyle(style.accent)
+            Image(systemName: form.kind == .globalOrchestrator ? "globe" : "folder").frame(width: style.pt(22)).foregroundStyle(style.accent)
             VStack(alignment: .leading, spacing: 1) {
-                Text(form.target?.title ?? "No project").lineLimit(1)
-                if let branch = form.target?.branchLabel, form.targets.count > 1 {
+                Text(title).lineLimit(1)
+                if let branch = form.target?.branchLabel, choosable {
                     Text(branch).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
                 }
             }
             Spacer(minLength: 4)
-            if form.targets.count > 1 { Image(systemName: "chevron.up.chevron.down").font(style.system(.caption)).foregroundStyle(style.muted) }
+            if choosable { Image(systemName: "chevron.up.chevron.down").font(style.system(.caption)).foregroundStyle(style.muted) }
         }
         .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: style.pt(48), alignment: .leading)
         .contentShape(Rectangle()).overlay { ring(.target) }
-        if form.targets.count > 1 {
+        if choosable {
             Menu {
                 ForEach(Array(form.targets.enumerated()), id: \.element.id) { index, target in
                     Button { sheet.select(targetAt: index) } label: {
@@ -86,7 +99,7 @@ struct NewTerminalSheet: View {
             } label: { content }
                 .accessibilityLabel("Where: \(form.target?.title ?? "none")").accessibilityHint("Choose a worktree")
         } else {
-            content.accessibilityElement(children: .combine).accessibilityLabel("Where: \(form.target?.title ?? "none")")
+            content.accessibilityElement(children: .combine).accessibilityLabel("Where: \(title)")
         }
     }
 
@@ -100,16 +113,21 @@ struct NewTerminalSheet: View {
         case .grok: "bolt"
         case .codexChat: ChatProvider.codex.glyph
         case .claudeChat: ChatProvider.claude.glyph
+        case .projectOrchestrator: "point.3.connected.trianglepath.dotted"
+        case .globalOrchestrator: "globe"
         }
     }
-    private func detail(_ kind: NewTerminalKind) -> String { kind == .shell ? "The Mac’s login shell" : (kind.isChat ? "Native chat" : "Agent") }
+    private func detail(_ kind: NewTerminalKind) -> String {
+        if kind.isOrchestrator { return "Orchestrator" }
+        return kind == .shell ? "The Mac’s login shell" : (kind.isChat ? "Native chat" : "Agent")
+    }
     private func kindRow(_ kind: NewTerminalKind) -> some View {
         let selected = sheet.form.kind == kind
         return Button { sheet.select(kind: kind) } label: {
             HStack(spacing: 10) {
                 Image(systemName: selected ? "largecircle.fill.circle" : "circle").frame(width: style.pt(22)).foregroundStyle(selected ? style.accent : style.muted)
                 Image(systemName: icon(kind)).frame(width: style.pt(20)).foregroundStyle(style.muted)
-                Text(kind.title).font(style.face(14, bold: selected, relativeTo: .body))
+                Text(kind.title).font(style.face(14, bold: selected, relativeTo: .body)).lineLimit(1).minimumScaleFactor(0.8)
                 Spacer(minLength: 4)
                 Text(detail(kind)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
             }
@@ -151,7 +169,8 @@ struct NewTerminalSheet: View {
 
     private var createTitle: String {
         if sheet.problem?.outcomeIsUncertain == true { return "Try again" }
-        return "Create \(sheet.form.kind.title)"
+        // An orchestrator is one per project: Create opens the one that is there, or starts it.
+        return sheet.form.kind.isOrchestrator ? "Open \(sheet.form.kind.title.lowercased())" : "Create \(sheet.form.kind.title)"
     }
     private var footer: some View {
         VStack(spacing: 6) {
@@ -163,7 +182,7 @@ struct NewTerminalSheet: View {
             Button { sheet.keyboardInUse = false; sheet.create() } label: {
                 HStack(spacing: 8) {
                     if sheet.busy { ProgressView().controlSize(.small) }
-                    Text(sheet.busy ? "Creating…" : createTitle).font(style.face(14, bold: true, relativeTo: .headline))
+                    Text(sheet.busy ? (sheet.form.kind.isOrchestrator ? "Opening…" : "Creating…") : createTitle).font(style.face(14, bold: true, relativeTo: .headline))
                 }.frame(maxWidth: .infinity, minHeight: style.pt(48))
             }
             .buttonStyle(DesktopButtonStyle(prominent: true))

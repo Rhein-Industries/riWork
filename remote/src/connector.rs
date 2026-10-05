@@ -637,9 +637,15 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     // Only a device that may open streams is told they exist.
                     features["pty"] = pty::features();
                 }
-                // Chats exist when the installed CLI has them; an older phone ignores it.
-                if rpc.chat_supported().await {
+                // Chats, and creating an orchestrator, exist when the installed CLI has them;
+                // an older phone ignores both. One question to the CLI answers the two.
+                let (chat, orchestrator_create) =
+                    tokio::join!(rpc.chat_supported(), rpc.orchestrator_create_supported());
+                if chat {
                     features["chat"] = json!(true);
+                }
+                if orchestrator_create {
+                    features["orchestrator_create"] = json!(true);
                 }
                 // Files from the phone; an older phone ignores it, and a phone that sees none
                 // tells the person that this desktop cannot take files yet.

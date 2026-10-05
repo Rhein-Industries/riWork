@@ -36,6 +36,27 @@ pub enum ApprovalMode {
     Plan,
 }
 
+/// Which orchestrator a chat is. RiWork has one global orchestrator and one for
+/// each project; the host keeps at most one chat per scope, and the CLI, the MCP
+/// tools, the scheduler and the apps find an orchestrator in chat mode by this
+/// mark. A chat without it is an ordinary chat.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum OrchestratorScope {
+    Global,
+    Project { project_id: String },
+}
+
+impl OrchestratorScope {
+    /// The project of a project orchestrator; the global one has none.
+    pub fn project_id(&self) -> Option<&str> {
+        match self {
+            Self::Global => None,
+            Self::Project { project_id } => Some(project_id),
+        }
+    }
+}
+
 /// What a chat is doing as a whole.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -75,6 +96,12 @@ pub struct ChatInfo {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Whether the user asked for the provider's fast mode (Codex's fast service
+    /// tier, Claude's `fastMode`). It is the user's choice, not what the
+    /// provider granted: Claude can turn it off for a while on its own, and says
+    /// so in a notice.
+    #[serde(default)]
+    pub fast: bool,
     #[serde(default)]
     pub approval_mode: ApprovalMode,
     /// The Codex account (RiWork's account id) the chat runs under.
@@ -82,6 +109,10 @@ pub struct ChatInfo {
     pub codex_account_id: Option<String>,
     #[serde(default)]
     pub state: ChatState,
+    /// Set when the chat is the orchestrator of this scope. Chats and logs
+    /// written before orchestrators could be chats do not have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<OrchestratorScope>,
 }
 
 /// What a new chat starts with.
@@ -93,6 +124,11 @@ pub struct NewChat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
     pub cwd: PathBuf,
+    /// Run a Codex chat under this saved account (a RiWork account id, as
+    /// `ChatInfo::codex_account_id` keeps it) instead of the project's or the
+    /// app's selection. A Claude chat has no such account and is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default)]
@@ -101,7 +137,45 @@ pub struct NewChat {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Makes the chat the orchestrator of this scope. The host refuses it when
+    /// the scope already has one (`ORCHESTRATOR_EXISTS`), and requires the
+    /// chat's project to be the scope's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<OrchestratorScope>,
+    /// Start with the provider's fast mode on. A model without one ignores it.
+    #[serde(default)]
+    pub fast: bool,
 }
+
+/// A model the provider offers, as its driver found it out (Codex `model/list`,
+/// Claude's `initialize` reply). The chat's `model` is the `id`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelOption {
+    /// What `model` takes: Codex's model id, Claude's alias or model name (the
+    /// default model's is `default`).
+    pub id: String,
+    /// The name to show.
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// The reasoning efforts this model takes, in the order to offer them.
+    /// Empty when it has none to choose.
+    #[serde(default)]
+    pub efforts: Vec<String>,
+    /// The effort the provider uses when none is chosen.
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    /// Whether the model has a fast mode.
+    #[serde(default)]
+    pub supports_fast: bool,
+    /// Whether the provider uses this model when none is chosen.
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+/// The start of the error `Create` answers when the orchestrator of the scope
+/// already has a chat; the id of that chat follows it.
+pub const ORCHESTRATOR_EXISTS: &str = "orchestrator_exists:";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -374,6 +448,11 @@ pub enum ChatEvent {
     Usage {
         usage: Usage,
     },
+    /// The models the provider offers. A driver sends it once after its
+    /// handshake and again if the list changes; each replaces the last.
+    Models {
+        models: Vec<ModelOption>,
+    },
 }
 
 /// What the user asks of a chat.
@@ -402,6 +481,8 @@ pub enum ChatCommand {
         effort: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         approval_mode: Option<ApprovalMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fast: Option<bool>,
     },
     Compact,
     /// Stop the provider process; the chat resumes with the next message.
@@ -419,6 +500,9 @@ pub struct Transcript {
     pub approvals: Vec<Approval>,
     pub questions: Vec<Question>,
     pub usage: Option<Usage>,
+    /// The models the provider offers, empty until its driver has said (an
+    /// older driver never does).
+    pub models: Vec<ModelOption>,
     pub turn_id: Option<String>,
     index: HashMap<String, usize>,
 }
@@ -496,6 +580,7 @@ impl Transcript {
                 self.questions.retain(|q| &q.request_id != request_id)
             }
             ChatEvent::Usage { usage } => self.usage = Some(usage.clone()),
+            ChatEvent::Models { models } => self.models = models.clone(),
         }
     }
 }
@@ -570,6 +655,75 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_written_before_orchestrators_could_be_chats_still_loads() {
+        // `info.json` and an `Info` event as an earlier build wrote them.
+        let old = r#"{"id":"c1","provider":"codex","cwd":"/work","title":"Codex chat",
+            "created_at_unix":5,"approval_mode":"full","state":{"state":"idle"}}"#;
+        let info: ChatInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(info.orchestrator, None);
+        assert_eq!(info.approval_mode, ApprovalMode::Full);
+        let event: ChatEvent =
+            serde_json::from_str(&format!(r#"{{"event":"info","info":{old}}}"#)).unwrap();
+        assert!(matches!(event, ChatEvent::Info { info } if info.orchestrator.is_none()));
+        let new: NewChat = serde_json::from_str(r#"{"provider":"claude","cwd":"/work"}"#).unwrap();
+        assert_eq!(new.orchestrator, None);
+
+        // An ordinary chat is written as it always was.
+        assert!(
+            !serde_json::to_string(&info)
+                .unwrap()
+                .contains("orchestrator")
+        );
+        assert!(
+            !serde_json::to_string(&new)
+                .unwrap()
+                .contains("orchestrator")
+        );
+    }
+
+    #[test]
+    fn an_orchestrator_chat_names_its_scope_in_info_and_in_the_request_that_makes_it() {
+        let project = OrchestratorScope::Project {
+            project_id: "11111111-1111-4111-8111-111111111111".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&OrchestratorScope::Global).unwrap(),
+            serde_json::json!({"scope": "global"})
+        );
+        assert_eq!(
+            serde_json::to_value(&project).unwrap(),
+            serde_json::json!({"scope": "project", "project_id": "11111111-1111-4111-8111-111111111111"})
+        );
+        assert_eq!(
+            project.project_id(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(OrchestratorScope::Global.project_id(), None);
+
+        let text = r#"{"id":"c1","provider":"claude","project_id":"11111111-1111-4111-8111-111111111111",
+            "cwd":"/work","title":"P","created_at_unix":5,
+            "orchestrator":{"scope":"project","project_id":"11111111-1111-4111-8111-111111111111"}}"#;
+        let info: ChatInfo = serde_json::from_str(text).unwrap();
+        assert_eq!(info.orchestrator, Some(project.clone()));
+        assert_eq!(
+            serde_json::from_str::<ChatInfo>(&serde_json::to_string(&info).unwrap()).unwrap(),
+            info
+        );
+        let new: NewChat = serde_json::from_str(
+            r#"{"provider":"codex","cwd":"/work","orchestrator":{"scope":"global"}}"#,
+        )
+        .unwrap();
+        assert_eq!(new.orchestrator, Some(OrchestratorScope::Global));
+        // A scope this build does not know is an error, not an ordinary chat.
+        assert!(
+            serde_json::from_str::<NewChat>(
+                r#"{"provider":"codex","cwd":"/work","orchestrator":{"scope":"galaxy"}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn events_round_trip_through_json() {
         let events = vec![
             ChatEvent::ItemStarted {
@@ -609,5 +763,112 @@ mod tests {
         };
         let line = serde_json::to_string(&command).unwrap();
         assert_eq!(serde_json::from_str::<ChatCommand>(&line).unwrap(), command);
+    }
+
+    fn model_option() -> ModelOption {
+        ModelOption {
+            id: "gpt-5.5".into(),
+            name: "GPT-5.5".into(),
+            description: "Frontier model".into(),
+            efforts: vec!["low".into(), "medium".into(), "high".into()],
+            default_effort: Some("medium".into()),
+            supports_fast: true,
+            is_default: true,
+        }
+    }
+
+    #[test]
+    fn a_model_option_has_the_keys_the_phone_reads_and_defaults_the_rest() {
+        let json = serde_json::to_value(model_option()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "gpt-5.5",
+                "name": "GPT-5.5",
+                "description": "Frontier model",
+                "efforts": ["low", "medium", "high"],
+                "default_effort": "medium",
+                "supports_fast": true,
+                "is_default": true,
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ModelOption>(json).unwrap(),
+            model_option()
+        );
+        // Only the id and the name are required.
+        let bare: ModelOption = serde_json::from_str(r#"{"id":"m","name":"M"}"#).unwrap();
+        assert_eq!(
+            bare,
+            ModelOption {
+                id: "m".into(),
+                name: "M".into(),
+                ..ModelOption::default()
+            }
+        );
+        let event = ChatEvent::Models {
+            models: vec![model_option(), bare],
+        };
+        let line = serde_json::to_string(&event).unwrap();
+        assert!(
+            line.starts_with(r#"{"event":"models","models":["#),
+            "{line}"
+        );
+        assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), event);
+    }
+
+    #[test]
+    fn fast_defaults_off_in_info_new_chat_and_configure_written_before_it_existed() {
+        let info: ChatInfo = serde_json::from_str(
+            r#"{"id":"i","provider":"codex","cwd":"/w","title":"t","created_at_unix":1}"#,
+        )
+        .unwrap();
+        assert!(!info.fast);
+        let new: NewChat = serde_json::from_str(r#"{"provider":"claude","cwd":"/w"}"#).unwrap();
+        assert!(!new.fast);
+        let old: ChatCommand =
+            serde_json::from_str(r#"{"command":"configure","effort":"high"}"#).unwrap();
+        assert_eq!(
+            old,
+            ChatCommand::Configure {
+                model: None,
+                effort: Some("high".into()),
+                approval_mode: None,
+                fast: None,
+            }
+        );
+        // Leaving it out stays out of the JSON; turning it off is a change that is sent.
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"command":"configure","effort":"high"}"#
+        );
+        for fast in [true, false] {
+            let command = ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+                fast: Some(fast),
+            };
+            let line = serde_json::to_string(&command).unwrap();
+            assert_eq!(line, format!(r#"{{"command":"configure","fast":{fast}}}"#));
+            assert_eq!(serde_json::from_str::<ChatCommand>(&line).unwrap(), command);
+        }
+        let mut info = info;
+        info.fast = true;
+        let line = serde_json::to_string(&info).unwrap();
+        assert!(line.contains(r#""fast":true"#), "{line}");
+        assert_eq!(serde_json::from_str::<ChatInfo>(&line).unwrap(), info);
+    }
+
+    #[test]
+    fn each_models_event_replaces_the_transcripts_list() {
+        let mut t = Transcript::default();
+        assert!(t.models.is_empty());
+        t.apply(&ChatEvent::Models {
+            models: vec![model_option()],
+        });
+        assert_eq!(t.models, [model_option()]);
+        t.apply(&ChatEvent::Models { models: Vec::new() });
+        assert!(t.models.is_empty());
     }
 }

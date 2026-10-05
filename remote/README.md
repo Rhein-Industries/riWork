@@ -135,7 +135,7 @@ earlier result and `wait_ms` (0 to 10000) makes the one `riwork shell output ...
 (about every 80 ms where it cannot say) and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time. That
 call may take ten seconds, so the connector no longer handles a device's requests one
 at a time: `lanes.rs` lets one ordered request (`shell.keys`, `shell.input`,
-`shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`, `chat.create`, `chat.command`, `chat.stop`, `shell.paste`, in arrival order) and three others run at once,
+`shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`, `orchestrator.create`, `chat.create`, `chat.command`, `chat.stop`, `shell.paste`, in arrival order) and three others run at once,
 at most two of them waits (a `shell.output` with `if_changed` and `wait_ms`, or a `chat.events` with `wait_ms` above 0), queues the rest in arrival order, and the connection loop
 alone seals and sends the responses (out of order by request, in order by counter). A
 wait ends, and its CLI process is killed, when the connection closes, the phone goes
@@ -263,6 +263,24 @@ phone that decodes them strictly. An older CLI has none of them and the answers 
 what they were. The tests are `tests/activity_fields.rs` (a stub CLI) and, in the root crate,
 `tests/agent_activity_cli.rs`, which pins the CLI side with real hook events, Codex rollouts and a
 real tmux in a throwaway `RIWORK_HOME`.
+
+An orchestrator can run as a chat of the chat host instead of a tmux terminal ("Chat orchestrators"
+in the protocol document). `orchestrator list --json` then also carries `mode` (`terminal` or
+`chat`) and, for a chat, `chat_id` (the entry's own `id`) and `provider` (`codex` or `claude`); they
+are in `SESSION_FIELDS` with the same shape checks, and `chat_id` and `provider` are passed on only for
+an entry whose own `mode` is `chat` (`session_fields`). The `shell.*` methods refuse a chat
+orchestrator's id with `invalid_request` before any `riwork shell ...` runs: `Rpc::selected` looks
+the session up and stops at `mode` `chat`; where the CLI checks shells itself (no lookup first, for
+speed), `Rpc::explain` looks only after that CLI refused the id as unknown. `tests/chat_orchestrator.rs`
+pins it against a stub CLI.
+
+`orchestrator.create` (`src/rpc/orchestrator.rs`) makes the global orchestrator or a project's, or
+returns the one that exists: `riwork orchestrator create [--project ID] --json`, which prints a list
+entry plus a boolean `created`. The connector forwards optional `mode` as `--mode terminal|chat`; omitted mode uses the desktop's "Orchestrator runs as" setting, and its chat provider is retained, looks the project up by exact id first like `shell.create`, runs in the
+ordered lane with the CLI in a task of its own, and refuses a `created` that is not a boolean or an
+entry of another scope. `"orchestrator_create": true` in `riwork capabilities --json` decides
+`features.orchestrator_create` in `ready`; the same answer serves `features.chat`. The tests are
+`tests/orchestrator_create.rs` (a stub CLI) and `tests/chat_link.rs` (the real connector).
 
 ## Pairing another Mac (desktop devices)
 

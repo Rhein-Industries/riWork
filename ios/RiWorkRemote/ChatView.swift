@@ -18,6 +18,8 @@ struct ChatScreen: View {
     /// Counts times a sheet over the screen went away: the composer takes the keyboard back.
     var refocus = 0
     @State private var focusToken = 0
+    /// The model picker is up.
+    @State private var showModels = false
     /// The height the screen has now. With the software keyboard up it is under half of the phone, and the bars above the composer must
     /// leave the transcript room, so what they may scroll is a share of it.
     @State private var height: CGFloat = 800
@@ -34,9 +36,9 @@ struct ChatScreen: View {
         let approvals = conversation.openApprovals
         let questions = conversation.openQuestions
         VStack(spacing: 0) {
-            ChatToolbar(model: model, chat: info, conversation: conversation, state: state)
+            ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
             ChatStatusLines(model: model, chat: info, conversation: conversation, state: state)
-            ChatTranscriptList(conversation: conversation, provider: chat.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached)
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached)
             if let approval = approvals.first {
                 ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2),
                                 busy: !connected || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
@@ -50,7 +52,7 @@ struct ChatScreen: View {
             if let activity = model.uploadActivity(for: .chat(chat.id)) {
                 UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
             }
-            ChatComposer(conversation: conversation, provider: chat.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
+            ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
                          send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
                          attach: { picking = $0 }, pasteFiles: pasteFiles)
         }
@@ -72,6 +74,16 @@ struct ChatScreen: View {
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(!state.isBusy || !connected)
                 .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+        }
+        // ⌘M opens the model picker (⌘M again closes it, from the sheet). The terminal has no ⌘M and its key view is not on this screen.
+        .background {
+            Button("Choose model") { showModels = true }
+                .keyboardShortcut("m", modifiers: .command)
+                .disabled(!connected || !conversation.modelChoices(fallback: info).isAvailable)
+                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+        }
+        .sheet(isPresented: $showModels, onDismiss: requestFocus) {
+            ChatModelSheet(model: model, chat: info) { showModels = false }.desktopThemed(model.theme.style)
         }
     }
 
@@ -100,8 +112,13 @@ private struct ChatToolbar: View {
     let chat: ChatInfo
     let conversation: ChatConversation
     let state: ChatState
+    @Binding var showModels: Bool
+
+    @State private var choosingModel = false
+    @State private var modelName = ""
 
     private var shownMode: ChatApprovalMode { conversation.pendingMode ?? chat.approvalMode }
+    private var choices: ChatModelChoices { conversation.modelChoices(fallback: chat) }
     private func icon(_ mode: ChatApprovalMode) -> String {
         switch mode {
         case .supervised: "hand.raised"
@@ -119,6 +136,7 @@ private struct ChatToolbar: View {
                 if style.native {
                     // Native: the controls on glass (iOS 26), as the workspace bar has them.
                     modeMenu.nativeGlass(style, in: Capsule())
+                    modelChip
                     Spacer(minLength: 4)
                     NativeGlassGroup(style: style) {
                         compactButton.nativeGlass(style, in: Capsule())
@@ -126,6 +144,7 @@ private struct ChatToolbar: View {
                     }
                 } else {
                     modeMenu
+                    modelChip
                     Spacer(minLength: 4)
                     compactButton
                     optionsMenu
@@ -133,6 +152,18 @@ private struct ChatToolbar: View {
             }
             .buttonStyle(DesktopButtonStyle(compact: true))
             .padding(.horizontal, style.native ? 6 : 4).padding(.vertical, style.glass ? 4 : 0)
+            HStack {
+                Button {
+                    modelName = chat.model ?? ""
+                    choosingModel = true
+                } label: {
+                    Label(chat.model ?? "Provider default model", systemImage: "cpu")
+                        .font(style.mono(10, relativeTo: .caption2)).lineLimit(1)
+                }
+                .buttonStyle(.plain).disabled(!connected || state.isBusy || state == .starting)
+                .accessibilityLabel("Change model").accessibilityValue(chat.model ?? "Provider default")
+                Spacer(minLength: 0)
+            }.foregroundStyle(style.muted).padding(.horizontal, 12).padding(.bottom, 4)
             if let meter, let text = meter.text {
                 HStack(spacing: 8) {
                     if let fraction = meter.contextFraction { ContextBar(fraction: fraction) }
@@ -145,8 +176,21 @@ private struct ChatToolbar: View {
             if !style.glass { DesktopRule() }
         }
         .background(style.glass ? style.surface : style.panel)
+        .alert("Chat model", isPresented: $choosingModel) {
+            TextField("Model name", text: $modelName).textInputAutocapitalization(.never).autocorrectionDisabled()
+            Button("Cancel", role: .cancel) {}
+            Button("Apply") {
+                Task { await model.setChatModel(chat.id, modelName) }
+            }.disabled(modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Enter a model name supported by \(chat.provider.title). It applies to the next message.")
+        }
     }
 
+    /// The model, with a bolt when Fast is on. A desktop that sends no list of models has no chip: the toolbar is as it was.
+    @ViewBuilder private var modelChip: some View {
+        if choices.isAvailable { ChatModelChip(choices: choices, enabled: connected) { showModels = true } }
+    }
     private var modeMenu: some View {
         Menu {
             Picker("Approval mode", selection: Binding(get: { shownMode }, set: { mode in Task { await model.setChatMode(chat.id, mode) } })) {
@@ -174,6 +218,11 @@ private struct ChatToolbar: View {
     }
     private var optionsMenu: some View {
         Menu {
+            Button("Change model", systemImage: "cpu") {
+                modelName = chat.model ?? ""
+                choosingModel = true
+            }
+            .disabled(!connected || state.isBusy || state == .starting)
             Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }
             Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }
                 .disabled(!connected || state == .stopped)
@@ -193,6 +242,7 @@ private struct ContextBar: View {
                 Capsule().fill(fraction > 0.95 ? style.error : (fraction > 0.8 ? style.gold : style.accent)).frame(width: max(2, style.pt(56) * fraction), height: 4)
             }
             .accessibilityHidden(true)
+
     }
 }
 

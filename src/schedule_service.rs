@@ -132,6 +132,13 @@ impl ScheduleService {
         })
     }
 
+    /// The same service reaching chats another way (a test's in-process host).
+    #[cfg(test)]
+    pub fn with_chat(mut self, chat: schedules::ChatDelivery) -> Self {
+        self.schedules = self.schedules.with_chat(chat);
+        self
+    }
+
     pub fn list(&self, scope: Option<&ScopeInput>) -> Result<Vec<Schedule>, ScheduleError> {
         let scope = scope.map(ScopeInput::resolve).transpose()?;
         let mut items = self.schedules.list().map_err(ScheduleError::store)?;
@@ -157,8 +164,10 @@ impl ScheduleService {
         full_id(Some(&request.shell_id), "shell_id")?;
         let timing = timing(&request.at, request.every_minutes)?;
         let state = self.workspace.snapshot().map_err(ScheduleError::store)?;
-        // `bind` verifies a live, scoped, known provider session and pins its identity.
-        let target = Target::bind(scope, &state, &self.sessions, &request.shell_id)
+        // `bind_any` verifies a live, scoped, known provider session (or the chat of
+        // an orchestrator that runs as one) and pins its identity.
+        let chats = self.schedules.chat_orchestrators();
+        let target = Target::bind_any(scope, &state, &self.sessions, &chats, &request.shell_id)
             .map_err(|error| ScheduleError::new("binding_failed", error))?;
         self.schedules
             .save(

@@ -253,6 +253,9 @@ pub struct RemoteShell {
     pub project_id: Option<String>,
     pub worktree_id: Option<String>,
     pub orchestrator: bool,
+    /// An orchestrator that runs as a chat on its host (`"mode":"chat"`): it has no
+    /// terminal to attach to, and its chat is followed on that Mac.
+    pub chat: bool,
     pub harness: Option<String>,
     pub alive: bool,
     pub cwd: String,
@@ -262,6 +265,7 @@ impl RemoteShell {
     /// A short name for a row or a tab: what runs in it, and which one it is.
     pub fn display(&self) -> String {
         let what = match (self.orchestrator, self.harness.as_deref()) {
+            (true, Some(harness)) if self.chat => format!("orchestrator chat ({harness})"),
             (true, Some(harness)) => format!("orchestrator ({harness})"),
             (true, None) => "orchestrator".to_owned(),
             (false, Some(harness)) => harness.to_owned(),
@@ -1381,6 +1385,7 @@ fn session(value: &Value) -> Option<RemoteShell> {
         project_id: text(value, "project_id"),
         worktree_id: text(value, "worktree_id"),
         orchestrator: text(value, "kind").as_deref() == Some("orchestrator"),
+        chat: text(value, "mode").as_deref() == Some("chat"),
         harness: text(value, "harness"),
         alive: value.get("alive").and_then(Value::as_bool).unwrap_or(false),
         cwd: text(value, "cwd").unwrap_or_default(),
@@ -1459,6 +1464,7 @@ mod tests {
             project_id: project.map(str::to_owned),
             worktree_id: worktree.map(str::to_owned),
             orchestrator: false,
+            chat: false,
             harness: None,
             alive: true,
             cwd: "/Users/me/app".to_owned(),
@@ -2524,7 +2530,20 @@ mod tests {
             {"id": "o1", "project_id": null, "kind": "orchestrator", "harness": "codex", "alive": false},
         ]}))
         .unwrap();
-        assert!(orchestrators[0].orchestrator && !orchestrators[0].alive);
+        assert!(orchestrators[0].orchestrator && !orchestrators[0].alive && !orchestrators[0].chat);
+        // An orchestrator that runs as a chat on its host has no terminal to attach to.
+        let orchestrators = parse_orchestrators(&json!({"orchestrators": [
+            {"id": "o1", "kind": "orchestrator", "harness": "codex", "alive": true, "mode": "terminal"},
+            {"id": "o2", "kind": "orchestrator", "harness": "claude", "alive": true,
+             "mode": "chat", "chat_id": "o2", "provider": "claude"},
+        ]}))
+        .unwrap();
+        assert!(!orchestrators[0].chat && orchestrators[1].chat);
+        assert_eq!(orchestrators[0].display(), "orchestrator (codex) · o1");
+        assert_eq!(
+            orchestrators[1].display(),
+            "orchestrator chat (claude) · o2"
+        );
         let created =
             parse_created_shell(&json!({"shell_id": "s1", "shell": {"id": "s1", "alive": true}}))
                 .unwrap();

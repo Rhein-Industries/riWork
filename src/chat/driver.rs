@@ -20,6 +20,8 @@ pub struct DriverConfig {
     pub approval_mode: ApprovalMode,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The provider's fast mode, when the model has one.
+    pub fast: bool,
     /// Resume this Codex thread or Claude session instead of starting one.
     pub resume: Option<String>,
     /// Extra arguments before the driver's own, e.g. Cua MCP configuration.

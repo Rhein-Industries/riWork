@@ -78,10 +78,22 @@ enum ConnectionState: Equatable {
     var chats: [ChatInfo] = []
     /// The chat on screen; nil while a terminal is. Not remembered across launches.
     var selectedChatID: String?
+    /// The orchestrator whose tab is on screen although it can be opened as neither a terminal nor a chat (it runs as a chat on a
+    /// desktop that has none): the screen says so. Nil while a terminal or a chat is; see `selectedBlocked`.
+    var selectedBlockedID: String?
     /// What has been read of the chats that were opened, by chat id.
     var chatConversations: [String: ChatConversation] = [:]
     /// A `chat.create` is on its way: a second one is refused until it answers.
     var creatingChat = false
+    // MARK: Opening orchestrators (pipeline in RemoteModel+Orchestrator.swift)
+    /// Whether the desktop opens orchestrators (`orchestrator.create`). Read from `features.orchestrator_create` when a connection
+    /// begins, and reset by every new one.
+    var orchestratorCreateSupport: OrchestratorCreateSupport = .unknown
+    /// An `orchestrator.create` is on its way: a second one is refused until it answers.
+    var creatingOrchestrator = false
+    /// A short note under the tab strip ("Project orchestrator is already running."). It goes by itself after a few seconds.
+    var orchestratorNotice: String?
+    @ObservationIgnored var orchestratorNoticeExpiry: Task<Void, Never>?
     /// How long `chat.events` may hold a request back, and how long the follower rests while the link is down (tests make them short).
     @ObservationIgnored let chatWaitMilliseconds: Int
     @ObservationIgnored let chatIdleInterval: Duration
@@ -344,13 +356,17 @@ enum ConnectionState: Equatable {
     var sessionID: String? { desktop?.selectedSessionID }
     var session: RemoteSession? { sessions.first(where: { $0.id == sessionID }) }
     var pendingInput: PendingInput? { desktop?.pendingInput }
+    /// The tabs' entries: the project's orchestrator and the global one (which belongs to no project, and is part of every one, as on
+    /// the desktop), then its shells. Orchestrators come first, the project's own before the global one.
     var sessions: [RemoteSession] {
-        (orchestrators.filter { $0.project_id == projectID } + shells).sorted {
+        (orchestrators.filter { $0.project_id == projectID || $0.project_id == nil } + shells).sorted {
             if $0.kind != $1.kind { return $0.kind == "orchestrator" }
+            if ($0.project_id == nil) != ($1.project_id == nil) { return $0.project_id != nil }
             return $0.created_at_unix > $1.created_at_unix
         }
     }
-    var openSessions: [RemoteSession] { sessions.filter { $0.alive && !missingSessionIDs.contains($0.id) } }
+    /// The terminal tabs: what runs in a terminal and is alive. An entry the desktop runs as a chat is never one, whatever it says it is.
+    var openSessions: [RemoteSession] { sessions.filter { $0.mode != .chat && $0.alive && !missingSessionIDs.contains($0.id) } }
     var viewportReady: Bool { !terminalVisible || (viewportSessionID == sessionID && appliedViewport == terminalViewport && terminalViewport != nil) }
     // Keep focus/keyboard stable while fitting the terminal. Submission still waits for its grid.
     var canEditDraft: Bool { state == .connected && session?.alive == true && !missingSessionIDs.contains(sessionID ?? "") && !sending && pendingInput == nil }
@@ -491,6 +507,8 @@ enum ConnectionState: Equatable {
         projectCreation = .unknown
         // And for chats (the desktop's `ready` says; what it answers confirms).
         chatSupport = .unknown
+        // And for opening orchestrators.
+        orchestratorCreateSupport = .unknown
         // And for waiting on changes: the first screen tells whether this desktop sends a `hash`.
         syncMode = .unknown; outputHash = nil; liveBackoff = LongPollBackoff(); waitSlots.reset(); outputExtensions = true; latency.reset()
         // And for paging history: the first page tells whether this desktop has `shell.history`.
@@ -566,7 +584,8 @@ enum ConnectionState: Equatable {
     }
     private func clearSnapshot() {
         projects = []; touchedProjects = [:]; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
-        chats = []; selectedChatID = nil; chatConversations = [:]
+        chats = []; selectedChatID = nil; selectedBlockedID = nil; chatConversations = [:]
+        clearOrchestratorNotice()
         lastListRead = [:]
         // Another desktop: nothing kept for the last one is of any use.
         terminalCache.removeAll()
@@ -628,7 +647,8 @@ enum ConnectionState: Equatable {
             }
             resetOutput(); draft = ""; deliveryNotice = nil
             worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
-            chats = []; selectedChatID = nil
+            chats = []; selectedChatID = nil; selectedBlockedID = nil
+            clearOrchestratorNotice()
             if state == .connected {
                 try await loadProject(id, token: generation)
                 await readOutput()
@@ -657,6 +677,7 @@ enum ConnectionState: Equatable {
         worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
         lastListRead[.sessions] = .now
         if let talks = listing.chats { installChats(talks, project: id) }
+        reconcileChatSelection()
         try reconcileSelectedSession()
         if sessionID == nil { try await synchronizeViewport(token: token) }
     }
@@ -682,7 +703,7 @@ enum ConnectionState: Equatable {
     func chooseSession(_ session: RemoteSession) async {
         guard openSessions.contains(where: { $0.id == session.id }) else { return }
         // A terminal tab takes the screen back from a chat.
-        selectedChatID = nil
+        selectedChatID = nil; selectedBlockedID = nil
         do {
             try updateDesktop {
                 $0.selectedSessionID = session.id

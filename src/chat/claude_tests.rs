@@ -612,6 +612,7 @@ fn a_message_sent_while_the_process_restarts_waits_for_the_new_one() {
         model: None,
         effort: Some("low".into()),
         approval_mode: None,
+        fast: None,
     });
     // The restart is claimed by now, so this does not go to the old process.
     rig.send("after");
@@ -652,6 +653,7 @@ fn a_setting_goes_to_the_running_process_as_a_control_request() {
         model: Some("opus".into()),
         effort: None,
         approval_mode: Some(ApprovalMode::AutoEdit),
+        fast: None,
     });
     wait_for("both requests", || rig.fake.received().len() == 3);
     let sent = rig.fake.received();
@@ -666,6 +668,7 @@ fn a_setting_goes_to_the_running_process_as_a_control_request() {
         model: Some("opus".into()),
         effort: None,
         approval_mode: Some(ApprovalMode::AutoEdit),
+        fast: None,
     });
     thread::sleep(Duration::from_millis(100));
     assert_eq!(rig.fake.received().len(), 3);
@@ -678,6 +681,7 @@ fn a_setting_the_cli_cannot_change_restarts_it_with_the_new_flags() {
         model: Some("opus".into()),
         effort: None,
         approval_mode: None,
+        fast: None,
     });
     rig.until(|event| {
         matches!(
@@ -706,6 +710,7 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
         model: None,
         effort: Some("high".into()),
         approval_mode: None,
+        fast: None,
     });
     rig.until(|event| {
         matches!(
@@ -725,6 +730,7 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
         model: Some("nonsense".into()),
         effort: None,
         approval_mode: None,
+        fast: None,
     });
     let events = rig.until(|event| {
         matches!(event, ChatEvent::ItemCompleted { item } if matches!(item.body, ItemBody::Notice { .. }))
@@ -741,8 +747,196 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
         model: Some("nonsense".into()),
         effort: None,
         approval_mode: None,
+        fast: None,
     });
     wait_for("the second request", || rig.fake.received().len() == 3);
+}
+
+fn models_events(events: &[ChatEvent]) -> Vec<Vec<ModelOption>> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            ChatEvent::Models { models } => Some(models.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn configure_fast(fast: bool) -> ChatCommand {
+    ChatCommand::Configure {
+        model: None,
+        effort: None,
+        approval_mode: None,
+        fast: Some(fast),
+    }
+}
+
+fn is_notice(event: &ChatEvent) -> bool {
+    matches!(event, ChatEvent::ItemCompleted { item } if matches!(item.body, ItemBody::Notice { .. }))
+}
+
+#[test]
+fn the_models_in_the_initialize_answer_become_a_models_event() {
+    let rig = Rig::with(&["models_fast"], fast(), |_| {});
+    let lists = models_events(&rig.seen);
+    assert_eq!(lists.len(), 1, "{:?}", rig.seen);
+    let models = &lists[0];
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["default", "opus", "fable", "sonnet", "haiku"]);
+    assert_eq!(
+        models[0],
+        ModelOption {
+            id: "default".into(),
+            name: "Default (recommended)".into(),
+            description: "Use the default model (currently Opus 5.5) \u{b7} $4/$20 per Mtok".into(),
+            efforts: ["low", "medium", "high", "xhigh", "max"]
+                .map(str::to_owned)
+                .into(),
+            default_effort: None,
+            supports_fast: true,
+            is_default: true,
+        }
+    );
+    // Fast mode is the CLI's word for two models; a model without the field has none.
+    let fast_models: Vec<&str> = models
+        .iter()
+        .filter(|m| m.supports_fast)
+        .map(|m| m.id.as_str())
+        .collect();
+    assert_eq!(fast_models, ["default", "opus"]);
+    assert_eq!(models.iter().filter(|m| m.is_default).count(), 1);
+    // Haiku takes no effort at all.
+    assert!(models[4].efforts.is_empty());
+    assert_eq!(models[3].name, "Sonnet");
+    // A CLI that names no models says nothing.
+    let rig = Rig::new(&["idle_only"]);
+    assert!(models_events(&rig.seen).is_empty());
+}
+
+#[test]
+fn fast_mode_is_in_the_launch_settings_only_when_asked_for() {
+    let on = Rig::with(&["models_fast"], fast(), |config| config.fast = true);
+    let args = argv(&on.fake.starts()[0]);
+    assert!(
+        has_pair(&args, "--settings", r#"{"fastMode":true}"#),
+        "{args:?}"
+    );
+    let off = Rig::new(&["idle_only"]);
+    assert!(!argv(&off.fake.starts()[0]).contains(&"--settings".to_owned()));
+    // Nothing is said when it is on, as asked.
+    assert!(notices(&on.seen).is_empty());
+}
+
+#[test]
+fn fast_mode_is_changed_in_the_running_process_and_a_state_that_is_not_on_is_said_once() {
+    let mut rig = Rig::with(&["models_fast"], fast(), |config| config.fast = true);
+    rig.command(configure_fast(false));
+    wait_for("the state to be asked for", || {
+        rig.fake.received().len() == 3
+    });
+    let sent = rig.fake.received();
+    assert_eq!(sent[1]["request"]["subtype"], "apply_flag_settings");
+    assert_eq!(sent[1]["request"]["settings"], json!({"fastMode": false}));
+    assert_eq!(sent[2]["request"]["subtype"], "initialize");
+    // The same again asks for nothing.
+    rig.command(configure_fast(false));
+    // Off was asked for, so "off" is no news. On is asked for, and the CLI says it is cooling
+    // down after a rate limit.
+    rig.command(configure_fast(true));
+    let events = rig.until(is_notice);
+    let said = notices(&events);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(said[0].0, NoticeLevel::Warning);
+    assert!(
+        said[0].1.contains("cooling down after a rate limit"),
+        "{said:?}"
+    );
+    assert_eq!(rig.fake.received().len(), 5);
+    assert_eq!(
+        rig.fake.received()[3]["request"]["settings"],
+        json!({"fastMode": true})
+    );
+    // A turn repeats the state in `system/init` and in `result`: nothing new. Then it is on again.
+    rig.send("go");
+    rig.until_idle();
+    assert_eq!(notices(&rig.seen).len(), 1, "{:?}", notices(&rig.seen));
+    rig.send("again");
+    rig.until_idle();
+    let said = notices(&rig.seen);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!(
+        (said[1].0, said[1].1.as_str()),
+        (NoticeLevel::Info, "Fast mode is on again.")
+    );
+    // The model list was not repeated by the questions asked on the way.
+    assert_eq!(models_events(&rig.seen).len(), 1);
+    assert!(!rig.fake.saw("mismatch"));
+}
+
+#[test]
+fn a_cli_that_cannot_change_fast_mode_is_restarted_with_it_in_the_settings() {
+    let mut rig = Rig::new(&["fast_unsupported_1", "fast_unsupported_2"]);
+    rig.command(configure_fast(true));
+    rig.until(|event| {
+        matches!(
+            event,
+            ChatEvent::State {
+                state: ChatState::Starting
+            }
+        )
+    });
+    rig.until_idle();
+    let starts = rig.fake.starts();
+    assert_eq!(starts.len(), 2);
+    assert!(!argv(&starts[0]).contains(&"--settings".to_owned()));
+    assert!(has_pair(
+        &argv(&starts[1]),
+        "--settings",
+        r#"{"fastMode":true}"#
+    ));
+    assert!(has_pair(&argv(&starts[1]), "--resume", "sess-1"));
+    assert!(!rig.fake.saw("mismatch"));
+}
+
+#[test]
+fn a_model_without_fast_mode_does_not_make_the_chat_complain_about_it() {
+    let mut rig = Rig::with(&["fast_model_without"], fast(), |config| config.fast = true);
+    rig.command(ChatCommand::Configure {
+        model: Some("sonnet".into()),
+        effort: None,
+        approval_mode: None,
+        fast: None,
+    });
+    rig.send("go");
+    rig.until_idle();
+    assert!(notices(&rig.seen).is_empty(), "{:?}", notices(&rig.seen));
+    assert!(!rig.fake.saw("mismatch"));
+}
+
+#[test]
+fn every_reason_fast_mode_is_off_has_its_own_words() {
+    let said = |state, reason| fast_off_text(state, reason);
+    assert!(said("cooldown", None).contains("cooling down after a rate limit"));
+    // A cooldown is a state, not a reason: whatever reason comes with it, it is a cooldown.
+    assert!(said("cooldown", Some("unknown")).contains("cooling down"));
+    for (reason, words) in [
+        ("free", "paid Claude subscription"),
+        ("preference", "organization has turned off"),
+        ("extra_usage_disabled", "extra usage"),
+        ("network_error", "network"),
+        ("not_first_party", "Anthropic API"),
+        ("disabled_by_env", "environment"),
+        ("model_not_allowed", "does not allow this model"),
+        ("sdk_opt_in_required", "did not turn on"),
+        ("unknown", "unavailable"),
+    ] {
+        assert!(said("off", Some(reason)).contains(words), "{reason}");
+    }
+    assert!(said("off", None).contains("for this model"));
+    assert_eq!(
+        said("off", Some("brand_new")),
+        "Fast mode is off (brand_new)"
+    );
 }
 
 #[test]
@@ -1336,6 +1530,7 @@ fn stopping_during_a_restart_stops_the_process_being_replaced_too() {
         model: None,
         effort: Some("low".into()),
         approval_mode: None,
+        fast: None,
     });
     // The restart has begun stopping the old process, which will not leave
     // by itself for a while.
@@ -1359,6 +1554,7 @@ fn messages_queued_for_a_restart_that_fails_are_reported_not_lost() {
         model: None,
         effort: Some("low".into()),
         approval_mode: None,
+        fast: None,
     });
     rig.send("hello?");
     rig.command(ChatCommand::Compact);
@@ -1681,6 +1877,7 @@ fn bare_config() -> DriverConfig {
         approval_mode: ApprovalMode::Plan,
         model: None,
         effort: None,
+        fast: false,
         resume: None,
         extra_args: Vec::new(),
         env: Vec::new(),
@@ -1709,6 +1906,7 @@ fn live_claude_answers_a_trivial_prompt() {
         approval_mode: ApprovalMode::Plan,
         model: None,
         effort: None,
+        fast: false,
         resume: None,
         extra_args: Vec::new(),
         env: Vec::new(),

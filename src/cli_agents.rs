@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::{
     activity::{AgentActivity, AgentState, states_once, unix_now},
+    orchestrators::ProjectFact,
     sessions::{SessionActivity, ShellSession},
     store::Project,
 };
@@ -25,6 +26,10 @@ use crate::{
 pub struct ShellEntry<'a> {
     #[serde(flatten)]
     shell: &'a ShellSession,
+    /// `terminal`, on an orchestrator's entry, whose other kind runs as a chat
+    /// (`orchestrators::chat_entry`). Absent on a shell, which is always one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'static str>,
     /// `working`, `waiting`, `done`, `unknown` or `exited`. Absent for a shell
     /// that runs no agent.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,6 +63,7 @@ pub fn shell_entries<'a>(
             match states.get(&shell.id) {
                 Some(state) => ShellEntry {
                     shell,
+                    mode: None,
                     activity: Some(state.activity.as_str()),
                     activity_since_unix: state
                         .since_unix
@@ -69,6 +75,7 @@ pub fn shell_entries<'a>(
                 },
                 None => ShellEntry {
                     shell,
+                    mode: None,
                     activity: None,
                     activity_since_unix: None,
                     subagents_working: None,
@@ -78,6 +85,19 @@ pub fn shell_entries<'a>(
             }
         })
         .collect()
+}
+
+/// `shell_entries` for terminal orchestrators, each marked `"mode":"terminal"`.
+pub fn orchestrator_entries<'a>(
+    home: &Path,
+    shells: &'a [ShellSession],
+    activity: &SessionActivity,
+) -> Vec<ShellEntry<'a>> {
+    let mut entries = shell_entries(home, shells, activity);
+    for entry in &mut entries {
+        entry.mode = Some("terminal");
+    }
+    entries
 }
 
 /// The agents of one project that are in each state. `waiting` and `done` are
@@ -114,11 +134,20 @@ pub fn project_entries<'a>(
     home: &Path,
     projects: &'a [Project],
     shells: Option<&[ShellSession]>,
+    chats: &[ProjectFact],
     activity: &SessionActivity,
 ) -> Vec<ProjectEntry<'a>> {
     let recency = crate::recency_file::read(home);
-    let counts = shells.map(|shells| agent_counts(&states_once(home, shells, unix_now()), shells));
-    let active = shells.map(|shells| project_activity(shells, activity));
+    let counts = shells.map(|shells| {
+        let mut counts = agent_counts(&states_once(home, shells, unix_now()), shells);
+        count_chats(&mut counts, chats);
+        counts
+    });
+    let active = shells.map(|shells| {
+        let mut active = project_activity(shells, activity);
+        chat_activity_times(&mut active, chats);
+        active
+    });
     projects
         .iter()
         .map(|project| ProjectEntry {
@@ -134,6 +163,29 @@ pub fn project_entries<'a>(
                 .map(|counts| counts.get(&project.id).copied().unwrap_or_default()),
         })
         .collect()
+}
+
+/// A project's chat orchestrator is one of its agents, as its terminal orchestrator is.
+fn count_chats(counts: &mut BTreeMap<String, AgentCounts>, chats: &[ProjectFact]) {
+    for chat in chats {
+        let entry = counts.entry(chat.project_id.clone()).or_default();
+        match chat.activity {
+            AgentActivity::Working => entry.working += 1,
+            AgentActivity::Waiting => entry.waiting += 1,
+            AgentActivity::Done => entry.done += 1,
+            AgentActivity::Unknown | AgentActivity::Exited => {}
+        }
+    }
+}
+
+/// And its chat's log growing is activity of the project.
+fn chat_activity_times(newest: &mut BTreeMap<String, u64>, chats: &[ProjectFact]) {
+    for chat in chats {
+        if let Some(time) = chat.last_activity_unix {
+            let entry = newest.entry(chat.project_id.clone()).or_default();
+            *entry = (*entry).max(time);
+        }
+    }
 }
 
 /// The newest activity per project id over every shell the project owns, its
@@ -216,6 +268,73 @@ mod tests {
         );
         assert!(project_activity(&shells, &SessionActivity::new()).is_empty());
         assert!(project_activity(&[], &activity).is_empty());
+    }
+
+    #[test]
+    fn a_chat_orchestrator_counts_for_its_project_as_a_terminal_one_does() {
+        let fact = |project: &str, activity, time| ProjectFact {
+            project_id: project.into(),
+            activity,
+            last_activity_unix: time,
+        };
+        let mut counts = BTreeMap::new();
+        count_chats(
+            &mut counts,
+            &[
+                fact("alpha", AgentActivity::Working, Some(500)),
+                fact("beta", AgentActivity::Done, None),
+                fact("gamma", AgentActivity::Waiting, Some(10)),
+                fact("delta", AgentActivity::Exited, Some(20)),
+                fact("epsilon", AgentActivity::Unknown, None),
+            ],
+        );
+        assert_eq!(
+            counts["alpha"],
+            AgentCounts {
+                working: 1,
+                waiting: 0,
+                done: 0
+            }
+        );
+        assert_eq!(
+            counts["beta"],
+            AgentCounts {
+                working: 0,
+                waiting: 0,
+                done: 1
+            }
+        );
+        assert_eq!(
+            counts["gamma"],
+            AgentCounts {
+                working: 0,
+                waiting: 1,
+                done: 0
+            }
+        );
+        // A chat whose agent is gone, or not started, counts as no agent at work.
+        assert_eq!(counts["delta"], AgentCounts::default());
+        assert_eq!(counts["epsilon"], AgentCounts::default());
+
+        // Its log growing is the project's activity, beside the project's shells.
+        let mut newest = BTreeMap::from([("alpha".to_owned(), 300), ("gamma".to_owned(), 50)]);
+        chat_activity_times(
+            &mut newest,
+            &[
+                fact("alpha", AgentActivity::Working, Some(500)),
+                fact("gamma", AgentActivity::Waiting, Some(10)),
+                fact("beta", AgentActivity::Done, None),
+                fact("delta", AgentActivity::Exited, Some(20)),
+            ],
+        );
+        assert_eq!(
+            newest,
+            BTreeMap::from([
+                ("alpha".to_owned(), 500),
+                ("delta".to_owned(), 20),
+                ("gamma".to_owned(), 50)
+            ])
+        );
     }
 
     #[test]
