@@ -7089,13 +7089,19 @@ impl Workspace {
             let close = ui_text::space_f32(6.0 + NATIVE_TAB_CLOSE) - ui_text::space_f32(4.0);
             let words: f32 = titles
                 .iter()
+                .zip(&pane.tabs)
                 .enumerate()
-                .map(|(index, title)| {
+                .map(|(index, (title, tab))| {
                     // Native keeps every closable tab's X in place, shown or not.
                     let shown_close = (native || index == pane.active) && tab_can_close;
+                    // A chat tab that shows its agent's mark is that much wider.
+                    let mark = self.settings.panel_tab_icons
+                        && tab
+                            .chat()
+                            .is_some_and(|view| view.read(cx).summary().provider.is_some());
                     ui_text::space_f32(16.0)
                         + 1.0
-                        + native_label_width(title, cx)
+                        + native_tab_words(native_label_width(title, cx), mark)
                         + if shown_close { close } else { 0.0 }
                 })
                 .sum();
@@ -7290,7 +7296,7 @@ impl Workspace {
                                         Some(provider) => div()
                                             .flex()
                                             .items_center()
-                                            .gap(ui_text::space(5.0))
+                                            .gap(ui_text::space(CHAT_MARK_GAP))
                                             .child(icons::icon(Icon::Provider(provider), tab_color))
                                             .child(display_title.clone())
                                             .into_any_element(),
@@ -9577,6 +9583,20 @@ fn native_label_width(label: &str, cx: &App) -> f32 {
         .sum::<f32>()
         .ceil()
 }
+
+/// How wide a Native tab's label is: its `words` (`native_label_width`) and, for a chat tab
+/// that shows its agent's `mark`, the mark and the gap the tab leaves after it.
+fn native_tab_words(words: f32, mark: bool) -> f32 {
+    if mark {
+        words + CHAT_MARK_SIDE * ui_text::scale() + ui_text::space_f32(CHAT_MARK_GAP)
+    } else {
+        words
+    }
+}
+
+/// A chat tab's agent mark: an icon's box (`icons::icon`), and the gap before its title.
+const CHAT_MARK_SIDE: f32 = 14.0;
+const CHAT_MARK_GAP: f32 = 5.0;
 
 /// A menu row's symbol: muted, or primary for a check mark. Native draws it at the size of
 /// the row's text.
@@ -13293,6 +13313,13 @@ mod main_pane_tests {
 #[cfg(test)]
 mod native_bar_tests {
     use super::*;
+
+    #[test]
+    fn a_chat_tab_with_its_agents_mark_is_measured_with_the_mark() {
+        // Off the UI thread the text is at its design size: the 14 px icon and a 5 px gap.
+        assert_eq!(native_tab_words(60.0, false), 60.0);
+        assert_eq!(native_tab_words(60.0, true), 60.0 + 14.0 + 5.0);
+    }
 
     /// What a Native navigation bar of five symbol tabs and no close marks shows when its
     /// tabs have `room` with neither the lock nor the focus button.

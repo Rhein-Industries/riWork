@@ -7,12 +7,12 @@ use gpui::{
     StrikethroughStyle, UnderlineStyle, div, prelude::*, px, rgb,
 };
 
-use crate::ui_text;
+use crate::{controls, ui_text};
 
 use super::{
     ChatView,
     markdown::{Align, Block, Span, plain_text},
-    widgets::{Look, button},
+    widgets::{Look, copy_button},
 };
 
 impl ChatView {
@@ -51,17 +51,23 @@ impl ChatView {
                     3 => 1.1,
                     _ => 1.0,
                 };
+                // Native heads a section in semibold, as its panels do.
+                let weight = if look.native {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::BOLD
+                };
                 div()
                     .w_full()
                     .pt(ui_text::space(4.0))
                     .text_size(ui_text::text(12.0 * size))
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(weight)
                     .text_color(rgb(if *level <= 2 {
                         colors.cyan
                     } else {
                         colors.text
                     }))
-                    .child(self.text(spans, key, look, Some(FontWeight::BOLD), cx))
+                    .child(self.text(spans, key, look, Some(weight), cx))
                     .into_any_element()
             }
             Block::Code { language, text } => {
@@ -148,7 +154,11 @@ impl ChatView {
         let owned = code.to_owned();
         div()
             .w_full()
-            .rounded(px(4.0))
+            .rounded(if look.native {
+                controls::radius(controls::ROW_RADIUS)
+            } else {
+                px(4.0)
+            })
             .border_1()
             .border_color(rgb(colors.divider))
             .bg(rgb(colors.panel_active))
@@ -166,14 +176,18 @@ impl ChatView {
                     .text_color(rgb(colors.muted))
                     .child(language.unwrap_or("code").to_owned())
                     .child(
-                        button(
+                        copy_button(
                             SharedString::from(copy_key.clone()),
-                            if copied { "copied" } else { "copy" },
-                            None,
+                            copied,
+                            "copy",
+                            "Copy code",
                             look,
                         )
-                        .border_color(rgb(colors.panel_active))
-                        .bg(rgb(colors.panel_active))
+                        .when(!look.native, |button| {
+                            button
+                                .border_color(rgb(colors.panel_active))
+                                .bg(rgb(colors.panel_active))
+                        })
                         .on_click(cx.listener(move |view, _, _, cx| {
                             view.copy(copy_key.clone(), owned.clone(), cx);
                         })),
@@ -193,6 +207,7 @@ impl ChatView {
                         .px(ui_text::space(10.0))
                         .py(ui_text::space(8.0))
                         .text_size(ui_text::text(11.0))
+                        .font_family(ui_text::code_family())
                         .child(div().flex_none().whitespace_nowrap().child(self.selectable(
                             &format!("code:{key}"),
                             code.replace('\t', "    "),
@@ -231,7 +246,16 @@ impl ChatView {
             }
             if span.style.code {
                 style.background_color = Some(rgb(look.tint(colors.divider, 0.5)).into());
-                style.color = Some(rgb(colors.gold).into());
+                // Native keeps its signal color for state; code reads in the secondary color.
+                // A highlight cannot change the face, so it stays in the run's own.
+                style.color = Some(
+                    rgb(if look.native {
+                        colors.magenta
+                    } else {
+                        colors.gold
+                    })
+                    .into(),
+                );
             }
             if span.style.strike {
                 style.strikethrough = Some(StrikethroughStyle {
@@ -265,6 +289,11 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = look.colors;
+        let bold = if look.native {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::BOLD
+        };
         let mut row = |cells: &[Vec<Span>], at: usize, head: bool| {
             div()
                 .w_full()
@@ -272,8 +301,7 @@ impl ChatView {
                 .border_b_1()
                 .border_color(rgb(colors.divider))
                 .when(head, |row| {
-                    row.bg(rgb(colors.panel_active))
-                        .font_weight(FontWeight::BOLD)
+                    row.bg(rgb(colors.panel_active)).font_weight(bold)
                 })
                 .children(cells.iter().enumerate().map(|(column, cell)| {
                     div()
@@ -294,7 +322,7 @@ impl ChatView {
                             cell,
                             &format!("{key}/{at}/{column}"),
                             look,
-                            head.then_some(FontWeight::BOLD),
+                            head.then_some(bold),
                             cx,
                         ))
                 }))
@@ -311,7 +339,11 @@ impl ChatView {
             .border_l_1()
             .border_r_1()
             .border_color(rgb(colors.divider))
-            .rounded(px(3.0))
+            .rounded(if look.native {
+                controls::radius(controls::ROW_RADIUS)
+            } else {
+                px(3.0)
+            })
             .overflow_hidden()
             .child(head)
             .children(body)

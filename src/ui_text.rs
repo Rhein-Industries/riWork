@@ -255,6 +255,16 @@ pub fn mono_family() -> SharedString {
     }
 }
 
+/// The font family of code: a code block, a diff, a command and its output. Unlike
+/// `mono_family` it stays fixed-width whatever the accents setting, as an editor keeps its
+/// code in a fixed-width face: Menlo in the colorful themes, SF Mono (else Menlo) in Native.
+pub fn code_family() -> SharedString {
+    match face() {
+        Face::System | Face::SystemMono if HAS_SF_MONO.with(Cell::get) => SF_MONO.into(),
+        _ => MENLO.into(),
+    }
+}
+
 /// The effective scale: 1.0 is today's exact sizes.
 pub fn scale() -> f32 {
     SCALE.with(Cell::get)
@@ -599,6 +609,23 @@ mod tests {
         );
         HAS_SF_MONO.with(|cell| cell.set(false));
         assert_eq!(families(Face::SystemMono).1, "Menlo");
+        HAS_SF_MONO.with(|cell| cell.set(true));
+    }
+
+    #[test]
+    fn code_stays_fixed_width_in_every_face() {
+        let code = |face| {
+            FACE.with(|cell| cell.set(face));
+            let family = code_family();
+            FACE.with(|cell| cell.set(Face::Menlo));
+            family
+        };
+        assert_eq!(code(Face::Menlo), "Menlo");
+        // Even with the accents off, which set technical text in the system font.
+        assert_eq!(code(Face::System), "SF Mono");
+        assert_eq!(code(Face::SystemMono), "SF Mono");
+        HAS_SF_MONO.with(|cell| cell.set(false));
+        assert_eq!(code(Face::System), "Menlo");
         HAS_SF_MONO.with(|cell| cell.set(true));
     }
 
