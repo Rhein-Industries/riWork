@@ -437,7 +437,7 @@ import RiWorkCore
         let bounds = UIScreen.main.bounds
         for look in Look.allCases {
             for (label, model) in [("short", "opus"), ("long", "claude-sonnet-4-5-20250929")] {
-                let rig = try await makeRig(chats: [modelChat(model)], hardwareKeyboard: true, width: bounds.width, height: bounds.height, look: look)
+                let rig = try await makeRig(chats: [modelChat(model)], hardwareKeyboard: false, width: bounds.width, height: bounds.height, look: look)
                 rig.window.windowLevel = .alert + 1
                 await rig.transport.append(chatID, conversationEvents() + [.info(modelChat(model))])
                 _ = try await openChat(rig)

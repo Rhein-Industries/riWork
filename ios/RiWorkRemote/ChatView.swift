@@ -167,27 +167,30 @@ private struct ChatToolbar: View {
     }
 
     /// Model and effort in one pull-down, in two sections with a tick on what the chat runs. The button shows the model and, after it,
-    /// the effort; a long model name is cut in the middle, the effort (a short word) never. It is not held back while a turn runs: the
-    /// Mac's tab is not either (Codex takes the change from its next turn, Claude at once or after the turn).
+    /// the effort; when the bar is short of room the effort goes first, then the model's name is cut in the middle. It is not held back
+    /// while a turn runs: the Mac's tab is not either (Codex takes the change from its next turn, Claude at once or after the turn).
     private func modelMenu(_ choices: ChatModelMenu) -> some View {
         Menu {
+            // Toggles rather than inline pickers: a picker makes a section of its own and the menu loses the headings.
             Section("Model") {
-                Picker("Model", selection: Binding(get: { choices.model ?? "" }, set: { name in choose(model: name) })) {
-                    ForEach(choices.models, id: \.self) { name in Text(name).tag(name) }
+                ForEach(choices.models, id: \.self) { name in
+                    Toggle(name, isOn: Binding(get: { choices.model == name }, set: { on in if on { choose(model: name) } }))
                 }
-                .pickerStyle(.inline)
                 Button("Other model…", systemImage: "character.cursor.ibeam") { typedModel = choices.model ?? ""; typingModel = true }
             }
             if !choices.efforts.isEmpty {
                 Section("Effort") {
-                    Picker("Effort", selection: Binding(get: { choices.effort ?? "" }, set: { effort in choose(effort: effort) })) {
-                        ForEach(choices.efforts, id: \.self) { effort in Text(effort).tag(effort) }
+                    ForEach(choices.efforts, id: \.self) { effort in
+                        Toggle(effort, isOn: Binding(get: { choices.effort == effort }, set: { on in if on { choose(effort: effort) } }))
                     }
-                    .pickerStyle(.inline)
                 }
             }
         } label: {
-            modelLabel(choices)
+            // The effort gives way before the model's name does.
+            ViewThatFits(in: .horizontal) {
+                modelLabel(choices, effort: true)
+                modelLabel(choices, effort: false)
+            }
                 .foregroundStyle(style.text).padding(.horizontal, 8)
                 .frame(minHeight: style.pt(40)).contentShape(Rectangle())
         }
@@ -195,11 +198,10 @@ private struct ChatToolbar: View {
         .accessibilityLabel("Model").accessibilityValue(choices.spoken)
         .accessibilityHint(choices.efforts.isEmpty ? "Choose the model" : "Choose the model and the reasoning effort")
     }
-    private func modelLabel(_ choices: ChatModelMenu) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: "cpu").accessibilityHidden(true)
+    private func modelLabel(_ choices: ChatModelMenu, effort: Bool) -> some View {
+        HStack(spacing: 4) {
             Text(choices.title).font(style.face(11, bold: true, relativeTo: .caption)).lineLimit(1).truncationMode(.middle)
-            if let detail = choices.detail {
+            if effort, let detail = choices.detail {
                 Text("· " + detail).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1).fixedSize()
             }
             Image(systemName: "chevron.up.chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
