@@ -308,11 +308,12 @@ impl ChatView {
             ))
             .children(
                 toolbar::effort_available(models, model.as_deref(), provider).then(|| {
+                    // An effort is a lowercase word; Native starts it with a capital.
                     picker(
                         "chat-effort",
-                        placeholder(
-                            toolbar::effort_label(models, model.as_deref(), effort.as_deref()),
-                            "effort",
+                        widgets::sentence(
+                            &toolbar::effort_label(models, model.as_deref(), effort.as_deref()),
+                            look,
                         ),
                         Menu::Effort,
                         cx,
@@ -320,17 +321,42 @@ impl ChatView {
                 }),
             )
             .children(toolbar::fast_available(models, model.as_deref()).then(|| {
+                // Native's is a capsule toggle with the bolt symbol: grey while off, and in
+                // the working color with the bolt filled while on, as the mic shows it listens.
+                let toggle = if look.native {
+                    capsule("chat-fast", "Fast", Button::Secondary, look)
+                        .pl(ui_text::space(8.0))
+                        .child(icons::symbol(
+                            if fast { "bolt.fill" } else { "bolt" },
+                            10.0,
+                            None,
+                        ))
+                        .flex_row_reverse()
+                        .when(fast, |toggle| {
+                            toggle
+                                .bg(rgb(look.tint(colors.working, 0.18)))
+                                .text_color(rgb(colors.working))
+                        })
+                        .when(!fast, |toggle| toggle.text_color(rgb(colors.muted)))
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style.bg(rgb(if fast {
+                                look.tint(colors.working, 0.28)
+                            } else {
+                                Button::Secondary.hover(colors)
+                            }))
+                        })
+                } else {
+                    button(
+                        "chat-fast",
+                        toolbar::fast_label(fast),
+                        fast.then_some(colors.cyan),
+                        look,
+                    )
+                };
                 div()
                     .relative()
-                    .child(
-                        button(
-                            "chat-fast",
-                            toolbar::fast_label(fast),
-                            fast.then_some(colors.cyan),
-                            look,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| view.toggle_fast(cx))),
-                    )
+                    .child(toggle.on_click(cx.listener(|view, _, _, cx| view.toggle_fast(cx))))
                     .child(tooltip::anchor(
                         "Fast mode answers sooner and uses more of your limits",
                         TipLook::Control,
@@ -553,7 +579,8 @@ impl ChatView {
                     .into_iter()
                     .map(|line| {
                         let name = line.effort;
-                        row(format!("effort-{name}"), line.label, None, line.current)
+                        let label = widgets::sentence(&line.label, look);
+                        row(format!("effort-{name}"), label, None, line.current)
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.configure(None, Some(name.clone()), None, None, cx);
                             }))
@@ -982,25 +1009,34 @@ impl ChatView {
                             .children(prompt.options.iter().enumerate().map(
                                 |(option_at, option)| {
                                     let chosen = picked.contains(&option_at);
-                                    let label = if chosen {
+                                    // Native leads a chosen option with the tick symbol.
+                                    let label = if chosen && !look.native {
                                         format!("✓ {}", option.label)
                                     } else {
                                         option.label.clone()
                                     };
+                                    let tick = |option: Stateful<gpui::Div>| {
+                                        option.when(chosen && look.native, |option| {
+                                            option
+                                                .flex_row_reverse()
+                                                .pl(ui_text::space(9.0))
+                                                .child(icons::symbol("checkmark", 9.0, None))
+                                        })
+                                    };
                                     if answered {
-                                        return dimmed(
+                                        return tick(dimmed(
                                             id(format!("opt-{prompt_at}-{option_at}")),
                                             label,
                                             look,
-                                        )
+                                        ))
                                         .into_any_element();
                                     }
-                                    button(
+                                    tick(button(
                                         id(format!("opt-{prompt_at}-{option_at}")),
                                         label,
                                         chosen.then_some(colors.cyan),
                                         look,
-                                    )
+                                    ))
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         view.pick(prompt_at, option_at, cx);
                                     }))
