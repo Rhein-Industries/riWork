@@ -147,8 +147,7 @@ struct ChatModelSheet: View {
         let choices = choices
         VStack(spacing: 0) {
             WorkspaceBar(title: style.cased("Model")) { Button("Done", action: close).accessibilityHint("Closes the picker") }
-            ScrollView { content(choices) }.scrollBounceBehavior(.basedOnSize)
-            footer
+            ScrollView { content(choices) }.scrollBounceBehavior(.basedOnSize).desktopSheetFooter(style) { footer }
         }
         .desktopSheetSurface(style)
         .foregroundStyle(style.text).font(style.face(13, relativeTo: .body)).tint(style.accent)
@@ -241,7 +240,7 @@ struct ChatModelSheet: View {
 
     private var footer: some View {
         VStack(spacing: 6) {
-            if !style.glass { DesktopRule() }
+            DesktopRule()
             if model.keyboard.hardware.isAttached || keyboardInUse {
                 Text("↑↓ move   ←→ effort   ⏎ choose   ⎋ close").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                     .lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 12).accessibilityHidden(true)
@@ -249,7 +248,7 @@ struct ChatModelSheet: View {
             Button(action: close) { Text("Done").font(style.face(14, bold: true, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: style.pt(48)) }
                 .buttonStyle(DesktopButtonStyle(prominent: true)).padding(.horizontal, 12).padding(.bottom, 8)
         }
-        .desktopSheetFooter(style)
+        .background(style.glass ? style.surface : style.panel)
     }
 
     // MARK: Ring and keys

@@ -281,9 +281,10 @@ extension View {
             background(selected ? style.active : .clear).contentShape(Rectangle())
         }
     }
-    /// The bottom of a sheet that holds its main button: a panel under a rule; on glass, the sheet's own glass with no rule.
-    @ViewBuilder func desktopSheetFooter(_ style: DesktopStyle) -> some View {
-        background(style.glass ? style.surface : style.panel)
+    /// A sheet's list with the footer that holds its main button under it, the list clipped at the footer's rule so its last lines
+    /// never run under the footer's labels (on glass too, where the footer has no panel of its own).
+    @ViewBuilder func desktopSheetFooter<Footer: View>(_ style: DesktopStyle, @ViewBuilder footer: () -> Footer) -> some View {
+        if style.native { VStack(spacing: 0) { self.clipped(); footer() } } else { VStack(spacing: 0) { self; footer() } }
     }
 }
 

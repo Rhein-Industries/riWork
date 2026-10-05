@@ -17,8 +17,7 @@ struct NewTerminalSheet: View {
             WorkspaceBar(title: style.cased("New terminal")) {
                 Button("Cancel", action: sheet.cancel).accessibilityHint("Closes without opening a terminal")
             }
-            ScrollView { formContent }.scrollBounceBehavior(.basedOnSize)
-            footer
+            ScrollView { formContent }.scrollBounceBehavior(.basedOnSize).desktopSheetFooter(style) { footer }
         }
         .desktopSheetSurface(style)
         .foregroundStyle(style.text).font(style.face(13, relativeTo: .body)).tint(style.accent)
@@ -177,7 +176,7 @@ struct NewTerminalSheet: View {
     }
     private var footer: some View {
         VStack(spacing: 6) {
-            if !style.glass { DesktopRule() }
+            DesktopRule()
             if hardwareKeyboard || sheet.keyboardInUse {
                 Text("↩ create   ⎋ cancel   ↑↓ choose   ⇥ next control").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                     .lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 12).accessibilityHidden(true)
@@ -193,7 +192,7 @@ struct NewTerminalSheet: View {
             .overlay { ring(.create) }
             .padding(.horizontal, 12).padding(.bottom, 8)
             .accessibilityHint(sheet.unsupported ? sheet.unsupportedMessage : "Opens it on your Mac and switches to it")
-        }.desktopSheetFooter(style)
+        }.background(style.glass ? style.surface : style.panel)
     }
 }
 
