@@ -23,6 +23,8 @@ impl DisplayMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Row {
     Item(usize),
+    /// An ordinary image artifact from a finished turn, without its routine item body.
+    Artifact(usize),
     Outcome(String, TurnOutcome),
 }
 
@@ -63,6 +65,7 @@ pub(super) fn rows(
             }
         }
     }
+    let finished: HashSet<&str> = completed.iter().map(|(id, _, _)| id.as_str()).collect();
     let done: HashSet<&str> = completed
         .iter()
         .filter(|(_, outcome, _)| *outcome == TurnOutcome::Completed)
@@ -106,11 +109,17 @@ pub(super) fn rows(
                 item.status,
                 ItemStatus::Failed | ItemStatus::Declined | ItemStatus::Interrupted
             )
-            || !item.presentation.images.is_empty()
             || item.presentation.phase == Some(MessagePhase::Final)
             || finals.contains(&at);
         if visible {
             out.push(Row::Item(at));
+        } else if !item.presentation.images.is_empty()
+            && item
+                .turn_id
+                .as_deref()
+                .is_some_and(|turn| finished.contains(turn))
+        {
+            out.push(Row::Artifact(at));
         }
     }
     out
@@ -119,7 +128,9 @@ pub(super) fn rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::model::{ChatEvent, ChatState, Item, Presentation};
+    use crate::chat::model::{ChatEvent, ChatImage, ChatState, ImageSource, Item, Presentation};
+    use crate::chat::wire::Envelope;
+    use crate::chat_view::state::ChatModel;
     fn item(id: &str, phase: Option<MessagePhase>, body: ItemBody) -> Item {
         Item {
             id: id.into(),
@@ -134,6 +145,178 @@ mod tests {
     }
     fn text(id: &str, phase: Option<MessagePhase>) -> Item {
         item(id, phase, ItemBody::AgentMessage { text: id.into() })
+    }
+    fn with_image(mut item: Item) -> Item {
+        item.presentation.images.push(ChatImage {
+            label: "Screenshot".into(),
+            source: ImageSource::Url {
+                url: "https://example.invalid/screenshot.png".into(),
+            },
+        });
+        item
+    }
+    fn apply(model: &mut ChatModel, seq: &mut u64, event: ChatEvent) {
+        *seq += 1;
+        model.apply(&[Envelope {
+            chat_id: "chat".into(),
+            seq: *seq,
+            event,
+        }]);
+    }
+
+    #[test]
+    fn tool_images_wait_for_turn_completion_and_verbose_retains_the_whole_history() {
+        let mut model = ChatModel::new();
+        let mut seq = 0;
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::TurnStarted {
+                turn_id: "turn".into(),
+            },
+        );
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::State {
+                state: ChatState::Running,
+            },
+        );
+        let user = with_image(item(
+            "user",
+            None,
+            ItemBody::UserMessage {
+                text: "Inspect this image".into(),
+            },
+        ));
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::ItemCompleted { item: user.clone() },
+        );
+        let mut tool = with_image(item(
+            "tool",
+            None,
+            ItemBody::ToolCall {
+                server: Some("cua".into()),
+                tool: "screenshot".into(),
+                input: serde_json::json!({"window": 42}),
+                output: Some("Routine tool details".into()),
+            },
+        ));
+        tool.status = ItemStatus::InProgress;
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::ItemStarted { item: tool.clone() },
+        );
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Normal),
+            vec![Row::Item(0)]
+        );
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Verbose),
+            vec![Row::Item(0), Row::Item(1)]
+        );
+
+        // Finishing the tool is not finishing the assistant's turn.
+        tool.status = ItemStatus::Completed;
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::ItemCompleted { item: tool.clone() },
+        );
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Normal),
+            vec![Row::Item(0)]
+        );
+        assert_eq!(model.transcript.items[1], tool);
+        let mut answer = with_image(text(
+            "Final answer with an image",
+            Some(MessagePhase::Final),
+        ));
+        answer.status = ItemStatus::InProgress;
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::ItemStarted { item: answer },
+        );
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Normal),
+            vec![Row::Item(0), Row::Item(2)]
+        );
+        assert_eq!(model.transcript.items[0], user);
+
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::TurnCompleted {
+                turn_id: "turn".into(),
+                outcome: TurnOutcome::Completed,
+            },
+        );
+        let history = model.transcript.clone();
+        // Artifact is a metadata-free rendering row, not the detailed tool item.
+        let normal = vec![Row::Item(0), Row::Artifact(1), Row::Item(2)];
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Normal),
+            normal
+        );
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Verbose),
+            vec![Row::Item(0), Row::Item(1), Row::Item(2)]
+        );
+        assert_eq!(model.transcript.items[1], tool);
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Normal),
+            normal
+        );
+        assert_eq!(model.transcript, history);
+    }
+
+    #[test]
+    fn image_failures_remain_visible_while_commentary_images_wait_and_lose_metadata() {
+        for status in [
+            ItemStatus::Failed,
+            ItemStatus::Declined,
+            ItemStatus::Interrupted,
+        ] {
+            let mut transcript = Transcript::default();
+            let mut failed = with_image(item(
+                "tool",
+                None,
+                ItemBody::ToolCall {
+                    server: None,
+                    tool: "screenshot".into(),
+                    input: serde_json::Value::Null,
+                    output: Some("Actionable failure".into()),
+                },
+            ));
+            failed.status = status;
+            transcript.items.push(failed);
+            assert_eq!(
+                rows(&transcript, &[], DisplayMode::Normal),
+                vec![Row::Item(0)]
+            );
+        }
+        let mut transcript = Transcript::default();
+        transcript.items.push(with_image(text(
+            "commentary",
+            Some(MessagePhase::Commentary),
+        )));
+        assert!(rows(&transcript, &[], DisplayMode::Normal).is_empty());
+        let completed = vec![("turn".into(), TurnOutcome::Completed, 1)];
+        assert_eq!(
+            rows(&transcript, &completed, DisplayMode::Normal),
+            vec![
+                Row::Artifact(0),
+                Row::Outcome("turn".into(), TurnOutcome::Completed)
+            ]
+        );
+        assert_eq!(
+            rows(&transcript, &completed, DisplayMode::Verbose),
+            vec![Row::Item(0)]
+        );
     }
     #[test]
     fn commentary_is_never_a_verdict_even_after_completion() {

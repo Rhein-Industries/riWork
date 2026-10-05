@@ -38,11 +38,13 @@ impl ChatView {
     ) -> AnyElement {
         let look = Look::of(cx);
         let content = match self.visible.get(ix) {
-            Some(super::display::Row::Item(at)) => {
+            Some(row @ (super::display::Row::Item(at) | super::display::Row::Artifact(at))) => {
                 let item = &self.model.transcript.items[*at];
                 div()
                     .w_full()
-                    .child(self.item(*at, item, look, cx))
+                    .when(matches!(row, super::display::Row::Item(_)), |row| {
+                        row.child(self.item(*at, item, look, cx))
+                    })
                     .children(
                         item.presentation
                             .images
@@ -83,13 +85,6 @@ impl ChatView {
 
     fn item(&self, ix: usize, item: &Item, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
-        if self.display_mode == super::DisplayMode::Normal
-            && !item.presentation.images.is_empty()
-            && matches!(item.body, ItemBody::ToolCall { .. })
-            && item.status == crate::chat::model::ItemStatus::Completed
-        {
-            return div().into_any_element();
-        }
         match &item.body {
             ItemBody::UserMessage { text } => div()
                 .w_full()

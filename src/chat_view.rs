@@ -418,7 +418,8 @@ impl ChatView {
             self.refresh_projection();
         }
         for (row, item) in self.visible.iter().enumerate() {
-            if matches!(item, display::Row::Item(at) if applied.touched.contains(at)) {
+            if matches!(item, display::Row::Item(at) | display::Row::Artifact(at) if applied.touched.contains(at))
+            {
                 self.list.remeasure_items(row..row + 1);
             }
         }
