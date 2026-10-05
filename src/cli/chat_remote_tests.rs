@@ -1021,3 +1021,58 @@ fn remote_shrink_preserves_small_images_and_marks_large_images_unavailable() {
             .is_none()
     );
 }
+
+#[test]
+fn complete_event_pages_never_cut_strings_or_advance_past_an_oversized_event() {
+    let event = ChatEvent::ItemCompleted {
+        item: crate::chat::model::Item {
+            id: "large".into(),
+            turn_id: None,
+            status: crate::chat::model::ItemStatus::Completed,
+            presentation: Default::default(),
+            body: crate::chat::model::ItemBody::AgentMessage {
+                text: "x".repeat(5000),
+            },
+        },
+    };
+    let mut script = Script::of([]);
+    script
+        .steps
+        .push_back(Ok(Poll::Event(envelope(8, event.clone()))));
+    assert!(
+        collect_complete(&mut script, &plan(7, 10, 1024))
+            .unwrap_err()
+            .starts_with("response_too_large:")
+    );
+    let mut script = Script::of([8]);
+    script.steps.push_back(Ok(Poll::Event(envelope(9, event))));
+    let page = collect_complete(&mut script, &plan(7, 10, 1024)).unwrap();
+    assert_eq!(page.next, 8);
+    assert!(page.more);
+    assert_eq!(page.events.len(), 1);
+}
+
+#[test]
+fn snapshot_is_read_only_without_a_host_or_an_ensure_call() {
+    let home = std::env::temp_dir().join(format!("riwork-cli-snapshot-{}", uuid::Uuid::new_v4()));
+    let id = uuid::Uuid::new_v4().to_string();
+    let dir = crate::chat::log::chat_dir(&home, &id).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    let line = serde_json::to_vec(&envelope(1, usage_event(42))).unwrap();
+    let mut value: Value = serde_json::from_slice(&line).unwrap();
+    value["chat_id"] = json!(id);
+    let log = value.to_string() + "\n{partial";
+    std::fs::write(dir.join("events.jsonl"), &log).unwrap();
+    let result = chat_client_command(&home, vec!["snapshot".into(), id], true, &|_| {
+        panic!("snapshot must never activate the host")
+    })
+    .unwrap();
+    let result: Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(result["next"], 1);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("events.jsonl")).unwrap(),
+        log
+    );
+    assert!(!home.join("run").exists());
+    std::fs::remove_dir_all(home).unwrap();
+}

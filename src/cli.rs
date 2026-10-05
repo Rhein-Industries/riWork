@@ -146,7 +146,11 @@ the events with seq above --since (default 0), at most --max (500 by default, up
 waits up to --wait-ms (up to 25000) for the first, then collects for 50 ms; it
 returns at once for events that are already there. Pass `next` as --since to continue;
 `more` says the page was cut short. An event too big for a page alone has its long
-strings cut. chat command takes one ChatCommand as JSON (send, interrupt, approve,
+strings cut unless --complete requests lossless events (an oversized event is an error).
+chat snapshot UUID --json reads current full items and controls directly from disk without
+starting a host. --max is 1–100 (default 50); --max-bytes bounds the complete response.
+Use its cursor and before with --cursor TOKEN --before ORDER to page older full items.
+chat command takes one ChatCommand as JSON (send, interrupt, approve,
 answer, configure, compact, stop) and refuses unknown fields; errors that start with
 `invalid_request:` are about the command, anything else about the host or the chat.
 capabilities --json has \"chat\": true and \"orchestrator_create\": true.
@@ -1987,8 +1991,36 @@ fn chat_client_command(
                 Ok(chat_line(&chat))
             }
         }
+        "snapshot" => {
+            let item_ids: Vec<String> = match take_verbatim_option(&mut args, "--items-json")? {
+                Some(text) if text.len() <= 60_000 => {
+                    serde_json::from_str(&text).map_err(|_| "invalid snapshot item ids")?
+                }
+                Some(_) => return Err("snapshot item ids limit exceeded".into()),
+                None => Vec::new(),
+            };
+            let cursor = take_option(&mut args, "--cursor")?;
+            let before = chat_remote::number(&mut args, "--before", u64::MAX, 0..=u64::MAX)?;
+            let limit = chat_remote::number(&mut args, "--max", 50, 1..=100)?;
+            let max_bytes = chat_remote::number(&mut args, "--max-bytes", 120_000, 4096..=8 << 20)?;
+            let id = take_single(
+                args,
+                "chat snapshot UUID [--cursor TOKEN --before ORDER] [--max N --max-bytes N]",
+            )?;
+            let snapshot = crate::chat::log::read_snapshot(
+                home,
+                &id,
+                cursor.as_deref(),
+                before,
+                limit as usize,
+                max_bytes as usize,
+                &item_ids,
+            )?;
+            json_text(&snapshot)
+        }
         "events" => {
             let started = std::time::Instant::now();
+            let complete = take_flag(&mut args, "--complete");
             let options = parse_events_arguments(args)?;
             let socket = ensure(home)?;
             let id = resolve_chat(&mut Client::connect(&socket)?, &options.chat)?;
@@ -2002,7 +2034,12 @@ fn chat_client_command(
                 })?;
             // The wait counts from the start of this process, so a host that
             // took long to start does not stretch it.
-            let page = chat_remote::collect(
+            let collect = if complete {
+                chat_remote::collect_complete
+            } else {
+                chat_remote::collect
+            };
+            let page = collect(
                 &mut subscription,
                 &chat_remote::Plan {
                     chat_id: id,
@@ -2076,7 +2113,7 @@ fn chat_client_command(
             }
         }
         _ => Err(
-            "Usage: riwork chat serve|ensure|list|new|events|command|send|stop (riwork help)"
+            "Usage: riwork chat serve|ensure|list|new|snapshot|events|command|send|stop (riwork help)"
                 .to_owned(),
         ),
     }

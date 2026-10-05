@@ -237,23 +237,25 @@ public struct ChatEventsRequest: Sendable, Equatable {
     public let waitMilliseconds: Int
     /// Sent only when set; the desktop's default is 500.
     public let maxEvents: Int?
+    public let complete: Bool
 
-    public init(chatID: String, since: UInt64, waitMilliseconds: Int, maxEvents: Int? = nil) throws {
+    public init(chatID: String, since: UInt64, waitMilliseconds: Int, maxEvents: Int? = nil, complete: Bool = false) throws {
         guard NewTerminalRequest.isCanonicalUUID(chatID) else { throw ChatValidationError.invalidID }
         guard (0...ChatLimits.maximumWaitMilliseconds).contains(waitMilliseconds) else { throw ChatValidationError.invalidWait }
         if let maxEvents { guard (1...ChatLimits.maximumEvents).contains(maxEvents) else { throw ChatValidationError.invalidCount } }
-        self.chatID = chatID; self.since = since; self.waitMilliseconds = waitMilliseconds; self.maxEvents = maxEvents
+        self.chatID = chatID; self.since = since; self.waitMilliseconds = waitMilliseconds; self.maxEvents = maxEvents; self.complete = complete
     }
     /// A request is a long poll when the desktop may hold it back: it takes one of the device's waiting slots.
     public var isLongPoll: Bool { waitMilliseconds > 0 }
 
     public var params: [String: JSONValue] {
         var params: [String: JSONValue] = ["chat_id": .string(chatID), "since": .number(Double(since)), "wait_ms": .number(Double(waitMilliseconds))]
+        if complete { params["complete"] = .bool(true) }
         if let maxEvents { params["max_events"] = .number(Double(maxEvents)) }
         return params
     }
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["chat_id", "since", "wait_ms", "max_events"]) else { throw ChatValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["chat_id", "since", "wait_ms", "max_events", "complete"]) else { throw ChatValidationError.malformed }
         func whole(_ key: String, in range: ClosedRange<Double>) throws -> Int? {
             guard let value = params[key] else { return nil }
             guard case .number(let number) = value, number.isFinite, number.rounded() == number, range.contains(number) else { throw ChatValidationError.malformed }
@@ -261,9 +263,21 @@ public struct ChatEventsRequest: Sendable, Equatable {
         }
         guard case .string(let id)? = params["chat_id"], case .number(let since)? = params["since"], since.isFinite, since >= 0, since.rounded() == since,
               since < 9_007_199_254_740_992, let wait = try whole("wait_ms", in: 0...Double(ChatLimits.maximumWaitMilliseconds)) else { throw ChatValidationError.malformed }
-        try self.init(chatID: id, since: UInt64(since), waitMilliseconds: wait, maxEvents: try whole("max_events", in: 1...Double(ChatLimits.maximumEvents)))
+        if let raw = params["complete"], case .bool = raw {} else if params["complete"] != nil { throw ChatValidationError.malformed }
+        try self.init(chatID: id, since: UInt64(since), waitMilliseconds: wait, maxEvents: try whole("max_events", in: 1...Double(ChatLimits.maximumEvents)), complete: params["complete"] == .bool(true))
     }
-    public func parse(_ result: JSONValue) throws -> ChatEventsReply { try ChatEventsReply.parse(result, chatID: chatID) }
+    public func parse(_ result: JSONValue) throws -> ChatEventsReply {
+        let reply = try ChatEventsReply.parse(result, chatID: chatID)
+        if complete {
+            var last = since
+            for envelope in reply.events {
+                guard last < UInt64.max, envelope.seq == last + 1 else { throw ChatControlError.unreadableReply }
+                last = envelope.seq
+            }
+            guard reply.next == last else { throw ChatControlError.unreadableReply }
+        }
+        return reply
+    }
 }
 
 // MARK: - chat.command and chat.stop
@@ -342,5 +356,50 @@ extension RemoteTransport {
     public func stopChat(_ request: ChatStopRequest, id: String = UUID().uuidString.lowercased()) async throws {
         do { try request.parse(try await self.request(method: "chat.stop", params: request.params, id: id)) }
         catch { throw ChatControlError.from(error, operation: .stop) }
+    }
+}
+
+
+/// Snapshot v1 returns full current rows and controls at one live event cursor.
+public struct ChatSnapshotRow: Sendable, Equatable, Codable {
+    public let order: UInt64
+    public let item: ChatItem
+    public init(order: UInt64, item: ChatItem) { self.order = order; self.item = item }
+}
+public struct ChatSnapshotReply: Sendable, Equatable, Codable {
+    public let v: Int
+    public let chatID: String
+    public let cursor: String
+    public let next: UInt64
+    public let before: UInt64
+    public let more: Bool
+    public let items: [ChatSnapshotRow]
+    public let controls: [ChatEvent]
+    enum CodingKeys: String, CodingKey { case v, chatID = "chat_id", cursor, next, before, more, items, controls }
+    public init(chatID: String, cursor: String, next: UInt64, before: UInt64, more: Bool, items: [ChatSnapshotRow], controls: [ChatEvent]) {
+        v = 1; self.chatID = chatID; self.cursor = cursor; self.next = next; self.before = before; self.more = more; self.items = items; self.controls = controls
+    }
+}
+extension RemoteTransport {
+    public func chatSnapshot(chatID: String, cursor: String? = nil, before: UInt64? = nil, itemIDs: [String] = []) async throws -> ChatSnapshotReply {
+        guard NewTerminalRequest.isCanonicalUUID(chatID) else { throw ChatValidationError.invalidID }
+        var params: [String: JSONValue] = ["chat_id": .string(chatID), "limit": .number(50)]
+        if let cursor { params["cursor"] = .string(cursor) }
+        if !itemIDs.isEmpty { params["item_ids"] = .array(itemIDs.map { .string($0) }) }
+        if let before { params["before"] = .number(Double(before)) }
+        let result = try await request(method: "chat.snapshot", params: params, id: UUID().uuidString.lowercased())
+        let reply = try result.decode(ChatSnapshotReply.self)
+        guard reply.v == 1, reply.chatID == chatID, reply.cursor.count <= 80, !reply.cursor.isEmpty,
+              reply.items.count <= (itemIDs.isEmpty ? 50 : 100), cursor == nil || reply.cursor == cursor,
+              cursor == nil || reply.controls.isEmpty,
+              reply.before == reply.items.first?.order ?? 0,
+              !reply.more || !reply.items.isEmpty else { throw ChatControlError.unreadableReply }
+        var last: UInt64 = 0
+        var ids = Set<String>()
+        for row in reply.items {
+            guard row.order > last, row.order < (before ?? UInt64.max), row.order <= reply.next, ids.insert(row.item.id).inserted else { throw ChatControlError.unreadableReply }
+            last = row.order
+        }
+        return reply
     }
 }

@@ -35,6 +35,18 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var notice: String?
     /// Reading the events failed; shown (and retried) while the link is up.
     var readError: ChatControlError?
+    var historyLoading = false
+    var historyError: String?
+    var legacyLoading = false
+    @ObservationIgnored var snapshotUnavailableGeneration: UUID?
+    func install(_ snapshot: ChatSnapshotReply) {
+        feed.install(snapshot)
+        modelCatalogue = transcript.models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
+        legacyLoading = false
+    }
+    func hydrate(_ snapshot: ChatSnapshotReply) { feed.hydrate(snapshot) }
+    func prepend(_ snapshot: ChatSnapshotReply, before: UInt64) { feed.prepend(snapshot, requestedBefore: before) }
+
     /// The chat is no longer on the desktop.
     var gone = false
     /// A reader is following it now (the chat is on screen). Nothing is asked of the desktop for a chat that is not.
@@ -251,16 +263,62 @@ extension RemoteModel {
                 try? await Task.sleep(for: chatIdleInterval)
                 continue
             }
+            if !conversation.feed.loaded, conversation.snapshotUnavailableGeneration != generation {
+                let connection = generation
+                do {
+                    let snapshot = try await client.chatSnapshot(chatID: id)
+                    guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
+                    conversation.install(snapshot)
+                    conversation.readError = nil
+                    if let info = conversation.transcript.info { prepareChatCatalogue(info) }
+                } catch {
+                    guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
+                    if RemoteError.isUnsupportedMethod(error) {
+                        conversation.snapshotUnavailableGeneration = connection
+                        conversation.legacyLoading = true
+                        conversation.notice = "Update RiWork on the Mac for recent-first loading. Loading older desktop history…"
+                    } else {
+                        let failure = ChatControlError.from(error, operation: .events)
+                        if case .notFound = failure {
+                            conversation.gone = true; conversation.readError = failure
+                            await refreshChatsQuietly(); return
+                        }
+                        conversation.readError = failure
+                        if case RemoteError.rpc(let code, _) = error, code == "snapshot_limit" { return }
+                        await noteLinkLossIfNeeded()
+                        try? await Task.sleep(for: backoff.failure())
+                        continue
+                    }
+                }
+            }
+            let connection = generation
             let canWait = waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
             let since = conversation.feed.next
             let request: ChatEventsRequest
-            do { request = try ChatEventsRequest(chatID: id, since: since, waitMilliseconds: canWait ? chatWaitMilliseconds : 0) } catch { return }
+            do { request = try ChatEventsRequest(chatID: id, since: since, waitMilliseconds: canWait ? chatWaitMilliseconds : 0, maxEvents: conversation.feed.historyCursor == nil ? nil : 100, complete: conversation.feed.historyCursor != nil) } catch { return }
             do {
                 let reply = try await chatEventsFlight(request)
-                guard !Task.isCancelled, conversation.follower == token else { return }
+                guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
+                if let cursor = conversation.feed.historyCursor {
+                    var ids = Set<String>()
+                    for envelope in reply.events where envelope.seq > conversation.feed.next {
+                        switch envelope.event {
+                        case .itemDelta(let id, _): if !conversation.feed.hasItem(id) { ids.insert(id) }
+                        case .itemStarted(let item), .itemCompleted(let item): if !conversation.feed.hasItem(item.id) { ids.insert(item.id) }
+                        default: break
+                        }
+                    }
+                    let missing = Array(ids).sorted()
+                    for start in stride(from: 0, to: missing.count, by: 100) {
+                        let base = try await client.chatSnapshot(chatID: id, cursor: cursor, itemIDs: Array(missing[start..<min(start + 100, missing.count)]))
+                        guard !Task.isCancelled, conversation.follower == token, generation == connection else { return }
+                        conversation.hydrate(base)
+                    }
+                }
                 conversation.readError = nil
                 backoff.success()
                 conversation.accept(reply, since: since)
+                if !reply.more { conversation.legacyLoading = false }
                 if let info = conversation.transcript.info {
                     prepareChatCatalogue(info)
                 }
@@ -272,19 +330,45 @@ extension RemoteModel {
                 // The screen went (or the chat was switched): not a failure.
                 return
             } catch ChatControlError.notFound {
+                guard generation == connection, conversation.follower == token else { continue }
                 conversation.gone = true
                 conversation.readError = .notFound(.events)
                 await refreshChatsQuietly()
                 return
             } catch ChatControlError.unsupported {
+                guard generation == connection, conversation.follower == token else { continue }
                 chatSupport = .unsupported
                 return
             } catch {
-                guard !Task.isCancelled, conversation.follower == token else { return }
+                guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
+                if case RemoteError.rpc(let code, _) = error, code == "snapshot_expired" { conversation.reset(); continue }
+                if case ChatControlError.invalid(let reason) = error, reason.contains("cannot continue after") { conversation.reset(); continue }
                 conversation.readError = ChatControlError.from(error, operation: .events)
                 await noteLinkLossIfNeeded()
                 try? await Task.sleep(for: backoff.failure())
             }
+        }
+    }
+
+    /// History has its own cancellation scope and never changes controls or the live cursor.
+    func loadOlderChat(_ id: String, beforeInstall: @MainActor () async -> Void = {}) async {
+        let conversation = conversation(id)
+        guard chatFollowWanted, conversation.following, !conversation.historyLoading, conversation.feed.hasOlder,
+              let cursor = conversation.feed.historyCursor else { return }
+        let before = conversation.feed.before, connection = generation, follower = conversation.follower
+        conversation.historyLoading = true; conversation.historyError = nil
+        defer { conversation.historyLoading = false }
+        do {
+            let page = try await client.chatSnapshot(chatID: id, cursor: cursor, before: before)
+            guard !Task.isCancelled, generation == connection, conversation.follower == follower, conversation.following else { return }
+            await beforeInstall()
+            guard !Task.isCancelled, generation == connection, conversation.follower == follower, conversation.following else { return }
+            conversation.prepend(page, before: before)
+        } catch {
+            guard !Task.isCancelled, generation == connection, conversation.follower == follower else { return }
+            if case RemoteError.rpc(let code, _) = error, code == "snapshot_expired" {
+                conversation.reset(); conversation.notice = "History changed on the Mac. Loading the current recent messages again."
+            } else { conversation.historyError = "Can’t load older messages. Try again." }
         }
     }
 

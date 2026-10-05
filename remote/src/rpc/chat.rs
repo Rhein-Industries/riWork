@@ -240,6 +240,51 @@ fn new_args(spec: &NewSpec) -> Vec<String> {
     args
 }
 
+/// Read-only snapshot/history. Opaque cursor pins the prefix, before is an item order.
+pub(super) struct SnapshotSpec {
+    chat: String,
+    cursor: Option<String>,
+    before: u64,
+    limit: u64,
+    items: Vec<String>,
+}
+pub(super) fn snapshot_spec(params: &Value) -> std::result::Result<SnapshotSpec, Fault> {
+    let object = fields(
+        params,
+        &["chat_id", "cursor", "before", "limit", "item_ids"],
+    )?;
+    let cursor = text(object, "cursor")?.map(str::to_owned);
+    if cursor.as_ref().is_some_and(|c| {
+        c.len() > 80 || c.is_empty() || !c.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+    }) {
+        return Err(invalid("invalid snapshot cursor"));
+    }
+    let items: Vec<String> = match object.get("item_ids") {
+        None => Vec::new(),
+        Some(value) => {
+            serde_json::from_value(value.clone()).map_err(|_| invalid("invalid item ids"))?
+        }
+    };
+    if items.len() > 100
+        || items.iter().any(|id| id.is_empty() || id.len() > 512)
+        || (!items.is_empty() && cursor.is_none())
+    {
+        return Err(invalid("invalid snapshot item ids"));
+    }
+    let before = number(object, "before")?.unwrap_or(u64::MAX);
+    let limit = number(object, "limit")?.unwrap_or(50);
+    if !(1..=100).contains(&limit) || (cursor.is_none() && before != u64::MAX) {
+        return Err(invalid("invalid snapshot range"));
+    }
+    Ok(SnapshotSpec {
+        chat: chat_id(object)?,
+        cursor,
+        before,
+        limit,
+        items,
+    })
+}
+
 /// A validated `chat.events`.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct EventsSpec {
@@ -247,9 +292,13 @@ pub(super) struct EventsSpec {
     since: u64,
     wait_ms: i64,
     max_events: u64,
+    complete: bool,
 }
 pub(super) fn events_spec(params: &Value) -> std::result::Result<EventsSpec, Fault> {
-    let object = fields(params, &["chat_id", "since", "wait_ms", "max_events"])?;
+    let object = fields(
+        params,
+        &["chat_id", "since", "wait_ms", "max_events", "complete"],
+    )?;
     let chat = chat_id(object)?;
     let since = number(object, "since")?.ok_or_else(|| invalid("since is required"))?;
     let wait_ms = number(object, "wait_ms")?.ok_or_else(|| invalid("wait_ms is required"))?;
@@ -265,6 +314,7 @@ pub(super) fn events_spec(params: &Value) -> std::result::Result<EventsSpec, Fau
         since,
         wait_ms: wait_ms as i64,
         max_events,
+        complete: flag(object, "complete")?.unwrap_or(false),
     })
 }
 /// How long the CLI may take for a `chat.events` that waits up to `wait_ms`: the wait plus
@@ -440,6 +490,12 @@ pub(super) fn stop_spec(params: &Value) -> std::result::Result<StopSpec, Fault> 
 /// stripped). The wording belongs to the CLI and was there before these methods; the codes
 /// are the connector's.
 fn chat_fault(fault: Fault) -> Fault {
+    if fault.code == "cli_error" && fault.message.contains("response_too_large:") {
+        return Fault::new(
+            "response_too_large",
+            "A complete chat update exceeds the response limit. Open this chat on the Mac.",
+        );
+    }
     if fault.code != "cli_error" {
         return fault;
     }
@@ -559,7 +615,10 @@ impl Page {
             let seq = entry.get("seq")?.as_u64()?;
             let event = entry.get("event")?;
             // An event is an object with its tag; what is inside is the desktop's.
-            if seq <= last || !event.get("event").is_some_and(Value::is_string) {
+            if seq <= last
+                || (spec.complete && last.checked_add(1) != Some(seq))
+                || !event.get("event").is_some_and(Value::is_string)
+            {
                 return None;
             }
             last = seq;
@@ -569,7 +628,7 @@ impl Page {
         let more = object.get("more")?.as_bool()?;
         // Not before the last event it returned, and a page that says there is more must have
         // moved the phone on, or it would ask for the same page again.
-        if next < last || (more && next == spec.since) {
+        if next < last || (spec.complete && next != last) || (more && next == spec.since) {
             return None;
         }
         Some(Self {
@@ -597,7 +656,9 @@ const FRAME_MARGIN: usize = 64;
 /// the cut with an ellipsis. The same cut the CLI makes of an event too big for a page.
 fn cut_strings(value: &mut Value, cap: usize) {
     if value["kind"].as_str() == Some("data")
-        && value["base64"].as_str().is_some_and(|data| data.len() > cap)
+        && value["base64"]
+            .as_str()
+            .is_some_and(|data| data.len() > cap)
     {
         *value = serde_json::json!({"kind": "unavailable", "reason": "Image omitted to fit the remote response limit"});
         return;
@@ -638,6 +699,29 @@ fn sealed(request: &str, page: &Page, compress: bool) -> std::result::Result<Opt
         Err(link::EncodeError::Other(e)) => Err(cli_fault(e)),
     }
 }
+/// Lossless mode cuts whole trailing events, never fields or state. An oversized
+/// single event fails explicitly and leaves the phone's live cursor unchanged.
+fn fit_complete_page(
+    request: &str,
+    mut page: Page,
+    compress: bool,
+) -> std::result::Result<Value, Fault> {
+    loop {
+        if let Some(result) = sealed(request, &page, compress)? {
+            return Ok(result);
+        }
+        if page.events.len() <= 1 {
+            return Err(Fault::new(
+                "response_too_large",
+                "a complete event exceeds the encrypted frame limit",
+            ));
+        }
+        page.events.truncate(page.events.len() / 2);
+        page.next = page.events.last().unwrap()["seq"].as_u64().unwrap();
+        page.more = true;
+    }
+}
+
 /// The `chat.events` result for `page`, cut until it fits one sealed frame (see `sealed`).
 ///
 /// - A page that is too big loses its last half, and says `more`; `next` is the last event it
@@ -852,6 +936,105 @@ impl Rpc {
         })
     }
 
+    pub(super) async fn chat_snapshot(
+        &self,
+        request: &str,
+        spec: SnapshotSpec,
+        reply_limit: usize,
+    ) -> std::result::Result<Value, Fault> {
+        let budget = (MAX_PLAINTEXT - REPLY_SLACK - FRAME_MARGIN).min(reply_limit - REPLY_SLACK);
+        let mut args = vec![
+            "chat".into(),
+            "snapshot".into(),
+            spec.chat.clone(),
+            "--max".into(),
+            spec.limit.to_string(),
+            "--max-bytes".into(),
+            budget.to_string(),
+        ];
+        if let Some(cursor) = &spec.cursor {
+            args.extend([
+                "--cursor".into(),
+                cursor.clone(),
+                "--before".into(),
+                spec.before.to_string(),
+            ]);
+        }
+        if !spec.items.is_empty() {
+            args.push(format!(
+                "--items-json={}",
+                serde_json::to_string(&spec.items).map_err(cli_fault)?
+            ));
+        }
+        let result = self
+            .read_capped(args, CLI_TIMEOUT, budget + REPLY_SLACK)
+            .await
+            .map_err(|fault| {
+                if fault.message.contains("Unknown chat command")
+                    || fault.message.contains("Usage: riwork chat")
+                {
+                    Fault::new(
+                        "invalid_request",
+                        "unsupported RPC method: update desktop CLI for chat.snapshot",
+                    )
+                } else if fault.message.contains("snapshot")
+                    && fault.message.contains("limit exceeded")
+                {
+                    Fault::new(
+                        "snapshot_limit",
+                        "This chat exceeds the recent-history read limit. Open it on the Mac.",
+                    )
+                } else if fault.message.contains("chat not found") {
+                    Fault::new("not_found", "chat not found on the desktop")
+                } else if fault.message.contains("snapshot expired") {
+                    Fault::new(
+                        "snapshot_expired",
+                        "snapshot expired; reopen the recent window",
+                    )
+                } else {
+                    chat_fault(fault)
+                }
+            })?;
+        let valid = result["v"] == json!(1)
+            && result["chat_id"] == spec.chat
+            && result["next"].as_u64().is_some()
+            && result["cursor"].as_str().is_some_and(|c| c.len() <= 80)
+            && result["more"].is_boolean()
+            && result["before"].as_u64().is_some()
+            && result["controls"].as_array().is_some()
+            && result["items"].as_array().is_some_and(|items| {
+                let mut last = 0;
+                items.len()
+                    <= if spec.items.is_empty() {
+                        spec.limit as usize
+                    } else {
+                        spec.items.len()
+                    }
+                    && items.iter().all(|i| {
+                        let order = i["order"].as_u64().unwrap_or(0);
+                        let good =
+                            order > last && order < spec.before && i["item"]["id"].is_string();
+                        last = order;
+                        good
+                    })
+            })
+            && spec
+                .cursor
+                .as_ref()
+                .is_none_or(|c| result["cursor"] == *c && result["controls"] == json!([]));
+        if !valid {
+            return Err(cli_fault("invalid snapshot reply"));
+        }
+        link::encode_reply(
+            &success(request, result.clone()),
+            std::time::Instant::now(),
+            reply_limit > MAX_PLAINTEXT,
+            MAX_PLAINTEXT - FRAME_MARGIN,
+        )
+        .map_err(|_| Fault::new("response_too_large", "snapshot exceeds frame limit"))?;
+        Ok(result)
+    }
+
     /// A page of a chat's events after `since`, as `riwork chat events` collects it. `request`
     /// is the id of the request, for sizing the reply; `reply_limit` tells whether the session
     /// deflates its replies.
@@ -864,7 +1047,7 @@ impl Rpc {
         self.require_chat().await?;
         // Bigger than one frame is fine when the session deflates; `fit_page` makes sure
         // that what is sent fits the frame it ends up in.
-        let args: Vec<String> = [
+        let mut args: Vec<String> = [
             "chat".to_owned(),
             "events".into(),
             spec.chat.clone(),
@@ -878,6 +1061,9 @@ impl Rpc {
             (reply_limit - REPLY_SLACK).to_string(),
         ]
         .into();
+        if spec.complete {
+            args.push("--complete".into());
+        }
         let cli = self
             .read_capped(args, events_limit(spec.wait_ms), reply_limit)
             .await
@@ -896,9 +1082,15 @@ impl Rpc {
         })?;
         // Deflating a page of megabytes, more than once, is not for a thread that serves others.
         let (request, compress) = (request.to_owned(), reply_limit > MAX_PLAINTEXT);
-        tokio::task::spawn_blocking(move || fit_page(&request, page, compress))
-            .await
-            .map_err(|e| cli_fault(format!("fitting the page was interrupted: {e}")))?
+        tokio::task::spawn_blocking(move || {
+            if spec.complete {
+                fit_complete_page(&request, page, compress)
+            } else {
+                fit_page(&request, page, compress)
+            }
+        })
+        .await
+        .map_err(|e| cli_fault(format!("fitting the page was interrupted: {e}")))?
     }
 
     /// Hand one command to a chat. A message to a stopped chat resumes it, which starts its
@@ -974,7 +1166,8 @@ mod tests {
 
     #[test]
     fn frame_cut_does_not_corrupt_image_payloads() {
-        let mut value = json!({"source":{"kind":"data","mime":"image/png","base64":"a".repeat(2000)}});
+        let mut value =
+            json!({"source":{"kind":"data","mime":"image/png","base64":"a".repeat(2000)}});
         cut_strings(&mut value, 128);
         assert_eq!(value["source"]["kind"], "unavailable");
         assert!(value["source"].get("base64").is_none());

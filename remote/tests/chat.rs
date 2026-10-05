@@ -197,6 +197,7 @@ fn stub_cli(dir: &Path) -> PathBuf {
                touch \"$d/create.ran\"\n\
                fail create\n\
                cat \"$d/create.json\";;\n\
+             'chat snapshot') fail snapshot; cat \"$d/snapshot.json\";;\n\
              'chat events')\n\
                if [ -e \"$d/events.delay\" ]; then sleep \"$(cat \"$d/events.delay\")\"; fi\n\
                fail events\n\
@@ -1960,4 +1961,129 @@ async fn a_list_is_as_long_as_a_reply_may_be_and_says_so_when_it_is_longer() {
     let deflating = f.call_deflating("chats.list", json!({})).await;
     assert_eq!(deflating["ok"], true, "{deflating}");
     assert_eq!(deflating["result"]["chats"].as_array().unwrap().len(), 400);
+}
+
+#[tokio::test]
+async fn snapshots_validate_before_cli_and_preserve_complete_rows_with_bounded_argv() {
+    let f = Fixture::without_cli();
+    for extra in [
+        json!({"limit":0}),
+        json!({"limit":101}),
+        json!({"cursor":"../escape"}),
+        json!({"cursor":null}),
+        json!({"before":-1}),
+        json!({"before":2}),
+        json!({"extra":true}),
+        json!({"item_ids":["a"]}),
+        json!({"item_ids":"bad"}),
+    ] {
+        let mut params = json!({"chat_id":f.chat});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        assert_eq!(
+            code(&f.call("chat.snapshot", params).await),
+            "invalid_request"
+        );
+    }
+    let f = Fixture::new();
+    let full = json!({"v":1,"chat_id":f.chat,"cursor":"1234-99-abcdef","next":99,
+        "before":90,"more":true,"items":[{"order":90,"item":{"id":"row","status":"completed","body":{"type":"agent_message","text":"full base plus every delta"}}}],
+        "controls":[{"event":"models","models":[]}]});
+    f.says("snapshot.json", &full);
+    let answer = f.call("chat.snapshot", json!({"chat_id":f.chat})).await;
+    assert_eq!(answer["result"], full);
+    let args = &f.chat_calls()[0];
+    assert!(args.contains(&"snapshot".into()));
+    assert!(args.contains(&"--max-bytes".into()));
+    assert!(!args.contains(&"--since".into()));
+    assert_eq!(
+        f.calls_of("capabilities", "--json").len(),
+        0,
+        "read-only snapshot never asks a host about capabilities"
+    );
+    let mut older = full.clone();
+    older["controls"] = json!([]);
+    f.says("snapshot.json", &older);
+    let answer = f
+        .call(
+            "chat.snapshot",
+            json!({"chat_id":f.chat,"cursor":"1234-99-abcdef","before":91}),
+        )
+        .await;
+    assert_eq!(answer["result"], older);
+    f.says("snapshot.json", &full);
+    assert_eq!(
+        code(
+            &f.call(
+                "chat.snapshot",
+                json!({"chat_id":f.chat,"cursor":"1234-99-abcdef","before":91})
+            )
+            .await
+        ),
+        "cli_error",
+        "history cannot replay controls"
+    );
+    f.set(
+        "snapshot.error",
+        "Usage: riwork chat serve|ensure|list|new|events|command|send|stop (riwork help)",
+    );
+    let answer = f.call("chat.snapshot", json!({"chat_id":f.chat})).await;
+    assert_eq!(code(&answer), "invalid_request");
+    assert!(message(&answer).contains("unsupported RPC method"));
+}
+
+#[tokio::test]
+async fn lossless_events_are_additive_and_do_not_truncate_or_skip_state() {
+    let f = Fixture::new();
+    let event = json!({"seq":1,"event":{"event":"item_completed","item":{"id":"big","status":"completed","body":{"type":"agent_message","text":noise(300_000,42)}}}});
+    f.says("events.json", &f.page(&[event], 1, false));
+    let response = f
+        .call_deflating(
+            "chat.events",
+            json!({"chat_id":f.chat,"since":0,"wait_ms":0,"complete":true}),
+        )
+        .await;
+    assert_eq!(code(&response), "response_too_large");
+    assert!(f.calls_of("chat", "events")[0].contains(&"--complete".into()));
+    let response = f
+        .call_deflating(
+            "chat.events",
+            json!({"chat_id":f.chat,"since":0,"wait_ms":0}),
+        )
+        .await;
+    assert_eq!(
+        response["result"]["next"], 1,
+        "legacy fitting stays compatible"
+    );
+    assert_eq!(
+        code(
+            &f.call_deflating(
+                "chat.events",
+                json!({"chat_id":f.chat,"since":0,"wait_ms":0,"complete":"true"})
+            )
+            .await
+        ),
+        "invalid_request"
+    );
+}
+
+#[tokio::test]
+async fn complete_pages_reject_missing_events_and_unrepresented_cursor_advances() {
+    let f = Fixture::new();
+    for (seqs, next) in [(vec![2], 2), (vec![1, 1], 1), (vec![1], 3), (vec![], 1)] {
+        let events: Vec<_> = seqs
+            .into_iter()
+            .map(|seq| json!({"seq":seq,"event":{"event":"state","state":"idle"}}))
+            .collect();
+        f.says("events.json", &f.page(&events, next, false));
+        let response = f
+            .call(
+                "chat.events",
+                json!({"chat_id":f.chat,"since":0,"wait_ms":0,"complete":true}),
+            )
+            .await;
+        assert_eq!(code(&response), "cli_error", "{response}");
+    }
 }

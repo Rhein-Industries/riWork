@@ -286,6 +286,126 @@ import RiWorkCore
         await finish(rig)
     }
 
+    func testLatestFirstOpensBoundedFullItemsAndPreservesReaderAcrossHistoryAndLiveEdits() async throws {
+        let screen = UIScreen.main.bounds.size
+        let rig = try await makeRig(width: screen.width, height: screen.height, look: .nativeLight)
+        await rig.transport.enableSnapshots()
+        var events: [ChatEvent] = [.info(chat()), approval("older-request"), .models(models), .usage(ChatUsage(inputTokens: 1234))]
+        events += (0..<1500).map { .itemCompleted(ChatItem(id: "recent-\($0)", status: .completed, body: .agentMessage($0 == 1499 ? "Latest message 1499. Complete." : "Message \($0). " + String(repeating: "A complete paragraph with varying row height. ", count: $0 % 4 + 1)))) }
+        await rig.transport.append(chatID, events)
+        let started = ContinuousClock.now
+        let field = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("only the newest 50 full messages are loaded") { conversation.feed.loaded && conversation.transcript.items.count == 50 }
+        XCTAssertEqual(conversation.transcript.items.first?.id, "recent-1450")
+        XCTAssertEqual(conversation.transcript.items.last?.id, "recent-1499")
+        XCTAssertEqual(conversation.openApprovals.first?.requestID, "older-request")
+        XCTAssertEqual(conversation.transcript.models.count, 2)
+        XCTAssertEqual(conversation.transcript.usage?.inputTokens, 1234)
+        let polls = await rig.transport.params(of: "chat.events")
+        XCTAssertTrue(polls.allSatisfy { $0["since"] == .number(Double(events.count)) }, "open must not replay old event pages")
+        print("LATEST_FIRST open latency \(started.duration(to: .now)), 1500 rows -> 50 rows, cursor \(conversation.feed.next)")
+        conversation.draft = "unsent draft"
+        try await Task.sleep(for: .milliseconds(450))
+        try snapshot(rig, name: "latest-first-initial")
+        try await hold("latest-first-initial")
+        let list = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).filter { $0 !== field && $0.bounds.height > 20 && $0.contentSize.height > $0.bounds.height + 500 }.max { $0.contentSize.height < $1.contentSize.height })
+        assertValidBottom(list)
+        XCTAssertTrue(try renderedTranscriptText(rig, scroll: list).contains("1499"), "the latest message is visible on initial open")
+        // Move to a partly visible row; the toolbar's history button stays reachable to VoiceOver.
+        list.delegate?.scrollViewWillBeginDragging?(list)
+        try await Task.sleep(for: .milliseconds(50))
+        list.setContentOffset(CGPoint(x: 0, y: 20), animated: false)
+        try await Task.sleep(for: .milliseconds(150))
+        let oldHeight = list.contentSize.height, oldOffset = list.contentOffset.y
+        let anchorTop = try renderedMessageTop("1450", rig: rig, scroll: list)
+        try snapshot(rig, name: "latest-first-before-page")
+        print("LATEST_FIRST reader offset \(oldOffset) height \(oldHeight) viewport \(list.bounds.height)")
+        list.delegate?.scrollViewDidEndDragging?(list, willDecelerate: false)
+        try await Task.sleep(for: .milliseconds(300))
+        if conversation.transcript.items.count == 50 { XCTAssertTrue(activate("Load older messages", in: rig.host.view)) }
+        await eventually("history prepended") { conversation.transcript.items.count == 100 }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(try renderedMessageTop("1450", rig: rig, scroll: list), anchorTop, accuracy: 4, "prepending preserves the actual visible message, independent of lazy height estimates")
+        let reader = list.contentOffset.y
+        await rig.transport.append(chatID, [.itemDelta(itemID: "recent-1470", delta: .text(" live edit")), .approvalResolved(requestID: "older-request", decision: .accept)])
+        await eventually("live controls arrive") { conversation.openApprovals.isEmpty }
+        if case .agentMessage(let text) = conversation.transcript.item("recent-1470")?.body { XCTAssertTrue(text.hasSuffix(" live edit")) } else { XCTFail("missing full live row") }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(list.contentOffset.y, reader, accuracy: 4, "an active reader opts out of bottom following")
+        XCTAssertEqual(conversation.draft, "unsent draft")
+        try snapshot(rig, name: "latest-first-history-reader")
+        try await hold("latest-first-history-reader")
+        await rig.transport.append(chatID, [.itemDelta(itemID: "recent-2", delta: .text(" old stream"))])
+        await eventually("preexisting old item hydrated with its base") { conversation.feed.hasItem("recent-2") }
+        XCTAssertEqual(conversation.transcript.items.first?.id, "recent-1400", "out-of-window live edits must not insert rows above the reader")
+        await finish(rig)
+    }
+
+    func testLatestFirstCancelledBootstrapIsIsolatedAndOlderDesktopFallsBackExplicitly() async throws {
+        let otherID = "dddddddd-1111-4111-8111-111111111111"
+        let other = ChatInfo(id: otherID, provider: .claude, projectID: project, cwd: "/fixture", title: "Other chat", createdAtUnix: 11, approvalMode: .supervised, state: .idle)
+        let rig = try await makeRig(chats: [chat(), other])
+        await rig.transport.enableSnapshots(); await rig.transport.gateSnapshots(true)
+        await rig.transport.append(otherID, [.info(other), .itemCompleted(ChatItem(id: "other-row", status: .completed, body: .agentMessage("Other chat only")))])
+        rig.model.selectChat(chatID)
+        await eventually("snapshot request started") { await rig.transport.count("chat.snapshot") > 0 }
+        rig.model.conversation(chatID).draft = "kept while switching"
+        rig.model.selectChat(otherID)
+        await eventually("follower cancelled on direct chat switch") { !rig.model.conversation(self.chatID).following && rig.model.conversation(otherID).following }
+        await rig.transport.gateSnapshots(false)
+        await eventually("only the second tab installs its snapshot") { rig.model.conversation(otherID).transcript.item("other-row") != nil }
+        XCTAssertEqual(rig.model.conversation(otherID).transcript.items.map(\.id), ["other-row"])
+        XCTAssertFalse(rig.model.conversation(chatID).feed.loaded)
+        XCTAssertEqual(rig.model.conversation(chatID).draft, "kept while switching")
+        await rig.transport.enableSnapshots(false)
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "legacy", status: .completed, body: .agentMessage("legacy complete")))])
+        _ = try await openChat(rig)
+        await eventually("legacy replay explicitly selected") { rig.model.conversation(self.chatID).transcript.item("legacy") != nil }
+        XCTAssertTrue(rig.model.conversation(chatID).notice?.contains("recent-first") == true)
+        XCTAssertNil(rig.model.conversation(chatID).feed.historyCursor)
+        await finish(rig)
+    }
+
+    func testLatestFirstHistoryKeepsInterleavedLiveChangesAndCancelledPagesOutOfAnotherTab() async throws {
+        let rig = try await makeRig()
+        await rig.transport.enableSnapshots()
+        let rows: [ChatEvent] = (0..<300).map { .itemCompleted(ChatItem(id: "row-\($0)", status: .completed, body: .agentMessage("base \($0)"))) }
+        await rig.transport.append(chatID, [.info(chat()), approval("old-request")] + rows)
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("snapshot loaded") { conversation.feed.loaded }
+        await rig.transport.gateSnapshots(true)
+        let history = Task { await rig.model.loadOlderChat(self.chatID) }
+        await eventually("history waits") { conversation.historyLoading }
+        await rig.transport.append(chatID, [.itemDelta(itemID: "row-270", delta: .text(" LIVE")), .approvalResolved(requestID: "old-request", decision: .accept), .state(.running)])
+        await eventually("live update while history waits") { conversation.transcript.state == .running && conversation.openApprovals.isEmpty }
+        let liveNext = conversation.feed.next
+        await rig.transport.gateSnapshots(false)
+        await history.value
+        XCTAssertEqual(conversation.feed.next, liveNext)
+        XCTAssertEqual(conversation.transcript.item("row-270")?.body, .agentMessage("base 270 LIVE"))
+        XCTAssertEqual(conversation.transcript.items.count, 100)
+        await rig.transport.drop()
+        await rig.model.connect()
+        _ = try await openChat(rig)
+        await rig.transport.append(chatID, [.itemDelta(itemID: "row-270", delta: .text(" RECONNECTED"))])
+        await eventually("reconnect resumes the cursor without replay or duplicates") { conversation.transcript.item("row-270")?.body == .agentMessage("base 270 LIVE RECONNECTED") }
+        XCTAssertEqual(Set(conversation.transcript.items.map(\.id)).count, 100)
+        let snapshotCalls = await rig.transport.params(of: "chat.snapshot")
+        XCTAssertEqual(snapshotCalls.filter { $0["cursor"] == nil }.count, 1)
+        let before = conversation.feed.before
+        await rig.transport.gateSnapshots(true)
+        let cancelled = Task { await rig.model.loadOlderChat(self.chatID) }
+        await eventually("second history waits") { conversation.historyLoading }
+        rig.model.deselectChat(); cancelled.cancel()
+        await cancelled.value
+        await rig.transport.gateSnapshots(false)
+        XCTAssertEqual(conversation.feed.before, before)
+        XCTAssertEqual(conversation.transcript.items.count, 100)
+        await finish(rig)
+    }
+
     // MARK: Pictures
 
     /// Draws the screen at phone size and checks it is not blank. With `RIWORK_CHAT_SNAPSHOTS` set to a directory the pictures are kept
@@ -344,6 +464,19 @@ import RiWorkCore
         XCTAssertEqual(scroll.contentOffset.y, bottomOffset(scroll), accuracy: 2, "absolute bottom gap, including adjusted insets", file: file, line: line)
     }
     /// OCR the actual viewport pixels, not the model or off-screen accessibility nodes: blank content cannot pass this check.
+    private func renderedMessageTop(_ message: String, rig: Rig, scroll: UIScrollView) throws -> CGFloat {
+        rig.window.layoutIfNeeded()
+        let visible = scroll.convert(scroll.bounds, to: rig.window).intersection(rig.window.bounds)
+        let image = UIGraphicsImageRenderer(size: visible.size).image { context in
+            context.cgContext.translateBy(x: -visible.minX, y: -visible.minY)
+            rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true)
+        }
+        let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate
+        try VNImageRequestHandler(cgImage: try XCTUnwrap(image.cgImage), options: [:]).perform([request])
+        let match = try XCTUnwrap(request.results?.first { $0.topCandidates(1).first?.string.contains(message) == true }, "message \(message) is actually visible")
+        return (1 - match.boundingBox.maxY) * visible.height
+    }
+
     private func renderedTranscriptText(_ rig: Rig, scroll: UIScrollView) throws -> String {
         rig.window.layoutIfNeeded()
         let visible = scroll.convert(scroll.bounds, to: rig.window).intersection(rig.window.bounds)

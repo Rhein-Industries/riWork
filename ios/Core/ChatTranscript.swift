@@ -76,6 +76,13 @@ public struct ChatTranscript: Sendable, Equatable {
         }
     }
 
+    /// Merge only missing historical rows; live rows and controls remain authoritative.
+    public mutating func mergeHistory(_ rows: [ChatSnapshotRow], orders: [String: UInt64]) {
+        for row in rows where index[row.item.id] == nil { apply(.itemCompleted(row.item)) }
+        items.sort { (orders[$0.id] ?? UInt64.max) < (orders[$1.id] ?? UInt64.max) }
+        index = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.id, $0.offset) })
+    }
+
     /// The item with this id.
     public func item(_ id: String) -> ChatItem? { index[id].map { items[$0] } }
     /// The text of the last message the person sent, for "Retry" on a failed chat.
@@ -143,8 +150,59 @@ public struct ChatFeed: Sendable, Equatable {
     public private(set) var loaded = false
     /// Events the phone could not read, since the feed began.
     public private(set) var skipped = 0
+    /// Newly arriving rows; historical prepends do not count as unread messages.
+    public private(set) var itemArrivals = 0
+
+    public private(set) var historyCursor: String?
+    public private(set) var before: UInt64 = 0
+    public private(set) var hasOlder = false
+    private var orders: [String: UInt64] = [:]
+    private var hidden = ChatTranscript()
+    // Only edits to unloaded rows are retained. History applies them to its full base,
+    // never to the live controls; replaying a page therefore cannot resolve a new request.
+    private var deferred: [ChatEvent] = []
+    private var deferredBytes = 0
 
     public init() {}
+
+    public mutating func install(_ snapshot: ChatSnapshotReply) {
+        self = ChatFeed()
+        next = snapshot.next; loaded = true; historyCursor = snapshot.cursor; itemArrivals = snapshot.items.count
+        before = snapshot.before; hasOlder = snapshot.more
+        for event in snapshot.controls { transcript.apply(event) }
+        for row in snapshot.items { orders[row.item.id] = row.order }
+        transcript.mergeHistory(snapshot.items, orders: orders)
+    }
+
+    public func hasItem(_ id: String) -> Bool { transcript.item(id) != nil || hidden.item(id) != nil }
+
+    /// Hydrate preexisting unloaded rows before applying live changes to them.
+    public mutating func hydrate(_ page: ChatSnapshotReply) {
+        guard page.cursor == historyCursor else { return }
+        for row in page.items { orders[row.item.id] = row.order }
+        var base = ChatTranscript()
+        for row in page.items { base.apply(.itemCompleted(row.item)) }
+        for event in deferred { base.apply(event) }
+        for item in base.items where !hasItem(item.id) { hidden.apply(.itemCompleted(item)) }
+    }
+
+    public mutating func prepend(_ page: ChatSnapshotReply, requestedBefore: UInt64) {
+        guard page.cursor == historyCursor, requestedBefore == before, page.before < before || !page.more else { return }
+        var historical = ChatTranscript()
+        for row in page.items { orders[row.item.id] = row.order; historical.apply(.itemCompleted(row.item)) }
+        for event in deferred { historical.apply(event) }
+        let rows = historical.items.map { ChatSnapshotRow(order: orders[$0.id] ?? 0, item: hidden.item($0.id) ?? $0) }
+        transcript.mergeHistory(rows, orders: orders)
+        before = page.before; hasOlder = page.more
+        deferred.removeAll { event in
+            switch event {
+            case .itemDelta(let id, _): return transcript.item(id) != nil
+            case .itemStarted(let item), .itemCompleted(let item): return transcript.item(item.id) != nil
+            default: return !hasOlder
+            }
+        }
+        deferredBytes = deferred.reduce(0) { $0 + ((try? JSONEncoder().encode($1).count) ?? 0) }
+    }
 
     public enum Outcome: Sendable, Equatable {
         /// This many events were folded in.
@@ -163,8 +221,34 @@ public struct ChatFeed: Sendable, Equatable {
         }
         var applied = 0
         for envelope in reply.events where envelope.seq > next {
-            if let event = envelope.event { transcript.apply(event); applied += 1 } else { skipped += 1 }
+            if let event = envelope.event {
+                if historyCursor != nil {
+                    switch event {
+                    case .itemStarted(let item), .itemCompleted(let item):
+                        if orders[item.id] == nil { orders[item.id] = envelope.seq }
+                    case .itemDelta(let id, _):
+                        if !hasItem(id) { deferred.append(event); deferredBytes += (try? JSONEncoder().encode(event).count) ?? 0 }
+                    case .turnCompleted: if hasOlder { deferred.append(event); deferredBytes += (try? JSONEncoder().encode(event).count) ?? 0 }
+                    default: break
+                    }
+                }
+                switch event {
+                case .itemStarted(let item), .itemCompleted(let item):
+                    if !hasItem(item.id) { itemArrivals += 1 }
+                    if hidden.item(item.id) != nil && transcript.item(item.id) == nil { hidden.apply(event) }
+                    else { transcript.apply(event) }
+                case .itemDelta(let id, _):
+                    if hidden.item(id) != nil && transcript.item(id) == nil { hidden.apply(event) }
+                    else { transcript.apply(event) }
+                default:
+                    hidden.apply(event); transcript.apply(event)
+                }
+                applied += 1
+            } else { skipped += 1 }
             next = envelope.seq
+        }
+        if hidden.items.count > 1000 || deferred.count > 10_000 || deferredBytes > 8 * 1024 * 1024 {
+            self = ChatFeed(); return .restarted
         }
         next = max(next, reply.next)
         loaded = true

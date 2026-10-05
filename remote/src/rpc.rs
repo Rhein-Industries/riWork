@@ -1801,6 +1801,10 @@ impl Rpc {
                 let spec = chat::new_spec(&r.params)?;
                 self.chat_create(device, spec).await
             }
+            "chat.snapshot" => {
+                let spec = chat::snapshot_spec(&r.params)?;
+                self.chat_snapshot(&r.id, spec, reply_limit).await
+            }
             "chat.events" => {
                 let spec = chat::events_spec(&r.params)?;
                 self.chat_events(&r.id, spec, reply_limit).await

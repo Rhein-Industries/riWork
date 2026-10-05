@@ -133,7 +133,7 @@ pub(super) struct EventsArguments {
     pub max_bytes: usize,
 }
 
-fn number(
+pub(super) fn number(
     args: &mut Vec<String>,
     option: &str,
     default: u64,
@@ -318,6 +318,12 @@ pub(super) fn shrink(entry: &Entry, budget: usize) -> Option<Entry> {
 ///   dropped when nothing helps, so the page can always move on: it counts
 ///   as read.
 pub(super) fn collect(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
+    collect_page(source, plan, false)
+}
+pub(super) fn collect_complete(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
+    collect_page(source, plan, true)
+}
+fn collect_page(source: &mut impl Source, plan: &Plan, complete: bool) -> Result<Page, String> {
     let budget = plan.max_bytes.saturating_sub(fixed_bytes(&plan.chat_id));
     let mut page = Page {
         chat_id: plan.chat_id.clone(),
@@ -363,6 +369,12 @@ pub(super) fn collect(source: &mut impl Source, plan: &Plan) -> Result<Page, Str
                     if !page.events.is_empty() {
                         page.more = true;
                         break;
+                    }
+                    if complete {
+                        return Err(
+                            "response_too_large: a complete event exceeds the response limit"
+                                .into(),
+                        );
                     }
                     match shrink(&entry, budget) {
                         Some(shrunk) => entry = shrunk,

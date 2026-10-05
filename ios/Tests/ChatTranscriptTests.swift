@@ -324,3 +324,47 @@ final class ChatFeedTests: XCTestCase {
         XCTAssertEqual(feed.transcript.items.map(\.id), ["i1"])
     }
 }
+
+
+final class LatestFirstFeedTests: XCTestCase {
+    private func row(_ n: UInt64, _ text: String = "base") -> ChatSnapshotRow {
+        ChatSnapshotRow(order: n, item: ChatItem(id: "r\(n)", status: .inProgress, body: .agentMessage(text)))
+    }
+    private func page(_ rows: [ChatSnapshotRow], more: Bool = true, controls: [ChatEvent] = []) -> ChatSnapshotReply {
+        ChatSnapshotReply(chatID: "c", cursor: "fixture", next: 10_000, before: rows.first?.order ?? 0, more: more, items: rows, controls: controls)
+    }
+    func testRecentBootstrapAndRepeatedHistoryNeverReplayControlsOrOverwriteLiveRows() {
+        var feed = ChatFeed()
+        feed.install(page([row(9999), row(10000)], controls: [.state(.waiting), .models([]), .usage(ChatUsage(inputTokens: 42))]))
+        XCTAssertEqual(feed.next, 10_000)
+        XCTAssertEqual(feed.transcript.items.count, 2)
+        let live = ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 10001, event: .itemDelta(itemID: "r9999", delta: .text("LIVE"))), ChatEnvelope(seq: 10002, event: .state(.running))], next: 10002, more: false)
+        feed.accept(live, since: 10000)
+        feed.accept(live, since: 10000)
+        let older = page([row(9998), row(9999, "STALE")])
+        feed.prepend(older, requestedBefore: 9999)
+        feed.prepend(older, requestedBefore: 9999)
+        XCTAssertEqual(feed.transcript.items.map(\.id), ["r9998", "r9999", "r10000"])
+        XCTAssertEqual(feed.transcript.item("r9999")?.body, .agentMessage("baseLIVE"))
+        XCTAssertEqual(feed.transcript.state, .running)
+        XCTAssertEqual(feed.transcript.usage?.inputTokens, 42)
+        XCTAssertEqual(feed.next, 10002)
+        XCTAssertEqual(feed.itemArrivals, 2, "older rows and duplicate live pages are not unread arrivals")
+    }
+    func testUnknownOlderDeltaAndTurnCompletionFoldOnFullBaseWithoutDuplicates() {
+        var feed = ChatFeed(); feed.install(page([row(10000)]))
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 10001, event: .itemDelta(itemID: "r1", delta: .text("STREAM"))), ChatEnvelope(seq: 10002, event: .turnCompleted(turnID: "t", outcome: .completed))], next: 10002, more: false), since: 10000)
+        feed.prepend(page([row(1)], more: false), requestedBefore: 10000)
+        XCTAssertEqual(feed.transcript.item("r1")?.body, .agentMessage("baseSTREAM"))
+        XCTAssertEqual(feed.transcript.item("r1")?.status, .completed)
+        XCTAssertEqual(feed.transcript.items.count, 2)
+    }
+    func testHydrationOfAnOldItemUsesOriginalOrderAndLiveCompletionWinsHistory() {
+        var feed = ChatFeed(); feed.install(page([row(10000)]))
+        feed.hydrate(page([row(5)], more: false))
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 10001, event: .itemCompleted(ChatItem(id: "r5", status: .completed, body: .agentMessage("final"))))], next: 10001, more: false), since: 10000)
+        feed.prepend(page([row(5), row(6)], more: false), requestedBefore: 10000)
+        XCTAssertEqual(feed.transcript.items.map(\.id), ["r5", "r6", "r10000"])
+        XCTAssertEqual(feed.transcript.item("r5")?.body, .agentMessage("final"))
+    }
+}

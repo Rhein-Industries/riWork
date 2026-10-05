@@ -87,6 +87,8 @@ public struct StickyBottom: Sendable, Equatable {
     }
 
     /// The user asked for the latest output (the pill, typing, sending keys, a menu command).
+    public mutating func stopFollowing() { following = false; far = true }
+
     public mutating func jumpToBottom() { following = true; newLines = 0; far = false }
     /// A shell was opened or switched to: at the bottom, nothing counted.
     public mutating func reset() { self = StickyBottom() }

@@ -40,7 +40,8 @@ struct ChatScreen: View {
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
             ChatStatusLines(model: model, chat: info, conversation: conversation, state: state)
-            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached)
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) })
+                .id(chat.id)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty) }
             if let approval = approvals.first {
                 BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
@@ -255,8 +256,8 @@ private struct ChatStatusLines: View {
                 line(icon: "wifi.slash", text: model.state == .connecting ? "Connecting…" : "Not connected. Your chat is kept; it carries on when the link is back.", tint: style.warning) {
                     if model.state != .connecting { Button("Reconnect") { Task { await model.connect() } }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule()) }
                 }
-            } else if conversation.readError != nil {
-                line(icon: "arrow.triangle.2.circlepath", text: "Can’t read this chat right now. Trying again…", tint: style.warning) { EmptyView() }
+            } else if let error = conversation.readError {
+                line(icon: "arrow.triangle.2.circlepath", text: error.message, tint: style.warning) { EmptyView() }
             }
             if let banner {
                 line(icon: icon(banner), text: banner.text, tint: tint(banner), working: { if case .starting = banner { true } else { false } }()) {
@@ -314,6 +315,14 @@ private struct StatusLineSurface: ViewModifier {
 
 /// The transcript, newest at the bottom. It follows the bottom while the chat streams and the reader is there; scrolled up, it stays
 /// where it is and a pill takes the reader back (`StickyBottom`, the rule the terminal follows too).
+/// Geometry bookkeeping does not invalidate the view on every scroll frame.
+private final class ChatHistoryViewport {
+    var metrics: ScrollMetrics?
+    var frames: [String: CGRect] = [:]
+    var anchor: (id: String, y: CGFloat)?
+    var correction: Task<Void, Never>?
+}
+
 private struct ChatTranscriptList: View {
     @Environment(\.desktopStyle) private var style
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -321,6 +330,10 @@ private struct ChatTranscriptList: View {
     let provider: ChatProvider
     let state: ChatState
     let hardwareKeyboard: Bool
+    var loadOlder: @MainActor (@MainActor () async -> Void) async -> Void = { _ in }
+    @State private var paging: Task<Void, Never>?
+    @State private var preservingHistory = false
+    @State private var viewport = ChatHistoryViewport()
     @State private var position = ScrollPosition(edge: .bottom)
     @State private var sticky = StickyBottom()
     @State private var userDriven = false
@@ -336,27 +349,46 @@ private struct ChatTranscriptList: View {
                 } else if transcript.items.isEmpty {
                     placeholder("Ask \(provider.title) to work in this project.", spinner: false)
                 }
+                if conversation.feed.hasOlder {
+                    Button {
+                        pageOlder(proxy)
+                    } label: {
+                        HStack { if conversation.historyLoading { ProgressView() }; Text(conversation.historyError ?? "Load older messages") }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }.disabled(conversation.historyLoading).accessibilityLabel("Load older messages").id("chat-history")
+                }
                 ForEach(transcript.items) { item in
                     ChatItemRow(item: item, provider: provider, open: open(for: item), toggle: toggle).equatable()
+                        .id(item.id)
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in viewport.frames[item.id] = frame }
+                        .onDisappear { viewport.frames[item.id] = nil }
                 }
                 if state == .running || state == .waiting || state == .starting { workingRow }
                 Color.clear.frame(height: 18).id(Self.end)
             }
             .padding(.top, 12)
         }
+        .coordinateSpace(name: Self.space)
         .scrollPosition($position)
-        .defaultScrollAnchor(.bottom)
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .defaultScrollAnchor(.top, for: .sizeChanges)
         // Dragging the list puts the software keyboard away, as in a chat; a hardware keyboard has none to put away, and must not lose
         // the composer to a scroll.
         .scrollDismissesKeyboard(hardwareKeyboard ? .never : .interactively)
         .onScrollPhaseChange { _, phase in
             userDriven = phase == .interacting || phase == .decelerating
-            if userDriven { bottomCorrection?.cancel(); bottomCorrection = nil }
+            if userDriven { sticky.stopFollowing(); bottomCorrection?.cancel(); bottomCorrection = nil }
         }
         .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
             ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height,
                           topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom)
         } action: { old, new in
+            viewport.metrics = new
+            if userDriven, new.offset + new.topInset < 100, conversation.feed.hasOlder { pageOlder(proxy) }
+            if preservingHistory {
+                scheduleHistoryCorrection()
+                return
+            }
             let response = sticky.metricsChanged(from: !userDriven && bottomCorrection != nil ? nil : old, to: new, lineHeight: 24, userDriven: userDriven)
             // An animated jump can finish against a lazy stack's previous height while the approval/composer resizes.
             // StickyBottom treats overscroll as following; it still needs correction to the newly measured content end.
@@ -366,12 +398,63 @@ private struct ChatTranscriptList: View {
                 scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }
             }
         }
-        .onChange(of: transcript.items.count) { _, count in sticky.contentChanged(end: count, epoch: 0) }
+        .onChange(of: conversation.feed.itemArrivals) { _, count in sticky.contentChanged(end: count, epoch: 0) }
         .onChange(of: conversation.jumps) { _, _ in jump(proxy) }
-        .onChange(of: conversation.feed.loaded) { _, _ in jump(proxy) }
+        .onChange(of: conversation.feed.loaded) { _, loaded in if loaded && !userDriven { jump(proxy) } }
         .overlay(alignment: .bottomTrailing) { pill(proxy) }
         .accessibilityLabel("\(provider.chatTitle) conversation")
-        .onDisappear { bottomCorrection?.cancel(); bottomCorrection = nil }
+        .onDisappear { viewport.correction?.cancel(); viewport.correction = nil; paging?.cancel(); paging = nil; bottomCorrection?.cancel(); bottomCorrection = nil }
+        }
+    }
+
+    private func pageOlder(_ proxy: ScrollViewProxy) {
+        guard paging == nil, !conversation.historyLoading, conversation.feed.hasOlder else { return }
+        // Keep a stable row and its visible offset, including a partly visible row.
+        // Lazy-stack height estimates cannot preserve the reader's position.
+        sticky.stopFollowing()
+        bottomCorrection?.cancel(); bottomCorrection = nil
+        paging = Task { @MainActor in
+            defer {
+                preservingHistory = false; viewport.anchor = nil
+                viewport.correction?.cancel(); viewport.correction = nil; paging = nil
+            }
+            while userDriven && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+            guard !Task.isCancelled else { return }
+            await loadOlder {
+                // A response may arrive during a new drag. Wait before mutation, then
+                // capture the reader's current point, not the point at request time.
+                while userDriven && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+                guard !Task.isCancelled else { return }
+                let height = CGFloat(viewport.metrics?.viewportHeight ?? 0)
+                viewport.anchor = viewport.frames.filter { $0.value.maxY > 0 && $0.value.minY < height }
+                    .min { $0.value.minY < $1.value.minY }.map { (id: $0.key, y: $0.value.minY) }
+                preservingHistory = true
+            }
+            if let anchor = viewport.anchor, !Task.isCancelled {
+                // Resolve the same lazy row by stable identity before restoring its
+                // fractional position; estimated content height is not an anchor.
+                try? await Task.sleep(for: .milliseconds(16))
+                guard !Task.isCancelled, !userDriven else { return }
+                proxy.scrollTo(anchor.id, anchor: .top)
+                try? await Task.sleep(for: .milliseconds(32))
+                guard !Task.isCancelled, !userDriven else { return }
+                proxy.scrollTo(anchor.id, anchor: .top)
+                scheduleHistoryCorrection()
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    private func scheduleHistoryCorrection() {
+        guard viewport.correction == nil else { return }
+        viewport.correction = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(16))
+            defer { viewport.correction = nil }
+            guard !Task.isCancelled, preservingHistory, !userDriven,
+                  let metrics = viewport.metrics, let anchor = viewport.anchor,
+                  let frame = viewport.frames[anchor.id] else { return }
+            let delta = frame.minY - anchor.y
+            if abs(delta) > 0.5 { position.scrollTo(y: CGFloat(metrics.offset) + delta) }
         }
     }
 
@@ -395,6 +478,7 @@ private struct ChatTranscriptList: View {
         }
     }
     private static let end = "chat-transcript-end"
+    private static let space = "chat-transcript-space"
 
     private func open(for item: ChatItem) -> Set<String> {
         guard !conversation.expanded.isEmpty else { return [] }

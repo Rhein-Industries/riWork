@@ -25,7 +25,8 @@ public enum RequestValidation {
         case "orchestrator.create": required = []; optional = ["project_id"]
         case "chats.list": required = []; optional = ["project_id"]
         case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "title"]
-        case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events"]
+        case "chat.snapshot": required = ["chat_id"]; optional = ["cursor", "before", "limit", "item_ids"]
+        case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events", "complete"]
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
         case "upload.begin", "upload.chunk", "upload.finish", "upload.cancel", "shell.paste":
@@ -66,6 +67,19 @@ public enum RequestValidation {
             switch method {
             case "chats.list": _ = try ChatListRequest(params: params)
             case "chat.create": _ = try ChatCreateRequest(params: params)
+            case "chat.snapshot":
+                if let raw = params["cursor"] {
+                    guard case .string(let cursor) = raw, !cursor.isEmpty, cursor.utf8.count <= 80,
+                          cursor.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) || $0 == 45 }) else { throw ChatValidationError.malformed }
+                }
+                for (key, range) in [("before", 0.0...9_007_199_254_740_991), ("limit", 1.0...100)] {
+                    if let raw = params[key] { guard case .number(let n) = raw, n.isFinite, range.contains(n), n.rounded() == n else { throw ChatValidationError.malformed } }
+                }
+                if params["before"] != nil, params["cursor"] == nil { throw ChatValidationError.malformed }
+                if let raw = params["item_ids"] {
+                    guard params["cursor"] != nil, case .array(let ids) = raw, ids.count <= 100,
+                          ids.allSatisfy({ if case .string(let id) = $0 { !id.isEmpty && id.utf8.count <= 512 } else { false } }) else { throw ChatValidationError.malformed }
+                }
             case "chat.events": _ = try ChatEventsRequest(params: params)
             case "chat.command": _ = try ChatCommandRequest(params: params)
             default: break

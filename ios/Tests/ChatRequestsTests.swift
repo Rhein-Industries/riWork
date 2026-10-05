@@ -269,3 +269,35 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertEqual(ChatControlError.notFound(.create(.codex)).message, "That project or worktree no longer exists on the Mac. Refresh and try again.")
     }
 }
+
+final class LatestFirstRequestTests: XCTestCase {
+    private let id = "cccccccc-1111-4111-8111-111111111111"
+    func testSnapshotValidationAndLosslessLiveRequests() throws {
+        try RequestValidation.validate(method: "chat.snapshot", params: ["chat_id": .string(id), "limit": .number(50)], id: id)
+        for extra in [["cursor": JSONValue.null], ["before": .number(2)], ["limit": .number(101)], ["cursor": .string("../path")], ["item_ids": .array([.string("a")])]] {
+            XCTAssertThrowsError(try RequestValidation.validate(method: "chat.snapshot", params: ["chat_id": .string(id)].merging(extra) { _, v in v }, id: id))
+        }
+        let request = try ChatEventsRequest(chatID: id, since: 30_000, waitMilliseconds: 0, complete: true)
+        XCTAssertEqual(request.params["complete"], .bool(true))
+        XCTAssertEqual(try ChatEventsRequest(params: request.params), request)
+        try RequestValidation.validate(method: "chat.events", params: request.params, id: id)
+        XCTAssertThrowsError(try ChatEventsRequest(params: request.params.merging(["complete": .string("true")]) { _, v in v }))
+    }
+}
+
+extension LatestFirstRequestTests {
+    func testLosslessPagesRejectGapsDuplicatesAndUnrepresentedCursorAdvances() throws {
+        let request = try ChatEventsRequest(chatID: id, since: 100, waitMilliseconds: 0, complete: true)
+        func page(_ seqs: [Int], next: Int) -> JSONValue {
+            .object(["chat_id": .string(id), "next": .number(Double(next)), "more": .bool(false),
+                     "events": .array(seqs.map { .object(["seq": .number(Double($0)), "event": .object(["event": .string("future_event")])]) })])
+        }
+        let contiguous = try request.parse(page([101, 102], next: 102))
+        XCTAssertEqual(contiguous.next, 102)
+        XCTAssertEqual(contiguous.skipped, 2, "unknown tagged events still account for their sequence")
+        for invalid in [page([102], next: 102), page([101, 101], next: 101), page([101], next: 103), page([], next: 101)] {
+            XCTAssertThrowsError(try request.parse(invalid), "never acknowledge an event that was not received")
+        }
+        XCTAssertEqual(try request.parse(page([], next: 100)).next, 100)
+    }
+}

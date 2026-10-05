@@ -137,6 +137,7 @@ actor ChatTransport: RemoteTransport {
                 chats.append(info)
                 return .object(["chat": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(info))])
             }
+        case "chat.snapshot": return try await snapshot(params)
         case "chat.events":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
             return try await events(params)
@@ -186,6 +187,43 @@ actor ChatTransport: RemoteTransport {
     }
 
     /// `chat.events`: what is after `since` at once, else what arrives within the wait, else nothing.
+    var snapshotsEnabled = false
+    var snapshotGated = false
+    func enableSnapshots(_ on: Bool = true) { snapshotsEnabled = on }
+    func gateSnapshots(_ on: Bool) { snapshotGated = on }
+    private func snapshot(_ params: [String: JSONValue]) async throws -> JSONValue {
+        guard snapshotsEnabled else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+        while snapshotGated { try await Task.sleep(for: .milliseconds(5)) }
+        let id = params["chat_id"]!.string!
+        let all = log[id] ?? []
+        let next = params["cursor"]?.string.flatMap(Int.init) ?? all.count
+        let before = params["before"].flatMap { if case .number(let n) = $0 { return UInt64(n) }; return nil } ?? UInt64.max
+        let requested = params["item_ids"].flatMap { if case .array(let a) = $0 { return Set(a.compactMap(\.string)) }; return nil }
+        var transcript = ChatTranscript(), orders: [String: UInt64] = [:]
+        for (at, value) in all.prefix(next).enumerated() {
+            let event = try value.decode(ChatEvent.self)
+            switch event {
+            case .itemStarted(let item), .itemCompleted(let item): if orders[item.id] == nil { orders[item.id] = UInt64(at + 1) }
+            default: break
+            }
+            transcript.apply(event)
+        }
+        let rows = transcript.items.filter { orders[$0.id]! < before && (requested == nil || requested!.contains($0.id)) }
+        let items = requested == nil ? Array(rows.suffix(50)) : rows
+        var controls: [ChatEvent] = []
+        if params["cursor"] == nil {
+            if let info = transcript.info { controls.append(.info(info)) }
+            controls.append(.state(transcript.state)); controls.append(.models(transcript.models))
+            if let usage = transcript.usage { controls.append(.usage(usage)) }
+            if let turn = transcript.turnID { controls.append(.turnStarted(turnID: turn)) }
+            controls += transcript.approvals.map { .approvalRequested($0) }
+            controls += transcript.questions.map { .questionRequested($0) }
+        }
+        let page = ChatSnapshotReply(chatID: id, cursor: String(next), next: UInt64(next), before: items.first.map { orders[$0.id]! } ?? 0,
+            more: requested == nil && rows.count > items.count, items: items.map { ChatSnapshotRow(order: orders[$0.id]!, item: $0) }, controls: controls)
+        return try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(page))
+    }
+
     private func events(_ params: [String: JSONValue]) async throws -> JSONValue {
         while eventsGated { try await Task.sleep(for: .milliseconds(5)) }
         guard let chat = params["chat_id"]?.string, case .number(let sinceNumber)? = params["since"], case .number(let waitNumber)? = params["wait_ms"] else {

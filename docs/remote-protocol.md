@@ -1320,6 +1320,44 @@ again, so a failed start does not invite a second creation. The connector checks
 chat is the one asked for (provider, project or worktree, mode, and model, effort and fast
 mode when sent) and answers `cli_error` if not, after stopping that stray chat's agent.
 
+**`chat.snapshot`** (additive, v1). Params `{"chat_id":"UUID","limit":50}`;
+optional `limit` is 1–100. Returns `{v:1, chat_id, cursor, next, before, more,
+items:[{order,item}], controls:[ChatEvent]}`. Items are **full reconstructed current
+items**, in first-appearance order, with the newest at the bottom. Controls carry
+current Info/State, turn, unresolved approvals/questions (including ones older than
+the window), usage and the latest model catalogue, including an empty catalogue.
+`next` is the exact last complete event folded. Start `chat.events` at this cursor,
+never at zero. The opaque `cursor` pins the byte prefix, sequence and checksum.
+
+To read older items, send the same `cursor` and `before` from the previous page.
+The returned `before` is the first returned item's original event order; `more`
+says another earlier page exists. History contains no controls and never changes
+`next`. Live updates win over historical copies of the same id. For a live event
+targeting an unloaded old item, `item_ids:[ID]` (at most 100, each 1–512 bytes),
+with the original cursor, reads its full base and original order; a newly created
+id has no base in that prefix. Clients retain these bases outside the rendered
+window until history reaches them, fold live changes once, and merge by stable id.
+
+The installed CLI implements this through `chat snapshot`, a read-only disk read;
+it neither calls `chat ensure` nor writes/repairs the log. Updating this path does
+not require restarting an already-running chat host. Each request scans at most
+128 MiB, one million events, 8 MiB per record, with a five-second scan budget.
+The response fits an encrypted plain frame even when compression is negotiated;
+only whole oldest rows can be omitted to fit. One oversized row or controls fail
+explicitly; nothing is truncated. `snapshot_limit` reports a bounded read failure;
+`snapshot_expired` reports replacement/truncation or a changed prefix. The latter
+requires a new recent snapshot, with drafts retained. History reads scan their
+pinned prefix again; this version does not maintain a persistent derived cache.
+
+An older connector, or a new connector with an older CLI, answers `invalid_request`
+with `unsupported RPC method`. The phone explicitly tells the reader to update the
+Mac and uses the legacy event replay for that connection. Other snapshot failures
+do not silently select full replay. A client using snapshot v1 also sends
+`complete:true` on `chat.events`: complete events are paged without truncating
+fields or skipping oversized events; an oversized single event is
+`response_too_large` and the client cursor remains unchanged. The optional boolean
+is absent for legacy clients; their existing fitting behavior is unchanged.
+
 **`chat.events`** is how the phone follows a chat. Params (all but `max_events`
 required):
 

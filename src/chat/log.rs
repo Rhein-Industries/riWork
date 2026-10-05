@@ -232,6 +232,181 @@ pub fn read_transcript(home: &Path, id: &str) -> Result<super::model::Transcript
     Ok(transcript)
 }
 
+// Snapshot v1 reads one immutable prefix without contacting or upgrading the host.
+// Explicit limits fail closed: never return a partial item or advance past omitted state.
+const SNAPSHOT_FILE_MAX: u64 = 128 << 20;
+const SNAPSHOT_LINE_MAX: u64 = 8 << 20;
+const SNAPSHOT_EVENTS_MAX: u64 = 1_000_000;
+
+#[derive(serde::Serialize)]
+pub struct SnapshotItem {
+    pub order: u64,
+    pub item: super::model::Item,
+}
+#[derive(serde::Serialize)]
+pub struct Snapshot {
+    pub v: u8,
+    pub chat_id: String,
+    pub cursor: String,
+    pub next: u64,
+    pub before: u64,
+    pub more: bool,
+    pub items: Vec<SnapshotItem>,
+    pub controls: Vec<super::model::ChatEvent>,
+}
+
+pub fn read_snapshot(
+    home: &Path,
+    id: &str,
+    cursor: Option<&str>,
+    before: u64,
+    limit: usize,
+    max_bytes: usize,
+    item_ids: &[String],
+) -> Result<Snapshot, String> {
+    use super::model::ChatEvent;
+    use std::collections::HashMap;
+    if cursor.is_some_and(|c| c.len() > 80 || c.is_empty())
+        || (!item_ids.is_empty() && cursor.is_none())
+        || (cursor.is_none() && before != u64::MAX)
+        || item_ids.len() > 100
+        || item_ids.iter().any(|id| id.is_empty() || id.len() > 512)
+        || !(1..=100).contains(&limit)
+        || !(4096..=8 << 20).contains(&max_bytes)
+    {
+        return Err("invalid snapshot limits".into());
+    }
+    let dir = chat_dir(home, id).ok_or("invalid chat id")?;
+    let file = File::open(dir.join(EVENTS)).map_err(|_| "chat not found")?;
+    let length = file.metadata().map_err(|e| e.to_string())?.len();
+    let end = match cursor {
+        Some(c) => c
+            .split('-')
+            .next()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v <= length)
+            .ok_or("snapshot expired")?,
+        None => length,
+    };
+    if end > SNAPSHOT_FILE_MAX {
+        return Err("snapshot file limit exceeded".into());
+    }
+    let started = std::time::Instant::now();
+    let mut reader = BufReader::new(file.take(end));
+    let mut transcript = super::model::Transcript::default();
+    let mut orders = HashMap::new();
+    let (mut next, mut bytes, mut hash) = (0u64, 0u64, 0xcbf29ce484222325u64);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        // Take is per line, preventing an untrusted unterminated record allocating the file.
+        let n = reader
+            .by_ref()
+            .take(SNAPSHOT_LINE_MAX + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        if n as u64 > SNAPSHOT_LINE_MAX {
+            return Err("snapshot record limit exceeded".into());
+        }
+        if line.last() != Some(&b'\n') {
+            break;
+        }
+        if next >= SNAPSHOT_EVENTS_MAX || started.elapsed().as_secs() >= 5 {
+            return Err("snapshot work limit exceeded".into());
+        }
+        let envelope: Envelope =
+            serde_json::from_slice(&line).map_err(|_| "invalid snapshot record")?;
+        if envelope.chat_id != id || envelope.seq != next + 1 {
+            return Err("invalid snapshot sequence".into());
+        }
+        for b in &line {
+            hash = (hash ^ u64::from(*b)).wrapping_mul(0x100000001b3);
+        }
+        bytes += n as u64;
+        next = envelope.seq;
+        if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } = &envelope.event
+        {
+            orders.entry(item.id.clone()).or_insert(next);
+        }
+        transcript.apply(&envelope.event);
+    }
+    let mark = format!("{bytes}-{next}-{hash:016x}");
+    if cursor.is_some_and(|c| c != mark) {
+        return Err("snapshot expired".into());
+    }
+    let mut controls = Vec::new();
+    if cursor.is_none() {
+        if let Some(info) = transcript.info.clone() {
+            controls.push(ChatEvent::Info { info });
+        }
+        controls.push(ChatEvent::State {
+            state: transcript.state.clone(),
+        });
+        if let Some(turn_id) = transcript.turn_id.clone() {
+            controls.push(ChatEvent::TurnStarted { turn_id });
+        }
+        for approval in &transcript.approvals {
+            controls.push(ChatEvent::ApprovalRequested {
+                approval: approval.clone(),
+            });
+        }
+        for question in &transcript.questions {
+            controls.push(ChatEvent::QuestionRequested {
+                question: question.clone(),
+            });
+        }
+        if let Some(usage) = transcript.usage.clone() {
+            controls.push(ChatEvent::Usage { usage });
+        }
+        controls.push(ChatEvent::Models {
+            models: transcript.models.clone(),
+        });
+    }
+    let mut items: Vec<_> = transcript
+        .items
+        .into_iter()
+        .filter_map(|item| {
+            let order = orders[&item.id];
+            (order < before && (item_ids.is_empty() || item_ids.contains(&item.id)))
+                .then_some(SnapshotItem { order, item })
+        })
+        .collect();
+    let more = item_ids.is_empty() && items.len() > limit;
+    let cut = if item_ids.is_empty() {
+        items.len().saturating_sub(limit)
+    } else {
+        0
+    };
+    items.drain(..cut);
+    let mut snapshot = Snapshot {
+        v: 1,
+        chat_id: id.into(),
+        cursor: mark,
+        next,
+        before: items.first().map_or(0, |i| i.order),
+        more,
+        items,
+        controls,
+    };
+    // Reduce by whole oldest items only. Oversized controls or one item are explicit errors.
+    while serde_json::to_vec(&snapshot)
+        .map_err(|e| e.to_string())?
+        .len()
+        > max_bytes
+    {
+        if !item_ids.is_empty() || snapshot.items.len() <= 1 {
+            return Err("snapshot response limit exceeded".into());
+        }
+        snapshot.items.remove(0);
+        snapshot.before = snapshot.items[0].order;
+        snapshot.more = true;
+    }
+    Ok(snapshot)
+}
+
 /// How long the log of chat `id` is, in bytes: a mark that `read_after` reads
 /// everything after.
 pub fn mark(home: &Path, id: &str) -> Result<u64, String> {
@@ -594,5 +769,148 @@ mod tests {
         for bad in ["", "..", "../x", &id.to_uppercase(), &id[..8], "a/b"] {
             assert_eq!(chat_dir(home, bad), None, "{bad:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use serde_json::json;
+    struct Fixture {
+        home: PathBuf,
+        id: String,
+        dir: PathBuf,
+        seq: u64,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let home = std::env::temp_dir().join(format!("riwork-snapshot-{}", Uuid::new_v4()));
+            let id = Uuid::new_v4().to_string();
+            let dir = chat_dir(&home, &id).unwrap();
+            fs::create_dir_all(&dir).unwrap();
+            File::create(dir.join(EVENTS)).unwrap();
+            Self {
+                home,
+                id,
+                dir,
+                seq: 0,
+            }
+        }
+        fn event(&mut self, event: serde_json::Value) {
+            self.seq += 1;
+            let line =
+                serde_json::to_vec(&json!({"chat_id": self.id, "seq": self.seq, "event": event}))
+                    .unwrap();
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(self.dir.join(EVENTS))
+                .unwrap();
+            file.write_all(&line).unwrap();
+            file.write_all(b"\n").unwrap();
+        }
+        fn row(&mut self, id: &str, text: &str) {
+            self.event(json!({"event":"item_started","item":{"id":id,"status":"in_progress","body":{"type":"agent_message","text":text}}}));
+        }
+        fn read(&self, cursor: Option<&str>, before: u64, count: usize) -> Snapshot {
+            read_snapshot(&self.home, &self.id, cursor, before, count, 120_000, &[]).unwrap()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.home);
+        }
+    }
+    #[test]
+    fn recent_full_items_controls_and_fixed_history_survive_live_writes() {
+        let mut f = Fixture::new();
+        f.event(json!({"event":"approval_requested","approval":{"request_id":"old-approval","kind":"command","title":"fixture","choices":["accept","decline"]}}));
+        f.event(json!({"event":"question_requested","question":{"request_id":"old-question","questions":[]}}));
+        f.event(json!({"event":"models","models":[]}));
+        f.event(json!({"event":"usage","usage":{"input_tokens":123}}));
+        for n in 0..8000 {
+            f.row(&format!("row-{n}"), "start");
+        }
+        f.event(json!({"event":"item_delta","item_id":"row-7999","delta":{"kind":"text","text":"-complete"}}));
+        f.event(json!({"event":"state","state":{"state":"waiting"}}));
+        let recent = f.read(None, u64::MAX, 50);
+        assert_eq!(recent.next, f.seq);
+        assert_eq!(recent.items.len(), 50);
+        assert_eq!(recent.items[0].item.id, "row-7950");
+        assert!(
+            serde_json::to_string(&recent.items[49].item)
+                .unwrap()
+                .contains("start-complete")
+        );
+        let controls = serde_json::to_value(&recent.controls).unwrap();
+        assert!(controls.to_string().contains("old-approval"));
+        assert!(controls.to_string().contains("old-question"));
+        assert!(controls.to_string().contains("123"));
+        assert!(controls.to_string().contains("waiting"));
+        f.event(
+            json!({"event":"approval_resolved","request_id":"old-approval","decision":"accept"}),
+        );
+        f.event(json!({"event":"item_delta","item_id":"row-7900","delta":{"kind":"text","text":"LIVE"}}));
+        let old = f.read(Some(&recent.cursor), recent.before, 50);
+        assert_eq!(old.next, recent.next);
+        assert!(old.controls.is_empty());
+        assert_eq!(old.items.last().unwrap().item.id, "row-7949");
+        assert!(!serde_json::to_string(&old).unwrap().contains("LIVE"));
+        let again = f.read(Some(&recent.cursor), recent.before, 50);
+        assert_eq!(
+            serde_json::to_value(old).unwrap(),
+            serde_json::to_value(again).unwrap()
+        );
+        let targeted = read_snapshot(
+            &f.home,
+            &f.id,
+            Some(&recent.cursor),
+            u64::MAX,
+            50,
+            120_000,
+            &["row-1".into()],
+        )
+        .unwrap();
+        assert_eq!(targeted.items[0].item.id, "row-1");
+        assert!(!targeted.more);
+    }
+    #[test]
+    fn partial_tail_validation_replacement_and_resource_limits_fail_closed() {
+        let mut f = Fixture::new();
+        f.row("a", "hello");
+        let before = f.read(None, u64::MAX, 50);
+        OpenOptions::new()
+            .append(true)
+            .open(f.dir.join(EVENTS))
+            .unwrap()
+            .write_all(b"{partial")
+            .unwrap();
+        let after = f.read(None, u64::MAX, 50);
+        assert_eq!(after.cursor, before.cursor);
+        assert!(read_snapshot(&f.home, "../escape", None, u64::MAX, 50, 120_000, &[]).is_err());
+        assert!(read_snapshot(&f.home, &f.id, None, u64::MAX, 101, 120_000, &[]).is_err());
+        assert!(
+            read_snapshot(
+                &f.home,
+                &f.id,
+                Some(&before.cursor),
+                u64::MAX,
+                50,
+                120_000,
+                &[String::new()]
+            )
+            .is_err()
+        );
+        fs::write(f.dir.join(EVENTS), b"").unwrap();
+        assert!(read_snapshot(&f.home, &f.id, Some(&before.cursor), 10, 50, 120_000, &[]).is_err());
+        f.seq = 0;
+        f.row("b", &"x".repeat(5000));
+        assert!(read_snapshot(&f.home, &f.id, None, u64::MAX, 50, 4096, &[]).is_err());
+        OpenOptions::new()
+            .write(true)
+            .open(f.dir.join(EVENTS))
+            .unwrap()
+            .set_len(SNAPSHOT_FILE_MAX + 1)
+            .unwrap();
+        assert!(read_snapshot(&f.home, &f.id, None, u64::MAX, 50, 120_000, &[]).is_err());
     }
 }
