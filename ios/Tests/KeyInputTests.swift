@@ -848,95 +848,255 @@ private final class FakeTransport: RemoteTransport, @unchecked Sendable {
     func testDeleteBackwardIsBackspace() {
         var mapper = KeyMapper()
         XCTAssertEqual(mapper.deleteBackward(), [.key(.backspace)])
-        mapper.toggleControl()
-        XCTAssertEqual(mapper.deleteBackward(), [.key(.backspace)])
-        XCTAssertFalse(mapper.controlArmed, "any key consumes an armed Ctrl")
+        mapper.tap(.alt, at: t0)
+        XCTAssertEqual(mapper.deleteBackward(), [.key(.escape), .key(.backspace)], "Alt+Backspace deletes a word in readline")
+        XCTAssertFalse(mapper.altArmed, "any key uses up what was armed for it")
+        mapper.tap(.control, at: t0)
+        XCTAssertEqual(mapper.deleteBackward(), [.key(.control("h"))], "Ctrl+Backspace is ^H, as xterm sends it")
         XCTAssertEqual(mapper.insert("c"), [.text("c")])
     }
 
-    func testStickyControlTurnsTheNextLetterIntoAControlKey() {
+    // MARK: Arming
+
+    func testATapArmsForOneKeyADoubleTapLocksAndASlowSecondTapReleases() {
         var mapper = KeyMapper()
-        XCTAssertFalse(mapper.controlArmed)
-        mapper.toggleControl()
+        XCTAssertEqual(mapper.control, .off)
+        mapper.tap(.control, at: t0)
+        XCTAssertEqual(mapper.control, .once)
         XCTAssertTrue(mapper.controlArmed)
         XCTAssertEqual(mapper.insert("c"), [.key(.control("c"))])
-        XCTAssertFalse(mapper.controlArmed, "one shot")
+        XCTAssertEqual(mapper.control, .off, "one key only")
         XCTAssertEqual(mapper.insert("c"), [.text("c")])
 
-        mapper.toggleControl()
-        XCTAssertEqual(mapper.insert("C"), [.key(.control("c"))], "an upper-case letter is the lower-case control key")
-        mapper.toggleControl()
-        XCTAssertEqual(mapper.insert("z"), [.key(.control("z"))])
+        mapper.tap(.control, at: t0)
+        mapper.tap(.control, at: t0 + 1)
+        XCTAssertEqual(mapper.control, .off, "a slow second tap lets it go")
+
+        mapper.tap(.control, at: t0)
+        mapper.tap(.control, at: t0 + 0.3)
+        XCTAssertEqual(mapper.control, .locked, "a double tap locks")
+        XCTAssertEqual(mapper.insert("a"), [.key(.control("a"))])
+        XCTAssertEqual(mapper.press(.left), [.key(.escape), .text("[1;5D")])
+        XCTAssertEqual(mapper.insert("e"), [.key(.control("e"))])
+        XCTAssertEqual(mapper.control, .locked, "a lock outlasts any number of keys")
+        mapper.tap(.control, at: t0 + 0.4)
+        XCTAssertEqual(mapper.control, .off, "a tap on a locked modifier releases it, however soon")
+        mapper.tap(.control, at: t0 + 0.5)
+        XCTAssertEqual(mapper.control, .once, "and the next tap starts over")
+    }
+    func testADoubleTapCountsOnlyOnTheSameModifierAndOnlyAfterNothingWasSent() {
+        var mapper = KeyMapper()
+        mapper.tap(.control, at: t0)
+        mapper.tap(.alt, at: t0 + 0.1)
+        mapper.tap(.control, at: t0 + 0.2)
+        XCTAssertEqual(mapper.control, .off, "Alt came between: a second tap, not a double tap")
+        XCTAssertEqual(mapper.alt, .once)
+        mapper.disarmModifiers()
+        mapper.tap(.shift, at: t0)
+        _ = mapper.insert("a")
+        mapper.tap(.shift, at: t0 + 0.1)
+        XCTAssertEqual(mapper.shift, .once, "a tap after the key used it arms again")
+    }
+    func testLatchesAreSetOutrightAndDisarmModifiersClearsLocksToo() {
+        var mapper = KeyMapper()
+        mapper.setLatch(.alt, .locked)
+        mapper.setLatch(.shift, .once)
+        XCTAssertEqual(mapper.armed, [.alt, .shift])
+        XCTAssertEqual(mapper.latch(.alt), .locked)
+        XCTAssertEqual(mapper.latch(.command), .off, "Command is not a bar modifier")
+        mapper.disarmModifiers()
+        XCTAssertEqual(mapper.armed, [])
+        XCTAssertEqual(mapper.alt, .off)
+    }
+    func testOnlyWhatWasArmedForOneKeyIsUsedUpALockedOneStays() {
+        var mapper = KeyMapper()
+        mapper.setLatch(.control, .locked)
+        mapper.tap(.alt, at: t0)
+        XCTAssertEqual(mapper.insert("x"), [.key(.escape), .key(.control("x"))])
+        XCTAssertEqual(mapper.alt, .off)
+        XCTAssertEqual(mapper.control, .locked)
+        XCTAssertEqual(mapper.insert("x"), [.key(.control("x"))])
+    }
+    func testAHotkeyIsSentAsDefinedAndUsesUpOnlyOneKeyModifiers() {
+        var mapper = KeyMapper()
+        mapper.tap(.alt, at: t0); mapper.setLatch(.control, .locked)
+        XCTAssertEqual(mapper.run(Hotkey(label: "Clear", steps: [.text("/clear"), .key(.enter)])), [.text("/clear"), .key(.enter)])
+        XCTAssertFalse(mapper.altArmed)
+        XCTAssertEqual(mapper.control, .locked)
     }
 
-    func testStickyControlUsesOnlyTheFirstCharacter() {
-        var mapper = KeyMapper()
-        mapper.toggleControl()
-        XCTAssertEqual(mapper.insert("cd"), [.key(.control("c")), .text("d")])
-        XCTAssertFalse(mapper.controlArmed)
-        mapper.toggleControl()
-        XCTAssertEqual(mapper.insert("ab\ncd"), [.key(.control("a")), .text("b"), .key(.enter), .text("cd")])
-    }
+    // MARK: Multi-character input
 
-    func testStickyControlWithANonLetterDisarmsAndPassesTheTextThrough() {
+    func testDictationPastesAndInputMethodWordsPassThroughAndKeepTheArming() {
         var mapper = KeyMapper()
-        for text in ["1", " ", "é", "你", "-", "🙂", "é!"] {
-            mapper.toggleControl()
-            XCTAssertEqual(mapper.insert(text), [.text(text)], text)
-            XCTAssertFalse(mapper.controlArmed, text)
+        mapper.tap(.control, at: t0); mapper.tap(.alt, at: t0 + 1); mapper.tap(.shift, at: t0 + 2)
+        for text in ["cd", "hello world", "ab\ncd", "你好", "Please open the file."] {
+            XCTAssertEqual(mapper.insert(text), KeyMapper.items(for: text), text)
+            XCTAssertEqual(mapper.armed, [.control, .alt, .shift], "\(text): no key was pressed, so nothing is used up")
         }
-        mapper.toggleControl()
-        XCTAssertEqual(mapper.insert("\n"), [.key(.enter)])
+        XCTAssertEqual(mapper.insert("c"), [.key(.escape), .key(.control("c"))], "the next single key gets them")
+        XCTAssertEqual(mapper.armed, [])
+    }
+    func testOneGraphemeIsOneKeyEvenWhenItIsSeveralScalars() {
+        var mapper = KeyMapper()
+        mapper.tap(.alt, at: t0)
+        XCTAssertEqual(mapper.insert("e\u{301}"), [.key(.escape), .text("e\u{301}")])
+        mapper.tap(.control, at: t0)
+        XCTAssertEqual(mapper.insert("\r\n"), [.key(.enter)], "CRLF is one character")
         XCTAssertFalse(mapper.controlArmed)
-        mapper.toggleControl()
-        XCTAssertEqual(mapper.insert("\r\n"), [.key(.enter)], "CRLF arrives as one character")
-        XCTAssertFalse(mapper.controlArmed)
-        mapper.toggleControl()
-        XCTAssertEqual(mapper.insert("c\u{301}"), [.text("c\u{301}")], "a letter with a mark is not a plain control letter")
+        mapper.tap(.alt, at: t0)
+        XCTAssertEqual(mapper.insert("🙂"), [.key(.escape), .text("🙂")])
+    }
+    func testACharacterThatCannotBeSentKeepsTheArming() {
+        var mapper = KeyMapper()
+        mapper.tap(.alt, at: t0)
+        XCTAssertEqual(mapper.insert("\u{7}"), [], "a bare control character is dropped")
+        XCTAssertTrue(mapper.altArmed)
+        XCTAssertEqual(mapper.insert(""), [])
+        XCTAssertTrue(mapper.altArmed)
+        XCTAssertEqual(mapper.insert("f"), [.key(.escape), .text("f")])
+    }
+
+    // MARK: Encoding: software keyboard characters
+
+    func testCtrlWithEveryLetterOfEitherCase() {
+        for letter in lowercaseLetters {
+            XCTAssertEqual(KeyMapper.encode(letter, modifiers: .control), [.key(.control(letter))])
+            XCTAssertEqual(KeyMapper.encode(Character(letter.uppercased()), modifiers: .control), [.key(.control(letter))], "Ctrl+Shift+letter is Ctrl+letter without CSI u")
+            XCTAssertEqual(KeyMapper.encode(letter, modifiers: [.control, .shift]), [.key(.control(letter))])
+        }
+    }
+    func testCtrlWithDigitsPunctuationAndSpace() {
+        XCTAssertEqual(KeyMapper.encode("[", modifiers: .control), [.key(.escape)], "Ctrl+[ is Escape")
+        XCTAssertEqual(KeyMapper.encode("3", modifiers: .control), [.key(.escape)], "so is Ctrl+3 in xterm")
+        XCTAssertEqual(KeyMapper.encode("?", modifiers: .control), [.key(.backspace)], "Ctrl+? is DEL")
+        XCTAssertEqual(KeyMapper.encode("8", modifiers: .control), [.key(.backspace)], "so is Ctrl+8")
+        // No key the desktop takes is NUL, FS, GS, RS or US: these go as themselves, as Ctrl+1 does in xterm.
+        for character: Character in ["1", "2", " ", "@", "\\", "]", "^", "_", "/", "-", ".", ",", "é"] {
+            XCTAssertEqual(KeyMapper.encode(character, modifiers: .control), [.text(String(character))], "\(character)")
+        }
+    }
+    func testAltPutsEscapeInFrontOfAnyCharacter() {
+        for character: Character in ["b", "f", ".", "B", "1", " ", "<", "é"] {
+            XCTAssertEqual(KeyMapper.encode(character, modifiers: .alt), [.key(.escape), .text(String(character))], "\(character)")
+        }
+        XCTAssertEqual(KeyMapper.encode("b", modifiers: [.alt, .shift]), [.key(.escape), .text("B")], "Alt+Shift+b is Escape B")
+    }
+    func testCtrlAltWithALetterIsEscapeThenTheControlKey() {
+        XCTAssertEqual(KeyMapper.encode("h", modifiers: [.control, .alt]), [.key(.escape), .key(.control("h"))])
+        XCTAssertEqual(KeyMapper.encode("X", modifiers: [.control, .alt, .shift]), [.key(.escape), .key(.control("x"))])
+        XCTAssertEqual(KeyMapper.encode("[", modifiers: [.control, .alt]), [.key(.escape), .key(.escape)])
+    }
+    func testShiftAloneMakesALetterUpperCaseAndLeavesTheRest() {
+        XCTAssertEqual(KeyMapper.encode("a", modifiers: .shift), [.text("A")])
+        XCTAssertEqual(KeyMapper.encode("1", modifiers: .shift), [.text("1")], "the software keyboard already shifted what it sends")
+        XCTAssertEqual(KeyMapper.encode("é", modifiers: .shift), [.text("é")])
+    }
+    func testCommandIsNotATerminalModifier() {
+        XCTAssertEqual(KeyMapper.encode("a", modifiers: .command), [.text("a")])
+        XCTAssertEqual(KeyMapper.encode(.up, modifiers: .command), [.key(.up)])
+    }
+    func testReturnTabAndBackspaceFromTheSoftwareKeyboardTakeTheModifiers() {
+        var mapper = KeyMapper()
+        mapper.tap(.alt, at: t0)
+        XCTAssertEqual(mapper.insert("\n"), [.key(.escape), .key(.enter)], "Alt+Return")
+        mapper.tap(.shift, at: t0)
+        XCTAssertEqual(mapper.insert("\t"), [.key(.backTab)], "Shift+Tab")
+        mapper.tap(.control, at: t0); mapper.tap(.alt, at: t0 + 1)
+        XCTAssertEqual(mapper.deleteBackward(), [.key(.escape), .key(.control("h"))])
+        mapper.tap(.control, at: t0)
+        XCTAssertEqual(mapper.insert("\n"), [.key(.enter)], "Ctrl+Return has no legacy form")
         XCTAssertFalse(mapper.controlArmed)
     }
 
-    func testTogglingControlTwiceDisarmsAndDisarmControlDoes() {
-        var mapper = KeyMapper()
-        mapper.toggleControl(); mapper.toggleControl()
-        XCTAssertFalse(mapper.controlArmed)
-        XCTAssertEqual(mapper.insert("c"), [.text("c")])
-        mapper.toggleControl()
-        mapper.disarmControl()
-        XCTAssertFalse(mapper.controlArmed)
-        XCTAssertEqual(mapper.insert("c"), [.text("c")])
-        mapper.disarmControl()
-        XCTAssertFalse(mapper.controlArmed)
-    }
+    // MARK: Encoding: named keys
 
-    func testPressingAKeyConsumesArmedControl() {
+    func testModifiedCursorAndEditingKeysAreXtermSequences() {
+        let finals: [(TerminalKey, String)] = [(.up, "1;%A"), (.down, "1;%B"), (.right, "1;%C"), (.left, "1;%D"), (.home, "1;%H"), (.end, "1;%F"),
+                                               (.pageUp, "5;%~"), (.pageDown, "6;%~"), (.delete, "3;%~")]
+        let parameters: [(ChordModifiers, Int)] = [(.shift, 2), (.alt, 3), ([.shift, .alt], 4), (.control, 5), ([.control, .shift], 6), ([.control, .alt], 7), ([.control, .alt, .shift], 8)]
+        for (key, pattern) in finals {
+            XCTAssertEqual(KeyMapper.encode(key, modifiers: []), [.key(key)], "\(key) alone is the named key")
+            for (modifiers, parameter) in parameters {
+                XCTAssertEqual(KeyMapper.xtermParameter(modifiers), parameter)
+                let items = KeyMapper.encode(key, modifiers: modifiers)
+                XCTAssertEqual(items, [.key(.escape), .text("[" + pattern.replacingOccurrences(of: "%", with: "\(parameter)"))], "\(key) \(modifiers.glyphs)")
+                XCTAssertNoThrow(try KeyItem.validate(batch: items))
+            }
+        }
+    }
+    func testKeysWithoutAModifiedFormKeepAltAndShiftTabIsBackTab() {
+        XCTAssertEqual(KeyMapper.encode(.tab, modifiers: .shift), [.key(.backTab)])
+        XCTAssertEqual(KeyMapper.encode(.tab, modifiers: [.shift, .alt]), [.key(.escape), .key(.backTab)])
+        XCTAssertEqual(KeyMapper.encode(.tab, modifiers: .control), [.key(.tab)])
+        XCTAssertEqual(KeyMapper.encode(.backTab, modifiers: .alt), [.key(.escape), .key(.backTab)])
+        XCTAssertEqual(KeyMapper.encode(.enter, modifiers: .alt), [.key(.escape), .key(.enter)])
+        XCTAssertEqual(KeyMapper.encode(.enter, modifiers: .shift), [.key(.enter)])
+        XCTAssertEqual(KeyMapper.encode(.escape, modifiers: .alt), [.key(.escape), .key(.escape)])
+        XCTAssertEqual(KeyMapper.encode(.escape, modifiers: .control), [.key(.escape)])
+        XCTAssertEqual(KeyMapper.encode(.backspace, modifiers: .shift), [.key(.backspace)])
+        XCTAssertEqual(KeyMapper.encode(.backspace, modifiers: .control), [.key(.control("h"))])
+        XCTAssertEqual(KeyMapper.encode(.control("c"), modifiers: .alt), [.key(.escape), .key(.control("c"))])
+        XCTAssertEqual(KeyMapper.encode(.control("c"), modifiers: .control), [.key(.control("c"))])
+    }
+    func testAPressAddsTheHeldModifiersToTheArmedOnes() {
         var mapper = KeyMapper()
-        mapper.toggleControl()
+        mapper.tap(.control, at: t0)
+        XCTAssertEqual(mapper.press(.right, modifiers: .shift), [.key(.escape), .text("[1;6C")], "bar Ctrl and a held Shift")
+        XCTAssertEqual(mapper.press(.right, modifiers: .alt), [.key(.escape), .text("[1;3C")], "Ctrl was used up")
+        mapper.tap(.alt, at: t0)
+        XCTAssertEqual(mapper.press("b", modifiers: .control), [.key(.escape), .key(.control("b"))])
         XCTAssertEqual(mapper.press(.escape), [.key(.escape)])
-        XCTAssertFalse(mapper.controlArmed)
-        XCTAssertEqual(mapper.insert("c"), [.text("c")])
-        XCTAssertEqual(mapper.press(.tab), [.key(.tab)])
-        XCTAssertEqual(mapper.press(.control("d")), [.key(.control("d"))])
-        for (_, key) in namedKeys {
-            mapper.toggleControl()
-            XCTAssertEqual(mapper.press(key), [.key(key)])
-            XCTAssertFalse(mapper.controlArmed)
-        }
     }
 
     func testMapperOutputFeedsTheBufferIntoValidBatches() throws {
         var mapper = KeyMapper(), buffer = KeyBuffer()
         var typed: [KeyItem] = []
         for step in ["git status", "\n", "ls\t-la\r\n", "ünï 🙂 ok"] { typed += mapper.insert(step) }
-        mapper.toggleControl(); typed += mapper.insert("c")
+        mapper.tap(.control, at: t0); typed += mapper.insert("c")
         typed += mapper.deleteBackward()
         typed += mapper.press(.up)
+        mapper.tap(.control, at: t0); mapper.tap(.alt, at: t0 + 1); typed += mapper.press(.left)
         XCTAssertTrue(buffer.append(typed))
         var sent: [KeyItem] = []
         while let batch = buffer.nextBatch() { try KeyItem.validate(batch: batch.items); sent += batch.items; XCTAssertTrue(buffer.finish(batch.id)) }
         XCTAssertEqual(sent, [
             .text("git status"), .key(.enter), .text("ls"), .key(.tab), .text("-la"), .key(.enter), .text("ünï 🙂 ok"),
-            .key(.control("c")), .key(.backspace), .key(.up)
+            .key(.control("c")), .key(.backspace), .key(.up), .key(.escape), .text("[1;7D")
         ])
+    }
+
+    // MARK: A sequence stays in one batch
+
+    func testABatchFullOfKeysDoesNotEndOnTheEscapeOfASequence() throws {
+        var buffer = KeyBuffer()
+        let ups = Array(repeating: KeyItem.key(.up), count: KeyItem.maxItems - 1)
+        XCTAssertTrue(buffer.append(ups + KeyMapper.encode(.up, modifiers: .control)))
+        let first = try XCTUnwrap(buffer.nextBatch())
+        XCTAssertEqual(first.items, ups, "the Escape waits for the rest of Ctrl+Up")
+        XCTAssertTrue(buffer.finish(first.id))
+        XCTAssertEqual(try XCTUnwrap(buffer.nextBatch()).items, [.key(.escape), .text("[1;5A")])
+    }
+    func testTextThatDoesNotFitTakesItsEscapeWithIt() throws {
+        var buffer = KeyBuffer()
+        let long = String(repeating: "é", count: KeyItem.maxTextBytes / 2 - 1)
+        XCTAssertTrue(buffer.append([.text(long), .key(.up)] + KeyMapper.encode(.left, modifiers: .alt)))
+        let first = try XCTUnwrap(buffer.nextBatch())
+        XCTAssertEqual(first.items, [.text(long), .key(.up)], "`[1;3D` does not fit, and the Escape goes with it")
+        XCTAssertTrue(buffer.finish(first.id))
+        XCTAssertEqual(try XCTUnwrap(buffer.nextBatch()).items, [.key(.escape), .text("[1;3D")])
+    }
+    func testALoneEscapeStillGoesAndOneAtTheEndOfTheQueueToo() throws {
+        var buffer = KeyBuffer()
+        XCTAssertTrue(buffer.append([.key(.escape)]))
+        XCTAssertEqual(try XCTUnwrap(buffer.nextBatch()).items, [.key(.escape)])
+        var more = KeyBuffer()
+        XCTAssertTrue(more.append([.text("a"), .key(.escape)]))
+        XCTAssertEqual(try XCTUnwrap(more.nextBatch()).items, [.text("a"), .key(.escape)], "nothing behind it: it ends the batch")
+    }
+    func testTheLineComposerGetsTypedTextButNotTheRestOfAnEscapeSequence() {
+        var buffer = KeyBuffer()
+        buffer.append([.text("ls")] + KeyMapper.encode(.left, modifiers: .control) + KeyMapper.encode("b", modifiers: .alt) + [.key(.enter), .text(" -la")])
+        XCTAssertEqual(buffer.plainText, "ls -la")
     }
 }

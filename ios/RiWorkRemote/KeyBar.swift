@@ -6,7 +6,7 @@ private final class KeyScrollView: UIScrollView {
     override func touchesShouldCancel(in view: UIView) -> Bool { true }
 }
 
-/// The key row on the keyboard: special keys, Ctrl and Alt, symbols that are awkward on the iOS keyboard, and hotkeys.
+/// The key row on the keyboard: special keys, Ctrl, Alt and Shift, symbols that are awkward on the iOS keyboard, and hotkeys.
 /// It is the input accessory view, and always 44 pt tall, exactly where iOS puts it:
 /// - above the software keyboard, or
 /// - alone at the bottom edge of the screen when a hardware keyboard is attached (iOS hides the software keyboard then).
@@ -16,7 +16,9 @@ private final class KeyScrollView: UIScrollView {
 /// including the "+" that opens the hotkey editor at the very end, is in the scrolling part.
 @MainActor final class KeyBarView: UIInputView {
     enum Action: Hashable {
-        case key(TerminalKey), control, alt, text(String), paste, hide, hotkey(String), editHotkeys, palette, help
+        case key(TerminalKey), control, alt, shift, text(String), paste, hide, hotkey(String), editHotkeys, palette, help
+        /// VoiceOver's "Lock" or "Release" on a modifier key, where a double tap cannot be made.
+        case latch(ChordModifiers, ModifierLatch)
     }
     private enum Role { case plain, hotkey, muted }
 
@@ -65,9 +67,11 @@ private final class KeyScrollView: UIScrollView {
     private var roles: [Action: Role] = [:]
     private var stackLeading: NSLayoutConstraint!, hideTrailing: NSLayoutConstraint!
     private var hideWidth: NSLayoutConstraint!, hideMinWidth: NSLayoutConstraint?, dividerInsets: [NSLayoutConstraint] = [], stackTrailing: NSLayoutConstraint!
-    private var controlArmed = false, altArmed = false
+    private var latches: [Action: ModifierLatch] = [.control: .off, .alt: .off, .shift: .off]
     private var repeatTask: Task<Void, Never>?
     private var didRepeat = false
+    /// True while a held key sends itself again (not for its first press), so that it keeps the modifiers it started with.
+    private(set) var isRepeating = false
     private var keyboardObservers: [any NSObjectProtocol] = []
 
     init() {
@@ -157,8 +161,9 @@ private final class KeyScrollView: UIScrollView {
             add(.key(key), title: face.0, symbol: face.1, label: label, role: .plain)
         }
         key(.escape, named("Esc", "escape"), "Escape"); key(.tab, named("Tab", "arrow.right.to.line"), "Tab")
-        let control = named("Ctrl", "control"), alt = named("Alt", "option")
+        let control = named("Ctrl", "control"), alt = named("Alt", "option"), shift = named("Shift", "shift")
         add(.control, title: control.0, symbol: control.1, label: "Control", role: .plain); add(.alt, title: alt.0, symbol: alt.1, label: "Alt", role: .plain)
+        add(.shift, title: shift.0, symbol: shift.1, label: "Shift", role: .plain)
         key(.left, (nil, "arrow.left"), "Left arrow"); key(.up, (nil, "arrow.up"), "Up arrow"); key(.down, (nil, "arrow.down"), "Down arrow"); key(.right, (nil, "arrow.right"), "Right arrow")
         key(.backTab, named("⇧Tab", "arrow.left.to.line"), "Shift Tab"); key(.home, named("Home", "arrow.up.left"), "Home"); key(.end, named("End", "arrow.down.right"), "End")
         key(.pageUp, named("PgUp", "chevron.up.2"), "Page up"); key(.pageDown, named("PgDn", "chevron.down.2"), "Page down")
@@ -224,18 +229,29 @@ private final class KeyScrollView: UIScrollView {
         return button
     }
 
-    /// Ctrl and Alt are sticky: they stay highlighted until the next key uses them.
-    func setArmed(control: Bool, alt: Bool) {
-        controlArmed = control; altArmed = alt
-        for (action, armed) in [(Action.control, control), (Action.alt, alt)] {
+    /// Ctrl, Alt and Shift are sticky. Armed for the next key, a modifier is tinted (the accent on the highlight color); locked,
+    /// it is filled with the accent. The same in the terminal look and under Native.
+    func setLatches(control: ModifierLatch, alt: ModifierLatch, shift: ModifierLatch) {
+        latches = [.control: control, .alt: alt, .shift: shift]
+        for (action, modifier) in [(Action.control, ChordModifiers.control), (.alt, .alt), (.shift, .shift)] {
             guard let button = buttons[action] else { continue }
-            button.configuration?.baseForegroundColor = armed ? style.accentUI : style.textUI
-            button.configuration?.background.backgroundColor = armed ? style.activeUI : .clear
-            button.isSelected = armed
-            button.accessibilityValue = armed ? "armed" : "not armed"
-            button.accessibilityTraits = armed ? [.button, .selected] : .button
+            let state = latch(action)
+            button.configuration?.baseForegroundColor = state == .locked ? style.backgroundUI : state == .once ? style.accentUI : style.textUI
+            button.configuration?.background.backgroundColor = state == .locked ? style.accentUI : state == .once ? style.activeUI : .clear
+            // Inset from the bar's edges, so that on glass the highlight stays inside the capsule; round under Native, square-ish in the terminal look.
+            button.configuration?.background.backgroundInsets = NSDirectionalEdgeInsets(top: unit(6), leading: unit(1), bottom: unit(6), trailing: unit(1))
+            button.configuration?.background.cornerRadius = style.native ? unit(15) : unit(5)
+            button.isSelected = state != .off
+            button.accessibilityValue = state == .locked ? "locked" : state == .once ? "armed" : "not armed"
+            button.accessibilityTraits = state == .off ? .button : [.button, .selected]
+            button.accessibilityHint = "Applies to the next key. Double-tap to lock."
+            let lock = state != .locked
+            button.accessibilityCustomActions = [UIAccessibilityCustomAction(name: lock ? "Lock" : "Release") { [weak self] _ in
+                self?.onAction?(.latch(modifier, lock ? .locked : .off)); return true
+            }]
         }
     }
+    func latch(_ action: Action) -> ModifierLatch { latches[action] ?? .off }
     /// Programmatic press, used by the buttons and by tests.
     func tapped(_ action: Action) {
         // A key that already repeated while held is not sent once more on release.
@@ -248,13 +264,15 @@ private final class KeyScrollView: UIScrollView {
         repeatTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
             while !Task.isCancelled, let self {
+                self.isRepeating = self.didRepeat
                 self.didRepeat = true
                 self.onAction?(action)
+                self.isRepeating = false
                 try? await Task.sleep(for: .milliseconds(70))
             }
         }
     }
-    private func endRepeat() { repeatTask?.cancel(); repeatTask = nil }
+    private func endRepeat() { repeatTask?.cancel(); repeatTask = nil; isRepeating = false }
 
     // MARK: Look
 
@@ -277,7 +295,7 @@ private final class KeyScrollView: UIScrollView {
             case .muted: button.configuration?.baseForegroundColor = style.mutedUI
             }
         }
-        setArmed(control: controlArmed, alt: altArmed)
+        setLatches(control: latch(.control), alt: latch(.alt), shift: latch(.shift))
     }
     /// Native on iOS 26 puts the row on glass, inset from the edges like the system's own bars; anything else takes it away.
     private func applyGlass() {
