@@ -62,7 +62,9 @@ fn next_snapshot(
     if appearance.selected != settings.theme {
         return None;
     }
-    let snapshot = appearance.published(settings.terminal_colors_forced());
+    let mut snapshot = appearance.published(settings.terminal_colors_forced());
+    // Not a color, but the phone reads it from the same document (see `Published`).
+    snapshot.mic = settings.dictation_mic;
     if last.is_some_and(|last| last.same_colors(&snapshot)) {
         return None;
     }
@@ -154,6 +156,38 @@ mod tests {
         let after =
             next_snapshot(&settings(ThemeChoice::Ghostty, false), &edited, Some(&own)).unwrap();
         assert_eq!(after.terminal.unwrap().palette[8].hex(), "#010203");
+    }
+
+    #[test]
+    fn switching_the_mic_is_published_with_the_colors_unchanged() {
+        let home =
+            std::env::temp_dir().join(format!("riwork-appearance-mic-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&home).unwrap();
+        let native = Appearance::resolve(ThemeChoice::Native, true);
+        let mut settings = settings(ThemeChoice::Native, false);
+        let off = next_snapshot(&settings, &native, None).unwrap();
+        assert!(!off.mic);
+        assert!(appearance_file::publish(&home, &off, 1_000).unwrap());
+        let before = fs::read(home.join("appearance.json")).unwrap();
+        assert!(!String::from_utf8_lossy(&before).contains("\"mic\""));
+
+        // On: a change to publish, though no color moved.
+        settings.dictation_mic = true;
+        let on = next_snapshot(&settings, &native, Some(&off)).unwrap();
+        assert!(on.mic);
+        assert_eq!((&on.palette, on.native), (&off.palette, off.native));
+        assert!(appearance_file::publish(&home, &on, 1_001).unwrap());
+        let published = appearance_file::read(&home).unwrap();
+        assert!(published.mic);
+        assert_eq!(published.updated_at, 1_001);
+        assert_eq!(next_snapshot(&settings, &native, Some(&on)), None);
+
+        // Off again: the file is the same bytes as before it was on, but the time.
+        settings.dictation_mic = false;
+        let again = next_snapshot(&settings, &native, Some(&on)).unwrap();
+        assert!(appearance_file::publish(&home, &again, 1_000).unwrap());
+        assert_eq!(fs::read(home.join("appearance.json")).unwrap(), before);
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

@@ -1,13 +1,18 @@
-//! Dictation into the message box: the mic button and ⌘⇧Space start and stop it, ⎋ cancels it,
+//! Dictation into the message box: the mic button and ⌃⌥D start and stop it, ⎋ cancels it,
 //! the words appear at the caret as they are heard, and it stops by itself after a pause.
 //! Dictation never sends the message. The rules are `dictation::Machine`'s; this runs them
-//! against the helper process and the box.
+//! against the helper process and the box. All of it is there only while Settings shows the
+//! mic in chats (`mic_shown`): otherwise the button, the key and the hints are gone, and no
+//! helper is started, so nothing asks for the microphone.
 
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Global, Task, WeakEntity};
+use gpui::{App, Context, Global, Task, WeakEntity};
 
-use crate::dictation::{self, Effect, Engine, Event, Insertion, Machine, Phase, Sources};
+use crate::{
+    dictation::{self, Effect, Engine, Event, Insertion, Machine, Phase, Sources},
+    settings::Settings,
+};
 
 use super::{ChatView, Field, state::provider_name};
 
@@ -29,6 +34,27 @@ impl Dictation {
     }
 }
 
+/// Whether chats show the mic: Settings → "Show microphone buttons for dictation", off by
+/// default. The phone follows the same setting through `appearance.json`.
+pub(super) fn mic_shown(cx: &App) -> bool {
+    mic_in(cx.try_global::<Settings>())
+}
+
+/// `mic_shown` for these settings; none yet is the default, off.
+fn mic_in(settings: Option<&Settings>) -> bool {
+    settings.is_some_and(|settings| settings.dictation_mic)
+}
+
+/// What becomes of a dictation in `phase` when the mic is hidden: one that runs is cancelled,
+/// so what it put in the box goes and the helper ends, and a failure is put away.
+fn when_hidden(phase: &Phase) -> Option<Event> {
+    match phase {
+        phase if phase.is_active() => Some(Event::Cancel),
+        Phase::Failed(_) => Some(Event::Dismiss),
+        _ => None,
+    }
+}
+
 /// The chat tab whose dictation runs, app-wide: one at a time, as there is one microphone.
 #[derive(Default)]
 struct Active(Option<WeakEntity<ChatView>>);
@@ -36,10 +62,10 @@ struct Active(Option<WeakEntity<ChatView>>);
 impl Global for Active {}
 
 impl ChatView {
-    /// The mic button and ⌘⇧Space: start a dictation into the message box, or stop the one that
+    /// The mic button and ⌃⌥D: start a dictation into the message box, or stop the one that
     /// runs and keep what was heard.
     pub(super) fn toggle_dictation(&mut self, cx: &mut Context<Self>) {
-        if !self.accepts_input() {
+        if !self.accepts_input() || !mic_shown(cx) {
             return;
         }
         if self.dictation.phase().is_active() {
@@ -53,6 +79,17 @@ impl ChatView {
     /// ⎋ and closing the tab: stop at once and take out what was dictated.
     pub(super) fn cancel_dictation(&mut self, cx: &mut Context<Self>) {
         self.dictate(Event::Cancel, cx);
+    }
+
+    /// The mic setting changed: turned off, a dictation that runs is cancelled (what it put in
+    /// the box goes) and a failure it left is put away. Either way the box is drawn again.
+    pub(super) fn follow_mic_setting(&mut self, cx: &mut Context<Self>) {
+        if !mic_shown(cx)
+            && let Some(event) = when_hidden(self.dictation.phase())
+        {
+            self.dictate(event, cx);
+        }
+        cx.notify();
     }
 
     /// The failure was seen.
@@ -189,5 +226,52 @@ impl ChatView {
             paths.push(info.cwd.display().to_string());
         }
         Sources::of_chat(names, paths, &self.model.transcript.items)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dictation::Problem;
+
+    #[test]
+    fn the_mic_is_hidden_unless_settings_show_it() {
+        assert!(!mic_in(None), "no settings yet");
+        assert!(!mic_in(Some(&Settings::default())), "off by default");
+        let shown = Settings {
+            dictation_mic: true,
+            ..Settings::default()
+        };
+        assert!(mic_in(Some(&shown)));
+    }
+
+    #[test]
+    fn hiding_the_mic_cancels_a_dictation_and_puts_a_failure_away() {
+        // Listening, with words already in the box: cancelled, the helper ends, the words go.
+        let mut machine = Machine::default();
+        machine.handle(Event::Start);
+        machine.handle(Event::Ready);
+        machine.handle(Event::Heard("half a sentence".into()));
+        let event = when_hidden(machine.phase()).unwrap();
+        assert_eq!(event, Event::Cancel);
+        assert_eq!(machine.handle(event), Effect::CancelEngine);
+        assert_eq!(machine.phase(), &Phase::Idle);
+        // Getting ready and settling are cancelled the same way.
+        let mut machine = Machine::default();
+        machine.handle(Event::Start);
+        assert_eq!(when_hidden(machine.phase()), Some(Event::Cancel));
+        machine.handle(Event::Ready);
+        machine.handle(Event::Heard("done".into()));
+        machine.handle(Event::Stop);
+        assert!(matches!(machine.phase(), Phase::Finishing { .. }));
+        assert_eq!(machine.handle(Event::Cancel), Effect::CancelEngine);
+        // A failure's message goes; nothing at all is left alone.
+        let mut machine = Machine::default();
+        machine.handle(Event::Start);
+        machine.handle(Event::Failed(Problem::Interrupted));
+        let event = when_hidden(machine.phase()).unwrap();
+        assert_eq!(machine.handle(event), Effect::None);
+        assert_eq!(machine.phase(), &Phase::Idle);
+        assert_eq!(when_hidden(&Phase::Idle), None);
     }
 }

@@ -738,6 +738,14 @@ repeated freely. Result:
   colors" option. It is omitted when the desktop could not read its terminal colors.
 - `dark` is true when the palette background is dark: its relative luminance
   (WCAG, on the linearized sRGB channels) is below 0.5.
+- `native` (optional, `true` only) says the desktop draws with its Native skin;
+  `mic` (optional, `true` only) says the desktop's setting "Show microphone
+  buttons for dictation" is on, so the phone shows all of its dictation mics (the
+  chat composers' and the terminal key bar's); without it the phone shows none. Each is written only while true: a missing field
+  means off, and a document without them is byte for byte what a desktop from
+  before them writes. Both validators accept `true` or `false` and reject any other
+  type; the connector passes them through. Switching either counts as a change
+  even when no color moves.
 - `updated_at` is Unix seconds of the last change to the colors. It does not move
   when the desktop restarts with the same colors. There is no push: a client reads
   the object again when it wants to follow later changes, and compares the object

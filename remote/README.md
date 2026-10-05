@@ -171,7 +171,8 @@ stand-in CLI; `fixtures/link.json` (see `fixtures/generate_link.py`) is shared w
 `appearance.get` returns the colors the desktop published, so the phone can match its
 theme (the contract is in [remote-protocol.md](../docs/remote-protocol.md)). It runs
 `riwork appearance --json` (no shell selection, no ledger), re-validates the output
-(version 1, lowercase `#rrggbb` colors, exactly 16 terminal colors, at most 16 KiB)
+(version 1, lowercase `#rrggbb` colors, exactly 16 terminal colors, the optional
+`native` and `mic` flags as booleans and passed on only when true, at most 16 KiB)
 and answers `not_found` "appearance not published" when the desktop app has not
 published a usable `appearance.json` yet. Its tests use a stub CLI and compile the
 desktop's `src/appearance_file.rs` to keep the two validators identical.

@@ -91,7 +91,8 @@ pub fn model_rows(models: &[ModelOption], chosen: Option<&str>) -> Vec<ModelRow>
         .iter()
         .map(|model| ModelRow {
             id: model.id.clone(),
-            label: if model.is_default {
+            // A name that already says so ("Default (recommended)") gets no second mark.
+            label: if model.is_default && !model.name.to_lowercase().contains("default") {
                 format!("{} (default)", model.name)
             } else {
                 model.name.clone()
@@ -415,6 +416,10 @@ mod tests {
             rows.iter().map(|r| r.current).collect::<Vec<_>>(),
             [true, false, false]
         );
+        // A default whose name says it is the default is not marked twice.
+        let mut named = list();
+        named[0].name = "Default (recommended)".into();
+        assert_eq!(model_rows(&named, None)[0].label, "Default (recommended)");
         // A description that is empty is no second line.
         let mut bare = list();
         bare[1].description.clear();

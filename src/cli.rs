@@ -875,9 +875,10 @@ fn appearance_summary(published: &crate::appearance_file::Published) -> String {
     };
     [
         format!(
-            "Appearance: {}{} (updated {updated})",
+            "Appearance: {}{}{} (updated {updated})",
             if published.dark { "dark" } else { "light" },
-            if published.native { ", Native" } else { "" }
+            if published.native { ", Native" } else { "" },
+            if published.mic { ", mic" } else { "" }
         ),
         format!(
             "Palette:    bg {} panel {} panel_active {} divider {}",
@@ -3352,7 +3353,17 @@ mod tests {
             appearance_summary(&published)
                 .starts_with("Appearance: dark, Native (updated 2026-09-21 14:13:20 UTC)\n")
         );
+        published.mic = true;
+        assert!(
+            appearance_summary(&published)
+                .starts_with("Appearance: dark, Native, mic (updated 2026-09-21 14:13:20 UTC)\n")
+        );
         published.native = false;
+        assert!(
+            appearance_summary(&published)
+                .starts_with("Appearance: dark, mic (updated 2026-09-21 14:13:20 UTC)\n")
+        );
+        published.mic = false;
         published.dark = false;
         published.terminal = None;
         published.updated_at = u64::MAX;

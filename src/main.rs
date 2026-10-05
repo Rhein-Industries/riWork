@@ -7608,7 +7608,7 @@ impl Workspace {
                 _ => match tab.chat().map(|view| view.read(cx).summary()) {
                     Some(summary) => chat_tab_text(
                         summary.provider,
-                        &summary.title,
+                        &orchestrators::shown_tab_title(&summary.title),
                         summary.activity,
                         self.settings.panel_tab_icons,
                     ),
@@ -7616,7 +7616,11 @@ impl Workspace {
                         let shell = tab
                             .shell_id()
                             .and_then(|id| self.shells.iter().find(|shell| shell.id == id));
-                        codex_tab_title(&tab.title, shell, &account_numbers)
+                        codex_tab_title(
+                            &orchestrators::shown_tab_title(&tab.title),
+                            shell,
+                            &account_numbers,
+                        )
                     }
                 },
             })
@@ -10085,6 +10089,17 @@ impl Render for Workspace {
                     .p(ui_text::space(8.0))
                     .bg(rgb(colors.panel_active))
                     .text_color(rgb(colors.gold))
+                    // Native: a raised rounded note with a hairline, as its menus are.
+                    .map(|note| {
+                        controls::native(note, |note| {
+                            note.px(ui_text::space(10.0))
+                                .rounded(controls::radius(controls::MENU_RADIUS))
+                                .border_1()
+                                .border_color(rgb(colors.divider))
+                                .bg(rgb(controls::raised(colors)))
+                                .shadow_md()
+                        })
+                    })
                     .child(notice.clone())
             }))
             .children(
@@ -11108,7 +11123,7 @@ fn main() {
             KeyBinding::new("cmd-alt-shift-c", OpenCodexChat, None),
             KeyBinding::new("cmd-alt-shift-l", OpenClaudeChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
-            KeyBinding::new("cmd-shift-space", ToggleDictation, Some("ChatView")),
+            KeyBinding::new("ctrl-alt-d", ToggleDictation, Some("ChatView")),
         ]);
         cx.set_menus([
             Menu::new("RiWork").items([
@@ -12951,6 +12966,21 @@ mod main_pane_tests {
             ),
             "● P·ORCH · PROJECT"
         );
+        // The colorful themes show the titles as they are, and so does Native any other
+        // chat's; Native's own words for the orchestrators' are in its sentence case.
+        assert_eq!(
+            orchestrators::shown_tab_title("G·ORCH · GLOBAL"),
+            "G·ORCH · GLOBAL"
+        );
+        assert_eq!(orchestrators::shown_tab_title("FIX CI"), "FIX CI");
+        assert_eq!(
+            ui_text::sentence_case(title(OrchestratorScope::Global)),
+            "G·Orch · Global"
+        );
+        assert_eq!(
+            ui_text::sentence_case(title(orchestrators::scope_of(Some("p1")))),
+            "P·Orch · Project"
+        );
     }
 
     #[test]
@@ -14286,8 +14316,21 @@ mod chat_tab_tests {
         }
         // Dictation in a chat: its own key, bound only in a chat tab.
         assert!(
-            keys.contains(&("cmd-shift-space".to_owned(), "Some(\"ChatView\"".to_owned())),
+            keys.contains(&("alt-ctrl-d".to_owned(), "Some(\"ChatView\"".to_owned())),
             "{keys:?}"
+        );
+        // ⌃⌥D is nobody else's, and ⌘⇧D stays Split down in a chat as everywhere.
+        assert_eq!(
+            keys.iter()
+                .filter(|(keystroke, _)| keystroke == "alt-ctrl-d")
+                .count(),
+            1
+        );
+        assert!(keys.contains(&("cmd-shift-d".to_owned(), "None".to_owned())));
+        assert!(
+            !keys
+                .iter()
+                .any(|(keystroke, _)| keystroke == "cmd-shift-space")
         );
         for chat in ["alt-cmd-shift-c", "alt-cmd-shift-l"] {
             assert!(

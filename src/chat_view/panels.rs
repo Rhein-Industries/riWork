@@ -21,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    ChatView, ChatViewEvent, Creation, Draft, Field, Menu, approval, composer,
+    ChatView, ChatViewEvent, Creation, Draft, Field, Menu, approval, composer, dictate,
     state::provider_name,
     toolbar,
     widgets::{self, Look, button, capsule, dimmed},
@@ -308,11 +308,12 @@ impl ChatView {
             ))
             .children(
                 toolbar::effort_available(models, model.as_deref(), provider).then(|| {
+                    // An effort is a lowercase word; Native starts it with a capital.
                     picker(
                         "chat-effort",
-                        placeholder(
-                            toolbar::effort_label(models, model.as_deref(), effort.as_deref()),
-                            "effort",
+                        widgets::sentence(
+                            &toolbar::effort_label(models, model.as_deref(), effort.as_deref()),
+                            look,
                         ),
                         Menu::Effort,
                         cx,
@@ -320,17 +321,42 @@ impl ChatView {
                 }),
             )
             .children(toolbar::fast_available(models, model.as_deref()).then(|| {
+                // Native's is a capsule toggle with the bolt symbol: grey while off, and in
+                // the working color with the bolt filled while on, as the mic shows it listens.
+                let toggle = if look.native {
+                    capsule("chat-fast", "Fast", Button::Secondary, look)
+                        .pl(ui_text::space(8.0))
+                        .child(icons::symbol(
+                            if fast { "bolt.fill" } else { "bolt" },
+                            10.0,
+                            None,
+                        ))
+                        .flex_row_reverse()
+                        .when(fast, |toggle| {
+                            toggle
+                                .bg(rgb(look.tint(colors.working, 0.18)))
+                                .text_color(rgb(colors.working))
+                        })
+                        .when(!fast, |toggle| toggle.text_color(rgb(colors.muted)))
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style.bg(rgb(if fast {
+                                look.tint(colors.working, 0.28)
+                            } else {
+                                Button::Secondary.hover(colors)
+                            }))
+                        })
+                } else {
+                    button(
+                        "chat-fast",
+                        toolbar::fast_label(fast),
+                        fast.then_some(colors.cyan),
+                        look,
+                    )
+                };
                 div()
                     .relative()
-                    .child(
-                        button(
-                            "chat-fast",
-                            toolbar::fast_label(fast),
-                            fast.then_some(colors.cyan),
-                            look,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| view.toggle_fast(cx))),
-                    )
+                    .child(toggle.on_click(cx.listener(|view, _, _, cx| view.toggle_fast(cx))))
                     .child(tooltip::anchor(
                         "Fast mode answers sooner and uses more of your limits",
                         TipLook::Control,
@@ -553,7 +579,8 @@ impl ChatView {
                     .into_iter()
                     .map(|line| {
                         let name = line.effort;
-                        row(format!("effort-{name}"), line.label, None, line.current)
+                        let label = widgets::sentence(&line.label, look);
+                        row(format!("effort-{name}"), label, None, line.current)
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.configure(None, Some(name.clone()), None, None, cx);
                             }))
@@ -752,7 +779,9 @@ impl ChatView {
                 )
         };
         // Why dictation stopped, with the way to System Settings when a permission is off.
-        if let Phase::Failed(problem) = self.dictation.phase() {
+        if let Phase::Failed(problem) = self.dictation.phase()
+            && dictate::mic_shown(cx)
+        {
             let settings = problem.settings_url();
             return Some(
                 line(problem.message(), colors.gold)
@@ -982,25 +1011,34 @@ impl ChatView {
                             .children(prompt.options.iter().enumerate().map(
                                 |(option_at, option)| {
                                     let chosen = picked.contains(&option_at);
-                                    let label = if chosen {
+                                    // Native leads a chosen option with the tick symbol.
+                                    let label = if chosen && !look.native {
                                         format!("✓ {}", option.label)
                                     } else {
                                         option.label.clone()
                                     };
+                                    let tick = |option: Stateful<gpui::Div>| {
+                                        option.when(chosen && look.native, |option| {
+                                            option
+                                                .flex_row_reverse()
+                                                .pl(ui_text::space(9.0))
+                                                .child(icons::symbol("checkmark", 9.0, None))
+                                        })
+                                    };
                                     if answered {
-                                        return dimmed(
+                                        return tick(dimmed(
                                             id(format!("opt-{prompt_at}-{option_at}")),
                                             label,
                                             look,
-                                        )
+                                        ))
                                         .into_any_element();
                                     }
-                                    button(
+                                    tick(button(
                                         id(format!("opt-{prompt_at}-{option_at}")),
                                         label,
                                         chosen.then_some(colors.cyan),
                                         look,
-                                    )
+                                    ))
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         view.pick(prompt_at, option_at, cx);
                                     }))
@@ -1069,23 +1107,9 @@ impl ChatView {
         let colors = look.colors;
         let running = self.running();
         let dictation = self.dictation.phase();
-        let hint = match dictation {
-            Phase::Preparing { note: Some(note) } => note.clone(),
-            Phase::Preparing { note: None } => "Getting the microphone ready…".to_owned(),
-            Phase::Listening { .. } => format!(
-                "Listening, recognized on this Mac · {} or the mic stops · ⎋ cancels",
-                dictation::SHORTCUT_LABEL
-            ),
-            Phase::Finishing { .. } => "Finishing what was heard…".to_owned(),
-            _ if running => format!(
-                "⏎ send (steers the turn) · ⇧⏎ new line · ⌘. interrupt · {} dictate",
-                dictation::SHORTCUT_LABEL
-            ),
-            _ => format!(
-                "⏎ send · ⇧⏎ new line · {} dictate",
-                dictation::SHORTCUT_LABEL
-            ),
-        };
+        // The mic, its key and its hints only while Settings shows it in chats.
+        let mic = dictate::mic_shown(cx);
+        let hint = composer::hint(dictation, running, mic);
         div()
             .w_full()
             .flex()
@@ -1111,7 +1135,7 @@ impl ChatView {
                         look,
                         cx,
                     )))
-                    .child(widgets::beside_field(self.mic_button(look, cx)))
+                    .children(mic.then(|| widgets::beside_field(self.mic_button(look, cx))))
                     // Native's are round symbol buttons beside the field, as a message field
                     // has them; their keys are in the tooltips and the hint below. Send waits
                     // in grey until there is something to send.
@@ -1169,7 +1193,7 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// The mic beside Send: click to dictate, click again to stop; ⌘⇧Space does the same. Native
+    /// The mic beside Send: click to dictate, click again to stop; ⌃⌥D does the same. Native
     /// draws it as the round buttons beside it: a mic, filled in the working color while it
     /// listens and pulsing while it gets ready or settles. The colorful themes write it out.
     fn mic_button(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
