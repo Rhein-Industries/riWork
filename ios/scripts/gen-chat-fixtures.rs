@@ -22,6 +22,7 @@ fn main() {
         fast: true,
         approval_mode: ApprovalMode::AutoEdit,
         codex_account_id: Some("acct".into()),
+        orchestrator: None,
         state: ChatState::Failed { message: "gone".into() },
     };
     let minimal = ChatInfo {
@@ -38,6 +39,7 @@ fn main() {
         fast: false,
         approval_mode: ApprovalMode::default(),
         codex_account_id: None,
+        orchestrator: None,
         state: ChatState::default(),
     };
     // What a driver sends once after its handshake: a model with efforts and Fast, one with efforts only, and one with nothing to choose
