@@ -269,6 +269,7 @@ fn unreadable(chat_id: &str, seq: u64) -> Envelope {
         seq,
         event: ChatEvent::ItemCompleted {
             item: Item {
+                presentation: Default::default(),
                 id: format!("unreadable-{seq}"),
                 turn_id: None,
                 status: ItemStatus::Completed,

@@ -100,6 +100,7 @@ struct FakeDriver {
 
 fn agent_item(id: &str, turn: &str, text: &str, status: ItemStatus) -> Item {
     Item {
+        presentation: Default::default(),
         id: id.into(),
         turn_id: Some(turn.into()),
         status,
@@ -127,6 +128,7 @@ impl Driver for FakeDriver {
         });
         fake.emit(ChatEvent::ItemStarted {
             item: Item {
+                presentation: Default::default(),
                 id: format!("user-{}", self.turn),
                 turn_id: Some(turn.clone()),
                 status: ItemStatus::Completed,

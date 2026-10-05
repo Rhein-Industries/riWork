@@ -596,6 +596,12 @@ const FRAME_MARGIN: usize = 64;
 /// Cuts every string longer than `cap` bytes down to it, at a character boundary, and marks
 /// the cut with an ellipsis. The same cut the CLI makes of an event too big for a page.
 fn cut_strings(value: &mut Value, cap: usize) {
+    if value["kind"].as_str() == Some("data")
+        && value["base64"].as_str().is_some_and(|data| data.len() > cap)
+    {
+        *value = serde_json::json!({"kind": "unavailable", "reason": "Image omitted to fit the remote response limit"});
+        return;
+    }
     match value {
         Value::String(text) if text.len() > cap => {
             let mut end = cap;
@@ -964,6 +970,14 @@ mod tests {
             events,
             more: false,
         }
+    }
+
+    #[test]
+    fn frame_cut_does_not_corrupt_image_payloads() {
+        let mut value = json!({"source":{"kind":"data","mime":"image/png","base64":"a".repeat(2000)}});
+        cut_strings(&mut value, 128);
+        assert_eq!(value["source"]["kind"], "unavailable");
+        assert!(value["source"].get("base64").is_none());
     }
 
     #[test]

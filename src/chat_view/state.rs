@@ -31,6 +31,7 @@ pub struct Applied {
     pub touched: BTreeSet<usize>,
     /// Events that were new to the model; a repeated one counts for nothing.
     pub events: usize,
+    pub projection_changed: bool,
 }
 
 #[cfg(test)]
@@ -71,6 +72,7 @@ pub struct ChatModel {
     pub last_seq: u64,
     /// A turn has ended in this chat, so an idle chat is "done" and not just new.
     pub turn_finished: bool,
+    pub completed: Vec<(String, crate::chat::model::TurnOutcome, usize)>,
     /// Where each item of the transcript is in its list.
     positions: HashMap<String, usize>,
 }
@@ -82,6 +84,7 @@ impl ChatModel {
             link: Link::Connecting,
             last_seq: 0,
             turn_finished: false,
+            completed: Vec::new(),
             positions: HashMap::new(),
         }
     }
@@ -92,12 +95,22 @@ impl ChatModel {
         let before = self.transcript.items.len();
         let mut touched = BTreeSet::new();
         let mut events = 0;
+        let mut projection_changed = false;
         for envelope in envelopes {
             if envelope.seq <= self.last_seq {
                 continue;
             }
             self.last_seq = envelope.seq;
             events += 1;
+            projection_changed |= matches!(
+                envelope.event,
+                ChatEvent::ItemStarted { .. }
+                    | ChatEvent::ItemCompleted { .. }
+                    | ChatEvent::TurnCompleted { .. }
+                    | ChatEvent::State { .. }
+                    | ChatEvent::QuestionRequested { .. }
+                    | ChatEvent::ApprovalRequested { .. }
+            );
             match &envelope.event {
                 ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
                     if let Some(&at) = self.positions.get(&item.id) {
@@ -109,7 +122,12 @@ impl ChatModel {
                         touched.insert(at);
                     }
                 }
-                ChatEvent::TurnCompleted { .. } => {
+                ChatEvent::TurnCompleted { turn_id, outcome } => {
+                    self.completed.push((
+                        turn_id.clone(),
+                        outcome.clone(),
+                        self.transcript.items.len(),
+                    ));
                     self.turn_finished = true;
                     // Whatever was still going on in the turn is over; those rows change.
                     touched.extend(
@@ -131,6 +149,7 @@ impl ChatModel {
             appended: self.transcript.items.len() - before,
             touched,
             events,
+            projection_changed,
         }
     }
 
@@ -219,6 +238,7 @@ mod tests {
     fn started(id: &str, body: ItemBody) -> ChatEvent {
         ChatEvent::ItemStarted {
             item: Item {
+                presentation: Default::default(),
                 id: id.into(),
                 turn_id: Some("t1".into()),
                 status: ItemStatus::InProgress,
@@ -254,7 +274,8 @@ mod tests {
             Applied {
                 appended: 0,
                 touched: BTreeSet::new(),
-                events: 1
+                events: 1,
+                projection_changed: false,
             }
         );
         assert_eq!(model.transcript.models, list);
@@ -289,7 +310,8 @@ mod tests {
             Applied {
                 appended: 2,
                 touched: BTreeSet::new(),
-                events: 3
+                events: 3,
+                projection_changed: true,
             }
         );
 
@@ -345,6 +367,7 @@ mod tests {
                 3,
                 ChatEvent::ItemCompleted {
                     item: Item {
+                        presentation: Default::default(),
                         id: "a".into(),
                         turn_id: Some("t1".into()),
                         status: ItemStatus::Completed,

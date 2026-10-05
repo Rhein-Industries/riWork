@@ -64,6 +64,7 @@ pub enum FileExplorerEvent {
     /// A path a terminal link named, inside the root and known to exist, is not in any listing:
     /// it is past the cap on a folder's rows, or ignored.
     NotListed(PathBuf),
+    RevealFailed(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -865,6 +866,7 @@ fn line_outcome(preview: &PreviewState, line: usize) -> LineOutcome {
 /// A file or folder a terminal link asked the tree to select, waiting for the listings that
 /// show it.
 struct PendingReveal {
+    external_fallback: bool,
     path: PathBuf,
     line: Option<usize>,
     /// Folders asked to list themselves for this; the file cannot be called missing before
@@ -1425,6 +1427,26 @@ impl FileExplorer {
         line: Option<u32>,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.reveal_inner(path, line, true, cx)
+    }
+
+    /// Chat links always stay inside the read-only preview, even if listings change.
+    pub fn reveal_read_only(
+        &mut self,
+        path: &Path,
+        line: Option<u32>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.reveal_inner(path, line, false, cx)
+    }
+
+    fn reveal_inner(
+        &mut self,
+        path: &Path,
+        line: Option<u32>,
+        external_fallback: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         let root = self
             .root
             .as_ref()
@@ -1448,6 +1470,7 @@ impl FileExplorer {
             awaiting.insert(folder);
         }
         self.pending_reveal = Some(PendingReveal {
+            external_fallback,
             path: path.to_owned(),
             line: line.map(|line| line as usize),
             awaiting,
@@ -1485,8 +1508,18 @@ impl FileExplorer {
             .is_some_and(|pending| pending.awaiting.is_empty())
         {
             // Every folder above it has answered and it is not there: gone, or ignored.
-            self.pending_reveal = None;
-            cx.emit(FileExplorerEvent::NotListed(target));
+            let external = self
+                .pending_reveal
+                .take()
+                .is_some_and(|pending| pending.external_fallback);
+            if external {
+                cx.emit(FileExplorerEvent::NotListed(target));
+            } else {
+                cx.emit(FileExplorerEvent::RevealFailed(format!(
+                    "Cannot preview {}: the file is missing or not listed in Files.",
+                    target.display()
+                )));
+            }
             cx.notify();
         }
     }

@@ -262,6 +262,14 @@ fn entry_bytes(entry: &Entry) -> usize {
 /// Cuts every string longer than `cap` bytes down to it, at a character
 /// boundary, and marks the cut with an ellipsis.
 pub(super) fn cut_strings(value: &mut Value, cap: usize) {
+    if value["kind"].as_str() == Some("data")
+        && value["base64"]
+            .as_str()
+            .is_some_and(|data| data.len() > cap)
+    {
+        *value = serde_json::json!({"kind": "unavailable", "reason": "Image omitted to fit the remote response limit"});
+        return;
+    }
     match value {
         Value::String(text) if text.len() > cap => {
             let mut end = cap;

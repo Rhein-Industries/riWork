@@ -37,8 +37,34 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = Look::of(cx);
-        let content = match self.model.transcript.items.get(ix) {
-            Some(item) => self.item(ix, item, look, cx),
+        let content = match self.visible.get(ix) {
+            Some(super::display::Row::Item(at)) => {
+                let item = &self.model.transcript.items[*at];
+                div()
+                    .w_full()
+                    .child(self.item(*at, item, look, cx))
+                    .children(
+                        item.presentation
+                            .images
+                            .iter()
+                            .enumerate()
+                            .map(|(n, image)| {
+                                self.image_card(image, &format!("{}:image:{n}", item.id), look, cx)
+                            }),
+                    )
+                    .into_any_element()
+            }
+            Some(super::display::Row::Outcome(_, outcome)) => div()
+                .text_size(ui_text::text(11.0))
+                .text_color(rgb(look.colors.muted))
+                .child(match outcome {
+                    crate::chat::model::TurnOutcome::Completed => "Turn completed".to_owned(),
+                    crate::chat::model::TurnOutcome::Interrupted => "Turn interrupted".to_owned(),
+                    crate::chat::model::TurnOutcome::Failed { message } => {
+                        format!("Turn failed: {message}")
+                    }
+                })
+                .into_any_element(),
             None => self.footer(look),
         };
         div()
@@ -57,6 +83,13 @@ impl ChatView {
 
     fn item(&self, ix: usize, item: &Item, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
+        if self.display_mode == super::DisplayMode::Normal
+            && !item.presentation.images.is_empty()
+            && matches!(item.body, ItemBody::ToolCall { .. })
+            && item.status == crate::chat::model::ItemStatus::Completed
+        {
+            return div().into_any_element();
+        }
         match &item.body {
             ItemBody::UserMessage { text } => div()
                 .w_full()
@@ -81,11 +114,9 @@ impl ChatView {
                                 .border_color(rgb(look.tint(colors.cyan, 0.45)))
                                 .bg(rgb(look.tint(colors.cyan, 0.10)))
                         })
-                        .child(self.selectable(
+                        .child(self.prose(
+                            &self.parsed(item, text),
                             &format!("user:{}", item.id),
-                            text.clone(),
-                            Vec::new(),
-                            Vec::new(),
                             look,
                             cx,
                         )),

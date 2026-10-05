@@ -1295,7 +1295,7 @@ fn path_shape(
 
 /// `path:12`, `path:12:5`, `path:12-30`, `path#L12`, `path#L12C5`, `path#L12-L30`: the path and
 /// the first position.
-fn split_position(token: &str) -> (&str, Option<u32>, Option<u32>) {
+pub(crate) fn split_position(token: &str) -> (&str, Option<u32>, Option<u32>) {
     // The last `#`: an anchor has no `/` in it, and a folder name can hold a `#`.
     if let Some((path, fragment)) = token.rsplit_once('#')
         && !fragment.contains('/')

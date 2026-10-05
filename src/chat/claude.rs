@@ -332,6 +332,7 @@ struct Turn {
     result: Option<TurnOutcome>,
     /// The last assistant text, so a failure is not said twice.
     last_text: Option<String>,
+    last_item: Option<Item>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -546,6 +547,7 @@ impl Core {
             id: id.clone(),
             result: None,
             last_text: None,
+            last_item: None,
         });
         self.last_activity = Instant::now();
         self.silent = false;
@@ -591,6 +593,7 @@ impl Core {
     fn notice(&mut self, level: NoticeLevel, text: impl Into<String>) {
         self.notice_counter += 1;
         let item = Item {
+            presentation: Default::default(),
             id: format!("notice-{}-{}", self.notice_prefix, self.notice_counter),
             turn_id: self.turn_id(),
             status: ItemStatus::Completed,
@@ -726,6 +729,7 @@ impl Core {
         self.silent = false;
         if echo {
             self.born(Item {
+                presentation: Default::default(),
                 id: format!("user-{}", Uuid::new_v4()),
                 turn_id: Some(turn_id),
                 status: ItemStatus::Completed,
@@ -1092,6 +1096,7 @@ impl Core {
                 }
                 let turn_id = self.turn_id();
                 self.born(Item {
+                    presentation: Default::default(),
                     id: format!("compaction-{}", Uuid::new_v4()),
                     turn_id,
                     status: ItemStatus::Completed,
@@ -1195,6 +1200,7 @@ impl Core {
                     };
                     self.emit(ChatEvent::ItemStarted {
                         item: Item {
+                            presentation: Default::default(),
                             id: item_id.clone(),
                             turn_id: Some(turn_id),
                             status: ItemStatus::InProgress,
@@ -1262,6 +1268,21 @@ impl Core {
                     };
                     self.finish_text(&message_id, index, kind, text.unwrap_or_default(), turn_id);
                 }
+                Some("image") if !subagent => {
+                    let item = Item {
+                        presentation: super::media::presentation(block),
+                        id: format!("{message_id}:{index}"),
+                        turn_id: Some(turn_id),
+                        status: ItemStatus::Completed,
+                        body: ItemBody::ToolCall {
+                            server: None,
+                            tool: "Image".into(),
+                            input: Value::Null,
+                            output: None,
+                        },
+                    };
+                    self.emit(ChatEvent::ItemCompleted { item });
+                }
                 Some("tool_use") => {
                     let (Some(id), Some(name)) = (str_of(block, "id"), str_of(block, "name"))
                     else {
@@ -1269,6 +1290,7 @@ impl Core {
                     };
                     let input = block.get("input").cloned().unwrap_or(Value::Null);
                     let item = Item {
+                        presentation: Default::default(),
                         id: id.to_owned(),
                         turn_id: Some(turn_id),
                         status: ItemStatus::InProgress,
@@ -1313,6 +1335,7 @@ impl Core {
             },
         };
         let mut item = Item {
+            presentation: Default::default(),
             id: item_id,
             turn_id: Some(turn_id),
             status: ItemStatus::InProgress,
@@ -1322,11 +1345,12 @@ impl Core {
             self.emit(ChatEvent::ItemStarted { item: item.clone() });
         }
         item.status = ItemStatus::Completed;
-        self.emit(ChatEvent::ItemCompleted { item });
+        self.emit(ChatEvent::ItemCompleted { item: item.clone() });
         if kind == BlockKind::Text
             && let Some(turn) = &mut self.turn
         {
             turn.last_text = Some(text.to_owned());
+            turn.last_item = Some(item);
         }
     }
 
@@ -1358,6 +1382,7 @@ impl Core {
             } else {
                 ItemStatus::Failed
             };
+            item.presentation.images = super::media::presentation(block).images;
             apply_result(
                 &mut item.body,
                 &text,
@@ -1407,6 +1432,29 @@ impl Core {
             if let Some(turn) = &mut self.turn {
                 turn.result = Some(TurnOutcome::Failed { message });
             }
+        }
+        if !failed
+            && let Some(result) = str_of(frame, "result").filter(|text| !text.trim().is_empty())
+        {
+            let turn_id = self.ensure_turn();
+            let matching = self
+                .turn
+                .as_ref()
+                .and_then(|turn| turn.last_item.clone())
+                .filter(
+                    |item| matches!(&item.body, ItemBody::AgentMessage { text } if text == result),
+                );
+            let mut item = matching.unwrap_or_else(|| Item {
+                presentation: Default::default(),
+                id: format!("{turn_id}:result"),
+                turn_id: Some(turn_id),
+                status: ItemStatus::Completed,
+                body: ItemBody::AgentMessage {
+                    text: result.to_owned(),
+                },
+            });
+            item.presentation.phase = Some(super::model::MessagePhase::Final);
+            self.emit(ChatEvent::ItemCompleted { item });
         }
         // Without state events nothing else says the turn is over.
         if !self.state_events && self.turn.is_some() {

@@ -290,9 +290,47 @@ pub enum ItemBody {
     },
 }
 
+/// Provider intent, distinct from an item's completion (commentary also completes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessagePhase {
+    Commentary,
+    Final,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Presentation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<MessagePhase>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ChatImage>,
+}
+impl Presentation {
+    pub fn is_empty(&self) -> bool {
+        self.phase.is_none() && self.images.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatImage {
+    pub label: String,
+    pub source: ImageSource,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImageSource {
+    Local { path: String },
+    Data { mime: String, base64: String },
+    Url { url: String },
+    Unavailable { reason: String },
+}
+
 /// One entry of the transcript.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Item {
+    /// Additive presentation hints; older logs and clients may omit/ignore them.
+    #[serde(default, skip_serializing_if = "Presentation::is_empty")]
+    pub presentation: Presentation,
     /// Unique within the chat. Drivers use the provider's id when it has one.
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -591,6 +629,7 @@ mod tests {
 
     fn agent(id: &str, text: &str, status: ItemStatus) -> Item {
         Item {
+            presentation: Default::default(),
             id: id.into(),
             turn_id: Some("t1".into()),
             status,
@@ -728,6 +767,7 @@ mod tests {
         let events = vec![
             ChatEvent::ItemStarted {
                 item: Item {
+                    presentation: Default::default(),
                     id: "c".into(),
                     turn_id: None,
                     status: ItemStatus::InProgress,

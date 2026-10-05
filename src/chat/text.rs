@@ -179,6 +179,7 @@ mod tests {
         for (number, (status, body)) in bodies.into_iter().enumerate() {
             transcript.apply(&ChatEvent::ItemCompleted {
                 item: Item {
+                    presentation: Default::default(),
                     id: format!("item-{number}"),
                     turn_id: None,
                     status,

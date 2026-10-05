@@ -553,6 +553,7 @@ fn only_a_message_with_the_prompts_own_text_after_the_mark_is_the_proof() {
     // An item that only quotes the prompt is not a user message.
     let quoted = ChatEvent::ItemCompleted {
         item: Item {
+            presentation: Default::default(),
             id: "a".into(),
             turn_id: None,
             status: ItemStatus::Completed,

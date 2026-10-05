@@ -28,6 +28,7 @@ pub mod driver;
 pub mod host;
 mod launch;
 pub(crate) mod log;
+pub mod media;
 pub mod model;
 #[cfg(test)]
 pub(crate) mod testing;

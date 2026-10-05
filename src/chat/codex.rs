@@ -444,6 +444,7 @@ impl Session {
     fn notice_with_id(&mut self, id: String, level: NoticeLevel, text: String) {
         self.emit(ChatEvent::ItemCompleted {
             item: Item {
+                presentation: Default::default(),
                 id,
                 turn_id: self.turn.clone(),
                 status: ItemStatus::Completed,
@@ -1405,6 +1406,7 @@ impl Session {
                     self.file_changes.insert(id.to_owned(), changes.clone());
                     self.emit(ChatEvent::ItemStarted {
                         item: Item {
+                            presentation: Default::default(),
                             id: id.to_owned(),
                             turn_id,
                             status: ItemStatus::InProgress,
@@ -1417,6 +1419,7 @@ impl Session {
                 if let Some(turn) = turn_id {
                     self.emit(ChatEvent::ItemStarted {
                         item: Item {
+                            presentation: Default::default(),
                             id: format!("plan-{turn}"),
                             turn_id: Some(turn),
                             status: ItemStatus::InProgress,
@@ -1552,6 +1555,7 @@ impl Session {
         if !std::mem::replace(&mut streamed.started, true) {
             self.emit(ChatEvent::ItemStarted {
                 item: Item {
+                    presentation: Default::default(),
                     id: id.to_owned(),
                     turn_id: params["turnId"].as_str().map(str::to_owned),
                     status: ItemStatus::InProgress,
@@ -1603,6 +1607,7 @@ impl Session {
             _ => {}
         }
         let item = Item {
+            presentation: super::media::presentation(item),
             id: id.to_owned(),
             turn_id,
             status,
@@ -1871,7 +1876,7 @@ fn convert_item(item: &Value, done: bool) -> Option<(ItemBody, ItemStatus)> {
             }),
         },
         kind @ ("collabAgentToolCall" | "imageView" | "imageGeneration") => {
-            let mut input = item.clone();
+            let mut input = super::media::without_payloads(item);
             if let Some(object) = input.as_object_mut() {
                 object.remove("id");
                 object.remove("type");
@@ -1919,7 +1924,7 @@ fn mcp_output(item: &Value) -> Option<String> {
                 .iter()
                 .map(|block| match block["text"].as_str() {
                     Some(text) => text.to_owned(),
-                    None => block.to_string(),
+                    None => super::media::without_payloads(block).to_string(),
                 })
                 .collect::<Vec<_>>()
                 .join("\n")

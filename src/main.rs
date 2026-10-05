@@ -2881,6 +2881,10 @@ impl Workspace {
                 FileExplorerEvent::Selected => workspace.reveal_preview(false, cx),
                 FileExplorerEvent::Revealed => workspace.reveal_preview(true, cx),
                 FileExplorerEvent::NotListed(path) => workspace.open_unlisted(path.clone(), cx),
+                FileExplorerEvent::RevealFailed(message) => {
+                    workspace.notice = Some(message.clone());
+                    cx.notify();
+                }
             })
             .detach();
             self.file_preview = Some(cx.new(|cx| FilePreview::new(panel.clone(), cx)));
@@ -6469,6 +6473,62 @@ impl Workspace {
         }
     }
 
+    fn open_chat_file(
+        &mut self,
+        view: Entity<ChatView>,
+        target: String,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(info) = view.read(cx).info().cloned() else {
+            return;
+        };
+        let Some(project) = info
+            .project_id
+            .as_deref()
+            .filter(|id| *id == self.project_id)
+        else {
+            self.notice = Some("This chat's project is not open in this window.".into());
+            cx.notify();
+            return;
+        };
+        let Some(root) = file_explorer_root(&self.state, project, info.worktree_id.as_deref())
+        else {
+            self.notice = Some("This chat's worktree is unavailable.".into());
+            cx.notify();
+            return;
+        };
+        let project_id = project.to_owned();
+        let worktree = info.worktree_id.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { chat_view::resolve_file(&root.path, &info.cwd, &target) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |workspace, cx| {
+                if workspace.project_id != project_id {
+                    return;
+                }
+                match result {
+                    Ok((path, line)) => {
+                        workspace.selected_worktree_id = worktree;
+                        workspace.ensure_file_explorer(cx);
+                        if let Some(explorer) = &workspace.file_explorer {
+                            if let Err(error) = explorer.update(cx, |explorer, cx| {
+                                explorer.reveal_read_only(&path, line, cx)
+                            }) {
+                                workspace.notice = Some(error);
+                            }
+                        }
+                    }
+                    Err(error) => workspace.notice = Some(format!("Cannot preview file: {error}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn chat_event(
         &mut self,
         view: &Entity<ChatView>,
@@ -6485,7 +6545,17 @@ impl Workspace {
         match event {
             ChatViewEvent::Changed => {
                 // The tab's own title is what the layout menu and a dragged tab name it by.
-                let title = view.read(cx).summary().title;
+                let summary = view.read(cx).summary();
+                let root = summary
+                    .project_id
+                    .as_deref()
+                    .filter(|id| *id == self.project_id)
+                    .and_then(|project| {
+                        file_explorer_root(&self.state, project, summary.worktree_id.as_deref())
+                    })
+                    .map(|root| root.path);
+                view.update(cx, |view, _| view.set_preview_root(root));
+                let title = summary.title;
                 for pane in self.panes.values_mut() {
                     for tab in &mut pane.tabs {
                         if tab.chat() == Some(view) {
@@ -6515,6 +6585,9 @@ impl Workspace {
                 }
             }
             ChatViewEvent::HandOff => self.begin_handoff_from_chat(view, window, cx),
+            ChatViewEvent::OpenFile { target } => {
+                self.open_chat_file(view.clone(), target.clone(), window, cx)
+            }
         }
     }
 

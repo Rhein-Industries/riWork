@@ -370,6 +370,7 @@ mod tests {
 
     fn item(status: ItemStatus, body: ItemBody) -> Item {
         Item {
+            presentation: Default::default(),
             id: "i".into(),
             turn_id: None,
             status,

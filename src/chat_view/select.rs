@@ -119,11 +119,29 @@ impl ChatView {
         &self,
         key: &str,
         text: String,
-        highlights: Vec<(Range<usize>, HighlightStyle)>,
-        links: Vec<(Range<usize>, String)>,
+        mut highlights: Vec<(Range<usize>, HighlightStyle)>,
+        mut links: Vec<(Range<usize>, String)>,
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        for (range, target) in super::links::detect(&text, key.starts_with("code:")) {
+            if links
+                .iter()
+                .all(|(existing, _)| existing.end <= range.start || existing.start >= range.end)
+            {
+                if highlights.is_empty() {
+                    highlights.push((
+                        range.clone(),
+                        HighlightStyle {
+                            color: Some(rgb(look.colors.cyan).into()),
+                            ..Default::default()
+                        },
+                    ));
+                }
+                links.push((range, target));
+            }
+        }
+        links.sort_by_key(|(range, _)| range.start);
         let selected = self
             .selection
             .as_ref()
@@ -153,14 +171,22 @@ impl ChatView {
             styled.into_any_element()
         } else {
             let urls: Vec<String> = links.into_iter().map(|(_, url)| url).collect();
+            let view = cx.weak_entity();
             InteractiveText::new(
                 ElementId::Name(SharedString::from(format!("text:{key}"))),
                 styled,
             )
             .on_click(link_ranges.clone(), move |at, _, cx| {
-                // Whatever the message links to, only what a browser or mail program opens.
-                if let Some(url) = urls.get(at).filter(|url| is_openable_url(url)) {
-                    cx.open_url(url);
+                if let Some(url) = urls.get(at) {
+                    if is_openable_url(url) {
+                        cx.open_url(url);
+                    } else {
+                        let _ = view.update(cx, |_, cx| {
+                            cx.emit(super::ChatViewEvent::OpenFile {
+                                target: url.clone(),
+                            })
+                        });
+                    }
                 }
             })
             .into_any_element()

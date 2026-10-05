@@ -54,6 +54,7 @@ fn source_chat(host: &TestHost, messages: &[(&str, &str)]) -> ChatInfo {
     let mut events = vec![ChatEvent::Info { info: info.clone() }];
     for (index, (user, agent)) in messages.iter().enumerate() {
         let item = |id: String, body| Item {
+            presentation: Default::default(),
             id,
             turn_id: Some(format!("t{index}")),
             status: ItemStatus::Completed,
@@ -720,6 +721,7 @@ fn deltas_of_a_running_chat_are_not_part_of_its_transcript_twice() {
     let home = short_home();
     let info = chat_info(None);
     let item = |text: &str, status| Item {
+        presentation: Default::default(),
         id: "a1".into(),
         turn_id: Some("t".into()),
         status,

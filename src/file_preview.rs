@@ -298,7 +298,7 @@ pub fn read_text(root: &Path, path: &Path, expected: FileIdentity) -> Result<Str
     Ok(text)
 }
 
-fn decode_image(bytes: &[u8]) -> Result<PreviewContent, String> {
+pub(crate) fn decode_image(bytes: &[u8]) -> Result<PreviewContent, String> {
     let format =
         image::guess_format(bytes).map_err(|_| "This image format is not supported.".to_owned())?;
     if !matches!(

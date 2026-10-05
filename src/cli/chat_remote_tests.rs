@@ -50,6 +50,7 @@ fn usage_event(tokens: u64) -> ChatEvent {
 fn message_event(text: &str) -> ChatEvent {
     ChatEvent::ItemCompleted {
         item: Item {
+            presentation: Default::default(),
             id: "agent-x".into(),
             turn_id: None,
             status: ItemStatus::Completed,
@@ -496,6 +497,7 @@ fn an_event_too_big_for_a_page_has_its_strings_cut_and_one_that_cannot_fit_is_pa
         (0..3000).map(|n| (format!("key{n}"), json!("v"))).collect();
     let hopeless = ChatEvent::ItemCompleted {
         item: Item {
+            presentation: Default::default(),
             id: "tool-1".into(),
             turn_id: None,
             status: ItemStatus::Completed,
@@ -996,4 +998,26 @@ fn a_hopeless_entry_is_not_shrunk_and_a_long_one_is() {
         event: Value::Array((0..5000).map(|n| json!(n)).collect()),
     };
     assert!(shrink(&wide, 2000).is_none());
+}
+
+#[test]
+fn remote_shrink_preserves_small_images_and_marks_large_images_unavailable() {
+    let mut value = json!({"item":{"presentation":{"images":[
+        {"label":"small","source":{"kind":"data","mime":"image/png","base64":"aGVsbG8="}},
+        {"label":"large","source":{"kind":"data","mime":"image/png","base64":"a".repeat(1000)}}
+    ]}}});
+    cut_strings(&mut value, 128);
+    assert_eq!(
+        value["item"]["presentation"]["images"][0]["source"]["base64"],
+        "aGVsbG8="
+    );
+    assert_eq!(
+        value["item"]["presentation"]["images"][1]["source"]["kind"],
+        "unavailable"
+    );
+    assert!(
+        value["item"]["presentation"]["images"][1]["source"]
+            .get("base64")
+            .is_none()
+    );
 }

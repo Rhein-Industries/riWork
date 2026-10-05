@@ -43,9 +43,12 @@ mod cards;
 mod composer;
 mod dictate;
 mod diff;
+mod display;
 mod feed;
 mod host;
+mod links;
 mod markdown;
+mod media;
 mod panels;
 mod prose;
 mod rows;
@@ -56,7 +59,9 @@ mod testing;
 mod toolbar;
 mod widgets;
 
+pub use display::DisplayMode;
 pub use host::HostConfig;
+pub use links::resolve as resolve_file;
 pub use state::{Link, Summary};
 
 use feed::{Backoff, Feed, FeedMsg};
@@ -76,6 +81,9 @@ pub enum ChatViewEvent {
     Close,
     /// **Hand off…** was chosen: the window asks where the conversation goes.
     HandOff,
+    OpenFile {
+        target: String,
+    },
 }
 
 impl EventEmitter<ChatViewEvent> for ChatView {}
@@ -148,6 +156,10 @@ pub struct ChatView {
     list: ListState,
     /// How many of the list's rows are transcript items; the row after them is the footer.
     items_in_list: usize,
+    visible: Vec<display::Row>,
+    display_mode: DisplayMode,
+    media: media::MediaState,
+    preview_root: Option<std::path::PathBuf>,
     /// The interface text scale the list's rows were measured at.
     scale: f32,
     focus: FocusHandle,
@@ -188,6 +200,12 @@ pub struct ChatView {
 }
 
 impl ChatView {
+    pub fn set_preview_root(&mut self, root: Option<std::path::PathBuf>) {
+        self.preview_root = root;
+    }
+    pub fn info(&self) -> Option<&ChatInfo> {
+        self.model.transcript.info.as_ref()
+    }
     /// The tab of a chat the host already has: it subscribes from the start and builds the
     /// transcript again.
     pub fn open(chat_id: String, config: HostConfig, cx: &mut Context<Self>) -> Self {
@@ -210,8 +228,12 @@ impl ChatView {
         let list = ListState::new(1, ListAlignment::Top, px(600.0));
         list.set_follow_mode(FollowMode::Tail);
         // Settings shows or hides the mic in every open chat at once.
-        cx.observe_global::<crate::settings::Settings>(|view, cx| view.follow_mic_setting(cx))
-            .detach();
+        cx.observe_global::<crate::settings::Settings>(|view, cx| {
+            view.follow_mic_setting(cx);
+            view.follow_display_setting(cx);
+        })
+        .detach();
+        cx.on_release(|view, cx| view.release_images(cx)).detach();
         Self {
             config,
             chat_id: None,
@@ -222,6 +244,13 @@ impl ChatView {
             working: None,
             list,
             items_in_list: 0,
+            visible: Vec::new(),
+            display_mode: cx
+                .try_global::<crate::settings::Settings>()
+                .map(|s| s.chat_display)
+                .unwrap_or_default(),
+            media: Default::default(),
+            preview_root: None,
             scale: ui_text::scale(),
             focus: cx.focus_handle(),
             field: Field::Composer,
@@ -385,17 +414,73 @@ impl ChatView {
     /// Tell the list about the rows that came or changed. Rows are measured when they are
     /// drawn, so a row that changed must be measured again.
     fn sync_list(&mut self, applied: &Applied) {
-        if applied.appended > 0 {
-            self.list
-                .splice(self.items_in_list..self.items_in_list, applied.appended);
-            self.items_in_list += applied.appended;
+        if applied.projection_changed {
+            self.refresh_projection();
         }
-        for at in &applied.touched {
-            self.list.remeasure_items(*at..*at + 1);
+        for (row, item) in self.visible.iter().enumerate() {
+            if matches!(item, display::Row::Item(at) if applied.touched.contains(at)) {
+                self.list.remeasure_items(row..row + 1);
+            }
         }
-        // The footer says what the chat is doing, and the end of the list moved.
         self.list
             .remeasure_items(self.items_in_list..self.items_in_list + 1);
+    }
+
+    fn refresh_projection(&mut self) {
+        let rows = display::rows(
+            &self.model.transcript,
+            &self.model.completed,
+            self.display_mode,
+        );
+        if rows != self.visible {
+            let prefix = rows
+                .iter()
+                .zip(&self.visible)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let suffix = rows[prefix..]
+                .iter()
+                .rev()
+                .zip(self.visible[prefix..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            self.list.splice(
+                prefix..self.visible.len() - suffix,
+                rows.len() - prefix - suffix,
+            );
+            self.items_in_list = rows.len();
+            self.visible = rows;
+        }
+    }
+
+    fn follow_display_setting(&mut self, cx: &mut Context<Self>) {
+        let mode = cx.global::<crate::settings::Settings>().chat_display;
+        if self.display_mode != mode {
+            self.display_mode = mode;
+            self.selection = None;
+            self.refresh_projection();
+            self.list.remeasure();
+            cx.notify();
+        }
+    }
+
+    fn toggle_display(&mut self, cx: &mut Context<Self>) {
+        let mode = match self.display_mode {
+            DisplayMode::Normal => DisplayMode::Verbose,
+            DisplayMode::Verbose => DisplayMode::Normal,
+        };
+        match crate::settings::SettingsStore::open_default()
+            .and_then(|store| store.update(|settings| settings.chat_display = mode))
+        {
+            Ok(settings) => {
+                cx.set_global(settings);
+                self.follow_display_setting(cx);
+            }
+            Err(error) => {
+                self.notice = Some(error);
+                cx.notify();
+            }
+        }
     }
 
     /// Requests the host has settled need no memory here, and their drafts go with them.
@@ -738,6 +823,10 @@ impl ChatView {
         }
         let key = event.keystroke.key.as_str();
         if key == "escape" {
+            if self.media.viewer.take().is_some() {
+                cx.notify();
+                return true;
+            }
             if self.menu.is_some() {
                 self.close_menu(cx);
                 return true;

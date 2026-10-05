@@ -1,6 +1,9 @@
 //! Drawing an agent's Markdown: the blocks `markdown` read, as elements.
 
-use std::ops::Range;
+use std::{
+    hash::{Hash, Hasher},
+    ops::Range,
+};
 
 use gpui::{
     AnyElement, Context, ElementId, FontStyle, FontWeight, HighlightStyle, SharedString,
@@ -230,6 +233,39 @@ impl ChatView {
         base: Option<FontWeight>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if spans.iter().any(|span| span.image) {
+            return div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(ui_text::space(6.0))
+                .children(spans.iter().enumerate().map(|(at, span)| {
+                    if span.image {
+                        let target = span.link.as_deref().unwrap_or_default();
+                        let mut hash = std::hash::DefaultHasher::new();
+                        target.hash(&mut hash);
+                        let ordinal = spans[..at]
+                            .iter()
+                            .filter(|other| other.image && other.link == span.link)
+                            .count();
+                        self.image_card(
+                            &crate::chat::media::reference(&span.text, target),
+                            &format!("{key}/image/{:x}/{ordinal}", hash.finish()),
+                            look,
+                            cx,
+                        )
+                    } else {
+                        self.text(
+                            std::slice::from_ref(span),
+                            &format!("{key}/{at}"),
+                            look,
+                            base,
+                            cx,
+                        )
+                    }
+                }))
+                .into_any_element();
+        }
         let colors = look.colors;
         let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
         let mut links: Vec<(Range<usize>, String)> = Vec::new();
@@ -262,6 +298,18 @@ impl ChatView {
                     thickness: px(1.0),
                     color: None,
                 });
+            }
+            let detected = span
+                .style
+                .code
+                .then(|| super::links::detect(&span.text, true))
+                .unwrap_or_default();
+            if span.link.is_none() {
+                links.extend(detected.into_iter().map(|(mut range, target)| {
+                    range.start += at - span.text.len();
+                    range.end += at - span.text.len();
+                    (range, target)
+                }));
             }
             if let Some(url) = &span.link {
                 style.color = Some(rgb(colors.cyan).into());

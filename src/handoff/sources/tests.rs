@@ -36,6 +36,7 @@ fn edit(path: &str, change: &'static str) -> FileEdit {
 
 fn item(id: &str, status: ItemStatus, body: ItemBody) -> Item {
     Item {
+        presentation: Default::default(),
         id: id.into(),
         turn_id: Some("t1".into()),
         status,

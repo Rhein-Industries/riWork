@@ -540,6 +540,7 @@ mod tests {
             seq,
             event: ChatEvent::ItemCompleted {
                 item: crate::chat::model::Item {
+                    presentation: Default::default(),
                     id: format!("u{seq}"),
                     turn_id: None,
                     status: crate::chat::model::ItemStatus::Completed,

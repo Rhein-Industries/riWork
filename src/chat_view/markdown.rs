@@ -21,6 +21,7 @@ pub struct Span {
     pub text: String,
     pub style: Style,
     pub link: Option<String>,
+    pub image: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -506,7 +507,69 @@ pub fn inline(text: &str) -> Vec<Span> {
     } else {
         inline_into(text, Style::default(), None, &mut spans, 0);
     }
-    spans
+    local_images(spans)
+}
+
+fn local_images(spans: Vec<Span>) -> Vec<Span> {
+    let is_image = |target: &str| {
+        super::links::local_target(target)
+            .ok()
+            .is_some_and(|(path, _)| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        matches!(
+                            ext.to_ascii_lowercase().as_str(),
+                            "png"
+                                | "jpg"
+                                | "jpeg"
+                                | "gif"
+                                | "webp"
+                                | "bmp"
+                                | "tif"
+                                | "tiff"
+                                | "ico"
+                        )
+                    })
+            })
+    };
+    let mut out = Vec::new();
+    for span in spans {
+        if span.image {
+            out.push(span);
+            continue;
+        }
+        if let Some(target) = &span.link {
+            let mut span = span.clone();
+            span.image = is_image(target);
+            out.push(span);
+            continue;
+        }
+        let paths = super::links::detect(&span.text, span.style.code);
+        let mut at = 0;
+        for (range, target) in paths.into_iter().filter(|(_, target)| is_image(target)) {
+            if at < range.start {
+                out.push(Span {
+                    text: span.text[at..range.start].into(),
+                    ..span.clone()
+                });
+            }
+            out.push(Span {
+                text: target.clone(),
+                link: Some(target),
+                image: true,
+                style: span.style,
+            });
+            at = range.end;
+        }
+        if at < span.text.len() {
+            out.push(Span {
+                text: span.text[at..].into(),
+                ..span
+            });
+        }
+    }
+    out
 }
 
 fn push(spans: &mut Vec<Span>, text: &str, style: Style, link: Option<&str>) {
@@ -524,6 +587,7 @@ fn push(spans: &mut Vec<Span>, text: &str, style: Style, link: Option<&str>) {
         text: text.to_owned(),
         style,
         link: link.map(str::to_owned),
+        image: false,
     });
 }
 
@@ -590,6 +654,22 @@ fn inline_into(text: &str, style: Style, link: Option<&str>, out: &mut Vec<Span>
                         plain.push(c);
                         i += width;
                     }
+                }
+            }
+            '!' if rest.starts_with("![") && depth < MAX_DEPTH => {
+                if let Some((label, target, used)) = bracketed_link(&rest[1..]) {
+                    push(out, &plain, style, link);
+                    plain.clear();
+                    out.push(Span {
+                        text: label.into(),
+                        style,
+                        link: Some(target.into()),
+                        image: true,
+                    });
+                    i += used + 1;
+                } else {
+                    plain.push(c);
+                    i += width;
                 }
             }
             '[' if depth < MAX_DEPTH => match bracketed_link(rest) {
@@ -808,8 +888,13 @@ fn bracketed_link(text: &str) -> Option<(&str, &str, usize)> {
     let end = end?;
     let target = after[..end].trim();
     // A title after the destination is dropped.
-    let destination = target.split_whitespace().next()?;
-    let destination = destination.trim_start_matches('<').trim_end_matches('>');
+    let destination = if let Some(angled) = target.strip_prefix('<') {
+        angled.split_once('>')?.0
+    } else {
+        target
+            .split_once(" \"")
+            .map_or(target, |(destination, _)| destination)
+    };
     if destination.is_empty() {
         return None;
     }
@@ -870,6 +955,7 @@ mod tests {
             text: text.into(),
             style,
             link: None,
+            image: false,
         }
     }
 
@@ -879,6 +965,28 @@ mod tests {
         code: false,
         strike: false,
     };
+
+    #[test]
+    fn image_syntax_local_references_and_spaced_destinations_survive_streaming() {
+        let spans = inline("Before ![diagram](<docs/Grüße image.png>) after");
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.image && span.link.as_deref() == Some("docs/Grüße image.png"))
+        );
+        assert!(
+            inline("`docs/Grüße image.png`")
+                .iter()
+                .any(|span| span.image)
+        );
+        let linked = inline("[file](<src/Grüße file.rs:12>) [web](https://example.com)");
+        assert_eq!(linked[0].link.as_deref(), Some("src/Grüße file.rs:12"));
+        assert!(
+            !inline("![unfinished](docs/image")
+                .iter()
+                .any(|span| span.image)
+        );
+    }
 
     #[test]
     fn headings_paragraphs_and_rules() {

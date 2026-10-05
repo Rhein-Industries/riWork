@@ -173,6 +173,11 @@ fn a_whole_turn_becomes_items_usage_and_states() {
 
     let transcript = run.transcript();
     let item = |id: &str, body: ItemBody| Item {
+        presentation: crate::chat::model::Presentation {
+            phase: matches!(body, ItemBody::AgentMessage { .. })
+                .then_some(crate::chat::model::MessagePhase::Final),
+            images: vec![],
+        },
         id: id.into(),
         turn_id: Some("turn-1".into()),
         status: ItemStatus::Completed,
@@ -1326,4 +1331,29 @@ fn live_codex_answers_a_trivial_prompt() {
     ));
     driver.shutdown();
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn provider_phase_and_real_image_payload_reach_the_log_without_raw_bitmap_text() {
+    let fake = Fake::new(&[]);
+    let (sender, receiver) = mpsc::channel();
+    let mut core = Session::new(&fake.config(Provider::Codex), sender);
+    core.item(
+        &json!({"id":"comment","type":"agentMessage","text":"Checking…","phase":"commentary"}),
+        Some("turn".into()),
+        true,
+    );
+    core.item(&json!({"id":"picture","type":"mcpToolCall","status":"completed","server":"cua-driver","tool":"screenshot","arguments":{},"result":{"content":[{"type":"image","mimeType":"image/png","data":"aGVsbG8="}]}}), Some("turn".into()), true);
+    core.item(&json!({"id":"dynamic","type":"dynamicToolCall","tool":"picture","contentItems":[{"type":"inputImage","imageUrl":"data:image/png;base64,aGVsbG8="}]}), Some("turn".into()), true);
+    let events: Vec<_> = receiver.try_iter().collect();
+    let transcript = fold(&events);
+    assert_eq!(
+        transcript.items[0].presentation.phase,
+        Some(crate::chat::model::MessagePhase::Commentary)
+    );
+    assert_eq!(transcript.items[1].presentation.images.len(), 1);
+    assert_eq!(transcript.items[2].presentation.images.len(), 1);
+    assert!(
+        matches!(&transcript.items[1].body, ItemBody::ToolCall { output: Some(output), .. } if !output.contains("aGVsbG8="))
+    );
 }

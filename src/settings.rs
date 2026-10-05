@@ -165,6 +165,7 @@ pub enum OrchestratorRuns {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
+    pub chat_display: crate::chat_view::DisplayMode,
     pub schema_version: u32,
     pub theme: ThemeChoice,
     /// Kept for older preferences and as a terminal-only override while following Ghostty.
@@ -225,6 +226,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             schema_version: 1,
+            chat_display: Default::default(),
             theme: ThemeChoice::Ghostty,
             use_riwork_colors: false,
             remember_window_size: true,
@@ -255,6 +257,7 @@ impl<'de> Deserialize<'de> for Settings {
         let object = Map::<String, Value>::deserialize(deserializer)?;
         let defaults = Self::default();
         Ok(Self {
+            chat_display: lenient_field(&object, "chat_display", defaults.chat_display),
             schema_version: strict_field(&object, "schema_version", defaults.schema_version)?,
             theme: lenient_field(&object, "theme", defaults.theme),
             use_riwork_colors: lenient_field(
@@ -3106,6 +3109,44 @@ impl Render for SettingsPanel {
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn chat_display_defaults_to_normal_and_round_trips_verbose() {
+        let settings: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
+        assert_eq!(settings.chat_display, crate::chat_view::DisplayMode::Normal);
+        let mut settings = settings;
+        settings.chat_display = crate::chat_view::DisplayMode::Verbose;
+        let reloaded: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            reloaded.chat_display,
+            crate::chat_view::DisplayMode::Verbose
+        );
+        assert_eq!(
+            serde_json::from_str::<Settings>(r#"{"chat_display":"future"}"#)
+                .unwrap()
+                .chat_display,
+            crate::chat_view::DisplayMode::Normal
+        );
+        let dir = env::temp_dir().join(format!("riwork-chat-display-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        store
+            .update(|settings| settings.chat_display = crate::chat_view::DisplayMode::Verbose)
+            .unwrap();
+        // An unrelated preference update must preserve the saved mode across reloads.
+        store
+            .update(|settings| settings.dictation_mic = true)
+            .unwrap();
+        assert_eq!(
+            SettingsStore::open(&dir)
+                .unwrap()
+                .load()
+                .unwrap()
+                .chat_display,
+            crate::chat_view::DisplayMode::Verbose
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn missing_and_older_settings_preserve_terminal_colors_by_default() {

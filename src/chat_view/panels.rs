@@ -132,7 +132,12 @@ impl ChatView {
             .children(self.approval_bar(look, cx))
             .children(self.question_panel(look, cx))
             .child(self.composer_box(look, cx));
-        stack.into_any_element()
+        div()
+            .relative()
+            .size_full()
+            .child(stack)
+            .children(self.image_viewer(look, cx))
+            .into_any_element()
     }
 
     /// What a tab shows while its chat is being made, or when that did not work.
@@ -294,6 +299,19 @@ impl ChatView {
             .border_b_1()
             .border_color(rgb(colors.divider))
             .bg(rgb(colors.panel))
+            .child(
+                button(
+                    "chat-display",
+                    self.display_mode.label(),
+                    Some(colors.cyan),
+                    look,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.toggle_display(cx)))
+                .child(tooltip::anchor(
+                    "Normal shows results · Verbose shows all activity",
+                    TipLook::Control,
+                )),
+            )
             .child(picker(
                 "chat-mode",
                 toolbar::mode_label(mode).to_owned(),

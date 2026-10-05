@@ -318,6 +318,7 @@ fn a_turn_streams_text_runs_tools_and_asks_for_approval() {
             "tool",
             "command",
             "file",
+            "agent",
             "agent"
         ]
     );
@@ -621,7 +622,7 @@ fn a_message_sent_while_the_process_restarts_waits_for_the_new_one() {
     rig.until_idle();
     assert_eq!(rig.fake.starts().len(), 2);
     let transcript = rig.transcript();
-    assert_eq!(agent_texts(&transcript), ["Received."]);
+    assert_eq!(agent_texts(&transcript), ["Received.", "done"]);
     // The message is echoed once it is sent; the queued /compact never is.
     let said: Vec<&str> = transcript
         .items
@@ -1038,7 +1039,7 @@ fn an_oversized_line_is_skipped_with_a_notice_and_the_turn_goes_on() {
     assert!(notices[0].1.contains("oversized"), "{notices:?}");
     assert!(notices[0].1.contains("17."), "{notices:?}");
     let transcript = rig.transcript();
-    assert_eq!(agent_texts(&transcript).len(), 2);
+    assert_eq!(agent_texts(&transcript).len(), 3);
     assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Completed]);
 }
 
@@ -1047,7 +1048,7 @@ fn noise_and_unknown_frames_are_ignored() {
     let mut rig = Rig::new(&["noise"]);
     rig.send("go");
     rig.until_idle();
-    assert_eq!(agent_texts(&rig.transcript()), ["Still here."]);
+    assert_eq!(agent_texts(&rig.transcript()), ["Still here.", "done"]);
     assert!(notices(&rig.seen).is_empty());
     assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Completed]);
 }
@@ -1127,7 +1128,12 @@ fn compact_sends_the_slash_command_and_the_boundary_becomes_a_compaction() {
             .iter()
             .map(|item| &item.body)
             .collect::<Vec<_>>(),
-        vec![&ItemBody::Compaction]
+        vec![
+            &ItemBody::Compaction,
+            &ItemBody::AgentMessage {
+                text: "done".into()
+            }
+        ]
     );
     assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Completed]);
 }
@@ -1236,7 +1242,7 @@ fn tools_become_the_items_their_kind_calls_for() {
         }
     );
     // A subagent's own text stays out of the transcript.
-    assert!(agent_texts(&transcript).is_empty());
+    assert_eq!(agent_texts(&transcript), ["done"]);
 }
 
 #[test]
@@ -1245,7 +1251,7 @@ fn without_state_events_the_result_ends_the_turn() {
     rig.send("go");
     rig.until_idle();
     assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Completed]);
-    assert_eq!(agent_texts(&rig.transcript()), ["Hi."]);
+    assert_eq!(agent_texts(&rig.transcript()), ["Hi.", "done"]);
 }
 
 #[test]
@@ -1394,7 +1400,10 @@ fn a_made_up_error_message_does_not_overwrite_the_streamed_one_before_it() {
     rig.send("go");
     rig.until_idle();
     let transcript = rig.transcript();
-    assert_eq!(agent_texts(&transcript), ["Streamed.", "Request failed."]);
+    assert_eq!(
+        agent_texts(&transcript),
+        ["Streamed.", "Request failed.", "done"]
+    );
     assert_eq!(
         item(&transcript, "M1:0").body,
         ItemBody::AgentMessage {
@@ -1942,5 +1951,27 @@ fn live_claude_answers_a_trivial_prompt() {
     assert!(
         outcomes(&seen).contains(&TurnOutcome::Completed),
         "{seen:#?}"
+    );
+}
+
+#[test]
+fn result_marks_only_authoritative_text_final_and_tool_images_survive() {
+    let fake = Fake::new(&[]);
+    let (sender, receiver) = mpsc::channel();
+    let mut core = Core::new(&fake.config(Provider::Claude), sender, "session".into());
+    core.on_assistant(&json!({"message":{"id":"comment","content":[{"type":"text","text":"Checking"}]},"parent_tool_use_id":null}));
+    core.on_assistant(&json!({"message":{"id":"tool","content":[{"type":"tool_use","id":"picture","name":"mcp__cua__screenshot","input":{}}]},"parent_tool_use_id":null}));
+    core.on_user(&json!({"message":{"content":[{"type":"tool_result","tool_use_id":"picture","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}]}}));
+    core.on_result(&json!({"type":"result","subtype":"success","is_error":false,"result":"The completed result"}));
+    let transcript = fold(&receiver.try_iter().collect::<Vec<_>>());
+    assert_eq!(transcript.items[0].presentation.phase, None);
+    assert_eq!(transcript.items[1].presentation.images.len(), 1);
+    let final_item = transcript
+        .items
+        .iter()
+        .find(|item| item.presentation.phase == Some(crate::chat::model::MessagePhase::Final))
+        .unwrap();
+    assert!(
+        matches!(&final_item.body, ItemBody::AgentMessage { text } if text == "The completed result")
     );
 }
