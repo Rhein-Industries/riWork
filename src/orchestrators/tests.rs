@@ -422,6 +422,7 @@ fn chat_orchestrators_are_found_from_disk_while_no_host_runs() {
         codex_account_id: None,
         state: ChatState::Running,
         orchestrator: Some(scope_of(Some(PROJECT))),
+        fast: false,
     };
     let plain = ChatInfo {
         id: Uuid::new_v4().to_string(),

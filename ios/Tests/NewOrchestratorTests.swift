@@ -281,10 +281,11 @@ final class NewOrchestratorTests: XCTestCase {
 
     func testNewChatCarriesTheChosenModel() throws {
         var form = NewTerminalForm(targets: [target()], kind: .codexChat, kinds: NewTerminalKind.offered(chats: true, orchestrators: true))
-        form.chatModel = "  custom-model  "
+        // The model comes from the sheet's model choice (the picker), not typed text.
+        form.chatChoices[.codex] = NewChatChoice(model: ChatModelOption(id: "custom-model", name: "Custom"), usesModel: true)
         guard case .chat(let request) = try form.submission() else { return XCTFail() }
         XCTAssertEqual(request.model, "custom-model")
-        form.chatModel = "  "
+        form.chatChoices[.codex] = NewChatChoice()
         guard case .chat(let defaultRequest) = try form.submission() else { return XCTFail() }
         XCTAssertNil(defaultRequest.model)
     }

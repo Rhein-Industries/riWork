@@ -8,18 +8,26 @@ use crate::sessions::{self, HarnessKind};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// The Codex account a new chat of `provider` runs under: the project's own, or
-/// else the app's selection, as `Some(account id)`; `None` is the system
-/// default (and every Claude chat). An unusable selection is an error, never a
-/// quiet switch to another account.
+/// The Codex account a new chat of `provider` runs under: the one `requested`
+/// (an account id, which must be usable), or else the project's own, or else
+/// the app's selection, as `Some(account id)`; `None` is the system default
+/// (and every Claude chat). An unusable selection is an error, never a quiet
+/// switch to another account.
 pub fn account_for(
     home: &Path,
     provider: Provider,
     project_id: Option<&str>,
+    requested: Option<&str>,
 ) -> Result<Option<String>, String> {
-    match provider {
-        Provider::Codex => Ok(sessions::selected_codex_binding(home, project_id)?.id),
-        Provider::Claude => Ok(None),
+    match (provider, requested) {
+        (Provider::Codex, Some(id)) => {
+            Ok(crate::codex_accounts::resolve_launch_binding(home, Some(id))?.id)
+        }
+        (Provider::Codex, None) => Ok(sessions::selected_codex_binding(home, project_id)?.id),
+        (Provider::Claude, Some(_)) => {
+            Err("a Claude chat has no Codex account; it uses the system login".into())
+        }
+        (Provider::Claude, None) => Ok(None),
     }
 }
 
@@ -74,6 +82,21 @@ fn assemble(
         OsString::from("RIWORK_SHELL_ID"),
         OsString::from("RIWORK_CODEX_SHELL_ID"),
     ];
+    // The chat's own agent finds itself by this id: `riwork handoff` with no
+    // `--from` hands off the chat that runs it. Codex builds the environment of
+    // the commands it runs from a policy of its own, which a user's config can
+    // narrow, so the id is named there too, as a terminal's pane id is.
+    env.push(("RIWORK_CHAT_ID".into(), info.id.clone().into()));
+    let mut extra_args = extra_args;
+    if info.provider == Provider::Codex {
+        extra_args.extend([
+            "-c".to_owned(),
+            format!(
+                "shell_environment_policy.set.RIWORK_CHAT_ID={}",
+                serde_json::Value::from(info.id.clone())
+            ),
+        ]);
+    }
     if let Some(codex_home) = codex_home {
         env.push(("CODEX_HOME".into(), codex_home.clone().into_os_string()));
         env.push((
@@ -105,6 +128,7 @@ fn assemble(
         approval_mode: info.approval_mode,
         model: info.model.clone(),
         effort: info.effort.clone(),
+        fast: info.fast,
         resume,
         extra_args,
         env,
@@ -129,6 +153,7 @@ mod tests {
             provider_thread_id: Some("thread".into()),
             model: Some("m".into()),
             effort: Some("high".into()),
+            fast: true,
             approval_mode: ApprovalMode::AutoEdit,
             codex_account_id: None,
             state: ChatState::Stopped,
@@ -145,6 +170,27 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_runs_under_the_account_asked_for_and_a_claude_chat_has_none_to_ask_for() {
+        use crate::codex_accounts::SYSTEM_DEFAULT_ID;
+        let home = std::env::temp_dir().join(format!("riwork-launch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        // The system default is no account of RiWork's.
+        assert_eq!(
+            account_for(&home, Provider::Codex, None, Some(SYSTEM_DEFAULT_ID)),
+            Ok(None)
+        );
+        // An account nobody saved is refused, not swapped for the system's.
+        assert!(account_for(&home, Provider::Codex, None, Some("acct-1")).is_err());
+        assert!(account_for(&home, Provider::Codex, None, Some("../escape")).is_err());
+        // Without a request it is the project's or the app's, here the system's.
+        assert_eq!(account_for(&home, Provider::Codex, None, None), Ok(None));
+        assert_eq!(account_for(&home, Provider::Claude, None, None), Ok(None));
+        let error = account_for(&home, Provider::Claude, None, Some("Work")).unwrap_err();
+        assert!(error.contains("no Codex account"), "{error}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn a_codex_chat_runs_under_its_account_home_and_a_claude_chat_never_sees_an_api_key() {
         let codex = assemble(
             &info(Provider::Codex),
@@ -156,7 +202,15 @@ mod tests {
             Some("/accounts/a".into()),
         );
         assert_eq!(codex.resume.as_deref(), Some("thread"));
-        assert_eq!(codex.extra_args, ["-c", "x=1"]);
+        assert_eq!(
+            codex.extra_args,
+            [
+                "-c",
+                "x=1",
+                "-c",
+                "shell_environment_policy.set.RIWORK_CHAT_ID=\"id\""
+            ]
+        );
         assert_eq!(
             (codex.cwd.as_path(), codex.approval_mode),
             (Path::new("/work"), ApprovalMode::AutoEdit)
@@ -169,6 +223,7 @@ mod tests {
             assert_eq!(value(&codex, name).unwrap(), "/accounts/a", "{name}");
         }
         assert_eq!(value(&codex, "RIWORK_HOME").unwrap(), "/riwork");
+        assert_eq!(value(&codex, "RIWORK_CHAT_ID").unwrap(), "id");
         assert_eq!(value(&codex, "PATH").unwrap(), "/shims:/bin");
         assert!(!codex.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
 
@@ -182,6 +237,11 @@ mod tests {
             None,
         );
         assert!(claude.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
+        assert_eq!(value(&claude, "RIWORK_CHAT_ID").unwrap(), "id");
+        assert!(
+            claude.extra_args.is_empty(),
+            "Claude takes its environment as it is"
+        );
         assert!(value(&claude, "CODEX_HOME").is_none());
         assert_eq!(claude.resume, None);
         for config in [&codex, &claude] {

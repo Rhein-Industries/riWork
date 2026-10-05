@@ -196,6 +196,111 @@ pub fn resolve_project_choice_binding(
     }
 }
 
+/// The accounts launches can use, read from the saved metadata only: nothing runs
+/// and nothing is written, so it is quick enough to call where a window is waiting.
+/// The system default comes first. An error means no list was ever saved.
+pub fn cached_accounts(state_home: &Path) -> Result<Vec<CodexAccount>, String> {
+    let cache = read_cache(state_home)?;
+    Ok(snapshot(Some(cache), None, true).accounts)
+}
+
+/// The account a person named by label or id, resolved the way a launch resolves its
+/// selection (saved metadata, a home that must exist), so that "the Work account" starts
+/// the same Codex home as choosing it in Settings. When no list was ever saved, Orca is
+/// asked once for it, as Settings does; run this on a background thread.
+pub fn resolve_account(state_home: &Path, query: &str) -> Result<CodexAccountBinding, String> {
+    let cache = match read_cache(state_home) {
+        Ok(cache) => cache,
+        Err(_) => {
+            let found = discover_in(state_home);
+            read_cache(state_home).map_err(|_| {
+                found.error.unwrap_or_else(|| {
+                    "No Codex accounts are saved yet. Refresh accounts in Settings.".into()
+                })
+            })?
+        }
+    };
+    resolve_account_in(&cache, query)
+}
+
+fn resolve_account_in(cache: &AccountCache, query: &str) -> Result<CodexAccountBinding, String> {
+    let accounts = snapshot(Some(cache.clone()), None, true).accounts;
+    let account = find_account(&accounts, query)?;
+    if account.is_system_default {
+        return Ok(CodexAccountBinding {
+            id: None,
+            label: None,
+            email: None,
+            home: default_codex_home()?,
+        });
+    }
+    resolve_cached_binding(cache, &account.id)
+}
+
+/// Which of `accounts` a person means by `query`: an id, or a label, email or workspace
+/// name in any case (`Work` for `me@example.com · Work`), or else a part of a label or the
+/// start of an id (at least eight characters). The first of these that names anything
+/// decides, and it must name one account.
+pub fn find_account<'a>(
+    accounts: &'a [CodexAccount],
+    query: &str,
+) -> Result<&'a CodexAccount, String> {
+    let wanted = query.trim().to_lowercase();
+    if wanted.is_empty() {
+        return Err("The account name is empty.".into());
+    }
+    let parts = |account: &CodexAccount| -> Vec<String> {
+        account
+            .label
+            .split(" · ")
+            .map(|part| part.trim().to_lowercase())
+            .chain(account.email.iter().map(|email| email.to_lowercase()))
+            .collect()
+    };
+    let tiers: [&dyn Fn(&CodexAccount) -> bool; 4] = [
+        &|account| account.id.to_lowercase() == wanted,
+        &|account| account.label.to_lowercase() == wanted || parts(account).contains(&wanted),
+        &|account| wanted.len() >= 8 && account.id.to_lowercase().starts_with(&wanted),
+        &|account| account.label.to_lowercase().contains(&wanted),
+    ];
+    for tier in tiers {
+        let mut found = accounts.iter().filter(|account| tier(account));
+        match (found.next(), found.next()) {
+            (None, _) => continue,
+            (Some(account), None) => {
+                return match &account.unavailable_reason {
+                    Some(reason) if !account.available => Err(format!(
+                        "The Codex account {} is unavailable: {reason}",
+                        account.label
+                    )),
+                    _ => Ok(account),
+                };
+            }
+            (Some(first), Some(second)) => {
+                let names: Vec<_> = [first, second]
+                    .into_iter()
+                    .chain(found)
+                    .map(|account| format!("{} ({})", account.label, account.id))
+                    .collect();
+                return Err(format!(
+                    "More than one Codex account matches '{}': {}. Use an id.",
+                    query.trim(),
+                    names.join(", ")
+                ));
+            }
+        }
+    }
+    let known: Vec<_> = accounts
+        .iter()
+        .map(|account| account.label.as_str())
+        .collect();
+    Err(format!(
+        "No Codex account matches '{}'. Known accounts: {}.",
+        query.trim(),
+        known.join(", ")
+    ))
+}
+
 fn resolve_cached_binding(
     cache: &AccountCache,
     selected: &str,
@@ -882,6 +987,144 @@ mod tests {
         assert!(resolve_cached_binding(&cache, "local-2").is_err());
         fs::remove_dir_all(home).unwrap();
         assert!(resolve_cached_binding(&cache, "local-1").is_err());
+    }
+
+    fn named(id: &str, label: &str, email: Option<&str>, available: bool) -> CodexAccount {
+        CodexAccount {
+            id: id.into(),
+            label: label.into(),
+            email: email.map(str::to_owned),
+            home: format!("/accounts/{id}/home").into(),
+            available,
+            unavailable_reason: (!available)
+                .then(|| "This saved account's home is missing.".into()),
+            is_system_default: id == SYSTEM_DEFAULT_ID,
+        }
+    }
+
+    fn roster() -> Vec<CodexAccount> {
+        vec![
+            named(SYSTEM_DEFAULT_ID, "System default", None, true),
+            named(
+                "948f08ad-ec46-4f87-806e-3afb2a5fd8c4",
+                "me@example.com · Work",
+                Some("me@example.com"),
+                true,
+            ),
+            named(
+                "7c1d9b3e-0000-4000-8000-000000000001",
+                "me@home.example · Private",
+                Some("me@home.example"),
+                true,
+            ),
+            named(
+                "7c1d9b3e-0000-4000-8000-000000000002",
+                "me@home.example · Private spare",
+                Some("me@home.example"),
+                false,
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_person_names_an_account_by_label_workspace_email_or_id() {
+        let accounts = roster();
+        let id = |query: &str| find_account(&accounts, query).map(|account| account.id.as_str());
+        let work = Ok("948f08ad-ec46-4f87-806e-3afb2a5fd8c4");
+        // Any case, any part of the label that is whole: `Work` is `me@example.com · Work`.
+        for query in [
+            "Work",
+            "work",
+            " WORK ",
+            "me@example.com · Work",
+            "me@example.com",
+            "948f08ad-ec46-4f87-806e-3afb2a5fd8c4",
+            "948F08AD-EC46-4F87-806E-3AFB2A5FD8C4",
+            "948f08ad",
+        ] {
+            assert_eq!(id(query), work, "{query}");
+        }
+        // The system default is an account too, by label or id.
+        assert_eq!(id("System default"), Ok(SYSTEM_DEFAULT_ID));
+        assert_eq!(id("system-default"), Ok(SYSTEM_DEFAULT_ID));
+        // A part of a label names an account when only one has it.
+        assert_eq!(id("example.com"), work);
+        // An id's start needs eight characters to count.
+        assert!(id("948f").is_err());
+    }
+
+    #[test]
+    fn a_name_that_fits_two_accounts_or_none_is_an_error_that_helps() {
+        let accounts = roster();
+        let error = find_account(&accounts, "me@home.example").unwrap_err();
+        assert!(
+            error.starts_with("More than one Codex account matches 'me@home.example'"),
+            "{error}"
+        );
+        assert!(
+            error.contains("7c1d9b3e-0000-4000-8000-000000000001"),
+            "{error}"
+        );
+        assert!(
+            error.contains("7c1d9b3e-0000-4000-8000-000000000002"),
+            "{error}"
+        );
+        assert!(error.ends_with("Use an id."), "{error}");
+        // The exact label wins over the longer one that contains it.
+        let one = find_account(&accounts, "me@home.example · Private").unwrap();
+        assert_eq!(one.id, "7c1d9b3e-0000-4000-8000-000000000001");
+        let error = find_account(&accounts, "Holiday").unwrap_err();
+        assert!(error.starts_with("No Codex account matches 'Holiday'. Known accounts: System default, me@example.com · Work"), "{error}");
+        assert_eq!(
+            find_account(&accounts, "  ").unwrap_err(),
+            "The account name is empty."
+        );
+    }
+
+    #[test]
+    fn an_account_that_cannot_be_used_is_named_not_swapped_for_another() {
+        let accounts = roster();
+        let error = find_account(&accounts, "Private spare").unwrap_err();
+        assert!(
+            error.contains("me@home.example · Private spare is unavailable"),
+            "{error}"
+        );
+        assert!(error.contains("home is missing"), "{error}");
+    }
+
+    #[test]
+    fn a_named_account_resolves_to_the_home_a_launch_would_use() {
+        let fixture = Fixture::new();
+        for id in ["local-1", "local-2"] {
+            fs::create_dir_all(fixture.0.join("codex-accounts").join(id).join("home")).unwrap();
+        }
+        let cache = parse_accounts(
+            &response(serde_json::json!([
+                {"id":"local-1","email":"first@example.test","workspaceLabel":"Work","managedHomeRuntime":"host"},
+                {"id":"local-2","email":"second@example.test","managedHomeRuntime":"host"}
+            ])),
+            fixture.0.clone(),
+        )
+        .unwrap();
+        let binding = resolve_account_in(&cache, "work").unwrap();
+        assert_eq!(binding, resolve_cached_binding(&cache, "local-1").unwrap());
+        assert_eq!(binding.id.as_deref(), Some("local-1"));
+        assert_eq!(binding.label.as_deref(), Some("first@example.test · Work"));
+        assert_eq!(
+            resolve_account_in(&cache, "second@example.test")
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("local-2")
+        );
+        // The system default is the CLI's own profile: no account, no managed home.
+        let system = resolve_account_in(&cache, "System default").unwrap();
+        assert_eq!((system.id, system.label), (None, None));
+        assert!(resolve_account_in(&cache, "third").is_err());
+        // An account whose home went away is unavailable, never another one.
+        fs::remove_dir_all(fixture.0.join("codex-accounts/local-2")).unwrap();
+        let error = resolve_account_in(&cache, "second@example.test").unwrap_err();
+        assert!(error.contains("is unavailable"), "{error}");
     }
 
     #[test]

@@ -398,6 +398,7 @@ mod tests {
             codex_account_id: None,
             state: ChatState::Starting,
             orchestrator: None,
+            fast: false,
         }
     }
 

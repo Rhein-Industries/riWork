@@ -540,6 +540,7 @@ fn configure_applies_on_the_next_turn_and_plan_mode_is_left_explicitly() {
             model: None,
             effort: Some("high".into()),
             approval_mode: Some(ApprovalMode::Plan),
+            fast: None,
         })
         .unwrap();
     run.send("plan it");
@@ -549,6 +550,7 @@ fn configure_applies_on_the_next_turn_and_plan_mode_is_left_explicitly() {
             model: None,
             effort: None,
             approval_mode: Some(ApprovalMode::AutoEdit),
+            fast: None,
         })
         .unwrap();
     run.send("do it");
@@ -1054,6 +1056,223 @@ fn unknown_items_are_not_shown() {
     assert!(matches!(body, ItemBody::ToolCall { ref tool, .. } if tool == "collabAgentToolCall"));
 }
 
+fn is_models(event: &ChatEvent) -> bool {
+    matches!(event, ChatEvent::Models { .. })
+}
+
+fn models_of(events: &[ChatEvent]) -> Vec<ModelOption> {
+    match events.last() {
+        Some(ChatEvent::Models { models }) => models.clone(),
+        other => panic!("no Models event: {other:?}"),
+    }
+}
+
+fn configure(model: Option<&str>, effort: Option<&str>, fast: Option<bool>) -> ChatCommand {
+    ChatCommand::Configure {
+        model: model.map(str::to_owned),
+        effort: effort.map(str::to_owned),
+        approval_mode: None,
+        fast,
+    }
+}
+
+/// `model/list` as codex 0.160.0 answered it with an empty `CODEX_HOME`, hidden models
+/// included (`testdata/codex/model_list.json`).
+fn recorded_model_list() -> Value {
+    serde_json::from_str(&fixture("codex/model_list.json")).unwrap()
+}
+
+#[test]
+fn a_recorded_model_list_maps_to_the_models_the_picker_offers() {
+    let list = recorded_model_list();
+    assert_eq!(list["data"].as_array().unwrap().len(), 11);
+    let models = model_options(&list["data"]);
+    // Hidden models (the two special-purpose ones and the auto-review model) are not offered.
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "gpt-6.1-sol",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5"
+        ]
+    );
+    assert_eq!(
+        models[0],
+        ModelOption {
+            id: "gpt-6.1-sol".into(),
+            name: "GPT-6.1-Sol".into(),
+            description: "Latest workhorse model for coding and everyday work.".into(),
+            efforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
+                .map(str::to_owned)
+                .into(),
+            default_effort: Some("low".into()),
+            supports_fast: true,
+            is_default: true,
+        }
+    );
+    // One default; every offered model has the `priority` tier; the efforts differ by model.
+    assert_eq!(models.iter().filter(|m| m.is_default).count(), 1);
+    assert!(models.iter().all(|m| m.supports_fast));
+    let luna = models.iter().find(|m| m.id == "gpt-6-luna").unwrap();
+    assert_eq!(luna.efforts.last().map(String::as_str), Some("max"));
+    let last = models.last().unwrap();
+    assert_eq!(
+        (
+            last.name.as_str(),
+            last.efforts.len(),
+            last.default_effort.as_deref()
+        ),
+        ("GPT-5.5", 4, Some("medium"))
+    );
+    // A hidden model keeps its facts when it is shown anyway: no tier, no Fast.
+    let blue = &list["data"].as_array().unwrap()[7];
+    assert_eq!(blue["id"], "gpt-daybreak-blue-latest");
+    let mut shown = blue.clone();
+    shown["hidden"] = json!(false);
+    assert!(!model_option(&shown).unwrap().supports_fast);
+}
+
+#[test]
+fn a_model_has_fast_when_it_lists_the_priority_tier_or_an_older_server_says_fast() {
+    let model = |extra: Value| {
+        let mut base = json!({"id": "m", "model": "m", "displayName": "M", "hidden": false,
+                              "supportedReasoningEfforts": [], "defaultReasoningEffort": "low"});
+        base.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        model_option(&base).unwrap()
+    };
+    let tiers = |ids: &[&str]| json!({"serviceTiers": ids.iter().map(|id| json!({"id": id, "name": "n", "description": "d"})).collect::<Vec<_>>()});
+    assert!(model(tiers(&["priority"])).supports_fast);
+    assert!(!model(tiers(&[])).supports_fast);
+    // Some other tier is not Fast.
+    assert!(!model(tiers(&["flex"])).supports_fast);
+    // `serviceTiers` wins over the deprecated `additionalSpeedTiers`; without it, the latter counts.
+    assert!(!model(json!({"serviceTiers": [], "additionalSpeedTiers": ["fast"]})).supports_fast);
+    assert!(model(json!({"additionalSpeedTiers": ["fast"]})).supports_fast);
+    assert!(!model(json!({})).supports_fast);
+    // Without a display name the id is the name; `model` is what turn/start takes.
+    let bare = model_option(&json!({"id": "a", "model": "b"})).unwrap();
+    assert_eq!((bare.id.as_str(), bare.name.as_str()), ("b", "b"));
+    assert!(model_option(&json!({"displayName": "no id"})).is_none());
+    assert!(model_options(&json!(null)).is_empty());
+}
+
+#[test]
+fn the_listed_models_come_as_an_event_from_every_page_and_fast_and_efforts_follow_them() {
+    let mut run = Run::start_with("models_fast", |config| {
+        config.model = Some("gpt-6.1-sol".into());
+        config.effort = Some("high".into());
+        config.fast = true;
+    });
+    let models = models_of(&run.until(is_models));
+    // Both pages: three, then the other eight (three of them hidden) and one more.
+    assert_eq!(models.len(), 9);
+    assert_eq!(models[0].id, "gpt-6.1-sol");
+    assert_eq!(models[8].id, "plain-model");
+    assert!(models[0].supports_fast && !models[8].supports_fast);
+    assert_eq!(run.fake.received_method("model/list").len(), 2);
+    assert_eq!(
+        run.fake.received_method("model/list")[1]["params"],
+        json!({"cursor": "3"})
+    );
+    // The thread was opened in Fast mode: the tier is `priority`.
+    assert_eq!(
+        run.fake.received_method("thread/start")[0]["params"]["serviceTier"],
+        "priority"
+    );
+
+    // Fast on: the tier rides on the turn.
+    run.send("one");
+    run.finish_turn();
+    // Fast off: the standard tier is said, since a tier set on a turn stays.
+    run.driver
+        .command(configure(None, None, Some(false)))
+        .unwrap();
+    run.send("two");
+    run.finish_turn();
+    // A model without the tier gets none, and an effort it does not list is dropped with a
+    // notice, once. Choosing another such effort is refused with a notice and changes nothing.
+    run.driver
+        .command(configure(Some("plain-model"), None, Some(true)))
+        .unwrap();
+    run.send("three");
+    run.finish_turn();
+    run.driver
+        .command(configure(None, Some("max"), None))
+        .unwrap();
+    // Back on a model that takes both.
+    run.driver
+        .command(configure(Some("gpt-6-sol"), None, None))
+        .unwrap();
+    run.send("four");
+    run.finish_turn();
+
+    let turns = run.fake.received_method("turn/start");
+    let tier = |turn: usize| turns[turn]["params"].get("serviceTier").cloned();
+    let effort = |turn: usize| turns[turn]["params"].get("effort").cloned();
+    assert_eq!(
+        (tier(0), tier(1), tier(2), tier(3)),
+        (
+            Some(json!("priority")),
+            Some(json!("default")),
+            None,
+            Some(json!("priority"))
+        )
+    );
+    assert_eq!(
+        (effort(0), effort(1), effort(2), effort(3)),
+        (
+            Some(json!("high")),
+            Some(json!("high")),
+            None,
+            Some(json!("high"))
+        )
+    );
+    let notices: Vec<String> = run.notices().into_iter().map(|(_, text)| text).collect();
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(
+        notices[0].contains("plain-model") && notices[0].contains("high"),
+        "{notices:?}"
+    );
+    assert!(
+        notices[1].contains("plain-model") && notices[1].contains("max"),
+        "{notices:?}"
+    );
+    run.end();
+}
+
+#[test]
+fn without_a_model_list_fast_is_sent_when_asked_for_and_taken_back_once() {
+    // A server that does not answer model/list (all the older fixtures): nothing is known
+    // about the models, so Fast goes to the server, which decides.
+    let (events, _unused) = mpsc::channel();
+    let fake = Fake::new(&[&fixture("codex/idle.ndjson")]);
+    let mut config = fake.config(Provider::Codex);
+    config.fast = true;
+    let mut session = Session::new(&config, events);
+    assert_eq!(session.service_tier(), Some(FAST_TIER));
+    assert_eq!(session.service_tier(), Some(FAST_TIER));
+    session.settings.fast = false;
+    // The tier sticks on the server: the standard one is said once, then the field is left out.
+    assert_eq!(session.service_tier(), Some(STANDARD_TIER));
+    assert_eq!(session.service_tier(), None);
+    // A chat that never asked for Fast never sends a tier.
+    config.fast = false;
+    let (events, _unused) = mpsc::channel();
+    let mut session = Session::new(&config, events);
+    assert_eq!(session.service_tier(), None);
+    // Efforts cannot be checked either, and go as they are.
+    session.settings.effort = Some("anything".into());
+    assert_eq!(session.effort_to_send().as_deref(), Some("anything"));
+}
+
 /// Opt-in smoke test against the real `codex app-server`; it spends tokens.
 ///
 /// `RIWORK_LIVE_CODEX=1 cargo test live_codex -- --ignored --nocapture`
@@ -1075,6 +1294,7 @@ fn live_codex_answers_a_trivial_prompt() {
         approval_mode: ApprovalMode::Supervised,
         model: None,
         effort: None,
+        fast: false,
         resume: None,
         extra_args: Vec::new(),
         env: Vec::new(),

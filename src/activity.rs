@@ -554,17 +554,7 @@ impl ActivityTracker {
                 result.insert(shell.id.clone(), self.claude_state(shell, now));
                 continue;
             }
-            let binding = self.read_binding(&shell.id).or_else(|| {
-                let thread_id = resume_thread(shell)?;
-                Some(Binding {
-                    shell_id: shell.id.clone(),
-                    thread_id,
-                    codex_home: shell
-                        .codex_home
-                        .clone()
-                        .or_else(|| self.default_codex_home.clone())?,
-                })
-            });
+            let binding = self.binding_of(shell);
             if binding.is_none() && shell.harness != Some(HarnessKind::Codex) {
                 continue;
             }
@@ -652,6 +642,22 @@ impl ActivityTracker {
             result.insert(shell.id.clone(), state);
         }
         result
+    }
+
+    /// The Codex conversation a shell is in: the thread its hooks bound, or else the
+    /// one its launch resumed by id.
+    fn binding_of(&self, shell: &ShellSession) -> Option<Binding> {
+        self.read_binding(&shell.id).or_else(|| {
+            let thread_id = resume_thread(shell)?;
+            Some(Binding {
+                shell_id: shell.id.clone(),
+                thread_id,
+                codex_home: shell
+                    .codex_home
+                    .clone()
+                    .or_else(|| self.default_codex_home.clone())?,
+            })
+        })
     }
 
     /// Claude has no log to follow: the turn cursor that its hooks keep is the
@@ -743,6 +749,16 @@ impl ActivityTracker {
         let binding: Binding = serde_json::from_slice(&data).ok()?;
         (binding.shell_id == shell_id && valid_uuid(&binding.thread_id)).then_some(binding)
     }
+}
+
+/// The rollout file of the Codex conversation `shell` is in, when the shell is bound to
+/// one and the file is on disk. Only the path: reading the conversation is the caller's.
+pub(crate) fn bound_rollout(home: &Path, shell: &ShellSession) -> Option<PathBuf> {
+    if shell.harness != Some(HarnessKind::Codex) {
+        return None;
+    }
+    let binding = ActivityTracker::at(home.to_path_buf()).binding_of(shell)?;
+    find_rollout(&binding.codex_home, &binding.thread_id)
 }
 
 /// The state of every agent shell in `shells`, read cold: a tracker made for

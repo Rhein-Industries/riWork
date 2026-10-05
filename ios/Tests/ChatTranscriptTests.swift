@@ -157,6 +157,40 @@ final class ChatTranscriptTests: XCTestCase {
         XCTAssertEqual(t.questions, [first])
     }
 
+    // MARK: Models
+
+    private func option(_ id: String, fast: Bool = false) -> ChatModelOption { ChatModelOption(id: id, name: id.uppercased(), efforts: ["low", "high"], defaultEffort: "low", supportsFast: fast) }
+
+    func testEachModelsEventReplacesTheListAndAnEmptyOneClearsIt() {
+        var t = ChatTranscript()
+        XCTAssertTrue(t.models.isEmpty, "an older driver, or an older desktop, never says")
+        t.apply(.models([option("a"), option("b", fast: true)]))
+        XCTAssertEqual(t.models.map(\.id), ["a", "b"])
+        t.apply(.models([option("c")]))
+        XCTAssertEqual(t.models.map(\.id), ["c"], "replaced, not added to")
+        t.apply(.models([]))
+        XCTAssertTrue(t.models.isEmpty)
+    }
+    func testTheModelsSurviveTheRestOfTheConversation() {
+        var t = ChatTranscript()
+        t.apply(.models([option("a")]))
+        for event: ChatEvent in [.info(chat()), .state(.running), .turnStarted(turnID: "t1"), .itemStarted(agent("a", "x", .inProgress)), .turnCompleted(turnID: "t1", outcome: .completed), .usage(ChatUsage())] { t.apply(event) }
+        XCTAssertEqual(t.models.map(\.id), ["a"])
+        // An info that says Fast is on is the chat's word, and it replaces the info as before.
+        var fast = chat(); fast.fast = true
+        t.apply(.info(fast))
+        XCTAssertEqual(t.info?.fast, true)
+        XCTAssertEqual(t.models.map(\.id), ["a"])
+    }
+    func testAFeedFoldsAModelsEventLikeTheOthers() {
+        var feed = ChatFeed()
+        let reply = ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 1, event: .models([option("a")])), ChatEnvelope(seq: 2, event: nil), ChatEnvelope(seq: 3, event: .models([option("b")]))], next: 3, more: false)
+        feed.accept(reply, since: 0)
+        XCTAssertEqual(feed.transcript.models.map(\.id), ["b"])
+        feed.accept(reply, since: 0)
+        XCTAssertEqual(feed.transcript.models.map(\.id), ["b"], "the same answer again changes nothing")
+    }
+
     // MARK: State, info and usage
 
     func testStateAndInfoKeepEachOtherInStep() {
@@ -216,6 +250,10 @@ final class ChatTranscriptTests: XCTestCase {
         // Approvals r1..r4 arrived after the turns ended, r1 was resolved, no turn ended since.
         XCTAssertEqual(t.approvals.map(\.requestID), ["r2", "r3", "r4"])
         XCTAssertTrue(t.questions.isEmpty, "asked and then resolved")
+        // The fixture ends with three models events, each replacing the last: three models, then one, then none.
+        XCTAssertTrue(t.models.isEmpty)
+        XCTAssertEqual(folded(Array(events.prefix(40))).models.map(\.id), ["gpt-5.5", "gpt-5.4-mini", "bare"])
+        XCTAssertEqual(folded(Array(events.prefix(41))).models.map(\.id), ["bare"])
     }
 }
 

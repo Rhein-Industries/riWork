@@ -96,6 +96,12 @@ pub struct ChatInfo {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Whether the user asked for the provider's fast mode (Codex's fast service
+    /// tier, Claude's `fastMode`). It is the user's choice, not what the
+    /// provider granted: Claude can turn it off for a while on its own, and says
+    /// so in a notice.
+    #[serde(default)]
+    pub fast: bool,
     #[serde(default)]
     pub approval_mode: ApprovalMode,
     /// The Codex account (RiWork's account id) the chat runs under.
@@ -118,6 +124,11 @@ pub struct NewChat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
     pub cwd: PathBuf,
+    /// Run a Codex chat under this saved account (a RiWork account id, as
+    /// `ChatInfo::codex_account_id` keeps it) instead of the project's or the
+    /// app's selection. A Claude chat has no such account and is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default)]
@@ -131,6 +142,35 @@ pub struct NewChat {
     /// chat's project to be the scope's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<OrchestratorScope>,
+    /// Start with the provider's fast mode on. A model without one ignores it.
+    #[serde(default)]
+    pub fast: bool,
+}
+
+/// A model the provider offers, as its driver found it out (Codex `model/list`,
+/// Claude's `initialize` reply). The chat's `model` is the `id`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelOption {
+    /// What `model` takes: Codex's model id, Claude's alias or model name (the
+    /// default model's is `default`).
+    pub id: String,
+    /// The name to show.
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// The reasoning efforts this model takes, in the order to offer them.
+    /// Empty when it has none to choose.
+    #[serde(default)]
+    pub efforts: Vec<String>,
+    /// The effort the provider uses when none is chosen.
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    /// Whether the model has a fast mode.
+    #[serde(default)]
+    pub supports_fast: bool,
+    /// Whether the provider uses this model when none is chosen.
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 /// The start of the error `Create` answers when the orchestrator of the scope
@@ -408,6 +448,11 @@ pub enum ChatEvent {
     Usage {
         usage: Usage,
     },
+    /// The models the provider offers. A driver sends it once after its
+    /// handshake and again if the list changes; each replaces the last.
+    Models {
+        models: Vec<ModelOption>,
+    },
 }
 
 /// What the user asks of a chat.
@@ -436,6 +481,8 @@ pub enum ChatCommand {
         effort: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         approval_mode: Option<ApprovalMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fast: Option<bool>,
     },
     Compact,
     /// Stop the provider process; the chat resumes with the next message.
@@ -453,6 +500,9 @@ pub struct Transcript {
     pub approvals: Vec<Approval>,
     pub questions: Vec<Question>,
     pub usage: Option<Usage>,
+    /// The models the provider offers, empty until its driver has said (an
+    /// older driver never does).
+    pub models: Vec<ModelOption>,
     pub turn_id: Option<String>,
     index: HashMap<String, usize>,
 }
@@ -530,6 +580,7 @@ impl Transcript {
                 self.questions.retain(|q| &q.request_id != request_id)
             }
             ChatEvent::Usage { usage } => self.usage = Some(usage.clone()),
+            ChatEvent::Models { models } => self.models = models.clone(),
         }
     }
 }
@@ -712,5 +763,112 @@ mod tests {
         };
         let line = serde_json::to_string(&command).unwrap();
         assert_eq!(serde_json::from_str::<ChatCommand>(&line).unwrap(), command);
+    }
+
+    fn model_option() -> ModelOption {
+        ModelOption {
+            id: "gpt-5.5".into(),
+            name: "GPT-5.5".into(),
+            description: "Frontier model".into(),
+            efforts: vec!["low".into(), "medium".into(), "high".into()],
+            default_effort: Some("medium".into()),
+            supports_fast: true,
+            is_default: true,
+        }
+    }
+
+    #[test]
+    fn a_model_option_has_the_keys_the_phone_reads_and_defaults_the_rest() {
+        let json = serde_json::to_value(model_option()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "gpt-5.5",
+                "name": "GPT-5.5",
+                "description": "Frontier model",
+                "efforts": ["low", "medium", "high"],
+                "default_effort": "medium",
+                "supports_fast": true,
+                "is_default": true,
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ModelOption>(json).unwrap(),
+            model_option()
+        );
+        // Only the id and the name are required.
+        let bare: ModelOption = serde_json::from_str(r#"{"id":"m","name":"M"}"#).unwrap();
+        assert_eq!(
+            bare,
+            ModelOption {
+                id: "m".into(),
+                name: "M".into(),
+                ..ModelOption::default()
+            }
+        );
+        let event = ChatEvent::Models {
+            models: vec![model_option(), bare],
+        };
+        let line = serde_json::to_string(&event).unwrap();
+        assert!(
+            line.starts_with(r#"{"event":"models","models":["#),
+            "{line}"
+        );
+        assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), event);
+    }
+
+    #[test]
+    fn fast_defaults_off_in_info_new_chat_and_configure_written_before_it_existed() {
+        let info: ChatInfo = serde_json::from_str(
+            r#"{"id":"i","provider":"codex","cwd":"/w","title":"t","created_at_unix":1}"#,
+        )
+        .unwrap();
+        assert!(!info.fast);
+        let new: NewChat = serde_json::from_str(r#"{"provider":"claude","cwd":"/w"}"#).unwrap();
+        assert!(!new.fast);
+        let old: ChatCommand =
+            serde_json::from_str(r#"{"command":"configure","effort":"high"}"#).unwrap();
+        assert_eq!(
+            old,
+            ChatCommand::Configure {
+                model: None,
+                effort: Some("high".into()),
+                approval_mode: None,
+                fast: None,
+            }
+        );
+        // Leaving it out stays out of the JSON; turning it off is a change that is sent.
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"command":"configure","effort":"high"}"#
+        );
+        for fast in [true, false] {
+            let command = ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+                fast: Some(fast),
+            };
+            let line = serde_json::to_string(&command).unwrap();
+            assert_eq!(line, format!(r#"{{"command":"configure","fast":{fast}}}"#));
+            assert_eq!(serde_json::from_str::<ChatCommand>(&line).unwrap(), command);
+        }
+        let mut info = info;
+        info.fast = true;
+        let line = serde_json::to_string(&info).unwrap();
+        assert!(line.contains(r#""fast":true"#), "{line}");
+        assert_eq!(serde_json::from_str::<ChatInfo>(&line).unwrap(), info);
+    }
+
+    #[test]
+    fn each_models_event_replaces_the_transcripts_list() {
+        let mut t = Transcript::default();
+        assert!(t.models.is_empty());
+        t.apply(&ChatEvent::Models {
+            models: vec![model_option()],
+        });
+        assert_eq!(t.models, [model_option()]);
+        t.apply(&ChatEvent::Models { models: Vec::new() });
+        assert!(t.models.is_empty());
     }
 }

@@ -19,6 +19,8 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var expanded: Set<String> = []
     /// The mode just chosen, shown until the desktop says so itself.
     var pendingMode: ChatApprovalMode?
+    /// The model, effort or Fast just chosen, shown until the desktop says so itself (`RemoteModel+ChatModels.swift`).
+    var pendingModel: ChatModelChoices.Configuration?
     /// Counts requests to go to the end of the transcript: a message sent, the menu.
     private(set) var jumps = 0
     func jumpToEnd() { jumps &+= 1 }
@@ -37,6 +39,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     @ObservationIgnored var follower: UUID?
     @ObservationIgnored var lastUsed = ContinuousClock.now
     @ObservationIgnored var modeExpiry: Task<Void, Never>?
+    @ObservationIgnored var modelExpiry: Task<Void, Never>?
 
     init(id: String) { self.id = id }
 
@@ -45,6 +48,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     func accept(_ reply: ChatEventsReply, since: UInt64) -> ChatFeed.Outcome {
         let outcome = feed.accept(reply, since: since)
         if let pending = pendingMode, transcript.info?.approvalMode == pending { pendingMode = nil }
+        settleModelChoice()
         // A request the desktop has resolved needs no hiding any more; one it has asked again does.
         let waiting = Set(transcript.approvals.map(\.requestID) + transcript.questions.map(\.requestID))
         answered.formIntersection(waiting)

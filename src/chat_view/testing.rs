@@ -158,6 +158,7 @@ fn info(id: &str) -> ChatInfo {
         codex_account_id: None,
         state: ChatState::Idle,
         orchestrator: None,
+        fast: false,
     }
 }
 

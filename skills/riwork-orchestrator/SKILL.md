@@ -32,7 +32,8 @@ Read your startup scope and `RIWORK_ORCHESTRATOR_SCOPE`. A project orchestrator 
 3. Reuse an appropriate live harness when possible. Otherwise create one with `riwork shell create --worktree WORKTREE_ID --harness codex --json`, `--harness claude`, or `--harness grok`. Normal presets use the harness's configured permissions. Do not choose `--unrestricted` unless the user requests it.
 4. Read `riwork shell cwd SHELL_UUID --json` and `riwork shell output SHELL_UUID --lines 120 --json` before sending input. Confirm the session is in the intended worktree and at an input prompt. If it is still working, inspect progress instead of submitting another task. A terminal capture is its rendered screen, not a guaranteed complete conversation transcript.
 5. Use `riwork shell send SHELL_UUID TEXT` to submit one clear assignment. It presses Return. Include task IDs, repository/worktree path, scope, constraints, acceptance checks, and the expected report. Use one physical line of text (join sections with spaces) and quote the whole prompt as one shell argument: embedded newlines are terminal key input and can submit fragments. Do not send input to a plain shell as if it were a harness, or answer a trust/login/approval prompt as if it were a task prompt.
-6. Mark delegated tasks `in_progress` after successful submission. Give agents separate worktrees for overlapping edits, and state any dependencies before starting dependent work.
+6. `riwork handoff --from SHELL_OR_CHAT_ID --to shell|chat --provider codex|claude|grok [--model M] [--account LABEL]` passes an existing conversation to a new shell or chat in the same worktree (see `riwork help`); use it to move work to another model or account instead of re-explaining it.
+7. Mark delegated tasks `in_progress` after successful submission. Give agents separate worktrees for overlapping edits, and state any dependencies before starting dependent work.
 
 ## Check progress and finish
 

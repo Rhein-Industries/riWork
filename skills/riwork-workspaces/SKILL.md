@@ -33,6 +33,10 @@ Project and task data lives under `RIWORK_HOME`, or `~/.local/share/riwork` by d
 - `riwork shell send UUID TEXT` sends the text followed by Return, so use it only when executing that input is intended. `riwork shell attach UUID` prints the tmux attach command.
 - Shells run in a dedicated tmux server and survive closing tabs, switching projects, and restarting the UI. `riwork shell close UUID` **ends the shell process**; do not use it merely to dismiss a tab or change views.
 
+## Handing a conversation over
+
+- `riwork handoff --to shell|chat --provider codex|claude|grok [--model M] [--effort E] [--account LABEL_OR_ID] [--mode supervised|auto-edit|full|plan] [--context transcript|summary] [--note TEXT] [--json]` passes a conversation to a new shell or chat in the same project, worktree and directory, with a document of it in `RIWORK_HOME/handoffs/`. Without `--from SHELL_OR_CHAT_ID` it hands off the session it runs in (`RIWORK_SHELL_ID` or `RIWORK_CHAT_ID`), so when the user says "hand this over to a Codex chat with gpt-5 on my Work account", run `riwork handoff --to chat --provider codex --model gpt-5 --account Work`. `--account` is a Codex account's label or id; Claude and Grok have none. Use the default `--context transcript` when handing off yourself: `summary` asks an idle agent, which you are not while you run the command. The source is left as it is.
+
 ## Desktop schedules
 
 Use `riwork schedule help` for the current CLI syntax and [scheduling.md](../../docs/scheduling.md#cli-and-mcp-agent-configuration) for examples. `riwork schedule list|show|create|update|pause|resume|delete` and the matching `riwork_schedule_*` MCP tools configure the same schedules shown in the desktop panel. Dispatch only occurs while the desktop app is open. These commands do not launch a session.

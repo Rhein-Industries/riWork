@@ -359,7 +359,7 @@ extension RemoteTransport {
 /// The "New terminal" form as a keyboard sees it: which control has the focus ring and what the arrows do. The same state
 /// drives touch, so both agree on what is chosen.
 public struct NewTerminalForm: Equatable, Sendable {
-    public enum Field: Equatable, Sendable, CaseIterable { case target, kind, orchestratorMode, unrestricted, create }
+    public enum Field: Equatable, Sendable, CaseIterable { case target, kind, orchestratorMode, chatModel, chatEffort, chatFast, unrestricted, create }
     public enum Key: Equatable, Sendable { case up, down, left, right, tab, backTab, space }
 
     public var targets: [NewTerminalTarget]
@@ -369,8 +369,9 @@ public struct NewTerminalForm: Equatable, Sendable {
     public let kinds: [NewTerminalKind]
     public private(set) var unrestricted = false
     public private(set) var orchestratorMode: NewOrchestratorMode = .desktop
-    public var chatModel = ""
     public var focus = Field.kind
+    /// The model, effort and Fast of a new Codex or Claude chat, per provider (`NewChatChoice`); a provider with none is the default.
+    public var chatChoices: [ChatProvider: NewChatChoice] = [:]
 
     public init(targets: [NewTerminalTarget], targetIndex: Int = 0, kind: NewTerminalKind = .standard, kinds: [NewTerminalKind] = NewTerminalKind.terminalKinds) {
         self.targets = targets
@@ -381,16 +382,20 @@ public struct NewTerminalForm: Equatable, Sendable {
     }
 
     public var target: NewTerminalTarget? { targets.indices.contains(targetIndex) ? targets[targetIndex] : nil }
-    /// The controls that can have focus now: the toggle only exists for agents, and an orchestrator has no worktree to choose (it
-    /// belongs to the project, or to none).
-    public var fields: [Field] { Field.allCases.filter { ($0 != .orchestratorMode || kind.isOrchestrator) && ($0 != .unrestricted || kind.isAgent) && ($0 != .target || !kind.isOrchestrator) } }
+    /// The controls that can have focus now: the toggle only exists for agents, an orchestrator has no worktree to choose (it
+    /// belongs to the project, or to none) but chooses how it runs, and the model controls only for a chat.
+    public var fields: [Field] {
+        Field.allCases.filter {
+            ($0 != .orchestratorMode || kind.isOrchestrator) && ($0 != .unrestricted || kind.isAgent)
+                && ($0 != .target || !kind.isOrchestrator) && chatFieldShown($0)
+        }
+    }
 
     public mutating func select(kind: NewTerminalKind) {
         guard kind != self.kind, kinds.contains(kind) else { return }
         self.kind = kind
         // Never carried over to another kind: it is chosen on purpose, each time.
         unrestricted = false
-        chatModel = ""
         if !fields.contains(focus) { focus = .kind }
     }
     public mutating func select(targetAt index: Int) { if targets.indices.contains(index) { targetIndex = index } }
@@ -409,6 +414,7 @@ public struct NewTerminalForm: Equatable, Sendable {
     /// Up and down choose (the target when its row has focus, otherwise the kind); left, right and tab move the focus ring;
     /// space flips the toggle when it has focus. Return and Escape are the sheet's: create and cancel.
     public mutating func handle(_ key: Key) {
+        if handleChat(key) { return }
         switch key {
         case .up, .down:
             let steps = key == .down ? 1 : -1
@@ -440,9 +446,7 @@ public struct NewTerminalForm: Equatable, Sendable {
         }
         guard let provider = kind.chatProvider else { return .terminal(try request()) }
         guard let target else { throw NewTerminalValidationError.needsOneTarget }
-        let model = chatModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        return .chat(try ChatCreateRequest(provider: provider, target: target.requestTarget,
-                                          approvalMode: unrestricted ? .full : nil, model: model.isEmpty ? nil : model))
+        return .chat(try ChatCreateRequest(provider: provider, target: target.requestTarget, approvalMode: unrestricted ? .full : nil, choice: chatChoices[provider] ?? NewChatChoice()))
     }
 }
 

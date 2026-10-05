@@ -403,6 +403,7 @@ fn standin_rig(on_send: OnSend, wait: Duration) -> (PathBuf, ScheduleStore, Chat
         codex_account_id: None,
         state: ChatState::Idle,
         orchestrator: Some(OrchestratorScope::Global),
+        fast: false,
     };
     chat::log::ChatLog::create(&chat::log::chat_dir(&home, &chat.id).unwrap(), &chat).unwrap();
     let stand_in = StandIn::start(&home, &chat, on_send);

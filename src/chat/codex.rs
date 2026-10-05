@@ -17,7 +17,9 @@
 //! `thread/start`, or `thread/resume` with `excludeTurns` when `config.resume`
 //! is set (the host already has the history). So when `start` returns, the
 //! thread id is known and the events so far are `State { Starting }` and
-//! `State { Idle }`.
+//! `State { Idle }`. Right after that the driver asks `model/list` (page after page
+//! while `nextCursor` is set, at most 20) without making the chat wait, and says
+//! what it finds in one `Models` event, a moment after `Idle`.
 //!
 //! Codex only saves a thread once it has run a turn, so resuming one that never
 //! did fails with "no rollout found". Then (and only then) the driver opens a
@@ -40,6 +42,7 @@
 //! | `item/fileChange/patchUpdated` | `ItemStarted` again with the new changes |
 //! | `turn/plan/updated` | `Plan` item `plan-<turn>`, replaced in place |
 //! | `thread/tokenUsage/updated` | `Usage` (totals; `context_used` is the last request's tokens) |
+//! | `model/list` (all pages) | `Models` (below); nothing if the list is empty or the same as before |
 //! | `item/commandExecution/requestApproval` | `ApprovalRequested` (`Command`) |
 //! | `item/fileChange/requestApproval` | `ApprovalRequested` (`FileChange`) |
 //! | `item/permissions/requestApproval` | `ApprovalRequested` (`Permissions`) |
@@ -84,7 +87,7 @@
 //! | `Interrupt` | `turn/interrupt` (remembered when the turn id is not known yet) |
 //! | `Approve` | the JSON-RPC response to the open request: `{ decision }`, or `{ permissions, scope }` for permissions |
 //! | `Answer` | the response `{ answers: { <question id>: { answers } } }` |
-//! | `Configure` | stored; model, effort and approval mode ride on the next `turn/start` |
+//! | `Configure` | stored; model, effort, approval mode and fast mode ride on the next `turn/start` (an effort the chosen model does not list is refused with a `Notice`) |
 //! | `Compact` | `thread/compact/start` |
 //! | `Stop` | shutdown |
 //!
@@ -95,6 +98,29 @@
 //! `collaborationMode` `plan` (an experimental field, which is why
 //! `initialize` opts in). Choosing another mode afterwards sends
 //! `collaborationMode` `default` once, since the mode sticks to the thread.
+//!
+//! # Models, efforts and Fast mode
+//!
+//! `Models` has one `ModelOption` per model of `model/list` that is not `hidden`, in the
+//! server's order: `id` is the `model` string (the one `turn/start` takes), `name` the
+//! `displayName`, `efforts` the `reasoningEffort` of each `supportedReasoningEfforts`,
+//! `default_effort` the `defaultReasoningEffort`, `is_default` the `isDefault`, and
+//! `supports_fast` is true when `serviceTiers` has a tier whose `id` is `priority` (the tier
+//! the apps call Fast; `additionalSpeedTiers` with `fast` counts for a server that predates
+//! `serviceTiers`).
+//!
+//! Fast mode is the `serviceTier` `priority`. It is sent on `thread/start` and
+//! `thread/resume` when the chat has it on, and on every `turn/start`: a model with a Fast
+//! tier gets `priority` when it is on and `default` (standard speed) when it is off, since
+//! the tier a turn sets stays for the turns after it and a resumed thread does not carry it
+//! over; a model without the tier gets none; before the list is known, `priority` goes
+//! out when asked for and `default` once after it is turned off. (The server drops a tier a
+//! model does not advertise, with a `warning`.) A model whose catalog default is `priority`
+//! is therefore at standard speed unless the chat has Fast on, which is what the toggle shows.
+//!
+//! An effort the model does not list is left out of `turn/start` and of the Plan mode
+//! settings, with a `Notice` (once per model and effort), and a `Configure` that names one
+//! changes nothing and says so. The server itself does not check the effort.
 //!
 //! Approval choices come from `availableDecisions` (`accept`,
 //! `acceptForSession`, `decline`, `cancel`); the amendment forms, which
@@ -109,9 +135,14 @@
 //! parameters above, `turn/start` with `collaborationMode`, `effort`,
 //! `sandboxPolicy` and `summary`, `thread/compact/start`, the `error`
 //! retry/failure notifications, closing stdin as shutdown, and the "no rollout
-//! found" failure of resuming a thread without turns. Everything about
-//! approvals, questions, tool items, plans, steering and interrupting comes
-//! from the schema and the T3 Code recordings, not from a live run.
+//! found" failure of resuming a thread without turns. `model/list` (and the
+//! `serviceTier` values `priority` and `default` on `thread/start` and
+//! `turn/start`, echoed in `thread/settings/updated`) was run the same way against
+//! codex 0.160.0, the version installed when it was added: eight visible models and
+//! three hidden, all in one page without a `limit`, `testdata/codex/model_list.json`;
+//! so does the fact that `thread/resume` answers `serviceTier: null` whatever was sent.
+//! Everything about approvals, questions, tool items, plans, steering and interrupting
+//! comes from the schema and the T3 Code recordings, not from a live run.
 //!
 //! Assumed: that `thread/compact/start` is followed by the usual
 //! `turn/started`, `contextCompaction` item and `turn/completed`
@@ -122,8 +153,8 @@ use super::child::{self, Frame, FrameReader, MAX_FRAME_BYTES, Proc};
 use super::driver::{Driver, DriverConfig, StartDriver};
 use super::model::{
     Approval, ApprovalKind, ApprovalMode, ChangeKind, ChatCommand, ChatEvent, ChatState, Decision,
-    Delta, FileChange, Item, ItemBody, ItemStatus, NoticeLevel, Question, QuestionOption,
-    QuestionPrompt, Step, StepStatus, TurnOutcome, Usage,
+    Delta, FileChange, Item, ItemBody, ItemStatus, ModelOption, NoticeLevel, Question,
+    QuestionOption, QuestionPrompt, Step, StepStatus, TurnOutcome, Usage,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -137,6 +168,14 @@ const _: StartDriver = start;
 
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 const THREAD_TIMEOUT: Duration = Duration::from_secs(60);
+/// The service tier that is Fast (`ModelServiceTier.id`; the name shown is "Fast", and the
+/// server also takes `fast` as another name for it).
+const FAST_TIER: &str = "priority";
+/// The service tier that is standard speed. Sent explicitly to leave Fast: a tier set on a
+/// turn stays for the turns after it, and leaving the field out keeps it.
+const STANDARD_TIER: &str = "default";
+/// The most pages of `model/list` read (the server returns everything in one by default).
+const MODEL_PAGES: usize = 20;
 /// Notifications that are large and that nothing here uses.
 const OPT_OUT: [&str; 2] = ["turn/diff/updated", "item/plan/delta"];
 /// Output kept per command or reasoning item to restore it on completion.
@@ -275,6 +314,8 @@ struct Settings {
     model: Option<String>,
     effort: Option<String>,
     mode: ApprovalMode,
+    /// The user wants the Fast service tier, on a model that has one.
+    fast: bool,
 }
 
 struct Session {
@@ -285,6 +326,14 @@ struct Session {
     /// The model the thread runs, from `thread/start`; Plan mode needs one.
     thread_model: Option<String>,
     settings: Settings,
+    /// The models `model/list` named, once it has answered (none for a server
+    /// that has no such method).
+    models: Vec<ModelOption>,
+    /// The Fast tier has been sent on this thread. The tier sticks, so a model
+    /// that is not known to have tiers still gets the standard one back.
+    tier_sent: bool,
+    /// The effort and model of the last dropped effort, so one notice says it.
+    effort_dropped: Option<(String, String)>,
     /// Whether the thread was last put in plan collaboration mode.
     plan_sent: bool,
     state: ChatState,
@@ -327,7 +376,11 @@ impl Session {
                 model: config.model.clone(),
                 effort: config.effort.clone(),
                 mode: config.approval_mode,
+                fast: config.fast,
             },
+            models: Vec::new(),
+            tier_sent: false,
+            effort_dropped: None,
             plan_sent: false,
             state: ChatState::Starting,
             ready: false,
@@ -458,6 +511,88 @@ impl Session {
         )
     }
 
+    /// The model the next turn runs: the chosen one, else the thread's, else the
+    /// provider's default.
+    fn effective_model(&self) -> Option<String> {
+        self.settings
+            .model
+            .clone()
+            .or_else(|| self.thread_model.clone())
+            .or_else(|| {
+                self.models
+                    .iter()
+                    .find(|model| model.is_default)
+                    .map(|model| model.id.clone())
+            })
+    }
+
+    /// What `model/list` said about `model`, once it has answered.
+    fn model_option(&self, model: Option<&str>) -> Option<&ModelOption> {
+        let model = model?;
+        self.models.iter().find(|option| option.id == model)
+    }
+
+    /// Whether `model` takes `effort`: yes for a model the list does not
+    /// describe, or describes without efforts.
+    fn takes_effort(&self, model: Option<&str>, effort: &str) -> bool {
+        self.model_option(model).is_none_or(|option| {
+            option.efforts.is_empty() || option.efforts.iter().any(|e| e == effort)
+        })
+    }
+
+    /// The effort to send: the chosen one if the model takes it. One it does not
+    /// take is left out, and a notice says so once.
+    fn effort_to_send(&mut self) -> Option<String> {
+        let effort = self.settings.effort.clone()?;
+        let model = self.effective_model();
+        if self.takes_effort(model.as_deref(), &effort) {
+            return Some(effort);
+        }
+        let model = model.unwrap_or_default();
+        let dropped = (model.clone(), effort.clone());
+        if self.effort_dropped.as_ref() != Some(&dropped) {
+            self.effort_dropped = Some(dropped);
+            self.notice(
+                NoticeLevel::Warning,
+                format!(
+                    "{model} does not take the reasoning effort {effort}; the model's own is used."
+                ),
+            );
+        }
+        None
+    }
+
+    /// Remember the models the server offers and tell the chat. A list with nothing
+    /// in it says nothing, and the same list as before is not said again.
+    fn set_models(&mut self, models: Vec<ModelOption>) {
+        if models.is_empty() || models == self.models {
+            return;
+        }
+        self.models = models.clone();
+        self.emit(ChatEvent::Models { models });
+    }
+
+    /// The service tier to send with a turn, `None` to leave the field out. A model
+    /// with a Fast tier gets the tier the user chose every time (the server keeps
+    /// what a turn sets, so the standard tier has to be said); a model without
+    /// one gets nothing, and a model the list does not describe gets Fast only
+    /// when it was asked for.
+    fn service_tier(&mut self) -> Option<&'static str> {
+        let model = self.effective_model();
+        let tier = match self.model_option(model.as_deref()).map(|m| m.supports_fast) {
+            Some(true) => Some(if self.settings.fast {
+                FAST_TIER
+            } else {
+                STANDARD_TIER
+            }),
+            Some(false) => None,
+            None if self.settings.fast => Some(FAST_TIER),
+            None => self.tier_sent.then_some(STANDARD_TIER),
+        };
+        self.tier_sent = tier == Some(FAST_TIER);
+        tier
+    }
+
     /// The parameters of a `turn/start`, with the settings in force.
     fn turn_params(&mut self, thread: &str, text: &str) -> Value {
         let policy = policy(self.settings.mode);
@@ -471,23 +606,23 @@ impl Session {
         if let Some(model) = &self.settings.model {
             params["model"] = json!(model);
         }
-        if let Some(effort) = &self.settings.effort {
+        let effort = self.effort_to_send();
+        if let Some(effort) = &effort {
             params["effort"] = json!(effort);
+        }
+        if let Some(tier) = self.service_tier() {
+            params["serviceTier"] = json!(tier);
         }
         // The collaboration mode sticks to the thread: Plan sets it, and the
         // first turn after Plan puts it back.
         if policy.plan || self.plan_sent {
-            let model = self
-                .settings
-                .model
-                .clone()
-                .or_else(|| self.thread_model.clone());
+            let model = self.effective_model();
             if let Some(model) = model {
                 params["collaborationMode"] = json!({
                     "mode": if policy.plan { "plan" } else { "default" },
                     "settings": {
                         "model": model,
-                        "reasoning_effort": self.settings.effort,
+                        "reasoning_effort": effort,
                         "developer_instructions": policy.plan.then_some(PLAN_INSTRUCTIONS),
                     },
                 });
@@ -673,6 +808,9 @@ impl Codex {
         if let Some(model) = &config.model {
             params["model"] = json!(model);
         }
+        if config.fast {
+            params["serviceTier"] = json!(FAST_TIER);
+        }
         let mut replaced = None;
         let result = match &config.resume {
             Some(thread) => {
@@ -699,6 +837,7 @@ impl Codex {
         self.with(|session| {
             session.thread_id = Some(thread);
             session.thread_model = result["model"].as_str().map(str::to_owned);
+            session.tier_sent = config.fast;
             // A resumed thread may still be in the plan mode it was left in.
             session.plan_sent = result["collaborationMode"]["mode"] == "plan";
             session.ready = true;
@@ -710,7 +849,39 @@ impl Codex {
             }
             session.refresh_state();
         });
+        // The chat does not wait for the list: it arrives as an event.
+        self.list_models(None, Vec::new(), 1);
         Ok(())
+    }
+
+    /// Ask for page number `page` of `model/list` (from `cursor`, after the models
+    /// already in `listed`) and, at the last page, tell the chat about the models.
+    /// A server without the method, or one that fails it, leaves the chat without a
+    /// list; it still works, with free text for the model.
+    fn list_models(&self, cursor: Option<String>, listed: Vec<ModelOption>, page: usize) {
+        let params = match &cursor {
+            Some(cursor) => json!({"cursor": cursor}),
+            None => json!({}),
+        };
+        let frame = self.with(|session| {
+            session.request(
+                "model/list",
+                params,
+                Box::new(move |codex, outcome| {
+                    let Ok(result) = outcome else { return };
+                    let mut listed = listed;
+                    listed.extend(model_options(&result["data"]));
+                    match result["nextCursor"].as_str() {
+                        Some(next) if page < MODEL_PAGES => {
+                            codex.list_models(Some(next.to_owned()), listed, page + 1)
+                        }
+                        _ => codex.with(|session| session.set_models(listed)),
+                    }
+                }),
+            )
+        });
+        // A failure to write is the process going away, which the reader sees.
+        let _ = self.proc.send(&frame);
     }
 
     fn read_loop(&self, stdout: std::process::ChildStdout) {
@@ -798,16 +969,33 @@ impl Codex {
                 model,
                 effort,
                 approval_mode,
+                fast,
             } => {
                 self.with(|session| {
                     if model.is_some() {
                         session.settings.model = model;
                     }
-                    if effort.is_some() {
-                        session.settings.effort = effort;
+                    // Against the model just chosen, if there is a new one.
+                    if let Some(effort) = effort {
+                        let chosen = session.effective_model();
+                        if session.takes_effort(chosen.as_deref(), &effort) {
+                            session.settings.effort = Some(effort);
+                        } else {
+                            let chosen = chosen.unwrap_or_default();
+                            session.notice(
+                                NoticeLevel::Warning,
+                                format!(
+                                    "{chosen} does not take the reasoning effort {effort}, \
+                                     so it was not changed."
+                                ),
+                            );
+                        }
                     }
                     if let Some(mode) = approval_mode {
                         session.settings.mode = mode;
+                    }
+                    if let Some(fast) = fast {
+                        session.settings.fast = fast;
                     }
                 });
                 Ok(())
@@ -1466,6 +1654,46 @@ fn policy(mode: ApprovalMode) -> Policy {
             plan: true,
         },
     }
+}
+
+/// The models of a `model/list` page, in the server's order, without the hidden ones
+/// (internal and special-purpose models the picker leaves out). The id that `turn/start`
+/// takes is `model` (the same string as `id` in every list seen).
+fn model_options(data: &Value) -> Vec<ModelOption> {
+    data.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(model_option)
+        .collect()
+}
+
+fn model_option(model: &Value) -> Option<ModelOption> {
+    if model["hidden"].as_bool() == Some(true) {
+        return None;
+    }
+    let id = model["model"].as_str().or(model["id"].as_str())?;
+    // `serviceTiers` replaced `additionalSpeedTiers` (which still says `fast`).
+    let supports_fast = match model["serviceTiers"].as_array() {
+        Some(tiers) => tiers.iter().any(|tier| tier["id"] == FAST_TIER),
+        None => model["additionalSpeedTiers"]
+            .as_array()
+            .is_some_and(|tiers| tiers.iter().any(|tier| tier == "fast")),
+    };
+    Some(ModelOption {
+        id: id.to_owned(),
+        name: model["displayName"].as_str().unwrap_or(id).to_owned(),
+        description: model["description"].as_str().unwrap_or_default().to_owned(),
+        efforts: model["supportedReasoningEfforts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|option| option["reasoningEffort"].as_str())
+            .map(str::to_owned)
+            .collect(),
+        default_effort: model["defaultReasoningEffort"].as_str().map(str::to_owned),
+        supports_fast,
+        is_default: model["isDefault"].as_bool() == Some(true),
+    })
 }
 
 fn text_input(text: &str) -> Value {

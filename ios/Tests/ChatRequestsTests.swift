@@ -43,6 +43,21 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertEqual(all.params, ["provider": .string("codex"), "project_id": .string(project), "approval_mode": .string("plan"),
                                     "model": .string("gpt-5"), "effort": .string("high"), "title": .string("Fix the build")])
     }
+    func testFastIsSentOnlyWhenItIsOn() throws {
+        // A desktop that predates Fast denies a field it does not know, so off is not spelled out.
+        XCTAssertNil(try create().params["fast"])
+        XCTAssertNil(try ChatCreateRequest(provider: .claude, target: .project(project), model: "opus", fast: false).params["fast"])
+        let on = try ChatCreateRequest(provider: .claude, target: .project(project), model: "opus", effort: "high", fast: true)
+        XCTAssertEqual(on.params, ["provider": .string("claude"), "project_id": .string(project), "model": .string("opus"), "effort": .string("high"), "fast": .bool(true)])
+        XCTAssertTrue(on.fast)
+        XCTAssertEqual(try ChatCreateRequest(params: on.params), on)
+        XCTAssertFalse(try ChatCreateRequest(params: ["provider": .string("codex"), "project_id": .string(project), "fast": .bool(false)]).fast, "a spelled-out off is read")
+        for bad in [JSONValue.string("true"), .number(1), .null] {
+            XCTAssertThrowsError(try ChatCreateRequest(params: ["provider": .string("codex"), "project_id": .string(project), "fast": bad]), "\(bad)") { XCTAssertEqual($0 as? ChatValidationError, .malformed) }
+        }
+        XCTAssertNoThrow(try RequestValidation.validate(method: "chat.create", params: on.params, id: requestID))
+        XCTAssertThrowsError(try RequestValidation.validate(method: "chat.create", params: on.params.merging(["fast": .string("yes")]) { $1 }, id: requestID))
+    }
     func testTheTargetIsExactlyOneFullLowercaseUUID() throws {
         for bad in ["", "nope", String(project.prefix(8)), letters.uppercased(), project.replacingOccurrences(of: "-", with: ""), project + " "] {
             XCTAssertThrowsError(try create(.codex, .project(bad)), bad) { XCTAssertEqual($0 as? ChatValidationError, .invalidID) }
@@ -143,6 +158,22 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertEqual(try ChatCommandRequest(params: approve.params), approve)
         XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .interrupt).params["command"], try value(#"{"command":"interrupt"}"#))
         XCTAssertThrowsError(try ChatCommandRequest(chatID: "nope", command: .interrupt)) { XCTAssertEqual($0 as? ChatValidationError, .invalidID) }
+    }
+    func testAConfigureCarriesOneChangeAndIsRefusedWhenItChangesNothing() throws {
+        let model = try ChatCommandRequest(chatID: chat, command: .configure(model: "opus"))
+        XCTAssertEqual(model.params["command"], try value(#"{"command":"configure","model":"opus"}"#))
+        XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .configure(effort: "high")).params["command"], try value(#"{"command":"configure","effort":"high"}"#))
+        XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .configure(fast: true)).params["command"], try value(#"{"command":"configure","fast":true}"#))
+        XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .configure(fast: false)).params["command"], try value(#"{"command":"configure","fast":false}"#), "turning it off is a change")
+        let all = try ChatCommandRequest(chatID: chat, command: .configure(model: "gpt-5.5", effort: "xhigh", approvalMode: .plan, fast: true))
+        XCTAssertEqual(try ChatCommandRequest(params: all.params), all)
+        // The desktop refuses a configure with nothing in it, and a blank or overlong model or effort.
+        XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure())) { XCTAssertEqual($0 as? ChatValidationError, .emptyConfigure) }
+        XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure(model: "  "))) { XCTAssertEqual($0 as? ChatValidationError, .blankSetting(field: "model")) }
+        XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure(effort: ""))) { XCTAssertEqual($0 as? ChatValidationError, .blankSetting(field: "effort")) }
+        XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure(model: String(repeating: "m", count: 101)))) { XCTAssertEqual($0 as? ChatValidationError, .textTooLong(field: "model", limit: 100)) }
+        XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure(effort: String(repeating: "e", count: 33)))) { XCTAssertEqual($0 as? ChatValidationError, .textTooLong(field: "effort", limit: 32)) }
+        _ = try ChatCommandRequest(chatID: chat, command: .configure(model: String(repeating: "m", count: 100), effort: String(repeating: "e", count: 32)))
     }
     func testAMessageIsNotBlankAndAtMost64KiB() throws {
         for blank in ["", "   ", "\n\t \n"] {

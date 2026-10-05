@@ -312,6 +312,7 @@ mod tests {
             codex_account_id: None,
             state: ChatState::Idle,
             orchestrator: None,
+            fast: false,
         };
         let served = info.clone();
         let host = thread::spawn(move || {
@@ -351,11 +352,13 @@ mod tests {
                 project_id: None,
                 worktree_id: None,
                 cwd: dir.clone(),
+                codex_account_id: None,
                 title: None,
                 approval_mode: ApprovalMode::Supervised,
                 model: None,
                 effort: None,
                 orchestrator: None,
+                fast: false,
             })
             .unwrap();
         assert_eq!(created, info);

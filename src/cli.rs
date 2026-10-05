@@ -99,12 +99,16 @@ riwork chat serve [--idle-seconds N]    Run the chat host in the foreground (exi
 riwork chat ensure                      Start the chat host if it is not running; print its socket
 riwork chat list [--project ID] [--json]   List Codex and Claude chats, running or not
 riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
-                [--model NAME] [--effort LEVEL] [--title TEXT]
+                [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
 riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
                                         Read a chat's events after N, waiting up to M ms for the first
 riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
 riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
+riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok
+               [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID]
+               [--mode supervised|auto-edit|full|plan] [--context transcript|summary] [--note TEXT]
+                                        Pass a conversation to a new shell or chat
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode terminal|chat]
 riwork orchestrator list [--project ID]   List global and project orchestrators, terminals and chats
@@ -133,7 +137,8 @@ default). A chat whose provider cannot start is kept as failed; chat send retrie
 chat new --json prints the chat as `chat list --json` shows it, also when its provider
 did not start (state failed); without --json that is an error. --model, --effort and
 --title (at most 100, 32 and 200 characters, no control characters) take their value
-as it is, also with `=`: --title=--draft.
+as it is, also with `=`: --title=--draft. --fast turns on the provider's fast mode for
+a model that has one (Codex's fast tier, Claude's fast mode).
 chat events --json prints one line, {\"chat_id\",\"events\":[{\"seq\",\"event\"}],\"next\",\"more\"}:
 the events with seq above --since (default 0), at most --max (500 by default, up to
 2000) and as many as fit --max-bytes (1 MiB by default, up to 2 MiB). With none yet it
@@ -144,6 +149,19 @@ strings cut. chat command takes one ChatCommand as JSON (send, interrupt, approv
 answer, configure, compact, stop) and refuses unknown fields; errors that start with
 `invalid_request:` are about the command, anything else about the host or the chat.
 capabilities --json has \"chat\": true and \"orchestrator_create\": true.
+handoff writes the source conversation into RIWORK_HOME/handoffs/ID.md (owner-only) and
+starts the target in the same project, worktree and directory with a first message that
+points at it (a chat gets a short document inline); the source is neither stopped nor
+changed, but --context summary sends it one message. --from
+defaults to the session the command runs in (RIWORK_SHELL_ID or RIWORK_CHAT_ID) and takes
+a shell or chat id or a unique prefix of eight characters or more. --context transcript
+(the default) builds the document from the chat's log, the shell's Codex rollout or Claude
+transcript, or else its scrollback; --context summary first asks an idle Codex or Claude
+source to write a summary (up to five minutes) and falls back to the transcript, saying so,
+if none comes. --account is a Codex account's label or id (only Codex has accounts); without
+it the project's own account is used, as in a new tab. For a shell target --mode supervised
+leaves the CLI's usual permissions. --json prints {handoff_id, document, target:{kind,id},
+context} and, if a summary was replaced by the transcript, fallback.
 worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
@@ -278,6 +296,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "shell"
             | "orchestrator"
             | "chat"
+            | "handoff"
             | "schedule"
             | "search"
             | "usage"
@@ -369,6 +388,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         "shell" => shell_command(args, json)?,
         "orchestrator" => orchestrator_command(args, json)?,
         "chat" => chat_command(args, json)?,
+        "handoff" => handoff::command(args, json)?,
         "schedule" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
         "mcp" => {
@@ -1915,6 +1935,7 @@ fn chat_client_command(
                 Some("plan") => crate::chat::model::ApprovalMode::Plan,
                 Some(_) => return Err("--mode must be supervised, auto-edit, full, or plan".into()),
             };
+            let fast = take_flag(&mut args, "--fast");
             ensure_empty(&args)?;
             let state = Store::open(home)?.snapshot()?;
             let (project_id, worktree_id, cwd) =
@@ -1924,11 +1945,13 @@ fn chat_client_command(
                 project_id: Some(project_id),
                 worktree_id,
                 cwd,
+                codex_account_id: None,
                 title,
                 approval_mode,
                 model,
                 effort,
                 orchestrator: None,
+                fast,
             })?;
             if json {
                 // A chat whose provider did not start still exists, and the
@@ -2039,7 +2062,7 @@ fn chat_client_command(
     }
 }
 
-const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--title TEXT]";
+const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]";
 
 /// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
 fn resolve_chat(
@@ -3016,6 +3039,7 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 }
 
 mod chat_remote;
+mod handoff;
 use chat_remote::{
     effort_setting, model_setting, parse_events_arguments, take_verbatim_option, title_setting,
 };

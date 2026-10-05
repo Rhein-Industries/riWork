@@ -18,6 +18,8 @@ struct ChatScreen: View {
     /// Counts times a sheet over the screen went away: the composer takes the keyboard back.
     var refocus = 0
     @State private var focusToken = 0
+    /// The model picker is up.
+    @State private var showModels = false
     /// The height the screen has now. With the software keyboard up it is under half of the phone, and the bars above the composer must
     /// leave the transcript room, so what they may scroll is a share of it.
     @State private var height: CGFloat = 800
@@ -32,7 +34,7 @@ struct ChatScreen: View {
         let approvals = conversation.openApprovals
         let questions = conversation.openQuestions
         VStack(spacing: 0) {
-            ChatToolbar(model: model, chat: info, conversation: conversation, state: state)
+            ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
             ChatStatusLines(model: model, chat: info, conversation: conversation, state: state)
             ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached)
             if let approval = approvals.first {
@@ -66,6 +68,16 @@ struct ChatScreen: View {
                 .disabled(!state.isBusy || !connected)
                 .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
+        // ⌘M opens the model picker (⌘M again closes it, from the sheet). The terminal has no ⌘M and its key view is not on this screen.
+        .background {
+            Button("Choose model") { showModels = true }
+                .keyboardShortcut("m", modifiers: .command)
+                .disabled(!connected || !conversation.modelChoices(fallback: info).isAvailable)
+                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+        }
+        .sheet(isPresented: $showModels, onDismiss: requestFocus) {
+            ChatModelSheet(model: model, chat: info) { showModels = false }.desktopThemed(model.theme.style)
+        }
     }
 
     private func decide(_ approval: ChatApproval, _ decision: ChatDecision) {
@@ -86,11 +98,13 @@ private struct ChatToolbar: View {
     let chat: ChatInfo
     let conversation: ChatConversation
     let state: ChatState
+    @Binding var showModels: Bool
 
     @State private var choosingModel = false
     @State private var modelName = ""
 
     private var shownMode: ChatApprovalMode { conversation.pendingMode ?? chat.approvalMode }
+    private var choices: ChatModelChoices { conversation.modelChoices(fallback: chat) }
     private func icon(_ mode: ChatApprovalMode) -> String {
         switch mode {
         case .supervised: "hand.raised"
@@ -121,6 +135,8 @@ private struct ChatToolbar: View {
                 .disabled(!connected)
                 .accessibilityLabel("Approval mode").accessibilityValue("\(shownMode.title), \(shownMode.detail)")
                 .accessibilityHint("Choose Supervised, Auto-edit, Full or Plan")
+                // The model, with a bolt when Fast is on. A desktop that sends no list of models has no chip: the toolbar is as it was.
+                if choices.isAvailable { ChatModelChip(choices: choices, enabled: connected) { showModels = true } }
                 Spacer(minLength: 4)
                 Button { Task { await model.compactChat(chat.id) } } label: {
                     Label("Compact", systemImage: "arrow.down.right.and.arrow.up.left").labelStyle(.titleAndIcon).font(style.mono(11, relativeTo: .caption))

@@ -1,7 +1,7 @@
 use super::*;
 use crate::chat::client::{Client, Subscription};
 use crate::chat::model::{
-    Approval, ApprovalKind, ApprovalMode, Item, ItemBody, ItemStatus, Transcript,
+    Approval, ApprovalKind, ApprovalMode, Item, ItemBody, ItemStatus, ModelOption, Transcript,
 };
 use crate::chat::testing::*;
 use std::io::{BufRead, BufReader, Write};
@@ -162,6 +162,29 @@ fn an_orchestrator_chat_has_the_project_of_its_scope_and_no_worktree() {
 }
 
 #[test]
+fn a_chat_can_ask_for_its_codex_account_and_keeps_it() {
+    let host = TestHost::new();
+    let mut new = host.new_chat(Provider::Codex);
+    new.codex_account_id = Some("account-b".into());
+    let created = host.client().create(new).unwrap();
+    assert_eq!(created.codex_account_id.as_deref(), Some("account-b"));
+    // It is the chat's own from then on: on disk and in what the host lists.
+    let saved: ChatInfo = serde_json::from_str(
+        &fs::read_to_string(host.home.join("chats").join(&created.id).join("info.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved.codex_account_id.as_deref(), Some("account-b"));
+    // A chat that does not ask gets the project's.
+    let plain = host.create(Provider::Codex);
+    assert_eq!(plain.codex_account_id.as_deref(), Some("account-a"));
+    // The request travels as a field that older hosts and clients leave out.
+    let line = serde_json::to_string(&host.new_chat(Provider::Codex)).unwrap();
+    assert!(!line.contains("codex_account_id"), "{line}");
+    let old: NewChat = serde_json::from_str(&line).unwrap();
+    assert_eq!(old.codex_account_id, None);
+}
+
+#[test]
 fn a_chat_needs_a_real_working_directory_and_a_claude_chat_has_no_codex_account() {
     let host = TestHost::new();
     let mut new = host.new_chat(Provider::Claude);
@@ -297,6 +320,7 @@ fn settings_change_the_chat_even_while_it_is_stopped() {
         model: Some("m2".into()),
         effort: Some("low".into()),
         approval_mode: Some(ApprovalMode::Plan),
+        fast: None,
     };
     client.command(&chat.id, configure.clone()).unwrap();
     assert_eq!(host.fake().commands(), vec![configure.clone()]);
@@ -315,6 +339,7 @@ fn settings_change_the_chat_even_while_it_is_stopped() {
         model: Some("m3".into()),
         effort: None,
         approval_mode: Some(ApprovalMode::Full),
+        fast: None,
     };
     client.command(&chat.id, again).unwrap();
     assert_eq!(host.fake().start_count(), 1);
@@ -329,6 +354,132 @@ fn settings_change_the_chat_even_while_it_is_stopped() {
         ),
         (Some("m3"), Some("low"), ApprovalMode::Full)
     );
+}
+
+fn configure_fast(fast: bool) -> ChatCommand {
+    ChatCommand::Configure {
+        model: None,
+        effort: None,
+        approval_mode: None,
+        fast: Some(fast),
+    }
+}
+
+#[test]
+fn fast_mode_belongs_to_the_chat_and_goes_to_every_driver_that_starts() {
+    let host = TestHost::new();
+    let mut new = host.new_chat(Provider::Codex);
+    new.fast = true;
+    let mut client = host.client();
+    let chat = client.create(new).unwrap();
+    assert!(chat.fast);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    assert!(host.fake().starts.lock().unwrap()[0].fast);
+
+    // Turned off while the driver runs: the driver is told, and the chat remembers.
+    client.command(&chat.id, configure_fast(false)).unwrap();
+    assert_eq!(host.fake().commands(), vec![configure_fast(false)]);
+    assert!(!host.info(&chat.id).fast);
+    let dir = host.home.join("chats").join(&chat.id);
+    let saved = |dir: &Path| -> ChatInfo {
+        serde_json::from_str(&fs::read_to_string(dir.join("info.json")).unwrap()).unwrap()
+    };
+    assert!(!saved(&dir).fast);
+    // The same again changes nothing and publishes nothing.
+    let published = host.log(&chat.id).len();
+    client.command(&chat.id, configure_fast(false)).unwrap();
+    assert_eq!(host.log(&chat.id).len(), published);
+
+    // Turned on while the chat is stopped: no process starts for it, the next one has it.
+    client.close(&chat.id).unwrap();
+    client.command(&chat.id, configure_fast(true)).unwrap();
+    assert_eq!(host.fake().start_count(), 1, "a real change starts nothing");
+    assert!(host.info(&chat.id).fast && saved(&dir).fast);
+    send(&mut client, &chat.id, "go");
+    let starts = host.fake().starts.lock().unwrap().clone();
+    assert_eq!(starts.len(), 2);
+    assert!(starts[1].fast && starts[1].resume.is_some());
+    // The log says so: an Info with the change, in the order it happened.
+    let log = host.wait_for_log(&chat.id, |log| {
+        log.iter()
+            .any(|e| matches!(&e.event, ChatEvent::Info { info } if info.fast))
+    });
+    assert_gapless(&log, 1);
+}
+
+#[test]
+fn only_a_configure_that_changes_nothing_at_all_is_a_retry_and_fast_alone_is_not() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Claude);
+    let mut client = host.client();
+    client.close(&chat.id).unwrap();
+    client.command(&chat.id, configure_fast(true)).unwrap();
+    assert_eq!(host.fake().start_count(), 1, "fast alone resumes nothing");
+    client
+        .command(
+            &chat.id,
+            ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+                fast: None,
+            },
+        )
+        .unwrap();
+    let starts = host.fake().starts.lock().unwrap().clone();
+    assert_eq!(starts.len(), 2, "the retry resumed the provider");
+    assert!(starts[1].fast, "with the fast mode the chat has");
+}
+
+#[test]
+fn the_models_a_driver_reports_are_logged_and_replayed_like_any_event() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    let models = vec![
+        ModelOption {
+            id: "gpt-6.1-sol".into(),
+            name: "GPT-6.1-Sol".into(),
+            efforts: vec!["low".into(), "high".into()],
+            default_effort: Some("low".into()),
+            supports_fast: true,
+            is_default: true,
+            ..ModelOption::default()
+        },
+        ModelOption {
+            id: "plain".into(),
+            name: "Plain".into(),
+            ..ModelOption::default()
+        },
+    ];
+    host.fake().emit(ChatEvent::Models {
+        models: models.clone(),
+    });
+    let log = host.wait_for_log(&chat.id, |log| {
+        log.iter()
+            .any(|e| matches!(e.event, ChatEvent::Models { .. }))
+    });
+    assert_gapless(&log, 1);
+    // A tab that connects late gets them from the start of the log.
+    let late = Follower::open(&host.socket(), &chat.id, 0).unwrap();
+    let mut transcript = Transcript::default();
+    for envelope in late.take(log.len()) {
+        transcript.apply(&envelope.event);
+    }
+    assert_eq!(transcript.models, models);
+    // A later list replaces it; one with nothing in it clears it.
+    host.fake().emit(ChatEvent::Models { models: Vec::new() });
+    let log = host.wait_for_log(&chat.id, |log| {
+        log.iter()
+            .filter(|e| matches!(e.event, ChatEvent::Models { .. }))
+            .count()
+            == 2
+    });
+    let mut transcript = Transcript::default();
+    for envelope in &log {
+        transcript.apply(&envelope.event);
+    }
+    assert!(transcript.models.is_empty());
 }
 
 #[test]
@@ -568,6 +719,7 @@ fn an_empty_configure_resumes_a_stopped_chat_and_other_configures_do_not() {
                 model: Some("gpt-5".into()),
                 effort: None,
                 approval_mode: None,
+                fast: None,
             },
         )
         .unwrap();
@@ -583,6 +735,7 @@ fn an_empty_configure_resumes_a_stopped_chat_and_other_configures_do_not() {
                 model: None,
                 effort: None,
                 approval_mode: None,
+                fast: None,
             },
         )
         .unwrap();
@@ -711,6 +864,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         codex_account_id: None,
         state: ChatState::Waiting,
         orchestrator: None,
+        fast: false,
     };
     let dir = log::chat_dir(&home, &id).unwrap();
     let chat_log = ChatLog::create(&dir, &info).unwrap();
@@ -1069,11 +1223,13 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
             project_id: None,
             worktree_id: None,
             cwd: home.join("work"),
+            codex_account_id: None,
             title: None,
             approval_mode: ApprovalMode::Supervised,
             model: None,
             effort: None,
             orchestrator: None,
+            fast: false,
         })
         .unwrap();
     busy.command(
