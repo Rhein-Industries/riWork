@@ -11,6 +11,8 @@ import Foundation
 /// Why a request cannot be sent. Nothing has left the phone when one of these is thrown.
 public enum ChatValidationError: Error, Equatable, Sendable, LocalizedError {
     case needsOneTarget, invalidID, invalidWait, invalidCount, textTooLong(field: String, limit: Int), blankMessage, messageTooLong, malformed
+    /// A `configure` that changes nothing, or sets a model or an effort to nothing: the desktop refuses it, so it is not sent.
+    case emptyConfigure, blankSetting(field: String)
     public var errorDescription: String? { message }
     public var message: String {
         switch self {
@@ -22,6 +24,8 @@ public enum ChatValidationError: Error, Equatable, Sendable, LocalizedError {
         case .blankMessage: "Write a message first."
         case .messageTooLong: "A message is at most 64 KiB."
         case .malformed: "The chat request is malformed."
+        case .emptyConfigure: "Choose a model, an effort, a mode or Fast to change."
+        case .blankSetting(let field): "The chat \(field) is blank."
         }
     }
 }
@@ -154,16 +158,18 @@ public struct ChatCreateRequest: Sendable, Equatable {
     public let approvalMode: ChatApprovalMode?
     public let model: String?
     public let effort: String?
+    /// Start with the provider's fast mode on. Sent only when on: a desktop that predates it denies the unknown field, and off is the default.
+    public let fast: Bool
     public let title: String?
 
-    public init(provider: ChatProvider, target: Target, approvalMode: ChatApprovalMode? = nil, model: String? = nil, effort: String? = nil, title: String? = nil) throws {
+    public init(provider: ChatProvider, target: Target, approvalMode: ChatApprovalMode? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false, title: String? = nil) throws {
         switch target {
         case .project(let id), .worktree(let id): guard NewTerminalRequest.isCanonicalUUID(id) else { throw ChatValidationError.invalidID }
         }
         for (field, value, limit) in [("model", model, ChatLimits.modelBytes), ("effort", effort, ChatLimits.effortBytes), ("title", title, ChatLimits.titleBytes)] {
             if let value, value.utf8.count > limit { throw ChatValidationError.textTooLong(field: field, limit: limit) }
         }
-        self.provider = provider; self.target = target; self.approvalMode = approvalMode; self.model = model; self.effort = effort; self.title = title
+        self.provider = provider; self.target = target; self.approvalMode = approvalMode; self.model = model; self.effort = effort; self.fast = fast; self.title = title
     }
 
     public var params: [String: JSONValue] {
@@ -175,13 +181,14 @@ public struct ChatCreateRequest: Sendable, Equatable {
         if let approvalMode { params["approval_mode"] = .string(approvalMode.rawValue) }
         if let model { params["model"] = .string(model) }
         if let effort { params["effort"] = .string(effort) }
+        if fast { params["fast"] = .bool(true) }
         if let title { params["title"] = .string(title) }
         return params
     }
 
     /// Reads wire parameters back through the same rules (the transport checks every request this way).
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["provider", "project_id", "worktree_id", "approval_mode", "model", "effort", "title"]) else { throw ChatValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["provider", "project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "title"]) else { throw ChatValidationError.malformed }
         let target: Target
         switch (params["project_id"], params["worktree_id"]) {
         case (.string(let id)?, nil): target = .project(id)
@@ -200,7 +207,12 @@ public struct ChatCreateRequest: Sendable, Equatable {
             guard let known = ChatApprovalMode(rawValue: word) else { throw ChatValidationError.malformed }
             mode = known
         }
-        try self.init(provider: provider, target: target, approvalMode: mode, model: try text("model"), effort: try text("effort"), title: try text("title"))
+        var fast = false
+        if let value = params["fast"] {
+            guard case .bool(let flag) = value else { throw ChatValidationError.malformed }
+            fast = flag
+        }
+        try self.init(provider: provider, target: target, approvalMode: mode, model: try text("model"), effort: try text("effort"), fast: fast, title: try text("title"))
     }
 
     /// The new chat of the answer. It must be the kind that was asked for, in the place that was asked for: anything else is treated as
@@ -266,6 +278,14 @@ public struct ChatCommandRequest: Sendable, Equatable {
         if case .send(let text) = command {
             guard text.utf8.count <= ChatLimits.messageBytes else { throw ChatValidationError.messageTooLong }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatValidationError.blankMessage }
+        }
+        if case .configure(let model, let effort, let mode, let fast) = command {
+            guard model != nil || effort != nil || mode != nil || fast != nil else { throw ChatValidationError.emptyConfigure }
+            for (field, value, limit) in [("model", model, ChatLimits.modelBytes), ("effort", effort, ChatLimits.effortBytes)] {
+                guard let value else { continue }
+                guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatValidationError.blankSetting(field: field) }
+                guard value.utf8.count <= limit else { throw ChatValidationError.textTooLong(field: field, limit: limit) }
+            }
         }
         self.chatID = chatID; self.command = command
     }

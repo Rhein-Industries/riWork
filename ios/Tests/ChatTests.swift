@@ -31,14 +31,14 @@ final class ChatTests: XCTestCase {
         let events = try fixture()["events"].array
         XCTAssertEqual(Set(events.compactMap { $0["event"].string }),
                        ["info", "state", "turn_started", "turn_completed", "item_started", "item_delta", "item_completed", "approval_requested",
-                        "approval_resolved", "question_requested", "question_resolved", "usage"])
+                        "approval_resolved", "question_requested", "question_resolved", "usage", "models"])
         let bodies = events.compactMap { event -> String? in event["item"]["body"]["type"].string }
         XCTAssertEqual(Set(bodies), ["user_message", "agent_message", "reasoning", "plan", "command", "file_change", "tool_call", "web_search", "todo", "compaction", "notice"])
         XCTAssertEqual(Set(events.compactMap { $0["delta"]["kind"].string }), ["text", "output"])
     }
     func testEveryCommandWeSendEncodesToTheFormTheDesktopWrites() throws {
         let commands = try fixture()["commands"].array
-        XCTAssertEqual(commands.count, 10)
+        XCTAssertEqual(commands.count, 13)
         for original in commands {
             let command = try original.decode(ChatCommand.self)
             XCTAssertEqual(try wire(command), original, "\(original)")
@@ -46,6 +46,12 @@ final class ChatTests: XCTestCase {
         // Spelled out, because the desktop denies unknown fields: nothing extra, and an unset field is absent rather than null.
         XCTAssertEqual(try wire(ChatCommand.configure(approvalMode: .plan)), try value(#"{"command":"configure","approval_mode":"plan"}"#))
         XCTAssertEqual(try wire(ChatCommand.configure()), try value(#"{"command":"configure"}"#))
+        // Fast: left out stays out of the JSON (an older desktop denies unknown fields), and turning it off is a change that is sent.
+        XCTAssertEqual(try wire(ChatCommand.configure(effort: "high")), try value(#"{"command":"configure","effort":"high"}"#))
+        XCTAssertEqual(try wire(ChatCommand.configure(fast: true)), try value(#"{"command":"configure","fast":true}"#))
+        XCTAssertEqual(try wire(ChatCommand.configure(fast: false)), try value(#"{"command":"configure","fast":false}"#))
+        XCTAssertEqual(try wire(ChatCommand.configure(model: "m", effort: "low", approvalMode: .full, fast: true)),
+                       try value(#"{"command":"configure","model":"m","effort":"low","approval_mode":"full","fast":true}"#))
         XCTAssertEqual(try wire(ChatCommand.approve(requestID: "r", decision: .acceptForSession)), try value(#"{"command":"approve","request_id":"r","decision":"accept_for_session"}"#))
         XCTAssertEqual(try wire(ChatCommand.answer(requestID: "q", answers: [["A"], []])), try value(#"{"command":"answer","request_id":"q","answers":[["A"],[]]}"#))
         XCTAssertEqual(try wire(ChatCommand.send(text: "hi")), try value(#"{"command":"send","text":"hi"}"#))
@@ -62,6 +68,7 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(full.state, .failed("gone"))
         XCTAssertEqual(full.createdAtUnix, 1_790_000_000)
         XCTAssertEqual(full.model, "gpt-5"); XCTAssertEqual(full.effort, "high"); XCTAssertEqual(full.codexAccountID, "acct")
+        XCTAssertTrue(full.fast)
         let minimal = try chats[1].decode(ChatInfo.self)
         XCTAssertEqual(minimal.provider, .claude)
         XCTAssertNil(minimal.projectID)
@@ -69,6 +76,7 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(minimal.approvalMode, .supervised)
         XCTAssertEqual(minimal.state, .starting)
         XCTAssertNil(minimal.model); XCTAssertNil(minimal.providerThreadID)
+        XCTAssertFalse(minimal.fast)
     }
     func testTheWordsOfTheEnumsAreTheDesktops() throws {
         let doc = try fixture()
@@ -112,6 +120,73 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(usage, ChatUsage(inputTokens: 1200, outputTokens: 300, cachedInputTokens: 100, contextWindow: 200_000, contextUsed: 84_000, costUSD: 0.4234))
         guard case .usage(let empty) = events[37] else { return XCTFail("empty usage") }
         XCTAssertEqual(empty, ChatUsage())
+    }
+
+    // MARK: Models and Fast
+
+    func testTheModelListsTheDesktopWritesAreReadExactly() throws {
+        let events = try fixture()["events"].array.map { try $0.decode(ChatEvent.self) }
+        guard case .models(let list) = events[39] else { return XCTFail("a models event") }
+        XCTAssertEqual(list, [
+            ChatModelOption(id: "gpt-5.5", name: "GPT-5.5", description: "Frontier model for coding and agents", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium", supportsFast: true, isDefault: true),
+            ChatModelOption(id: "gpt-5.4-mini", name: "GPT-5.4 mini", description: "Faster, cheaper", efforts: ["low", "medium", "high"], defaultEffort: "low"),
+            ChatModelOption(id: "bare", name: "Bare")
+        ])
+        XCTAssertNil(list[2].defaultEffort, "serde writes null for the missing default effort")
+        XCTAssertEqual(events[40], .models([ChatModelOption(id: "bare", name: "Bare")]))
+        XCTAssertEqual(events[41], .models([]), "an empty list is a list: it replaces the last")
+        // The option alone, as `ModelOption`.
+        let options = try fixture()["model_options"].array
+        XCTAssertEqual(try options.map { try $0.decode(ChatModelOption.self) }, list)
+        for original in options { XCTAssertEqual(try wire(try original.decode(ChatModelOption.self)), original) }
+    }
+    func testFastIsReadFromAChatInfoAndWrittenBack() throws {
+        let events = try fixture()["events"].array
+        guard case .info(let full) = try events[0].decode(ChatEvent.self), case .info(let minimal) = try events[38].decode(ChatEvent.self) else { return XCTFail("infos") }
+        XCTAssertTrue(full.fast); XCTAssertFalse(minimal.fast)
+        XCTAssertEqual(try wire(full)["fast"], .bool(true))
+        XCTAssertEqual(try wire(minimal)["fast"], .bool(false), "serde writes it always")
+    }
+    func testAnInfoOrAModelOptionWrittenBeforeTheNewFieldsExistedStillReads() throws {
+        // A desktop that predates Fast and the models: no `fast` in the info, no `models` events.
+        let info = try decode(ChatInfo.self, #"{"id":"i","provider":"codex","cwd":"/w","title":"t","created_at_unix":1,"model":"gpt-5","effort":"high"}"#)
+        XCTAssertFalse(info.fast)
+        XCTAssertEqual(info.model, "gpt-5")
+        // The shortest model: an id and a name.
+        let bare = try decode(ChatModelOption.self, #"{"id":"m","name":"M"}"#)
+        XCTAssertEqual(bare, ChatModelOption(id: "m", name: "M"))
+        XCTAssertEqual([bare.description, "\(bare.efforts)", "\(bare.supportsFast)", "\(bare.isDefault)"], ["", "[]", "false", "false"])
+        XCTAssertNil(bare.defaultEffort)
+        // A command written before Fast: no `fast`.
+        XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","effort":"high"}"#), .configure(effort: "high"))
+        XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","fast":false}"#), .configure(fast: false))
+    }
+    func testAModelOptionIsReadLeniently() throws {
+        // No name: the id is shown. A name of blanks too.
+        XCTAssertEqual(try decode(ChatModelOption.self, #"{"id":"opus"}"#).name, "opus")
+        XCTAssertEqual(try decode(ChatModelOption.self, #"{"id":"opus","name":"  "}"#).name, "opus")
+        // Fields of the wrong kind are their defaults, not a lost list; efforts keep the words that are words.
+        let odd = try decode(ChatModelOption.self, #"{"id":"m","name":"M","description":3,"efforts":["low",7,null,"high"],"default_effort":5,"supports_fast":"yes","is_default":1}"#)
+        XCTAssertEqual(odd, ChatModelOption(id: "m", name: "M", efforts: ["low", "high"]))
+        XCTAssertEqual(try decode(ChatModelOption.self, #"{"id":"m","name":"M","efforts":"low"}"#).efforts, [])
+        // No id, or an empty one, is not a model.
+        XCTAssertThrowsError(try decode(ChatModelOption.self, #"{"name":"M"}"#))
+        XCTAssertThrowsError(try decode(ChatModelOption.self, #"{"id":"","name":"M"}"#))
+    }
+    func testAModelsEventKeepsTheModelsItCanReadAndIsSkippedWhenItHoldsNoList() throws {
+        XCTAssertEqual(try decode(ChatEvent.self, #"{"event":"models","models":[{"id":"a","name":"A"},{"name":"no id"},"junk",{"id":"b","name":"B","supports_fast":true}]}"#),
+                       .models([ChatModelOption(id: "a", name: "A"), ChatModelOption(id: "b", name: "B", supportsFast: true)]))
+        // Not a list: the event cannot be read, so the transcript keeps the models it has.
+        for json in [#"{"event":"models"}"#, #"{"event":"models","models":null}"#, #"{"event":"models","models":"opus"}"#, #"{"event":"models","models":{"id":"a"}}"#] {
+            XCTAssertThrowsError(try decode(ChatEvent.self, json), json)
+        }
+        let result = try value(#"{"chat_id":"c","next":2,"more":false,"events":[{"seq":1,"event":{"event":"models","models":[{"id":"a","name":"A"}]}},{"seq":2,"event":{"event":"models","models":7}}]}"#)
+        let reply = try ChatEventsReply.parse(result, chatID: "c")
+        XCTAssertEqual(reply.events.map { $0.event != nil }, [true, false])
+        var feed = ChatFeed()
+        feed.accept(reply, since: 0)
+        XCTAssertEqual(feed.transcript.models.map(\.id), ["a"], "the garbled event took nothing away")
+        XCTAssertEqual(feed.next, 2)
     }
 
     // MARK: Leniency

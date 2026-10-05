@@ -108,20 +108,23 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var providerThreadID: String?
     public var model: String?
     public var effort: String?
+    /// Fast mode was asked for (Codex's fast service tier, Claude's `fastMode`): the person's choice, not what the provider granted. A
+    /// desktop that predates it never says, which reads as off.
+    public var fast: Bool
     public var approvalMode: ChatApprovalMode
     public var codexAccountID: String?
     public var state: ChatState
 
     public init(id: String, provider: ChatProvider, projectID: String? = nil, worktreeID: String? = nil, cwd: String = "", title: String = "",
-                createdAtUnix: UInt64 = 0, providerThreadID: String? = nil, model: String? = nil, effort: String? = nil,
+                createdAtUnix: UInt64 = 0, providerThreadID: String? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false,
                 approvalMode: ChatApprovalMode = .supervised, codexAccountID: String? = nil, state: ChatState = .starting) {
         self.id = id; self.provider = provider; self.projectID = projectID; self.worktreeID = worktreeID; self.cwd = cwd; self.title = title
-        self.createdAtUnix = createdAtUnix; self.providerThreadID = providerThreadID; self.model = model; self.effort = effort
+        self.createdAtUnix = createdAtUnix; self.providerThreadID = providerThreadID; self.model = model; self.effort = effort; self.fast = fast
         self.approvalMode = approvalMode; self.codexAccountID = codexAccountID; self.state = state
     }
 
     private enum Keys: String, CodingKey {
-        case id, provider, cwd, title, model, effort, state
+        case id, provider, cwd, title, model, effort, fast, state
         case projectID = "project_id", worktreeID = "worktree_id", createdAtUnix = "created_at_unix", providerThreadID = "provider_thread_id"
         case approvalMode = "approval_mode", codexAccountID = "codex_account_id"
     }
@@ -137,6 +140,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         providerThreadID = try c.decodeIfPresent(String.self, forKey: .providerThreadID)
         model = try c.decodeIfPresent(String.self, forKey: .model)
         effort = try c.decodeIfPresent(String.self, forKey: .effort)
+        fast = c.tolerant(Bool.self, forKey: .fast) ?? false
         approvalMode = c.lenient(ChatApprovalMode.self, forKey: .approvalMode, default: .supervised)
         codexAccountID = try c.decodeIfPresent(String.self, forKey: .codexAccountID)
         state = c.tolerant(ChatState.self, forKey: .state) ?? .starting
@@ -153,9 +157,62 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         try c.encodeIfPresent(providerThreadID, forKey: .providerThreadID)
         try c.encodeIfPresent(model, forKey: .model)
         try c.encodeIfPresent(effort, forKey: .effort)
+        try c.encode(fast, forKey: .fast)
         try c.encode(approvalMode, forKey: .approvalMode)
         try c.encodeIfPresent(codexAccountID, forKey: .codexAccountID)
         try c.encode(state, forKey: .state)
+    }
+}
+
+/// A model the provider offers (`ModelOption`), as its driver found it out (Codex `model/list`, Claude's `initialize` reply). The chat's
+/// `model` is the `id`. Only the id and the name are required; the rest is read leniently (a missing or odd field is its default).
+public struct ChatModelOption: Codable, Sendable, Equatable, Hashable, Identifiable {
+    /// What `model` takes: Codex's model id, Claude's alias or model name (the default model's is `default`).
+    public var id: String
+    /// The name to show.
+    public var name: String
+    public var description: String
+    /// The reasoning efforts the model takes, in the order to offer them. Empty when there is none to choose.
+    public var efforts: [String]
+    /// The effort the provider uses when none is chosen.
+    public var defaultEffort: String?
+    /// The model has a fast mode.
+    public var supportsFast: Bool
+    /// The provider uses this model when none is chosen.
+    public var isDefault: Bool
+
+    public init(id: String, name: String? = nil, description: String = "", efforts: [String] = [], defaultEffort: String? = nil, supportsFast: Bool = false, isDefault: Bool = false) {
+        self.id = id; self.name = name ?? id; self.description = description; self.efforts = efforts; self.defaultEffort = defaultEffort
+        self.supportsFast = supportsFast; self.isDefault = isDefault
+    }
+
+    private enum Keys: String, CodingKey {
+        case id, name, description, efforts
+        case defaultEffort = "default_effort", supportsFast = "supports_fast", isDefault = "is_default"
+    }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        let id = try c.decode(String.self, forKey: .id)
+        // A model with no id cannot be chosen: it is not one.
+        guard !id.isEmpty else { throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "A model has an id") }
+        self.id = id
+        let name = c.tolerant(String.self, forKey: .name) ?? ""
+        self.name = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? id : name
+        description = c.tolerant(String.self, forKey: .description) ?? ""
+        efforts = c.leniently([String].self, forKey: .efforts)
+        defaultEffort = c.tolerant(String.self, forKey: .defaultEffort)
+        supportsFast = c.tolerant(Bool.self, forKey: .supportsFast) ?? false
+        isDefault = c.tolerant(Bool.self, forKey: .isDefault) ?? false
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(description, forKey: .description)
+        try c.encode(efforts, forKey: .efforts)
+        try c.encode(defaultEffort, forKey: .defaultEffort)
+        try c.encode(supportsFast, forKey: .supportsFast)
+        try c.encode(isDefault, forKey: .isDefault)
     }
 }
 
@@ -508,7 +565,7 @@ public enum ChatTurnOutcome: Sendable, Equatable, Hashable, Codable {
 
 /// Everything that happens in a chat, in order (`ChatEvent`, tagged `event`).
 public enum ChatEvent: Sendable, Equatable, Codable {
-    /// The chat's metadata changed (thread id learned, model or mode changed).
+    /// The chat's metadata changed (thread id learned, model, effort, Fast or mode changed).
     case info(ChatInfo)
     case state(ChatState)
     case turnStarted(turnID: String)
@@ -522,9 +579,11 @@ public enum ChatEvent: Sendable, Equatable, Codable {
     case questionRequested(ChatQuestion)
     case questionResolved(requestID: String)
     case usage(ChatUsage)
+    /// The models the provider offers: sent once after the handshake and again if the list changes; each replaces the last.
+    case models([ChatModelOption])
 
     private enum Keys: String, CodingKey {
-        case event, info, state, outcome, item, delta, approval, decision, question, usage
+        case event, info, state, outcome, item, delta, approval, decision, question, usage, models
         case turnID = "turn_id", itemID = "item_id", requestID = "request_id"
     }
     public init(from decoder: any Decoder) throws {
@@ -545,6 +604,8 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         case "question_requested": self = .questionRequested(try c.decode(ChatQuestion.self, forKey: .question))
         case "question_resolved": self = .questionResolved(requestID: try c.decode(String.self, forKey: .requestID))
         case "usage": self = .usage(try c.decode(ChatUsage.self, forKey: .usage))
+        // A list that is no array is no list: the event is skipped and the models held stay. A model the phone cannot read is left out.
+        case "models": self = .models(try c.decode([Lenient<ChatModelOption>].self, forKey: .models).compactMap(\.value))
         default: throw DecodingError.dataCorruptedError(forKey: .event, in: c, debugDescription: "Unknown event \(word)")
         }
     }
@@ -565,6 +626,7 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         case .questionRequested(let question): try c.encode("question_requested", forKey: .event); try c.encode(question, forKey: .question)
         case .questionResolved(let requestID): try c.encode("question_resolved", forKey: .event); try c.encode(requestID, forKey: .requestID)
         case .usage(let usage): try c.encode("usage", forKey: .event); try c.encode(usage, forKey: .usage)
+        case .models(let models): try c.encode("models", forKey: .event); try c.encode(models, forKey: .models)
         }
     }
 }
@@ -579,13 +641,14 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
     case approve(requestID: String, decision: ChatDecision)
     /// One entry per question, in order: the chosen labels, or free text.
     case answer(requestID: String, answers: [[String]])
-    case configure(model: String? = nil, effort: String? = nil, approvalMode: ChatApprovalMode? = nil)
+    /// Each field is a change; one left out stays as it is. `fast` is `false` to turn it off, `nil` to leave it.
+    case configure(model: String? = nil, effort: String? = nil, approvalMode: ChatApprovalMode? = nil, fast: Bool? = nil)
     case compact
     /// Stops the provider process; the chat resumes with the next message.
     case stop
 
     private enum Keys: String, CodingKey {
-        case command, text, decision, answers, model, effort
+        case command, text, decision, answers, model, effort, fast
         case requestID = "request_id", approvalMode = "approval_mode"
     }
     public init(from decoder: any Decoder) throws {
@@ -598,7 +661,7 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
         case "answer": self = .answer(requestID: try c.decode(String.self, forKey: .requestID), answers: try c.decode([[String]].self, forKey: .answers))
         case "configure":
             self = .configure(model: try c.decodeIfPresent(String.self, forKey: .model), effort: try c.decodeIfPresent(String.self, forKey: .effort),
-                              approvalMode: try c.decodeIfPresent(ChatApprovalMode.self, forKey: .approvalMode))
+                              approvalMode: try c.decodeIfPresent(ChatApprovalMode.self, forKey: .approvalMode), fast: try c.decodeIfPresent(Bool.self, forKey: .fast))
         case "compact": self = .compact
         case "stop": self = .stop
         default: throw DecodingError.dataCorruptedError(forKey: .command, in: c, debugDescription: "Unknown command \(word)")
@@ -611,9 +674,10 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
         case .interrupt: try c.encode("interrupt", forKey: .command)
         case .approve(let requestID, let decision): try c.encode("approve", forKey: .command); try c.encode(requestID, forKey: .requestID); try c.encode(decision, forKey: .decision)
         case .answer(let requestID, let answers): try c.encode("answer", forKey: .command); try c.encode(requestID, forKey: .requestID); try c.encode(answers, forKey: .answers)
-        case .configure(let model, let effort, let approvalMode):
+        case .configure(let model, let effort, let approvalMode, let fast):
             try c.encode("configure", forKey: .command)
             try c.encodeIfPresent(model, forKey: .model); try c.encodeIfPresent(effort, forKey: .effort); try c.encodeIfPresent(approvalMode, forKey: .approvalMode)
+            try c.encodeIfPresent(fast, forKey: .fast)
         case .compact: try c.encode("compact", forKey: .command)
         case .stop: try c.encode("stop", forKey: .command)
         }
