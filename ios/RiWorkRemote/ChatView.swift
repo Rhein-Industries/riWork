@@ -388,7 +388,11 @@ private struct ChatTranscriptList: View {
         } action: { old, new in
             // The bottom moved away from a view that follows it (a bar came up over the transcript, the transcript grew). The position
             // already says "bottom", so setting it again does nothing: the reader scrolls there itself.
-            if sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven) == .scrollToBottom { proxy.scrollTo(Self.end, anchor: .bottom) }
+            // Within a line of the bottom counts as there for following, but a view that resized while following is put exactly there,
+            // so the last message is not left a few points under the bar that came up.
+            let response = sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven)
+            let settle = sticky.following && !userDriven && new.resized(since: old) && new.distanceFromBottom > 0.5
+            if response == .scrollToBottom || settle { proxy.scrollTo(Self.end, anchor: .bottom) }
         }
         .onChange(of: transcript.items.count) { _, count in sticky.contentChanged(end: count, epoch: 0) }
         .onChange(of: conversation.jumps) { _, _ in jump() }

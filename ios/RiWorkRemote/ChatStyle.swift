@@ -121,7 +121,9 @@ struct BoundedScroll<Content: View>: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollIndicatorsFlash(trigger: style.native ? shown : 0)
-        .frame(height: height > 0 ? shown : nil)
+        // Nothing until the content is measured: a bare scroll view would first take half the room from the transcript beside it, and
+        // throw the transcript off its bottom while it settles.
+        .frame(height: shown)
     }
     private var shown: CGFloat {
         BoundedScrollBreaks.visibleHeight(content: height, maxHeight: maxHeight, breaks: style.native ? breaks : [])
