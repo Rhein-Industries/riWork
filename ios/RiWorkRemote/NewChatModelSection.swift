@@ -1,10 +1,8 @@
 import SwiftUI
 import RiWorkCore
 
-/// The model of a new chat, in the New terminal sheet. The phone has no list of models before a chat exists, so it offers what it can know:
-/// **Default** (the Mac's own choice) and the model last used with this provider, with the effort and Fast it was used with. Choosing the
-/// last model shows its efforts and Fast; what is chosen is sent in `chat.create` and remembered for the next chat. The keyboard's ring is
-/// the sheet's own (`NewTerminalForm`): ↑ ↓ choose on the model rows and on the efforts, space flips Fast.
+/// New chats use the same provider Models events as the in-chat picker, read from an existing chat in this project.
+/// Default remains available when a provider has not published its catalogue yet. Effort and Fast use the shared controls.
 struct NewChatModelSection: View {
     @Environment(\.desktopStyle) private var style
     @Bindable var sheet: NewTerminalSheetModel
@@ -16,12 +14,33 @@ struct NewChatModelSection: View {
                 .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).accessibilityAddTraits(.isHeader)
             VStack(spacing: 0) {
                 row(title: "Default", detail: "The Mac’s choice", selected: !choice.usesModel, last: false)
-                if let model = choice.model { row(title: model.shortName, detail: "Last used", selected: choice.usesModel, last: true) }
+                let models = sheet.form.kind.chatProvider.flatMap { sheet.form.chatModels[$0] } ?? []
+                ForEach(models) { option in
+                    Button { sheet.chooseChatModel(option) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: choice.chosen?.id == option.id ? "largecircle.fill.circle" : "circle")
+                            Text(option.name).font(style.face(14, relativeTo: .body))
+                            Spacer(minLength: 4)
+                            if option.isDefault { Text("Default").font(style.system(.caption)).foregroundStyle(style.muted) }
+                        }.padding(12).frame(minHeight: style.pt(48)).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(sheet.busy)
+                        .overlay { if choice.chosen?.id == option.id { ring(.chatModel) } }
+                        .accessibilityIdentifier("new-chat-model-\(option.id)")
+                        .accessibilityAddTraits(choice.chosen?.id == option.id ? .isSelected : [])
+                }
+                if models.isEmpty, let model = choice.model { row(title: model.name, detail: "Last used", selected: choice.usesModel, last: true) }
             }
             .accessibilityElement(children: .contain).accessibilityLabel("Model")
-            if choice.model == nil {
-                Text("Choose a model inside the chat; it is offered here next time.").font(style.system(.caption)).foregroundStyle(style.muted)
-                    .padding(.horizontal, 12).padding(.top, 4).fixedSize(horizontal: false, vertical: true)
+            if let provider = sheet.form.kind.chatProvider, let label = sheet.chatModelsSources[provider]?.label {
+                Text(label).font(style.system(.caption)).foregroundStyle(style.warning).padding(12)
+            }
+            if sheet.loadingChatModels { ProgressView("Loading models…").padding(12) }
+            if let error = sheet.chatModelsError {
+                Text(error).font(style.system(.caption)).foregroundStyle(style.warning).padding(12)
+            }
+            if let provider = sheet.form.kind.chatProvider, sheet.chatModelsSources[provider] != .live || sheet.chatModelsError != nil {
+                Button("Retry live models") { Task { await sheet.loadChatModels() } }.padding(.horizontal, 12)
+                    .disabled(sheet.loadingChatModels || sheet.busy)
             }
             if !choice.efforts.isEmpty {
                 ChatEffortSegments(efforts: choice.efforts, selected: choice.selectedEffort, ringed: ringed(.chatEffort) ? choice.selectedEffort.flatMap { choice.efforts.firstIndex(of: $0) } : nil) { _, effort in
@@ -36,6 +55,7 @@ struct NewChatModelSection: View {
                     .padding(.top, 4)
             }
         }
+        .task(id: sheet.form.kind.chatProvider) { await sheet.loadChatModels() }
     }
 
     private func row(title: String, detail: String, selected: Bool, last: Bool) -> some View {

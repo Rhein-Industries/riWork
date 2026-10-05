@@ -250,3 +250,31 @@ public struct ChatModelCursor: Equatable, Sendable {
         if stop == .effort, let chosen = choices.selectedEffortIndex { effortIndex = chosen }
     }
 }
+
+
+/// Snapshot of visible models actually reported by the installed providers on 2026-10-05.
+/// Sources: src/chat/testdata/codex/model_list.json and claude/models_fast.ndjson.
+/// This is a fallback, not an account entitlement claim. Unknown capability flags stay off.
+public enum ChatBundledModels {
+    public static func models(for provider: ChatProvider) -> [ChatModelOption] {
+        switch provider {
+        case .codex: return [
+            ChatModelOption(id: "gpt-6.1-sol", name: "GPT-6.1-Sol", description: "Latest workhorse model for coding and everyday work.", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "low", supportsFast: true, isDefault: true),
+            ChatModelOption(id: "gpt-6-astra", name: "GPT-6-Astra", description: "Frontier intelligence for the most demanding work.", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "low", supportsFast: true, isDefault: false),
+            ChatModelOption(id: "gpt-6-sol", name: "GPT-6-Sol", description: "Previous generation workhorse model.", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "medium", supportsFast: true, isDefault: false),
+            ChatModelOption(id: "gpt-6-luna", name: "GPT-6-Luna", description: "Fast and affordable model for easier tasks.", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium", supportsFast: true, isDefault: false),
+            ChatModelOption(id: "gpt-5.6-sol", name: "GPT-5.6-Sol", description: "Older generation workhorse model.", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "low", supportsFast: true, isDefault: false),
+            ChatModelOption(id: "gpt-5.6-terra", name: "GPT-5.6-Terra", description: "Older balanced model for straightforward work.", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "medium", supportsFast: true, isDefault: false),
+            ChatModelOption(id: "gpt-5.6-luna", name: "GPT-5.6-Luna", description: "Older fast and efficient model.", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium", supportsFast: true, isDefault: false),
+            ChatModelOption(id: "gpt-5.5", name: "GPT-5.5", description: "Legacy coding model.", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium", supportsFast: true, isDefault: false),
+        ]
+        case .claude: return [
+            ChatModelOption(id: "default", name: "Default (recommended)", description: "Use the default model (currently Opus 5.5)", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: nil, supportsFast: true, isDefault: true),
+            ChatModelOption(id: "opus", name: "Opus", description: "Opus 5.5 · Best for everyday, complex tasks", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: nil, supportsFast: true, isDefault: false),
+            ChatModelOption(id: "fable", name: "Fable", description: "Fable 5.1 · Most capable for your hardest and longest-running tasks", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: nil, supportsFast: false, isDefault: false),
+            ChatModelOption(id: "sonnet", name: "Sonnet", description: "Sonnet 5.5 · Efficient for routine tasks", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: nil, supportsFast: false, isDefault: false),
+            ChatModelOption(id: "haiku", name: "Haiku", description: "Haiku 4.5 · Fastest for quick answers", efforts: [], defaultEffort: nil, supportsFast: false, isDefault: false),
+        ]
+        }
+    }
+}

@@ -66,6 +66,25 @@ import RiWorkCore
 
     // MARK: A chat orchestrator
 
+    func testOrchestratorCatalogueUsesItsChatIdAndIsAvailableForNewChats() async throws {
+        let rig = try await connected(orchestrators: [chatEntry()])
+        let option = ChatModelOption(id: "provider-option", name: "Provider display name", efforts: ["medium"], supportsFast: true)
+        await rig.transport.append(chatID, [.info(listedChat()), .models([option])])
+        let catalogue = try await rig.model.availableChatModels(provider: .claude)
+        XCTAssertEqual(catalogue, [option])
+        let reads = await rig.transport.params(of: "chat.events")
+        XCTAssertEqual(reads.map { $0["chat_id"] }, [.string(chatID)])
+        XCTAssertFalse(reads.contains { $0["chat_id"] == .string(entryID) })
+        let info = try XCTUnwrap(rig.model.tabs.first?.chatInfo)
+        rig.model.conversation(chatID).modelCatalogue = catalogue
+        let failure = await rig.model.chooseChatModel(info, .model(option.id))
+        XCTAssertNil(failure)
+        let commands = await rig.transport.params(of: "chat.command")
+        XCTAssertEqual(commands.first?["chat_id"], .string(chatID))
+        XCTAssertEqual(commands.first?["command"], .object(["command": .string("configure"), "model": .string(option.id)]))
+        await rig.model.disconnect()
+    }
+
     func testAChatOrchestratorIsAChatTabAndNotATerminalTab() async throws {
         let rig = try await connected(orchestrators: [chatEntry()])
         let model = rig.model

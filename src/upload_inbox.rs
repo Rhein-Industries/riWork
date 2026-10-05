@@ -20,14 +20,53 @@ pub fn inbox(home: &Path, target: &str) -> Option<PathBuf> {
 /// Remove the inbox of `target` and the files in it. Best effort: a shell is closed (or a chat
 /// deleted) whether or not this succeeds, and the connector's sweep removes what is left.
 pub fn remove(home: &Path, target: &str) {
-    if let Some(inbox) = inbox(home, target) {
+    if let Some(inbox) = inbox(home, target)
+        && real_dir(home)
+        && real_dir(&home.join(DIRECTORY))
+        && real_dir(&inbox)
+    {
         let _ = std::fs::remove_dir_all(inbox);
     }
+}
+
+/// Cleanup must check ancestors as well as the leaf: remove_dir_all does not follow the leaf's symlink,
+/// but would otherwise follow an intermediate uploads symlink.
+fn real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_refuses_symlinked_inbox_roots_and_targets() {
+        use std::os::unix::fs::symlink;
+        let fixture =
+            std::env::temp_dir().join(format!("riwork-inbox-containment-{}", uuid::Uuid::new_v4()));
+        let home = fixture.join("home");
+        let outside = fixture.join("outside");
+        let target = "00000000-0000-4000-8000-0000000000aa";
+        std::fs::create_dir_all(outside.join(target)).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let marker = outside.join(target).join("keep");
+        std::fs::write(&marker, b"keep").unwrap();
+        symlink(&outside, home.join(DIRECTORY)).unwrap();
+        remove(&home, target);
+        assert!(
+            marker.is_file(),
+            "cleanup must not traverse an uploads symlink"
+        );
+        std::fs::remove_file(home.join(DIRECTORY)).unwrap();
+        std::fs::create_dir(home.join(DIRECTORY)).unwrap();
+        symlink(outside.join(target), home.join(DIRECTORY).join(target)).unwrap();
+        remove(&home, target);
+        assert!(
+            marker.is_file(),
+            "cleanup must not traverse a target symlink"
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
 
     #[test]
     fn only_a_canonical_uuid_names_an_inbox_and_removing_takes_it_whole() {

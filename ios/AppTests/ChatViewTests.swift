@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import UIKit
+import Vision
 import RiWorkCore
 @testable import RiWorkRemote
 
@@ -300,6 +301,215 @@ import RiWorkCore
             try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
         }
     }
+    func testStreamingLeavesScrolledUpReaderInPlaceAndJumpSettlesWithLargeText() async throws {
+        let rig = try await makeRig(hardwareKeyboard: false, width: 375, height: 812)
+        rig.host.traitOverrides.preferredContentSizeCategory = .accessibilityExtraLarge
+        let events = (0..<16).map { index in
+            ChatEvent.itemCompleted(ChatItem(id: "message-\(index)", status: .completed, body: .agentMessage("Message \(index). A paragraph that wraps across several lines at accessibility text sizes.")))
+        }
+        await rig.transport.append(chatID, [.info(chat())] + events)
+        _ = try await openChat(rig)
+        await eventually("all messages loaded") { rig.model.conversation(self.chatID).transcript.items.count == 16 }
+        try await Task.sleep(for: .milliseconds(400))
+        let scroll = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).filter { $0.contentSize.height > $0.bounds.height + 100 }.max { $0.bounds.height < $1.bounds.height })
+        scroll.setContentOffset(CGPoint(x: 0, y: -scroll.adjustedContentInset.top), animated: false)
+        try await Task.sleep(for: .milliseconds(300))
+        let offset = scroll.contentOffset.y
+        await rig.transport.append(chatID, [.itemDelta(itemID: "message-15", delta: .text(" More streamed text arrives below the reader."))])
+        await eventually("stream accepted") { rig.model.conversation(self.chatID).transcript.items.last?.body == .agentMessage("Message 15. A paragraph that wraps across several lines at accessibility text sizes. More streamed text arrives below the reader.") }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(scroll.contentOffset.y, offset, accuracy: 2, "streaming below does not pull a reader to the bottom")
+        rig.model.conversation(chatID).jumpToEnd()
+        await eventually("jump converges after lazy rows are measured", timeout: 3) {
+            self.isAtValidBottom(scroll)
+        }
+        assertValidBottom(scroll)
+        let text = try renderedTranscriptText(rig, scroll: scroll)
+        XCTAssertTrue(text.lowercased().contains("reader"), "the streamed tail is actually rendered, not an empty overscrolled viewport: \(text)")
+        await finish(rig)
+    }
+
+    private func bottomOffset(_ scroll: UIScrollView) -> CGFloat {
+        max(-scroll.adjustedContentInset.top, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
+    }
+    private func isAtValidBottom(_ scroll: UIScrollView) -> Bool {
+        let offset = scroll.contentOffset.y
+        return scroll.bounds.height > 0 && offset >= -scroll.adjustedContentInset.top - 2
+            && offset <= bottomOffset(scroll) + 2 && abs(bottomOffset(scroll) - offset) <= 2
+    }
+    private func assertValidBottom(_ scroll: UIScrollView, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertGreaterThan(scroll.bounds.height, 0, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(scroll.contentOffset.y, -scroll.adjustedContentInset.top - 2, file: file, line: line)
+        XCTAssertLessThanOrEqual(scroll.contentOffset.y, bottomOffset(scroll) + 2, "no overscroll beyond the content end", file: file, line: line)
+        XCTAssertEqual(scroll.contentOffset.y, bottomOffset(scroll), accuracy: 2, "absolute bottom gap, including adjusted insets", file: file, line: line)
+    }
+    /// OCR the actual viewport pixels, not the model or off-screen accessibility nodes: blank content cannot pass this check.
+    private func renderedTranscriptText(_ rig: Rig, scroll: UIScrollView) throws -> String {
+        rig.window.layoutIfNeeded()
+        let visible = scroll.convert(scroll.bounds, to: rig.window).intersection(rig.window.bounds)
+        XCTAssertFalse(visible.isEmpty, "transcript has a visible viewport")
+        let image = UIGraphicsImageRenderer(size: visible.size).image { context in
+            context.cgContext.translateBy(x: -visible.minX, y: -visible.minY)
+            rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true)
+        }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+    }
+    func testApprovalArrivalKeepsLoadedChatTailVisible() async throws {
+        try await checkApprovalResize(jumpFirst: false)
+    }
+    func testJumpImmediatelyFollowedByApprovalResizeKeepsTailVisible() async throws {
+        try await checkApprovalResize(jumpFirst: true)
+    }
+    private func checkApprovalResize(jumpFirst: Bool, look: Look = .terminal, mic: Bool = false) async throws {
+        let rig = try await makeRig(hardwareKeyboard: false, width: 375, height: 812, look: look, mic: mic)
+        let messages = (0..<12).map { index in
+            ChatEvent.itemCompleted(ChatItem(id: "reply-\(index)", status: .completed, body: .agentMessage(index == 11 ? "Latest reply remains visible." : "Reply \(index). This conversation has enough history to scroll.")))
+        }
+        await rig.transport.append(chatID, [.info(chat())] + messages)
+        _ = try await openChat(rig)
+        await eventually("fresh chat loaded") { rig.model.conversation(self.chatID).transcript.items.count == 12 }
+        try await Task.sleep(for: .milliseconds(400))
+        let scroll = try XCTUnwrap(transcriptScroll(rig))
+        await eventually("fresh loaded chat at valid bottom") { self.isAtValidBottom(scroll) }
+        if jumpFirst {
+            scroll.setContentOffset(CGPoint(x: 0, y: -scroll.adjustedContentInset.top), animated: false)
+            try await Task.sleep(for: .milliseconds(300))
+            rig.model.conversation(chatID).jumpToEnd()
+        }
+        await rig.transport.append(chatID, [.approvalRequested(ChatApproval(requestID: "resize", kind: .command, title: "swift test --package-path ios", detail: "Run focused tests.", choices: [.accept, .acceptForSession, .decline, .cancel])), .state(.waiting)])
+        rig.model.conversation(chatID).draft = "Keep my draft\nand check the chat tail."
+        await eventually("approval arrives") { !rig.model.conversation(self.chatID).openApprovals.isEmpty }
+        try await Task.sleep(for: .milliseconds(500))
+        await eventually("approval and composer resize leave a valid bottom") { self.isAtValidBottom(scroll) }
+        assertValidBottom(scroll)
+        let text = try renderedTranscriptText(rig, scroll: scroll).lowercased()
+        XCTAssertTrue(text.contains("latest reply"), "rendered reply tail must remain visible: \(text)")
+        XCTAssertTrue(text.contains("waiting for you"), "rendered waiting status must remain visible: \(text)")
+        try reviewSnapshot(rig, name: jumpFirst ? "phone-jump-approval-resize" : "phone-fresh-approval-resize")
+        await finish(rig)
+    }
+
+    func testCombinedNativeControlsAndApprovalResizeKeepLoadedTailVisible() async throws {
+        for look in [Look.nativeLight, .nativeDark] {
+            try await checkApprovalResize(jumpFirst: true, look: look, mic: true)
+        }
+    }
+
+    func testComposerTracksDynamicTypeWithoutLosingDraftOrKeyboardCommands() async throws {
+        let rig = try await makeRig(hardwareKeyboard: false, width: 375, height: 812)
+        let field = try await openChat(rig)
+        rig.model.conversation(chatID).draft = "A draft that must survive text scaling."
+        try await Task.sleep(for: .milliseconds(100))
+        let initialFont = try XCTUnwrap(field.font).pointSize
+        rig.host.traitOverrides.preferredContentSizeCategory = .accessibilityExtraLarge
+        await eventually("composer font follows accessibility text size") { (field.font?.pointSize ?? 0) > initialFont }
+        XCTAssertEqual(field.text, "A draft that must survive text scaling.")
+        XCTAssertEqual(field.keyCommands?.count, 2, "Return routing is unchanged by layout")
+        let frame = field.convert(field.bounds, to: rig.window)
+        XCTAssertGreaterThanOrEqual(frame.minX, 0)
+        XCTAssertLessThanOrEqual(frame.maxX, rig.window.bounds.width)
+        XCTAssertLessThanOrEqual(frame.maxY, rig.window.bounds.height)
+        await finish(rig)
+    }
+
+    /// Reproducible design review using the real screen and scripted transport, never production fake messages.
+    func testChatLayoutReviewCaptures() async throws {
+        let tablet = UIDevice.current.userInterfaceIdiom == .pad
+        let screenSize = try XCTUnwrap((UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen.bounds.size)
+        let width: CGFloat = tablet ? screenSize.width : 375
+        let height: CGFloat = tablet ? screenSize.height : 812
+        for (name, appearance, category) in [("light", UIUserInterfaceStyle.light, UIContentSizeCategory.large),
+                                             ("dark", .dark, .large), ("large-text", .light, .accessibilityExtraLarge)] {
+            let rig = try await makeRig(hardwareKeyboard: false, width: width, height: height)
+            rig.window.overrideUserInterfaceStyle = appearance
+            rig.host.traitOverrides.preferredContentSizeCategory = category
+            let conversation = rig.model.conversation(chatID)
+            let events: [ChatEvent] = [
+                .info(chat()), .models(ChatBundledModels.models(for: .claude)),
+                .itemCompleted(ChatItem(id: "user", status: .completed, body: .userMessage("Can you make this screen easier to read on my phone and iPad?"))),
+                .itemCompleted(ChatItem(id: "assistant", status: .completed, body: .agentMessage("""
+                ## A calmer conversation
+
+                The messages now have room to breathe. **Your prompts** and the assistant’s response should be easy to tell apart, while the model stays within reach.
+
+                - Keep the reading column comfortable on iPad.
+                - Preserve drafts, keyboard shortcuts and approvals.
+
+                ```swift
+                let title = "A long line stays inside the code surface, with horizontal scrolling when needed"
+                print(title)
+                ```
+                """))),
+                .itemCompleted(ChatItem(id: "tool", status: .completed, body: .toolCall(server: "Files", tool: "read", input: .object(["path": .string("ios/RiWorkRemote/ChatView.swift")]), output: "Read 328 lines.\nThe toolbar, transcript and composer share the same theme.")))
+            ]
+            await rig.transport.append(chatID, events)
+            let field = try await openChat(rig)
+            await eventually("fixture messages") { conversation.transcript.items.count == 3 }
+            conversation.expanded.insert("tool")
+            try await Task.sleep(for: .milliseconds(600))
+            try reviewSnapshot(rig, name: "\(tablet ? "tablet" : "phone")-\(name)-messages")
+            let transcriptScroll = descendants(UIScrollView.self, in: rig.host.view)
+                // The whole conversation can fit on iPad before an approval reduces its viewport.
+                .filter { $0.bounds.height > 100 }
+                .max { $0.bounds.height < $1.bounds.height }
+            let scrolledToStart = transcriptScroll.map { $0.contentSize.height > $0.bounds.height + 20 } ?? false
+            if scrolledToStart {
+                transcriptScroll?.setContentOffset(CGPoint(x: 0, y: -(transcriptScroll?.adjustedContentInset.top ?? 0)), animated: false)
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            try reviewSnapshot(rig, name: "\(tablet ? "tablet" : "phone")-\(name)-messages-start")
+            if scrolledToStart { conversation.jumpToEnd() }
+            await rig.transport.append(chatID, [.approvalRequested(ChatApproval(requestID: "review", kind: .command, title: "swift test --package-path ios", detail: "Run the focused chat tests.", choices: [.accept, .acceptForSession, .decline, .cancel])), .state(.waiting)])
+            await eventually("approval shown") { !conversation.openApprovals.isEmpty }
+            conversation.draft = "Please keep the current model\nand run the focused checks."
+            try await Task.sleep(for: .milliseconds(400))
+            let scroll = try XCTUnwrap(transcriptScroll)
+            await eventually("review approval settles at valid bottom") { self.isAtValidBottom(scroll) }
+            assertValidBottom(scroll)
+            var rendered = ""
+            await eventually("review viewport paints its reply tail") {
+                rendered = (try? self.renderedTranscriptText(rig, scroll: scroll).lowercased()) ?? ""
+                return rendered.contains("waiting for you") && (category != .large || rendered.contains("read 328 lines"))
+            }
+            XCTAssertTrue(rendered.contains("waiting for you"), "review viewport renders its tail: \(rendered)")
+            if category == .large {
+                XCTAssertTrue(rendered.contains("read 328 lines"), "expanded tool tail remains visible: \(rendered)")
+            }
+            try reviewSnapshot(rig, name: "\(tablet ? "tablet" : "phone")-\(name)-approval")
+            if name == "dark" {
+                _ = field.becomeFirstResponder()
+                try await Task.sleep(for: .milliseconds(700))
+                // SDK capture includes the real software keyboard, which lives in its own UIKit window.
+                let image = UIGraphicsImageRenderer(bounds: rig.window.screen.bounds).image { _ in
+                    for window in (rig.window.windowScene?.windows ?? []) where !window.isHidden {
+                        window.drawHierarchy(in: window.frame, afterScreenUpdates: true)
+                    }
+                }
+                try reviewImage(image, name: "\(tablet ? "tablet" : "phone")-dark-keyboard")
+                // Allows SDK simctl capture of the keyboard's separate system window during a design review.
+                try await Task.sleep(for: .seconds(5))
+            }
+            await finish(rig)
+        }
+    }
+    private func reviewSnapshot(_ rig: Rig, name: String) throws {
+        rig.window.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: rig.window.bounds).image { _ in rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true) }
+        try reviewImage(image, name: name)
+    }
+    private func reviewImage(_ image: UIImage, name: String) throws {
+        let attachment = XCTAttachment(image: image); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        guard let path = ProcessInfo.processInfo.environment["RIWORK_CHAT_SNAPSHOTS"] else { return }
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try XCTUnwrap(image.pngData()).write(to: directory.appendingPathComponent(name + ".png"))
+    }
+
     private func conversationEvents() -> [ChatEvent] {
         let diff = "@@ -10,6 +10,7 @@ fn main() {\n     let a = 1;\n-    let b = 2;\n+    let b = 3;\n+    let c = 4;\n     println!(\"{a}\");\n"
         let longOutput = (1...40).map { "compiling crate \($0) of 40" }.joined(separator: "\n")

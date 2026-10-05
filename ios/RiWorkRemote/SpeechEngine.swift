@@ -64,6 +64,8 @@ enum SpeechEngines {
 final class MicrophoneTap: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var running = false
+    private var tapInstalled = false
+    private var sessionActive = false
     /// The level of the latest buffer, read by the main actor a few times a second.
     private let levelLock = NSLock()
     private var latestLevel: Float = 0
@@ -74,25 +76,33 @@ final class MicrophoneTap: @unchecked Sendable {
     /// Sets up the audio session for recording and starts handing over buffers.
     func start(_ handle: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { throw MicrophoneError.noInput }
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            self?.measure(buffer)
-            handle(buffer)
+        do {
+            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            sessionActive = true
+            let input = engine.inputNode
+            let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else { throw MicrophoneError.noInput }
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+                self?.measure(buffer)
+                handle(buffer)
+            }
+            tapInstalled = true
+            engine.prepare()
+            try engine.start()
+            running = true
+        } catch {
+            stop()
+            throw error
         }
-        engine.prepare()
-        try engine.start()
-        running = true
     }
     func stop() {
-        guard running else { return }
-        running = false
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if tapInstalled { engine.inputNode.removeTap(onBus: 0); tapInstalled = false }
+        if running { engine.stop(); running = false }
+        if sessionActive {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            sessionActive = false
+        }
     }
     private func measure(_ buffer: AVAudioPCMBuffer) {
         guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
@@ -155,6 +165,10 @@ final class BufferConverter: @unchecked Sendable {
 @available(iOS 26, *)
 @MainActor final class AnalyzerSpeechEngine: SpeechEngine {
     var onEvent: ((SpeechEngineEvent) -> Void)?
+    private let authorize: @MainActor (Bool) async -> DictationProblem?
+    init(authorize: @escaping @MainActor (Bool) async -> DictationProblem? = { await SpeechEngines.authorize(recognition: $0) }) {
+        self.authorize = authorize
+    }
     private let microphone = MicrophoneTap()
     private let meter = LevelMeter()
     private var analyzer: SpeechAnalyzer?
@@ -163,7 +177,9 @@ final class BufferConverter: @unchecked Sendable {
     private var cancelled = false
 
     func start(vocabulary: SpeechVocabulary) async {
-        if let problem = await SpeechEngines.authorize(recognition: false) { report(.failed(problem)); return }
+        guard !cancelled else { return }
+        if let problem = await authorize(false) { report(.failed(problem)); return }
+        guard !cancelled else { return }
         do {
             let transcriber = try await Self.transcriber(note: { [weak self] in self?.report(.note($0)) })
             guard !cancelled else { return }
@@ -177,6 +193,7 @@ final class BufferConverter: @unchecked Sendable {
             let (stream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
             input = continuation
             try await analyzer.start(inputSequence: stream)
+            guard !cancelled else { await analyzer.cancelAndFinishNow(); return }
             let converter = format.map { BufferConverter(from: microphone.inputFormat, to: $0) }
             try microphone.start { buffer in
                 guard let converted = converter.map({ $0.convert(buffer) }) ?? buffer else { return }
@@ -266,16 +283,26 @@ final class BufferConverter: @unchecked Sendable {
 
 @MainActor final class RecognizerSpeechEngine: SpeechEngine {
     var onEvent: ((SpeechEngineEvent) -> Void)?
+    private let authorize: @MainActor (Bool) async -> DictationProblem?
+    private let makeRecognizer: @MainActor () -> SFSpeechRecognizer?
+    init(authorize: @escaping @MainActor (Bool) async -> DictationProblem? = { await SpeechEngines.authorize(recognition: $0) },
+         makeRecognizer: @escaping @MainActor () -> SFSpeechRecognizer? = { RecognizerSpeechEngine.recognizer() }) {
+        self.authorize = authorize
+        self.makeRecognizer = makeRecognizer
+    }
     private let microphone = MicrophoneTap()
     private let meter = LevelMeter()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var latest = ""
     private var done = false
+    private var cancelled = false
 
     func start(vocabulary: SpeechVocabulary) async {
-        if let problem = await SpeechEngines.authorize(recognition: true) { report(.failed(problem)); return }
-        guard let recognizer = Self.recognizer() else { report(.failed(.unsupported)); return }
+        guard !cancelled else { return }
+        if let problem = await authorize(true) { report(.failed(problem)); return }
+        guard !cancelled else { return }
+        guard let recognizer = makeRecognizer() else { report(.failed(.unsupported)); return }
         let request = Self.request(SFSpeechAudioBufferRecognitionRequest(), vocabulary: vocabulary)
         self.request = request
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -301,6 +328,8 @@ final class BufferConverter: @unchecked Sendable {
         request?.endAudio()
     }
     func cancel() {
+        cancelled = true
+        done = true
         onEvent = nil
         meter.stop()
         microphone.stop()

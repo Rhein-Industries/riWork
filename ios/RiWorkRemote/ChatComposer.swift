@@ -17,6 +17,21 @@ import RiWorkCore
 /// - **Software keyboard.** Return makes a new line, as in any chat; the Send button sends.
 /// - **⌘. (interrupt) is not here:** it is a SwiftUI shortcut on the screen, so it works wherever the keyboard is.
 @MainActor final class ChatComposerTextView: UITextView {
+    private var focusRequested = false
+    /// SwiftUI may request focus before this view is attached. Keep that one request until UIKit gives it a window.
+    func requestFocusWhenAttached() {
+        focusRequested = true
+        DispatchQueue.main.async { [weak self] in self?.fulfilFocusRequest() }
+    }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { DispatchQueue.main.async { [weak self] in self?.fulfilFocusRequest() } }
+    }
+    private func fulfilFocusRequest() {
+        guard focusRequested, window != nil, isEditable else { return }
+        if isFirstResponder || becomeFirstResponder() { focusRequested = false }
+    }
+
     /// A key the router should judge, and what it came to. The view does not know what is on the screen.
     var onKey: (ChatKey) -> ChatKeyAction = { _ in .none }
     /// A request waits for the keys that answer it (and nothing is typed).
@@ -81,10 +96,10 @@ struct ChatComposerField: UIViewRepresentable {
     var onPasteFiles: (() -> Bool)?
 
     /// Space above and below the text inside the field.
-    static let verticalInset: CGFloat = 8
+    static let verticalInset: CGFloat = 12
     /// The text's font, at the text size `traits` ask for (the current one when nil).
     static func font(_ style: DesktopStyle, _ traits: UITraitCollection? = nil) -> UIFont {
-        UIFontMetrics(forTextStyle: .callout).scaledFont(for: .systemFont(ofSize: 16 * CGFloat(style.scale)), compatibleWith: traits)
+        UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17 * CGFloat(style.scale)), compatibleWith: traits)
     }
     /// The height of the field holding one line; its last line is centred in the band this tall at the field's bottom.
     static func lineBand(_ style: DesktopStyle, _ size: DynamicTypeSize) -> CGFloat {
@@ -96,7 +111,7 @@ struct ChatComposerField: UIViewRepresentable {
         let view = ChatComposerTextView()
         view.delegate = context.coordinator
         view.backgroundColor = .clear
-        view.textContainerInset = UIEdgeInsets(top: Self.verticalInset, left: 4, bottom: Self.verticalInset, right: 4)
+        view.textContainerInset = UIEdgeInsets(top: 12, left: 8, bottom: 12, right: 8)
         view.textContainer.lineFragmentPadding = 4
         view.isScrollEnabled = false
         view.adjustsFontForContentSizeCategory = true
@@ -118,12 +133,14 @@ struct ChatComposerField: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         let style = context.environment.desktopStyle
-        if coordinator.appliedStyle != style {
+        let category = context.environment.dynamicTypeSize
+        if coordinator.appliedStyle != style || coordinator.appliedTypeSize != category {
             coordinator.appliedStyle = style
+            coordinator.appliedTypeSize = category
             // Native's field is rounded: the text keeps clear of its ends.
             let side: CGFloat = style.native ? 10 : 4
             view.textContainerInset = UIEdgeInsets(top: Self.verticalInset, left: side, bottom: Self.verticalInset, right: side)
-            view.font = Self.font(style)
+            view.font = Self.font(style, view.traitCollection)
             view.textColor = style.textUI
             view.tintColor = style.accentUI
             view.keyboardAppearance = style.colorScheme == .dark ? .dark : .default
@@ -137,8 +154,7 @@ struct ChatComposerField: UIViewRepresentable {
         view.onPasteFiles = onPasteFiles
         if coordinator.lastFocusToken != focusToken {
             coordinator.lastFocusToken = focusToken
-            // The view may not be in a window yet (the screen is still arriving): the next turn of the run loop is early enough.
-            DispatchQueue.main.async { if view.window != nil, isEnabled, !view.isFirstResponder { _ = view.becomeFirstResponder() } }
+            if isEnabled { view.requestFocusWhenAttached() }
         }
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: ChatComposerTextView, context: Context) -> CGSize? {
@@ -154,6 +170,7 @@ struct ChatComposerField: UIViewRepresentable {
     @MainActor final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ChatComposerField
         var appliedStyle: DesktopStyle?
+        var appliedTypeSize: DynamicTypeSize?
         var lastFocusToken = 0
         init(_ parent: ChatComposerField) { self.parent = parent }
         func textViewDidChange(_ textView: UITextView) { parent.text = textView.text }
@@ -167,6 +184,7 @@ struct ChatComposerField: UIViewRepresentable {
 /// The text field, Send and Interrupt, and the notice under them.
 struct ChatComposer: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.dynamicTypeSize) private var typeSize
     let conversation: ChatConversation
     let provider: ChatProvider
     let state: ChatState
@@ -180,7 +198,6 @@ struct ChatComposer: View {
     /// The paperclip (a photo or a file goes to the Mac and its path into the message), and a paste of files.
     var attach: ((AttachmentChoice) -> Void)?
     var pasteFiles: (() -> Bool)?
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var focused = false
     @State private var dictation = TextInsertion()
 
@@ -201,7 +218,7 @@ struct ChatComposer: View {
                 HStack(alignment: .top, spacing: 6) {
                     Text(notice).font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button("Dismiss message", systemImage: "xmark") { conversation.notice = nil }.labelStyle(.iconOnly).font(style.system(.caption)).foregroundStyle(style.muted)
+                    Button("Dismiss message", systemImage: "xmark") { conversation.notice = nil }.labelStyle(.iconOnly).font(style.system(.caption)).foregroundStyle(style.muted).frame(minWidth: 44, minHeight: 44)
                 }
                 .padding(.horizontal, 12)
                 .accessibilityElement(children: .combine)
@@ -213,36 +230,37 @@ struct ChatComposer: View {
                     ComposerPaperclip(connected: connected, choose: attach).equatable()
                 }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
-                                  isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, onKey: handle, onFocusChange: { focused = $0 },
+                                  isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, maxLines: typeSize.isAccessibilitySize ? 3 : 6, onKey: handle, onFocusChange: { focused = $0 },
                                   insertion: dictation, onPasteFiles: pasteFiles)
                     .overlay(alignment: .topLeading) {
                         if conversation.draft.isEmpty {
-                            Text(placeholder).font(style.prose).foregroundStyle(style.muted).padding(.top, 8).padding(.leading, style.native ? 14 : 8)
+                            Text(placeholder).font(style.prose).foregroundStyle(style.muted).padding(.top, ChatComposerField.verticalInset).padding(.leading, style.native ? 14 : 8)
                                 .lineLimit(1).allowsHitTesting(false).accessibilityHidden(true)
                         }
                     }
                     .modifier(ComposerFieldSurface(focused: focused))
-                    .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, dynamicTypeSize)] d in d.height - band / 2 }
+                    .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, typeSize)] d in d.height - band / 2 }
                 if state.isBusy {
-                    Button(action: interrupt) { Image(systemName: "stop.circle.fill").font(.system(size: style.pt(24))).foregroundStyle(style.gold) }
-                        .buttonStyle(.plain).frame(width: style.pt(44), height: style.pt(44)).contentShape(Rectangle())
+                    Button(action: interrupt) { Image(systemName: "stop.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(style.gold).frame(width: 36, height: 36).background(style.gold.opacity(0.12), in: Circle()) }
+                        .buttonStyle(.plain).frame(width: 44, height: 44).contentShape(Rectangle())
                         .disabled(!connected)
                         .accessibilityLabel("Interrupt").accessibilityHint("Stops what \(provider.title) is doing now")
                 }
                 // Only while the desktop's mic setting is on; off, the row closes up around the field.
                 if style.mic { DictationButton(owner: .chat(conversation.id), insertion: dictation) }
                 Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: style.pt(28)))
-                        .foregroundStyle(canSend ? style.accent : style.muted.opacity(0.6))
+                    Image(systemName: "arrow.up").font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(canSend ? style.background : style.muted)
+                        .frame(width: 36, height: 36).background(canSend ? style.accent : style.active, in: Circle())
                 }
-                .buttonStyle(.plain).frame(width: style.pt(44), height: style.pt(44)).contentShape(Rectangle())
+                .buttonStyle(.plain).frame(width: 44, height: 44).contentShape(Rectangle())
                 .disabled(!canSend)
                 .accessibilityLabel("Send").accessibilityHint(conversation.sending ? "Sending" : "Sends the message")
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 6).padding(.vertical, 3)
         }
-        // On glass the bar is the screen's own surface with no rule, as under the workspace bar; the field carries the glass.
-        .padding(.vertical, 6).background(style.glass ? style.surface : style.panel).overlay(alignment: .top) { if !style.glass { DesktopRule() } }
+        .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10)
+        .background(style.glass ? style.surface : style.background)
     }
 
     /// A key from the hardware keyboard: the router says what it means now.
@@ -336,19 +354,22 @@ struct ChatApprovalBar: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: icon).foregroundStyle(style.gold).accessibilityHidden(true)
-                Text(kindWord).font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.gold)
+                Text(kindWord).font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.gold)
                 Spacer(minLength: 0)
-                if count > 1 { Text("1 of \(count)").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).monospacedDigit() }
+                if count > 1 { Text("1 of \(count)").font(style.system(.caption)).foregroundStyle(style.muted).monospacedDigit() }
+                if !approval.detail.isEmpty {
+                    Button { showDetail.toggle() } label: {
+                        Image(systemName: showDetail ? "info.circle.fill" : "info.circle")
+                            .font(style.system(.body)).foregroundStyle(style.muted)
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).accessibilityLabel(showDetail ? "Hide approval details" : "Show approval details")
+                    .accessibilityValue(showDetail ? "Shown" : "Hidden")
+                }
             }
             Text(verbatim: approval.title.isEmpty ? "(no description)" : approval.title).font(style.code).foregroundStyle(style.text)
                 .lineLimit(showDetail ? 12 : 3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             if !approval.detail.isEmpty {
-                Button { showDetail.toggle() } label: {
-                    Label(showDetail ? "Hide details" : "Details", systemImage: "chevron.right").labelStyle(.titleAndIcon)
-                        .font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
-                        .frame(minHeight: style.pt(28), alignment: .leading).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).accessibilityValue(showDetail ? "Shown" : "Hidden")
                 if showDetail {
                     BoundedScroll(maxHeight: detailHeight) {
                         Group {
@@ -366,10 +387,10 @@ struct ChatApprovalBar: View {
                 }
             }
             if keyHints {
-                Text(Self.hint(for: approval)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7).accessibilityHidden(true)
+                Text(Self.hint(for: approval)).font(style.system(.caption)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7).accessibilityHidden(true)
             }
         }
-        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
         .chatRequestSurface(style, tint: style.gold, opacity: 0.12)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Approval needed. \(kindWord) \(approval.title)")
@@ -378,7 +399,7 @@ struct ChatApprovalBar: View {
     /// One answer. The terminal look frames each in a rectangle; Native makes them capsules, Allow the filled one, the others on glass
     /// (iOS 26) or outlined.
     @ViewBuilder private func decisionButton(_ decision: ChatDecision) -> some View {
-        let button = Button { decide(decision) } label: { Text(Self.title(decision)).lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity) }
+        let button = Button { decide(decision) } label: { Text(Self.title(decision)).font(style.system(.subheadline, weight: .semibold)).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, minHeight: 44) }
             .buttonStyle(DesktopButtonStyle(prominent: decision == .accept))
             .foregroundStyle(decision == .cancel ? style.error : (decision == .accept ? style.accent : style.text))
         if !style.native {
@@ -437,7 +458,7 @@ struct ChatQuestionBar: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "questionmark.bubble").foregroundStyle(style.accent).accessibilityHidden(true)
-                Text(question.questions.count > 1 ? "Questions" : "Question").font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                Text(question.questions.count > 1 ? "Questions" : "Question").font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.accent)
                 // Native: Send sits in the header, as a sheet's Done does, and leaves the answers the room under it.
                 if style.native {
                     Spacer(minLength: 4)
@@ -453,7 +474,7 @@ struct ChatQuestionBar: View {
                 sendButton { Text("Send answer").frame(maxWidth: .infinity) }.buttonStyle(DesktopButtonStyle(prominent: true))
             }
         }
-        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
         .chatRequestSurface(style, tint: style.accent, opacity: 0.10)
         .accessibilityElement(children: .contain)
     }
@@ -479,15 +500,15 @@ struct ChatQuestionBar: View {
                         Image(systemName: chosen ? (prompt.multiSelect ? "checkmark.square.fill" : "largecircle.fill.circle") : (prompt.multiSelect ? "square" : "circle"))
                             .foregroundStyle(chosen ? style.accent : style.muted)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(prompt.options[option].label).font(style.face(12, bold: chosen, relativeTo: .footnote)).foregroundStyle(style.text)
+                            Text(prompt.options[option].label).font(style.system(.subheadline, weight: chosen ? .semibold : .regular)).foregroundStyle(style.text)
                             if !prompt.options[option].description.isEmpty {
                                 Text(prompt.options[option].description).font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: style.pt(40), alignment: .leading)
-                    .background(chosen ? style.active : .clear, in: style.block()).overlay(style.block().stroke(chosen ? style.accent : style.divider, lineWidth: 1)).contentShape(Rectangle())
+                    .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .background(chosen ? style.active : .clear, in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(chosen ? style.accent : style.divider, lineWidth: 1)).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .boundedScrollBreak()

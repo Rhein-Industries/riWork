@@ -338,6 +338,74 @@ async fn a_file_arrives_whole_private_and_under_a_name_of_the_desktops_making() 
     assert_eq!(std::fs::read(&path).unwrap(), data);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn cleanup_preserves_outside_files_behind_symlinked_roots_and_targets() {
+    use std::os::unix::fs::symlink;
+    for target_symlink in [false, true] {
+        for revoke in [false, true] {
+            let f = Fixture::new();
+            let (_, placed) = f.send("keep.bin", b"keep").await;
+            let uploads = Uploads::new(f.rpc.storage.dir.clone());
+            let outside = tempfile::tempdir().unwrap();
+            if target_symlink {
+                std::fs::rename(f.inbox(), outside.path().join(&f.shell)).unwrap();
+                symlink(outside.path().join(&f.shell), f.inbox()).unwrap();
+            } else {
+                std::fs::rename(
+                    f.home.path().join("uploads"),
+                    outside.path().join("uploads"),
+                )
+                .unwrap();
+                symlink(
+                    outside.path().join("uploads"),
+                    f.home.path().join("uploads"),
+                )
+                .unwrap();
+            }
+            let marker = if target_symlink {
+                outside
+                    .path()
+                    .join(&f.shell)
+                    .join(placed.file_name().unwrap())
+            } else {
+                outside
+                    .path()
+                    .join("uploads")
+                    .join(&f.shell)
+                    .join(placed.file_name().unwrap())
+            };
+            if revoke {
+                uploads.forget_device(&f.device);
+            } else {
+                uploads.sweep_at(|_| true, u64::MAX);
+            }
+            assert_eq!(
+                std::fs::read(marker).unwrap(),
+                b"keep",
+                "target symlink {target_symlink}, revoke {revoke}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_extreme_chunk_offset_is_refused_without_overflow_or_writes() {
+    let f = Fixture::new();
+    let data = b"abc";
+    let upload = new_uuid();
+    let begin = f.begin_params(&upload, "a.bin", data);
+    result(&f.call("upload.begin", begin.clone()).await);
+    let refused = f
+        .call(
+            "upload.chunk",
+            json!({"upload": upload, "offset": u64::MAX, "data": "eA"}),
+        )
+        .await;
+    assert_eq!(code(&refused), "invalid_request", "{refused}");
+    assert_eq!(result(&f.call("upload.begin", begin).await)["received"], 0);
+}
+
 #[tokio::test]
 async fn an_interrupted_upload_resumes_and_a_repeated_chunk_changes_nothing() {
     let f = Fixture::new();

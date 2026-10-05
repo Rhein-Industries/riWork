@@ -21,6 +21,8 @@ struct UploadActivity: Equatable {
 @MainActor @Observable final class Attachments {
     var activity: UploadActivity?
     @ObservationIgnored var task: Task<Void, Never>?
+    @ObservationIgnored var job: UUID?
+    @ObservationIgnored var loadSource: @MainActor (AttachmentSource) async throws -> UploadFile = { try await $0.load() }
 }
 
 // Files and photos from the phone: they go to the Mac (`FileTransfer`), into the inbox of the shell or chat on screen, and then
@@ -40,43 +42,51 @@ extension RemoteModel {
         guard state == .connected else { fail(target, "Connect to the Mac first."); return }
         guard let feature = desktopFeatures.upload else { fail(target, UploadError.desktopTooOld.localizedDescription); return }
         guard sources.count <= feature.maximumFiles else { fail(target, UploadError.tooMany(limit: feature.maximumFiles).localizedDescription); return }
+        guard let desktop else { fail(target, "Connect to the Mac first."); return }
         attachments.activity = UploadActivity(target: target, phase: .preparing, count: sources.count)
-        let client = client
-        let desktopID = selectedDesktopID
+        let client = BoundUploadTransport(upstream: client, identity: UploadConnectionIdentity(pairing: desktop.pairing))
+        let desktopID = desktop.id
+        let job = UUID()
+        attachments.job = job
         let attachments = attachments
         attachments.task = Task { [weak self] in
+            defer { if attachments.job == job { attachments.task = nil; attachments.job = nil } }
             do {
                 var uploaded: [UploadedFile] = []
                 for (offset, source) in sources.enumerated() {
-                    let file = try await source.load()
+                    let file = try await attachments.loadSource(source)
                     try Task.checkCancellation()
-                    self?.update { $0.phase = .sending; $0.name = file.name; $0.index = offset + 1; $0.sent = 0; $0.total = file.data.count }
+                    guard let self, self.selectedDesktopID == desktopID, attachments.job == job else { throw CancellationError() }
+                    self.update { $0.phase = .sending; $0.name = file.name; $0.index = offset + 1; $0.sent = 0; $0.total = file.data.count }
                     let sent = try await FileTransfer.send(file, to: target, feature: feature, over: client) { received in
-                        Task { @MainActor in if attachments.activity?.index == offset + 1, attachments.task != nil { attachments.activity?.sent = received } }
+                        Task { @MainActor in if attachments.job == job, attachments.activity?.index == offset + 1 { attachments.activity?.sent = received } }
                     }
                     uploaded.append(sent)
                 }
                 // Another Mac chosen meanwhile: what was sent stays in that Mac's inbox until it is swept.
-                guard let self, self.selectedDesktopID == desktopID else { return }
+                try Task.checkCancellation()
+                guard let self, self.selectedDesktopID == desktopID, attachments.job == job else { throw CancellationError() }
                 switch target {
                 case .shell(let shell):
                     self.update { $0.phase = .pasting }
                     try await FileTransfer.paste(uploaded.map(\.upload), into: shell, over: client)
+                    try Task.checkCancellation()
+                    guard attachments.job == job, self.selectedDesktopID == desktopID else { throw CancellationError() }
                     self.jumpToLatest()
                 case .chat(let chat):
                     self.appendToChat(chat, paths: uploaded.map(\.path))
                 }
-                self.attachments.activity = nil
+                if attachments.job == job { attachments.activity = nil }
             } catch is CancellationError {
-                self?.attachments.activity = nil
+                if attachments.job == job { attachments.activity = nil }
             } catch {
-                self?.update { $0.phase = .failed(error.localizedDescription) }
+                if attachments.job == job { self?.update { $0.phase = .failed(error.localizedDescription) } }
             }
-            self?.attachments.task = nil
         }
     }
 
     func cancelUpload() {
+        attachments.job = nil
         attachments.task?.cancel()
         attachments.task = nil
         attachments.activity = nil
@@ -98,5 +108,17 @@ extension RemoteModel {
     }
     private func fail(_ target: UploadTarget, _ message: String) {
         attachments.activity = UploadActivity(target: target, phase: .failed(message))
+    }
+}
+
+/// Every upload step, including retry and detached cancellation, is bound at the transport to its authenticated destination.
+private struct BoundUploadTransport: RemoteTransport {
+    let upstream: any RemoteTransport
+    let identity: UploadConnectionIdentity
+    func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing { throw RemoteError.disconnected }
+    func disconnect() async {}
+    func isConnected() async -> Bool { await upstream.isConnected() }
+    func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue {
+        try await upstream.request(method: method, params: params, id: id, boundTo: identity)
     }
 }

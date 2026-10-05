@@ -250,6 +250,35 @@ private final class Order: @unchecked Sendable {
 
     // MARK: cancellation
 
+    func testBoundRequestsRejectAnotherDesktopDeviceOrRouteBeforeSealing() async throws {
+        let (client, _, desktop) = try await connected()
+        let original = try pairing()
+        _ = try await client.request(method: "projects.list", params: [:], id: UUID().uuidString.lowercased(), boundTo: UploadConnectionIdentity(pairing: original))
+        for field in ["desktop_id", "device_id", "route_id"] {
+            var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+            fields[field] = "99999999-9999-4999-8999-999999999999"
+            let other = try JSONDecoder().decode(Pairing.self, from: JSONSerialization.data(withJSONObject: fields))
+            do {
+                _ = try await client.request(method: "projects.list", params: [:], id: UUID().uuidString.lowercased(), boundTo: UploadConnectionIdentity(pairing: other))
+                XCTFail("a different authenticated destination was accepted")
+            } catch is CancellationError {} catch { XCTFail("unexpected error: \(error)") }
+        }
+        XCTAssertEqual(desktop.requestCount, 1, "refused calls spend no counter and send no frame")
+        _ = try await client.request(method: "projects.list")
+        XCTAssertEqual(desktop.violations, 0)
+        await client.disconnect()
+    }
+
+    func testDisconnectedBoundUploadCanWaitForTheOriginalPeerToReconnect() async throws {
+        let (client, _, _) = try await connected()
+        let identity = UploadConnectionIdentity(pairing: try pairing())
+        await client.disconnect()
+        do {
+            _ = try await client.request(method: "projects.list", params: [:], id: UUID().uuidString.lowercased(), boundTo: identity)
+            XCTFail("the disconnected request succeeded")
+        } catch RemoteError.disconnected {} catch { XCTFail("a disconnect must remain retryable: \(error)") }
+    }
+
     func testCancellingOneRequestKeepsTheConnectionAndCounterSequence() async throws {
         let (client, socket, desktop) = try await connected { $0.policy = { $0 == "shell.output" ? .hold : .respond } }
         let slow = Task { try await client.request(method: "shell.output", params: self.outputParams(), id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa") }

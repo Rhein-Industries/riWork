@@ -273,4 +273,42 @@ final class ChatModelsTests: XCTestCase {
         tapped.place(.fast, in: choices(model: "bare"))
         XCTAssertEqual(tapped.stop, .model(0), "Fast is not there for this model")
     }
+    func testCreationKeyboardSelectsCatalogueRowsAndKeepsCompatibleEffortAndFast() throws {
+        var form = NewTerminalForm(targets: [], kind: .codexChat, kinds: NewTerminalKind.offered(chats: true))
+        form.chatModels[.codex] = list
+        form.focus = .chatModel
+        form.handle(.down)
+        XCTAssertEqual(form.chatChoice?.chosen, gpt)
+        form.selectChatEffort("medium")
+        form.setChatFast(true)
+        form.selectChatModel(gpt)
+        XCTAssertEqual(form.chatChoice?.selectedEffort, "medium")
+        XCTAssertTrue(form.chatChoice?.fastIsOn ?? false)
+        form.handle(.down)
+        XCTAssertEqual(form.chatChoice?.chosen, mini)
+        XCTAssertEqual(form.chatChoice?.selectedEffort, "medium")
+        XCTAssertFalse(form.chatChoice?.fastIsOn ?? true)
+        form.handle(.down)
+        XCTAssertEqual(form.chatChoice?.chosen, bare)
+        form.handle(.down)
+        XCTAssertNil(form.chatChoice?.chosen)
+        form.selectChatModel(ChatModelOption(id: "invented", name: "Invented"))
+        XCTAssertNil(form.chatChoice?.chosen)
+    }
+
+    func testBundledFallbackContainsRecordedVisibleProductionModelsAndDefaults() {
+        let codex = ChatBundledModels.models(for: .codex)
+        let claude = ChatBundledModels.models(for: .claude)
+        XCTAssertEqual(codex.count, 8)
+        XCTAssertEqual(Set(claude.map(\.id)), ["default", "opus", "fable", "sonnet", "haiku"])
+        for models in [codex, claude] {
+            XCTAssertFalse(models.isEmpty)
+            XCTAssertTrue(models.contains { $0.isDefault })
+            XCTAssertEqual(Set(models.map(\.id)).count, models.count)
+            XCTAssertFalse(models.contains { $0.id == "plain-model" || $0.id.contains("daybreak") || $0.id.contains("auto-review") })
+        }
+        XCTAssertFalse(claude.first { $0.id == "haiku" }!.supportsFast)
+        XCTAssertTrue(claude.first { $0.id == "haiku" }!.efforts.isEmpty)
+    }
+
 }

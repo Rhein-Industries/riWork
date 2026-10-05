@@ -10,16 +10,18 @@ import RiWorkCore
 /// The model in the toolbar: its short name, a bolt when Fast is on, and a chevron. A tap opens the picker.
 struct ChatModelChip: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.dynamicTypeSize) private var typeSize
     let choices: ChatModelChoices
     let enabled: Bool
     let open: () -> Void
 
     var body: some View {
         Button(action: open) {
-            HStack(spacing: 4) {
-                Text(choices.chipTitle).font(style.face(11, bold: true, relativeTo: .caption)).lineLimit(1).truncationMode(.tail)
+            HStack(spacing: 7) {
+                Image(systemName: "cpu").foregroundStyle(style.accent).accessibilityHidden(true)
+                Text(choices.chipTitle).font(style.system(.subheadline, weight: .semibold)).lineLimit(typeSize.isAccessibilitySize ? nil : 1).truncationMode(.tail)
                 if choices.chipShowsFast { Image(systemName: "bolt.fill").font(.system(size: style.pt(10), weight: .bold)).foregroundStyle(style.gold).accessibilityHidden(true) }
-                Image(systemName: "chevron.up.chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
+                Image(systemName: "chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
             }
             .foregroundStyle(style.text).padding(.horizontal, 8)
             .frame(minHeight: style.pt(40)).contentShape(Rectangle())
@@ -131,6 +133,9 @@ struct ChatModelSheet: View {
     let close: () -> Void
     @State private var cursor: ChatModelCursor
     @State private var keyboardInUse: Bool
+    @State private var loadingModels = false
+    @State private var modelsError: String?
+    @State private var catalogueRequest = UUID()
 
     init(model: RemoteModel, chat: ChatInfo, close: @escaping () -> Void) {
         self.model = model; self.chat = chat; self.close = close
@@ -154,6 +159,11 @@ struct ChatModelSheet: View {
         .background { KeyCommandHost(active: true, actions: keyActions).frame(width: 1, height: 1).accessibilityHidden(true) }
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .onChange(of: choices) { _, fresh in cursor.reconcile(with: fresh) }
+        .task { await loadModels() }
+        .onChange(of: conversation.modelCatalogueRevision) { _, _ in
+            modelsError = nil; loadingModels = false; catalogueRequest = UUID()
+        }
+        .onDisappear { loadingModels = false; catalogueRequest = UUID() }
     }
 
     private func content(_ choices: ChatModelChoices) -> some View {
@@ -161,7 +171,16 @@ struct ChatModelSheet: View {
             if let notice = conversation.notice { messageRow(notice, icon: "exclamationmark.triangle") }
             else if !connected { messageRow("Not connected. Choose again when the link is back.", icon: "wifi.slash") }
             sectionLabel("Model")
-            if choices.models.isEmpty { Text("This chat has no models to choose from.").font(style.system(.footnote)).foregroundStyle(style.muted).padding(12) }
+            if loadingModels { ProgressView("Loading models…").padding(12) }
+            if let label = conversation.modelCatalogueSource.label { messageRow(label, icon: "clock.arrow.circlepath") }
+            if let error = modelsError {
+                messageRow(error, icon: "exclamationmark.triangle")
+            }
+            if conversation.modelCatalogueSource != .live || modelsError != nil {
+                Button("Retry live models") { Task { await loadModels() } }.padding(12).disabled(loadingModels || !connected)
+            }
+            Text("Current model: \(choices.current?.name ?? choices.modelID ?? "Provider default")")
+                .font(style.system(.caption)).foregroundStyle(style.muted).padding(.horizontal, 12)
             ForEach(Array(choices.models.enumerated()), id: \.element.id) { index, option in modelRow(index, option, choices) }
             if !choices.efforts.isEmpty {
                 sectionLabel("Effort")
@@ -182,6 +201,38 @@ struct ChatModelSheet: View {
             }
         }
         .padding(.bottom, 8)
+    }
+
+    private func loadModels() async {
+        guard !loadingModels else { return }
+        model.prepareChatCatalogue(chat)
+        let token = UUID()
+        catalogueRequest = token
+        let generation = model.generation
+        let project = model.projectID
+        let revision = conversation.modelCatalogueRevision
+        loadingModels = true; modelsError = nil
+        let timeout = Task {
+            try? await Task.sleep(for: RemoteModel.catalogueLoadingLimit)
+            guard !Task.isCancelled, catalogueRequest == token, model.generation == generation, model.projectID == project else { return }
+            catalogueRequest = UUID(); loadingModels = false
+            modelsError = "Live model lookup took too long. Use the fallback list or Retry."
+        }
+        defer { timeout.cancel(); if catalogueRequest == token { loadingModels = false } }
+        do {
+            let catalogue = try await model.availableChatModels(provider: chat.provider, chat: chat)
+            guard catalogueRequest == token, model.generation == generation, model.projectID == project,
+                  conversation.modelCatalogueRevision == revision else { return }
+            conversation.modelCatalogue = catalogue
+            conversation.modelCatalogueSource = .live
+            model.rememberModelCatalogue(catalogue, provider: chat.provider, chat: conversation.transcript.info ?? chat)
+        }
+        catch is CancellationError { }
+        catch {
+            guard catalogueRequest == token, model.generation == generation, model.projectID == project,
+                  conversation.modelCatalogueRevision == revision else { return }
+            modelsError = ChatControlError.from(error, operation: .list).message
+        }
     }
 
     private func sectionLabel(_ text: String) -> some View {

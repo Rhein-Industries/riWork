@@ -180,6 +180,31 @@ import RiWorkCore
         }
     }
 
+    /// Cancelling while the system permission sheet is pending must not open audio when permission resolves later.
+    func testLegacyRecognizerDoesNotStartAfterCancellationDuringPermission() async {
+        var permission: CheckedContinuation<DictationProblem?, Never>?
+        var recognizersMade = 0
+        let engine = RecognizerSpeechEngine(authorize: { _ in
+            await withCheckedContinuation { permission = $0 }
+        }, makeRecognizer: {
+            recognizersMade += 1
+            return nil
+        })
+        let start = Task { await engine.start(vocabulary: SpeechVocabulary(terms: [])) }
+        await wait(until: permission != nil)
+        engine.cancel()
+        permission?.resume(returning: nil)
+        await start.value
+        XCTAssertEqual(recognizersMade, 0, "late permission must not start recognition or microphone capture")
+    }
+    func testCancelledRecognizerDoesNotAskForPermissionWhenItsQueuedStartRuns() async {
+        var asked = 0
+        let engine = RecognizerSpeechEngine(authorize: { _ in asked += 1; return .microphoneDenied })
+        engine.cancel()
+        await engine.start(vocabulary: SpeechVocabulary(terms: []))
+        XCTAssertEqual(asked, 0)
+    }
+
     // MARK: Into a text view
 
     private final class Delegate: NSObject, UITextViewDelegate { var text = ""; func textViewDidChange(_ view: UITextView) { text = view.text } }
@@ -223,6 +248,27 @@ import RiWorkCore
         insertion.discard()
         XCTAssertEqual(view.text, "Hello", "nothing to take out")
     }
+    func testCancellingLiveInsertionLetsTheNextDictationUseANewCaret() {
+        let (view, _) = makeTextView("Hello world", caret: 5)
+        let insertion = TextInsertion()
+        insertion.view = view
+        insertion.show("first")
+        insertion.show("") // The controller's cancellation callback.
+        XCTAssertEqual(view.text, "Hello world")
+        view.selectedRange = NSRange(location: 11, length: 0)
+        insertion.commit("again")
+        XCTAssertEqual(view.text, "Hello world again")
+    }
+    func testCancellingLiveInsertionPreservesTypingThatChangedTheDraft() {
+        let (view, _) = makeTextView("Hello", caret: 5)
+        let insertion = TextInsertion()
+        insertion.view = view
+        insertion.show("world")
+        view.text = "Hello edited"
+        insertion.show("")
+        XCTAssertEqual(view.text, "Hello edited")
+    }
+
     func testADictationIntoTheComposerEndToEnd() async {
         let (view, delegate) = makeTextView("", caret: 0)
         let insertion = TextInsertion()

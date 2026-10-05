@@ -7,10 +7,13 @@ import RiWorkCore
 actor UploadTransport: RemoteTransport {
     var connected = false
     var old = false
+    var identity: UploadConnectionIdentity?
+    var dropNextUploadBegin = false
+    func dropNextBegin() { dropNextUploadBegin = true }
     var calls: [(method: String, params: [String: JSONValue])] = []
     var received: [String: Data] = [:]
     func setOld(_ on: Bool) { old = on }
-    func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing { connected = true; return pairing }
+    func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing { connected = true; identity = UploadConnectionIdentity(pairing: pairing); return pairing }
     func disconnect() async { connected = false }
     func isConnected() async -> Bool { connected }
     func desktopFeatures() async -> DesktopFeatures {
@@ -19,6 +22,10 @@ actor UploadTransport: RemoteTransport {
     }
     func methods() -> [String] { calls.map(\.method).filter { $0.hasPrefix("upload.") || $0 == "shell.paste" } }
     func pasted() -> [[String: JSONValue]] { calls.filter { $0.method == "shell.paste" }.map(\.params) }
+    func request(method: String, params: [String: JSONValue], id: String, boundTo expected: UploadConnectionIdentity) async throws -> JSONValue {
+        guard expected == identity else { throw CancellationError() }
+        return try await request(method: method, params: params, id: id)
+    }
     func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue {
         guard connected else { throw RemoteError.disconnected }
         try RequestValidation.validate(method: method, params: params, id: id)
@@ -32,6 +39,7 @@ actor UploadTransport: RemoteTransport {
         case "appearance.get": throw RemoteError.rpc(code: "not_found", message: "appearance not published")
         case _ where old: throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method")
         case "upload.begin":
+            if dropNextUploadBegin { dropNextUploadBegin = false; connected = false; throw RemoteError.disconnected }
             received[upload] = Data()
             return .object(["upload": .string(upload), "status": .string("partial"), "received": .number(0)])
         case "upload.chunk":
@@ -132,6 +140,85 @@ actor UploadTransport: RemoteTransport {
         model.cancelUpload()
         XCTAssertNil(model.attachments.activity)
         XCTAssertNil(model.attachments.task)
+        await model.disconnect()
+    }
+
+    func testChangingDesktopCancelsPendingSourceBeforeAnyBytesLeave() async throws {
+        let (model, transport) = try await connected()
+        var load: CheckedContinuation<UploadFile, any Error>?
+        model.attachments.loadSource = { _ in try await withCheckedThrowingContinuation { load = $0 } }
+        model.attach([.camera(Data())], to: .chat(chat))
+        await settle { load != nil }
+        let task = try XCTUnwrap(model.attachments.task)
+        var other = try XCTUnwrap(model.desktop)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(other.pairing)) as? [String: Any])
+        fields["desktop_id"] = "99999999-9999-4999-8999-999999999999"
+        fields["route_id"] = "88888888-8888-4888-8888-888888888888"
+        other.pairing = try JSONDecoder().decode(Pairing.self, from: JSONSerialization.data(withJSONObject: fields))
+        model.desktops.append(other)
+        await model.activate(other.id)
+        load?.resume(returning: UploadFile(name: "fixture.bin", mediaType: nil, data: Data([1, 2, 3])))
+        await task.value
+        let methods = await transport.methods()
+        XCTAssertTrue(methods.isEmpty, "late source loading must not send to the new desktop")
+        XCTAssertNil(model.attachments.task)
+        await model.disconnect()
+    }
+    func testCancelledOldSourceCannotClearOrOverwriteANewerJob() async throws {
+        let (model, transport) = try await connected()
+        var loads: [CheckedContinuation<UploadFile, any Error>] = []
+        model.attachments.loadSource = { _ in try await withCheckedThrowingContinuation { loads.append($0) } }
+        model.attach([.camera(Data())], to: .chat(chat))
+        await settle { loads.count == 1 }
+        let old = try XCTUnwrap(model.attachments.task)
+        model.cancelUpload()
+        model.attach([.camera(Data())], to: .shell(shell))
+        await settle { loads.count == 2 }
+        let newJob = model.attachments.job
+        loads[0].resume(returning: UploadFile(name: "old.bin", mediaType: nil, data: Data([0])))
+        await old.value
+        XCTAssertEqual(model.attachments.job, newJob)
+        XCTAssertNotNil(model.attachments.task)
+        XCTAssertEqual(model.attachments.activity?.target, .shell(shell))
+        loads[1].resume(returning: UploadFile(name: "new.bin", mediaType: nil, data: Data([1])))
+        await settle { model.attachments.task == nil }
+        let methods = await transport.methods()
+        XCTAssertEqual(methods, ["upload.begin", "upload.chunk", "upload.finish", "shell.paste"])
+        await model.disconnect()
+    }
+
+    func testChangingDesktopDuringReconnectWaitNeverRetriesOnTheNewPeer() async throws {
+        let (model, transport) = try await connected()
+        await transport.dropNextBegin()
+        model.attachments.loadSource = { _ in UploadFile(name: "fixture.bin", mediaType: nil, data: Data([1, 2, 3])) }
+        model.attach([.camera(Data())], to: .chat(chat))
+        await settle { model.attachments.activity?.phase == .sending }
+        while await transport.isConnected() { try await Task.sleep(for: .milliseconds(5)) }
+        let task = try XCTUnwrap(model.attachments.task)
+        let old = try XCTUnwrap(model.desktop)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old.pairing)) as? [String: Any])
+        fields["desktop_id"] = "99999999-9999-4999-8999-999999999999"
+        fields["route_id"] = "88888888-8888-4888-8888-888888888888"
+        let pairing = try JSONDecoder().decode(Pairing.self, from: JSONSerialization.data(withJSONObject: fields))
+        let other = SavedDesktop(name: "Other fixture", pairing: pairing, allowLocalDevelopment: false)
+        model.desktops.append(other)
+        await model.activate(other.id)
+        await task.value
+        let methods = await transport.methods()
+        XCTAssertEqual(methods, ["upload.begin"], "no chunk, retry, or detached cancellation may reach the new peer")
+        await model.disconnect()
+    }
+    func testAnUploadCanResumeOnTheSameAuthenticatedDesktop() async throws {
+        let (model, transport) = try await connected()
+        let pairing = try XCTUnwrap(model.desktop).pairing
+        await transport.dropNextBegin()
+        model.attachments.loadSource = { _ in UploadFile(name: "fixture.bin", mediaType: nil, data: Data([1, 2, 3])) }
+        model.attach([.camera(Data())], to: .chat(chat))
+        while await transport.isConnected() { try await Task.sleep(for: .milliseconds(5)) }
+        _ = try await transport.connect(pairing: pairing, allowLocalDevelopment: false)
+        await settle { model.attachments.task == nil }
+        let methods = await transport.methods()
+        XCTAssertEqual(methods, ["upload.begin", "upload.begin", "upload.chunk", "upload.finish"])
         await model.disconnect()
     }
 

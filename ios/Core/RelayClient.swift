@@ -96,6 +96,7 @@ public actor RelayClient: RemoteTransport {
     private var socket: (any WebSocketConnection)?
     private var cipher: SessionCipher?
     private var generation = UUID()
+    private var uploadIdentity: UploadConnectionIdentity?
     private var reader: Task<Void, Never>?
     private var keepAlive: Task<Void, Never>?
     private var sendTail: Task<Void, Never>?
@@ -180,6 +181,7 @@ public actor RelayClient: RemoteTransport {
             var sessionCipher = started.1
             let ready = try sessionCipher.open(try await Self.receive(on: ws, deadline: deadline))
             guard generation == token, ready["type"].string == "ready", ready["desktop_id"].string == pairing.desktop_id, ready["device_id"].string == pairing.device_id else { throw RemoteError.protocolViolation("Desktop did not authenticate readiness.") }
+            uploadIdentity = UploadConnectionIdentity(pairing: started.0)
             cipher = sessionCipher
             features = DesktopFeatures(ready: ready)
             compressing = false
@@ -233,6 +235,7 @@ public actor RelayClient: RemoteTransport {
     }
     public func disconnect() { endConnection(error: RemoteError.disconnected) }
     private func endConnection(error: any Error) {
+        uploadIdentity = nil
         generation = UUID()
         reader?.cancel(); reader = nil
         keepAlive?.cancel(); keepAlive = nil
@@ -252,6 +255,12 @@ public actor RelayClient: RemoteTransport {
     }
     public func request(method: String, params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
         try await timedRequest(method: method, params: params, id: id).value
+    }
+    public func request(method: String, params: [String: JSONValue], id: String, boundTo identity: UploadConnectionIdentity) async throws -> JSONValue {
+        guard let uploadIdentity else { throw RemoteError.disconnected }
+        guard uploadIdentity == identity else { throw CancellationError() }
+        // No suspension between the identity check and timedRequest sealing on this actor.
+        return try await timedRequest(method: method, params: params, id: id).value
     }
     // `async` although nothing here suspends: on the concrete type a sync actor method loses to the protocol's async default.
     public func desktopFeatures() async -> DesktopFeatures { features }

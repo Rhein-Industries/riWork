@@ -474,7 +474,7 @@ enum ConnectionState: Equatable {
         do { try persist() } catch { desktops[i].name = old; throw error }
     }
     func remove(id: String) async throws {
-        if selectedDesktopID == id { await disconnect(); selectedDesktopID = nil; clearSnapshot() }
+        if selectedDesktopID == id { cancelUpload(); await disconnect(); selectedDesktopID = nil; clearSnapshot() }
         discardKeyBuffers(forDesktop: id)
         let previous = desktops
         desktops.removeAll { $0.id == id }
@@ -484,6 +484,7 @@ enum ConnectionState: Equatable {
     }
     func activate(_ id: String) async {
         if selectedDesktopID != id {
+            cancelUpload()
             await disconnect()
             selectedDesktopID = id; clearSnapshot(); draft = ""; deliveryNotice = nil
             // The new desktop's last palette is drawn before it has even connected.

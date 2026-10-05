@@ -164,7 +164,9 @@ final class BufferConverter: @unchecked Sendable {
     private var cancelled = false
 
     func start(vocabulary: SpeechVocabulary) async {
+        guard !cancelled else { return }
         if let problem = await SpeechEngines.authorize(recognition: false) { report(.failed(problem)); return }
+        guard !cancelled else { return }
         do {
             let transcriber = try await Self.transcriber(note: { [weak self] in self?.report(.note($0)) })
             guard !cancelled else { return }
@@ -178,6 +180,7 @@ final class BufferConverter: @unchecked Sendable {
             let (stream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
             input = continuation
             try await analyzer.start(inputSequence: stream)
+            guard !cancelled else { await analyzer.cancelAndFinishNow(); return }
             let converter = format.map { BufferConverter(from: microphone.inputFormat, to: $0) }
             try microphone.start(lost: { [weak self] in Task { @MainActor in self?.fail(.interrupted) } }) { buffer in
                 guard let converted = converter.map({ $0.convert(buffer) }) ?? buffer else { return }
@@ -267,9 +270,12 @@ final class BufferConverter: @unchecked Sendable {
     private var task: SFSpeechRecognitionTask?
     private var latest = ""
     private var done = false
+    private var cancelled = false
 
     func start(vocabulary: SpeechVocabulary) async {
+        guard !cancelled else { return }
         if let problem = await SpeechEngines.authorize(recognition: true) { report(.failed(problem)); return }
+        guard !cancelled else { return }
         guard let recognizer = Self.recognizer() else { report(.failed(.unsupported)); return }
         let request = Self.request(SFSpeechAudioBufferRecognitionRequest(), vocabulary: vocabulary)
         self.request = request
@@ -294,6 +300,8 @@ final class BufferConverter: @unchecked Sendable {
         request?.endAudio()
     }
     func cancel() {
+        cancelled = true
+        done = true
         onEvent = nil
         microphone.stop()
         task?.cancel()

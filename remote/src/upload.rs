@@ -340,12 +340,27 @@ impl Uploads {
     }
     /// Remove an upload's data, partial or complete.
     fn discard(&self, device: &str, record: &Record) {
-        let _ = fs::remove_file(self.part(device, &record.upload));
+        if self.safe_staging(device) {
+            let _ = fs::remove_file(self.part(device, &record.upload));
+        }
         if record.complete
+            && self.safe_inbox(&record.target)
             && let Some(file) = self.inbox_file(record)
         {
             let _ = fs::remove_file(file);
         }
+    }
+    fn safe_staging_root(&self) -> bool {
+        real_dir(&self.home) && real_dir(&self.remote) && real_dir(&self.remote.join("uploads"))
+    }
+    fn safe_staging(&self, device: &str) -> bool {
+        self.safe_staging_root() && real_dir(&self.staging(device))
+    }
+    fn safe_inbox_root(&self) -> bool {
+        real_dir(&self.home) && real_dir(&self.inbox_root())
+    }
+    fn safe_inbox(&self, target: &str) -> bool {
+        self.safe_inbox_root() && real_dir(&self.inbox_root().join(target))
     }
     fn status(&self, device: &str, record: &Record) -> Status {
         if record.complete {
@@ -507,12 +522,14 @@ impl Uploads {
         let have = fs::metadata(&part)
             .map_err(|_| refuse("not_found", "the upload expired; begin it again"))?
             .len();
-        let end = offset + data.len() as u64;
         if offset > have {
             return Err(invalid(format!(
                 "the desktop has {have} bytes of this upload; send from there"
             )));
         }
+        let end = offset
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| invalid("the chunk offset overflows"))?;
         if end > record.size {
             return Err(invalid("the chunk goes past the size the upload announced"));
         }
@@ -681,6 +698,9 @@ impl Uploads {
     }
     pub fn sweep_at(&self, paired: impl Fn(&str) -> bool, now: u64) {
         let _guard = self.guard();
+        if !real_dir(&self.home) || !real_dir(&self.remote) {
+            return;
+        }
         let mut devices = std::collections::BTreeSet::new();
         for entry in fs::read_dir(&self.remote).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -691,8 +711,11 @@ impl Uploads {
                 devices.insert(device.to_owned());
             }
         }
-        for entry in fs::read_dir(self.remote.join("uploads"))
+        for entry in self
+            .safe_staging_root()
+            .then(|| fs::read_dir(self.remote.join("uploads")))
             .into_iter()
+            .flatten()
             .flatten()
             .flatten()
         {
@@ -719,8 +742,11 @@ impl Uploads {
                 .filter(|r| !r.complete)
                 .map(|r| format!("{}.part", r.upload))
                 .collect();
-            for entry in fs::read_dir(self.staging(&device))
+            for entry in self
+                .safe_staging(&device)
+                .then(|| fs::read_dir(self.staging(&device)))
                 .into_iter()
+                .flatten()
                 .flatten()
                 .flatten()
             {
@@ -728,15 +754,20 @@ impl Uploads {
                     let _ = fs::remove_file(entry.path());
                 }
             }
-            let _ = fs::remove_dir(self.staging(&device));
+            if self.safe_staging(&device) {
+                let _ = fs::remove_dir(self.staging(&device));
+            }
             for record in ledger.uploads.iter().filter(|r| r.complete) {
                 known.extend(self.inbox_file(record));
             }
         }
         // Files in the inboxes that no ledger holds (a ledger lost, a crash between placing a
         // file and writing it down) once they are as old as a kept upload, and empty inboxes.
-        for inbox in fs::read_dir(self.inbox_root())
+        for inbox in self
+            .safe_inbox_root()
+            .then(|| fs::read_dir(self.inbox_root()))
             .into_iter()
+            .flatten()
             .flatten()
             .flatten()
         {
@@ -769,17 +800,29 @@ impl Uploads {
         }
     }
     fn forget_locked(&self, device: &str) {
+        if !real_dir(&self.home) || !real_dir(&self.remote) {
+            return;
+        }
         if let Ok(ledger) = self.read(device) {
             for record in &ledger.uploads {
                 self.discard(device, record);
-                if let Some(file) = self.inbox_file(record) {
+                if self.safe_inbox(&record.target)
+                    && let Some(file) = self.inbox_file(record)
+                {
                     let _ = file.parent().map(fs::remove_dir);
                 }
             }
         }
-        let _ = fs::remove_dir_all(self.staging(device));
+        if self.safe_staging(device) {
+            let _ = fs::remove_dir_all(self.staging(device));
+        }
         let _ = fs::remove_file(self.ledger_path(device));
     }
+}
+
+// symlink_metadata describes the directory itself, rather than following a symlink.
+fn real_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
 }
 
 fn hash_file(path: &Path) -> Result<String> {

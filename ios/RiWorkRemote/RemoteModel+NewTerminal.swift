@@ -144,6 +144,10 @@ struct NewTabProblem: Equatable {
 @MainActor @Observable final class NewTerminalSheetModel: Identifiable {
     let id = UUID()
     var form: NewTerminalForm
+    var loadingChatModels = false
+    var chatModelsSources: [ChatProvider: ChatCatalogueSource] = [:]
+    var chatModelsError: String?
+    var catalogueRequest = UUID()
     var error: TerminalControlError?
     /// The same for a chat, which has its own errors.
     var chatError: ChatControlError?

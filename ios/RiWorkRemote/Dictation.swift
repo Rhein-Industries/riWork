@@ -219,6 +219,7 @@ enum DictationOwner: Hashable, Sendable {
 
     /// Shows `text` at the caret in place of what was shown before; "" takes it out.
     func show(_ text: String) {
+        if text.isEmpty { discard(); return }
         guard let view else { return }
         if base == nil || view.text != written {
             let text = view.text ?? ""
@@ -238,7 +239,9 @@ enum DictationOwner: Hashable, Sendable {
     /// Takes out what dictation showed.
     func discard() {
         guard base != nil else { return }
-        show("")
+        if let view, let base, view.text == written {
+            apply((text: base, caret: anchor.location + anchor.length), to: view)
+        }
         base = nil; written = nil
     }
     private func apply(_ result: (text: String, caret: Int), to view: UITextView) {
