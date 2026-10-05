@@ -202,8 +202,32 @@ pub(super) fn round_button(
 /// `controls::on_first_line`: a mark centred on it sits on the text's first line.
 pub(super) const BODY_LINE: f32 = 17.8;
 
-/// A round button's side, the height of the one-line message field beside it.
+/// A round button's side.
 pub(super) const ROUND_BUTTON: f32 = 26.0;
+
+/// The design size of the text in an input box, and the space above and below it.
+pub(super) const FIELD_TEXT: f32 = 12.0;
+pub(super) const FIELD_PAD_Y: f32 = 6.0;
+
+/// The height of an input box of one line: its text's line box (GPUI's default line height,
+/// φ times the text size, rounded as GPUI rounds it), its padding and its 1 px border.
+pub(super) fn field_line_height() -> Pixels {
+    let line = (f32::from(ui_text::text(FIELD_TEXT)) * 1.618_034).round();
+    px(line + 2.0 * ui_text::space_f32(FIELD_PAD_Y) + 2.0)
+}
+
+/// A button beside the message box, centered on the box's line: on the box's own center while
+/// it has one line, and on its last line once it has more, as the row keeps its buttons at the
+/// bottom. Every button of the row sits in one of these, so they share one center line whatever
+/// their height.
+pub(super) fn beside_field(button: impl IntoElement) -> Div {
+    div()
+        .flex_none()
+        .h(field_line_height())
+        .flex()
+        .items_center()
+        .child(button)
+}
 
 /// A button that copies something: `word` ("copy"), then "copied" once it has, in the
 /// colorful themes; Native's copy symbol, then a tick, named in its tooltip.
