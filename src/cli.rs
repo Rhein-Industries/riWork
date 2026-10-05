@@ -101,6 +101,7 @@ riwork chat ensure                      Start the chat host if it is not running
 riwork chat list [--project ID] [--json]   List Codex and Claude chats, running or not
 riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
                 [--model NAME] [--effort LEVEL] [--title TEXT]
+riwork chat options [--json]            The models and reasoning efforts a chat is offered, per provider
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
 riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
                                         Read a chat's events after N, waiting up to M ms for the first
@@ -1934,6 +1935,16 @@ fn chat_client_command(
                 Ok(chat_line(&chat))
             }
         }
+        "options" => {
+            // The lists are the app's own: no host is started to print them.
+            ensure_empty(&args)?;
+            let options = crate::chat::choices::options_json();
+            if json {
+                json_text(&options)
+            } else {
+                Ok(chat_options_text())
+            }
+        }
         "events" => {
             let started = std::time::Instant::now();
             let options = parse_events_arguments(args)?;
@@ -2023,13 +2034,33 @@ fn chat_client_command(
             }
         }
         _ => Err(
-            "Usage: riwork chat serve|ensure|list|new|events|command|send|stop (riwork help)"
+            "Usage: riwork chat serve|ensure|list|new|options|events|command|send|stop (riwork help)"
                 .to_owned(),
         ),
     }
 }
 
 const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--title TEXT]";
+
+/// `riwork chat options` for a person: one line per provider.
+fn chat_options_text() -> String {
+    use crate::chat::{choices, model::Provider};
+    [(Provider::Codex, "codex"), (Provider::Claude, "claude")]
+        .into_iter()
+        .map(|(provider, name)| {
+            let models = choices::model_suggestions(provider);
+            format!(
+                "{name}\tmodels: {}\tefforts: {}\n",
+                if models.is_empty() {
+                    "(any name)".to_owned()
+                } else {
+                    models.join(" ")
+                },
+                choices::efforts(provider).join(" ")
+            )
+        })
+        .collect()
+}
 
 /// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
 fn resolve_chat(
