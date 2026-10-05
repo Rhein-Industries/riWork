@@ -82,6 +82,10 @@ enum ConnectionState: Equatable {
     var chatConversations: [String: ChatConversation] = [:]
     /// A `chat.create` is on its way: a second one is refused until it answers.
     var creatingChat = false
+    /// The models and efforts the desktop offers a chat (`chat.options`), read once per connection. Nil until read, and for a desktop
+    /// that offers none: then the chat shows no Model menu.
+    var chatOptions: ChatOptions?
+    var chatOptionsSupport: ChatOptionsSupport = .unknown
     /// How long `chat.events` may hold a request back, and how long the follower rests while the link is down (tests make them short).
     @ObservationIgnored let chatWaitMilliseconds: Int
     @ObservationIgnored let chatIdleInterval: Duration
@@ -490,7 +494,7 @@ enum ConnectionState: Equatable {
         // And for creating projects.
         projectCreation = .unknown
         // And for chats (the desktop's `ready` says; what it answers confirms).
-        chatSupport = .unknown
+        chatSupport = .unknown; chatOptions = nil; chatOptionsSupport = .unknown
         // And for waiting on changes: the first screen tells whether this desktop sends a `hash`.
         syncMode = .unknown; outputHash = nil; liveBackoff = LongPollBackoff(); waitSlots.reset(); outputExtensions = true; latency.reset()
         // And for paging history: the first page tells whether this desktop has `shell.history`.

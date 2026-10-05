@@ -41,9 +41,10 @@ import RiWorkCore
     }
     private struct Rig { let model: RemoteModel; let transport: ChatTransport }
     /// A model connected to a desktop with chats. A wait of 300 ms and a quick idle make the loop observable in a test.
-    private func connected(chats: [ChatInfo]? = nil, feature: Bool = true, wait: Int = 300) async throws -> Rig {
+    private func connected(chats: [ChatInfo]? = nil, feature: Bool = true, wait: Int = 300, options: Bool = true) async throws -> Rig {
         let transport = ChatTransport(chats: chats ?? [chat()])
         await transport.setFeature(feature)
+        if !options { await transport.setOptions(nil) }
         let model = RemoteModel(client: transport, keychain: try store(), defaults: defaults(), chatWaitMilliseconds: wait, chatIdleInterval: .milliseconds(20))
         await model.connect()
         XCTAssertEqual(model.state, .connected)
@@ -620,6 +621,95 @@ import RiWorkCore
         follower.cancel()
         await rig.model.disconnect()
     }
+    // MARK: Model and effort
+
+    func testTheOptionsAreAskedOncePerConnectionAndAReconnectAsksAgain() async throws {
+        let rig = try await connected()
+        // Asked as the connection learns the desktop has chats, before a chat is on screen; asking again asks nothing.
+        await eventually("read at connect") { rig.model.chatOptionsSupport == .supported }
+        await rig.model.loadChatOptions()
+        await rig.model.loadChatOptions()
+        XCTAssertEqual(rig.model.chatOptions?[.claude]?.models, ["opus", "sonnet", "haiku"])
+        XCTAssertEqual(rig.model.chatOptions?[.codex]?.efforts, ["low", "medium", "high", "xhigh"])
+        let asked = await rig.transport.count("chat.options")
+        XCTAssertEqual(asked, 1)
+        await rig.model.disconnect()
+        // A new connection may reach another build of the Mac: it is asked again.
+        await rig.transport.setOptions(nil)
+        await rig.model.connect()
+        await eventually("asked again") { await rig.transport.count("chat.options") == 2 }
+        await eventually("and believed") { rig.model.chatOptionsSupport == .unsupported && rig.model.chatOptions == nil }
+        await rig.model.disconnect()
+    }
+    func testAMacFromBeforeTheOptionsOffersNoModelAndIsNotAskedAgainButChatsGoOn() async throws {
+        let rig = try await connected(options: false)
+        await eventually("asked at connect") { rig.model.chatOptionsSupport == .unsupported }
+        await rig.model.loadChatOptions()
+        XCTAssertNil(rig.model.chatOptions)
+        XCTAssertEqual(rig.model.chatOptionsSupport, .unsupported)
+        XCTAssertEqual(rig.model.chatSupport, .supported, "the chats themselves are not given up")
+        await rig.model.loadChatOptions()
+        let asked = await rig.transport.count("chat.options")
+        XCTAssertEqual(asked, 1)
+        // A desktop without chats is not asked at all.
+        let none = try await connected(feature: false)
+        await none.model.loadChatOptions()
+        let noneAsked = await none.transport.count("chat.options")
+        XCTAssertEqual(noneAsked, 0)
+        await rig.model.disconnect(); await none.model.disconnect()
+    }
+    func testAModelOrAnEffortIsOneConfigureShownAtOnceAndConfirmedByTheDesktop() async throws {
+        let rig = try await connected(chats: [chat(provider: .claude)])
+        let conversation = rig.model.conversation(chatID)
+        // The desktop's host publishes the chat's new settings, as `configure` does on the Mac.
+        await rig.transport.handleCommands { [project] id, command in
+            guard case .configure(let model, let effort, _) = command else { return [] }
+            return [.info(ChatInfo(id: id, provider: .claude, projectID: project, cwd: "/fixture", title: "", createdAtUnix: 10, model: model ?? "sonnet", effort: effort ?? "high", state: .idle))]
+        }
+        let failure = await rig.model.setChatModel(chatID, model: "sonnet")
+        XCTAssertNil(failure)
+        XCTAssertEqual(conversation.pendingModel, "sonnet", "the menu shows the choice until the desktop's own word replaces it")
+        XCTAssertNil(conversation.pendingEffort)
+        _ = await rig.model.setChatModel(chatID, effort: "max")
+        let nothing = await rig.model.setChatModel(chatID)
+        XCTAssertNil(nothing, "nothing to change sends nothing")
+        let commands = await rig.transport.commands()
+        XCTAssertEqual(commands, [.object(["command": .string("configure"), "model": .string("sonnet")]), .object(["command": .string("configure"), "effort": .string("max")])])
+        let follower = follow(rig)
+        await eventually("confirmed") { conversation.pendingModel == nil && conversation.pendingEffort == nil && conversation.transcript.info?.effort == "max" }
+        XCTAssertEqual(conversation.transcript.info?.model, "sonnet")
+        follower.cancel()
+        await rig.model.disconnect()
+    }
+    func testAModelTheDesktopRefusesIsTakenBackAndSaidAboveTheComposer() async throws {
+        let rig = try await connected()
+        let conversation = rig.model.conversation(chatID)
+        await rig.transport.failCommand(.rpc(code: "cli_error", message: "the chat is stopped; send a message to resume it"))
+        let failure = await rig.model.setChatModel(chatID, model: "gpt-5.5", effort: "high")
+        XCTAssertEqual(failure, .failed("the chat is stopped; send a message to resume it"))
+        XCTAssertNil(conversation.pendingModel); XCTAssertNil(conversation.pendingEffort)
+        XCTAssertEqual(conversation.notice, "the chat is stopped; send a message to resume it")
+        // One that cannot be sent never leaves the phone.
+        let blank = await rig.model.setChatModel(chatID, model: " ")
+        XCTAssertNotNil(blank)
+        XCTAssertNil(conversation.pendingModel)
+        let sent = await rig.transport.commands()
+        XCTAssertEqual(sent, [.object(["command": .string("configure"), "model": .string("gpt-5.5"), "effort": .string("high")])], "the refused one only")
+        await rig.model.disconnect()
+    }
+    func testAModelChosenOnTheMacReachesThePhoneWhileItFollows() async throws {
+        let rig = try await connected()
+        let conversation = rig.model.conversation(chatID)
+        let follower = follow(rig)
+        await eventually("loaded") { conversation.feed.loaded }
+        await rig.transport.append(chatID, [.info(ChatInfo(id: chatID, provider: .codex, projectID: project, cwd: "/fixture", title: "", createdAtUnix: 10, model: "gpt-5.5-codex", effort: "xhigh", state: .running))])
+        await eventually("the Mac's choice is in") { conversation.transcript.info?.model == "gpt-5.5-codex" }
+        let menu = ChatModelMenu(choices: ChatOptions.Choices(efforts: ["low", "high"]), model: conversation.transcript.info?.model, effort: conversation.transcript.info?.effort)
+        XCTAssertEqual(menu.models, ["gpt-5.5-codex"]); XCTAssertEqual(menu.efforts, ["low", "high", "xhigh"])
+        follower.cancel()
+        await rig.model.disconnect()
+    }
+
     func testRetryOnAFailedChatSendsTheLastMessageAgainOnlyWhenAskedTo() async throws {
         let rig = try await connected()
         await rig.transport.append(chatID, [.itemStarted(ChatItem(id: "u", status: .completed, body: .userMessage("run the tests"))), .state(.failed("process exited"))])

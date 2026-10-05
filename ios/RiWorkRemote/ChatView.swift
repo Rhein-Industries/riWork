@@ -112,13 +112,24 @@ private struct ChatToolbar: View {
     }
     private var connected: Bool { model.state == .connected }
     private var meter: ChatUsageMeter? { conversation.transcript.usage.map(ChatUsageMeter.init) }
+    /// The Model menu, when the desktop offers models for this chat's kind; an older desktop offers none, and there is no menu.
+    private var modelChoices: ChatModelMenu? {
+        guard let choices = model.chatOptions?[chat.provider] else { return nil }
+        return ChatModelMenu(choices: choices, model: conversation.pendingModel ?? chat.model, effort: conversation.pendingEffort ?? chat.effort)
+    }
+    /// The "Other model…" alert and what is typed in it.
+    @State private var typingModel = false
+    @State private var typedModel = ""
 
     var body: some View {
+        let choices = modelChoices
         VStack(spacing: 0) {
             HStack(spacing: 2) {
                 if style.native {
-                    // Native: the controls on glass (iOS 26), as the workspace bar has them.
+                    // Native: the controls on glass (iOS 26), as the workspace bar has them. Mode and Model each sit on a capsule of
+                    // their own; the Model one gives way first when the bar is short of room.
                     modeMenu.nativeGlass(style, in: Capsule())
+                    if let choices { modelMenu(choices).nativeGlass(style, in: Capsule()).layoutPriority(-1) }
                     Spacer(minLength: 4)
                     NativeGlassGroup(style: style) {
                         compactButton.nativeGlass(style, in: Capsule())
@@ -126,6 +137,7 @@ private struct ChatToolbar: View {
                     }
                 } else {
                     modeMenu
+                    if let choices { modelMenu(choices).layoutPriority(-1) }
                     Spacer(minLength: 4)
                     compactButton
                     optionsMenu
@@ -145,6 +157,59 @@ private struct ChatToolbar: View {
             if !style.glass { DesktopRule() }
         }
         .background(style.glass ? style.surface : style.panel)
+        .alert("Other model", isPresented: $typingModel) {
+            TextField("Model name", text: $typedModel).autocorrectionDisabled().textInputAutocapitalization(.never)
+            Button("Use") { if let name = ChatSetting.typedModel(typedModel) { choose(model: name) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The name goes to \(chat.provider.title) as it is, as one typed on the Mac does; \(chat.provider.title) says if it does not know it.")
+        }
+    }
+
+    /// Model and effort in one pull-down, in two sections with a tick on what the chat runs. The button shows the model and, after it,
+    /// the effort; a long model name is cut in the middle, the effort (a short word) never. It is not held back while a turn runs: the
+    /// Mac's tab is not either (Codex takes the change from its next turn, Claude at once or after the turn).
+    private func modelMenu(_ choices: ChatModelMenu) -> some View {
+        Menu {
+            Section("Model") {
+                Picker("Model", selection: Binding(get: { choices.model ?? "" }, set: { name in choose(model: name) })) {
+                    ForEach(choices.models, id: \.self) { name in Text(name).tag(name) }
+                }
+                .pickerStyle(.inline)
+                Button("Other model…", systemImage: "character.cursor.ibeam") { typedModel = choices.model ?? ""; typingModel = true }
+            }
+            if !choices.efforts.isEmpty {
+                Section("Effort") {
+                    Picker("Effort", selection: Binding(get: { choices.effort ?? "" }, set: { effort in choose(effort: effort) })) {
+                        ForEach(choices.efforts, id: \.self) { effort in Text(effort).tag(effort) }
+                    }
+                    .pickerStyle(.inline)
+                }
+            }
+        } label: {
+            modelLabel(choices)
+                .foregroundStyle(style.text).padding(.horizontal, 8)
+                .frame(minHeight: style.pt(40)).contentShape(Rectangle())
+        }
+        .disabled(!connected)
+        .accessibilityLabel("Model").accessibilityValue(choices.spoken)
+        .accessibilityHint(choices.efforts.isEmpty ? "Choose the model" : "Choose the model and the reasoning effort")
+    }
+    private func modelLabel(_ choices: ChatModelMenu) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "cpu").accessibilityHidden(true)
+            Text(choices.title).font(style.face(11, bold: true, relativeTo: .caption)).lineLimit(1).truncationMode(.middle)
+            if let detail = choices.detail {
+                Text("· " + detail).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1).fixedSize()
+            }
+            Image(systemName: "chevron.up.chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
+        }
+    }
+    private func choose(model name: String? = nil, effort: String? = nil) {
+        let model = name.flatMap { $0 == (conversation.pendingModel ?? chat.model) ? nil : $0 }
+        let effort = effort.flatMap { $0 == (conversation.pendingEffort ?? chat.effort) ? nil : $0 }
+        guard model != nil || effort != nil else { return }
+        Task { await self.model.setChatModel(chat.id, model: model, effort: effort) }
     }
 
     private var modeMenu: some View {

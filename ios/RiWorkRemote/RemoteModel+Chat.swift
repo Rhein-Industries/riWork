@@ -4,6 +4,9 @@ import RiWorkCore
 
 /// Whether the desktop has chats, learned from `ready.features.chat` and from what it answers, and reset by every new connection.
 enum ChatSupport: Equatable { case unknown, supported, unsupported }
+/// Whether the desktop offers models and efforts (`chat.options`): asked once per connection; `unsupported` for one from before them, which
+/// still takes a chat's other commands.
+enum ChatOptionsSupport: Equatable { case unknown, asking, supported, unsupported }
 
 /// One open chat as the phone holds it: what has been read of it, what the person has typed and not sent, and what is on its way.
 /// It outlives the screen (leaving a chat and coming back finds the transcript where it was, and the reading goes on from there), but not
@@ -19,6 +22,9 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var expanded: Set<String> = []
     /// The mode just chosen, shown until the desktop says so itself.
     var pendingMode: ChatApprovalMode?
+    /// The model and the effort just chosen, shown the same way.
+    var pendingModel: String?
+    var pendingEffort: String?
     /// Counts requests to go to the end of the transcript: a message sent, the menu.
     private(set) var jumps = 0
     func jumpToEnd() { jumps &+= 1 }
@@ -37,6 +43,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     @ObservationIgnored var follower: UUID?
     @ObservationIgnored var lastUsed = ContinuousClock.now
     @ObservationIgnored var modeExpiry: Task<Void, Never>?
+    @ObservationIgnored var settingExpiry: Task<Void, Never>?
 
     init(id: String) { self.id = id }
 
@@ -45,6 +52,8 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     func accept(_ reply: ChatEventsReply, since: UInt64) -> ChatFeed.Outcome {
         let outcome = feed.accept(reply, since: since)
         if let pending = pendingMode, transcript.info?.approvalMode == pending { pendingMode = nil }
+        if let pending = pendingModel, transcript.info?.model == pending { pendingModel = nil }
+        if let pending = pendingEffort, transcript.info?.effort == pending { pendingEffort = nil }
         // A request the desktop has resolved needs no hiding any more; one it has asked again does.
         let waiting = Set(transcript.approvals.map(\.requestID) + transcript.questions.map(\.requestID))
         answered.formIntersection(waiting)
@@ -368,6 +377,54 @@ extension RemoteModel {
         }
         return nil
     }
+    // MARK: Model and effort
+
+    /// Asks the desktop once per connection which models and efforts it offers. A desktop from before them (an older connector or CLI)
+    /// offers none, and the Model menu stays away; a read that failed on the way is asked again with the next connection. It runs as the
+    /// connection learns the desktop has chats, so the answer is in before a chat is on screen.
+    func loadChatOptions() async {
+        guard state == .connected, chatSupport != .unsupported, desktopFeatures.chat, chatOptionsSupport == .unknown else { return }
+        let token = generation
+        chatOptionsSupport = .asking
+        do {
+            let options = try await client.chatOptions()
+            guard generation == token else { return }
+            chatOptions = options; chatOptionsSupport = .supported
+        } catch {
+            guard generation == token else { return }
+            switch ChatControlError.from(error, operation: .options) {
+            // `unsupported RPC method` from an older connector, "update RiWork" from an older CLI.
+            case .unsupported, .failed, .invalid, .unreadableReply: chatOptionsSupport = .unsupported
+            default: chatOptionsSupport = .unknown
+            }
+        }
+    }
+
+    /// Changes the model, or the effort, the chat's next turns run with; the desktop takes it during a turn too, as its own tab does. The
+    /// menu shows the choice at once and takes it back if the desktop refuses it.
+    @discardableResult
+    func setChatModel(_ chatID: String, model: String? = nil, effort: String? = nil) async -> ChatControlError? {
+        guard model != nil || effort != nil else { return nil }
+        let conversation = conversation(chatID)
+        let previous = (conversation.pendingModel, conversation.pendingEffort)
+        if let model { conversation.pendingModel = model }
+        if let effort { conversation.pendingEffort = effort }
+        let failure = await sendChatCommand(chatID, .configure(model: model, effort: effort))
+        if let failure {
+            (conversation.pendingModel, conversation.pendingEffort) = previous
+            conversation.notice = failure.message
+            return failure
+        }
+        conversation.notice = nil
+        // As for the mode: the desktop's `info` event replaces the choice, and a choice it never confirms is not kept.
+        conversation.settingExpiry?.cancel()
+        conversation.settingExpiry = Task { [weak conversation] in
+            try? await Task.sleep(for: .seconds(10))
+            if !Task.isCancelled { conversation?.pendingModel = nil; conversation?.pendingEffort = nil }
+        }
+        return nil
+    }
+
     /// Stops the agent's process. The chat stays; the next message starts it again.
     @discardableResult
     func stopChat(_ chatID: String) async -> ChatControlError? {

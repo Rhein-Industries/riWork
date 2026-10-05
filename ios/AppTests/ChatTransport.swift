@@ -34,6 +34,12 @@ actor ChatTransport: RemoteTransport {
     var onCommand: (@Sendable (String, ChatCommand) -> [ChatEvent])?
     /// What `appearance.get` gives; nil is "not published", and the built-in look.
     var appearance: JSONValue?
+    /// What `chat.options` gives, as the desktop's chat tabs list them; nil is a connector from before it ("unsupported RPC method").
+    var options: JSONValue? = ChatTransport.desktopOptions
+    static let desktopOptions: JSONValue = .object(["providers": .object([
+        "codex": .object(["models": .array([]), "efforts": .array(["low", "medium", "high", "xhigh"].map(JSONValue.string))]),
+        "claude": .object(["models": .array(["opus", "sonnet", "haiku"].map(JSONValue.string)), "efforts": .array(["low", "medium", "high", "xhigh", "max"].map(JSONValue.string))])
+    ])])
     private var created = 0
 
     init(chats: [ChatInfo] = [], appearance: JSONValue? = nil) { self.chats = chats; self.appearance = appearance }
@@ -47,6 +53,7 @@ actor ChatTransport: RemoteTransport {
     func gateCommands(_ on: Bool) { gatedCommands = on }
     func setGone(_ gone: Bool) { chatsGone = gone }
     func setChats(_ list: [ChatInfo]) { chats = list }
+    func setOptions(_ value: JSONValue?) { options = value }
     func handleCommands(_ handler: (@Sendable (String, ChatCommand) -> [ChatEvent])?) { onCommand = handler }
     func drop() { connected = false }
     func append(_ chat: String, _ events: [ChatEvent]) {
@@ -124,6 +131,9 @@ actor ChatTransport: RemoteTransport {
             if let chat = params["chat_id"]?.string, let command = try? params["command"]?.decode(ChatCommand.self), let onCommand { append(chat, onCommand(chat, command)) }
             return .object(["status": .string("ok")])
         case "chat.stop": return .object(["status": .string("stopped")])
+        case "chat.options":
+            guard chatFeature, let options else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            return options
         default: throw RemoteError.protocolViolation("Unknown method \(method)")
         }
     }

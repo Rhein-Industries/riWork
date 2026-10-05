@@ -51,7 +51,7 @@ import RiWorkCore
     private struct Rig {
         let model: RemoteModel, transport: ChatTransport, window: UIWindow, host: UIHostingController<AnyView>, keychain: KeychainStore
     }
-    private func makeRig(chats: [ChatInfo]? = nil, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal) async throws -> Rig {
+    private func makeRig(chats: [ChatInfo]? = nil, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal, options: Bool = true) async throws -> Rig {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show a chat in") }
         let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
         let pairing = try Pairing.parse("""
@@ -63,6 +63,7 @@ import RiWorkCore
         let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
         defaultsNames.append(suite)
         let transport = ChatTransport(chats: chats ?? [chat()], appearance: appearance(look))
+        if !options { await transport.setOptions(nil) }
         let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300, chatIdleInterval: .milliseconds(20),
                                 hardwareKeyboard: HardwareKeyboardMonitor(probe: { hardwareKeyboard }))
         await model.connect()
@@ -372,6 +373,92 @@ import RiWorkCore
         try snapshot(rig, name: named("chat-question-failed", look))
         await finish(rig)
     }
+    // MARK: The Model menu
+
+    /// The pull-downs of the chat's toolbar, left to right: the views SwiftUI gives a context menu that opens on a tap. Their spoken
+    /// labels are not on those views, so the toolbar is found as the first row from the top that has more than one of them (the tab
+    /// strip above it has one).
+    private func toolbarMenus(_ rig: Rig) -> [(view: UIView, menu: UIContextMenuInteraction, frame: CGRect)] {
+        func all(_ view: UIView) -> [(view: UIView, menu: UIContextMenuInteraction, frame: CGRect)] {
+            let own = view.interactions.compactMap { $0 as? UIContextMenuInteraction }.first.map { [(view: view, menu: $0, frame: view.convert(view.bounds, to: rig.window))] } ?? []
+            return (view is UITextView || view === rig.host.view ? [] : own) + view.subviews.flatMap(all)
+        }
+        let rows = Dictionary(grouping: all(rig.host.view)) { Int($0.frame.minY.rounded()) }
+        return rows.keys.sorted().lazy.compactMap { rows[$0] }.first { $0.count > 1 }?.sorted { $0.frame.minX < $1.frame.minX } ?? []
+    }
+    private func modelChat(_ model: String?, effort: String? = "high") -> ChatInfo {
+        var info = chat(state: .running, mode: .autoEdit)
+        info.model = model; info.effort = effort
+        return info
+    }
+
+    func testTheModelMenuIsBetweenModeAndCompactAndAnOlderMacHasNone() async throws {
+        let rig = try await makeRig(chats: [modelChat("claude-sonnet-4-5-20250929")])
+        await rig.transport.append(chatID, [.info(modelChat("claude-sonnet-4-5-20250929"))])
+        _ = try await openChat(rig)
+        await eventually("the options are in") { rig.model.chatOptionsSupport == .supported }
+        await eventually("mode, model and ⋯ are on the toolbar") { self.toolbarMenus(rig).count == 3 }
+        // A long name is cut, not the controls: the mode menu keeps its width, and Compact and ⋯ their place at the end.
+        let menus = toolbarMenus(rig)
+        if menus.count == 3 {
+            let (mode, model, more) = (menus[0].frame, menus[1].frame, menus[2].frame)
+            XCTAssertGreaterThan(model.width, 80, "the model's name has room to be read")
+            XCTAssertGreaterThanOrEqual(model.minX, mode.maxX)
+            XCTAssertLessThanOrEqual(model.maxX, more.minX - 80, "Compact keeps its room between the model and ⋯")
+            XCTAssertEqual(more.maxX, rig.window.bounds.width, accuracy: 8)
+        }
+        await finish(rig)
+
+        let older = try await makeRig(chats: [modelChat("opus")], options: false)
+        _ = try await openChat(older)
+        await eventually("the Mac says it has no options") { older.model.chatOptionsSupport == .unsupported }
+        await eventually("mode and ⋯ are on the toolbar") { self.toolbarMenus(older).count == 2 }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(toolbarMenus(older).count, 2, "no Model menu for a Mac that offers no models")
+        await finish(older)
+    }
+
+    /// Pictures of the toolbar and of the open Model menu in the three looks, taken by the simulator itself (a system menu and Liquid
+    /// Glass are drawn only on screen): with `RIWORK_CHAT_MODEL_SCREENSHOTS` set to a directory, this leaves `<name>.ready` while a state
+    /// is on screen and waits for `<name>.png`, which a loop running `xcrun simctl io <udid> screenshot` beside the test takes.
+    func testPicturesOfTheModelMenu() async throws {
+        guard let path = ProcessInfo.processInfo.environment["RIWORK_CHAT_MODEL_SCREENSHOTS"] else { throw XCTSkip("Set RIWORK_CHAT_MODEL_SCREENSHOTS") }
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        func save(_ name: String) async throws {
+            let ready = directory.appendingPathComponent(name + ".ready"), shot = directory.appendingPathComponent(name + ".png")
+            try? FileManager.default.removeItem(at: shot)
+            try Data().write(to: ready)
+            let deadline = Date().addingTimeInterval(20)
+            while !FileManager.default.fileExists(atPath: shot.path), Date() < deadline { try await Task.sleep(for: .milliseconds(200)) }
+            try? FileManager.default.removeItem(at: ready)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: shot.path), "no screenshot taken for \(name)")
+        }
+        let bounds = UIScreen.main.bounds
+        for look in Look.allCases {
+            for (label, model) in [("short", "opus"), ("long", "claude-sonnet-4-5-20250929")] {
+                let rig = try await makeRig(chats: [modelChat(model)], hardwareKeyboard: true, width: bounds.width, height: bounds.height, look: look)
+                rig.window.windowLevel = .alert + 1
+                await rig.transport.append(chatID, conversationEvents() + [.info(modelChat(model))])
+                _ = try await openChat(rig)
+                rig.window.endEditing(true)
+                await eventually("the menu is on the toolbar") { self.toolbarMenus(rig).count == 3 }
+                try await Task.sleep(for: .milliseconds(600))
+                try await save(named("chat-model-toolbar-\(label)", look))
+                if label == "long", let (view, menu, _) = toolbarMenus(rig).dropFirst().first {
+                    // The tap that opens a pull-down, as UIKit's own button does it.
+                    let open = NSSelectorFromString("_presentMenuAtLocation:")
+                    if menu.responds(to: open) { menu.perform(open, with: NSValue(cgPoint: CGPoint(x: view.bounds.midX, y: view.bounds.midY))) }
+                    try await Task.sleep(for: .milliseconds(900))
+                    try await save(named("chat-model-menu", look))
+                    menu.dismissMenu()
+                    try await Task.sleep(for: .milliseconds(400))
+                }
+                await finish(rig)
+            }
+        }
+    }
+
     func testTheNewTerminalSheetOffersTheChatKinds() async throws {
         let rig = try await makeRig()
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
