@@ -25,6 +25,8 @@ struct ChatScreen: View {
     @State private var height: CGFloat = 800
     /// The photo or file picker of the composer's paperclip.
     @State private var picking: AttachmentChoice?
+    /// Scrolling room the bar over the composer gives up so the transcript keeps its last message in view (`transcriptChanged`).
+    @State private var squeeze: CGFloat = 0
 
     private var conversation: ChatConversation { model.chatConversations[chat.id] ?? ChatConversation(id: chat.id) }
     private var state: ChatState { model.chatState(chat) }
@@ -39,12 +41,13 @@ struct ChatScreen: View {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
             ChatStatusLines(model: model, chat: info, conversation: conversation, state: state)
             ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty) }
             if let approval = approvals.first {
-                ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2),
+                ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2 - squeeze),
                                 busy: !connected || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
                     .id(approval.requestID)
             } else if let question = questions.first {
-                ChatQuestionBar(question: question, scrollHeight: max(100, height * 0.3), busy: !connected || conversation.answered.contains(question.requestID)) { form in
+                ChatQuestionBar(question: question, scrollHeight: max(leastQuestionScroll, height * 0.3 - squeeze), busy: !connected || conversation.answered.contains(question.requestID)) { form in
                     Task { await model.answerChatQuestion(chat.id, form) }
                 }
                 .id(question.requestID)
@@ -87,6 +90,18 @@ struct ChatScreen: View {
         }
     }
 
+    /// The least the questions may scroll in: a question and an answer, at least.
+    private var leastQuestionScroll: CGFloat { style.native ? 60 : 100 }
+    /// The least of the transcript that stays on screen above a request or question bar: the last message, at one line.
+    private var leastTranscript: CGFloat { style.pt(48) }
+    /// In Native, where the bars are taller, a bar over a short screen (the keyboard up) gives up scrolling room until the transcript
+    /// keeps `leastTranscript`, and takes it back as the screen grows again. Each new height moves the bar by the difference, so it
+    /// settles at once; the terminal look keeps its bars as they were.
+    private func transcriptChanged(_ transcript: CGFloat, barShown: Bool) {
+        guard style.native, barShown else { if squeeze != 0 { squeeze = 0 }; return }
+        let next = min(max(0, squeeze + leastTranscript - transcript), height * 0.3)
+        if abs(next - squeeze) >= 1 { squeeze = next }
+    }
     private func decide(_ approval: ChatApproval, _ decision: ChatDecision) {
         Task { await model.decideChatApproval(chat.id, approval, decision) }
     }
@@ -134,9 +149,14 @@ private struct ChatToolbar: View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
                 if style.native {
-                    // Native: the controls on glass (iOS 26), as the workspace bar has them.
-                    modeMenu.nativeGlass(style, in: Capsule())
-                    modelChip
+                    // Native: the controls on glass (iOS 26), as the workspace bar has them; the model chip is a capsule of its own
+                    // beside the mode menu's, the two in one container as the controls on the right are.
+                    NativeGlassGroup(style: style) {
+                        modeMenu.nativeGlass(style, in: Capsule())
+                        modelChip
+                    }
+                    // The chip gives way first when the bar is full, as it does in the terminal look.
+                    .layoutPriority(-1)
                     Spacer(minLength: 4)
                     NativeGlassGroup(style: style) {
                         compactButton.nativeGlass(style, in: Capsule())
@@ -158,7 +178,7 @@ private struct ChatToolbar: View {
                     choosingModel = true
                 } label: {
                     Label(chat.model ?? "Provider default model", systemImage: "cpu")
-                        .font(style.mono(10, relativeTo: .caption2)).lineLimit(1)
+                        .font(style.face(10, relativeTo: .caption2)).lineLimit(1)
                 }
                 .buttonStyle(.plain).disabled(!connected || state.isBusy || state == .starting)
                 .accessibilityLabel("Change model").accessibilityValue(chat.model ?? "Provider default")
@@ -303,9 +323,23 @@ private struct ChatStatusLines: View {
             trailing()
         }
         .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint.opacity(tint == style.muted ? 0 : 0.10))
-        .overlay(alignment: .bottom) { DesktopRule() }
+        .modifier(StatusLineSurface(tint: tint))
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// What a status line sits on. The terminal look: a band in its signal color with a rule under it. Native: a rounded tinted panel set
+/// in from the edges, as the request bars and the upload line are, and a muted line (Starting, Stopped) on nothing at all.
+private struct StatusLineSurface: ViewModifier {
+    @Environment(\.desktopStyle) private var style
+    let tint: Color
+    func body(content: Content) -> some View {
+        let quiet = tint == style.muted
+        if style.native {
+            content.background(tint.opacity(quiet ? 0 : 0.12), in: style.block(12)).padding(.horizontal, 8).padding(.top, quiet ? 0 : 6)
+        } else {
+            content.background(tint.opacity(quiet ? 0 : 0.10)).overlay(alignment: .bottom) { DesktopRule() }
+        }
     }
 }
 
@@ -326,6 +360,7 @@ private struct ChatTranscriptList: View {
 
     var body: some View {
         let transcript = conversation.transcript
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if !conversation.feed.loaded {
@@ -337,7 +372,7 @@ private struct ChatTranscriptList: View {
                     ChatItemRow(item: item, provider: provider, open: open(for: item), toggle: toggle).equatable()
                 }
                 if state == .running || state == .waiting || state == .starting { workingRow }
-                Color.clear.frame(height: 6)
+                Color.clear.frame(height: 6).id(Self.end)
             }
             .padding(.top, 4)
         }
@@ -351,14 +386,18 @@ private struct ChatTranscriptList: View {
             ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height,
                           topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom)
         } action: { old, new in
-            if sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven) == .scrollToBottom { position.scrollTo(edge: .bottom) }
+            // The bottom moved away from a view that follows it (a bar came up over the transcript, the transcript grew). The position
+            // already says "bottom", so setting it again does nothing: the reader scrolls there itself.
+            if sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven) == .scrollToBottom { proxy.scrollTo(Self.end, anchor: .bottom) }
         }
         .onChange(of: transcript.items.count) { _, count in sticky.contentChanged(end: count, epoch: 0) }
         .onChange(of: conversation.jumps) { _, _ in jump() }
         .onChange(of: conversation.feed.loaded) { _, _ in jump() }
         .overlay(alignment: .bottomTrailing) { pill }
         .accessibilityLabel("\(provider.chatTitle) conversation")
+        }
     }
+    private static let end = "chat-transcript-end"
 
     private func open(for item: ChatItem) -> Set<String> {
         guard !conversation.expanded.isEmpty else { return [] }

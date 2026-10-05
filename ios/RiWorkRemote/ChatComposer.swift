@@ -437,19 +437,31 @@ struct ChatQuestionBar: View {
             HStack(spacing: 6) {
                 Image(systemName: "questionmark.bubble").foregroundStyle(style.accent).accessibilityHidden(true)
                 Text(question.questions.count > 1 ? "Questions" : "Question").font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                // Native: Send sits in the header, as a sheet's Done does, and leaves the answers the room under it.
+                if style.native {
+                    Spacer(minLength: 4)
+                    sendButton { Text("Send") }.buttonStyle(DesktopButtonStyle(prominent: true, compact: true))
+                }
             }
             BoundedScroll(maxHeight: scrollHeight) {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(question.questions.indices, id: \.self) { prompt in promptView(prompt) }
                 }
             }
-            Button { submit(form) } label: { Text("Send answer").frame(maxWidth: .infinity) }
-                .buttonStyle(DesktopButtonStyle(prominent: true)).disabled(busy || !form.isComplete)
-                .accessibilityHint(form.isComplete ? "" : "Answer every question first")
+            if !style.native {
+                sendButton { Text("Send answer").frame(maxWidth: .infinity) }.buttonStyle(DesktopButtonStyle(prominent: true))
+            }
         }
         .padding(10).frame(maxWidth: .infinity, alignment: .leading)
         .chatRequestSurface(style, tint: style.accent, opacity: 0.10)
         .accessibilityElement(children: .contain)
+    }
+
+    private func sendButton(@ViewBuilder _ label: () -> some View) -> some View {
+        Button { submit(form) } label: { label() }
+            .disabled(busy || !form.isComplete)
+            .accessibilityLabel("Send answer")
+            .accessibilityHint(form.isComplete ? "" : "Answer every question first")
     }
 
     @ViewBuilder private func promptView(_ index: Int) -> some View {
@@ -457,7 +469,8 @@ struct ChatQuestionBar: View {
         VStack(alignment: .leading, spacing: 6) {
             if let header = prompt.header, !header.isEmpty { ChatCaption(text: header) }
             Text(prompt.question).font(style.prose).foregroundStyle(style.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            if prompt.multiSelect { Text("Choose any").font(style.system(.caption)).foregroundStyle(style.muted) }
+                .boundedScrollBreak()
+            if prompt.multiSelect { Text("Choose any").font(style.system(.caption)).foregroundStyle(style.muted).boundedScrollBreak() }
             ForEach(prompt.options.indices, id: \.self) { option in
                 let chosen = form.isChosen(prompt: index, option: option)
                 Button { form.toggle(prompt: index, option: option) } label: {
@@ -476,12 +489,14 @@ struct ChatQuestionBar: View {
                     .background(chosen ? style.active : .clear, in: style.block()).overlay(style.block().stroke(chosen ? style.accent : style.divider, lineWidth: 1)).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .boundedScrollBreak()
                 .accessibilityLabel(prompt.options[option].label).accessibilityHint(prompt.options[option].description)
                 .accessibilityAddTraits(chosen ? .isSelected : [])
             }
             TextField(prompt.options.isEmpty ? "Your answer" : "Or answer in your own words", text: Binding(get: { form.text[index] }, set: { form.setText(prompt: index, $0) }), axis: .vertical)
                 .lineLimit(1...4).modifier(DesktopField())
                 .font(style.prose)
+                .boundedScrollBreak()
                 .autocorrectionDisabled()
                 .accessibilityLabel("Your own answer to: \(prompt.question)")
         }

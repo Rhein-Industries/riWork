@@ -511,8 +511,8 @@ struct TerminalTabsView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Label { Text(session.title) } icon: {
                     Image(systemName: session.provider?.glyph ?? "point.3.connected.trianglepath.dotted").foregroundStyle(style.magenta)
-                }.font(style.mono(12, relativeTo: .subheadline)).lineLimit(1)
-                Text(opening == .needsUpdate ? "Update the Mac" : "Not ready").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
+                Text(opening == .needsUpdate ? "Update the Mac" : "Not ready").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
             }
             .tabChrome(selected: selected, waiting: false)
             .opacity(selected ? 1 : 0.7)
@@ -568,11 +568,24 @@ private struct NoteLine: View {
             }
             .font(style.system(.footnote)).foregroundStyle(style.muted)
             .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
-            .background(style.panel)
+            .modifier(NoteSurface())
         }
         .buttonStyle(.plain)
         .accessibilityHint("Dismisses the note")
         .onAppear { UIAccessibility.post(notification: .announcement, argument: text) }
+    }
+    /// A band of the panel color in the terminal look; in Native a rounded panel set in from the edges, on glass on iOS 26, as the
+    /// upload line is.
+    private struct NoteSurface: ViewModifier {
+        @Environment(\.desktopStyle) private var style
+        func body(content: Content) -> some View {
+            if style.native {
+                content.background(style.glass ? Color.clear : style.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .nativeGlass(style, in: RoundedRectangle(cornerRadius: 12, style: .continuous)).padding(.horizontal, 8).padding(.vertical, 4)
+            } else {
+                content.background(style.panel)
+            }
+        }
     }
 }
 

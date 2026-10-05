@@ -47,8 +47,8 @@ struct NewChatModelSection: View {
                 Text(detail).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
             }
             .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: style.pt(48), alignment: .leading)
-            .background(selected ? style.active : .clear).contentShape(Rectangle())
             .overlay { if selected { ring(.chatModel) } }
+            .desktopRowFill(style, selected: selected)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(last ? "new-chat-model-last" : "new-chat-model-default")
@@ -58,6 +58,6 @@ struct NewChatModelSection: View {
 
     private func ringed(_ field: NewTerminalForm.Field) -> Bool { sheet.keyboardInUse && sheet.form.focus == field }
     private func ring(_ field: NewTerminalForm.Field) -> some View {
-        Rectangle().stroke(style.accent, lineWidth: 2).opacity(ringed(field) ? 1 : 0).allowsHitTesting(false)
+        DesktopRing(shown: ringed(field))
     }
 }

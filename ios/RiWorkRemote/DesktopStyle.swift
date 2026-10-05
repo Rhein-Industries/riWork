@@ -269,4 +269,31 @@ extension View {
     @ViewBuilder func desktopSheetSurface(_ style: DesktopStyle) -> some View {
         if style.native { background(style.surface) } else { background(style.background).presentationCornerRadius(8) }
     }
+    /// The fill of a row that can be chosen in a sheet's list (a kind, a model): a band across the sheet in the terminal look; in Native,
+    /// a rounded highlight set in from the sheet's edges, as iOS marks the chosen row. The whole width still takes the tap.
+    @ViewBuilder func desktopRowFill(_ style: DesktopStyle, selected: Bool) -> some View {
+        if style.native {
+            background(selected ? style.active : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous)).padding(.horizontal, 8).contentShape(Rectangle())
+        } else {
+            background(selected ? style.active : .clear).contentShape(Rectangle())
+        }
+    }
+    /// The bottom of a sheet that holds its main button: a panel under a rule; on glass, the sheet's own glass with no rule.
+    @ViewBuilder func desktopSheetFooter(_ style: DesktopStyle) -> some View {
+        background(style.glass ? style.surface : style.panel)
+    }
+}
+
+/// The keyboard's ring around what it is on in a sheet: square in the terminal look, rounded like the row in Native.
+struct DesktopRing: View {
+    @Environment(\.desktopStyle) private var style
+    var shown: Bool
+    var capsule = false
+    var body: some View {
+        Group {
+            if capsule && style.native { Capsule().stroke(style.accent, lineWidth: 2) }
+            else { RoundedRectangle(cornerRadius: style.native ? 10 : 0, style: .continuous).stroke(style.accent, lineWidth: 2) }
+        }
+        .opacity(shown ? 1 : 0).allowsHitTesting(false)
+    }
 }

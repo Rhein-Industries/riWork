@@ -103,15 +103,53 @@ struct CopyButton: View {
 
 /// Scrolling content that takes the room it needs up to `maxHeight`, and scrolls only past that. (A bare `ScrollView` is flexible, and
 /// next to the transcript, which is too, it is given next to no room.)
+///
+/// In Native, content that does not fit is cut between two of its rows (those marked `boundedScrollBreak()`), never through one, and the
+/// scroll indicator flashes to say there is more.
 struct BoundedScroll<Content: View>: View {
+    @Environment(\.desktopStyle) private var style
     let maxHeight: CGFloat
     @ViewBuilder var content: () -> Content
     @State private var height: CGFloat = 0
+    @State private var breaks: [CGFloat] = []
     var body: some View {
         ScrollView {
-            content().onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+            content()
+                .coordinateSpace(.named(BoundedScrollBreaks.space))
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                .onPreferenceChange(BoundedScrollBreaks.self) { breaks = $0 }
         }
         .scrollBounceBehavior(.basedOnSize)
-        .frame(height: height > 0 ? min(height, maxHeight) : nil)
+        .scrollIndicatorsFlash(trigger: style.native ? shown : 0)
+        .frame(height: height > 0 ? shown : nil)
+    }
+    private var shown: CGFloat {
+        BoundedScrollBreaks.visibleHeight(content: height, maxHeight: maxHeight, breaks: style.native ? breaks : [])
+    }
+}
+
+/// Where a `BoundedScroll`'s content may be cut: the bottoms of its rows, in the content's own coordinates.
+struct BoundedScrollBreaks: PreferenceKey {
+    static let space = "bounded-scroll"
+    static let defaultValue: [CGFloat] = []
+    static func reduce(value: inout [CGFloat], nextValue: () -> [CGFloat]) { value += nextValue() }
+    /// The height shown: all of the content when it fits; else the room, cut at the lowest row bottom inside it unless that would give
+    /// up more than half of it (then a row is cut, as before).
+    static func visibleHeight(content: CGFloat, maxHeight: CGFloat, breaks: [CGFloat]) -> CGFloat {
+        guard content > maxHeight else { return content }
+        guard let cut = breaks.filter({ $0 <= maxHeight }).max(), cut >= maxHeight / 2 else { return maxHeight }
+        return cut
+    }
+}
+
+extension View {
+    /// Marks this row's bottom as a place where a `BoundedScroll` that cannot show everything may end.
+    func boundedScrollBreak() -> some View {
+        background {
+            GeometryReader { proxy in
+                // The outline drawn on a row's edge reaches a point past it.
+                Color.clear.preference(key: BoundedScrollBreaks.self, value: [proxy.frame(in: .named(BoundedScrollBreaks.space)).maxY + 1])
+            }
+        }
     }
 }

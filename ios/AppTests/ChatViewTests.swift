@@ -459,10 +459,58 @@ import RiWorkCore
         }
     }
     func testAQuestionAndTheStatusLinesDraw() async throws {
-        for look in Look.allCases { try await questionAndStatusLines(look) }
+        for look in Look.allCases { await finish(try await questionAndStatusLines(look)) }
     }
-    private func questionAndStatusLines(_ look: Look) async throws {
-        let rig = try await makeRig(chats: [chat(state: .failed("the process exited with status 1"))], look: look)
+    /// The same on the room the software keyboard leaves (the screen less the keyboard's 336 points). In Native the question gives up
+    /// scrolling room so the last message stays whole above it, and what it scrolls ends between two answers, not through one.
+    func testAQuestionAndTheStatusLinesLeaveTheLastMessageWholeOverTheKeyboard() async throws {
+        for look in Look.allCases {
+            let rig = try await questionAndStatusLines(look, height: 874 - 336, name: "chat-question-failed-keyboard")
+            if look != .terminal {
+                let transcript = try XCTUnwrap(transcriptScroll(rig))
+                XCTAssertGreaterThanOrEqual(transcript.bounds.height, 47, "\(look): the transcript keeps room for its last message")
+                XCTAssertLessThanOrEqual(transcript.contentSize.height - (transcript.contentOffset.y + transcript.bounds.height - transcript.adjustedContentInset.bottom), 1,
+                                         "\(look): and is at its bottom")
+            }
+            await finish(rig)
+        }
+    }
+    /// A bar that comes up over a transcript at its bottom (a failure, a question) keeps the transcript at its bottom: the last message is
+    /// not left under it.
+    func testTheTranscriptStaysAtItsBottomWhenABannerOrAQuestionComesUp() async throws {
+        for look in Look.allCases {
+            let rig = try await makeRig(chats: [chat(state: .running)], look: look)
+            let messages = (1...12).map { ChatItem(id: "m\($0)", turnID: "t0", status: .completed, body: $0 % 2 == 0 ? .agentMessage("Answer \($0), a line or two of it.") : .userMessage("Question \($0)")) }
+            await rig.transport.append(chatID, [.info(chat(state: .running)), .turnStarted(turnID: "t0")] + messages.map { .itemCompleted($0) } + [.state(.running)])
+            _ = try await openChat(rig)
+            await eventually("the transcript is in") { rig.model.conversation(self.chatID).transcript.items.count == 12 }
+            func atBottom() -> Bool {
+                guard let list = self.transcriptScroll(rig) else { return false }
+                return list.contentSize.height - (list.contentOffset.y + list.bounds.height - list.adjustedContentInset.bottom) <= 1
+            }
+            await eventually("\(look): at the bottom") { atBottom() }
+            await rig.transport.append(chatID, [.turnCompleted(turnID: "t0", outcome: .completed), .state(.failed("the process exited with status 1"))])
+            await eventually("\(look): the failure") { rig.model.chatState(self.chat()) == .failed("the process exited with status 1") }
+            try await Task.sleep(for: .milliseconds(400))
+            await eventually("\(look): still at the bottom under the failure", timeout: 1) { atBottom() }
+            await rig.transport.append(chatID, [.questionRequested(ChatQuestion(requestID: "q1", questions: [ChatQuestionPrompt(header: "Scope", question: "Which tests should I run?", options: [ChatQuestionOption(label: "All", description: "The full suite"), ChatQuestionOption(label: "Changed", description: "Only what the diff touches")], multiSelect: false)]))])
+            await eventually("\(look): the question") { rig.model.conversation(self.chatID).openQuestions.count == 1 }
+            try await Task.sleep(for: .milliseconds(400))
+            await eventually("\(look): still at the bottom over the question", timeout: 1) { atBottom() }
+            if !atBottom(), let list = transcriptScroll(rig) {
+                XCTFail("offset \(list.contentOffset.y) height \(list.bounds.height) content \(list.contentSize.height) insets \(list.adjustedContentInset) pill \(rig.model.conversation(chatID).following)")
+            }
+            try snapshot(rig, name: named("chat-question-arrives", look))
+            await finish(rig)
+        }
+    }
+    /// The transcript's scroll view: the highest wide one on the chat screen under the tab strip (the bars' own scrolls are below it).
+    private func transcriptScroll(_ rig: Rig) -> UIScrollView? {
+        descendants(UIScrollView.self, in: rig.host.view).filter { !($0 is UITextView) && $0.bounds.width > 300 && $0.bounds.height >= 50 && $0.window != nil }
+            .min { $0.convert($0.bounds, to: nil).minY < $1.convert($1.bounds, to: nil).minY }
+    }
+    private func questionAndStatusLines(_ look: Look, height: CGFloat = 874, name: String = "chat-question-failed") async throws -> Rig {
+        let rig = try await makeRig(chats: [chat(state: .failed("the process exited with status 1"))], height: height, look: look)
         await rig.transport.append(chatID, [
             .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("run the tests"))),
             .state(.failed("the process exited with status 1")),
@@ -471,8 +519,8 @@ import RiWorkCore
         _ = try await openChat(rig)
         await eventually("the question and the failure") { rig.model.conversation(self.chatID).openQuestions.count == 1 && rig.model.chatState(self.chat()) == .failed("the process exited with status 1") }
         try await Task.sleep(for: .milliseconds(400))
-        try snapshot(rig, name: named("chat-question-failed", look))
-        await finish(rig)
+        try snapshot(rig, name: named(name, look))
+        return rig
     }
     func testTheNewTerminalSheetOffersTheChatKinds() async throws {
         let rig = try await makeRig()
@@ -559,5 +607,150 @@ import RiWorkCore
         sheet.press(.down)
         XCTAssertEqual(sheet.form.kind, .globalOrchestrator)
         await finish(rig)
+    }
+
+    // MARK: The model controls, the new-chat sheet and the orchestrators, in each look
+
+    private let models = [
+        ChatModelOption(id: "claude-opus-4-1", name: "Claude Opus 4.1", description: "The most capable model", efforts: ["low", "medium", "high"], defaultEffort: "medium", supportsFast: true, isDefault: true),
+        ChatModelOption(id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", description: "Fast and capable", efforts: ["low", "medium", "high"], defaultEffort: "medium")
+    ]
+    private func modelChat(fast: Bool) -> ChatInfo {
+        ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10,
+                 model: "claude-opus-4-1", effort: "high", fast: fast, approvalMode: .supervised, state: .idle)
+    }
+    /// A desktop that does what a Configure says and reports the chat's new info, as the real one does.
+    private final class Mirror: @unchecked Sendable {
+        private let lock = NSLock()
+        private var info: ChatInfo
+        init(_ info: ChatInfo) { self.info = info }
+        func apply(_ command: ChatCommand) -> [ChatEvent] {
+            guard case .configure(let model, let effort, _, let fast) = command else { return [] }
+            lock.lock(); defer { lock.unlock() }
+            if let model { info.model = model }
+            if let effort { info.effort = effort }
+            if let fast { info.fast = fast }
+            return [.info(info)]
+        }
+    }
+    /// Sends a ⌘ shortcut of the screen up the responder chain, as a key press does.
+    private func shortcut(_ rig: Rig, _ input: String) throws {
+        let command = try XCTUnwrap((rig.host.keyCommands ?? []).first { $0.input?.lowercased() == input && $0.modifierFlags == .command }, "⌘\(input)")
+        XCTAssertTrue(UIApplication.shared.sendAction(try XCTUnwrap(command.action), to: nil, from: command, for: nil))
+    }
+    /// With `RIWORK_NATIVE_SCREENSHOTS` set to a directory: leaves `<name>.ready` there and waits for `<name>.png`, which whoever drives
+    /// the simulator takes (`xcrun simctl io booted screenshot`), after opening a system menu if the name says so. Nothing otherwise.
+    private func hold(_ name: String) async throws {
+        guard let path = ProcessInfo.processInfo.environment["RIWORK_NATIVE_SCREENSHOTS"] else { return }
+        executionTimeAllowance = 1800
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try await Task.sleep(for: .milliseconds(600))
+        let ready = directory.appendingPathComponent(name + ".ready"), shot = directory.appendingPathComponent(name + ".png")
+        try? FileManager.default.removeItem(at: shot)
+        try Data().write(to: ready)
+        let deadline = Date().addingTimeInterval(300)
+        while !FileManager.default.fileExists(atPath: shot.path), Date() < deadline { try await Task.sleep(for: .milliseconds(250)) }
+        try? FileManager.default.removeItem(at: ready)
+    }
+    /// Activates the accessibility element with `label` on the screen, as VoiceOver's double tap does.
+    private func activate(_ label: String, in view: UIView) -> Bool {
+        func search(_ element: NSObject) -> Bool {
+            if element.accessibilityLabel == label, element.accessibilityActivate() { return true }
+            let children: [NSObject] = (element.accessibilityElements as? [NSObject])
+                ?? (0..<max(0, element.accessibilityElementCount())).compactMap { element.accessibilityElement(at: $0) as? NSObject }
+            if children.contains(where: search) { return true }
+            return (element as? UIView)?.subviews.contains(where: search) ?? false
+        }
+        return search(view)
+    }
+
+    func testTheModelControlsDrawInEachLook() async throws {
+        let screen = UIScreen.main.bounds.size
+        for look in Look.allCases {
+            let rig = try await makeRig(chats: [modelChat(fast: true)], width: screen.width, height: screen.height, look: look)
+            let mirror = Mirror(modelChat(fast: true))
+            await rig.transport.handleCommands { _, command in mirror.apply(command) }
+            await rig.transport.append(chatID, [.info(modelChat(fast: true)), .models(models),
+                .itemCompleted(ChatItem(id: "u1", turnID: "t0", status: .completed, body: .userMessage("Which model are you?"))),
+                .itemCompleted(ChatItem(id: "a1", turnID: "t0", status: .completed, body: .agentMessage("Claude Opus 4.1, with high effort and Fast on."))),
+                .usage(ChatUsage(inputTokens: 12_000, outputTokens: 800, contextWindow: 200_000, contextUsed: 42_000))])
+            _ = try await openChat(rig)
+            let conversation = rig.model.conversation(chatID)
+            await eventually("the models are in") { conversation.transcript.models.count == 2 }
+            try await Task.sleep(for: .milliseconds(500))
+            try snapshot(rig, name: named("chat-model-toolbar", look))
+            try await hold(named("chat-model-toolbar", look))
+            // The ⋯ menu, opened by hand on the held screen, has Change model.
+            try await hold(named("chat-options-menu", look))
+            // ⌘M: the picker, Fast on and then off.
+            try shortcut(rig, "m")
+            await eventually("the picker is up") { rig.host.presentedViewController != nil }
+            try await Task.sleep(for: .milliseconds(700))
+            try snapshot(rig, name: named("chat-model-sheet-fast-on", look))
+            try await hold(named("chat-model-sheet-fast-on", look))
+            _ = await rig.model.chooseChatModel(modelChat(fast: true), .fast(false))
+            await eventually("Fast is off") { !conversation.modelChoices(fallback: self.modelChat(fast: false)).fastIsOn }
+            try await Task.sleep(for: .milliseconds(500))
+            try snapshot(rig, name: named("chat-model-sheet-fast-off", look))
+            try await hold(named("chat-model-sheet-fast-off", look))
+            // The model line opens the text field for a model by name (a system alert, so only a screenshot shows it).
+            if ProcessInfo.processInfo.environment["RIWORK_NATIVE_SCREENSHOTS"] != nil, let sheet = rig.host.presentedViewController {
+                await withCheckedContinuation { done in sheet.dismiss(animated: false) { done.resume() } }
+                try await Task.sleep(for: .milliseconds(500))
+                XCTAssertTrue(activate("Change model", in: rig.host.view), "the model line is a button")
+                try await hold(named("chat-model-alert", look))
+            }
+            await finish(rig)
+        }
+    }
+    func testTheNewChatAndOrchestratorChoicesDrawInEachLook() async throws {
+        let screen = UIScreen.main.bounds.size
+        for look in Look.allCases {
+            let rig = try await makeRig(orchestratorCreate: true, width: screen.width, height: screen.height, look: look)
+            let opus = models[0]
+            rig.model.rememberChatChoice(NewChatChoice(model: opus, usesModel: true, effort: "high", fast: true), for: .claude)
+            rig.model.newTerminalRequestedProject = project
+            var keys: NewTerminalKeyView?
+            await eventually("the New terminal sheet is up") {
+                keys = rig.host.presentedViewController.flatMap { self.descendants(NewTerminalKeyView.self, in: $0.view).first }
+                return keys != nil
+            }
+            let keyView = try XCTUnwrap(keys)
+            func press(_ input: String, times: Int = 1) {
+                for _ in 0..<times { if let command = keyView.keyCommands?.first(where: { $0.input == input && $0.modifierFlags == [] }) { keyView.fired(command) } }
+            }
+            // Shell, Codex, Claude, Grok, Codex chat, Claude chat.
+            press(UIKeyCommand.inputDownArrow, times: 5)
+            try await Task.sleep(for: .milliseconds(700))
+            try snapshot(rig, name: named("new-chat-sheet-model", look))
+            try await hold(named("new-chat-sheet-model", look))
+            press(UIKeyCommand.inputDownArrow)
+            try await Task.sleep(for: .milliseconds(500))
+            try snapshot(rig, name: named("new-orchestrator-sheet", look))
+            await finish(rig)
+        }
+    }
+    func testTheOrchestratorsDrawInEachLook() async throws {
+        for look in Look.allCases {
+            var rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator], orchestratorCreate: true, look: look)
+            await rig.transport.append(chatID, [.state(.running), .itemStarted(ChatItem(id: "a", turnID: "t1", status: .completed, body: .agentMessage("Three workers are running; the build is green.")))])
+            rig.model.chooseOrchestrator(rig.model.tabs[0])
+            await eventually("the chat screen is up for the chat id") { self.composer(rig) != nil }
+            // Asking for the project's orchestrator again says it is already there, in the note under the tabs.
+            _ = await rig.model.createOrchestrator(try NewOrchestratorRequest(projectID: project))
+            await eventually("the note") { rig.model.orchestratorNotice != nil }
+            try await Task.sleep(for: .milliseconds(400))
+            try snapshot(rig, name: named("chat-orchestrator-tab", look))
+            // The tabs menu, opened by hand on the held screen, has Global orchestrator.
+            try await hold(named("tabs-menu", look))
+            await finish(rig)
+            rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator], chatFeature: false, look: look)
+            rig.model.chooseOrchestrator(rig.model.tabs[0])
+            await eventually("the notice") { rig.model.selectedBlocked != nil }
+            try await Task.sleep(for: .milliseconds(400))
+            try snapshot(rig, name: named("chat-orchestrator-update-the-mac", look))
+            await finish(rig)
+        }
     }
 }
