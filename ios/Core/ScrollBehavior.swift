@@ -92,6 +92,26 @@ public struct StickyBottom: Sendable, Equatable {
     public mutating func reset() { self = StickyBottom() }
 }
 
+/// Which rows of a full-screen program's screen the phone draws. The desktop's screen can have more rows than the pane has room for:
+/// the keyboard came up and the desktop has not been resized yet, or the desktop keeps its own size. Then only the rows that fit are
+/// drawn, as few as possible moved off the top so the cursor stays in view (the bottom ones, without a cursor). Drawing them all
+/// would make the pane taller than the screen and push the whole screen up under the status bar and down under the keyboard.
+public enum AlternateRows {
+    /// Whole rows of `lineHeight` that fit `height` points, at least one.
+    public static func fitting(height: Double, lineHeight: Double) -> Int {
+        guard height.isFinite, lineHeight.isFinite, lineHeight > 0 else { return 1 }
+        return max(1, Int((height / lineHeight + 0.001).rounded(.down)))
+    }
+    /// The rows, out of `count`, drawn in a pane of `fitting` rows with the cursor on row `cursor` (0 is the top), if there is one.
+    public static func shown(count: Int, fitting: Int, cursor: Int?) -> Range<Int> {
+        let count = max(0, count), fitting = max(1, fitting)
+        guard count > fitting else { return 0..<count }
+        let lowest = count - fitting
+        let first = cursor.map { min(lowest, max(0, $0 - fitting + 1)) } ?? lowest
+        return first..<(first + fitting)
+    }
+}
+
 /// Turns vertical swipes into Page Up / Page Down, for a full-screen program on the alternate screen (vim, less, htop), which has
 /// no scrollback to scroll.
 ///

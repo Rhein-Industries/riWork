@@ -3004,7 +3004,7 @@ fn a_waiting_read_watches_the_pane_instead_of_capturing_it_every_80_ms() {
     assert_eq!(clients_started, 1, "{:?}", fixture.calls());
     let control: Vec<&str> = clients.lines().filter(|c| c.starts_with("1|")).collect();
     assert_eq!(control.len(), 1, "{clients}");
-    assert!(control[0].contains("read-only"), "{clients}");
+    assert!(!control[0].contains("read-only"), "{clients}");
     assert!(control[0].contains("ignore-size"), "{clients}");
     assert_eq!(size_during, size);
     // And nothing stays attached afterwards.

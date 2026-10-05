@@ -242,6 +242,12 @@ fn matrix() -> Vec<(String, bool)> {
         (mutate(&|v| v["native"] = json!("yes")), false),
         (mutate(&|v| v["native"] = json!(1)), false),
         (mutate(&|v| v["native"] = Value::Null), false),
+        (mutate(&|v| v["mic"] = json!(true)), true),
+        (mutate(&|v| v["mic"] = json!(false)), true),
+        (mutate(&|v| v["mic"] = json!("yes")), false),
+        (mutate(&|v| v["mic"] = json!(1)), false),
+        (mutate(&|v| v["mic"] = Value::Null), false),
+        (mutate(&|v| v["mic"] = json!({})), false),
     ];
     for bytes in ["", "{", "null", "[]", "\"{}\"", "{}", "\u{feff}{}"] {
         cases.push((bytes.to_owned(), false));
@@ -475,6 +481,19 @@ async fn what_the_desktop_writes_is_what_the_rpc_serves() {
     f.publish(std::fs::read(home.path().join("appearance.json")).unwrap());
     assert_eq!(f.get().await["result"]["native"], true);
     snapshot.native = false;
+
+    // No mic: no field. On, the connector passes it through; off again, it is gone.
+    assert!(f.get().await["result"].get("mic").is_none());
+    snapshot.mic = true;
+    assert!(appearance_file::publish(home.path(), &snapshot, 1_790_000_003).unwrap());
+    f.publish(std::fs::read(home.path().join("appearance.json")).unwrap());
+    let response = f.get().await;
+    assert_eq!(response["result"]["mic"], true, "{response}");
+    assert!(response["result"].get("native").is_none(), "{response}");
+    snapshot.mic = false;
+    assert!(appearance_file::publish(home.path(), &snapshot, 1_790_000_004).unwrap());
+    f.publish(std::fs::read(home.path().join("appearance.json")).unwrap());
+    assert!(f.get().await["result"].get("mic").is_none());
 
     snapshot.terminal = None;
     assert!(appearance_file::publish(home.path(), &snapshot, 1_790_000_001).unwrap());

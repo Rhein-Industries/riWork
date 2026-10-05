@@ -48,31 +48,40 @@ struct PhoneTerminal: View {
     // MARK: Alternate screen
 
     /// A full-screen program: its screen, as the desktop draws it, and nothing to scroll. Swipes page the program itself.
+    /// The screen takes exactly the room the pane is given, never more: rows that do not fit (the desktop has not followed a smaller
+    /// pane yet) are left out, keeping the cursor in view (`AlternateRows`). A screen taller than the pane would make the whole
+    /// screen taller than the display: the header and tabs went up under the status bar, the last rows down under the key bar, and
+    /// the pane, measured that tall, kept asking the desktop for that many rows.
     private var alternateScreen: some View {
         let lines = Array(model.alternateLines)
         let current = settings
         let size = cell
         let cursorLine = model.styledOutput.cursorLine.map { $0 - model.styledOutput.historyLines }
-        return VStack(alignment: .leading, spacing: 0) {
-            ForEach(lines.indices, id: \.self) { index in
-                TerminalRow(line: lines[index], cursorColumn: showCursor && cursorLine == index ? model.styledOutput.cursorColumn : nil,
-                            settings: current, fontSize: fontSize, height: size.height).equatable()
-                    .frame(maxWidth: .infinity, alignment: .topLeading).clipped()
+        return GeometryReader { geometry in
+            let fitting = AlternateRows.fitting(height: geometry.size.height - 2 * padding, lineHeight: size.height)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(AlternateRows.shown(count: lines.count, fitting: fitting, cursor: cursorLine), id: \.self) { index in
+                    TerminalRow(line: lines[index], cursorColumn: showCursor && cursorLine == index ? model.styledOutput.cursorColumn : nil,
+                                settings: current, fontSize: fontSize, height: size.height).equatable()
+                        .frame(maxWidth: .infinity, alignment: .topLeading).clipped()
+                }
             }
+            .padding(padding)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+            .contentShape(Rectangle())
+            .simultaneousGesture(swipe(viewHeight: geometry.size.height))
         }
-        .padding(padding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .contentShape(Rectangle())
+        .clipped()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Terminal output, full-screen program")
         .accessibilityHint("Drag up or down to page the program")
-        .simultaneousGesture(swipe)
         .overlay(alignment: .top) {
             if model.keysSupport != .unsupported { AlternateHint(loud: model.alternateHintLoud) }
         }
     }
 
-    private var swipe: some Gesture {
+    /// A page is a share of the pane as it is on screen.
+    private func swipe(viewHeight swipeHeight: Double) -> some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
                 if scroll.swipeStart != value.startLocation { scroll.swipeStart = value.startLocation; scroll.pager.begin() }
@@ -90,7 +99,6 @@ struct PhoneTerminal: View {
                 scroll.swipeStart = nil
             }
     }
-    private var swipeHeight: Double { Double(model.terminalArea?.height ?? 600) }
 }
 
 /// The scrollback surface of the shell on screen. This is the part of the screen that follows the buffer, so it is a view of its own:

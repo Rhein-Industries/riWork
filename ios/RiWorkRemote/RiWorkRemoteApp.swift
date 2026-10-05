@@ -12,6 +12,8 @@ import UIKit
         WindowGroup {
             RemoteRootView(model: model)
                 .desktopThemed(model.theme.style)
+                // Dictation is biased towards the session on screen, read fresh each time it starts.
+                .onAppear { DictationController.shared.sessionSources = { [model] in model.speechSources() } }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .background:

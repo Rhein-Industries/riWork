@@ -6,7 +6,7 @@ use gpui::{AnyElement, Context, ElementId, SharedString, Window, div, prelude::*
 
 use crate::{
     chat::model::{ChangeKind, FileChange, Item, ItemBody, NoticeLevel, Step, StepStatus},
-    ui_text,
+    controls, icons, theme, ui_text,
 };
 
 use super::{
@@ -67,10 +67,20 @@ impl ChatView {
                         .max_w(gpui::relative(0.85))
                         .px(ui_text::space(10.0))
                         .py(ui_text::space(6.0))
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(rgb(look.tint(colors.cyan, 0.45)))
-                        .bg(rgb(look.tint(colors.cyan, 0.10)))
+                        // Native's is a plain grey bubble, as Messages draws one.
+                        .when(look.native, |bubble| {
+                            bubble
+                                .px(ui_text::space(12.0))
+                                .rounded(controls::radius(BUBBLE_RADIUS))
+                                .bg(rgb(colors.panel_active))
+                        })
+                        .when(!look.native, |bubble| {
+                            bubble
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(rgb(look.tint(colors.cyan, 0.45)))
+                                .bg(rgb(look.tint(colors.cyan, 0.10)))
+                        })
                         .child(self.selectable(
                             &format!("user:{}", item.id),
                             text.clone(),
@@ -133,9 +143,27 @@ impl ChatView {
                 .text_size(ui_text::text(10.0))
                 .text_color(rgb(colors.muted))
                 .child(div().flex_1().h(px(1.0)).bg(rgb(colors.divider)))
-                .child("context compacted")
+                .child(widgets::sentence("context compacted", look))
                 .child(div().flex_1().h(px(1.0)).bg(rgb(colors.divider)))
                 .into_any_element(),
+            ItemBody::Notice { level, text } if look.native => {
+                let color = look.tone(cards::notice_tone(*level));
+                div()
+                    .w_full()
+                    .flex()
+                    .items_start()
+                    .gap(ui_text::space(6.0))
+                    .text_size(ui_text::text(11.0))
+                    .text_color(rgb(color))
+                    .children(notice_symbol(*level).map(|symbol| {
+                        controls::on_first_line(
+                            icons::symbol(symbol, 11.0, Some(color)),
+                            widgets::BODY_LINE,
+                        )
+                    }))
+                    .child(div().flex_1().min_w_0().child(text.clone()))
+                    .into_any_element()
+            }
             ItemBody::Notice { level, text } => div()
                 .w_full()
                 .text_size(ui_text::text(11.0))
@@ -179,16 +207,11 @@ impl ChatView {
                     .opacity(0.0)
                     .group_hover(group, |style| style.opacity(1.0))
                     .child(
-                        widgets::button(
-                            id(copy_key),
-                            if copied { "copied" } else { "copy" },
-                            None,
-                            look,
-                        )
-                        .bg(rgb(colors.panel_active))
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.copy_item(&message, cx);
-                        })),
+                        widgets::copy_button(id(copy_key), copied, "copy", "Copy message", look)
+                            .when(!look.native, |button| button.bg(rgb(colors.panel_active)))
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.copy_item(&message, cx);
+                            })),
                     ),
             )
             .into_any_element()
@@ -251,6 +274,8 @@ impl ChatView {
         let colors = look.colors;
         let open = self.open.contains(&item.id) && head.expandable;
         let key = item.id.clone();
+        // A command is code; the subtitles are folders, paths, arguments and line counts.
+        let code_title = matches!(item.body, ItemBody::Command { .. });
         let header = div()
             .id(id(format!("card:{}", item.id)))
             .w_full()
@@ -263,7 +288,11 @@ impl ChatView {
             .when(head.expandable, |header| {
                 header
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(colors.panel_active)))
+                    .hover(move |style| {
+                        controls::hovered(style, controls::row_hover(false, colors), |style| {
+                            style.bg(rgb(colors.panel_active))
+                        })
+                    })
                     .on_click(cx.listener(move |view, _, _, cx| view.toggle(&key, Some(ix), cx)))
             })
             .child(chevron(open, head.expandable, colors.muted))
@@ -272,6 +301,9 @@ impl ChatView {
                     .min_w_0()
                     .truncate()
                     .text_color(rgb(colors.text))
+                    .when(code_title, |title| {
+                        title.font_family(ui_text::code_family())
+                    })
                     .child(head.title.clone()),
             )
             .children(head.subtitle.clone().map(|subtitle| {
@@ -279,6 +311,7 @@ impl ChatView {
                     .flex_1()
                     .min_w_0()
                     .truncate()
+                    .font_family(ui_text::mono_family())
                     .text_color(rgb(colors.muted))
                     .child(subtitle)
             }))
@@ -290,13 +323,7 @@ impl ChatView {
                     .as_ref()
                     .map(|badge| widgets::badge(id(format!("badge:{}", item.id)), badge, look)),
             );
-        div()
-            .w_full()
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .bg(rgb(colors.panel))
-            .overflow_hidden()
+        card_box(look)
             .child(header)
             // The body is made only for a card that is open.
             .children(body.filter(|_| open).map(|body| {
@@ -311,13 +338,7 @@ impl ChatView {
     /// A card whose body is its content: a plan, a todo list.
     fn always_open(&self, ix: usize, head: &Head, body: AnyElement, look: Look) -> AnyElement {
         let colors = look.colors;
-        div()
-            .w_full()
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .bg(rgb(colors.panel))
-            .overflow_hidden()
+        card_box(look)
             .child(
                 div()
                     .id(id(format!("plan:{ix}")))
@@ -328,7 +349,14 @@ impl ChatView {
                     .px(ui_text::space(10.0))
                     .py(ui_text::space(6.0))
                     .text_size(ui_text::text(11.0))
-                    .child(div().text_color(rgb(colors.cyan)).child(head.title.clone()))
+                    .child(
+                        div()
+                            .text_color(rgb(colors.cyan))
+                            .when(look.native, |title| {
+                                title.font_weight(gpui::FontWeight::SEMIBOLD)
+                            })
+                            .child(head.title.clone()),
+                    )
                     .children(head.subtitle.clone().map(|subtitle| {
                         div()
                             .flex_1()
@@ -397,6 +425,7 @@ impl ChatView {
                         .px(ui_text::space(10.0))
                         .py(ui_text::space(6.0))
                         .text_size(ui_text::text(11.0))
+                        .font_family(ui_text::code_family())
                         .text_color(rgb(colors.cyan))
                         .border_b_1()
                         .border_color(rgb(colors.divider))
@@ -416,13 +445,14 @@ impl ChatView {
                     .child(if hidden > 0 {
                         format!("{hidden} earlier lines not shown")
                     } else {
-                        "output".to_owned()
+                        widgets::sentence("output", look)
                     })
                     .child(
-                        widgets::button(
+                        widgets::copy_button(
                             id(copy_key),
-                            if copied { "copied" } else { "copy output" },
-                            None,
+                            copied,
+                            "copy output",
+                            "Copy output",
                             look,
                         )
                         .on_click(cx.listener(move |view, _, _, cx| {
@@ -444,6 +474,7 @@ impl ChatView {
                         .py(ui_text::space(6.0))
                         .bg(rgb(colors.bg))
                         .text_size(ui_text::text(11.0))
+                        .font_family(ui_text::code_family())
                         .child(
                             div()
                                 .flex_none()
@@ -480,6 +511,8 @@ impl ChatView {
                 let letter_color = match change.kind {
                     ChangeKind::Add => look.diff.added,
                     ChangeKind::Delete => look.diff.removed,
+                    // Native keeps its signal color for state: an edit is in its secondary.
+                    ChangeKind::Modify | ChangeKind::Rename if look.native => colors.magenta,
                     ChangeKind::Modify | ChangeKind::Rename => colors.gold,
                 };
                 let (added, removed) = stats.get(at).copied().unwrap_or((0, 0));
@@ -501,7 +534,13 @@ impl ChatView {
                             .when(has_diff && !only_one, |row| {
                                 let key = key.clone();
                                 row.cursor_pointer()
-                                    .hover(|style| style.bg(rgb(colors.panel_active)))
+                                    .hover(move |style| {
+                                        controls::hovered(
+                                            style,
+                                            controls::row_hover(false, colors),
+                                            |style| style.bg(rgb(colors.panel_active)),
+                                        )
+                                    })
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         view.toggle(&key, Some(ix), cx)
                                     }))
@@ -518,9 +557,15 @@ impl ChatView {
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
+                                    .font_family(ui_text::mono_family())
                                     .child(change.path.clone()),
                             )
-                            .child(div().flex_none().text_color(rgb(colors.muted)).child(word))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(rgb(colors.muted))
+                                    .child(widgets::sentence(word, look)),
+                            )
                             .when(added > 0, |row| {
                                 row.child(
                                     div()
@@ -574,7 +619,7 @@ impl ChatView {
                     div()
                         .text_size(ui_text::text(10.0))
                         .text_color(rgb(colors.muted))
-                        .child(label),
+                        .child(widgets::sentence(label, look)),
                 )
                 .child(
                     self.scroller(&name).attach(
@@ -586,6 +631,7 @@ impl ChatView {
                             .items_start()
                             .overflow_scroll()
                             .text_size(ui_text::text(11.0))
+                            .font_family(ui_text::code_family())
                             .child(
                                 div()
                                     .flex_none()
@@ -626,18 +672,62 @@ impl ChatView {
                 Some(("Connecting…", colors.muted, false))
             }
             (ChatState::Starting, _) => Some(("Starting…", colors.muted, true)),
-            (ChatState::Running, _) => Some(("Working…", colors.cyan, true)),
+            (ChatState::Running, _) => Some(("Working…", colors.working, true)),
             (ChatState::Waiting, _) => Some(("Waiting for you", colors.gold, true)),
             _ => None,
         };
         let empty = transcript.items.is_empty() && self.model.link == Link::Live;
+        let title = match self.provider() {
+            Some(provider) => format!("{} chat", provider_name(provider)),
+            None => "Chat".to_owned(),
+        };
+        let cwd = transcript
+            .info
+            .as_ref()
+            .map(|info| info.cwd.display().to_string());
         div()
             .w_full()
             .flex()
             .flex_col()
             .gap(ui_text::space(8.0))
             .pb(ui_text::space(10.0))
-            .when(empty, |footer| {
+            // Native's empty state, as its panels have one: a muted symbol over the title.
+            .when(empty && look.native, |footer| {
+                footer.child(
+                    div()
+                        .w_full()
+                        .py(ui_text::space(48.0))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(ui_text::space(6.0))
+                        .text_size(ui_text::text(11.0))
+                        .text_color(rgb(colors.muted))
+                        .child(icons::symbol(
+                            "bubble.left.and.bubble.right",
+                            22.0,
+                            Some(theme::mix(colors.muted, colors.bg, 0.25)),
+                        ))
+                        .child(
+                            div()
+                                .pt(ui_text::space(4.0))
+                                .text_size(ui_text::text(controls::TITLE_TEXT))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(colors.text))
+                                .child(title.clone()),
+                        )
+                        .children(cwd.clone().map(|cwd| {
+                            div()
+                                .max_w_full()
+                                .truncate()
+                                .text_size(ui_text::text(controls::META_TEXT))
+                                .font_family(ui_text::mono_family())
+                                .child(cwd)
+                        }))
+                        .child("Type a message below to begin."),
+                )
+            })
+            .when(empty && !look.native, |footer| {
                 footer.child(
                     div()
                         .w_full()
@@ -651,17 +741,9 @@ impl ChatView {
                             div()
                                 .text_size(ui_text::text(14.0))
                                 .text_color(rgb(colors.text))
-                                .child(match self.provider() {
-                                    Some(provider) => format!("{} chat", provider_name(provider)),
-                                    None => "Chat".to_owned(),
-                                }),
+                                .child(title),
                         )
-                        .children(
-                            transcript
-                                .info
-                                .as_ref()
-                                .map(|info| div().child(info.cwd.display().to_string())),
-                        )
+                        .children(cwd.map(|cwd| div().child(cwd)))
                         .child("Type a message below to begin."),
                 )
             })
@@ -679,6 +761,43 @@ impl ChatView {
                     .child(label)
             }))
             .into_any_element()
+    }
+}
+
+/// A user message bubble's corner radius under Native.
+const BUBBLE_RADIUS: f32 = 12.0;
+
+/// A card's surface: Native rounds it like its rows and lets the hairline be its edge.
+fn card_box(look: Look) -> gpui::Div {
+    let colors = look.colors;
+    div()
+        .w_full()
+        .rounded(if look.native {
+            controls::radius(controls::ROW_RADIUS)
+        } else {
+            px(4.0)
+        })
+        .border_1()
+        .border_color(rgb(colors.divider))
+        .bg(rgb(colors.panel))
+        .overflow_hidden()
+}
+
+/// The SF Symbol Native shows before a notice: none for one that only informs.
+fn notice_symbol(level: NoticeLevel) -> Option<&'static str> {
+    match level {
+        NoticeLevel::Info => None,
+        NoticeLevel::Warning => Some("exclamationmark.triangle"),
+        NoticeLevel::Error => Some("xmark.octagon"),
+    }
+}
+
+/// The SF Symbol Native shows for a step, in place of `cards::step_mark`.
+fn step_symbol(status: StepStatus) -> &'static str {
+    match status {
+        StepStatus::Pending => "circle",
+        StepStatus::InProgress => "circle.lefthalf.filled",
+        StepStatus::Completed => "checkmark.circle.fill",
     }
 }
 
@@ -701,8 +820,22 @@ fn checklist(steps: &[Step], explanation: Option<&str>, look: Look) -> AnyElemen
         .children(steps.iter().map(|step| {
             let (mark_color, text_color) = match step.status {
                 StepStatus::Pending => (colors.muted, colors.text),
+                // Native says what is under way with its mark alone, in the working color.
+                StepStatus::InProgress if look.native => (colors.working, colors.text),
                 StepStatus::InProgress => (colors.cyan, colors.cyan),
                 StepStatus::Completed => (look.diff.added, colors.muted),
+            };
+            let mark = if look.native {
+                controls::on_first_line(
+                    icons::symbol(step_symbol(step.status), 10.0, Some(mark_color)),
+                    widgets::BODY_LINE,
+                )
+                .into_any_element()
+            } else {
+                div()
+                    .text_color(rgb(mark_color))
+                    .child(cards::step_mark(step.status))
+                    .into_any_element()
             };
             div()
                 .w_full()
@@ -713,9 +846,8 @@ fn checklist(steps: &[Step], explanation: Option<&str>, look: Look) -> AnyElemen
                 .child(
                     div()
                         .flex_none()
-                        .w(ui_text::space(12.0))
-                        .text_color(rgb(mark_color))
-                        .child(cards::step_mark(step.status)),
+                        .w(ui_text::space(if look.native { 14.0 } else { 12.0 }))
+                        .child(mark),
                 )
                 .child(
                     div()
@@ -769,6 +901,7 @@ impl ChatView {
                         .overflow_scroll()
                         .bg(rgb(colors.bg))
                         .text_size(ui_text::text(11.0))
+                        .font_family(ui_text::code_family())
                         .child(
                             div()
                                 .flex_none()

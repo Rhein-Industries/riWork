@@ -10,7 +10,7 @@ struct ChatMarkdownView: View, Equatable {
 
     var body: some View {
         MarkdownBlocks(blocks: ChatMarkdown.parse(source), depth: 0)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading).tint(style.link)
     }
 }
 
@@ -42,7 +42,7 @@ private struct MarkdownBlockView: View {
                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityAddTraits(.isHeader).accessibilityHeading(level <= 1 ? .h1 : level == 2 ? .h2 : .h3)
         case .paragraph(let text):
-            Text(ChatMarkdown.inline(text)).font(style.prose).lineSpacing(3).foregroundStyle(muted ? style.muted : style.text).tint(style.accent)
+            Text(ChatMarkdown.inline(text)).font(style.prose).lineSpacing(3).foregroundStyle(muted ? style.muted : style.text).tint(style.link)
                 .textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
         case .code(let language, let text, _):
             CodeBlock(language: language, text: text)
@@ -54,7 +54,7 @@ private struct MarkdownBlockView: View {
             }
         case .quote(let blocks):
             HStack(alignment: .top, spacing: 8) {
-                Rectangle().fill(style.divider).frame(width: 3)
+                style.block(1.5).fill(style.divider).frame(width: 3)
                 MarkdownBlocks(blocks: blocks, depth: depth + 1).environment(\.markdownMuted, true)
             }.fixedSize(horizontal: false, vertical: true)
         case .rule:
@@ -106,19 +106,18 @@ private struct CodeBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
-                Text(language ?? "code").font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                Text(language ?? "code").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
                 Spacer(minLength: 4)
                 CopyButton(title: "Copy code", text: { text })
             }
-            .padding(.leading, 12).background(style.active.opacity(0.5))
+            .padding(.leading, 12).background(style.cardHeader)
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(verbatim: text).font(style.code).foregroundStyle(style.text).textSelection(.enabled)
                     .fixedSize(horizontal: true, vertical: true).padding(12)
             }
         }
-        .background(style.panel)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(style.divider, lineWidth: 1))
+        .background(style.panel).clipShape(style.block(14))
+        .overlay { if !style.native { Rectangle().stroke(style.divider, lineWidth: 1) } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(language ?? "Code") block")
     }
@@ -139,7 +138,7 @@ private struct TableBlock: View {
             }
             .foregroundStyle(style.text).textSelection(.enabled).padding(8)
         }
-        .background(style.panel).clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(style.divider, lineWidth: 1))
+        .background(style.panel).clipShape(style.block(14))
+        .overlay { if !style.native { Rectangle().stroke(style.divider, lineWidth: 1) } }
     }
 }

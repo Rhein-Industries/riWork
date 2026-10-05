@@ -168,12 +168,18 @@ pub async fn start(storage: Storage, cli: PathBuf) -> Result<()> {
     let mut running: HashMap<String, (watch::Sender<bool>, tokio::task::JoinHandle<()>)> =
         HashMap::new();
     let mut tick = interval(Duration::from_millis(250));
+    // The uploads' sweep: at once, then every hour (see `upload`).
+    let mut sweep = interval(Duration::from_secs(60 * 60));
     eprintln!(
         "RiWork connector running; paired device config is watched; Ctrl-C stops transport only."
     );
     loop {
         tokio::select! {
             _=tokio::signal::ctrl_c()=>break,
+            _=sweep.tick()=>{
+                let rpc=rpc.clone();
+                tokio::spawn(async move{rpc.sweep_uploads().await;});
+            }
             _=tick.tick()=>{
                 let cfg=match storage.config(){Ok(c)=>c,Err(e)=>{
                     // Fail closed if protected config disappears/corrupts permissions.
@@ -182,7 +188,7 @@ pub async fn start(storage: Storage, cli: PathBuf) -> Result<()> {
                 }};
                 let active:HashMap<_,_>=cfg.devices.into_iter().filter(|d|!d.revoked).map(|d|(d.pairing.device_id.clone(),d)).collect();
                 let removed=running.keys().filter(|id|!active.contains_key(*id)).cloned().collect::<Vec<_>>();
-                for id in removed {if let Some((cancel,_))=running.remove(&id){let _=cancel.send(true);eprintln!("Remote device {id} was removed or revoked; connection closed.");}}
+                for id in removed {if let Some((cancel,_))=running.remove(&id){let _=cancel.send(true);eprintln!("Remote device {id} was removed or revoked; connection closed.");rpc.forget_uploads(&id).await;}}
                 for (id,device) in active {
                     if let std::collections::hash_map::Entry::Vacant(entry) = running.entry(id) {
                         // A pairing made by any local process is adopted here within a tick.
@@ -641,6 +647,9 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 if orchestrator_create {
                     features["orchestrator_create"] = json!(true);
                 }
+                // Files from the phone; an older phone ignores it, and a phone that sees none
+                // tells the person that this desktop cannot take files yet.
+                features["upload"] = crate::upload::features();
                 let ready = json!({"v":1,"type":"ready","desktop_id":p.desktop_id,"device_id":p.device_id,"features":features});
                 let e = s.seal("d2c", &serde_json::to_vec(&ready)?)?;
                 send_json(&mut ws, &e).await?;

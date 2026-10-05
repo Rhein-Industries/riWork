@@ -110,10 +110,24 @@ extension RemoteSession {
     }
 }
 
+/// The authenticated destination of an upload. Same-device reconnects may resume it; another route may not.
+public struct UploadConnectionIdentity: Sendable, Equatable {
+    public let desktopID: String
+    public let deviceID: String
+    public let routeID: String
+    public init(pairing: Pairing) {
+        desktopID = pairing.desktop_id
+        deviceID = pairing.device_id
+        routeID = pairing.route_id
+    }
+}
+
 public protocol RemoteTransport: Sendable {
     @discardableResult
     func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing
     func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue
+    /// Checked on the transport's executor before sealing the frame. Implementations without this guard fail closed.
+    func request(method: String, params: [String: JSONValue], id: String, boundTo: UploadConnectionIdentity) async throws -> JSONValue
     func disconnect() async
     func isConnected() async -> Bool
     /// `request`, together with how the reply travelled (see `ReplyTiming`). The default has no timing.
@@ -124,4 +138,10 @@ public protocol RemoteTransport: Sendable {
     func setCompression(_ enabled: Bool) async
     /// Whether the desktop has agreed to compress this session's replies.
     func compressionActive() async -> Bool
+}
+
+extension RemoteTransport {
+    public func request(method: String, params: [String: JSONValue], id: String, boundTo: UploadConnectionIdentity) async throws -> JSONValue {
+        throw RemoteError.protocolViolation("This transport cannot bind uploads to an authenticated desktop.")
+    }
 }

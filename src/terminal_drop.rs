@@ -137,7 +137,7 @@ pub fn program(
 }
 
 /// The names of the processes in the foreground of terminal `tty` (`/dev/ttys001`).
-fn foreground_names(tty: &str) -> Vec<String> {
+pub(crate) fn foreground_names(tty: &str) -> Vec<String> {
     let Some(tty) = tty.strip_prefix("/dev/").filter(|tty| !tty.is_empty()) else {
         return Vec::new();
     };

@@ -91,6 +91,7 @@ riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-
 riwork shell history ID --end N --lines M [--styled] [--json]   Read a page of older scrollback
 riwork shell send ID TEXT               Paste a complete line and submit once
 riwork shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no Return added
+riwork shell paste ID [--json] -- FILE...   Paste file paths as a drop on the terminal does
 riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
 riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
 riwork shell cwd|metrics|attach|close ID
@@ -175,6 +176,12 @@ Down Left Right Home End PageUp PageDown or C-a to C-z. At most 4096 text bytes
 in all. Items go to the pane in order under the shell's input lock, leaving
 copy mode first; a key directly after text goes 150 ms later, outside Codex's
 paste detection. An error naming input_unavailable means the pane's input is off.
+shell paste pastes the absolute paths of 1 to 16 existing files after `--` the
+way dropping them on the shell's terminal does, chosen by the program in front:
+Codex gets one paste per path, Claude Code, Grok and anything else the paths
+shell-escaped and joined by spaces. No Return is added. Errors that start with
+invalid_request:, not_found:, input_unavailable: or not_sent: happened before
+anything was pasted. The remote connector pastes a phone's uploads this way.
 shell output --json also reports cursor {x,y}, rows, cols and in_mode; the last
 `rows` lines of its output are the visible screen. It reports history_size (the
 scrollback lines above the screen) and alternate (a full-screen program is on
@@ -268,7 +275,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             args.first().map(String::as_str),
             Some("agent-notify" | "agent-hook")
         );
-    let json = if matches!(args.get(..2), Some([shell, keys]) if shell == "shell" && keys == "keys")
+    let json = if matches!(args.get(..2), Some([shell, keys]) if shell == "shell" && (keys == "keys" || keys == "paste"))
     {
         // Only a --json before the `--` is ours; every argument after it is a
         // typed item, whatever it looks like.
@@ -810,6 +817,9 @@ fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
 /// `shell_attach_exec`: `shell attach ID --exec [--ignore-size] [--read-only]` replaces the
 /// process with a tmux client of the shell, which is what a remote desktop's terminal stream runs
 /// (`pty.open` in the remote connector). An older CLI would refuse the flags as a usage error.
+///
+/// `shell_paste`: `shell paste ID -- FILE...` pastes file paths as a drop on the terminal does,
+/// which is how the remote connector hands a shell the files a phone uploaded.
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
@@ -819,7 +829,8 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "project_create_exclusive": true,
             "shell_attach_exec": true,
             "chat": true,
-            "orchestrator_create": true
+            "orchestrator_create": true,
+            "shell_paste": true
         }));
     }
     println!("verifies_shell yes");
@@ -827,6 +838,7 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     println!("shell_attach_exec yes");
     println!("chat yes");
     println!("orchestrator_create yes");
+    println!("shell_paste yes");
     Ok(())
 }
 
@@ -863,9 +875,10 @@ fn appearance_summary(published: &crate::appearance_file::Published) -> String {
     };
     [
         format!(
-            "Appearance: {}{} (updated {updated})",
+            "Appearance: {}{}{} (updated {updated})",
             if published.dark { "dark" } else { "light" },
-            if published.native { ", Native" } else { "" }
+            if published.native { ", Native" } else { "" },
+            if published.mic { ", mic" } else { "" }
         ),
         format!(
             "Palette:    bg {} panel {} panel_active {} divider {}",
@@ -1696,6 +1709,13 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             manager.send_keys(&id, &items)?;
             if json {
                 print_json(&json!({ "id": id, "sent": items.len() }))?;
+            }
+        }
+        "paste" => {
+            let (id, paths) = parse_paste_arguments(args)?;
+            manager.paste_files(&id, &paths)?;
+            if json {
+                print_json(&json!({ "id": id, "pasted": paths.len() }))?;
             }
         }
         "resize" | "resize-clear" | "viewport-watch" => {
@@ -2975,6 +2995,31 @@ fn parse_keys_arguments(
     Ok((id, items))
 }
 
+/// The most files one `shell paste` takes.
+pub const PASTE_MAX_FILES: usize = 16;
+
+fn parse_paste_arguments(mut args: Vec<String>) -> Result<(String, Vec<PathBuf>), String> {
+    const USAGE: &str = "shell paste ID [--json] -- FILE...";
+    let usage = || {
+        format!(
+            "{}Usage: riwork {USAGE}",
+            crate::session_keys::INVALID_REQUEST
+        )
+    };
+    let separator = args.iter().position(|arg| arg == "--").ok_or_else(usage)?;
+    let files = args.split_off(separator + 1);
+    args.pop();
+    let id = take_single(args, USAGE)
+        .map_err(|error| format!("{}{error}", crate::session_keys::INVALID_REQUEST))?;
+    if files.is_empty() || files.len() > PASTE_MAX_FILES {
+        return Err(format!(
+            "{}shell paste takes 1 to {PASTE_MAX_FILES} files",
+            crate::session_keys::INVALID_REQUEST
+        ));
+    }
+    Ok((id, files.into_iter().map(PathBuf::from).collect()))
+}
+
 /// Like `take_flag`, but only looks at the arguments before the first `--`.
 fn take_flag_before_separator(args: &mut Vec<String>, flag: &str) -> bool {
     let end = args
@@ -3308,7 +3353,17 @@ mod tests {
             appearance_summary(&published)
                 .starts_with("Appearance: dark, Native (updated 2026-09-21 14:13:20 UTC)\n")
         );
+        published.mic = true;
+        assert!(
+            appearance_summary(&published)
+                .starts_with("Appearance: dark, Native, mic (updated 2026-09-21 14:13:20 UTC)\n")
+        );
         published.native = false;
+        assert!(
+            appearance_summary(&published)
+                .starts_with("Appearance: dark, mic (updated 2026-09-21 14:13:20 UTC)\n")
+        );
+        published.mic = false;
         published.dark = false;
         published.terminal = None;
         published.updated_at = u64::MAX;

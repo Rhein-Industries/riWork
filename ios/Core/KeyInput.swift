@@ -251,6 +251,8 @@ public struct KeyBuffer: Sendable, Equatable {
                 if text.utf8.count <= budget {
                     items.append(item); textBytes += text.utf8.count; consumed += 1
                 } else {
+                    // An Escape right before it starts a sequence (Alt+key, Ctrl+Up as `ESC [1;5A`): it waits for the next batch too.
+                    if items.count > 1, items.last == .key(.escape) { items.removeLast(); consumed -= 1; break formation }
                     var head = String.UnicodeScalarView()
                     var used = 0
                     for scalar in text.unicodeScalars {
@@ -266,6 +268,9 @@ public struct KeyBuffer: Sendable, Equatable {
                 }
             }
         }
+        // A batch never ends on an Escape that has more behind it: the program would read a lone Esc and then the rest of the
+        // sequence as typing.
+        if items.count > 1, items.last == .key(.escape), consumed < queued.count { items.removeLast(); consumed -= 1 }
         queued.removeFirst(consumed)
         let batch = KeyBatch(id: id, items: items)
         frozen = batch
@@ -289,8 +294,12 @@ public struct KeyBuffer: Sendable, Equatable {
     /// Text only, for restoring what was typed into the line composer when the desktop cannot take keys.
     public var plainText: String {
         var text = ""
+        var afterEscape = false
         for item in items {
+            defer { afterEscape = item == .key(.escape) }
             switch item {
+            // Text right after an Escape is the rest of a key (Alt+b, Ctrl+Up), not something typed.
+            case .text where afterEscape: break
             case .text(let value): text += value
             case .key(.backspace): if !text.isEmpty { text.removeLast() }
             default: break
@@ -308,48 +317,164 @@ public struct KeyBuffer: Sendable, Equatable {
 
 // MARK: - Event mapping
 
+/// How a modifier key on the key bar is held: not at all, for the next key only, or until it is tapped again.
+public enum ModifierLatch: Sendable, Equatable {
+    case off, once, locked
+}
+
 /// Turns typed, dictated and pasted text and key presses into contract items.
+///
+/// Ctrl, Alt and Shift on the key bar latch like the Shift key of the iOS keyboard: a tap arms one for the next key, a quick second
+/// tap (a double tap) locks it until it is tapped again, and a slower second tap lets it go. Whatever is armed applies to the next
+/// single key: a letter, digit or symbol from the software keyboard or the bar, Return, Backspace, a named key of the bar, or a key
+/// of a hardware keyboard (its own modifiers add to the bar's). More than one character at once (dictation, a paste, an
+/// autocorrection, a word from an input method) is text, not a key press: it goes through unchanged and the arming stays.
 public struct KeyMapper: Sendable, Equatable {
-    /// Sticky Ctrl: the next letter becomes `C-<letter>`.
-    public private(set) var controlArmed = false
-    /// Sticky Alt (Meta), readline style: the next key or text is preceded by Escape, so Alt+b is `Escape`, `b`.
-    public private(set) var altArmed = false
+    /// A second tap within this many seconds of the first locks the modifier; a later one lets it go.
+    public static let doubleTapInterval: TimeInterval = 0.4
+    public private(set) var control = ModifierLatch.off
+    public private(set) var alt = ModifierLatch.off
+    public private(set) var shift = ModifierLatch.off
+    /// The modifier tapped last and when, while a second tap could still make a double tap of it.
+    private var lastTap: ChordModifiers?
+    private var lastTapAt: Date?
     public init() {}
 
-    public mutating func toggleControl() { controlArmed.toggle() }
-    public mutating func toggleAlt() { altArmed.toggle() }
-    public mutating func disarmControl() { controlArmed = false }
-    /// Both modifiers, for when the keyboard goes away.
-    public mutating func disarmModifiers() { controlArmed = false; altArmed = false }
-
-    public mutating func insert(_ text: String) -> [KeyItem] {
-        var rest = Substring(text)
-        var items: [KeyItem] = []
-        if controlArmed, let first = rest.first {
-            controlArmed = false
-            if let key = TerminalKey.control(forLetter: first) { items.append(.key(key)); rest = rest.dropFirst() }
+    public var controlArmed: Bool { control != .off }
+    public var altArmed: Bool { alt != .off }
+    public var shiftArmed: Bool { shift != .off }
+    /// What the next key gets.
+    public var armed: ChordModifiers {
+        var out: ChordModifiers = []
+        if controlArmed { out.insert(.control) }
+        if altArmed { out.insert(.alt) }
+        if shiftArmed { out.insert(.shift) }
+        return out
+    }
+    public func latch(_ modifier: ChordModifiers) -> ModifierLatch {
+        switch modifier {
+        case .control: control
+        case .alt: alt
+        case .shift: shift
+        default: .off
         }
-        return meta(items + Self.items(for: String(rest)))
     }
-    public mutating func deleteBackward() -> [KeyItem] {
-        controlArmed = false
-        return meta([.key(.backspace)])
+    private mutating func set(_ modifier: ChordModifiers, _ latch: ModifierLatch) {
+        switch modifier {
+        case .control: control = latch
+        case .alt: alt = latch
+        case .shift: shift = latch
+        default: break
+        }
     }
-    /// A bar or hardware key. Any key press consumes an armed Ctrl and an armed Alt.
-    public mutating func press(_ key: TerminalKey) -> [KeyItem] {
-        controlArmed = false
-        return meta([.key(key)])
+
+    /// A tap on Ctrl, Alt or Shift: off arms it for one key, a double tap locks it, any other tap lets it go.
+    public mutating func tap(_ modifier: ChordModifiers, at now: Date = Date()) {
+        let quick = lastTap == modifier && lastTapAt.map { now.timeIntervalSince($0) < Self.doubleTapInterval } ?? false
+        switch latch(modifier) {
+        case .off: set(modifier, .once)
+        case .once: set(modifier, quick ? .locked : .off)
+        case .locked: set(modifier, .off)
+        }
+        // A tap that locked or released ends the pair: a third quick tap starts over instead of counting as another double.
+        if latch(modifier) == .once { lastTap = modifier; lastTapAt = now } else { lastTap = nil; lastTapAt = nil }
     }
-    /// A hotkey is complete in itself: it goes out as defined, and consumes both modifiers.
+    /// Locks or releases a modifier outright (VoiceOver's actions, where a double tap is not a gesture one can make on a key).
+    public mutating func setLatch(_ modifier: ChordModifiers, _ latch: ModifierLatch) { set(modifier, latch); lastTap = nil; lastTapAt = nil }
+    /// Every modifier, locked ones too, for when the keyboard goes away.
+    public mutating func disarmModifiers() { control = .off; alt = .off; shift = .off; lastTap = nil; lastTapAt = nil }
+    /// A key was sent: what was armed for one key is used up; a locked modifier stays.
+    private mutating func release() {
+        if control == .once { control = .off }
+        if alt == .once { alt = .off }
+        if shift == .once { shift = .off }
+        lastTap = nil; lastTapAt = nil
+    }
+
+    /// Typed, dictated or pasted text. A single character is a key press and takes the armed modifiers; anything longer is text.
+    public mutating func insert(_ text: String) -> [KeyItem] {
+        let modifiers = armed
+        guard !modifiers.isEmpty, text.count == 1, let character = text.first else { return Self.items(for: text) }
+        let items: [KeyItem]
+        switch character {
+        case "\r", "\n", "\r\n": items = Self.encode(.enter, modifiers: modifiers)
+        case "\t": items = Self.encode(.tab, modifiers: modifiers)
+        default: items = Self.encode(character, modifiers: modifiers)
+        }
+        // A character that cannot be sent (a bare control character) is not a key press: the modifiers wait for one that is.
+        if !items.isEmpty { release() }
+        return items
+    }
+    public mutating func deleteBackward() -> [KeyItem] { press(.backspace) }
+    /// A bar or hardware key, with the modifiers a hardware keyboard held for it. It also takes the armed ones.
+    public mutating func press(_ key: TerminalKey, modifiers held: ChordModifiers = []) -> [KeyItem] {
+        let items = Self.encode(key, modifiers: armed.union(held))
+        release()
+        return items
+    }
+    /// A character key of a hardware keyboard with the modifiers held for it (Ctrl+Alt+B, say), plus the armed ones.
+    public mutating func press(_ character: Character, modifiers held: ChordModifiers) -> [KeyItem] {
+        let items = Self.encode(character, modifiers: armed.union(held))
+        if !items.isEmpty { release() }
+        return items
+    }
+    /// A hotkey is complete in itself: it goes out as defined, and uses up what was armed for one key.
     public mutating func run(_ hotkey: Hotkey) -> [KeyItem] {
-        disarmModifiers()
+        release()
         return hotkey.items
     }
-    /// An armed Alt puts Escape in front of what is about to be sent, once. Nothing to send keeps it armed.
-    private mutating func meta(_ items: [KeyItem]) -> [KeyItem] {
-        guard altArmed, !items.isEmpty else { return items }
-        altArmed = false
-        return [.key(.escape)] + items
+
+    // MARK: Encoding
+
+    /// The xterm modifier parameter: 1 plus 1 for Shift, 2 for Alt, 4 for Ctrl (Command is not a terminal modifier).
+    public static func xtermParameter(_ modifiers: ChordModifiers) -> Int {
+        1 + (modifiers.contains(.shift) ? 1 : 0) + (modifiers.contains(.alt) ? 2 : 0) + (modifiers.contains(.control) ? 4 : 0)
+    }
+
+    /// A named key with modifiers, as xterm sends it. The desktop takes named keys and plain text only, so a modified cursor or
+    /// editing key travels as `Escape` and the rest of its CSI sequence as text (`ESC [1;5A` for Ctrl+Up), which reaches the
+    /// program as the same bytes. Where xterm has no modified form the modifier is dropped, except that Alt puts Escape in front.
+    public static func encode(_ key: TerminalKey, modifiers: ChordModifiers) -> [KeyItem] {
+        let modifiers = modifiers.intersection([.shift, .control, .alt])
+        guard !modifiers.isEmpty else { return [.key(key)] }
+        let parameter = xtermParameter(modifiers)
+        func csi(_ body: String) -> [KeyItem] { [.key(.escape), .text("[" + body)] }
+        switch key {
+        case .up: return csi("1;\(parameter)A")
+        case .down: return csi("1;\(parameter)B")
+        case .right: return csi("1;\(parameter)C")
+        case .left: return csi("1;\(parameter)D")
+        case .home: return csi("1;\(parameter)H")
+        case .end: return csi("1;\(parameter)F")
+        case .pageUp: return csi("5;\(parameter)~")
+        case .pageDown: return csi("6;\(parameter)~")
+        case .delete: return csi("3;\(parameter)~")
+        case .tab:
+            // Shift+Tab is Back Tab; Ctrl+Tab has no legacy form.
+            return meta(modifiers, [.key(modifiers.contains(.shift) ? .backTab : .tab)])
+        case .backspace:
+            // Ctrl+Backspace is ^H, as in xterm (which leaves Backspace itself as DEL).
+            return meta(modifiers, [.key(modifiers.contains(.control) ? .control("h") : .backspace)])
+        case .backTab, .enter, .escape, .control:
+            return meta(modifiers, [.key(key)])
+        }
+    }
+
+    /// One character key with modifiers. Shift makes a letter upper case. Ctrl makes a letter its control key, `[` (and `3`)
+    /// Escape and `?` (and `8`) DEL; any other character has no control form the desktop can type, and goes as itself. Alt puts
+    /// Escape in front (meta sends escape). A character that cannot travel at all (a control character) gives nothing.
+    public static func encode(_ character: Character, modifiers: ChordModifiers) -> [KeyItem] {
+        var character = character
+        if modifiers.contains(.shift), TerminalKey.control(forLetter: character) != nil { character = Character(String(character).uppercased()) }
+        var items: [KeyItem]
+        if modifiers.contains(.control), let key = TerminalKey.control(forLetter: character) { items = [.key(key)] }
+        else if modifiers.contains(.control), character == "[" || character == "3" { items = [.key(.escape)] }
+        else if modifiers.contains(.control), character == "?" || character == "8" { items = [.key(.backspace)] }
+        else { items = Self.items(for: String(character)) }
+        return items.isEmpty ? [] : meta(modifiers, items)
+    }
+    private static func meta(_ modifiers: ChordModifiers, _ items: [KeyItem]) -> [KeyItem] {
+        modifiers.contains(.alt) ? [.key(.escape)] + items : items
     }
 
     /// CR, LF and CRLF become Enter, tab becomes Tab, other control characters and U+2028/2029 are dropped,

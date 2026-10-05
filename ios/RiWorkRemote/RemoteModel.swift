@@ -148,6 +148,8 @@ enum ConnectionState: Equatable {
     var compressTraffic = true
     /// What the desktop announced when this connection began, and whether it agreed to compress.
     @ObservationIgnored var desktopFeatures = DesktopFeatures()
+    /// Files and photos on their way to the Mac (RemoteModel+Upload.swift).
+    let attachments = Attachments()
     var compressionAgreed = false
     /// How the latest `shell.output` reply travelled: what a line of this terminal weighs, before any page has said.
     @ObservationIgnored var lastOutputTiming: ReplyTiming?
@@ -302,6 +304,9 @@ enum ConnectionState: Equatable {
         self.chatWaitMilliseconds = chatWaitMilliseconds
         self.chatIdleInterval = chatIdleInterval
         self.theme = ThemeStore(defaults: defaults)
+        // The desktop's mic setting, followed live: off, no dictation starts and one in progress is cancelled.
+        theme.onMicChange = { DictationController.shared.isAllowed = $0 }
+        DictationController.shared.isAllowed = theme.style.mic
         self.hotkeys = HotkeyStore(defaults: defaults)
         self.keyboard = KeyboardPrefs(defaults: defaults, hardware: hardwareKeyboard)
         self.cellMetrics = cellMetrics
@@ -469,7 +474,7 @@ enum ConnectionState: Equatable {
         do { try persist() } catch { desktops[i].name = old; throw error }
     }
     func remove(id: String) async throws {
-        if selectedDesktopID == id { await disconnect(); selectedDesktopID = nil; clearSnapshot() }
+        if selectedDesktopID == id { cancelUpload(); await disconnect(); selectedDesktopID = nil; clearSnapshot() }
         discardKeyBuffers(forDesktop: id)
         let previous = desktops
         desktops.removeAll { $0.id == id }
@@ -479,6 +484,7 @@ enum ConnectionState: Equatable {
     }
     func activate(_ id: String) async {
         if selectedDesktopID != id {
+            cancelUpload()
             await disconnect()
             selectedDesktopID = id; clearSnapshot(); draft = ""; deliveryNotice = nil
             // The new desktop's last palette is drawn before it has even connected.

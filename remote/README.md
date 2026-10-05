@@ -135,7 +135,7 @@ earlier result and `wait_ms` (0 to 10000) makes the one `riwork shell output ...
 (about every 80 ms where it cannot say) and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time. That
 call may take ten seconds, so the connector no longer handles a device's requests one
 at a time: `lanes.rs` lets one ordered request (`shell.keys`, `shell.input`,
-`shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`, `orchestrator.create`, `chat.create`, `chat.command`, `chat.stop`, in arrival order) and three others run at once,
+`shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`, `orchestrator.create`, `chat.create`, `chat.command`, `chat.stop`, `shell.paste`, in arrival order) and three others run at once,
 at most two of them waits (a `shell.output` with `if_changed` and `wait_ms`, or a `chat.events` with `wait_ms` above 0), queues the rest in arrival order, and the connection loop
 alone seals and sends the responses (out of order by request, in order by counter). A
 wait ends, and its CLI process is killed, when the connection closes, the phone goes
@@ -171,7 +171,8 @@ stand-in CLI; `fixtures/link.json` (see `fixtures/generate_link.py`) is shared w
 `appearance.get` returns the colors the desktop published, so the phone can match its
 theme (the contract is in [remote-protocol.md](../docs/remote-protocol.md)). It runs
 `riwork appearance --json` (no shell selection, no ledger), re-validates the output
-(version 1, lowercase `#rrggbb` colors, exactly 16 terminal colors, at most 16 KiB)
+(version 1, lowercase `#rrggbb` colors, exactly 16 terminal colors, the optional
+`native` and `mic` flags as booleans and passed on only when true, at most 16 KiB)
 and answers `not_found` "appearance not published" when the desktop app has not
 published a usable `appearance.json` yet. Its tests use a stub CLI and compile the
 desktop's `src/appearance_file.rs` to keep the two validators identical.
@@ -227,6 +228,27 @@ page until the reply fits one sealed frame the way `connector.rs` will seal it (
 `more` and `next` for the cut (one event that is more than a frame by itself has its long strings cut, as the CLI cuts them for a page). `tests/chat.rs` runs the RPCs against a stub CLI (an ignored test drives the real
 CLI and its chat host in a throwaway home with `RIWORK_TEST_CLI`); `tests/chat_link.rs` runs a real relay and the
 real connector binary for `features.chat`, the lanes and the sealing of a page.
+
+`upload.begin`, `upload.chunk`, `upload.finish`, `upload.cancel` and `shell.paste` take a photo or a file
+from the phone and give it to a shell or a chat (the contract is in [remote-protocol.md](../docs/remote-protocol.md),
+"File upload extension"; the code is `src/upload.rs` and `src/rpc/upload.rs`). The connector writes the chunks
+itself (no CLI per chunk) into `remote/uploads/DEVICE/UPLOAD.part`, checks the size and SHA-256 at `upload.finish`
+and only then links the file, whole, into `RIWORK_HOME/uploads/TARGET/` under a name it makes from the phone's
+(ASCII letters, digits, `-` and `_`, eight random hex digits, the extension), never replacing a file. Every
+limit is the connector's: 50 MiB a file, four uploads under way and 200 MiB per device (the oldest complete
+uploads make room), 90 KiB of data per chunk, 16 files per paste. `ready` announces them as `features.upload`.
+A per-device ledger (`uploads-DEVICE.json`, mode 600) says what each device sent; the sweep (at start, then
+hourly, and for a device before each new upload) removes partial uploads idle for an hour, complete ones after a
+day, everything of a device that is revoked or gone (also `revoke` itself and a running connector within a tick)
+and day-old files no ledger knows. The desktop removes a shell's inbox when the shell is closed and a chat's when
+it is deleted. A begin for a shell checks first that the CLI has `shell paste` (`"shell_paste": true` in
+`riwork capabilities --json`, remembered once it says yes) and that the shell is alive. `shell.paste` runs
+`riwork shell paste SHELL -- FILE...` for this device's finished uploads for that shell, with the batch ledger,
+locks and `sent|duplicate|uncertain` answers of `shell.keys`, and the same reading of the CLI's error tokens. The
+upload steps are reads in `lanes.rs` (a shared slot each, so an upload never holds up typing); `shell.paste` is
+ordered. Nothing logs, opens or runs a file. The tests are `tests/upload.rs` (a stub CLI: validation, traversal
+names, resume, damaged files, limits, exactly-once paste, sweep and revocation) and, in the root crate,
+`tests/shell_paste_cli.rs` (the real CLI and a real tmux in a throwaway `RIWORK_HOME`).
 
 `projects.list`, `shells.list` and `orchestrators.list` also carry what the desktop knows about
 recency and agent activity (the contract is in [remote-protocol.md](../docs/remote-protocol.md),

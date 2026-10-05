@@ -23,6 +23,10 @@ struct ChatScreen: View {
     /// The height the screen has now. With the software keyboard up it is under half of the phone, and the bars above the composer must
     /// leave the transcript room, so what they may scroll is a share of it.
     @State private var height: CGFloat = 800
+    /// The photo or file picker of the composer's paperclip.
+    @State private var picking: AttachmentChoice?
+    /// Scrolling room the bar over the composer gives up so the transcript keeps its last message in view (`transcriptChanged`).
+    @State private var squeeze: CGFloat = 0
 
     private var conversation: ChatConversation { model.chatConversations[chat.id] ?? ChatConversation(id: chat.id) }
     private var state: ChatState { model.chatState(chat) }
@@ -37,25 +41,31 @@ struct ChatScreen: View {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
             ChatStatusLines(model: model, chat: info, conversation: conversation, state: state)
             ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty) }
             if let approval = approvals.first {
-                BoundedScroll(maxHeight: max(110, height * 0.52)) {
-                    ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2),
+                BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
+                    ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2 - squeeze),
                                     busy: !connected || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
                         .id(approval.requestID)
                 }
             } else if let question = questions.first {
-                ChatQuestionBar(question: question, scrollHeight: max(100, height * 0.3), busy: !connected || conversation.answered.contains(question.requestID)) { form in
+                ChatQuestionBar(question: question, scrollHeight: max(leastQuestionScroll, height * 0.3 - squeeze), busy: !connected || conversation.answered.contains(question.requestID)) { form in
                     Task { await model.answerChatQuestion(chat.id, form) }
                 }
                 .id(question.requestID)
             }
+            if let activity = model.uploadActivity(for: .chat(chat.id)) {
+                UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
+            }
             ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
-                         send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } })
+                         send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
+                         attach: { picking = $0 }, pasteFiles: pasteFiles)
         }
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
         .background(style.background)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0; squeeze = 0 }
+        .attachmentPicker($picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
         .task(id: chat.id) { await model.followChat(chat.id) }
         .onAppear { requestFocus() }
         .onChange(of: chat.id) { _, _ in requestFocus() }
@@ -84,6 +94,20 @@ struct ChatScreen: View {
         }
     }
 
+    /// The least the questions may scroll in: a question and an answer, at least.
+    private var leastQuestionScroll: CGFloat { style.native ? 60 : 100 }
+    /// The least of the transcript that stays on screen above a request or question bar: the last message, at one line.
+    private var leastTranscript: CGFloat { style.pt(48) }
+    /// In Native, where the bars are taller, a bar over a short screen (the keyboard up) gives up scrolling room until the transcript
+    /// keeps `leastTranscript`; the terminal look keeps its bars as they were. It only ever gives more up, and starts over when the
+    /// screen's height changes: a bar cuts its answers between rows, so its height moves in steps, and taking room back as the
+    /// transcript grows would swing between two steps without end.
+    private func transcriptChanged(_ transcript: CGFloat, barShown: Bool) {
+        guard style.native, barShown else { if squeeze != 0 { squeeze = 0 }; return }
+        guard transcript < leastTranscript - 0.5 else { return }
+        let next = min(squeeze + leastTranscript - transcript, height * 0.3)
+        if next - squeeze >= 1 { squeeze = next }
+    }
     private func decide(_ approval: ChatApproval, _ decision: ChatDecision) {
         Task { await model.decideChatApproval(chat.id, approval, decision) }
     }
@@ -91,6 +115,13 @@ struct ChatScreen: View {
     private func requestFocus() {
         let context = KeyboardFocusContext(hardwareKeyboard: model.keyboard.hardware.isAttached)
         if KeyboardFocusPolicy.decide(setting: model.keyboard.focusSetting, context: context).shouldFocus { focusToken &+= 1 }
+    }
+    /// A paste of files or a lone picture in the composer: they go to the Mac and their paths into the message.
+    private func pasteFiles() -> Bool {
+        let sources = PasteboardAttachments.sources()
+        guard !sources.isEmpty else { return false }
+        model.attach(sources, to: .chat(chat.id))
+        return true
     }
 }
 
@@ -145,8 +176,8 @@ private struct ChatToolbar: View {
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(style.background)
-        .overlay(alignment: .bottom) { DesktopRule() }
+        .background(style.glass ? style.surface : style.background)
+        .overlay(alignment: .bottom) { if !style.glass { DesktopRule() } }
     }
 
     private var modelButton: some View {
@@ -166,7 +197,7 @@ private struct ChatToolbar: View {
             .foregroundStyle(shownMode == .full ? style.gold : style.muted)
             .padding(.horizontal, 10).frame(minHeight: 44).contentShape(Rectangle())
         }
-        .buttonStyle(.plain).disabled(!connected)
+        .buttonStyle(.plain).nativeGlass(style, in: Capsule()).disabled(!connected)
         .accessibilityLabel("Approval mode").accessibilityValue("\(shownMode.title), \(shownMode.detail)")
         .accessibilityHint("Choose Supervised, Auto-edit, Full or Plan")
     }
@@ -183,7 +214,7 @@ private struct ChatToolbar: View {
             Image(systemName: "ellipsis").font(style.system(.body, weight: .semibold)).foregroundStyle(style.muted)
                 .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
         }
-        .buttonStyle(.plain).accessibilityLabel("Chat options")
+        .buttonStyle(.plain).nativeGlass(style, in: Capsule()).accessibilityLabel("Chat options")
     }
 
 }
@@ -218,11 +249,11 @@ private struct ChatStatusLines: View {
         VStack(spacing: 0) {
             if conversation.gone {
                 line(icon: "questionmark.folder", text: "This chat is gone from the Mac.", tint: style.warning) {
-                    Button("Back") { model.deselectChat() }.buttonStyle(DesktopButtonStyle(compact: true))
+                    Button("Back") { model.deselectChat() }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule())
                 }
             } else if model.state != .connected {
                 line(icon: "wifi.slash", text: model.state == .connecting ? "Connecting…" : "Not connected. Your chat is kept; it carries on when the link is back.", tint: style.warning) {
-                    if model.state != .connecting { Button("Reconnect") { Task { await model.connect() } }.buttonStyle(DesktopButtonStyle(compact: true)) }
+                    if model.state != .connecting { Button("Reconnect") { Task { await model.connect() } }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule()) }
                 }
             } else if conversation.readError != nil {
                 line(icon: "arrow.triangle.2.circlepath", text: "Can’t read this chat right now. Trying again…", tint: style.warning) { EmptyView() }
@@ -230,7 +261,7 @@ private struct ChatStatusLines: View {
             if let banner {
                 line(icon: icon(banner), text: banner.text, tint: tint(banner), working: { if case .starting = banner { true } else { false } }()) {
                     if case .failed(_, let retry?) = banner {
-                        Button("Retry") { Task { await model.sendChatMessage(chat.id, retry) } }.buttonStyle(DesktopButtonStyle(compact: true))
+                        Button("Retry") { Task { await model.sendChatMessage(chat.id, retry) } }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule())
                             .disabled(model.state != .connected || conversation.sending)
                             .accessibilityHint("Sends your last message again")
                     }
@@ -259,9 +290,23 @@ private struct ChatStatusLines: View {
             trailing()
         }
         .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint.opacity(tint == style.muted ? 0 : 0.10))
-        .overlay(alignment: .bottom) { DesktopRule() }
+        .modifier(StatusLineSurface(tint: tint))
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// What a status line sits on. The terminal look: a band in its signal color with a rule under it. Native: a rounded tinted panel set
+/// in from the edges, as the request bars and the upload line are, and a muted line (Starting, Stopped) on nothing at all.
+private struct StatusLineSurface: ViewModifier {
+    @Environment(\.desktopStyle) private var style
+    let tint: Color
+    func body(content: Content) -> some View {
+        let quiet = tint == style.muted
+        if style.native {
+            content.background(tint.opacity(quiet ? 0 : 0.12), in: style.block(12)).padding(.horizontal, 8).padding(.top, quiet ? 0 : 6)
+        } else {
+            content.background(tint.opacity(quiet ? 0 : 0.10)).overlay(alignment: .bottom) { DesktopRule() }
+        }
     }
 }
 
@@ -283,6 +328,7 @@ private struct ChatTranscriptList: View {
 
     var body: some View {
         let transcript = conversation.transcript
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if !conversation.feed.loaded {
@@ -294,9 +340,9 @@ private struct ChatTranscriptList: View {
                     ChatItemRow(item: item, provider: provider, open: open(for: item), toggle: toggle).equatable()
                 }
                 if state == .running || state == .waiting || state == .starting { workingRow }
-                Color.clear.frame(height: 6)
+                Color.clear.frame(height: 18).id(Self.end)
             }
-            .padding(.vertical, 12)
+            .padding(.top, 12)
         }
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom)
@@ -311,33 +357,44 @@ private struct ChatTranscriptList: View {
             ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height,
                           topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom)
         } action: { old, new in
-            let response = sticky.metricsChanged(from: old, to: new, lineHeight: 24, userDriven: userDriven)
+            let response = sticky.metricsChanged(from: !userDriven && bottomCorrection != nil ? nil : old, to: new, lineHeight: 24, userDriven: userDriven)
             // An animated jump can finish against a lazy stack's previous height while the approval/composer resizes.
             // StickyBottom treats overscroll as following; it still needs correction to the newly measured content end.
             let bottom = max(-new.topInset, new.contentHeight - new.viewportHeight + new.bottomInset)
-            if response == .scrollToBottom || (sticky.following && !userDriven && new.offset > bottom + 2) {
-                scheduleBottomCorrection()
+            let settle = sticky.following && !userDriven && new.resized(since: old) && new.distanceFromBottom > 0.5
+            if response == .scrollToBottom || settle || (sticky.following && !userDriven && new.offset > bottom + 2) {
+                scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }
             }
         }
         .onChange(of: transcript.items.count) { _, count in sticky.contentChanged(end: count, epoch: 0) }
-        .onChange(of: conversation.jumps) { _, _ in jump() }
-        .onChange(of: conversation.feed.loaded) { _, _ in jump() }
-        .overlay(alignment: .bottomTrailing) { pill }
+        .onChange(of: conversation.jumps) { _, _ in jump(proxy) }
+        .onChange(of: conversation.feed.loaded) { _, _ in jump(proxy) }
+        .overlay(alignment: .bottomTrailing) { pill(proxy) }
         .accessibilityLabel("\(provider.chatTitle) conversation")
         .onDisappear { bottomCorrection?.cancel(); bottomCorrection = nil }
+        }
     }
 
     /// Lazy rows can change their measured height during layout (especially with accessibility text). Scroll after that pass,
     /// rather than feeding a new scroll position back into the geometry callback. A reader's gesture cancels the pending correction.
-    private func scheduleBottomCorrection() {
+    private func scheduleBottomCorrection(_ scroll: @escaping @MainActor () -> Void) {
         guard bottomCorrection == nil else { return }
         bottomCorrection = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(16))
             guard !Task.isCancelled else { return }
-            if sticky.following && !userDriven { position.scrollTo(edge: .bottom) }
+            if sticky.following && !userDriven { scroll() }
+            // Keep our own position changes from ending following while the lazy rows settle.
+            try? await Task.sleep(for: .milliseconds(32))
+            guard !Task.isCancelled else { return }
+            if sticky.following && !userDriven {
+                scroll()
+                // The marker loads lazy rows; the content edge also includes adjusted insets and final measurements.
+                position.scrollTo(edge: .bottom)
+            }
             bottomCorrection = nil
         }
     }
+    private static let end = "chat-transcript-end"
 
     private func open(for item: ChatItem) -> Set<String> {
         guard !conversation.expanded.isEmpty else { return [] }
@@ -350,9 +407,10 @@ private struct ChatTranscriptList: View {
             }
         }
     }
-    private func jump() {
+    private func jump(_ proxy: ScrollViewProxy) {
         sticky.jumpToBottom()
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { position.scrollTo(edge: .bottom) }
+        proxy.scrollTo(Self.end, anchor: .bottom)
+        scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }
     }
 
     private func placeholder(_ text: String, spinner: Bool) -> some View {
@@ -365,17 +423,26 @@ private struct ChatTranscriptList: View {
     private var workingRow: some View {
         HStack(spacing: 8) {
             ActivityIndicator(activity: state == .waiting ? .waiting : .working)
-            Text(state == .waiting ? "Waiting for you" : (state == .starting ? "Starting…" : "Working…")).font(style.mono(11, relativeTo: .caption)).foregroundStyle(style.muted)
+            Text(state == .waiting ? "Waiting for you" : (state == .starting ? "Starting…" : "Working…")).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .accessibilityElement(children: .combine).accessibilityLabel(state == .waiting ? "Waiting for you" : "Working")
     }
-    @ViewBuilder private var pill: some View {
+    @ViewBuilder private func pill(_ proxy: ScrollViewProxy) -> some View {
         if let pill = sticky.pill {
-            Button(action: jump) {
-                Text(pill.newLines > 0 ? "↓ Latest · \(pill.newLines) new" : "↓ Latest").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
-                    .padding(.horizontal, 12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(style.divider, lineWidth: 1)).contentShape(Capsule())
+            Button { jump(proxy) } label: {
+                if style.native {
+                    // Native: the arrow is a symbol, and the pill is glass on iOS 26, material before.
+                    Label(pill.newLines > 0 ? "Latest · \(pill.newLines) new" : "Latest", systemImage: "arrow.down").labelStyle(.titleAndIcon)
+                        .font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                        .padding(.horizontal, 12).frame(minHeight: 44)
+                        .background { if !style.glass { Capsule().fill(.ultraThinMaterial) } }
+                        .nativeGlass(style, in: Capsule()).contentShape(Capsule())
+                } else {
+                    Text(pill.newLines > 0 ? "↓ Latest · \(pill.newLines) new" : "↓ Latest").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                        .padding(.horizontal, 12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(style.divider, lineWidth: 1)).contentShape(Capsule())
+                }
             }
             .buttonStyle(.plain).padding(.trailing, 10).padding(.bottom, 8).transition(.opacity)
             .accessibilityLabel(pill.newLines > 0 ? "Jump to latest, \(pill.newLines) new" : "Jump to latest")

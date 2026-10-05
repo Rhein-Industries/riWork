@@ -7,7 +7,7 @@
 //!
 //! - `Ordered`: `shell.keys`, `shell.input`, `shell.resize`,
 //!   `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`,
-//!   `orchestrator.create`, `chat.create`, `chat.command` and `chat.stop`.
+//!   `orchestrator.create`, `chat.create`, `chat.command`, `chat.stop` and `shell.paste`.
 //!   One at a time, in arrival order. This is what keeps the batch ledger, the
 //!   viewport and the order of typed text intact. Creating and closing a
 //!   terminal, and creating a project or an orchestrator, change what exists, and a request that
@@ -21,8 +21,9 @@
 //! - `LongPoll`: a `shell.output` that waits for a change, and a `chat.events`
 //!   that waits for an event (any `wait_ms` above 0). At most two.
 //! - `Read`: everything else, including a `shell.output` that does not wait,
-//!   `shell.history`, a page of scrollback that never waits, `chats.list` and a
-//!   `chat.events` with `wait_ms` 0. It changes nothing, so it needs no order,
+//!   `shell.history`, a page of scrollback that never waits, `chats.list`, a
+//!   `chat.events` with `wait_ms` 0 and the `upload.*` steps of a file from the
+//!   phone (each a short write to disk; the paste that follows is `Ordered`). It changes nothing, so it needs no order,
 //!   and it takes one of the three shared slots, never the `Ordered` one.
 //!
 //! At most four of those run at once: the one `Ordered` slot and three shared
@@ -97,7 +98,8 @@ pub fn classify(request: &Value) -> Lane {
             | "orchestrator.create"
             | "chat.create"
             | "chat.command"
-            | "chat.stop",
+            | "chat.stop"
+            | "shell.paste",
         ) => Lane::Ordered,
         Some("pty.open") => Lane::Attach,
         Some("pty.read") => Lane::Stream,
@@ -411,6 +413,7 @@ mod tests {
             "chat.create",
             "chat.command",
             "chat.stop",
+            "shell.paste",
         ];
         for method in ordered {
             assert_eq!(
@@ -424,6 +427,10 @@ mod tests {
             "shells.list",
             "appearance.get",
             "chats.list",
+            "upload.begin",
+            "upload.chunk",
+            "upload.finish",
+            "upload.cancel",
             "nope",
             "execute",
         ] {

@@ -91,6 +91,11 @@ pub struct Published {
     /// keeps the terminal look.
     #[serde(default, skip_serializing_if = "is_false")]
     pub native: bool,
+    /// Settings → "Show microphone buttons for dictation" is on, so the phone shows its mic
+    /// buttons (chat composers and the terminal key bar). Written only when true, like `native`: a document
+    /// without it means off, and one from before the field reads as it always did.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mic: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -107,6 +112,7 @@ impl Published {
             palette,
             terminal,
             native: false,
+            mic: false,
         }
     }
 
@@ -405,6 +411,12 @@ mod tests {
         assert!(mutate(&|v| v["native"] = json!("yes")).is_err());
         assert!(mutate(&|v| v["native"] = json!(1)).is_err());
         assert!(mutate(&|v| v["native"] = Value::Null).is_err());
+        assert!(mutate(&|v| v["mic"] = json!(true)).is_ok());
+        assert!(mutate(&|v| v["mic"] = json!(false)).is_ok());
+        assert!(mutate(&|v| v["mic"] = json!("yes")).is_err());
+        assert!(mutate(&|v| v["mic"] = json!(1)).is_err());
+        assert!(mutate(&|v| v["mic"] = Value::Null).is_err());
+        assert!(mutate(&|v| v["mic"] = json!({})).is_err());
         for bytes in [
             &b""[..],
             b"{",
@@ -463,6 +475,42 @@ mod tests {
     }
 
     #[test]
+    fn the_mic_flag_is_written_only_when_set() {
+        let mut published = snapshot(0x111111);
+        // Off, the document is exactly what it was before the flag existed.
+        let off = serde_json::to_vec_pretty(&published).unwrap();
+        assert!(!String::from_utf8_lossy(&off).contains("\"mic\""));
+        assert!(
+            !parse(&serde_json::to_value(&published).unwrap())
+                .unwrap()
+                .mic
+        );
+        published.mic = true;
+        let value = serde_json::to_value(&published).unwrap();
+        assert_eq!(value["mic"], true);
+        assert!(value.get("native").is_none(), "{value}");
+        assert_eq!(parse(&value).unwrap(), published);
+        // With Native too, both flags follow the terminal colors.
+        published.native = true;
+        let text = serde_json::to_string(&published).unwrap();
+        assert!(
+            text.find("\"terminal\"") < text.find("\"native\"")
+                && text.find("\"native\"") < text.find("\"mic\""),
+            "{text}"
+        );
+        // Missing or false is off, and false is dropped when written again.
+        let mut old = document();
+        assert!(!parse(&old).unwrap().mic);
+        old["mic"] = json!(false);
+        assert_eq!(
+            serde_json::to_value(parse(&old).unwrap()).unwrap(),
+            document()
+        );
+        old["mic"] = json!(true);
+        assert!(parse(&old).unwrap().mic);
+    }
+
+    #[test]
     fn same_colors_ignores_only_the_time() {
         let first = snapshot(0x202020);
         let mut later = first.clone();
@@ -484,6 +532,10 @@ mod tests {
         // Switching Native on with the same colors is a change the phone must see.
         other = first.clone();
         other.native = true;
+        assert!(!first.same_colors(&other));
+        // So is switching the mic, which changes no color.
+        other = first.clone();
+        other.mic = true;
         assert!(!first.same_colors(&other));
     }
 
