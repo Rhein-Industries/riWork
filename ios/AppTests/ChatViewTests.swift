@@ -379,6 +379,52 @@ import RiWorkCore
             await finish(rig)
         }
     }
+    /// Pictures of the rows that hold a field and its buttons: the chat composer with one line and with several, while dictating and
+    /// with a turn running, and the terminal's line composer and the bar under the terminal, in Native dark and the terminal look. As
+    /// above, with `RIWORK_ROW_SCREENSHOTS` set each state leaves `<name>.ready` and waits for `<name>.png` from the simulator.
+    func testPicturesOfTheComposerRows() async throws {
+        guard let path = ProcessInfo.processInfo.environment["RIWORK_ROW_SCREENSHOTS"] else { throw XCTSkip("Set RIWORK_ROW_SCREENSHOTS") }
+        executionTimeAllowance = 1800
+        let directory = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        func hold(_ name: String) async throws {
+            try await Task.sleep(for: .milliseconds(800))
+            let ready = directory.appendingPathComponent(name + ".ready"), shot = directory.appendingPathComponent(name + ".png")
+            try? FileManager.default.removeItem(at: shot)
+            try Data().write(to: ready)
+            let deadline = Date().addingTimeInterval(120)
+            while !FileManager.default.fileExists(atPath: shot.path), Date() < deadline { try await Task.sleep(for: .milliseconds(250)) }
+            try? FileManager.default.removeItem(at: ready)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: shot.path), "no screenshot taken for \(name)")
+        }
+        let screen = UIScreen.main.bounds.size
+        for look in [Look.nativeDark, .terminal] {
+            var rig = try await makeRig(chats: [chat(state: .idle), mixed[1]], hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            let field = try await openChat(rig)
+            _ = field.becomeFirstResponder()
+            let conversation = rig.model.conversation(chatID)
+            try await hold(named("row-chat-empty", look))
+            conversation.draft = "Run the tests"
+            try await hold(named("row-chat-one-line", look))
+            conversation.draft = "Run the tests\nthen fix what fails\nand tell me what changed"
+            try await hold(named("row-chat-three-lines", look))
+            await finish(rig)
+            // A turn running: Stop joins the row.
+            rig = try await makeRig(chats: [chat(state: .running), mixed[1]], hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            _ = try await openChat(rig).becomeFirstResponder()
+            rig.model.conversation(chatID).draft = "Also check the docs"
+            try await hold(named("row-chat-running", look))
+            await finish(rig)
+
+            rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
+            try await hold(named("row-terminal-bar", look))
+            rig.model.preferLineComposer = true
+            try await Task.sleep(for: .milliseconds(600))
+            if let line = descendants(UITextField.self, in: rig.host.view).first { _ = line.becomeFirstResponder() }
+            try await hold(named("row-line-composer", look))
+            await finish(rig)
+        }
+    }
     func testTheScreenDrawsEveryKindOfItem() async throws {
         for look in Look.allCases {
             // Tall enough to hold the whole transcript, so every row is drawn.
