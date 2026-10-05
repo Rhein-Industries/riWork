@@ -79,6 +79,13 @@ remote_binary="remote/target/$profile/riwork-remote"
 if [ -x "$remote_binary" ]; then
     cp "$remote_binary" "$bundle/Contents/MacOS/riwork-remote"
 fi
+# The chat's dictation helper, built beside riwork by build.rs when Swift is available.
+speech_binary="target/$profile/riwork-speech"
+if [ -x "$speech_binary" ]; then
+    cp "$speech_binary" "$bundle/Contents/MacOS/riwork-speech"
+else
+    echo "warning: $speech_binary is missing; chat dictation will be unavailable" >&2
+fi
 cp "$app_icon" "$resources/RiWork.icns"
 tic -x -o "$resources/terminfo" "$work/ghostty.terminfo"
 cp -R "$ghostty_source/shell-integration" "$resources/ghostty/"
@@ -107,7 +114,8 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>A program running within RiWork would like to use your microphone.</string>
+    <key>NSMicrophoneUsageDescription</key><string>RiWork uses the microphone when you dictate a chat message, and programs running within RiWork may use it too.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>RiWork turns what you dictate into a chat message on this Mac; nothing is sent to a server.</string>
 </dict>
 </plist>
 PLIST
@@ -128,6 +136,10 @@ xattr -cr "$bundle"
 if [ -f "$bundle/Contents/MacOS/riwork-remote" ]; then
     codesign --force --sign "$codesign_identity" --identifier "$identifier.remote" \
         "$bundle/Contents/MacOS/riwork-remote"
+fi
+if [ -f "$bundle/Contents/MacOS/riwork-speech" ]; then
+    codesign --force --sign "$codesign_identity" --identifier "$identifier.speech" \
+        "$bundle/Contents/MacOS/riwork-speech"
 fi
 codesign --force --sign "$codesign_identity" --identifier "$identifier" "$bundle"
 codesign --verify --deep --strict "$bundle"
