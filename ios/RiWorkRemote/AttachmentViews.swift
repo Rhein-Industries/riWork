@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 import RiWorkCore
 
 // Giving the Mac a photo or a file from the phone: where it comes from (the Photos library, Files, the camera, the pasteboard), the
-// sheet that offers those, and the line that shows it on its way. `RemoteModel.attach` sends it; see RemoteModel+Upload.swift.
+// menu that offers those, and the line that shows it on its way. `RemoteModel.attach` sends it; see RemoteModel+Upload.swift.
 
 /// Something picked or pasted, loaded only when it is sent.
 enum AttachmentSource: @unchecked Sendable {
@@ -75,41 +75,57 @@ enum PasteboardAttachments {
     }
 }
 
-/// Where a photo or a file comes from: the Photos library, Files or the camera, offered as a dialog when `isPresented` is set. `onDone`
-/// runs once whatever was shown has gone, picked or not (the terminal gives the keyboard back then).
+/// Where a photo or a file comes from. The paperclip offers these as a menu on itself (`AttachMenu`, and the paperclip key of
+/// `KeyBarView`); the choice opens its picker (`attachmentPicker`).
+enum AttachmentChoice: Hashable, Identifiable {
+    case photos, camera, files
+    var id: Self { self }
+    /// In sentence case; `DesktopStyle.cased` gives the terminal look its capitals.
+    var title: String {
+        switch self {
+        case .photos: "Photo library"
+        case .camera: "Take photo"
+        case .files: "Files"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .photos: "photo.on.rectangle"
+        case .camera: "camera"
+        case .files: "folder"
+        }
+    }
+    /// What this phone offers: the camera only where there is one.
+    static var available: [AttachmentChoice] {
+        UIImagePickerController.isSourceTypeAvailable(.camera) ? [.photos, .camera, .files] : [.photos, .files]
+    }
+}
+
+/// The picker of `choice` (the Photos library, Files or the camera), shown while `choice` is set; closing it clears `choice`. `onDone`
+/// runs once it has gone, picked or not (the terminal and the chat give the keyboard back then).
 ///
-/// The dialog and the pickers exist only while one of them is wanted, on a background of their own: installed for good, the pickers'
-/// presenters take the keys and the keyboard from a chat's composer.
+/// The pickers exist only while one of them is wanted, on a background of their own: installed for good, their presenters take the
+/// keys and the keyboard from a chat's composer.
 struct AttachmentPicker: ViewModifier {
-    @Binding var isPresented: Bool
+    @Binding var choice: AttachmentChoice?
     var onPick: ([AttachmentSource]) -> Void
     var onDone: () -> Void = {}
-    @State private var photos = false
-    @State private var files = false
-    @State private var camera = false
-
-    private var armed: Bool { isPresented || photos || files || camera }
 
     func body(content: Content) -> some View {
         content.background {
-            if armed { presenters }
+            if choice != nil { presenters }
         }
+    }
+    private func shows(_ wanted: AttachmentChoice) -> Binding<Bool> {
+        Binding(get: { choice == wanted }, set: { if !$0, choice == wanted { choice = nil } })
     }
     private var presenters: some View {
         Color.clear
-            .confirmationDialog("Send to the Mac", isPresented: $isPresented, titleVisibility: .visible) {
-                Button("Photo Library") { photos = true }
-                if UIImagePickerController.isSourceTypeAvailable(.camera) { Button("Take Photo") { camera = true } }
-                Button("Files") { files = true }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("A terminal gets the file’s path the way its program takes a dropped file; a chat gets it in the message.")
-            }
-            .photosPicker(isPresented: $photos, selection: picked, maxSelectionCount: UploadLimits.maximumFiles, matching: .images, photoLibrary: .shared())
-            .fileImporter(isPresented: $files, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            .photosPicker(isPresented: shows(.photos), selection: picked, maxSelectionCount: UploadLimits.maximumFiles, matching: .images, photoLibrary: .shared())
+            .fileImporter(isPresented: shows(.files), allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result, !urls.isEmpty { onPick(urls.map(AttachmentSource.file)) }
             }
-            .fullScreenCover(isPresented: $camera) {
+            .fullScreenCover(isPresented: shows(.camera)) {
                 CameraPicker { data in onPick([.camera(data)]) }.ignoresSafeArea()
             }
             .onDisappear(perform: finishSoon)
@@ -118,18 +134,18 @@ struct AttachmentPicker: ViewModifier {
     private var picked: Binding<[PhotosPickerItem]> {
         Binding(get: { [] }, set: { items in if !items.isEmpty { onPick(items.map(AttachmentSource.photo)) } })
     }
-    /// The dialog's choice opens the next sheet right after the dialog closes: done only when nothing is open a moment later.
+    /// Done once the picker has finished going away, unless another was asked for meanwhile.
     private func finishSoon() {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
-            if !armed { onDone() }
+            if choice == nil { onDone() }
         }
     }
 }
 
 extension View {
-    func attachmentPicker(isPresented: Binding<Bool>, onDone: @escaping () -> Void = {}, onPick: @escaping ([AttachmentSource]) -> Void) -> some View {
-        modifier(AttachmentPicker(isPresented: isPresented, onPick: onPick, onDone: onDone))
+    func attachmentPicker(_ choice: Binding<AttachmentChoice?>, onDone: @escaping () -> Void = {}, onPick: @escaping ([AttachmentSource]) -> Void) -> some View {
+        modifier(AttachmentPicker(choice: choice, onPick: onPick, onDone: onDone))
     }
 }
 
@@ -207,14 +223,31 @@ struct UploadStatusBar: View {
     }
 }
 
-/// The paperclip that opens the picker.
-struct AttachButton: View {
+/// The paperclip: a menu on itself of where the photo or file comes from, opening from the paperclip as the system's pull-down menus
+/// do, so it stays beside what was tapped and clear of the screen's header.
+struct AttachMenu<Label: View>: View {
     @Environment(\.desktopStyle) private var style
-    var compact = true
-    let action: () -> Void
+    let choose: (AttachmentChoice) -> Void
+    @ViewBuilder var label: Label
     var body: some View {
-        Button("Send a photo or file", systemImage: "paperclip", action: action)
-            .labelStyle(.iconOnly).buttonStyle(DesktopButtonStyle(compact: compact))
+        Menu {
+            ForEach(AttachmentChoice.available) { choice in
+                Button(style.cased(choice.title), systemImage: choice.symbol) { choose(choice) }
+            }
+        } label: { label }
+            // Top to bottom as listed, whichever way the menu opens.
+            .menuOrder(.fixed)
+            .accessibilityLabel("Send a photo or file")
+    }
+}
+
+/// The paperclip of the terminal's bars, in their button style.
+struct AttachButton: View {
+    var compact = true
+    let choose: (AttachmentChoice) -> Void
+    var body: some View {
+        AttachMenu(choose: choose) { Image(systemName: "paperclip") }
+            .menuStyle(.button).buttonStyle(DesktopButtonStyle(compact: compact))
             .accessibilityHint("Sends a photo or a file to the Mac and pastes its path")
     }
 }

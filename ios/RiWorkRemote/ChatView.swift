@@ -22,7 +22,7 @@ struct ChatScreen: View {
     /// leave the transcript room, so what they may scroll is a share of it.
     @State private var height: CGFloat = 800
     /// The photo or file picker of the composer's paperclip.
-    @State private var picking = false
+    @State private var picking: AttachmentChoice?
 
     private var conversation: ChatConversation { model.chatConversations[chat.id] ?? ChatConversation(id: chat.id) }
     private var state: ChatState { model.chatState(chat) }
@@ -52,11 +52,11 @@ struct ChatScreen: View {
             }
             ChatComposer(conversation: conversation, provider: chat.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
                          send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
-                         attach: { picking = true }, pasteFiles: pasteFiles)
+                         attach: { picking = $0 }, pasteFiles: pasteFiles)
         }
         .background(style.background)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
-        .attachmentPicker(isPresented: $picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
+        .attachmentPicker($picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
         .task(id: chat.id) { await model.followChat(chat.id) }
         .onAppear { requestFocus() }
         .onChange(of: chat.id) { _, _ in requestFocus() }

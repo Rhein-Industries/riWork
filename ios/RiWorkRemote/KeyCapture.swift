@@ -68,9 +68,9 @@ enum TerminalFont {
     var onEditHotkeys: (() -> Void)?
     /// The bar's mic: start or stop a dictation.
     var onDictate: (() -> Void)?
-    /// The bar's paperclip, and a paste that finds files or a picture (`PasteboardAttachments`): both send them to the Mac. A paste
-    /// that is handled returns true; text is pasted as typing, as before.
-    var onAttach: (() -> Void)?
+    /// A choice from the bar's paperclip menu, and a paste that finds files or a picture (`PasteboardAttachments`): both send them to
+    /// the Mac. A paste that is handled returns true; text is pasted as typing, as before.
+    var onAttach: ((AttachmentChoice) -> Void)?
     var onPasteFiles: (() -> Bool)?
     var onNewHotkey: (() -> Void)?
     var onEditHotkey: ((Hotkey) -> Void)?
@@ -232,7 +232,8 @@ enum TerminalFont {
         case .latch(let modifier, let latch): mapper.setLatch(modifier, latch)
         case .text(let symbol): emit(mapper.insert(symbol))
         case .paste: paste(nil)
-        case .attach: onAttach?()
+        case .attach: break  // The paperclip key opens its menu; a choice from it comes as `.attachFrom`.
+        case .attachFrom(let choice): onAttach?(choice)
         case .hide: onUserHide?(); _ = resignFirstResponder()
         case .hotkey(let id): if let hotkey = (Hotkey.builtIn + hotkeys).first(where: { $0.id == id }) { emit(mapper.run(hotkey)) }
         case .editHotkeys: onEditHotkeys?()
@@ -633,7 +634,7 @@ struct KeyCapture: UIViewRepresentable {
     var onKeyEvent: (KeyEventRecord) -> Void = { _ in }
     var dictation = KeyBarView.Dictation.idle
     var onDictate: () -> Void = {}
-    var onAttach: () -> Void = {}
+    var onAttach: (AttachmentChoice) -> Void = { _ in }
     var onPasteFiles: () -> Bool = { false }
     var onItems: ([KeyItem]) -> Bool
 

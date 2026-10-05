@@ -167,7 +167,7 @@ struct ChatComposer: View {
     let interrupt: () -> Void
     let decide: (ChatDecision) -> Void
     /// The paperclip (a photo or a file goes to the Mac and its path into the message), and a paste of files.
-    var attach: (() -> Void)?
+    var attach: ((AttachmentChoice) -> Void)?
     var pasteFiles: (() -> Bool)?
     @State private var focused = false
     @State private var dictation = TextInsertion()
@@ -196,10 +196,12 @@ struct ChatComposer: View {
             }
             HStack(alignment: .bottom, spacing: 4) {
                 if let attach {
-                    Button(action: attach) { Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5)) }
-                        .buttonStyle(.plain).frame(width: style.pt(32), height: style.pt(44)).contentShape(Rectangle())
-                        .disabled(!connected)
-                        .accessibilityLabel("Send a photo or file").accessibilityHint("Sends it to the Mac and puts its path in the message")
+                    AttachMenu(choose: attach) {
+                        Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
+                            .frame(width: style.pt(32), height: style.pt(44)).contentShape(Rectangle())
+                    }
+                    .disabled(!connected)
+                    .accessibilityHint("Sends it to the Mac and puts its path in the message")
                 }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
                                   isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, onKey: handle, onFocusChange: { focused = $0 },
