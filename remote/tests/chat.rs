@@ -169,9 +169,9 @@ fn warm(cli: &Path) {
 /// `[]`). `chat new` waits `create.delay` seconds if that exists, marks
 /// `create.ran`, then prints `create.json`. `chat events` waits `events.delay`
 /// and prints `events.json`. `chat command` and `chat stop` print the chat they
-/// were given. `chat options` prints `options.json`. Each of the `chat` calls fails
-/// with the line in its `.error` file (`list.error`, `create.error`, `events.error`,
-/// `command.error`, `stop.error`, `options.error`) if that exists.
+/// were given. Each of the `chat` calls fails with the line in its `.error` file
+/// (`list.error`, `create.error`, `events.error`, `command.error`, `stop.error`)
+/// if that exists.
 fn stub_cli(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let cli = dir.join("fake-riwork");
@@ -203,7 +203,6 @@ fn stub_cli(dir: &Path) -> PathBuf {
                cat \"$d/events.json\";;\n\
              'chat command') fail command; printf '{{\"id\":\"%s\",\"status\":\"ok\"}}' \"$3\";;\n\
              'chat stop') fail stop; printf '{{\"id\":\"%s\",\"state\":\"stopped\"}}' \"$3\";;\n\
-             'chat options') fail options; cat \"$d/options.json\";;\n\
              esac\n",
             dir = dir.display()
         ),
@@ -546,11 +545,6 @@ async fn parameters_are_validated_before_any_cli_runs() {
         ("chat.stop", json!({"chat_id":&c[..8]})),
         ("chat.stop", json!({"chat_id":c,"force":true})),
         ("chat.stop", json!({"id":c})),
-        // Options take nothing.
-        ("chat.options", json!(null)),
-        ("chat.options", json!([])),
-        ("chat.options", json!({"provider":"codex"})),
-        ("chat.options", json!({"chat_id":c})),
     ];
     for (method, params) in bad {
         let response = f.call(method, params.clone()).await;
@@ -1267,81 +1261,6 @@ async fn a_cli_without_chats_is_told_apart_and_asked_again_until_it_says_yes() {
 }
 
 #[tokio::test]
-async fn the_options_are_the_clis_lists_checked_and_an_older_cli_says_to_update() {
-    let f = Fixture::new();
-    let desktop = json!({"providers": {
-        "codex": {"models": [], "efforts": ["low", "medium", "high", "xhigh"]},
-        "claude": {"models": ["opus", "sonnet", "haiku"],
-                   "efforts": ["low", "medium", "high", "xhigh", "max"]}
-    }});
-    f.says("options.json", &desktop);
-    let options = f.call("chat.options", json!({})).await;
-    assert_eq!(options["ok"], true, "{options}");
-    assert_eq!(options["result"], desktop);
-    assert_eq!(
-        f.calls_of("chat", "options"),
-        vec![words(&["chat", "options", "--json"])]
-    );
-
-    // A newer CLI may say more: only the two providers and their two lists pass, and a
-    // provider it leaves out is left out.
-    f.says(
-        "options.json",
-        &json!({"providers": {
-            "claude": {"models": ["opus"], "efforts": ["max"], "default": "opus"},
-            "grok": {"models": ["grok-4"], "efforts": []}
-        }, "v": 2}),
-    );
-    let newer = f.call("chat.options", json!({})).await;
-    assert_eq!(
-        newer["result"],
-        json!({"providers": {"claude": {"models": ["opus"], "efforts": ["max"]}}})
-    );
-
-    // What a `configure` could not send is not an option: the CLI is not believed.
-    for wrong in [
-        json!([]),
-        json!({"providers": []}),
-        json!({"providers": {"codex": {"models": []}}}),
-        json!({"providers": {"codex": {"models": "opus", "efforts": []}}}),
-        json!({"providers": {"codex": {"models": [7], "efforts": []}}}),
-        json!({"providers": {"codex": {"models": [""], "efforts": []}}}),
-        json!({"providers": {"codex": {"models": ["  "], "efforts": []}}}),
-        json!({"providers": {"codex": {"models": ["a\nb"], "efforts": []}}}),
-        json!({"providers": {"codex": {"models": ["x".repeat(101)], "efforts": []}}}),
-        json!({"providers": {"codex": {"models": [], "efforts": ["x".repeat(33)]}}}),
-        json!({"providers": {"codex": {"models": vec!["m"; 65], "efforts": []}}}),
-    ] {
-        f.says("options.json", &wrong);
-        let response = f.call("chat.options", json!({})).await;
-        assert_eq!(code(&response), "cli_error", "{wrong}: {response}");
-    }
-    // The limits are inclusive.
-    let longest = json!({"providers": {"codex": {
-        "models": vec!["m".repeat(100); 64], "efforts": ["e".repeat(32)]}}});
-    f.says("options.json", &longest);
-    assert_eq!(f.call("chat.options", json!({})).await["result"], longest);
-
-    // A CLI from before the method refuses it as a usage error: the phone is told to update.
-    f.set(
-        "options.error",
-        "Usage: riwork chat serve|ensure|list|new|events|command|send|stop (riwork help)",
-    );
-    let older = f.call("chat.options", json!({})).await;
-    assert_eq!(code(&older), "cli_error", "{older}");
-    assert!(message(&older).contains("update RiWork"), "{older}");
-    f.unset("options.error");
-
-    // And a CLI without chats is not asked at all.
-    let g = Fixture::new();
-    g.set("capabilities.out", "{\"v\":1}");
-    let none = g.call("chat.options", json!({})).await;
-    assert_eq!(code(&none), "cli_error", "{none}");
-    assert!(message(&none).contains("update RiWork"), "{none}");
-    assert!(g.chat_calls().is_empty());
-}
-
-#[tokio::test]
 async fn an_events_page_is_what_the_cli_collected_checked_against_the_request() {
     let f = Fixture::new();
     let events = |from: u64, count: u64| -> Vec<Value> {
@@ -1741,21 +1660,6 @@ async fn the_real_cli_lists_creates_follows_and_stops_a_chat_through_the_rpc() {
     assert_eq!(none["result"], json!({"chats":[]}), "{none}");
     let missing = call("chats.list", json!({"project_id":new_uuid()})).await;
     assert_eq!(code(&missing), "not_found", "{missing}");
-
-    // The models and efforts of each provider, as the chat tabs list them.
-    let options = call("chat.options", json!({})).await;
-    assert_eq!(options["ok"], true, "{options}");
-    assert_eq!(
-        options["result"]["providers"]["claude"]["models"],
-        json!(["opus", "sonnet", "haiku"]),
-        "{options}"
-    );
-    assert!(
-        options["result"]["providers"]["codex"]["efforts"]
-            .as_array()
-            .is_some_and(|efforts| efforts.contains(&json!("high"))),
-        "{options}"
-    );
 
     // A chat is created whatever becomes of its agent (this build may have none).
     let created = call(

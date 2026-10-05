@@ -1,11 +1,7 @@
 //! The words and numbers of the chat toolbar: the approval modes, the choices for model and
 //! effort, the context meter and the thread id.
 
-use crate::chat::model::{ApprovalMode, Usage};
-
-/// The choices for model and effort live with the chats, so the phone is offered the same
-/// (`riwork chat options`).
-pub use crate::chat::choices::{efforts, model_suggestions};
+use crate::chat::model::{ApprovalMode, Provider, Usage};
 
 /// The modes in the order the picker lists them, with what each lets the agent do.
 pub const MODES: [(ApprovalMode, &str, &str); 4] = [
@@ -32,6 +28,24 @@ pub fn mode_label(mode: ApprovalMode) -> &'static str {
         .iter()
         .find(|(candidate, ..)| *candidate == mode)
         .map_or("Supervised", |(_, label, _)| label)
+}
+
+/// The reasoning efforts offered for a provider. The host passes the name on as it is, so
+/// a level the installed CLI does not know is the provider's to refuse.
+pub fn efforts(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Codex => &["low", "medium", "high", "xhigh"],
+        Provider::Claude => &["low", "medium", "high", "xhigh", "max"],
+    }
+}
+
+/// Models offered as buttons beside the text field. Claude's aliases keep working as models
+/// change; Codex model names change often enough that only the text field is offered.
+pub fn model_suggestions(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Codex => &[],
+        Provider::Claude => &["opus", "sonnet", "haiku"],
+    }
 }
 
 /// A token count in a few characters: `842`, `12.3k`, `1.2M`.
@@ -103,7 +117,6 @@ pub fn short_thread_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::model::Provider;
 
     #[test]
     fn token_counts_stay_short() {

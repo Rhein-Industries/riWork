@@ -217,31 +217,6 @@ fn chat_commands_refuse_what_they_cannot_do_without_starting_a_host() {
 }
 
 #[test]
-fn options_lists_the_models_and_efforts_of_each_provider_without_a_host() {
-    let home = Home::new();
-    let options = home.run(&["chat", "options", "--json"]);
-    assert!(options.status.success(), "{}", stderr(&options));
-    let options: serde_json::Value = serde_json::from_slice(&options.stdout).unwrap();
-    assert_eq!(
-        options,
-        serde_json::json!({"providers": {
-            "codex": {"models": [], "efforts": ["low", "medium", "high", "xhigh"]},
-            "claude": {"models": ["opus", "sonnet", "haiku"],
-                       "efforts": ["low", "medium", "high", "xhigh", "max"]}
-        }})
-    );
-    let text = stdout(&home.run(&["chat", "options"]));
-    assert!(
-        text.contains("claude\tmodels: opus sonnet haiku\tefforts: low medium high xhigh max"),
-        "{text}"
-    );
-    assert!(text.contains("codex\tmodels: (any name)"), "{text}");
-    let extra = home.run(&["chat", "options", "now"]);
-    assert_eq!(extra.status.code(), Some(2));
-    assert!(!home.socket().exists(), "no host was started");
-}
-
-#[test]
 fn events_and_command_refuse_an_unknown_chat_and_capabilities_announce_chat() {
     let home = Home::new();
     let capabilities = home.run(&["capabilities", "--json"]);

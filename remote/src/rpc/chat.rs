@@ -1,6 +1,5 @@
 //! Chats on the phone ("Chat extension" in `docs/remote-protocol.md`): `chats.list`,
-//! `chat.create`, `chat.events`, `chat.command` and `chat.stop`, and `chat.options`, the
-//! models and efforts a chat is offered.
+//! `chat.create`, `chat.events`, `chat.command` and `chat.stop`.
 //!
 //! Each is one call of the installed CLI (`riwork chat ...`), which talks to the chat host.
 //! The connector validates the params before any CLI runs, builds the argument vector from
@@ -407,11 +406,6 @@ fn answers(object: &Map<String, Value>) -> std::result::Result<Vec<Vec<String>>,
     Ok(all)
 }
 
-/// A validated `chat.options`: it takes nothing.
-pub(super) fn options_spec(params: &Value) -> std::result::Result<(), Fault> {
-    fields(params, &[]).map(|_| ())
-}
-
 /// A validated `chat.stop`.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct StopSpec {
@@ -518,42 +512,6 @@ fn new_result(spec: &NewSpec, cli: &Value) -> Option<Value> {
         && same("model", &spec.model)
         && same("effort", &spec.effort))
     .then(|| json!({ "chat": cli }))
-}
-
-/// The most models or efforts one provider's list of `chat.options` may hold.
-const OPTIONS_MAX: usize = 64;
-
-/// The `chat.options` result for what the CLI printed, or `None` if it is not that: for each
-/// of `codex` and `claude` that it names, `models` and `efforts` as lists of names that a
-/// `configure` could send (one line, not blank, within the limits). Only those two providers
-/// and those two lists are passed on: a newer CLI may print more, and the phone is told what
-/// the contract says.
-fn options_result(cli: &Value) -> Option<Value> {
-    let providers = cli.get("providers")?.as_object()?;
-    let names = |entry: &Value, list: &str, max: usize| -> Option<Value> {
-        let names = entry.get(list)?.as_array()?;
-        let fits = names.len() <= OPTIONS_MAX
-            && names.iter().all(|name| {
-                name.as_str().is_some_and(
-                    |name| matches!(label(list, Some(name), max), Ok(Some(kept)) if kept == name),
-                )
-            });
-        fits.then(|| Value::Array(names.clone()))
-    };
-    let mut kept = Map::new();
-    for provider in ["codex", "claude"] {
-        let Some(entry) = providers.get(provider) else {
-            continue;
-        };
-        kept.insert(
-            provider.to_owned(),
-            json!({
-                "models": names(entry, "models", MODEL_MAX_CHARS)?,
-                "efforts": names(entry, "efforts", EFFORT_MAX_CHARS)?,
-            }),
-        );
-    }
-    Some(json!({ "providers": kept }))
 }
 
 /// A page of events as the CLI printed it, checked: `chat_id` is the chat, `events` are
@@ -928,29 +886,6 @@ impl Rpc {
             return Err(cli_fault("CLI answered for another chat"));
         }
         Ok(json!({"status":"ok"}))
-    }
-
-    /// The models and efforts the desktop offers a chat of each provider, as its chat tabs list
-    /// them. A plain read: the CLI prints its own lists and starts no chat host. A CLI from
-    /// before the method refuses it as a usage error, which says to update.
-    pub(super) async fn chat_options(&self) -> std::result::Result<Value, Fault> {
-        self.require_chat().await?;
-        let cli = self.read(&["chat", "options"]).await.map_err(|fault| {
-            let older = fault
-                .message
-                .strip_prefix("RiWork CLI failed: riwork: ")
-                .is_some_and(|detail| detail.starts_with("Usage: riwork chat "));
-            if older {
-                Fault::new(
-                    "cli_error",
-                    "the installed riwork CLI does not list chat models; update RiWork",
-                )
-            } else {
-                chat_fault(fault)
-            }
-        })?;
-        options_result(&cli)
-            .ok_or_else(|| cli_fault("CLI returned chat options that do not fit the contract"))
     }
 
     /// Stop a chat's agent and keep its history. With no chat host running nothing runs, so

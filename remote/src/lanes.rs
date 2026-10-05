@@ -299,10 +299,9 @@ mod tests {
                 assert!(!lane.cancellable(), "{method}");
             }
         }
-        // The list and the options are plain reads.
+        // The list is a plain read.
         for params in [json!({}), json!({"project_id":"p"}), json!(null)] {
-            assert_eq!(classify(&request("chats.list", params.clone())), Lane::Read);
-            assert_eq!(classify(&request("chat.options", params)), Lane::Read);
+            assert_eq!(classify(&request("chats.list", params)), Lane::Read);
         }
         // Events wait only when asked to: any `wait_ms` above 0, no hash needed.
         let events = |params| classify(&request("chat.events", params));
