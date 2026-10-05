@@ -1180,6 +1180,7 @@ fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
         provider_thread_id: None,
         model: new.model,
         effort: new.effort,
+        fast: new.fast,
         approval_mode: new.approval_mode,
         codex_account_id: account,
         state: ChatState::Starting,
@@ -1541,6 +1542,7 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
             model: None,
             effort: None,
             approval_mode: None,
+            fast: None,
         }
     );
     if retry || matches!(command, ChatCommand::Send { .. } | ChatCommand::Compact) {
@@ -1552,9 +1554,10 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
             model,
             effort,
             approval_mode,
+            fast,
         } = command
         {
-            configure(chat, model, effort, approval_mode);
+            configure(chat, model, effort, approval_mode, fast);
             return Ok(());
         }
         return Err("the chat is stopped; send a message to resume it".into());
@@ -1564,9 +1567,10 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
         model,
         effort,
         approval_mode,
+        fast,
     } = command
     {
-        configure(chat, model, effort, approval_mode);
+        configure(chat, model, effort, approval_mode, fast);
     }
     Ok(())
 }
@@ -1576,6 +1580,7 @@ fn configure(
     model: Option<String>,
     effort: Option<String>,
     approval_mode: Option<super::model::ApprovalMode>,
+    fast: Option<bool>,
 ) {
     let mut inner = lock(&chat.inner);
     let mut changed = false;
@@ -1589,6 +1594,10 @@ fn configure(
     }
     if let Some(mode) = approval_mode.filter(|mode| inner.info.approval_mode != *mode) {
         inner.info.approval_mode = mode;
+        changed = true;
+    }
+    if let Some(fast) = fast.filter(|fast| inner.info.fast != *fast) {
+        inner.info.fast = fast;
         changed = true;
     }
     if changed {

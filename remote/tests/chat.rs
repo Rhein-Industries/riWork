@@ -302,6 +302,18 @@ async fn parameters_are_validated_before_any_cli_runs() {
         ),
         (
             "chat.create",
+            json!({"provider":"codex","project_id":p,"fast":"yes"}),
+        ),
+        (
+            "chat.create",
+            json!({"provider":"codex","project_id":p,"fast":1}),
+        ),
+        (
+            "chat.create",
+            json!({"provider":"codex","project_id":p,"fast":null}),
+        ),
+        (
+            "chat.create",
             json!({"provider":"codex","project_id":p,"title":long(201)}),
         ),
         (
@@ -536,6 +548,18 @@ async fn parameters_are_validated_before_any_cli_runs() {
         (
             "chat.command",
             json!({"chat_id":c,"command":{"command":"configure","title":"x"}}),
+        ),
+        (
+            "chat.command",
+            json!({"chat_id":c,"command":{"command":"configure","fast":"on"}}),
+        ),
+        (
+            "chat.command",
+            json!({"chat_id":c,"command":{"command":"configure","fast":null}}),
+        ),
+        (
+            "chat.command",
+            json!({"chat_id":c,"command":{"command":"send","text":"hi","fast":true}}),
         ),
         // Stop.
         ("chat.stop", json!({})),
@@ -782,6 +806,8 @@ async fn every_value_is_its_own_argument_and_the_cli_gets_json() {
         json!({"command":"answer","request_id":"q-1","answers":[["Yes"],["free text","and more"],[]]}),
         json!({"command":"configure","model":"opus","effort":"low","approval_mode":"plan"}),
         json!({"command":"configure","approval_mode":"full"}),
+        json!({"command":"configure","fast":true}),
+        json!({"command":"configure","model":"gpt-5.5","effort":"low","fast":false}),
     ] {
         let response = f
             .call("chat.command", json!({"chat_id":f.chat,"command":command}))
@@ -999,6 +1025,109 @@ async fn a_chat_that_was_not_asked_for_is_stopped_rather_than_left_running() {
     let stops = f.calls_of("chat", "stop").len();
     // Only the worktree case above (and none of these) may have added one.
     assert!(stops <= before + 1, "{:?}", f.calls_of("chat", "stop"));
+}
+
+#[tokio::test]
+async fn fast_mode_is_a_flag_of_the_new_chat_and_a_chat_that_ignored_it_is_stopped() {
+    let f = Fixture::new();
+    let stray = new_uuid();
+    let fast_chat = |fast: bool| {
+        let mut info = f.info(&stray);
+        info["fast"] = json!(fast);
+        info["model"] = json!("gpt-5.5");
+        info
+    };
+    // Asked for: the CLI is told with `--fast`, after the free-text values.
+    f.says("create.json", &fast_chat(true));
+    let created = f
+        .call(
+            "chat.create",
+            json!({"provider":"codex","project_id":f.project,"model":"gpt-5.5","fast":true}),
+        )
+        .await;
+    assert_eq!(created["result"]["chat"]["fast"], true, "{created}");
+    assert_eq!(
+        f.calls_of("chat", "new").pop().unwrap(),
+        words(&[
+            "chat",
+            "new",
+            "--provider",
+            "codex",
+            "--project",
+            &f.project,
+            "--mode",
+            "supervised",
+            "--model=gpt-5.5",
+            "--fast",
+            "--json"
+        ])
+    );
+    // Not asked for, or turned off: no flag, and a chat that is not fast is what was asked.
+    for ask in [json!({}), json!({"fast":false})] {
+        f.says("create.json", &fast_chat(false));
+        let mut params = json!({"provider":"codex","project_id":f.project,"model":"gpt-5.5"});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(ask.as_object().unwrap().clone());
+        let created = f.call("chat.create", params).await;
+        assert_eq!(created["ok"], true, "{created}");
+        assert!(
+            !f.calls_of("chat", "new")
+                .pop()
+                .unwrap()
+                .contains(&"--fast".to_owned())
+        );
+    }
+    // A chat that is not in fast mode is not the chat that was asked for.
+    f.says("create.json", &fast_chat(false));
+    let created = f
+        .call(
+            "chat.create",
+            json!({"provider":"codex","project_id":f.project,"model":"gpt-5.5","fast":true}),
+        )
+        .await;
+    assert_eq!(code(&created), "cli_error", "{created}");
+    for _ in 0..300 {
+        if !f.calls_of("chat", "stop").is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        f.calls_of("chat", "stop").len(),
+        1,
+        "the stray chat was stopped"
+    );
+}
+
+#[tokio::test]
+async fn a_models_event_and_the_fast_flag_pass_through_a_page_as_the_cli_printed_them() {
+    let f = Fixture::new();
+    let models = json!({"seq": 12, "event": {
+        "event": "models",
+        "models": [{
+            "id": "gpt-5.5", "name": "GPT-5.5", "description": "Frontier",
+            "efforts": ["low", "medium", "high"], "default_effort": "medium",
+            "supports_fast": true, "is_default": true
+        }, {"id": "default", "name": "Default"}]
+    }});
+    let mut info = f.info(&f.chat);
+    info["fast"] = json!(true);
+    let changed = json!({"seq": 13, "event": {"event": "info", "info": info}});
+    let page = f.page(&[models, changed], 13, false);
+    f.says("events.json", &page);
+    let response = f
+        .call(
+            "chat.events",
+            json!({"chat_id":f.chat,"since":11,"wait_ms":0}),
+        )
+        .await;
+    assert_eq!(response["result"], page, "{response}");
+    // And so does a chat that has it, in a list.
+    f.says("list.json", &json!([info]));
+    let listed = f.call("chats.list", json!({})).await;
+    assert_eq!(listed["result"]["chats"][0]["fast"], true, "{listed}");
 }
 
 #[tokio::test]

@@ -255,6 +255,7 @@ fn create_chat(
         effort: None,
         codex_account_id: None,
         orchestrator: Some(scope.clone()),
+        fast: false,
     });
     let info = match created {
         Ok(info) => info,

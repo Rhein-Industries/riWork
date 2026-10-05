@@ -382,7 +382,7 @@ pub(super) fn collect(source: &mut impl Source, plan: &Plan) -> Result<Page, Str
 
 /// The fields of `Configure` that may be left out, and so may be `null`. No other field of
 /// any command may be `null`: that is a field the command does not have.
-const OPTIONAL_FIELDS: [&str; 3] = ["model", "effort", "approval_mode"];
+const OPTIONAL_FIELDS: [&str; 4] = ["model", "effort", "approval_mode", "fast"];
 
 /// Whether everything in `input` was taken into `output`, the command serde made of it: a
 /// field serde does not know is not there, and one it had to ignore differs. A `null` is no
@@ -462,10 +462,11 @@ pub(super) fn parse_command(text: &str) -> Result<ChatCommand, String> {
             model,
             effort,
             approval_mode,
+            fast,
         } => {
-            if model.is_none() && effort.is_none() && approval_mode.is_none() {
+            if model.is_none() && effort.is_none() && approval_mode.is_none() && fast.is_none() {
                 return Err(invalid(
-                    "configure needs a model, an effort or an approval_mode",
+                    "configure needs a model, an effort, an approval_mode or fast",
                 ));
             }
             if let Some(model) = model {

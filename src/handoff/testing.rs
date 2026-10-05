@@ -60,6 +60,7 @@ pub fn chat_info(model: Option<&str>) -> ChatInfo {
         approval_mode: ApprovalMode::Supervised,
         codex_account_id: None,
         orchestrator: None,
+        fast: false,
         state: ChatState::Idle,
     }
 }

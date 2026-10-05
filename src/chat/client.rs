@@ -312,6 +312,7 @@ mod tests {
             codex_account_id: None,
             state: ChatState::Idle,
             orchestrator: None,
+            fast: false,
         };
         let served = info.clone();
         let host = thread::spawn(move || {
@@ -357,6 +358,7 @@ mod tests {
                 model: None,
                 effort: None,
                 orchestrator: None,
+                fast: false,
             })
             .unwrap();
         assert_eq!(created, info);

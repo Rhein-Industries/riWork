@@ -470,6 +470,7 @@ impl ChatView {
         model: Option<String>,
         effort: Option<String>,
         approval_mode: Option<ApprovalMode>,
+        fast: Option<bool>,
         cx: &mut Context<Self>,
     ) {
         self.menu = None;
@@ -478,14 +479,39 @@ impl ChatView {
             model,
             effort,
             approval_mode,
+            fast,
         });
         cx.notify();
+    }
+
+    /// Choose a model from the driver's list. An effort the model does not take is replaced
+    /// by the model's own default, so the chat never shows one that is not used.
+    fn choose_model(&mut self, model: &str, cx: &mut Context<Self>) {
+        let effort = self
+            .model
+            .transcript
+            .info
+            .as_ref()
+            .and_then(|info| info.effort.as_deref());
+        let (model, effort) = toolbar::model_choice(&self.model.transcript.models, model, effort);
+        self.configure(Some(model), effort, None, None, cx);
+    }
+
+    /// Turn the provider's fast mode on or off for the chat.
+    fn toggle_fast(&mut self, cx: &mut Context<Self>) {
+        let on = self
+            .model
+            .transcript
+            .info
+            .as_ref()
+            .is_some_and(|info| info.fast);
+        self.configure(None, None, None, Some(!on), cx);
     }
 
     /// Start the provider process again for a chat that stopped or failed. Any command
     /// resumes it, and one that changes nothing is a way to ask without a message.
     fn resume(&mut self, cx: &mut Context<Self>) {
-        self.configure(None, None, None, cx);
+        self.configure(None, None, None, None, cx);
     }
 
     fn compact(&mut self, cx: &mut Context<Self>) {
@@ -592,7 +618,8 @@ impl ChatView {
             self.field = Field::Composer;
         } else {
             self.menu = Some(menu);
-            self.field = if menu == Menu::Model {
+            // The model name is typed only when the driver has not listed its models.
+            self.field = if menu == Menu::Model && self.model.transcript.models.is_empty() {
                 self.model_input = Input::new(
                     self.model
                         .transcript
@@ -775,7 +802,7 @@ impl ChatView {
             "enter" | "return" => {
                 let model = self.model_input.text.trim().to_owned();
                 if !model.is_empty() {
-                    self.configure(Some(model), None, None, cx);
+                    self.configure(Some(model), None, None, None, cx);
                 }
                 true
             }

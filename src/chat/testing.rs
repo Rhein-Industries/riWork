@@ -233,6 +233,7 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         provider_thread_id: Some(thread_id.into()),
         model: config.model.clone(),
         effort: config.effort.clone(),
+        fast: config.fast,
         approval_mode: config.approval_mode,
         codex_account_id: None,
         state: ChatState::Idle,
@@ -252,6 +253,7 @@ fn fake_config(
         approval_mode: info.approval_mode,
         model: info.model.clone(),
         effort: info.effort.clone(),
+        fast: info.fast,
         resume,
         extra_args: Vec::new(),
         env: Vec::new(),
@@ -365,6 +367,7 @@ impl TestHost {
             model: None,
             effort: None,
             orchestrator: None,
+            fast: false,
         }
     }
 

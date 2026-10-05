@@ -985,6 +985,7 @@ fn new_chat_request(
         model: None,
         effort: None,
         orchestrator: None,
+        fast: false,
     }
 }
 

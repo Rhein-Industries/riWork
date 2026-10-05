@@ -165,6 +165,7 @@ fn new_takes_a_model_an_effort_and_a_title_as_they_are() {
             "--model",
             "gpt-5.5",
             "--effort=high",
+            "--fast",
             "--title",
             "Fix the build",
         ],
@@ -172,13 +173,29 @@ fn new_takes_a_model_an_effort_and_a_title_as_they_are() {
     .unwrap();
     assert_eq!(chat.model.as_deref(), Some("gpt-5.5"));
     assert_eq!(chat.effort.as_deref(), Some("high"));
+    assert!(chat.fast);
     assert_eq!(chat.title, "Fix the build");
     assert_eq!(chat.approval_mode, ApprovalMode::AutoEdit);
     let starts = fake_for(&project.root).starts.lock().unwrap().clone();
     assert_eq!(starts[0].model.as_deref(), Some("gpt-5.5"));
     assert_eq!(starts[0].effort.as_deref(), Some("high"));
+    assert!(starts[0].fast, "the driver starts with fast mode on");
 
-    // A value may look like an option, in either form.
+    // A value may look like an option, in either form: `--fast` as a title is a title.
+    let titled = run_json(
+        &host.home,
+        &[
+            "new",
+            "--provider",
+            "codex",
+            "--project",
+            "demo",
+            "--title",
+            "--fast",
+        ],
+    );
+    assert_eq!(titled["title"], "--fast");
+    assert_eq!(titled["fast"], false);
     let odd = run_json(
         &host.home,
         &[
@@ -612,6 +629,8 @@ fn every_command_reaches_the_driver_in_either_argument_form() {
     ok(r#"{"command":"compact"}"#);
     ok(r#"{"command":"configure","model":"gpt-5.5","effort":"low","approval_mode":"plan"}"#);
     ok(r#"{"command":"configure","effort":null,"model":"gpt-5.6"}"#);
+    ok(r#"{"command":"configure","fast":true}"#);
+    ok(r#"{"command":"configure","fast":false,"model":null}"#);
     assert_eq!(
         host.fake().commands(),
         vec![
@@ -631,18 +650,33 @@ fn every_command_reaches_the_driver_in_either_argument_form() {
             ChatCommand::Configure {
                 model: Some("gpt-5.5".into()),
                 effort: Some("low".into()),
-                approval_mode: Some(ApprovalMode::Plan)
+                approval_mode: Some(ApprovalMode::Plan),
+                fast: None,
             },
             ChatCommand::Configure {
                 model: Some("gpt-5.6".into()),
                 effort: None,
-                approval_mode: None
+                approval_mode: None,
+                fast: None,
+            },
+            ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+                fast: Some(true),
+            },
+            ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+                fast: Some(false),
             },
         ]
     );
     let info = host.info(&chat.id);
     assert_eq!(info.model.as_deref(), Some("gpt-5.6"));
     assert_eq!(info.approval_mode, ApprovalMode::Plan);
+    assert!(!info.fast, "the last Configure turned fast mode off");
 
     // After a separator, the same, and the text form prints nothing.
     let text = chat_client_command(
@@ -743,6 +777,11 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
         r#"{"command":"configure","model":"a\u0007b"}"#,
         r#"{"command":"configure","effort":"x234567890123456789012345678901234"}"#,
         r#"{"command":"configure","approval_mode":"reckless"}"#,
+        // Fast is a boolean; the host's Retry (nothing to change) is not a command a client sends.
+        r#"{"command":"configure","fast":"yes"}"#,
+        r#"{"command":"configure","fast":1}"#,
+        r#"{"command":"configure","fast":null}"#,
+        r#"{"command":"send","text":"hi","fast":true}"#,
         r#"{"command":"approve","request_id":"r","decision":"yes"}"#,
         r#"{"command":"approve","request_id":"r"}"#,
         r#"{"command":"answer","request_id":"r","answers":["a"]}"#,

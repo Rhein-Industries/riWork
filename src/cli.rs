@@ -99,7 +99,7 @@ riwork chat serve [--idle-seconds N]    Run the chat host in the foreground (exi
 riwork chat ensure                      Start the chat host if it is not running; print its socket
 riwork chat list [--project ID] [--json]   List Codex and Claude chats, running or not
 riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
-                [--model NAME] [--effort LEVEL] [--title TEXT]
+                [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
 riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
                                         Read a chat's events after N, waiting up to M ms for the first
@@ -137,7 +137,8 @@ default). A chat whose provider cannot start is kept as failed; chat send retrie
 chat new --json prints the chat as `chat list --json` shows it, also when its provider
 did not start (state failed); without --json that is an error. --model, --effort and
 --title (at most 100, 32 and 200 characters, no control characters) take their value
-as it is, also with `=`: --title=--draft.
+as it is, also with `=`: --title=--draft. --fast turns on the provider's fast mode for
+a model that has one (Codex's fast tier, Claude's fast mode).
 chat events --json prints one line, {\"chat_id\",\"events\":[{\"seq\",\"event\"}],\"next\",\"more\"}:
 the events with seq above --since (default 0), at most --max (500 by default, up to
 2000) and as many as fit --max-bytes (1 MiB by default, up to 2 MiB). With none yet it
@@ -1932,6 +1933,7 @@ fn chat_client_command(
                 Some("plan") => crate::chat::model::ApprovalMode::Plan,
                 Some(_) => return Err("--mode must be supervised, auto-edit, full, or plan".into()),
             };
+            let fast = take_flag(&mut args, "--fast");
             ensure_empty(&args)?;
             let state = Store::open(home)?.snapshot()?;
             let (project_id, worktree_id, cwd) =
@@ -1947,6 +1949,7 @@ fn chat_client_command(
                 model,
                 effort,
                 orchestrator: None,
+                fast,
             })?;
             if json {
                 // A chat whose provider did not start still exists, and the
@@ -2057,7 +2060,7 @@ fn chat_client_command(
     }
 }
 
-const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--title TEXT]";
+const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]";
 
 /// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
 fn resolve_chat(

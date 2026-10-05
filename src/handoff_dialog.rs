@@ -611,6 +611,7 @@ fn placeholder_source() -> handoff::Source {
         approval_mode: Default::default(),
         codex_account_id: None,
         orchestrator: None,
+        fast: false,
         state: Default::default(),
     })
 }
