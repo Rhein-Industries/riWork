@@ -27,6 +27,7 @@ public enum RequestValidation {
         case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events"]
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
+        case "chat.options": required = []; optional = []
         case "upload.begin", "upload.chunk", "upload.finish", "upload.cancel", "shell.paste":
             (required, optional) = UploadRequests.methods[method] ?? ([], [])
         default: throw RemoteError.protocolViolation("Unsupported operation.")

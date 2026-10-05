@@ -1,6 +1,6 @@
 import Foundation
 
-// Talking to the desktop's chats: `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop`.
+// Talking to the desktop's chats: `chats.list`, `chat.create`, `chat.events`, `chat.command`, `chat.stop` and `chat.options`.
 //
 // The request builders validate what the desktop validates, so a request that leaves the phone is one the desktop will not reject as
 // malformed (it denies unknown fields and checks every id and length before any command runs). The reply parsers check that an answer is
@@ -29,7 +29,7 @@ public enum ChatValidationError: Error, Equatable, Sendable, LocalizedError {
 /// What went wrong with a chat request, in words for the person using the phone.
 public enum ChatControlError: Error, Equatable, Sendable, LocalizedError {
     public enum Operation: Equatable, Sendable {
-        case list, create(ChatProvider), events, command, stop
+        case list, create(ChatProvider), events, command, stop, options
     }
     /// The desktop predates chats.
     case unsupported
@@ -267,6 +267,15 @@ public struct ChatCommandRequest: Sendable, Equatable {
             guard text.utf8.count <= ChatLimits.messageBytes else { throw ChatValidationError.messageTooLong }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatValidationError.blankMessage }
         }
+        if case .configure(let model, let effort, let mode) = command {
+            // The desktop drops a blank value and refuses a configure that is left with nothing to change.
+            guard model != nil || effort != nil || mode != nil else { throw ChatValidationError.malformed }
+            for (field, value, limit) in [("model", model, ChatLimits.modelBytes), ("effort", effort, ChatLimits.effortBytes)] {
+                guard let value else { continue }
+                guard ChatSetting.isSendable(value) else { throw ChatValidationError.malformed }
+                if value.utf8.count > limit { throw ChatValidationError.textTooLong(field: field, limit: limit) }
+            }
+        }
         self.chatID = chatID; self.command = command
     }
     public var params: [String: JSONValue] {
@@ -281,6 +290,82 @@ public struct ChatCommandRequest: Sendable, Equatable {
     public func parse(_ result: JSONValue) throws {
         guard result["status"].string == "ok" else { throw ChatControlError.unreadableReply }
     }
+}
+
+/// A model or an effort as `configure` may carry it: one line, not blank.
+public enum ChatSetting {
+    public static func isSendable(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || $0 == "\u{2028}" || $0 == "\u{2029}" }
+    }
+    /// What the person typed as a model name, ready to send: trimmed, as the desktop's own field takes it. Nil when it cannot be sent.
+    public static func typedModel(_ text: String) -> String? {
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return isSendable(name) && name.utf8.count <= ChatLimits.modelBytes ? name : nil
+    }
+}
+
+// MARK: - chat.options
+
+/// The models and efforts the desktop offers a chat, per provider (`chat.options`): the lists of the Model and Effort pop-ups of its
+/// chat tabs. Any other model name may still be typed.
+public struct ChatOptions: Sendable, Equatable {
+    public struct Choices: Sendable, Equatable {
+        public var models: [String]
+        public var efforts: [String]
+        public init(models: [String] = [], efforts: [String] = []) { self.models = models; self.efforts = efforts }
+    }
+    public var providers: [ChatProvider: Choices]
+    public init(providers: [ChatProvider: Choices] = [:]) { self.providers = providers }
+    public subscript(provider: ChatProvider) -> Choices? { providers[provider] }
+
+    /// Reads a `chat.options` result. A provider the phone does not know, and a name it could not send back, are left out; an answer
+    /// without `providers` is not one.
+    public static func parse(_ result: JSONValue) throws -> ChatOptions {
+        guard case .object(let providers) = result["providers"] else { throw ChatControlError.unreadableReply }
+        var options = ChatOptions()
+        for (word, entry) in providers {
+            guard let provider = ChatProvider(rawValue: word), case .object = entry else { continue }
+            func names(_ key: String, limit: Int) -> [String] {
+                guard case .array(let list) = entry[key] else { return [] }
+                var seen = Set<String>()
+                return list.compactMap(\.string).filter { ChatSetting.isSendable($0) && $0.utf8.count <= limit && seen.insert($0).inserted }
+            }
+            options.providers[provider] = Choices(models: names("models", limit: ChatLimits.modelBytes), efforts: names("efforts", limit: ChatLimits.effortBytes))
+        }
+        return options
+    }
+}
+
+/// What the Model menu of a chat shows: the desktop's lists, with the chat's own model and effort added when they are not in them (a
+/// name typed on the Mac, or one the agent reported), so the menu always has a tick on what the chat runs.
+public struct ChatModelMenu: Sendable, Equatable {
+    public let models: [String]
+    public let efforts: [String]
+    public let model: String?
+    public let effort: String?
+    public init(choices: ChatOptions.Choices, model: String?, effort: String?) {
+        self.model = model; self.effort = effort
+        models = choices.models + [model].compactMap { $0 }.filter { !choices.models.contains($0) }
+        // An effort is offered only for a provider that has a list: a chat's own effort alone is no choice.
+        efforts = choices.efforts.isEmpty ? [] : choices.efforts + [effort].compactMap { $0 }.filter { !choices.efforts.contains($0) }
+    }
+    /// The button's words: the model (or "Model" before the chat names one), and the effort after it.
+    public var title: String { model ?? "Model" }
+    public var detail: String? { efforts.isEmpty ? nil : effort }
+    public var spoken: String {
+        [model ?? "Not chosen", effort.map { "effort \($0)" }].compactMap { $0 }.joined(separator: ", ")
+    }
+}
+
+/// `chat.options`: no params.
+public struct ChatOptionsRequest: Sendable, Equatable {
+    public init() {}
+    public var params: [String: JSONValue] { [:] }
+    public init(params: [String: JSONValue]) throws {
+        guard params.isEmpty else { throw ChatValidationError.malformed }
+    }
+    public func parse(_ result: JSONValue) throws -> ChatOptions { try ChatOptions.parse(result) }
 }
 
 /// `chat.stop`: stops the provider process. The chat stays; the next message resumes it.
@@ -322,5 +407,10 @@ extension RemoteTransport {
     public func stopChat(_ request: ChatStopRequest, id: String = UUID().uuidString.lowercased()) async throws {
         do { try request.parse(try await self.request(method: "chat.stop", params: request.params, id: id)) }
         catch { throw ChatControlError.from(error, operation: .stop) }
+    }
+    /// The models and efforts the desktop offers. A desktop from before them answers `unsupported`.
+    public func chatOptions(_ request: ChatOptionsRequest = ChatOptionsRequest(), id: String = UUID().uuidString.lowercased()) async throws -> ChatOptions {
+        do { return try request.parse(try await self.request(method: "chat.options", params: request.params, id: id)) }
+        catch { throw ChatControlError.from(error, operation: .options) }
     }
 }
