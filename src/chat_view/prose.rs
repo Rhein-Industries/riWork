@@ -251,6 +251,7 @@ impl ChatView {
                         self.image_card(
                             &crate::chat::media::reference(&span.text, target),
                             &format!("{key}/image/{:x}/{ordinal}", hash.finish()),
+                            None,
                             look,
                             cx,
                         )

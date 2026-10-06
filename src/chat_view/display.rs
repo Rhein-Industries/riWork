@@ -23,9 +23,69 @@ impl DisplayMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Row {
     Item(usize),
-    /// An ordinary image artifact from a finished turn, without its routine item body.
-    Artifact(usize),
+    /// An actionable technical item whose images are in the turn disclosure.
+    Details(usize),
+    Artifacts {
+        turn_id: String,
+        items: Vec<usize>,
+    },
     Outcome(String, TurnOutcome),
+}
+
+fn technical(item: &crate::chat::model::Item) -> bool {
+    matches!(
+        item.body,
+        ItemBody::Command { .. }
+            | ItemBody::ToolCall { .. }
+            | ItemBody::FileChange { .. }
+            | ItemBody::WebSearch { .. }
+    )
+}
+
+fn usable_answer(item: &crate::chat::model::Item) -> bool {
+    matches!(&item.body, ItemBody::AgentMessage { text } if !text.trim().is_empty()
+    || item.presentation.images.iter().any(|image| match &image.source {
+        crate::chat::model::ImageSource::Local { path } => !path.trim().is_empty(),
+        crate::chat::model::ImageSource::Url { url } => !url.trim().is_empty(),
+        crate::chat::model::ImageSource::Data { base64, .. } => !base64.is_empty(),
+        crate::chat::model::ImageSource::Unavailable { .. } => false,
+    })) && !matches!(
+        item.status,
+        ItemStatus::Failed | ItemStatus::Declined | ItemStatus::Interrupted
+    )
+}
+
+/// Keep a reader on the same item (or its collapsed turn disclosure) across modes.
+pub(super) fn remap_anchor(anchor: &Row, rows: &[Row]) -> Option<usize> {
+    if let Some(at) = rows.iter().position(|row| row == anchor) {
+        return Some(at);
+    }
+    let index = match anchor {
+        Row::Item(at) | Row::Details(at) => *at,
+        Row::Artifacts { items, .. } => *items.first()?,
+        Row::Outcome(_, _) => return None,
+    };
+    if let Some(at) = rows.iter().position(|row| match row {
+        Row::Item(at) | Row::Details(at) => *at == index,
+        Row::Artifacts { items, .. } => items.contains(&index),
+        _ => false,
+    }) {
+        return Some(at);
+    }
+    let positions = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(row, entry)| match entry {
+            Row::Item(at) | Row::Details(at) => Some((row, *at)),
+            Row::Artifacts { items, .. } => items.first().map(|at| (row, *at)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    positions
+        .iter()
+        .find(|(_, at)| *at >= index)
+        .or(positions.last())
+        .map(|(row, _)| *row)
 }
 
 pub(super) fn rows(
@@ -45,12 +105,16 @@ pub(super) fn rows(
         })
         .flatten();
     let mut explicit = HashSet::new();
+    let mut usable_explicit = HashSet::new();
     let mut last = HashMap::new();
     // A legacy message is a candidate only while no later tool/reasoning/commentary follows it.
     for (at, item) in transcript.items.iter().enumerate() {
         if let Some(turn) = &item.turn_id {
             if item.presentation.phase == Some(MessagePhase::Final) {
                 explicit.insert(turn.as_str());
+                if usable_answer(item) {
+                    usable_explicit.insert(turn.as_str());
+                }
             }
             match &item.body {
                 ItemBody::AgentMessage { .. }
@@ -73,30 +137,23 @@ pub(super) fn rows(
         .collect();
     let finals: HashSet<usize> = last
         .into_iter()
-        .filter(|(id, _)| done.contains(id) && !explicit.contains(id))
+        .filter(|(id, at)| {
+            done.contains(id) && !explicit.contains(id) && usable_answer(&transcript.items[*at])
+        })
         .map(|(_, at)| at)
         .collect();
     let final_turns: HashSet<&str> = finals
         .iter()
         .filter_map(|ix| transcript.items[*ix].turn_id.as_deref())
+        .chain(usable_explicit)
         .collect();
-    let mut out = Vec::new();
-    let mut outcomes = completed.iter().peekable();
-    for at in 0..=transcript.items.len() {
-        while let Some((turn, outcome, end)) = outcomes.peek() {
-            if *end > at {
-                break;
-            }
-            let has_final = explicit.contains(turn.as_str()) || final_turns.contains(turn.as_str());
-            if !has_final || *outcome != TurnOutcome::Completed {
-                out.push(Row::Outcome(turn.clone(), outcome.clone()));
-            }
-            outcomes.next();
-        }
-        let Some(item) = transcript.items.get(at) else {
-            break;
-        };
-        let visible = waiting_message == Some(at)
+    let visible = |at: usize, item: &crate::chat::model::Item| {
+        let recovered = technical(item)
+            && item
+                .turn_id
+                .as_deref()
+                .is_some_and(|turn| done.contains(turn) && final_turns.contains(turn));
+        waiting_message == Some(at)
             || matches!(item.body, ItemBody::UserMessage { .. })
             || matches!(
                 item.body,
@@ -105,21 +162,60 @@ pub(super) fn rows(
                     ..
                 }
             )
-            || matches!(
-                item.status,
-                ItemStatus::Failed | ItemStatus::Declined | ItemStatus::Interrupted
-            )
+            || (!recovered
+                && matches!(
+                    item.status,
+                    ItemStatus::Failed | ItemStatus::Declined | ItemStatus::Interrupted
+                ))
             || item.presentation.phase == Some(MessagePhase::Final)
-            || finals.contains(&at);
-        if visible {
-            out.push(Row::Item(at));
-        } else if !item.presentation.images.is_empty()
-            && item
+            || finals.contains(&at)
+    };
+    let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut grouped = HashSet::new();
+    for (at, item) in transcript.items.iter().enumerate() {
+        if !item.presentation.images.is_empty()
+            && !matches!(item.body, ItemBody::UserMessage { .. })
+            && item.presentation.phase != Some(MessagePhase::Final)
+            && !finals.contains(&at)
+            && waiting_message != Some(at)
+            && (technical(item) || !visible(at, item))
+            && let Some(turn) = item
                 .turn_id
                 .as_deref()
-                .is_some_and(|turn| finished.contains(turn))
+                .filter(|turn| finished.contains(turn))
         {
-            out.push(Row::Artifact(at));
+            groups.entry(turn).or_default().push(at);
+            grouped.insert(at);
+        }
+    }
+    let mut out = Vec::new();
+    let mut outcomes = completed.iter().peekable();
+    for at in 0..=transcript.items.len() {
+        while let Some((turn, outcome, end)) = outcomes.peek() {
+            if *end > at {
+                break;
+            }
+            if let Some(items) = groups.remove(turn.as_str()) {
+                out.push(Row::Artifacts {
+                    turn_id: turn.clone(),
+                    items,
+                });
+            }
+            let has_final = final_turns.contains(turn.as_str());
+            if !has_final || *outcome != TurnOutcome::Completed {
+                out.push(Row::Outcome(turn.clone(), outcome.clone()));
+            }
+            outcomes.next();
+        }
+        let Some(item) = transcript.items.get(at) else {
+            break;
+        };
+        if visible(at, item) {
+            out.push(if grouped.contains(&at) {
+                Row::Details(at)
+            } else {
+                Row::Item(at)
+            });
         }
     }
     out
@@ -162,6 +258,261 @@ mod tests {
             seq: *seq,
             event,
         }]);
+    }
+
+    fn failed_command(id: &str) -> Item {
+        let mut command = item(
+            id,
+            None,
+            ItemBody::Command {
+                command: "rg absent-pattern src".into(),
+                cwd: None,
+                output: "No matches".into(),
+                exit_code: Some(1),
+            },
+        );
+        command.status = ItemStatus::Failed;
+        command
+    }
+
+    #[test]
+    fn successful_verdict_recovers_four_errors_and_groups_nine_images_without_losing_history() {
+        let mut model = ChatModel::new();
+        let mut seq = 0;
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::TurnStarted {
+                turn_id: "turn".into(),
+            },
+        );
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::State {
+                state: ChatState::Running,
+            },
+        );
+        let user = with_image(item(
+            "user",
+            None,
+            ItemBody::UserMessage {
+                text: "Inspect".into(),
+            },
+        ));
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::ItemCompleted { item: user },
+        );
+        for n in 0..4 {
+            apply(
+                &mut model,
+                &mut seq,
+                ChatEvent::ItemCompleted {
+                    item: failed_command(&format!("rg-{n}")),
+                },
+            );
+        }
+        for n in 0..9 {
+            apply(
+                &mut model,
+                &mut seq,
+                ChatEvent::ItemCompleted {
+                    item: with_image(item(
+                        &format!("tool-{n}"),
+                        None,
+                        ItemBody::ToolCall {
+                            server: Some("cua".into()),
+                            tool: "screenshot".into(),
+                            input: serde_json::json!({"window": 42}),
+                            output: Some("Capture complete".into()),
+                        },
+                    )),
+                },
+            );
+        }
+        let answer = with_image(text("Usable result", Some(MessagePhase::Final)));
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::ItemCompleted { item: answer },
+        );
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Normal),
+            vec![
+                Row::Item(0),
+                Row::Item(1),
+                Row::Item(2),
+                Row::Item(3),
+                Row::Item(4),
+                Row::Item(14)
+            ]
+        );
+        apply(
+            &mut model,
+            &mut seq,
+            ChatEvent::TurnCompleted {
+                turn_id: "turn".into(),
+                outcome: TurnOutcome::Completed,
+            },
+        );
+        let before = model.transcript.clone();
+        let normal = vec![
+            Row::Item(0),
+            Row::Item(14),
+            Row::Artifacts {
+                turn_id: "turn".into(),
+                items: (5..14).collect(),
+            },
+        ];
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Normal),
+            normal
+        );
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Verbose),
+            (0..15).map(Row::Item).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            rows(&model.transcript, &model.completed, DisplayMode::Normal),
+            normal
+        );
+        assert_eq!(model.transcript, before);
+        assert!(matches!(
+            model.transcript.items[1].body,
+            ItemBody::Command {
+                exit_code: Some(1),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn only_technical_failures_in_successful_turns_with_usable_answers_are_recovered() {
+        for outcome in [
+            TurnOutcome::Completed,
+            TurnOutcome::Interrupted,
+            TurnOutcome::Failed {
+                message: "Failed".into(),
+            },
+        ] {
+            for answer in [
+                None,
+                Some(text(" ", Some(MessagePhase::Final))),
+                Some(text("Answer", Some(MessagePhase::Final))),
+            ] {
+                let recover =
+                    outcome == TurnOutcome::Completed && answer.as_ref().is_some_and(usable_answer);
+                for status in [
+                    ItemStatus::Failed,
+                    ItemStatus::Declined,
+                    ItemStatus::Interrupted,
+                ] {
+                    let mut t = Transcript::default();
+                    let mut command = with_image(failed_command("rg"));
+                    command.status = status;
+                    t.items.push(command);
+                    if let Some(answer) = answer.clone() {
+                        t.items.push(answer);
+                    }
+                    let completed = vec![("turn".into(), outcome.clone(), t.items.len())];
+                    let projected = rows(&t, &completed, DisplayMode::Normal);
+                    assert_eq!(projected.contains(&Row::Details(0)), !recover);
+                    assert!(projected.contains(&Row::Artifacts {
+                        turn_id: "turn".into(),
+                        items: vec![0]
+                    }));
+                    assert_eq!(
+                        rows(&t, &completed, DisplayMode::Verbose),
+                        (0..t.items.len()).map(Row::Item).collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+        let mut t = Transcript::default();
+        t.items = vec![
+            failed_command("rg"),
+            text("Answer", Some(MessagePhase::Final)),
+            item(
+                "warning",
+                None,
+                ItemBody::Notice {
+                    level: NoticeLevel::Warning,
+                    text: "Review permissions".into(),
+                },
+            ),
+            item(
+                "error",
+                None,
+                ItemBody::Notice {
+                    level: NoticeLevel::Error,
+                    text: "Action required".into(),
+                },
+            ),
+        ];
+        t.items[2].status = ItemStatus::Failed;
+        assert_eq!(
+            rows(
+                &t,
+                &[("turn".into(), TurnOutcome::Completed, 4)],
+                DisplayMode::Normal
+            ),
+            vec![Row::Item(1), Row::Item(2), Row::Item(3)]
+        );
+        // A final whose only image is unavailable is not a usable answer.
+        t.items[1] = with_image(text("", Some(MessagePhase::Final)));
+        t.items[1].presentation.images[0].source = ImageSource::Unavailable {
+            reason: "Too large".into(),
+        };
+        assert!(
+            rows(
+                &t,
+                &[("turn".into(), TurnOutcome::Completed, 4)],
+                DisplayMode::Normal
+            )
+            .contains(&Row::Item(0))
+        );
+    }
+
+    #[test]
+    fn disclosure_anchor_and_grouping_are_per_turn_and_keep_deliverables_separate() {
+        let mut t = Transcript::default();
+        t.items = vec![
+            with_image(failed_command("first-tool")),
+            with_image(text("First result", Some(MessagePhase::Final))),
+            with_image(failed_command("second-tool")),
+            with_image(text("Second result", None)),
+        ];
+        for item in &mut t.items[2..] {
+            item.turn_id = Some("second".into());
+        }
+        let completed = vec![
+            ("turn".into(), TurnOutcome::Completed, 2),
+            ("second".into(), TurnOutcome::Completed, 4),
+        ];
+        let normal = rows(&t, &completed, DisplayMode::Normal);
+        assert_eq!(
+            normal,
+            vec![
+                Row::Item(1),
+                Row::Artifacts {
+                    turn_id: "turn".into(),
+                    items: vec![0]
+                },
+                Row::Item(3),
+                Row::Artifacts {
+                    turn_id: "second".into(),
+                    items: vec![2]
+                }
+            ]
+        );
+        let verbose = rows(&t, &completed, DisplayMode::Verbose);
+        assert_eq!(remap_anchor(&Row::Item(1), &verbose), Some(1));
+        assert_eq!(remap_anchor(&Row::Item(0), &normal), Some(1));
+        assert_eq!(remap_anchor(&normal[3], &verbose), Some(2));
+        assert_eq!(remap_anchor(&Row::Item(2), &normal), Some(3));
+        assert_eq!(remap_anchor(&Row::Item(3), &normal), Some(2));
     }
 
     #[test]
@@ -257,7 +608,14 @@ mod tests {
         );
         let history = model.transcript.clone();
         // Artifact is a metadata-free rendering row, not the detailed tool item.
-        let normal = vec![Row::Item(0), Row::Artifact(1), Row::Item(2)];
+        let normal = vec![
+            Row::Item(0),
+            Row::Item(2),
+            Row::Artifacts {
+                turn_id: "turn".into(),
+                items: vec![1],
+            },
+        ];
         assert_eq!(
             rows(&model.transcript, &model.completed, DisplayMode::Normal),
             normal
@@ -309,7 +667,10 @@ mod tests {
         assert_eq!(
             rows(&transcript, &completed, DisplayMode::Normal),
             vec![
-                Row::Artifact(0),
+                Row::Artifacts {
+                    turn_id: "turn".into(),
+                    items: vec![0]
+                },
                 Row::Outcome("turn".into(), TurnOutcome::Completed)
             ]
         );
@@ -378,10 +739,34 @@ mod tests {
         t.apply(&ChatEvent::State {
             state: ChatState::Waiting,
         });
+        t.apply(&ChatEvent::ApprovalRequested {
+            approval: crate::chat::model::Approval {
+                request_id: "approve".into(),
+                item_id: None,
+                kind: crate::chat::model::ApprovalKind::Command,
+                title: "Approve operation".into(),
+                detail: "Action required".into(),
+                choices: vec![],
+            },
+        });
+        t.apply(&ChatEvent::QuestionRequested {
+            question: crate::chat::model::Question {
+                request_id: "question".into(),
+                questions: vec![crate::chat::model::QuestionPrompt {
+                    header: None,
+                    question: "Choose a target".into(),
+                    options: vec![],
+                    multi_select: false,
+                }],
+            },
+        });
         let before = t.clone();
         rows(&t, &[], DisplayMode::Normal);
         rows(&t, &[], DisplayMode::Verbose);
         assert_eq!(before, t);
+        assert_eq!(rows(&t, &[], DisplayMode::Normal), vec![Row::Item(0)]);
+        assert_eq!(t.approvals.len(), 1);
+        assert_eq!(t.questions.len(), 1);
     }
     #[test]
     fn large_history_projection_is_linear_and_keeps_one_result_per_turn() {

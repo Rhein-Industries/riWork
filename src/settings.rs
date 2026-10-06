@@ -166,6 +166,8 @@ pub enum OrchestratorRuns {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
     pub chat_display: crate::chat_view::DisplayMode,
+    /// Conversation overrides; chat_display remains the default for untouched chats.
+    pub chat_display_modes: BTreeMap<String, crate::chat_view::DisplayMode>,
     pub schema_version: u32,
     pub theme: ThemeChoice,
     /// Kept for older preferences and as a terminal-only override while following Ghostty.
@@ -211,6 +213,12 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub fn chat_display_for(&self, chat_id: Option<&str>) -> crate::chat_view::DisplayMode {
+        chat_id
+            .and_then(|id| self.chat_display_modes.get(id))
+            .copied()
+            .unwrap_or(self.chat_display)
+    }
     /// Whether the selected theme's terminal colors option is on: "Terminals
     /// match the theme" for Native, "Use RiWork terminal colors" while following
     /// Ghostty. The presets force their colors whatever this says.
@@ -227,6 +235,7 @@ impl Default for Settings {
         Self {
             schema_version: 1,
             chat_display: Default::default(),
+            chat_display_modes: BTreeMap::new(),
             theme: ThemeChoice::Ghostty,
             use_riwork_colors: false,
             remember_window_size: true,
@@ -258,6 +267,20 @@ impl<'de> Deserialize<'de> for Settings {
         let defaults = Self::default();
         Ok(Self {
             chat_display: lenient_field(&object, "chat_display", defaults.chat_display),
+            chat_display_modes: object
+                .get("chat_display_modes")
+                .and_then(Value::as_object)
+                .map(|modes| {
+                    modes
+                        .iter()
+                        .filter_map(|(id, mode)| {
+                            serde_json::from_value(mode.clone())
+                                .ok()
+                                .map(|mode| (id.clone(), mode))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             schema_version: strict_field(&object, "schema_version", defaults.schema_version)?,
             theme: lenient_field(&object, "theme", defaults.theme),
             use_riwork_colors: lenient_field(
@@ -3109,6 +3132,61 @@ impl Render for SettingsPanel {
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn chat_modes_are_independent_durable_and_do_not_change_the_existing_default() {
+        use crate::chat_view::DisplayMode::{Normal, Verbose};
+        let dir = env::temp_dir().join(format!("riwork-chat-modes-{}", Uuid::new_v4()));
+        let first_window = SettingsStore::open(&dir).unwrap();
+        let second_window = SettingsStore::open(&dir).unwrap();
+        let before = first_window
+            .update(|settings| {
+                settings.chat_display = Verbose;
+                settings.open_preview_on_select = false;
+            })
+            .unwrap();
+        first_window
+            .update(|settings| {
+                settings.chat_display_modes.insert("chat-a".into(), Normal);
+            })
+            .unwrap();
+        let second = second_window.load().unwrap();
+        assert_eq!(second.chat_display_for(Some("chat-a")), Normal);
+        assert_eq!(second.chat_display_for(Some("chat-b")), Verbose);
+        assert_eq!(second.chat_display_for(None), Verbose);
+        second_window
+            .update(|settings| {
+                settings.chat_display_modes.insert("chat-b".into(), Normal);
+            })
+            .unwrap();
+        first_window
+            .update(|settings| {
+                settings.chat_display_modes.insert("chat-a".into(), Verbose);
+            })
+            .unwrap();
+        // A reload and unrelated preference update retain both independent choices.
+        second_window
+            .update(|settings| settings.dictation_mic = true)
+            .unwrap();
+        let mut reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
+        assert_eq!(reloaded.chat_display_for(Some("chat-a")), Verbose);
+        assert_eq!(reloaded.chat_display_for(Some("chat-b")), Normal);
+        assert_eq!(reloaded.chat_display_for(Some("new-chat")), Verbose);
+        assert_eq!(reloaded.chat_display, before.chat_display);
+        reloaded.chat_display_modes.clear();
+        reloaded.dictation_mic = before.dictation_mic;
+        assert_eq!(reloaded, before);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_chat_mode_does_not_erase_other_chats_or_the_legacy_default() {
+        use crate::chat_view::DisplayMode::{Normal, Verbose};
+        let settings: Settings = serde_json::from_str(r#"{"chat_display":"verbose","chat_display_modes":{"a":"normal","b":"future","c":"verbose"}}"#).unwrap();
+        assert_eq!(settings.chat_display_for(Some("a")), Normal);
+        assert_eq!(settings.chat_display_for(Some("b")), Verbose);
+        assert_eq!(settings.chat_display_for(Some("c")), Verbose);
+    }
 
     #[test]
     fn chat_display_defaults_to_normal_and_round_trips_verbose() {

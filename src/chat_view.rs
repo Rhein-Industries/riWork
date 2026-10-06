@@ -158,6 +158,7 @@ pub struct ChatView {
     items_in_list: usize,
     visible: Vec<display::Row>,
     display_mode: DisplayMode,
+    pending_display: Option<DisplayMode>,
     media: media::MediaState,
     preview_root: Option<std::path::PathBuf>,
     /// The interface text scale the list's rows were measured at.
@@ -211,6 +212,7 @@ impl ChatView {
     pub fn open(chat_id: String, config: HostConfig, cx: &mut Context<Self>) -> Self {
         let mut view = Self::blank(config, cx);
         view.chat_id = Some(chat_id.clone());
+        view.follow_display_setting(cx);
         view.start_feed(chat_id, 0, cx);
         view
     }
@@ -249,6 +251,7 @@ impl ChatView {
                 .try_global::<crate::settings::Settings>()
                 .map(|s| s.chat_display)
                 .unwrap_or_default(),
+            pending_display: None,
             media: Default::default(),
             preview_root: None,
             scale: ui_text::scale(),
@@ -347,6 +350,11 @@ impl ChatView {
         match result {
             Ok(info) => {
                 self.chat_id = Some(info.id.clone());
+                if let Some(mode) = self.pending_display.take() {
+                    self.choose_display(mode, cx);
+                } else {
+                    self.follow_display_setting(cx);
+                }
                 self.start_feed(info.id.clone(), 0, cx);
                 cx.emit(ChatViewEvent::Created(info.id));
             }
@@ -418,8 +426,14 @@ impl ChatView {
             self.refresh_projection();
         }
         for (row, item) in self.visible.iter().enumerate() {
-            if matches!(item, display::Row::Item(at) | display::Row::Artifact(at) if applied.touched.contains(at))
-            {
+            let touched = match item {
+                display::Row::Item(at) | display::Row::Details(at) => applied.touched.contains(at),
+                display::Row::Artifacts { items, .. } => {
+                    items.iter().any(|at| applied.touched.contains(at))
+                }
+                _ => false,
+            };
+            if touched {
                 self.list.remeasure_items(row..row + 1);
             }
         }
@@ -455,24 +469,56 @@ impl ChatView {
     }
 
     fn follow_display_setting(&mut self, cx: &mut Context<Self>) {
-        let mode = cx.global::<crate::settings::Settings>().chat_display;
+        let mode = self.pending_display.unwrap_or_else(|| {
+            cx.global::<crate::settings::Settings>()
+                .chat_display_for(self.chat_id.as_deref())
+        });
+        self.apply_display_mode(mode, cx);
+    }
+
+    fn apply_display_mode(&mut self, mode: DisplayMode, cx: &mut Context<Self>) {
         if self.display_mode != mode {
+            let tail = self.list.is_following_tail();
+            let offset = self.list.logical_scroll_top();
+            let anchor = self.visible.get(offset.item_ix).cloned();
             self.display_mode = mode;
             self.selection = None;
             self.refresh_projection();
             self.list.remeasure();
+            if tail {
+                self.list.scroll_to_end();
+            } else if let Some(anchor) = anchor {
+                if let Some(at) = display::remap_anchor(&anchor, &self.visible) {
+                    self.list.scroll_to(gpui::ListOffset {
+                        item_ix: at,
+                        offset_in_item: if self.visible.get(at) == Some(&anchor) {
+                            offset.offset_in_item
+                        } else {
+                            px(0.0)
+                        },
+                    });
+                }
+            } else {
+                self.list.scroll_to(gpui::ListOffset {
+                    item_ix: self.visible.len(),
+                    offset_in_item: offset.offset_in_item,
+                });
+            }
             cx.notify();
         }
     }
 
-    fn toggle_display(&mut self, cx: &mut Context<Self>) {
-        let mode = match self.display_mode {
-            DisplayMode::Normal => DisplayMode::Verbose,
-            DisplayMode::Verbose => DisplayMode::Normal,
+    fn choose_display(&mut self, mode: DisplayMode, cx: &mut Context<Self>) {
+        let Some(chat_id) = self.chat_id.clone() else {
+            self.pending_display = Some(mode);
+            self.apply_display_mode(mode, cx);
+            return;
         };
-        match crate::settings::SettingsStore::open_default()
-            .and_then(|store| store.update(|settings| settings.chat_display = mode))
-        {
+        match crate::settings::SettingsStore::open_default().and_then(|store| {
+            store.update(|settings| {
+                settings.chat_display_modes.insert(chat_id, mode);
+            })
+        }) {
             Ok(settings) => {
                 cx.set_global(settings);
                 self.follow_display_setting(cx);
@@ -706,7 +752,13 @@ impl ChatView {
         }
         // The row changes height.
         if let Some(at) = item {
-            self.list.remeasure_items(at..at + 1);
+            if let Some(row) = self.visible.iter().position(|row| match row {
+                display::Row::Item(index) | display::Row::Details(index) => *index == at,
+                display::Row::Artifacts { items, .. } => items.contains(&at),
+                _ => false,
+            }) {
+                self.list.remeasure_items(row..row + 1);
+            }
         }
         cx.notify();
     }

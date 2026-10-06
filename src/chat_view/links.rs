@@ -32,7 +32,7 @@ pub fn local_target(target: &str) -> Result<(PathBuf, Option<u32>), String> {
     };
     Ok((PathBuf::from(path), line))
 }
-fn percent_decode(text: &str) -> Result<String, String> {
+pub(super) fn percent_decode(text: &str) -> Result<String, String> {
     let mut bytes = Vec::new();
     let source = text.as_bytes();
     let mut i = 0;

@@ -4,7 +4,7 @@ use super::{
     widgets::{Look, button},
 };
 use crate::{
-    chat::model::{ChatImage, ImageSource},
+    chat::model::{ChatImage, ImageSource, Item, ItemBody, MessagePhase},
     file_preview::{self, PreviewContent},
     ui_text,
 };
@@ -20,8 +20,125 @@ use std::{
 const CONCURRENT: usize = 2;
 const LOADED: usize = 8;
 const NETWORK_BYTES: u64 = 8 * 1024 * 1024;
+pub(super) const ARTIFACT_PAGE: usize = 32;
+
+pub(super) fn artifact_range(count: usize, page: usize) -> std::ops::Range<usize> {
+    let start = page.min(count.saturating_sub(1) / ARTIFACT_PAGE) * ARTIFACT_PAGE;
+    start..count.min(start.saturating_add(ARTIFACT_PAGE))
+}
+
+fn readable_label(label: &str) -> Option<String> {
+    let label = label.trim();
+    if label.is_empty()
+        || label.eq_ignore_ascii_case("image")
+        || label.to_ascii_lowercase().contains("data:")
+        || (label.len() >= 64
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+/=_-".contains(&b)))
+    {
+        return None;
+    }
+    Some(
+        label
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(160)
+            .collect(),
+    )
+}
+
+fn filename(path: &str) -> Option<String> {
+    let (path, _, _) = crate::terminal_links::split_position(path);
+    let name = path.rsplit('/').next()?;
+    let decoded = super::links::percent_decode(name).unwrap_or_else(|_| name.to_owned());
+    readable_label(&decoded)
+}
+
+/// Pure renderer fallback: old logs and resident hosts may still label every image "Image".
+fn image_label(image: &ChatImage, context: Option<&Item>) -> String {
+    if let Some(label) = readable_label(&image.label) {
+        // URL labels can contain credentials/query tokens; display only their source name.
+        if !label.starts_with("https://") && !label.starts_with("http://") {
+            return label;
+        }
+    }
+    match &image.source {
+        ImageSource::Local { path } => {
+            if let Some(name) = filename(path) {
+                return name;
+            }
+        }
+        ImageSource::Url { url } => {
+            if let Some(rest) = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"))
+            {
+                let clean = rest.split(['?', '#']).next().unwrap_or(rest);
+                if let Some((_, path)) = clean.split_once('/')
+                    && let Some(name) = filename(path)
+                {
+                    return name;
+                }
+                if let Some(host) = readable_label(
+                    clean
+                        .split('/')
+                        .next()
+                        .unwrap_or_default()
+                        .rsplit('@')
+                        .next()
+                        .unwrap_or_default(),
+                ) {
+                    return format!("Image from {host}");
+                }
+            }
+        }
+        _ => {}
+    }
+    let origin = match context.map(|item| &item.body) {
+        Some(ItemBody::ToolCall { tool, input, .. }) => {
+            for field in [
+                "path",
+                "file_path",
+                "filename",
+                "savedPath",
+                "output_file",
+                "screenshot_path",
+                "image_path",
+            ] {
+                if let Some(name) = input[field].as_str().and_then(filename) {
+                    return name;
+                }
+            }
+            readable_label(tool.rsplit("__").next().unwrap_or(tool))
+                .map(|tool| format!("{} image", tool.replace('_', " ")))
+                .unwrap_or_else(|| "Tool image".into())
+        }
+        Some(ItemBody::UserMessage { .. }) => "Uploaded image".into(),
+        Some(ItemBody::AgentMessage { .. })
+            if context.is_some_and(|item| item.presentation.phase == Some(MessagePhase::Final)) =>
+        {
+            "Final answer image".into()
+        }
+        Some(ItemBody::AgentMessage { .. }) => "Assistant image".into(),
+        Some(ItemBody::Command { .. }) => "Command image".into(),
+        _ => "Attached image".into(),
+    };
+    let format = match &image.source {
+        ImageSource::Data { mime, .. } => match mime.as_str() {
+            "image/png" => Some("PNG"),
+            "image/jpeg" => Some("JPEG"),
+            "image/webp" => Some("WebP"),
+            "image/gif" => Some("GIF"),
+            _ => None,
+        },
+        _ => None,
+    };
+    format.map_or(origin.clone(), |format| format!("{origin} · {format}"))
+}
 #[derive(Default)]
 pub(super) struct MediaState {
+    pub artifact_pages: HashMap<String, usize>,
     slots: HashMap<String, Slot>,
     queue: VecDeque<(String, ChatImage)>,
     active: usize,
@@ -33,6 +150,114 @@ pub(super) struct MediaState {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn artifact_pages_bound_rendering_and_keep_all_images_reachable() {
+        assert_eq!(artifact_range(9, 0), 0..9);
+        assert_eq!(artifact_range(0, 100), 0..0);
+        let pages = (0..313)
+            .flat_map(|page| artifact_range(10_000, page))
+            .collect::<Vec<_>>();
+        assert_eq!(pages, (0..10_000).collect::<Vec<_>>());
+        assert_eq!(artifact_range(33, 99), 32..33);
+        assert_eq!(artifact_range(10_000, 20), 640..672);
+    }
+
+    fn context(body: ItemBody) -> Item {
+        Item {
+            id: "item".into(),
+            turn_id: Some("turn".into()),
+            status: crate::chat::model::ItemStatus::Completed,
+            presentation: Default::default(),
+            body,
+        }
+    }
+
+    #[test]
+    fn generic_image_labels_use_filenames_tool_context_and_deliverable_roles_without_payloads() {
+        let inline = ChatImage {
+            label: "Image".into(),
+            source: ImageSource::Data {
+                mime: "image/png".into(),
+                base64: "SECRET_PAYLOAD".repeat(40),
+            },
+        };
+        let user = context(ItemBody::UserMessage {
+            text: "Upload".into(),
+        });
+        let mut final_answer = context(ItemBody::AgentMessage {
+            text: "Result".into(),
+        });
+        final_answer.presentation.phase = Some(MessagePhase::Final);
+        let mut tool = context(ItemBody::ToolCall {
+            server: Some("cua".into()),
+            tool: "mcp__cua_driver__get_window_state".into(),
+            input: serde_json::json!({"pid": 123}),
+            output: None,
+        });
+        assert_eq!(image_label(&inline, Some(&user)), "Uploaded image · PNG");
+        assert_eq!(
+            image_label(&inline, Some(&final_answer)),
+            "Final answer image · PNG"
+        );
+        assert_eq!(
+            image_label(&inline, Some(&tool)),
+            "get window state image · PNG"
+        );
+        if let ItemBody::ToolCall { input, .. } = &mut tool.body {
+            *input = serde_json::json!({"screenshot_path":"/tmp/Zażółć wide shot.png"});
+        }
+        assert_eq!(image_label(&inline, Some(&tool)), "Zażółć wide shot.png");
+        let local = ChatImage {
+            label: "Image".into(),
+            source: ImageSource::Local {
+                path: "docs/日本語 image.png".into(),
+            },
+        };
+        assert_eq!(image_label(&local, None), "日本語 image.png");
+        let url = ChatImage {
+            label: "Image".into(),
+            source: ImageSource::Url {
+                url: "https://user:secret@example.test/screens/wide%20shot.png?token=private#x"
+                    .into(),
+            },
+        };
+        assert_eq!(image_label(&url, None), "wide shot.png");
+        let host = ChatImage {
+            label: "Image".into(),
+            source: ImageSource::Url {
+                url: "https://example.test/?secret=hidden".into(),
+            },
+        };
+        assert_eq!(image_label(&host, None), "Image from example.test");
+        for label in [
+            "data:image/png;base64,SECRET_PAYLOAD".into(),
+            "a".repeat(500),
+        ] {
+            let unsafe_label = ChatImage {
+                label,
+                ..inline.clone()
+            };
+            assert_eq!(
+                image_label(&unsafe_label, Some(&user)),
+                "Uploaded image · PNG"
+            );
+        }
+        assert_eq!(
+            image_label(
+                &ChatImage {
+                    label: "Architecture diagram".into(),
+                    ..inline.clone()
+                },
+                None
+            ),
+            "Architecture diagram"
+        );
+        assert_eq!(inline.label, "Image");
+        assert!(
+            matches!(inline.source, ImageSource::Data { ref base64, .. } if base64.contains("SECRET_PAYLOAD"))
+        );
+    }
 
     #[test]
     fn downloads_stop_at_the_byte_limit_and_invalid_inline_images_fail() {
@@ -156,15 +381,12 @@ impl ChatView {
         &self,
         image: &ChatImage,
         key: &str,
+        context: Option<&Item>,
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let open = self.open.contains(key);
-        let label = if image.label.trim().is_empty() {
-            "Image"
-        } else {
-            &image.label
-        };
+        let label = image_label(image, context);
         let owned = image.clone();
         let toggle_key = key.to_owned();
         let content = self
@@ -264,6 +486,8 @@ impl ChatView {
             .into_any_element()
     }
     fn toggle_image(&mut self, key: String, image: ChatImage, cx: &mut Context<Self>) {
+        let offset = self.list.logical_scroll_top();
+        self.list.pause_following_tail();
         if !self.open.remove(&key) {
             if self.open.iter().filter(|id| id.contains("image")).count() >= 16 {
                 self.notice = Some("Fold an image before opening more.".into());
@@ -276,6 +500,7 @@ impl ChatView {
             release(slot, cx);
         }
         self.list.remeasure();
+        self.list.scroll_to(offset);
         cx.notify();
     }
     fn start_images(&mut self, cx: &mut Context<Self>) {

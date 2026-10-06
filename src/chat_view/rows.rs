@@ -38,22 +38,138 @@ impl ChatView {
     ) -> AnyElement {
         let look = Look::of(cx);
         let content = match self.visible.get(ix) {
-            Some(row @ (super::display::Row::Item(at) | super::display::Row::Artifact(at))) => {
+            Some(row @ (super::display::Row::Item(at) | super::display::Row::Details(at))) => {
                 let item = &self.model.transcript.items[*at];
                 div()
                     .w_full()
+                    .child(self.item(*at, item, look, cx))
                     .when(matches!(row, super::display::Row::Item(_)), |row| {
-                        row.child(self.item(*at, item, look, cx))
+                        row.children(item.presentation.images.iter().enumerate().map(
+                            |(n, image)| {
+                                self.image_card(
+                                    image,
+                                    &format!("{}:image:{n}", item.id),
+                                    Some(item),
+                                    look,
+                                    cx,
+                                )
+                            },
+                        ))
                     })
-                    .children(
-                        item.presentation
-                            .images
-                            .iter()
-                            .enumerate()
-                            .map(|(n, image)| {
-                                self.image_card(image, &format!("{}:image:{n}", item.id), look, cx)
-                            }),
+                    .into_any_element()
+            }
+            Some(super::display::Row::Artifacts { turn_id, items }) => {
+                let key = format!("artifacts:{turn_id}");
+                let open = self.open.contains(&key);
+                let count: usize = items
+                    .iter()
+                    .map(|at| self.model.transcript.items[*at].presentation.images.len())
+                    .sum();
+                let range = super::media::artifact_range(
+                    count,
+                    self.media.artifact_pages.get(&key).copied().unwrap_or(0),
+                );
+                let previous_key = key.clone();
+                let next_key = key.clone();
+                let previous_page = range.start / super::media::ARTIFACT_PAGE;
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(ui_text::space(4.0))
+                    .child(
+                        widgets::button(
+                            SharedString::from(key.clone()),
+                            format!(
+                                "{} Images from this turn · {count}",
+                                if open { "▾" } else { "▸" }
+                            ),
+                            None,
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            let offset = view.list.logical_scroll_top();
+                            view.list.pause_following_tail();
+                            view.toggle(&key, None, cx);
+                            view.list.remeasure();
+                            view.list.scroll_to(offset);
+                        })),
                     )
+                    .when(open, |row| {
+                        row.children(
+                            items
+                                .iter()
+                                .flat_map(|at| {
+                                    let item = &self.model.transcript.items[*at];
+                                    item.presentation
+                                        .images
+                                        .iter()
+                                        .enumerate()
+                                        .map(move |(n, image)| (item, n, image))
+                                })
+                                .skip(range.start)
+                                .take(range.len())
+                                .map(|(item, n, image)| {
+                                    self.image_card(
+                                        image,
+                                        &format!("{}:image:{n}", item.id),
+                                        Some(item),
+                                        look,
+                                        cx,
+                                    )
+                                }),
+                        )
+                    })
+                    .when(open && count > super::media::ARTIFACT_PAGE, |row| {
+                        row.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(ui_text::space(6.0))
+                                .children((range.start > 0).then(|| {
+                                    widgets::button(
+                                        SharedString::from(format!("previous:{previous_key}")),
+                                        "Previous images",
+                                        None,
+                                        look,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |view, _, _, cx| {
+                                            let offset = view.list.logical_scroll_top();
+                                            view.list.pause_following_tail();
+                                            view.media.artifact_pages.insert(
+                                                previous_key.clone(),
+                                                previous_page.saturating_sub(1),
+                                            );
+                                            view.list.remeasure();
+                                            view.list.scroll_to(offset);
+                                            cx.notify();
+                                        },
+                                    ))
+                                }))
+                                .child(format!("{}–{} of {count}", range.start + 1, range.end))
+                                .children((range.end < count).then(|| {
+                                    widgets::button(
+                                        SharedString::from(format!("next:{next_key}")),
+                                        "Next images",
+                                        None,
+                                        look,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |view, _, _, cx| {
+                                            let offset = view.list.logical_scroll_top();
+                                            view.list.pause_following_tail();
+                                            view.media
+                                                .artifact_pages
+                                                .insert(next_key.clone(), previous_page + 1);
+                                            view.list.remeasure();
+                                            view.list.scroll_to(offset);
+                                            cx.notify();
+                                        },
+                                    ))
+                                })),
+                        )
+                    })
                     .into_any_element()
             }
             Some(super::display::Row::Outcome(_, outcome)) => div()

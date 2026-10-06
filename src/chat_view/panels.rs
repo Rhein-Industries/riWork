@@ -338,17 +338,40 @@ impl ChatView {
             .border_color(rgb(colors.divider))
             .bg(rgb(colors.panel))
             .child(
-                button(
-                    "chat-display",
-                    self.display_mode.label(),
-                    Some(colors.cyan),
-                    look,
-                )
-                .on_click(cx.listener(|view, _, _, cx| view.toggle_display(cx)))
-                .child(tooltip::anchor(
-                    "Normal shows results · Verbose shows all activity",
-                    TipLook::Control,
-                )),
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap(ui_text::space(1.0))
+                    .p(ui_text::space(2.0))
+                    .rounded(ui_text::space(6.0))
+                    .border_1()
+                    .border_color(rgb(colors.divider))
+                    .bg(rgb(colors.panel_active))
+                    .children(
+                        [super::DisplayMode::Normal, super::DisplayMode::Verbose]
+                            .into_iter()
+                            .map(|mode| {
+                                button(
+                                    if mode == super::DisplayMode::Normal {
+                                        "chat-display-normal"
+                                    } else {
+                                        "chat-display-verbose"
+                                    },
+                                    mode.label(),
+                                    (self.display_mode == mode).then_some(colors.cyan),
+                                    look,
+                                )
+                                .on_click(
+                                    cx.listener(move |view, _, _, cx| {
+                                        view.choose_display(mode, cx)
+                                    }),
+                                )
+                            }),
+                    )
+                    .child(tooltip::anchor(
+                        "Normal shows results · Verbose shows all activity",
+                        TipLook::Control,
+                    )),
             )
             .child(picker(
                 "chat-mode",
