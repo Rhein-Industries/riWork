@@ -136,3 +136,53 @@ Additional **held, source-only** exact names:
 - `file_explorer::kit_filter_tests::kit_visible_filters_protect_composition_history_and_focus`: two rendered FileExplorerSurface entities over root=None; distinct headless bounds, shared query/history/undo, synthetic marked handler and focus checks. Does not mount Workspace or a native application.
 
 These new names may be compiled/listed but **must not execute** until parent source/helper gate. Full Workspace project/layout/drag/resize and native IME coverage remains pending; standalone headless tests do not establish it. Correction to earlier domain audit prose: editor_defaults_and_options_edit_keep_the_pinned_account_and_destination is a private Store/filesystem fixture (including remove_dir_all), not pure computation; it remains excluded with all six schedule panel tests.
+
+## Released final checks and six exact tests
+
+Correction commits:
+
+- `9c20d77b2ba79b9c549564036e45c544c57506c6`: compile API correction and initial copied-cache compile receipt.
+- `a64df0d38bd6bf60e4a0eb1adb0966879f5f01aa`: independent review fixes, synchronous Window boundaries, protected mirrors/membership and effect drains; adds three held regressions.
+- `1a83251c63a55a266c41337a69c522753da48fe0`: cfg(test)-only accessor correction for the newly held visible-filter test. Production source is unchanged from the checked/built a64df0d candidate.
+
+Through the same absolute approved Cargo/runner whitelist:
+
+| Command suffix | UTC start / finish | Result |
+| --- | --- | --- |
+| `check --offline --locked` | 12:43:35.999593 / 12:43:42.941083 | exit0 at a64df0d |
+| `build --offline --locked --bin riwork` | 12:43:46.373851 / 12:44:00.766143 | exit0 at a64df0d |
+| `test --offline --locked --bin riwork --no-run --message-format=json` | 12:45:11.551941 / 12:45:33.353977 | exit0 at 1a83251 |
+
+No download/install occurred. Final test executable: `/private/tmp/riwork-gpui-kit-forms-30c77170-target/debug/deps/riwork-7d8133c829b1c91f`, SHA-256 `c6a1ff064a2f1a8e5b17083de89d3a0a20d506467562e039607418ac93fe843a`. This executable is the Rust test harness, not a native RiWork app launch. Parent-released `--list` succeeded and found exactly one compiled test for each released qualified name. Listing contains 1683 tests; no unselected test was executed. The three new names were only compiled/listed.
+
+Parent released ONLY the six names in `/Users/dominik/orca/projects/riWork-review-manu-20261005/.review/forms-source-20261006T122449Z/supplements/20261006T123202Z/proposed-test-allowlist.json`. Runner `/tmp/rwf-iynxctm6/exact.py` uses the binary directly with one qualified name, `--exact --test-threads=1`, and the same explicit private env dictionary. It enforces one listing match and one selected/passed test, rejects zero/extra/ignored selections, records binary and allowlist hashes and verifies unchanged parent environment before/after each child.
+
+| Exact qualified name | Passed / failed / ignored / filtered | Exit |
+| --- | --- | --- |
+| `form_input::tests::original_form_and_workspace_paste_policies_remain_distinct` | 1 / 0 / 0 / 1682 | 0 |
+| `remote_prompt::kit_form_tests::kit_project_name_has_one_submit_and_preserves_composition` | 1 / 0 / 0 / 1682 | 0 |
+| `remote_prompt::kit_form_tests::kit_pairing_secret_is_masked_and_busy_keeps_its_draft` | 1 / 0 / 0 / 1682 | 0 |
+| `remote_prompt::kit_form_tests::kit_pair_fields_retain_supplied_defaults` | 1 / 0 / 0 / 1682 | 0 |
+| `file_explorer::kit_filter_tests::kit_filter_persists_selection_and_owns_enter_escape_and_tab` | 1 / 0 / 0 / 1682 | 0 |
+| `file_explorer::kit_filter_tests::kit_duplicate_filters_keep_distinct_persistent_geometry` | 1 / 0 / 0 / 1682 | 0 |
+
+All six passed; parent environment equality held for every Cargo, listing and exact-test child. The helper boundaries remain headless: Files root=None/empty tree, RemotePrompt backend=Err with no Workspace subscriber and only synthetic secrets/defaults. No six schedule fixtures, providers, SessionManager, services, GUI, app, host, remote/iOS action or broad test filter ran. All started/tracked child commands exited naturally; no process or fixture cleanup followed.
+
+Evidence preserved: `check.log`, `build.log`, `compile-tests.log`, `list.log`, `exact-0.log` through `exact-5.log`, timestamped per-command result/env files, `six-test-receipt.json`, `cache-copy-attestation.json`, `installed-native-attestation.json`, `run.py` and `exact.py` under `/tmp/rwf-iynxctm6`. Original failed check log/attestation/result and previous fixtures/logs remain intact.
+
+Current source hashes (compiled at 1a83251):
+
+- `Cargo.lock`: `6badaa76ede26da688bc5874bf2c9cf957b464f27849fe09396fc18998bfdc17`
+- `src/form_input.rs`: `6727d94fcda78f30ec02cc539f279ff07d05a88a0c7ec0fda4d924cc3c04f429`
+- `src/file_explorer.rs`: `2224869c23384de69c4ea59cc831453b84a8ca192716db243b5da0261b77fad4`
+- `src/remote_prompt.rs`: `b837dedc8a42671d5e45a59f78beaa5c36bceac51c34a8c8c160a914ab4c942f`
+
+Remaining exact newly added execution names, **held pending parent source/helper gate**:
+
+1. `form_input::tests::synchronous_replacements_and_refresh_preserve_newer_whitespace_and_aba_drafts`
+2. `file_explorer::kit_filter_tests::kit_removed_filter_rejects_stale_events_and_reopens_without_subscriptions`
+3. `file_explorer::kit_filter_tests::kit_visible_filters_protect_composition_history_and_focus`
+
+Shared composition Escape fix is still awaiting the foundation owner’s supplied commit; it was neither edited independently nor accepted by these six tests. No composition Escape acceptance or final combined-candidate/native acceptance is claimed. Parent owns cherry-pick coordination, integration and completion. Native Cua ownership remains held.
+
+**Build slot released with this final receipt. Worker returns idle; no tracked running child remains.**
