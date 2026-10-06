@@ -567,13 +567,13 @@ private struct TabChrome: ViewModifier {
         let cell = content.padding(.horizontal, 10).frame(minHeight: style.pt(36))
         if style.native {
             cell
-                .background(selected ? (style.glass ? style.active : style.background) : (style.glass ? style.surface : style.panel))
+                .background(selected ? (style.glass ? style.active : style.background) : (style.glass ? style.surface : style.panel), ignoresSafeAreaEdges: [])
                 .overlay(alignment: .bottom) { if waiting { Capsule().fill(style.gold).frame(height: 2).padding(.horizontal, 8) } }
                 .padding(.horizontal, style.glass ? 2 : 0)
                 .overlay(alignment: .trailing) { if !style.glass { Rectangle().fill(style.divider).frame(width: 1) } }
         } else {
             cell
-                .background(selected ? style.active : style.panel)
+                .background(selected ? style.active : style.panel, ignoresSafeAreaEdges: [])
                 .overlay(alignment: .trailing) { Rectangle().fill(style.divider).frame(width: 1) }
                 .overlay(alignment: .bottom) { Rectangle().fill(selected ? style.accent : (waiting ? style.gold : style.divider)).frame(height: waiting ? 2 : 1) }
         }

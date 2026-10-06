@@ -654,6 +654,61 @@ import RiWorkCore
         await finish(rig)
     }
 
+    func testCompactSelectedTabPaintStaysInsideNavigationAndOutOfTopSafeArea() async throws {
+        let screen = UIScreen.main.bounds.size
+        for look in [Look.nativeLight, .terminal] {
+            let rig = try await makeRig(width: screen.width, height: screen.height, look: look)
+            await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "paint", status: .completed, body: .agentMessage("A fixture conversation.")))])
+            _ = try await openChat(rig)
+            await eventually("navigation has completed layout") { rig.layout.frames["navigation"] != nil }
+            rig.window.layoutIfNeeded()
+            let navigation = try XCTUnwrap(rig.layout.frames["navigation"])
+            let safeTop = rig.host.view.safeAreaInsets.top
+            XCTAssertGreaterThan(safeTop, 0, "exercise the actual device top safe area")
+            XCTAssertEqual(navigation.minY, safeTop, accuracy: 1)
+            let image = UIGraphicsImageRenderer(bounds: rig.window.bounds).image { _ in
+                rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true)
+            }
+            let cg = try XCTUnwrap(image.cgImage)
+            let width = cg.width, height = cg.height, stride = width * 4
+            let scale = CGFloat(height) / rig.window.bounds.height
+            let topEnd = Int(floor(navigation.minY * scale))
+            let rowEnd = Int(floor(navigation.maxY * scale))
+            let style = rig.model.theme.style
+            func rgb(_ color: UIColor) -> [Int] {
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, alpha: CGFloat = 0
+                color.resolvedColor(with: rig.host.traitCollection).getRed(&r, green: &g, blue: &b, alpha: &alpha)
+                return [r, g, b].map { Int(($0 * 255).rounded()) }
+            }
+            let background = rgb(style.backgroundUI), selected = rgb(style.activeUI)
+            XCTAssertNotEqual(background, selected, "the selected paint must be distinguishable")
+            var pixels = [UInt8](repeating: 0, count: stride * height)
+            let counts = try pixels.withUnsafeMutableBytes { bytes -> (above: Int, inside: Int) in
+                let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: stride,
+                                                     space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+                let rgba = bytes.bindMemory(to: UInt8.self)
+                func matches(_ offset: Int, _ color: [Int]) -> Bool {
+                    (0..<3).allSatisfy { abs(Int(rgba[offset + $0]) - color[$0]) <= 3 } && rgba[offset + 3] == 255
+                }
+                var above = 0, inside = 0
+                for y in 0..<rowEnd {
+                    for x in 0..<width {
+                        let offset = y * stride + x * 4
+                        if y < topEnd { if !matches(offset, background) { above += 1 } }
+                        else if matches(offset, selected) { inside += 1 }
+                    }
+                }
+                return (above, inside)
+            }
+            XCTAssertGreaterThan(counts.inside, 100, "positive control: the selected tab is actually painted within the row")
+            XCTAssertEqual(counts.above, 0, "no tab paint may bleed above navigation or into the status-bar safe area")
+            print("COMPACT_SAFE_AREA look=\(look.rawValue) size=\(screen) safeTop=\(safeTop) navigation=\(navigation) scale=\(scale) aboveMismatchPixels=\(counts.above) selectedInsidePixels=\(counts.inside)")
+            try compactSnapshot(rig, name: "compact-safe-area-" + look.rawValue)
+            await finish(rig)
+        }
+    }
+
     func testCompactChatChromeReservesLatestAndKeepsLargeOutputAndControlsAboveKeyboard() async throws {
         let screen = UIScreen.main.bounds.size
         for category in [UIContentSizeCategory.large, .accessibilityExtraLarge] {
