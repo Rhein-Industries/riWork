@@ -308,57 +308,72 @@ struct TerminalTabsView: View {
         VStack(spacing: 0) {
             // Focus mode drops all of this: only the shell (and its keyboard) stays.
             if !focused {
-                WorkspaceBar(title: project.name, back: onBack, compact: true, onDoubleTap: { if model.sessionID != nil { model.setFocusMode(true) } }) {
-                    Button("New terminal", systemImage: "plus") { openNewTerminal() }
-                        .labelStyle(.iconOnly).disabled(model.state != .connected || model.projectID != project.id)
-                        // A desktop that is too old still answers a tap, with the reason.
-                        .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
-                        .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
-                    Button("Focus mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.setFocusMode(true) }
-                        .labelStyle(.iconOnly).disabled(model.sessionID == nil || model.terminalCovered)
-                    Button("Session info", systemImage: "info.circle") {
-                        if let chat = model.selectedChat {
-                            let info = model.chatConversations[chat.id]?.transcript.info ?? chat
-                            // An orchestrator that runs as a chat keeps its name, and says which chat it is by the chat's id.
-                            let orchestrator = model.orchestrator(ofChat: chat.id)
-                            sessionInfo = SessionInfo(id: chat.id, title: orchestrator?.title ?? ChatTabs.title(info), cwd: info.cwd,
-                                                      kind: "\(info.provider.chatTitle) · \(info.approvalMode.title)", activity: model.chatState(chat).spokenActivity, since: nil)
-                        } else if let blocked = model.selectedBlocked {
-                            sessionInfo = SessionInfo(id: blocked.session.id, title: blocked.session.title, cwd: blocked.session.cwd, kind: blocked.session.kind, activity: nil, since: nil)
-                        } else if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind, activity: session.activitySummary, since: session.activity_since_unix) }
-                    }.labelStyle(.iconOnly).disabled(model.sessionID == nil && !model.terminalCovered)
-                    Menu {
-                        if !model.terminalCovered {
-                            if UIDevice.current.userInterfaceIdiom == .pad { Toggle("Follow output", isOn: $followOutput) }
-                            else { Button("Jump to latest output", systemImage: "arrow.down.to.line") { model.jumpToLatest() } }
-                            Button("Display…", systemImage: "textformat.size") { showingDisplay = true }
-                            Menu("Text size · \(Int(model.terminalFontSize)) pt", systemImage: "textformat.size") {
-                                Button("Larger", systemImage: "plus") { model.stepTerminalFontSize(1) }.disabled(model.terminalFontSize >= TerminalFontSize.range.upperBound)
-                                Button("Smaller", systemImage: "minus") { model.stepTerminalFontSize(-1) }.disabled(model.terminalFontSize <= TerminalFontSize.range.lowerBound)
-                                Button("Reset to \(Int(TerminalFontSize.standard)) pt", systemImage: "arrow.counterclockwise") { model.setTerminalFontSize(TerminalFontSize.standard) }
+                if model.selectedChat != nil {
+                    HStack(spacing: 4) {
+                        Button("Back to projects", systemImage: "chevron.left", action: onBack).labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44).buttonStyle(.plain)
+                        tabStrip
+                        Button("New terminal", systemImage: "plus") { openNewTerminal() }.labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44).buttonStyle(.plain).disabled(model.state != .connected || model.projectID != project.id)
+                            .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
+                            .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
+                        Menu {
+                            Text(project.name)
+                            if model.orchestratorsOffered {
+                                Button("Global orchestrator", systemImage: "globe") { openGlobalOrchestrator() }
+                                    .disabled(model.state != .connected || model.creatingOrchestrator)
                             }
-                            if model.keysSupport != .unsupported {
-                                Toggle("Line composer instead of direct typing", isOn: Binding(get: { model.preferLineComposer }, set: { model.setPreferLineComposer($0) }))
+                            Button("Session info", systemImage: "info.circle") { showSessionInfo() }
+                            Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                            if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
+                            else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
+                        } label: { Label("Terminal tabs and connection", systemImage: "ellipsis") }
+                            .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).buttonStyle(.plain)
+                    }
+                    .chatLayoutProbe("navigation")
+                } else {
+                    WorkspaceBar(title: project.name, back: onBack, compact: true, onDoubleTap: { if model.sessionID != nil { model.setFocusMode(true) } }) {
+                        Button("New terminal", systemImage: "plus") { openNewTerminal() }
+                            .labelStyle(.iconOnly).disabled(model.state != .connected || model.projectID != project.id)
+                            // A desktop that is too old still answers a tap, with the reason.
+                            .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
+                            .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
+                        Button("Focus mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.setFocusMode(true) }
+                            .labelStyle(.iconOnly).disabled(model.sessionID == nil || model.terminalCovered)
+                        Button("Session info", systemImage: "info.circle") { showSessionInfo() }.labelStyle(.iconOnly).disabled(model.sessionID == nil && !model.terminalCovered)
+                        Menu {
+                            if !model.terminalCovered {
+                                if UIDevice.current.userInterfaceIdiom == .pad { Toggle("Follow output", isOn: $followOutput) }
+                                else { Button("Jump to latest output", systemImage: "arrow.down.to.line") { model.jumpToLatest() } }
+                                Button("Display…", systemImage: "textformat.size") { showingDisplay = true }
+                                Menu("Text size · \(Int(model.terminalFontSize)) pt", systemImage: "textformat.size") {
+                                    Button("Larger", systemImage: "plus") { model.stepTerminalFontSize(1) }.disabled(model.terminalFontSize >= TerminalFontSize.range.upperBound)
+                                    Button("Smaller", systemImage: "minus") { model.stepTerminalFontSize(-1) }.disabled(model.terminalFontSize <= TerminalFontSize.range.lowerBound)
+                                    Button("Reset to \(Int(TerminalFontSize.standard)) pt", systemImage: "arrow.counterclockwise") { model.setTerminalFontSize(TerminalFontSize.standard) }
+                                }
+                                if model.keysSupport != .unsupported {
+                                    Toggle("Line composer instead of direct typing", isOn: Binding(get: { model.preferLineComposer }, set: { model.setPreferLineComposer($0) }))
+                                }
+                                // The screen and the last 500 lines of scrollback above it, not everything loaded.
+                                Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.screenTextForCopy }.disabled(!model.hasOutput)
+                                Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                             }
-                            // The screen and the last 500 lines of scrollback above it, not everything loaded.
-                            Button("Copy screen text", systemImage: "doc.on.doc") { UIPasteboard.general.string = model.screenTextForCopy }.disabled(!model.hasOutput)
-                            Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
-                        }
-                        Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-                        // The project's own orchestrator is a row of the New terminal sheet; the global one is here too, a tap away.
-                        if model.orchestratorsOffered {
-                            Button("Global orchestrator", systemImage: "globe") { openGlobalOrchestrator() }
-                                .disabled(model.state != .connected || model.creatingOrchestrator)
-                        }
-                        if !model.terminalCovered, let session = model.session, model.canClose(session) {
-                            Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
-                        }
-                        Divider()
-                        if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
-                        else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
-                    } label: { Label("Terminal tabs and connection", systemImage: "ellipsis") }.labelStyle(.iconOnly)
+                            Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                            // The project's own orchestrator is a row of the New terminal sheet; the global one is here too, a tap away.
+                            if model.orchestratorsOffered {
+                                Button("Global orchestrator", systemImage: "globe") { openGlobalOrchestrator() }
+                                    .disabled(model.state != .connected || model.creatingOrchestrator)
+                            }
+                            if !model.terminalCovered, let session = model.session, model.canClose(session) {
+                                Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
+                            }
+                            Divider()
+                            if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
+                            else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
+                        } label: { Label("Terminal tabs and connection", systemImage: "ellipsis") }.labelStyle(.iconOnly)
+                    }
+                    if !model.tabs.isEmpty { tabStrip }
                 }
-                if !model.tabs.isEmpty { tabStrip }
                 if let note = model.orchestratorNotice { NoteLine(text: note) { model.clearOrchestratorNotice() } }
             }
             if let chat = model.selectedChat {
@@ -407,6 +422,17 @@ struct TerminalTabsView: View {
         .onChange(of: model.newTerminalRequestedProject) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.projectID) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.state) { _, _ in openRequestedNewTerminal() }
+    }
+    private func showSessionInfo() {
+        if let chat = model.selectedChat {
+            let info = model.chatConversations[chat.id]?.transcript.info ?? chat
+            // An orchestrator that runs as a chat keeps its name, and says which chat it is by the chat's id.
+            let orchestrator = model.orchestrator(ofChat: chat.id)
+            sessionInfo = SessionInfo(id: chat.id, title: orchestrator?.title ?? ChatTabs.title(info), cwd: info.cwd,
+                                      kind: "\(info.provider.chatTitle) · \(info.approvalMode.title)", activity: model.chatState(chat).spokenActivity, since: nil)
+        } else if let blocked = model.selectedBlocked {
+            sessionInfo = SessionInfo(id: blocked.session.id, title: blocked.session.title, cwd: blocked.session.cwd, kind: blocked.session.kind, activity: nil, since: nil)
+        } else if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind, activity: session.activitySummary, since: session.activity_since_unix) }
     }
     private func syncTerminalVisible() { model.setTerminalVisible(onScreen && !model.terminalCovered) }
     private func openNewTerminal() {
@@ -461,8 +487,9 @@ struct TerminalTabsView: View {
                     }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
                     ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
                 }
-                Text(tabDetail(session)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                if model.selectedChat == nil { Text(tabDetail(session)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1) }
             }
+            .frame(minHeight: model.selectedChat == nil ? nil : 44)
             .tabChrome(selected: selected, waiting: session.shownActivity == .waiting)
         }
         .buttonStyle(.plain).id(session.id)
@@ -490,8 +517,9 @@ struct TerminalTabsView: View {
                     ActivityIndicator(activity: activity)
                     if case .failed = state { Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).foregroundStyle(style.error).accessibilityHidden(true) }
                 }
-                Text(ChatTabs.detail(chat, branch: branch)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                if model.selectedChat == nil { Text(ChatTabs.detail(chat, branch: branch)).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1) }
             }
+            .frame(minHeight: model.selectedChat == nil ? nil : 44)
             .tabChrome(selected: selected, waiting: activity == .waiting)
             .opacity(state == .stopped && !selected ? 0.6 : 1)
         }
@@ -539,13 +567,13 @@ private struct TabChrome: ViewModifier {
         let cell = content.padding(.horizontal, 10).frame(minHeight: style.pt(36))
         if style.native {
             cell
-                .background(selected ? (style.glass ? style.active : style.background) : (style.glass ? style.surface : style.panel))
+                .background(selected ? (style.glass ? style.active : style.background) : (style.glass ? style.surface : style.panel), ignoresSafeAreaEdges: [])
                 .overlay(alignment: .bottom) { if waiting { Capsule().fill(style.gold).frame(height: 2).padding(.horizontal, 8) } }
                 .padding(.horizontal, style.glass ? 2 : 0)
                 .overlay(alignment: .trailing) { if !style.glass { Rectangle().fill(style.divider).frame(width: 1) } }
         } else {
             cell
-                .background(selected ? style.active : style.panel)
+                .background(selected ? style.active : style.panel, ignoresSafeAreaEdges: [])
                 .overlay(alignment: .trailing) { Rectangle().fill(style.divider).frame(width: 1) }
                 .overlay(alignment: .bottom) { Rectangle().fill(selected ? style.accent : (waiting ? style.gold : style.divider)).frame(height: waiting ? 2 : 1) }
         }

@@ -2140,3 +2140,28 @@ async fn bounded_recovery_keeps_identity_and_controls_and_refuses_unrepresented_
         "invalid_request"
     );
 }
+
+#[tokio::test]
+async fn bounded_placeholder_uses_product_copy_without_changing_cursor_or_identity() {
+    let f = Fixture::new();
+    let mut event = json!({"seq":1,"event":{"event":"item_completed","item":{"id":"large-structured-body","turn_id":"turn","status":"completed","body":{"type":"tool_call","tool":"fixture","input":[]}}}});
+    let bare = f.page(&[event.clone()], 1, false).to_string().len();
+    let count = (MAX_PLAINTEXT - 20 - bare) / 4;
+    event["event"]["item"]["body"]["input"] = json!(vec!["x"; count]);
+    f.says("events.json", &f.page(&[event], 1, false));
+    let reply = f
+        .call(
+            "chat.events",
+            json!({"chat_id":f.chat,"since":0,"wait_ms":0,"bounded":true}),
+        )
+        .await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["result"]["next"], 1);
+    let item = &reply["result"]["events"][0]["event"]["item"];
+    assert_eq!(item["id"], "large-structured-body");
+    assert_eq!(item["turn_id"], "turn");
+    assert_eq!(
+        item["body"]["text"],
+        "This message is too long to show here. Full text is on your Mac."
+    );
+}

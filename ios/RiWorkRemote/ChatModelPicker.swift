@@ -13,22 +13,24 @@ struct ChatModelChip: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     let choices: ChatModelChoices
     let enabled: Bool
+    var compact = false
     let open: () -> Void
 
     var body: some View {
-        Button(action: open) {
+        let button = Button(action: open) {
             HStack(spacing: 7) {
                 Image(systemName: "cpu").foregroundStyle(style.accent).accessibilityHidden(true)
-                Text(choices.chipTitle).font(style.system(.subheadline, weight: .semibold)).lineLimit(typeSize.isAccessibilitySize ? nil : 1).truncationMode(.tail)
+                Text(choices.chipTitle).font(style.system(compact ? .footnote : .subheadline, weight: .semibold)).lineLimit(typeSize.isAccessibilitySize ? nil : 1).truncationMode(.tail)
                 if choices.chipShowsFast { Image(systemName: "bolt.fill").font(.system(size: style.pt(10), weight: .bold)).foregroundStyle(style.gold).accessibilityHidden(true) }
                 Image(systemName: "chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
             }
             .foregroundStyle(style.text).padding(.horizontal, 8)
-            .frame(minHeight: style.pt(40)).contentShape(Rectangle())
+            .frame(minHeight: compact ? 44 : style.pt(40)).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Native: a glass capsule like the mode menu beside it (iOS 26).
-        .nativeGlass(style, in: Capsule())
+        Group {
+            if compact { button } else { button.nativeGlass(style, in: Capsule()) }
+        }
         // The first to give way when the toolbar is full (a long model name, large text): the name is cut, the other controls are not.
         .layoutPriority(-1)
         .disabled(!enabled)

@@ -312,7 +312,7 @@ fn shorten_body(event: &mut Value, cap: usize) -> bool {
         Some("item_started" | "item_completed") => {
             cut_strings(&mut event["item"]["body"], cap);
             if cap == MIN_CUT {
-                event["item"]["body"] = serde_json::json!({"type":"agent_message", "text":"[Body omitted for remote size limits. Open on the Mac for full content.]"});
+                event["item"]["body"] = serde_json::json!({"type":"agent_message", "text":"This message is too long to show here. Full text is on your Mac."});
             }
             true
         }

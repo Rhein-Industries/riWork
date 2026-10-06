@@ -42,7 +42,7 @@ private struct MarkdownBlockView: View {
                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityAddTraits(.isHeader).accessibilityHeading(level <= 1 ? .h1 : level == 2 ? .h2 : .h3)
         case .paragraph(let text):
-            Text(ChatMarkdown.inline(text)).font(style.prose).lineSpacing(3).foregroundStyle(muted ? style.muted : style.text).tint(style.link)
+            Text(ChatMarkdown.inline(text)).chatProse().lineSpacing(3).foregroundStyle(muted ? style.muted : style.text).tint(style.link)
                 .textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
         case .code(let language, let text, _):
             CodeBlock(language: language, text: text)
@@ -93,7 +93,7 @@ private struct ListRow: View {
                 case .check(let done): Image(systemName: done ? "checkmark.square" : "square").accessibilityLabel(done ? "Done" : "Not done")
                 }
             }
-            .font(style.prose).foregroundStyle(style.muted).frame(minWidth: style.pt(16), alignment: .trailing)
+            .chatProse().foregroundStyle(style.muted).frame(minWidth: style.pt(16), alignment: .trailing)
             MarkdownBlocks(blocks: item.blocks, depth: depth + 1)
         }
     }

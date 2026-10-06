@@ -505,7 +505,7 @@ fn chat_fault(fault: Fault) -> Fault {
     if fault.code == "cli_error" && fault.message.contains("response_too_large:") {
         return Fault::new(
             "response_too_large",
-            "A complete chat update exceeds the response limit. Open this chat on the Mac.",
+            "This update is too large to show safely. Open this chat on your Mac.",
         );
     }
     if fault.code != "cli_error" {
@@ -698,7 +698,7 @@ fn shorten_body(event: &mut Value, cap: usize) -> bool {
         Some("item_started" | "item_completed") => {
             cut_strings(&mut event["item"]["body"], cap);
             if cap == MIN_CUT {
-                event["item"]["body"] = json!({"type":"agent_message", "text":"[Body omitted for remote size limits. Open on the Mac for full content.]"});
+                event["item"]["body"] = json!({"type":"agent_message", "text":"This message is too long to show here. Full text is on your Mac."});
             }
             true
         }
@@ -740,7 +740,7 @@ fn fit_bounded_page(
         }
         return Err(Fault::new(
             "response_too_large",
-            "event cannot be represented without losing identity or controls",
+            "This update is too large to show safely without leaving out a request or its details. Open this chat on your Mac.",
         ));
     }
 }
@@ -1050,7 +1050,7 @@ impl Rpc {
                 {
                     Fault::new(
                         "snapshot_limit",
-                        "This chat exceeds the recent-history read limit. Open it on the Mac.",
+                        "This chat is too long to load here. Open it on your Mac.",
                     )
                 } else if fault.message.contains("chat not found") {
                     Fault::new("not_found", "chat not found on the desktop")

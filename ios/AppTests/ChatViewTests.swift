@@ -64,6 +64,7 @@ import RiWorkCore
     }
     private struct Rig {
         let model: RemoteModel, transport: ChatTransport, window: UIWindow, host: UIHostingController<AnyView>, keychain: KeychainStore
+        let layout: ChatLayoutInspection
     }
     private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal, mic: Bool = false) async throws -> Rig {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show a chat in") }
@@ -86,7 +87,8 @@ import RiWorkCore
         if look != .terminal { await eventually("the desktop's Native look is in") { model.theme.style.native } }
         if mic { await eventually("the desktop's mic setting is in") { model.theme.style.mic } }
         let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
-        let root = AnyView(ThemedTabs(model: model, project: projectValue))
+        let layout = ChatLayoutInspection()
+        let root = AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout))
         let host = UIHostingController(rootView: root)
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: width, height: height)
@@ -95,7 +97,7 @@ import RiWorkCore
         window.makeKeyAndVisible()
         windows.append(window)
         await eventually("the terminal is on screen") { !self.descendants(KeyCaptureView.self, in: host.view).isEmpty && model.terminalArea != nil }
-        return Rig(model: model, transport: transport, window: window, host: host, keychain: keychain)
+        return Rig(model: model, transport: transport, window: window, host: host, keychain: keychain, layout: layout)
     }
     private func finish(_ rig: Rig) async {
         rig.window.endEditing(true)
@@ -455,6 +457,7 @@ import RiWorkCore
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertEqual(try renderedMessageTop(movedMessage, rig: rig, scroll: list), movedAnchor, accuracy: 4, "late expansion above the anchor preserves its within-row position")
         XCTAssertEqual(conversation.draft, "gated draft")
+        try assertLatestOutsideTranscript(rig, scroll: list)
         try snapshot(rig, name: "latest-first-gated-large-text")
         await finish(rig)
     }
@@ -651,6 +654,159 @@ import RiWorkCore
         await finish(rig)
     }
 
+    func testCompactSelectedTabPaintStaysInsideNavigationAndOutOfTopSafeArea() async throws {
+        let screen = UIScreen.main.bounds.size
+        for look in [Look.nativeLight, .terminal] {
+            let rig = try await makeRig(width: screen.width, height: screen.height, look: look)
+            await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "paint", status: .completed, body: .agentMessage("A fixture conversation.")))])
+            _ = try await openChat(rig)
+            await eventually("navigation has completed layout") { rig.layout.frames["navigation"] != nil }
+            rig.window.layoutIfNeeded()
+            let navigation = try XCTUnwrap(rig.layout.frames["navigation"])
+            let safeTop = rig.host.view.safeAreaInsets.top
+            XCTAssertGreaterThan(safeTop, 0, "exercise the actual device top safe area")
+            XCTAssertEqual(navigation.minY, safeTop, accuracy: 1)
+            let image = UIGraphicsImageRenderer(bounds: rig.window.bounds).image { _ in
+                rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true)
+            }
+            let cg = try XCTUnwrap(image.cgImage)
+            let width = cg.width, height = cg.height, stride = width * 4
+            let scale = CGFloat(height) / rig.window.bounds.height
+            let topEnd = Int(floor(navigation.minY * scale))
+            let rowEnd = Int(floor(navigation.maxY * scale))
+            let style = rig.model.theme.style
+            func rgb(_ color: UIColor) -> [Int] {
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, alpha: CGFloat = 0
+                color.resolvedColor(with: rig.host.traitCollection).getRed(&r, green: &g, blue: &b, alpha: &alpha)
+                return [r, g, b].map { Int(($0 * 255).rounded()) }
+            }
+            let background = rgb(style.backgroundUI), selected = rgb(style.activeUI)
+            XCTAssertNotEqual(background, selected, "the selected paint must be distinguishable")
+            var pixels = [UInt8](repeating: 0, count: stride * height)
+            let counts = try pixels.withUnsafeMutableBytes { bytes -> (above: Int, inside: Int) in
+                let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: stride,
+                                                     space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+                let rgba = bytes.bindMemory(to: UInt8.self)
+                func matches(_ offset: Int, _ color: [Int]) -> Bool {
+                    (0..<3).allSatisfy { abs(Int(rgba[offset + $0]) - color[$0]) <= 3 } && rgba[offset + 3] == 255
+                }
+                var above = 0, inside = 0
+                for y in 0..<rowEnd {
+                    for x in 0..<width {
+                        let offset = y * stride + x * 4
+                        if y < topEnd { if !matches(offset, background) { above += 1 } }
+                        else if matches(offset, selected) { inside += 1 }
+                    }
+                }
+                return (above, inside)
+            }
+            XCTAssertGreaterThan(counts.inside, 100, "positive control: the selected tab is actually painted within the row")
+            XCTAssertEqual(counts.above, 0, "no tab paint may bleed above navigation or into the status-bar safe area")
+            print("COMPACT_SAFE_AREA look=\(look.rawValue) size=\(screen) safeTop=\(safeTop) navigation=\(navigation) scale=\(scale) aboveMismatchPixels=\(counts.above) selectedInsidePixels=\(counts.inside)")
+            try compactSnapshot(rig, name: "compact-safe-area-" + look.rawValue)
+            await finish(rig)
+        }
+    }
+
+    func testCompactChatChromeReservesLatestAndKeepsLargeOutputAndControlsAboveKeyboard() async throws {
+        let screen = UIScreen.main.bounds.size
+        for category in [UIContentSizeCategory.large, .accessibilityExtraLarge] {
+            let rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: .nativeLight)
+            rig.host.traitOverrides.preferredContentSizeCategory = category
+            await rig.transport.enableSnapshots()
+            let output = (0..<24).map { "output line \($0): compile fixture" }.joined(separator: "\n")
+            var events: [ChatEvent] = [.info(chat()), .models(models), .usage(ChatUsage(inputTokens: 42))]
+            events += (0..<60).map { .itemCompleted(ChatItem(id: "layout-\($0)", status: .completed, body: .agentMessage("Message \($0). A readable paragraph in this conversation."))) }
+            events.append(.itemCompleted(ChatItem(id: "layout-command", status: .completed, body: .command(command: "swift test --filter fixture", cwd: "/fixture", output: output, exitCode: 0))))
+            await rig.transport.append(chatID, events)
+            let field = try await openChat(rig), conversation = rig.model.conversation(chatID)
+            conversation.expanded.insert("layout-command"); conversation.draft = "Layout draft"
+            await eventually("recent full rows loaded") { conversation.transcript.items.count == 50 }
+            try await Task.sleep(for: .milliseconds(350))
+            let scroll = try XCTUnwrap(transcriptScroll(rig))
+            let modelFrame = try XCTUnwrap(rig.layout.frames["model"])
+            let permissions = try XCTUnwrap(rig.layout.frames["permissions"])
+            let navigation = try XCTUnwrap(rig.layout.frames["navigation"])
+            XCTAssertGreaterThanOrEqual(modelFrame.height, 44)
+            XCTAssertGreaterThanOrEqual(permissions.height, 44)
+            XCTAssertLessThanOrEqual(navigation.height, 48, "project and tab navigation share one compact row")
+            if category == .large {
+                XCTAssertEqual(modelFrame.midY, permissions.midY, accuracy: 2, "routine model and permission controls fit one compact row")
+                XCTAssertLessThanOrEqual(modelFrame.union(permissions).height, 48)
+            }
+            XCTAssertTrue(try renderedTranscriptText(rig, scroll: scroll).contains("output line 23"))
+            XCTAssertFalse(try renderedTranscriptText(rig, scroll: scroll).contains("output line 0:"), "expanded cards begin with a short output preview")
+            let expand = try XCTUnwrap(rig.layout.actions["output-toggle"])
+            expand()
+            await eventually("the visible output expands") { (try? self.renderedText(rig, in: rig.layout.frames["output-toggle"] ?? .zero).contains("Show less output")) == true }
+            await eventually("expanded output settles at the newest bottom") { self.isAtValidBottom(scroll) }
+            let copy = try XCTUnwrap(rig.layout.actions["copy-Copy output"])
+            copy()
+            XCTAssertEqual(UIPasteboard.general.string, output, "folded output still copies the full text held locally")
+            try XCTUnwrap(rig.layout.actions["output-toggle"])()
+            await eventually("the visible output folds again") { (try? self.renderedText(rig, in: rig.layout.frames["output-toggle"] ?? .zero).contains("Show more output")) == true }
+            await eventually("folded output settles before reading begins") { self.isAtValidBottom(scroll) }
+            if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-output") }
+            listStartReading(scroll)
+            try await Task.sleep(for: .milliseconds(50))
+            scroll.setContentOffset(CGPoint(x: 0, y: max(20, bottomOffset(scroll) - scroll.bounds.height - 200)), animated: false)
+            try await Task.sleep(for: .milliseconds(150))
+            scroll.delegate?.scrollViewDidEndDragging?(scroll, willDecelerate: false)
+            await eventually("Latest has its own reserved row") { rig.layout.visible["latest"] == true }
+            try await Task.sleep(for: .milliseconds(100))
+            try assertLatestOutsideTranscript(rig, scroll: scroll)
+            await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "layout-live", status: .completed, body: .agentMessage("One new live message.")))])
+            await eventually("only the live row counts as new") { (try? self.renderedText(rig, in: rig.layout.frames["latest"] ?? .zero).contains("1 new")) == true }
+            try assertLatestOutsideTranscript(rig, scroll: scroll)
+            if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-reader") }
+            await rig.transport.append(chatID, [approval("layout-approval"), .state(.waiting)])
+            await eventually("approval displayed") { conversation.openApprovals.count == 1 }
+            var keyboardTop = screen.height
+            let keyboard = NotificationCenter.default.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { note in
+                if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect { keyboardTop = frame.minY }
+            }
+            defer { NotificationCenter.default.removeObserver(keyboard) }
+            field.becomeFirstResponder()
+            await eventually("software keyboard is presented") { keyboardTop < screen.height - 100 && field.isFirstResponder }
+            try await Task.sleep(for: .milliseconds(350))
+            let composerFrame = field.convert(field.bounds, to: rig.window)
+            XCTAssertLessThanOrEqual(composerFrame.maxY, keyboardTop + 2, "draft remains above the actual keyboard frame")
+            XCTAssertEqual(field.text, "Layout draft")
+            let allow = try XCTUnwrap(rig.layout.frames["approval-accept"])
+            XCTAssertLessThanOrEqual(allow.maxY, composerFrame.minY + 2)
+            XCTAssertGreaterThan(allow.height, 40)
+            XCTAssertTrue(try renderedText(rig, in: CGRect(x: 0, y: scroll.convert(scroll.bounds, to: rig.window).maxY, width: screen.width, height: composerFrame.minY - scroll.convert(scroll.bounds, to: rig.window).maxY)).contains("Allow"), "approval action is visible above the keyboard")
+            XCTAssertGreaterThan(scroll.bounds.height, 24, "conversation retains visible room above approvals")
+            try assertLatestOutsideTranscript(rig, scroll: scroll)
+            print("COMPACT_LAYOUT category=\(category.rawValue) size=\(screen) navigation=\(navigation.height) model=\(modelFrame.height) transcript=\(scroll.convert(scroll.bounds, to: rig.window)) latest=\(rig.layout.frames["latest"] ?? .zero) approval=\(allow) draft=\(composerFrame) keyboardTop=\(keyboardTop)")
+            if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-approval-keyboard") }
+            await rig.transport.append(chatID, [.approvalResolved(requestID: "layout-approval", decision: .accept), .questionRequested(ChatQuestion(requestID: "layout-question", questions: [ChatQuestionPrompt(header: "Scope", question: "Which tests?", options: [ChatQuestionOption(label: "Changed", description: "Focused checks")], multiSelect: false)]))])
+            await eventually("question displayed") { conversation.openQuestions.count == 1 }
+            try await Task.sleep(for: .milliseconds(150))
+            let answer = try XCTUnwrap(rig.layout.frames["question-send"])
+            XCTAssertLessThanOrEqual(answer.maxY, field.convert(field.bounds, to: rig.window).minY + 2)
+            XCTAssertEqual(conversation.draft, "Layout draft")
+            await finish(rig)
+        }
+    }
+
+    private func listStartReading(_ scroll: UIScrollView) { scroll.delegate?.scrollViewWillBeginDragging?(scroll) }
+    private func assertLatestOutsideTranscript(_ rig: Rig, scroll: UIScrollView, file: StaticString = #filePath, line: UInt = #line) throws {
+        let latest = try XCTUnwrap(rig.layout.frames["latest"], file: file, line: line)
+        XCTAssertEqual(rig.layout.visible["latest"], true, file: file, line: line)
+        let transcript = scroll.convert(scroll.bounds, to: rig.window)
+        XCTAssertGreaterThanOrEqual(latest.minY, transcript.maxY - 1, "Latest cannot cover any visible transcript text", file: file, line: line)
+        let field = try XCTUnwrap(composer(rig), file: file, line: line)
+        XCTAssertLessThanOrEqual(latest.maxY, field.convert(field.bounds, to: rig.window).minY + 1, file: file, line: line)
+    }
+    private func compactSnapshot(_ rig: Rig, name: String) throws {
+        guard let directory = ProcessInfo.processInfo.environment["RIWORK_COMPACT_CHAT_SNAPSHOTS"] else { return }
+        rig.window.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: rig.window.bounds).image { _ in rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true) }
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        try XCTUnwrap(image.pngData()).write(to: URL(fileURLWithPath: directory).appendingPathComponent(name + ".png"))
+    }
     // MARK: Pictures
 
     /// Draws the screen at phone size and checks it is not blank. With `RIWORK_CHAT_SNAPSHOTS` set to a directory the pictures are kept
@@ -734,6 +890,12 @@ import RiWorkCore
         rig.window.layoutIfNeeded()
         let visible = scroll.convert(scroll.bounds, to: rig.window).intersection(rig.window.bounds)
         XCTAssertFalse(visible.isEmpty, "transcript has a visible viewport")
+        return try renderedText(rig, in: visible)
+    }
+    private func renderedText(_ rig: Rig, in rect: CGRect) throws -> String {
+        rig.window.layoutIfNeeded()
+        let visible = rect.intersection(rig.window.bounds)
+        guard !visible.isEmpty else { return "" }
         let image = UIGraphicsImageRenderer(size: visible.size).image { context in
             context.cgContext.translateBy(x: -visible.minX, y: -visible.minY)
             rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true)
@@ -1117,9 +1279,13 @@ import RiWorkCore
     /// The transcript's scroll view: from the top of the chat screen the wide scroll views are the tab strip, the transcript, and then
     /// those of the bars over the composer. (Over the keyboard the transcript can be shorter than a bar's, so size does not tell.)
     private func transcriptScroll(_ rig: Rig) -> UIScrollView? {
-        let wide = descendants(UIScrollView.self, in: rig.host.view).filter { !($0 is UITextView) && $0.bounds.width > 300 && $0.window != nil }
-            .sorted { $0.convert($0.bounds, to: nil).minY < $1.convert($1.bounds, to: nil).minY }
-        return wide.count >= 2 ? wide[1] : nil
+        guard let frame = rig.layout.frames["transcript"] else { return nil }
+        // Match the actual transcript viewport; compact tabs and nested horizontal output also use UIScrollView.
+        return descendants(UIScrollView.self, in: rig.host.view).first { scroll in
+            guard !(scroll is UITextView), scroll.window != nil else { return false }
+            let actual = scroll.convert(scroll.bounds, to: rig.window)
+            return abs(actual.minY - frame.minY) < 1 && abs(actual.width - frame.width) < 1 && abs(actual.height - frame.height) < 1
+        }
     }
     private func questionAndStatusLines(_ look: Look, height: CGFloat = 874, name: String = "chat-question-failed") async throws -> Rig {
         let rig = try await makeRig(chats: [chat(state: .failed("the process exited with status 1"))], height: height, look: look)
