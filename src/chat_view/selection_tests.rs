@@ -78,12 +78,13 @@ fn base_drag_crosses_unicode_paragraphs_and_messages_in_reading_order(cx: &mut T
         // Native menu/action routing uses the same Base Copy action.
         cx.write_to_clipboard(ClipboardItem::new_string("menu sentinel".into()));
         window.dispatch_action(Box::new(Copy), cx);
-        assert_eq!(
-            cx.read_from_clipboard().unwrap().text().unwrap(),
-            "alpha 🦀 café\nbeta\ngamma"
-        );
     })
     .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_from_clipboard().unwrap().text().unwrap(),
+        "alpha 🦀 café\nbeta\ngamma"
+    );
     assert!(recording.try_recv().is_err());
 }
 
@@ -197,7 +198,7 @@ fn focused_composer_model_and_request_answer_keep_copy_priority(cx: &mut TestApp
         window.press("right", cx);
         assert_eq!(
             copied(window, cx),
-            "",
+            "unchanged sentinel",
             "an empty editor selection must not copy old transcript text"
         );
         view.update(cx, |v, cx| v.toggle_menu(Menu::Model, window, cx));
