@@ -51,6 +51,22 @@ fn select_between(window: &mut Window, first: &str, last: &str, cx: &mut gpui::A
     window.drag(from, to, cx);
 }
 
+fn select_glyph_span(
+    view: &Entity<ChatView>,
+    window: &mut Window,
+    first: &str,
+    last: &str,
+    cx: &mut gpui::App,
+) {
+    window.render_frame(cx);
+    // These are native, visible TextLayout coordinates, checked against both
+    // native byte hit testing and the source-key resolver before real dispatch.
+    let selection = &view.read(cx).transcript_selection;
+    let from = selection.glyph_span_points(first).0;
+    let to = selection.glyph_span_points(last).1;
+    window.drag(from, to, cx);
+}
+
 fn copied(window: &mut Window, cx: &mut gpui::App) -> String {
     cx.write_to_clipboard(ClipboardItem::new_string("unchanged sentinel".into()));
     window.press("cmd-c", cx);
@@ -435,12 +451,7 @@ fn library_copy_adapter_preserves_selected_code_indentation(cx: &mut TestAppCont
             window,
             cx,
         );
-        select_between(
-            window,
-            "transcript:code:indent/0",
-            "transcript:code:indent/0",
-            cx,
-        );
+        select_glyph_span(&view, window, "code:indent/0", "code:indent/0", cx);
         assert_eq!(copied(window, cx), "  code 🦀\n    nested");
     })
     .unwrap();
@@ -766,23 +777,13 @@ fn source_projection_keeps_code_blank_lines_trailing_and_whitespace_only_bytes(
             window,
             cx,
         );
-        select_between(
-            window,
-            "transcript:code:spaces/0",
-            "transcript:code:spaces/0",
-            cx,
-        );
+        select_glyph_span(&view, window, "code:spaces/0", "code:spaces/0", cx);
         assert_eq!(
             copied(window, cx),
             "   ",
             "Base contributor filtering must not erase whitespace-only selection"
         );
-        select_between(
-            window,
-            "transcript:code:spaces/0",
-            "transcript:code:code/0",
-            cx,
-        );
+        select_glyph_span(&view, window, "code:spaces/0", "code:code/0", cx);
         assert_eq!(copied(window, cx), "   \n  start  \n\n \n    finish  ");
         cx.write_to_clipboard(ClipboardItem::new_string("menu sentinel".into()));
         window.dispatch_action(Box::new(Copy), cx);
@@ -825,6 +826,20 @@ fn chat_base_disclosure_pointer_enter_space_activate_once_and_disabled_is_inert(
     })
     .unwrap();
     cx.run_until_parked();
+    let button_focus = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(view.read(cx).open.contains("command"));
+            let button = window.find("card:command");
+            assert_eq!(button.expanded(), Some(true));
+            assert_eq!(
+                button.focused(),
+                Some(true),
+                "pointer focus must survive Base's deferred selection effects"
+            );
+            window.focused(cx).expect("clicked disclosure has focus")
+        })
+        .unwrap();
     for (key, expected) in [("enter", false), ("space", true), ("enter", false)] {
         cx.update_window(handle.into(), |_, window, cx| {
             window.press(key, cx);
@@ -835,6 +850,12 @@ fn chat_base_disclosure_pointer_enter_space_activate_once_and_disabled_is_inert(
             window.render_frame(cx);
             assert_eq!(view.read(cx).open.contains("command"), expected);
             assert_eq!(window.find("card:command").expanded(), Some(expected));
+            assert_eq!(window.find("card:command").focused(), Some(true));
+            assert_eq!(
+                window.focused(cx),
+                Some(button_focus.clone()),
+                "disclosure rerender must preserve native focus identity after {key}"
+            );
         })
         .unwrap();
     }

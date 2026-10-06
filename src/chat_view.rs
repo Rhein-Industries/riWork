@@ -265,12 +265,8 @@ impl ChatView {
             cx.subscribe_in(&model_input, window, Self::model_event),
         ];
         let focus = cx.focus_handle();
-        let transcript_selection = select::TranscriptSelection::new(
-            focus.clone(),
-            window.window_handle(),
-            cx.weak_entity(),
-            cx,
-        );
+        let transcript_selection =
+            select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
         Self {
             config,
             window_handle: window.window_handle(),
@@ -1024,12 +1020,8 @@ impl Render for ChatView {
             // A participant and its refresh subscription belong to one
             // window. Old-frame sweeping must never clear the new window's
             // selection through a reused participant entity.
-            self.transcript_selection = select::TranscriptSelection::new(
-                self.focus.clone(),
-                window.window_handle(),
-                cx.weak_entity(),
-                cx,
-            );
+            self.transcript_selection =
+                select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
             self.window_handle = window.window_handle();
         }
         self.follow_text_size(cx);

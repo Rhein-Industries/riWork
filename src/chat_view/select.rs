@@ -4,7 +4,7 @@
 //! including leaves whose elements have genuinely left the virtual list.
 use super::{ChatView, selection_document::SourceLeaf, widgets::Look};
 use gpui::{
-    AnyElement, AnyWindowHandle, App, Bounds, Context, Element, ElementId, FocusHandle, Focusable,
+    AnyElement, AnyWindowHandle, App, Bounds, Context, Element, ElementId, Focusable,
     GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, InspectorElementId, InteractiveText,
     IntoElement, LayoutId, ListState, Pixels, Point, SharedString, StyledText, Subscription,
     TextLayout, Window, div, prelude::*, rgb,
@@ -130,17 +130,16 @@ pub(super) struct TranscriptSelection {
     _refresh: Subscription,
 }
 impl TranscriptSelection {
-    pub fn new(
-        focus: FocusHandle,
-        window: AnyWindowHandle,
-        owner: gpui::WeakEntity<ChatView>,
-        cx: &mut App,
-    ) -> Self {
+    pub fn new(window: AnyWindowHandle, owner: gpui::WeakEntity<ChatView>, cx: &mut App) -> Self {
         let handle = TextSelectionHandle::new("", cx);
         let participant = handle.entity_id();
         let data = Rc::new(RefCell::new(Document::default()));
         data.borrow_mut().participant = Some(handle.entity_id());
-        handle.focus_with(move |window, cx| focus.focus(window, cx), cx);
+        // This participant covers the viewport, including child controls. Base
+        // defers its focus callback for any point inside that viewport, even
+        // outside glyphs; focusing ChatView there would steal a button's focus.
+        // ChatView's native track_focus already transfers text clicks while
+        // respecting the child's native prevent_default when it takes focus.
         let source = data.clone();
         let weak = Rc::downgrade(&source);
         handle.resolve_content_key_with(
@@ -221,6 +220,55 @@ impl TranscriptSelection {
         let leaf = data.frame.iter().find(|leaf| leaf.key == key)?;
         let point = leaf.layout.position_for_index(byte)?;
         Some(point + gpui::point(gpui::px(0.), leaf.layout.line_height() / 2.))
+    }
+    #[cfg(test)]
+    pub(super) fn glyph_span_points(&self, key: &str) -> (Point<Pixels>, Point<Pixels>) {
+        let data = self.data.borrow();
+        let leaf = data
+            .frame
+            .iter()
+            .find(|leaf| leaf.key == key)
+            .unwrap_or_else(|| panic!("missing painted glyph layout: {key}"));
+        let caret = |byte| {
+            leaf.layout
+                .position_for_index(byte)
+                .unwrap_or_else(|| panic!("missing native caret: {key} byte {byte}"))
+        };
+        // A Div's right edge minus one is inside the last glyph. Native hit
+        // testing returns that glyph's starting byte, not its ending caret.
+        // Dispatch at the real first glyph and just past the final caret.
+        let offset = gpui::point(gpui::px(1.), leaf.layout.line_height() / 2.);
+        let first = caret(0) + offset;
+        let last = caret(leaf.text.len()) + offset;
+        let source_at = data
+            .source
+            .iter()
+            .position(|source| source.key == key)
+            .unwrap();
+        for (point, byte) in [(first, 0), (last, leaf.text.len())] {
+            assert!(
+                leaf.clip.contains(&point),
+                "clipped glyph endpoint: {key} byte {byte}"
+            );
+            assert_eq!(
+                leaf.layout
+                    .index_for_position(point)
+                    .unwrap_or_else(|byte| byte),
+                byte,
+                "native glyph endpoint: {key} at {point:?} layout {:?} clip {:?}",
+                leaf.bounds,
+                leaf.clip,
+            );
+            let resolved = data
+                .content_key(point - data.origin - data.scroll)
+                .and_then(|key| data.endpoint(key));
+            assert_eq!(
+                resolved,
+                Some((source_at, byte)),
+                "source endpoint: {key} at {point:?}"
+            );
+        }
+        (first, last)
     }
 }
 
