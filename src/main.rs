@@ -66,7 +66,6 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet, HashSet},
     env,
-    ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, Mutex, OnceLock},

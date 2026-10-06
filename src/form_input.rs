@@ -164,7 +164,7 @@ pub fn placeholder<V: 'static>(
     value: &'static str,
     cx: &mut Context<V>,
 ) {
-    if state.read(cx).placeholder().as_ref() == value {
+    if state.read(cx).presentation().placeholder().as_ref() == value {
         return;
     }
     let state = state.clone();

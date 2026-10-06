@@ -112,3 +112,9 @@ The six preserved panel domain names are:
 - `schedule_panel::tests::custom_zero_minutes_cannot_become_a_one_time_schedule`
 
 The first three use LegacyEditorFixture -> TestHost, SessionManager::at, Store, ScheduleStore, chat-host fixture creation; its Drop calls `sessions.kill_server()`, and the ordinary-shell case additionally calls `sessions.create`. They remain excluded pending parent audit, regardless of private environment. The last three are pure editor/domain computations; parent still owns exact execution release.
+
+## Compile API correction before reviewer follow-up
+
+Parent authorized copying audited Ghostty fingerprint/package cache sources. Copy attestation `/tmp/rwf-iynxctm6/cache-copy-attestation.json` records canonical nonoverlap, every file SHA-256/size and unchanged originals; internal relative dylib links were checked to remain within each subtree and preserved. Native archive SHA-256 `75443f9cd0b74a0b41f51b214bbc1cc00c10b94d10710302f5eca9971f157b66`; the installed target archive matched it. Private cache reuse skipped the Zig rebuild. The first copied-cache check found a placeholder accessor error; corrected to `state.presentation().placeholder()` and removed obsolete Files/Workspace imports.
+
+`cargo check --offline --locked` succeeded at 12:32:25 UTC, and `cargo build --offline --locked --bin riwork` succeeded at 12:33:43 UTC, through the absolute approved Cargo and unchanged child whitelist. Initial failed attempt/logs preserved; new attempts have timestamped result/attestation files, while check.log appends. Four legacy helper/macro compatibility warnings remain. These passes precede the independent review corrections and are not final-candidate acceptance. No test compilation/list/execution had occurred at that point.

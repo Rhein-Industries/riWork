@@ -21,10 +21,9 @@ use std::{
 
 use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    HighlightStyle, IntoElement, KeyDownEvent, Pixels, Point, Render, RenderImage, ScrollStrategy,
-    SharedString, StyledText, Task, UniformListScrollHandle, Window, canvas, div, img, prelude::*,
-    px, rgb, uniform_list,
+    AnyElement, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, IntoElement,
+    KeyDownEvent, Render, RenderImage, ScrollStrategy, SharedString, Task, UniformListScrollHandle,
+    Window, div, img, prelude::*, px, rgb, uniform_list,
 };
 use gpui::{Focusable, Subscription};
 
