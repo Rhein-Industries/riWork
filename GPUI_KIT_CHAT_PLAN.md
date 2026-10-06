@@ -275,3 +275,34 @@ hygiene receipts here, not compilation or test evidence. No Cargo/runtime/GUI
 command, fixture launch, process probe/signal, production settings/service change,
 shell/tmux cleanup, main edit or delegation was performed by this follow-up.
 Return idle for immutable combined verification; task acceptance is still pending.
+
+## Valid staged backpressure fixture correction, source-only (2026-10-06)
+
+Parent reports immutable combined `23d01018` builds and compiles tests, with
+76/78 exact selections passing, including the new OwnedChild guards. This is
+reviewer evidence for those combined bytes, not this correction. Read the
+reviewer's retained log at
+`/private/tmp/rwv-k_qkvg6s/logs/test-chat-attachment_driver_tests-codex_attachment_non_draining_child_can_be_cancelled_while_driver_mutex_is_held.log`:
+the named test failed during stage because a 4 MiB text file exceeds the
+unchanged 1 MiB text admission limit; no backpressure was reached.
+
+The exact test now stages four independently valid 1 MiB UTF-8 text snapshots,
+retaining its 4 MiB outbound producer load within the existing count/send
+bounds. It validates the assembled inputs before driver startup, waits for the
+fixed fake's bounded consumed turn/start prefix marker and checks that the
+Driver mutex remains held. Cancellation must produce UNKNOWN_SUBMISSION with
+the nonblocking writer's positive byte count below the complete input size:
+receipt-wait cancellation alone cannot satisfy this assertion. The fixture
+also retains checks for no complete start/steer frame, one fake start and one
+prefix marker. Production admission limits, fake-provider behavior, bounded
+writer, owned-child lifetime and no-retry policy are unchanged.
+
+This new fixture correction is **unexecuted and uncompiled by this author**.
+Only source formatting and diff hygiene may be reported. Reviewer retains the
+sole build/test slot and must rehash the new combined candidate and rerun the
+exact qualified name
+`chat::attachment_driver_tests::codex_attachment_non_draining_child_can_be_cancelled_while_driver_mutex_is_held`
+under the existing audited private-helper release. Other failed selections and
+native GUI acceptance remain outside this focused fix. No Cargo/test/fixture,
+GUI, real provider, process probe, cleanup, tmux/host/main/installed-state action
+was executed here. Return idle pending reviewer evidence and parent acceptance.

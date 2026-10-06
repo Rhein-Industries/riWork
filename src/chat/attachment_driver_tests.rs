@@ -71,9 +71,24 @@ fn codex_attachment_non_draining_child_can_be_cancelled_while_driver_mutex_is_he
         .join("\n")
         + "\n{\"type\":\"attachment_backpressure\"}\n";
     let fake = Fake::new(&[&script]);
-    let file = fake.dir.join("large.txt");
-    fs::write(&file, "x".repeat(FILE_BYTES as usize)).unwrap();
-    let attachments = vec![stage(&fake.dir, &file).unwrap()];
+    // Text has a tighter admission bound than FILE_BYTES. Keep the original
+    // 4 MiB producer load using four individually valid owned snapshots.
+    let attachments = (0..4)
+        .map(|index| {
+            let file = fake.dir.join(format!("large-{index}.txt"));
+            fs::write(&file, "x".repeat(TEXT_BYTES)).unwrap();
+            let attachment = stage(&fake.dir, &file).unwrap();
+            assert_eq!(attachment.bytes, TEXT_BYTES as u64);
+            attachment
+        })
+        .collect::<Vec<_>>();
+    assert!(attachments.len() <= SEND_COUNT);
+    let total_bytes = attachments.iter().map(|a| a.bytes).sum::<u64>();
+    assert_eq!(total_bytes, 4 * TEXT_BYTES as u64);
+    assert!(total_bytes <= SEND_BYTES);
+    let input_bytes = serde_json::to_vec(&inputs("", &attachments, false).unwrap())
+        .unwrap()
+        .len();
     let (driver, _) = start(&fake, Provider::Codex);
     let cancel = driver
         .cancel_io()
@@ -94,6 +109,14 @@ fn codex_attachment_non_draining_child_can_be_cancelled_while_driver_mutex_is_he
         .unwrap()
     });
     super::testing::eventually(|| fake.saw("backpressure"));
+    let markers = fake
+        .entries()
+        .into_iter()
+        .filter(|entry| entry["backpressure"] == true)
+        .collect::<Vec<_>>();
+    assert_eq!(markers.len(), 1);
+    let prefix_bytes = markers[0]["prefix_bytes"].as_u64().unwrap();
+    assert!(prefix_bytes > 0 && prefix_bytes <= 65536);
     assert!(
         driver.try_lock().is_err(),
         "the command must still be in backpressure"
@@ -107,11 +130,30 @@ fn codex_attachment_non_draining_child_can_be_cancelled_while_driver_mutex_is_he
         error.starts_with(UNKNOWN_SUBMISSION),
         "partial writes are ambiguous: {error}"
     );
+    // Receipt-wait cancellation also returns UNKNOWN_SUBMISSION. Require the
+    // writer's byte-counted cancellation, proving the producer was blocked
+    // before completing its frame, rather than merely awaiting an RPC reply.
+    let written = error
+        .split_once("provider input was cancelled (")
+        .and_then(|(_, tail)| tail.split_once(" bytes written)"))
+        .and_then(|(bytes, _)| bytes.parse::<usize>().ok())
+        .expect("cancellation must interrupt the nonblocking producer write");
+    assert!(written >= prefix_bytes as usize && written < input_bytes);
     worker.join().unwrap();
     driver.lock().unwrap().shutdown();
     assert!(
         fake.received_method("turn/start").is_empty(),
         "no complete JSON frame was drained"
+    );
+    assert!(fake.received_method("turn/steer").is_empty());
+    assert_eq!(fake.starts().len(), 1, "ambiguous writes must not restart");
+    assert_eq!(
+        fake.entries()
+            .iter()
+            .filter(|entry| entry["backpressure"] == true)
+            .count(),
+        1,
+        "only one owned fake enters the prefix-only step"
     );
 }
 
