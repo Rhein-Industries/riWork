@@ -90,6 +90,8 @@ struct Harness {
     editor: Entity<crate::text_input::InputState>,
     next_editor: Entity<crate::text_input::InputState>,
     notes: Entity<crate::text_input::TextareaState>,
+    // Only the mode-policy fixture mounts this explicitly indentable Base textarea.
+    indent_notes: Option<Entity<crate::text_input::TextareaState>>,
     selection: TextSelectionHandle,
     chat_scope: TextSelectionScopeId,
     other_selection: TextSelectionHandle,
@@ -208,7 +210,10 @@ impl Render for Harness {
             .child(crate::text_input::input("next-editor", &self.next_editor, window, cx))
             // An input nested below a terminal context still owns its Copy action.
             .child(div().key_context("Terminal")
-                .child(crate::text_input::textarea("notes", &self.notes, window, cx)))
+                .child(crate::text_input::textarea("notes", &self.notes, window, cx))
+                .children(self.indent_notes.as_ref().map(|state| {
+                    crate::text_input::textarea("indent-notes", state, window, cx)
+                })))
             // This proxy proves key routing without constructing Ghostty or a process.
             .child(div().id("terminal-proxy").key_context("Terminal")
                 .track_focus(&self.terminal_focus).h(px(24.))
@@ -251,6 +256,7 @@ fn mount(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Harness>) {
                 editor: crate::text_input::single_line("", "Editor", window, cx),
                 next_editor: crate::text_input::single_line("", "Next editor", window, cx),
                 notes: crate::text_input::multiline("", "Notes", 1, 3, crate::text_input::EnterBehavior::Newline, window, cx),
+                indent_notes: None,
                 selection, chat_scope: TextSelectionScopeId::new(),
                 other_selection: TextSelectionHandle::new("other transcript", cx), other_scope: TextSelectionScopeId::new(),
                 modal_selection: TextSelectionHandle::new("modal", cx),
@@ -489,24 +495,78 @@ fn root_modal_scope_and_input_terminal_keys_do_not_cross_owner_boundaries(cx: &m
     });
     assert_eq!(content.read_with(cx, |owner, _| owner.raw_tabs), 1);
     turn(cx, handle, |window, cx| {
-        window.click("notes", cx); window.press("tab", cx);
+        let bounds = window.find("notes").bounds();
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        window.click("notes", cx);
+        assert!(content.read(cx).notes.read(cx).focus_handle(cx).is_focused(window));
+    });
+    for key in ["tab", "shift-tab"] {
+        turn(cx, handle, |window, cx| {
+            assert!(content.read(cx).notes.read(cx).focus_handle(cx).is_focused(window));
+            window.press(key, cx);
+            assert!(content.read(cx).notes.read(cx).focus_handle(cx).is_focused(window));
+        });
+        turn(cx, handle, |window, cx| {
+            let notes = content.read(cx).notes.clone();
+            assert!(notes.read(cx).focus_handle(cx).is_focused(window));
+            assert_eq!(notes.read(cx).value(), "", "ordinary AutoGrow Notes does not indent");
+            notes.update(cx, |state, cx| {
+                assert_eq!(gpui::EntityInputHandler::marked_text_range(state, window, cx), None);
+            });
+        });
+    }
+    assert_eq!(content.read_with(cx, |owner, _| owner.raw_tabs), 1);
+    turn(cx, handle, |window, cx| {
+        content.update(cx, |owner, cx| {
+            // TextareaState::new retains Base's default PlainText layout. Do
+            // not call auto_grow here: that intentionally opts out of indentation.
+            owner.indent_notes = Some(cx.new(|cx| crate::text_input::TextareaState::new(window, cx)
+                .placeholder("Indentable notes")
+                .tab_size(base::input::TabSize::default())));
+            cx.notify();
+        });
     });
     turn(cx, handle, |window, cx| {
-        // Base's default textarea tab policy is two soft spaces, not a hard tab.
-        assert_eq!(content.read(cx).notes.read(cx).value(), "  ");
-        window.press("cmd-a", cx);
-        window.press("cmd-c", cx);
+        let bounds = window.find("indent-notes").bounds();
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        window.click("indent-notes", cx);
+        let notes = content.read(cx).indent_notes.clone().unwrap();
+        assert!(notes.read(cx).focus_handle(cx).is_focused(window));
     });
+    turn(cx, handle, |window, cx| {
+        let notes = content.read(cx).indent_notes.clone().unwrap();
+        assert!(notes.read(cx).focus_handle(cx).is_focused(window));
+        window.press("tab", cx);
+    });
+    turn(cx, handle, |window, cx| {
+        let notes = content.read(cx).indent_notes.clone().unwrap();
+        // Explicit PlainText textarea retains Base's two-soft-space policy.
+        assert_eq!(notes.read(cx).value(), "  ");
+        assert!(notes.read(cx).focus_handle(cx).is_focused(window));
+    });
+    turn(cx, handle, |window, cx| window.press("cmd-a", cx));
+    turn(cx, handle, |window, cx| window.press("cmd-c", cx));
     assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "  ");
     assert_eq!(content.read_with(cx, |owner, _| owner.terminal_menu_guards), 0);
     turn(cx, handle, |window, cx| {
+        let bounds = window.find("notes").bounds();
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        window.click("notes", cx);
+        assert!(content.read(cx).notes.read(cx).focus_handle(cx).is_focused(window));
+    });
+    turn(cx, handle, |window, cx| {
         let notes = content.read(cx).notes.clone();
+        assert!(notes.read(cx).focus_handle(cx).is_focused(window));
         let mut handler = gpui::ElementInputHandler::new(window.find("notes").bounds(), notes);
         gpui::InputHandler::replace_and_mark_text_in_range(&mut handler, None, "日本", Some(2..2), window, cx);
         window.render_frame(cx);
     });
     for key in ["tab", "shift-tab"] {
-        turn(cx, handle, |window, cx| window.press(key, cx));
+        turn(cx, handle, |window, cx| {
+            assert!(content.read(cx).notes.read(cx).focus_handle(cx).is_focused(window));
+            window.press(key, cx);
+            assert!(content.read(cx).notes.read(cx).focus_handle(cx).is_focused(window));
+        });
         turn(cx, handle, |window, cx| {
             let notes = content.read(cx).notes.clone();
             assert!(notes.read(cx).focus_handle(cx).is_focused(window));
