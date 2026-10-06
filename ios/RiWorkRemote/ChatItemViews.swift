@@ -97,7 +97,7 @@ private struct UserBlock: View {
     var body: some View {
         HStack {
             Spacer(minLength: typeSize.isAccessibilitySize ? 16 : 40)
-            Text(text).font(style.prose).foregroundStyle(style.text).textSelection(.enabled)
+            Text(text).chatProse().foregroundStyle(style.text).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 12).padding(.horizontal, 16)
                 .background(style.native ? style.active : style.accent.opacity(0.12), in: style.block(18))
@@ -244,9 +244,10 @@ private struct CardHeader<Title: View>: View {
 private struct OutputText: View {
     @Environment(\.desktopStyle) private var style
     let text: String
-    var lines = 80
+    @State private var more = false
     var body: some View {
-        let tail = ChatOutput.tail(text, lines: lines)
+        let preview = ChatOutput.tail(text, lines: 8)
+        let tail = more ? ChatOutput.tail(text, lines: 80) : preview
         VStack(alignment: .leading, spacing: 4) {
             if tail.hidden > 0 { Text("… \(tail.hidden) earlier \(tail.hidden == 1 ? "line" : "lines") not shown").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted) }
             if tail.text.isEmpty { Text("No output.").font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted) }
@@ -254,6 +255,13 @@ private struct OutputText: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(verbatim: tail.text).font(style.codeSmall).foregroundStyle(style.text).textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
                 }
+            }
+            if more || preview.hidden > 0 {
+                Button(more ? "Show less output" : "Show more output") { more.toggle() }
+                    .font(style.system(.footnote)).frame(minHeight: 44)
+                    .buttonStyle(.plain).foregroundStyle(style.link)
+                    .accessibilityIdentifier("chat-tool-output-toggle")
+                    .chatLayoutProbe("output-toggle", action: { more.toggle() })
             }
         }
     }

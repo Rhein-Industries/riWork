@@ -19,11 +19,10 @@ extension DesktopStyle {
     var added: Color { ansiColor(2) }
     /// Removed lines and files.
     var removed: Color { ansiColor(1) }
-    /// Text for prose (messages, questions): the system face, which reads better in paragraphs than Menlo; Menlo stays for code and chrome.
-    var prose: Font { system(.body) }
+    /// Code and prose follow the same Dynamic Type curve, preserving their relative sizes.
     /// Code, commands and their output.
-    var code: Font { mono(12, relativeTo: .footnote) }
-    var codeSmall: Font { mono(11, relativeTo: .caption) }
+    var code: Font { mono(12, relativeTo: .body) }
+    var codeSmall: Font { mono(11, relativeTo: .body) }
     /// The outline of a block of the transcript (a card, a code block, a diff, a bar): square in the terminal look, rounded as iOS rounds
     /// its grouped content in Native.
     func block(_ radius: CGFloat = 10) -> RoundedRectangle { RoundedRectangle(cornerRadius: native ? radius : 0, style: .continuous) }
@@ -85,11 +84,7 @@ struct CopyButton: View {
     let text: @MainActor () -> String
     @State private var copied = false
     var body: some View {
-        Button {
-            UIPasteboard.general.string = text()
-            copied = true
-            Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
-        } label: {
+        Button(action: copy) {
             Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc").labelStyle(.titleAndIcon)
                 .font(style.system(.caption)).foregroundStyle(copied ? style.accent : style.muted)
                 .padding(.trailing, 8)
@@ -98,6 +93,12 @@ struct CopyButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
+        .chatLayoutProbe("copy-\(title)", action: copy)
+    }
+    private func copy() {
+        UIPasteboard.general.string = text()
+        copied = true
+        Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
     }
 }
 
@@ -154,4 +155,58 @@ extension View {
             }
         }
     }
+}
+
+// Hosted tests can inspect measured SwiftUI controls without depending on private accessibility APIs.
+// The observer is absent by default and the modifier is inert in release builds.
+#if DEBUG
+@MainActor final class ChatLayoutInspection {
+    var frames: [String: CGRect] = [:]
+    var visible: [String: Bool] = [:]
+    var actions: [String: () -> Void] = [:]
+}
+private struct ChatLayoutInspectionKey: EnvironmentKey {
+    static let defaultValue: ChatLayoutInspection? = nil
+}
+extension EnvironmentValues {
+    var chatLayoutInspection: ChatLayoutInspection? {
+        get { self[ChatLayoutInspectionKey.self] }
+        set { self[ChatLayoutInspectionKey.self] = newValue }
+    }
+}
+private struct ChatLayoutProbe: ViewModifier {
+    @Environment(\.chatLayoutInspection) private var inspection
+    let name: String
+    let visible: Bool
+    let action: (() -> Void)?
+    func body(content: Content) -> some View {
+        if let inspection {
+            content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                inspection.frames[name] = frame
+                inspection.actions[name] = action
+            }
+            .onChange(of: visible, initial: true) { _, value in inspection.visible[name] = value }
+            .onDisappear { inspection.frames[name] = nil; inspection.visible[name] = nil; inspection.actions[name] = nil }
+        } else { content }
+    }
+}
+#endif
+extension View {
+    @ViewBuilder func chatLayoutProbe(_ name: String, visible: Bool = true, action: (() -> Void)? = nil) -> some View {
+        #if DEBUG
+        modifier(ChatLayoutProbe(name: name, visible: visible, action: action))
+        #else
+        self
+        #endif
+    }
+}
+
+private struct ChatProseFont: ViewModifier {
+    @Environment(\.desktopStyle) private var style
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 17
+    func body(content: Content) -> some View { content.font(.system(size: size * CGFloat(style.scale))) }
+}
+extension View {
+    /// Prose keeps the system face and follows the same uncapped body curve as code.
+    func chatProse() -> some View { modifier(ChatProseFont()) }
 }

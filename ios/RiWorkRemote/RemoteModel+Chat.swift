@@ -48,7 +48,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         }
         resourceFallbackGeneration = connection; snapshotUnavailableGeneration = connection
         feed.beginDegradedReplay(); readError = nil; legacyLoading = true
-        notice = "This chat exceeds recent-history limits. Loading history with shortened large bodies; full content is on the Mac."
+        notice = "Long messages are shortened here; full text is on your Mac."
         return true
     }
     func install(_ snapshot: ChatSnapshotReply) {

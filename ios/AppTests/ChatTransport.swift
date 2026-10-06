@@ -285,7 +285,7 @@ actor ChatTransport: RemoteTransport {
                         if !values.isEmpty { break }
                         if params["bounded"] == .bool(true), value["event"].string == "item_completed" || value["event"].string == "item_started" {
                             guard case .object(var fields) = value, case .object(var item) = value["item"] else { throw RemoteError.rpc(code: "response_too_large", message: "invalid body") }
-                            item["body"] = .object(["type": .string("agent_message"), "text": .string("[Body shortened for remote size limits] " + String((value["item"]["body"]["text"].string ?? "").prefix(2048)) + "…")])
+                            item["body"] = .object(["type": .string("agent_message"), "text": .string("Long message shortened. Full text is on your Mac. " + String((value["item"]["body"]["text"].string ?? "").prefix(2048)) + "…")])
                             fields["item"] = .object(item); represented = .object(fields)
                         } else {
                             if params["complete"] == .bool(true) { completeSizeFailures += 1 }

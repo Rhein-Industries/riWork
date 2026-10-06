@@ -40,9 +40,8 @@ struct ChatScreen: View {
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
             ChatStatusLines(model: model, chat: info, conversation: conversation, state: state)
-            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) })
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty) })
                 .id(chat.id)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty) }
             if let approval = approvals.first {
                 BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
                     ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2 - squeeze),
@@ -149,40 +148,22 @@ private struct ChatToolbar: View {
     private var connected: Bool { model.state == .connected }
     private var meter: ChatUsageMeter? { conversation.transcript.usage.map(ChatUsageMeter.init) }
 
-    @Environment(\.dynamicTypeSize) private var typeSize
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if typeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .top) { modelButton; Spacer(minLength: 8); options }
-                    modeButton
-                }
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) { modelButton; Spacer(minLength: 8); modeButton.fixedSize(); options }
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack { modelButton; Spacer(minLength: 8); options }
-                        modeButton
-                    }
-                }
-            }
-            if let meter, let text = meter.text {
-                HStack(spacing: 8) {
-                    if let fraction = meter.contextFraction { ContextBar(fraction: fraction) }
-                    Text(text).font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 10).padding(.bottom, 4)
-                .accessibilityElement(children: .ignore).accessibilityLabel("Usage").accessibilityValue(meter.spoken ?? text)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { modelButton; Spacer(minLength: 4); modeButton; options }
+            VStack(alignment: .leading, spacing: 0) {
+                HStack { modelButton; Spacer(minLength: 4); options }
+                modeButton
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(style.glass ? style.surface : style.background)
+        .padding(.horizontal, 12)
+        .background(style.background)
         .overlay(alignment: .bottom) { if !style.glass { DesktopRule() } }
     }
 
     private var modelButton: some View {
-        ChatModelChip(choices: choices, enabled: connected) { showModels = true }
+        ChatModelChip(choices: choices, enabled: connected, compact: true) { showModels = true }
+            .chatLayoutProbe("model")
     }
     private var modeButton: some View {
         Menu {
@@ -196,14 +177,19 @@ private struct ChatToolbar: View {
                 Image(systemName: "chevron.down").font(style.system(.caption2)).accessibilityHidden(true)
             }
             .foregroundStyle(shownMode == .full ? style.gold : style.muted)
-            .padding(.horizontal, 10).frame(minHeight: 44).contentShape(Rectangle())
+            .padding(.horizontal, 4).frame(minHeight: 44).contentShape(Rectangle())
         }
-        .buttonStyle(.plain).nativeGlass(style, in: Capsule()).disabled(!connected)
+        .buttonStyle(.plain).disabled(!connected)
+        .accessibilityIdentifier("chat-permission-mode")
+        .chatLayoutProbe("permissions")
         .accessibilityLabel("Approval mode").accessibilityValue("\(shownMode.title), \(shownMode.detail)")
         .accessibilityHint("Choose Supervised, Auto-edit, Full or Plan")
     }
     private var options: some View {
         Menu {
+            if let meter, let text = meter.text {
+                Text("Usage: \(text)").accessibilityLabel("Usage").accessibilityValue(meter.spoken ?? text)
+            }
             Button("Change model", systemImage: "cpu") { showModels = true }.disabled(!connected || state.isBusy || state == .starting)
             Button("Compact conversation", systemImage: "arrow.down.right.and.arrow.up.left") { Task { await model.compactChat(chat.id) } }
                 .disabled(!connected || state.isBusy || state == .starting)
@@ -215,23 +201,9 @@ private struct ChatToolbar: View {
             Image(systemName: "ellipsis").font(style.system(.body, weight: .semibold)).foregroundStyle(style.muted)
                 .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
         }
-        .buttonStyle(.plain).nativeGlass(style, in: Capsule()).accessibilityLabel("Chat options")
+        .buttonStyle(.plain).accessibilityLabel("Chat options")
     }
 
-}
-
-/// How full the context is: a thin bar that turns gold above 80 % and red above 95 %.
-private struct ContextBar: View {
-    @Environment(\.desktopStyle) private var style
-    let fraction: Double
-    var body: some View {
-        Capsule().fill(style.divider).frame(width: style.pt(56), height: 4)
-            .overlay(alignment: .leading) {
-                Capsule().fill(fraction > 0.95 ? style.error : (fraction > 0.8 ? style.gold : style.accent)).frame(width: max(2, style.pt(56) * fraction), height: 4)
-            }
-            .accessibilityHidden(true)
-
-    }
 }
 
 // MARK: - What the chat is doing
@@ -349,6 +321,7 @@ private struct ChatTranscriptList: View {
     let state: ChatState
     let hardwareKeyboard: Bool
     var loadOlder: @MainActor (@MainActor () async -> Void) async -> Void = { _ in }
+    var viewportChanged: (CGFloat) -> Void = { _ in }
     @State private var paging: Task<Void, Never>?
     @State private var preservingHistory = false
     @State private var viewport = ChatHistoryViewport()
@@ -360,6 +333,7 @@ private struct ChatTranscriptList: View {
     var body: some View {
         let transcript = conversation.transcript
         ScrollViewReader { proxy in
+        VStack(spacing: 0) {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if !conversation.feed.loaded {
@@ -389,6 +363,8 @@ private struct ChatTranscriptList: View {
             }
             .padding(.top, 12)
         }
+        .chatLayoutProbe("transcript")
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportChanged($0) }
         .coordinateSpace(name: Self.space)
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
@@ -425,9 +401,12 @@ private struct ChatTranscriptList: View {
         .onChange(of: conversation.feed.itemArrivals) { _, count in sticky.contentChanged(end: count, epoch: 0) }
         .onChange(of: conversation.jumps) { _, _ in jump(proxy) }
         .onChange(of: conversation.feed.loaded) { _, loaded in if loaded && !userDriven { jump(proxy) } }
-        .overlay(alignment: .bottomTrailing) { pill(proxy) }
         .accessibilityLabel("\(provider.chatTitle) conversation")
         .onDisappear { cancelHistoryAnchor(); paging?.cancel(); paging = nil; bottomCorrection?.cancel(); bottomCorrection = nil }
+        // Reserve the control's intrinsic size even when hidden; entering reader mode must not resize the viewport.
+        HStack { Spacer(minLength: 0); pill(proxy) }
+            .background(style.background)
+        }
         }
     }
 
@@ -547,23 +526,25 @@ private struct ChatTranscriptList: View {
         .accessibilityElement(children: .combine).accessibilityLabel(state == .waiting ? "Waiting for you" : "Working")
     }
     @ViewBuilder private func pill(_ proxy: ScrollViewProxy) -> some View {
-        if let pill = sticky.pill {
-            Button { jump(proxy) } label: {
-                if style.native {
-                    // Native: the arrow is a symbol, and the pill is glass on iOS 26, material before.
-                    Label(pill.newLines > 0 ? "Latest · \(pill.newLines) new" : "Latest", systemImage: "arrow.down").labelStyle(.titleAndIcon)
-                        .font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
-                        .padding(.horizontal, 12).frame(minHeight: 44)
-                        .background { if !style.glass { Capsule().fill(.ultraThinMaterial) } }
-                        .nativeGlass(style, in: Capsule()).contentShape(Capsule())
-                } else {
-                    Text(pill.newLines > 0 ? "↓ Latest · \(pill.newLines) new" : "↓ Latest").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
-                        .padding(.horizontal, 12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
-                        .overlay(Capsule().stroke(style.divider, lineWidth: 1)).contentShape(Capsule())
-                }
+        let pill = sticky.pill
+        Button { jump(proxy) } label: {
+            if style.native {
+                // Native: the arrow is a symbol, and the pill is glass on iOS 26, material before.
+                Label((pill?.newLines ?? 0) > 0 ? "Latest · \((pill?.newLines ?? 0)) new" : "Latest", systemImage: "arrow.down").labelStyle(.titleAndIcon)
+                    .font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                    .padding(.horizontal, 12).frame(minHeight: 44)
+                    .background { if !style.glass { Capsule().fill(.ultraThinMaterial) } }
+                    .nativeGlass(style, in: Capsule()).contentShape(Capsule())
+            } else {
+                Text((pill?.newLines ?? 0) > 0 ? "↓ Latest · \((pill?.newLines ?? 0)) new" : "↓ Latest").font(style.mono(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent)
+                    .padding(.horizontal, 12).frame(minHeight: 44).background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(style.divider, lineWidth: 1)).contentShape(Capsule())
             }
-            .buttonStyle(.plain).padding(.trailing, 10).padding(.bottom, 8).transition(.opacity)
-            .accessibilityLabel(pill.newLines > 0 ? "Jump to latest, \(pill.newLines) new" : "Jump to latest")
         }
+        .buttonStyle(.plain).padding(.horizontal, 10)
+        .opacity(pill == nil ? 0 : 1).allowsHitTesting(pill != nil).accessibilityHidden(pill == nil)
+        .accessibilityIdentifier("chat-latest-button")
+        .chatLayoutProbe("latest", visible: pill != nil)
+        .accessibilityLabel((pill?.newLines ?? 0) > 0 ? "Jump to latest, \((pill?.newLines ?? 0)) new" : "Jump to latest")
     }
 }

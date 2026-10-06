@@ -1123,3 +1123,32 @@ fn bounded_recovery_represents_bodies_and_never_shortens_or_skips_controls() {
             .starts_with("response_too_large:")
     );
 }
+
+#[test]
+fn bounded_body_placeholder_says_full_text_is_on_the_mac_and_keeps_identity() {
+    let item = Item {
+        id: "large-structured-body".into(),
+        turn_id: Some("turn".into()),
+        status: ItemStatus::Completed,
+        presentation: Default::default(),
+        body: ItemBody::ToolCall {
+            server: None,
+            tool: "fixture".into(),
+            input: json!(vec!["x"; 3000]),
+            output: None,
+        },
+    };
+    let mut source = Script::of([]);
+    source.steps.push_back(Ok(Poll::Event(envelope(
+        1,
+        ChatEvent::ItemCompleted { item },
+    ))));
+    let page = collect_bounded(&mut source, &plan(0, 1, 1024)).unwrap();
+    assert_eq!(page.next, 1);
+    assert_eq!(page.events[0].event["item"]["id"], "large-structured-body");
+    assert_eq!(page.events[0].event["item"]["turn_id"], "turn");
+    assert_eq!(
+        page.events[0].event["item"]["body"]["text"],
+        "This message is too long to show here. Full text is on your Mac."
+    );
+}

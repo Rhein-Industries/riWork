@@ -234,7 +234,7 @@ struct ChatComposer: View {
                                   insertion: dictation, onPasteFiles: pasteFiles)
                     .overlay(alignment: .topLeading) {
                         if conversation.draft.isEmpty {
-                            Text(placeholder).font(style.prose).foregroundStyle(style.muted).padding(.top, ChatComposerField.verticalInset).padding(.leading, style.native ? 14 : 8)
+                            Text(placeholder).chatProse().foregroundStyle(style.muted).padding(.top, ChatComposerField.verticalInset).padding(.leading, style.native ? 14 : 8)
                                 .lineLimit(1).allowsHitTesting(false).accessibilityHidden(true)
                         }
                     }
@@ -384,6 +384,7 @@ struct ChatApprovalBar: View {
                     decisionButton(decision)
                         .disabled(busy)
                         .accessibilityLabel(Self.spoken(decision))
+                        .chatLayoutProbe("approval-\(decision.rawValue)")
                 }
             }
             if keyHints {
@@ -483,6 +484,7 @@ struct ChatQuestionBar: View {
         Button { submit(form) } label: { label() }
             .disabled(busy || !form.isComplete)
             .accessibilityLabel("Send answer")
+            .chatLayoutProbe("question-send")
             .accessibilityHint(form.isComplete ? "" : "Answer every question first")
     }
 
@@ -490,7 +492,7 @@ struct ChatQuestionBar: View {
         let prompt = question.questions[index]
         VStack(alignment: .leading, spacing: 6) {
             if let header = prompt.header, !header.isEmpty { ChatCaption(text: header) }
-            Text(prompt.question).font(style.prose).foregroundStyle(style.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            Text(prompt.question).chatProse().foregroundStyle(style.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 .boundedScrollBreak()
             if prompt.multiSelect { Text("Choose any").font(style.system(.caption)).foregroundStyle(style.muted).boundedScrollBreak() }
             ForEach(prompt.options.indices, id: \.self) { option in
@@ -517,7 +519,7 @@ struct ChatQuestionBar: View {
             }
             TextField(prompt.options.isEmpty ? "Your answer" : "Or answer in your own words", text: Binding(get: { form.text[index] }, set: { form.setText(prompt: index, $0) }), axis: .vertical)
                 .lineLimit(1...4).modifier(DesktopField())
-                .font(style.prose)
+                .chatProse()
                 .boundedScrollBreak()
                 .autocorrectionDisabled()
                 .accessibilityLabel("Your own answer to: \(prompt.question)")
