@@ -45,7 +45,7 @@ impl Render for Harness {
         let colors = Palette::RIWORK;
         let toggle_owner = cx.entity().downgrade();
         let switch_owner = cx.entity().downgrade();
-        div().track_focus(&self.focus).size_full().flex().flex_col()
+        div().id("behavior-harness").track_focus(&self.focus).size_full().flex().flex_col()
             .on_click(cx.listener(|owner, _, _, _| owner.parent_calls += 1))
             .capture_key_down(cx.listener(|owner, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "tab" && owner.editor.read(cx).focus_handle(cx).is_focused(window) {
@@ -164,7 +164,8 @@ fn root_tab_traversal_uses_base_focus_and_skips_disabled_controls(cx: &mut TestA
     }
     content.update(cx, |owner, cx| { owner.disabled = true; cx.notify(); });
     turn(cx, handle, |window, cx| {
-        window.focus(&content.read(cx).focus, cx);
+        let focus = content.read(cx).focus.clone();
+        window.focus(&focus, cx);
         window.render_frame(cx);
         window.press("tab", cx);
     });

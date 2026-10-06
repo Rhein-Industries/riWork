@@ -206,7 +206,6 @@ fn focused_composer_model_and_request_answer_keep_copy_priority(cx: &mut TestApp
         let question = Question {
             request_id: "copy-request".into(),
             questions: vec![QuestionPrompt {
-                id: "answer".into(),
                 header: None,
                 question: "Which?".into(),
                 options: vec![],
