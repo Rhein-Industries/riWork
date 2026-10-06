@@ -77,7 +77,7 @@ impl Render for Fields {
                     cx.propagate();
                 }
             }))
-            .capture_key_down(cx.listener(|this, event, window, cx| {
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "enter" => this.raw_enters += 1,
                     "escape" => {

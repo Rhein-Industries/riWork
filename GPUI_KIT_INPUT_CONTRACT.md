@@ -235,3 +235,23 @@ cargo test --offline --locked --bin riwork text_input::tests::composing_escape_c
 Substitute each remaining exact name, record exit status/count/log independently,
 and stop on a failed/zero/extra selection. Do not broaden to a suite or launch
 Workspace/services/providers/native GUI. No executable acceptance is claimed.
+
+### Source-only fixture compiler correction — reviewer owns execution
+
+The reviewer reports candidate
+`30051200adee219de76953a2c514c1ce8b104005` passed check and binary build, but
+`cargo test --no-run` failed with E0282 at `src/text_input/tests.rs:80`.
+The existing diagnostic in
+`/private/tmp/rwv-icgy9z1n/logs/compile.log` confirms the shared fixture's
+`capture_key_down(cx.listener(...))` event type was ambiguous.
+
+The listener now explicitly accepts `event: &gpui::KeyDownEvent`. Source
+inspection found no analogous untyped key listener in the shared input module
+or its test files; the two action listeners already name their action types.
+Only the test fixture type annotation and this receipt note changed; production
+code and event behavior are unchanged. No Cargo/build/test/listing/formatter,
+runtime, GUI, process probe, install, reload, tmux command or cleanup was run.
+The correction and proposed Escape/Return tests remain **unexecuted here**.
+The reviewer remains the sole build/test owner and must compile the test target
+and record fresh results for the integrated correction. Earlier passing receipts
+do not validate this correction. The untracked rollout audit is preserved.
