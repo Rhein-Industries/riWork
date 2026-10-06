@@ -4382,8 +4382,8 @@ mod kit_filter_tests {
                 let left = pair.read(app).left.read(app).input.clone();
                 let right = pair.read(app).right.read(app).input.clone();
                 assert_ne!(
-                    left.read(app).presentation().input_bounds(),
-                    right.read(app).presentation().input_bounds()
+                    left.read(app).input_bounds(),
+                    right.read(app).input_bounds()
                 );
                 left.read(app).focus_handle(app).focus(window, app);
                 window.render_frame(app);
@@ -4392,8 +4392,7 @@ mod kit_filter_tests {
             })
             .unwrap();
         cx.run_until_parked();
-        cx.background_executor()
-            .advance_clock(Duration::from_secs(3));
+        cx.background_executor.advance_clock(Duration::from_secs(3));
         cx.update_window(handle.into(), |_, window, app| {
             assert_eq!(right.read(app).value(), "A");
             window.render_frame(app);
@@ -4415,10 +4414,8 @@ mod kit_filter_tests {
         cx.run_until_parked();
         cx.update_window(handle.into(), |_, window, app| {
             assert_eq!(right.read(app).value(), "A");
-            let mut handler = ElementInputHandler::new(
-                right.read(app).presentation().input_bounds(),
-                right.clone(),
-            );
+            let mut handler =
+                ElementInputHandler::new(right.read(app).input_bounds(), right.clone());
             handler.replace_and_mark_text_in_range(None, "日本", Some(2..2), window, app);
         })
         .unwrap();
