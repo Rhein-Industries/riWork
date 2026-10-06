@@ -264,6 +264,6 @@ final class LiveOutputTests: XCTestCase {
         XCTAssertEqual(InterfaceScale.scaled(44, by: 9), 57, "an out-of-range scale is clamped first")
         XCTAssertEqual(KeyBarGeometry.height(scale: 1.0), KeyBarGeometry.height)
         XCTAssertEqual(KeyBarGeometry.height(scale: 1.3), 57)
-        XCTAssertEqual(KeyBarGeometry.height(scale: 0.8), 35)
+        XCTAssertEqual(KeyBarGeometry.height(scale: 0.8), 44, "the bar's keys stay 44-point targets at the smallest size")
     }
 }

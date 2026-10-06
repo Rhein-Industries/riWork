@@ -33,8 +33,8 @@ public enum KeyBarPosition: Sendable, Equatable {
 public enum KeyBarGeometry {
     /// The bar's height: a 1 pt rule and the keys. It does not change with the keyboard.
     public static let height = 44.0
-    /// The bar's height at an interface scale (see `InterfaceScale`).
-    public static func height(scale: Double) -> Double { InterfaceScale.scaled(height, by: scale) }
+    /// The bar's height at an interface scale (see `InterfaceScale`): it grows with a larger interface, never below a 44-point target.
+    public static func height(scale: Double) -> Double { BottomBarGeometry.target(scale: scale) }
     public static let clearance: ClosedRange<Double> = 20...28
     private static let insetToRadius = 1.0 / 0.62
 
@@ -70,6 +70,9 @@ public enum KeyBarGeometry {
 public enum BottomBarGeometry {
     /// The least width and height of anything that is tapped, in points (Apple's Human Interface Guidelines).
     public static let minimumTarget = 44.0
+    /// A tap target at an interface scale: it grows with a larger interface and never shrinks below `minimumTarget`, so the 80 %
+    /// size makes glyphs and text smaller but leaves every target at 44 points.
+    public static func target(scale: Double) -> Double { max(minimumTarget, InterfaceScale.scaled(minimumTarget, by: scale)) }
     /// On glass the key bar's row sits on a capsule set this far in from the bar's sides, and this far from its top and bottom.
     public static let capsuleSideInset = 6.0, capsuleEndInset = 2.0
     /// How far the first key (and, mirrored, Hide) sits in from the bar's sides, beyond the corner padding: on glass clear of the

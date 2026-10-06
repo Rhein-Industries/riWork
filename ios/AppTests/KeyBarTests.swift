@@ -119,7 +119,7 @@ import RiWorkCore
         XCTAssertEqual(bar.barHeight, 57)
         XCTAssertEqual(bar.intrinsicContentSize.height, 57, "the bar tells iOS its new height")
         XCTAssertGreaterThan(try frame(.key(.escape), in: bar).width, standardEscape.width)
-        XCTAssertEqual(try frame(.key(.escape), in: bar).height, 56, accuracy: 1, "keys fill the strip below its 1 pt rule")
+        XCTAssertEqual(try frame(.key(.escape), in: bar).height, 57, accuracy: 1, "keys fill the strip")
         XCTAssertGreaterThan(bar.scrollView.contentSize.width, standardWidth)
         XCTAssertGreaterThanOrEqual(try frame(.hide, in: bar).width, 57 - 1, "Hide keeps a target as large as the bar")
         let big = try XCTUnwrap(bar.buttons[.key(.escape)]?.configuration?.attributedTitle)
@@ -127,8 +127,8 @@ import RiWorkCore
         bar.style = DesktopStyle(.builtIn, scale: 0.8)
         bar.frame.size.height = bar.barHeight
         layout(bar)
-        XCTAssertEqual(bar.intrinsicContentSize.height, 35)
-        XCTAssertLessThan(bar.scrollView.contentSize.width, standardWidth)
+        XCTAssertEqual(bar.intrinsicContentSize.height, 44, "a smaller interface makes the keys' text smaller, not the 44-point bar")
+        XCTAssertLessThan(bar.scrollView.contentSize.width, standardWidth, "text keys still narrow with their text")
         bar.style = DesktopStyle(.builtIn)
         bar.frame.size.height = bar.barHeight
         layout(bar)
@@ -310,5 +310,28 @@ import RiWorkCore
             bar.scrollView.contentOffset = CGPoint(x: bar.scrollView.contentSize.width - bar.scrollView.bounds.width, y: 0)
             XCTAssertEqual(bar.rowFadeEnds.trailing, 1, accuracy: 0.01, "at the far end the last key is not faded")
         }
+    }
+
+    /// At the smallest interface size (80 %), glyphs and text shrink but every key, Hide and the mic stay 44-point targets, and the
+    /// mic's fixed and least widths agree (no conflicting required constraints).
+    func testAtTheSmallestInterfaceSizeEveryKeyStaysA44PointTarget() throws {
+        var theme = DesktopTheme.builtIn
+        theme.mic = true
+        let bar = makeBar()
+        bar.style = DesktopStyle(theme, scale: 0.8)
+        bar.frame.size.height = bar.barHeight
+        layout(bar)
+        XCTAssertEqual(bar.barHeight, 44)
+        XCTAssertTrue(bar.showsMic)
+        for (action, button) in bar.buttons where !button.isHidden {
+            let frame = button.convert(button.bounds, to: bar)
+            XCTAssertGreaterThanOrEqual(frame.width, 44 - 0.5, "\(action) at 80 %")
+            XCTAssertGreaterThanOrEqual(frame.height, 44 - 0.5, "\(action) at 80 %")
+        }
+        let mic = try XCTUnwrap(bar.buttons[.dictate])
+        let widths = mic.constraints.filter { type(of: $0) == NSLayoutConstraint.self && $0.firstAttribute == .width && $0.isActive && $0.secondItem == nil }
+        XCTAssertFalse(widths.isEmpty)
+        for constraint in widths { XCTAssertEqual(constraint.constant, 44, "\(constraint): the mic's width constraints agree") }
+        XCTAssertFalse(bar.hasAmbiguousLayout)
     }
 }

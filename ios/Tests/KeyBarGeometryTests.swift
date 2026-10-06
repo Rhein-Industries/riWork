@@ -81,6 +81,18 @@ final class BottomBarGeometryTests: XCTestCase {
         XCTAssertEqual(bounced.leading, 0); XCTAssertEqual(bounced.trailing, 0, "a row that fits never fades")
     }
 
+    func testTargetsGrowWithTheInterfaceButNeverShrinkBelow44() {
+        XCTAssertEqual(BottomBarGeometry.target(scale: 1), 44)
+        XCTAssertEqual(BottomBarGeometry.target(scale: 0.8), 44, "80 % would be 35 points: clamped")
+        XCTAssertEqual(BottomBarGeometry.target(scale: 0.5), 44)
+        XCTAssertEqual(BottomBarGeometry.target(scale: 1.3), InterfaceScale.scaled(44, by: 1.3))
+        XCTAssertGreaterThan(BottomBarGeometry.target(scale: 1.3), 44)
+        for scale in stride(from: 0.5, through: 2.0, by: 0.05) {
+            XCTAssertGreaterThanOrEqual(BottomBarGeometry.target(scale: scale), 44)
+            XCTAssertGreaterThanOrEqual(KeyBarGeometry.height(scale: scale), 44)
+        }
+    }
+
     func testComposerLinesUpWithTheKeyBar() {
         for glass in [true, false] {
             let insets = BottomBarGeometry.composerInsets(glass: glass)

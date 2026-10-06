@@ -6,11 +6,10 @@ final class TabScreenChromeTests: XCTestCase {
         let chromes = TabScreenContent.allCases.map { TabScreenChrome.decide(content: $0, focusMode: false) }
         for chrome in chromes {
             XCTAssertEqual(chrome.header, .navigationRow)
-            XCTAssertEqual(chrome.tabLines, 1)
             XCTAssertFalse(chrome.statusBarHidden)
         }
-        for a in chromes { for b in chromes { XCTAssertFalse(a.movesTop(comparedTo: b), "\(a) vs \(b)") } }
-        XCTAssertEqual(TabScreenChrome.rowHeight, 44)
+        XCTAssertEqual(TabScreenChrome.rowHeight(scale: 1), 44)
+        XCTAssertEqual(TabScreenChrome.rowHeight(scale: 0.8), 44, "the row's targets do not shrink with a smaller interface")
     }
 
     func testSwitchingBetweenShellAndChatNeverMovesTheTop() {
@@ -19,7 +18,7 @@ final class TabScreenChromeTests: XCTestCase {
             let shell = TabScreenChrome.decide(content: .terminal, focusMode: focus)
             let chat = TabScreenChrome.decide(content: .chat, focusMode: focus)
             XCTAssertEqual(chat.header, .navigationRow)
-            XCTAssertEqual(shell.movesTop(comparedTo: chat), focus, "only focus mode drops the row")
+            XCTAssertEqual(shell.header == chat.header && shell.statusBarHidden == chat.statusBarHidden, !focus, "only focus mode drops the row")
         }
     }
 

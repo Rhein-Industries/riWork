@@ -26,12 +26,10 @@ public struct TabScreenChrome: Sendable, Hashable {
         /// Nothing above the content (focus mode).
         case hidden
     }
-    /// The least height of the row and of each tab in it, in points before the desktop's display scale: a full touch target.
-    public static let rowHeight: Double = 44
+    /// The height of the row and of each (one-line) tab in it at an interface scale: a full touch target, never below 44 points.
+    public static func rowHeight(scale: Double) -> Double { BottomBarGeometry.target(scale: scale) }
 
     public let header: Header
-    /// Lines of text in each tab. One: the branch and short id are in the tab's accessibility label, its context menu and Session info.
-    public let tabLines: Int
     /// The menu has the terminal's own section (focus mode, jump to latest, display, text size, line composer, copy, refresh output,
     /// close this terminal).
     public let terminalActions: Bool
@@ -41,12 +39,6 @@ public struct TabScreenChrome: Sendable, Hashable {
     /// The chrome for what is on screen. `focusMode` is the person's focus-mode setting; it applies only while a terminal is shown.
     public static func decide(content: TabScreenContent, focusMode: Bool) -> TabScreenChrome {
         let focused = focusMode && content == .terminal
-        return TabScreenChrome(header: focused ? .hidden : .navigationRow, tabLines: 1, terminalActions: content == .terminal, statusBarHidden: focused)
-    }
-
-    /// Whether going from one to the other changes the top of the screen (a bar appearing, disappearing or changing height). Only
-    /// entering or leaving focus mode does.
-    public func movesTop(comparedTo other: TabScreenChrome) -> Bool {
-        header != other.header || tabLines != other.tabLines || statusBarHidden != other.statusBarHidden
+        return TabScreenChrome(header: focused ? .hidden : .navigationRow, terminalActions: content == .terminal, statusBarHidden: focused)
     }
 }

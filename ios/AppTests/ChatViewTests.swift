@@ -677,6 +677,12 @@ import RiWorkCore
             rig.window.layoutIfNeeded()
             let again = try XCTUnwrap(rig.layout.frames["navigation"])
             XCTAssertEqual(again, shell, "\(look): back on the shell, the row is where it was")
+            // The smallest interface size makes the row's glyphs smaller, never its 44-point targets.
+            rig.model.setInterfaceScale(0.8)
+            try await Task.sleep(for: .milliseconds(200))
+            rig.window.layoutIfNeeded()
+            let small = try XCTUnwrap(rig.layout.frames["navigation"])
+            XCTAssertGreaterThanOrEqual(small.height, 44, "\(look): the row stays a 44-point target at 80 %")
             await finish(rig)
         }
     }

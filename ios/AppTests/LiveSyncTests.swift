@@ -517,7 +517,9 @@ private struct ThemedTerminal: View {
         model.setInterfaceScale(0.8)
         await settle()
         let small = try XCTUnwrap(model.terminalViewport)
-        XCTAssertGreaterThan(small.rows, normal.rows, "smaller chrome, more rows: \(normal) -> \(small)")
+        // The chrome's text shrinks at 80 % but its tap targets stay 44 points (`BottomBarGeometry.target`), so the terminal gains
+        // at most the rows the text gave back, never fewer.
+        XCTAssertGreaterThanOrEqual(small.rows, normal.rows, "smaller chrome, no fewer rows: \(normal) -> \(small)")
         await model.disconnect()
     }
 }

@@ -33,6 +33,8 @@ private final class KeyScrollView: UIScrollView {
     var barHeight: CGFloat { CGFloat(KeyBarGeometry.height(scale: style.scale)) }
     /// A length of the bar at the current interface size, on whole points.
     private func unit(_ points: CGFloat) -> CGFloat { CGFloat(InterfaceScale.scaled(Double(points), by: style.scale)) }
+    /// A key's least width (and the bar's height): larger with a larger interface, never below 44 points (`BottomBarGeometry.target`).
+    private var target: CGFloat { CGFloat(BottomBarGeometry.target(scale: style.scale)) }
     /// Symbols that are awkward to reach on the iOS keyboard, sent as text.
     static let symbols: [String] = ["|", "/", "\\", "~", "-", "_", "`", "*", "&", "$", ">", "<", "{", "}", "[", "]", ";", ":", "'", "\""]
     static let symbolNames: [String: String] = [
@@ -83,7 +85,7 @@ private final class KeyScrollView: UIScrollView {
     private var stackLeading: NSLayoutConstraint!, hideTrailing: NSLayoutConstraint!
     private var hideWidth: NSLayoutConstraint!, hideMinWidth: NSLayoutConstraint?, dividerInsets: [NSLayoutConstraint] = [], stackTrailing: NSLayoutConstraint!
     private var latches: [Action: ModifierLatch] = [.control: .off, .alt: .off, .shift: .off]
-    private var dictation = Dictation.idle, dictateWidth: NSLayoutConstraint?
+    private var dictation = Dictation.idle, dictateWidth: NSLayoutConstraint?, dictateMinWidth: NSLayoutConstraint?
     private var scrollBeforeMic: NSLayoutConstraint?, scrollBeforeHide: NSLayoutConstraint?
     private var repeatTask: Task<Void, Never>?
     private var didRepeat = false
@@ -139,7 +141,7 @@ private final class KeyScrollView: UIScrollView {
         hide.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(hide)
         hideTrailing = row.trailingAnchor.constraint(equalTo: hide.trailingAnchor)
-        hideWidth = hide.widthAnchor.constraint(equalToConstant: 44)
+        hideWidth = hide.widthAnchor.constraint(equalToConstant: target)
         NSLayoutConstraint.activate([
             hideTrailing, hide.leadingAnchor.constraint(equalTo: hideDivider.trailingAnchor), hide.topAnchor.constraint(equalTo: row.topAnchor),
             hide.bottomAnchor.constraint(equalTo: row.bottomAnchor), hideWidth
@@ -160,14 +162,16 @@ private final class KeyScrollView: UIScrollView {
 
     /// A new interface size: the bar's height, every key's font, insets and width, and the fixed pieces around them.
     private func applyScale() {
-        hideWidth.constant = unit(44)
+        hideWidth.constant = target
         for constraint in dividerInsets { constraint.constant = constraint === dividerInsets.first ? unit(10) : -unit(10) }
         stackTrailing.constant = -unit(4)
         if let hide = buttons[.hide] {
             hide.configuration?.image = UIImage(systemName: "keyboard.chevron.compact.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14 * CGFloat(style.scale), weight: .regular))
-            hideMinWidth?.constant = unit(CGFloat(BottomBarGeometry.minimumTarget))
+            hideMinWidth?.constant = target
         }
-        dictateWidth?.constant = unit(44)
+        // Hide and the mic have a fixed width and a least one, both the target, so the two never disagree at any size.
+        dictateWidth?.constant = target
+        dictateMinWidth?.constant = target
         setDictation(dictation)
         rebuild()
         invalidateIntrinsicContentSize()
@@ -257,9 +261,10 @@ private final class KeyScrollView: UIScrollView {
         button.setContentHuggingPriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
         // Every key is at least a 44-point target, however narrow its glyph; the bar is 44 points tall.
-        let minimumWidth = button.widthAnchor.constraint(greaterThanOrEqualToConstant: unit(CGFloat(BottomBarGeometry.minimumTarget)))
+        let minimumWidth = button.widthAnchor.constraint(greaterThanOrEqualToConstant: target)
         minimumWidth.isActive = true
         if action == .hide { hideMinWidth = minimumWidth }
+        if action == .dictate { dictateMinWidth = minimumWidth }
         button.addAction(UIAction { [weak self] _ in self?.tapped(action) }, for: .touchUpInside)
         if case .key(let key) = action, Self.repeating.contains(key) {
             button.addAction(UIAction { [weak self] _ in self?.beginRepeat(action) }, for: .touchDown)
@@ -325,7 +330,7 @@ private final class KeyScrollView: UIScrollView {
         let mic = makeButton(.dictate, title: nil, symbol: "mic", label: "Dictate", role: .plain)
         mic.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(mic)
-        dictateWidth = mic.widthAnchor.constraint(equalToConstant: 44)
+        dictateWidth = mic.widthAnchor.constraint(equalToConstant: target)
         scrollBeforeMic = scroll.trailingAnchor.constraint(equalTo: mic.leadingAnchor)
         scrollBeforeHide = scroll.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor)
         NSLayoutConstraint.activate([

@@ -385,7 +385,7 @@ struct TerminalTabsView: View {
                 .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
             screenMenu(chrome)
         }
-        .frame(minHeight: style.pt(TabScreenChrome.rowHeight))
+        .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
         .chatLayoutProbe("navigation")
     }
     /// The screen's menu. The project, Session info, the tabs and the connection are there for every tab; a terminal adds its own section.
@@ -426,7 +426,7 @@ struct TerminalTabsView: View {
             else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
         } label: {
             Label("Terminal tabs and connection", systemImage: "ellipsis").labelStyle(.iconOnly)
-                .frame(minWidth: style.pt(44), minHeight: style.pt(44)).contentShape(Rectangle())
+                .frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
         }
             .buttonStyle(.plain)
     }
@@ -495,7 +495,7 @@ struct TerminalTabsView: View {
                     ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
                 }
             }
-            .frame(minHeight: style.pt(TabScreenChrome.rowHeight))
+            .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
             .tabChrome(selected: selected, waiting: session.shownActivity == .waiting)
         }
         .buttonStyle(.plain).id(session.id)
@@ -525,7 +525,7 @@ struct TerminalTabsView: View {
                     if case .failed = state { Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).foregroundStyle(style.error).accessibilityHidden(true) }
                 }
             }
-            .frame(minHeight: style.pt(TabScreenChrome.rowHeight))
+            .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
             .tabChrome(selected: selected, waiting: activity == .waiting)
             .opacity(state == .stopped && !selected ? 0.6 : 1)
         }
@@ -548,7 +548,7 @@ struct TerminalTabsView: View {
                     Image(systemName: session.provider?.glyph ?? "point.3.connected.trianglepath.dotted").foregroundStyle(style.magenta)
                 }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
             }
-            .frame(minHeight: style.pt(TabScreenChrome.rowHeight))
+            .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
             .tabChrome(selected: selected, waiting: false)
             .opacity(selected ? 1 : 0.7)
         }
@@ -602,7 +602,7 @@ private struct NoteLine: View {
                 Text(text).lineLimit(2)
             }
             .font(style.system(.footnote)).foregroundStyle(style.muted)
-            .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, minHeight: style.target, alignment: .leading)
             .modifier(NoteSurface())
         }
         .buttonStyle(.plain)

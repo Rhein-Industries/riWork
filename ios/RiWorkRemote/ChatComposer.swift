@@ -297,7 +297,7 @@ private struct ComposerPaperclip: View, Equatable {
     var body: some View {
         AttachMenu(choose: choose) {
             Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
-                .frame(width: style.pt(44), height: style.pt(44)).contentShape(Rectangle())
+                .frame(width: style.target, height: style.target).contentShape(Rectangle())
         }
         // No padding of the menu's own around the 44-point target, so the paperclip lines up with the key bar's first key.
         .menuStyle(.button).buttonStyle(.plain)

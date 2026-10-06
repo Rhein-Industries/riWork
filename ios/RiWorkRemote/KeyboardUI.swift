@@ -255,7 +255,7 @@ struct HotkeyPaletteView: View {
                         .accessibilityLabel("Filter").accessibilityValue(state.query)
                     Button("Close hotkey menu", systemImage: "xmark") { controller.close() }.labelStyle(.iconOnly).buttonStyle(TargetButtonStyle(tinted: true))
                 }
-                .font(style.face(13, relativeTo: .body)).padding(.leading, 10).frame(minHeight: style.pt(44))
+                .font(style.face(13, relativeTo: .body)).padding(.leading, 10).frame(minHeight: style.target)
                 DesktopRule()
                 if state.results.isEmpty {
                     Text("No hotkey matches “\(state.query)”").font(style.system(.footnote)).foregroundStyle(style.muted)
@@ -270,7 +270,7 @@ struct HotkeyPaletteView: View {
                                 }
                             }
                         }
-                        .frame(maxHeight: style.pt(44) * 7.5)
+                        .frame(maxHeight: style.target * 7.5)
                         .onChange(of: state.selection) { _, selection in
                             if state.results.indices.contains(selection) { proxy.scrollTo(state.results[selection].id) }
                         }
@@ -305,7 +305,7 @@ struct HotkeyPaletteView: View {
                     .padding(.horizontal, 5).padding(.vertical, 1).overlay(RoundedRectangle(cornerRadius: 3).stroke(style.divider, lineWidth: 1))
             }
         }
-        .padding(.horizontal, 10).frame(minHeight: style.pt(44))
+        .padding(.horizontal, 10).frame(minHeight: style.target)
         .background(selected ? style.active : .clear).contentShape(Rectangle())
         .accessibilityElement(children: .combine).accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
@@ -330,14 +330,14 @@ struct HotkeyHelpView: View {
                     Text("press a shortcut · ⌘/ ⎋ close").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7)
                     Button("Close hotkey help", systemImage: "xmark") { controller.close() }.labelStyle(.iconOnly).buttonStyle(TargetButtonStyle(tinted: true))
                 }
-                .padding(.leading, 10).frame(minHeight: style.pt(44))
+                .padding(.leading, 10).frame(minHeight: style.target)
                 DesktopRule()
                 // The whole list when it fits, a scrolling one when it does not.
                 ViewThatFits(in: .vertical) {
                     content(help)
                     ScrollView { content(help) }
                 }
-                .frame(maxHeight: style.pt(44) * 9.5)
+                .frame(maxHeight: style.target * 9.5)
             }
             .background(style.panel, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(style.divider, lineWidth: 1))
@@ -386,7 +386,7 @@ struct HotkeyHelpView: View {
             Text(row.sends).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10).frame(maxWidth: .infinity, minHeight: style.pt(44), alignment: .leading)
+        .padding(.horizontal, 10).frame(maxWidth: .infinity, minHeight: style.target, alignment: .leading)
         .contentShape(Rectangle()).onTapGesture { controller.fire(row.hotkey) }
         .accessibilityElement(children: .ignore).accessibilityAddTraits(.isButton)
         .accessibilityLabel("\(row.label), \(row.shortcut.map { "shortcut \($0)" } ?? "no shortcut"), sends \(row.sends)")
