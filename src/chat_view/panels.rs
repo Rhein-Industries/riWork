@@ -1267,6 +1267,147 @@ impl ChatView {
             ))
         }
         .on_click(cx.listener(|view, _, window, cx| view.attach_picker(window, cx)));
+        // The box keeps `composer::MIN_FIELD`: the mic goes first when the row is short of
+        // it, then the buttons move to a row under the box (the mic too, if that row has
+        // room). A mic that is dictating stays, under the box if need be. The colorful themes' buttons are words, wider than
+        // Native's round ones.
+        let button_width = if look.native {
+            widgets::ROUND_BUTTON
+        } else {
+            56.0
+        };
+        let fit = match composer::fit(
+            self.composer_width.get(),
+            ui_text::scale(),
+            mic,
+            running,
+            button_width,
+            BAR_GAP,
+        ) {
+            composer::Fit::Inline { mic: false } | composer::Fit::Stacked { mic: false }
+                if mic && dictation.is_active() =>
+            {
+                composer::Fit::Stacked { mic: true }
+            }
+            fit => fit,
+        };
+        let (stacked, mic) = match fit {
+            composer::Fit::Inline { mic } => (false, mic),
+            composer::Fit::Stacked { mic } => (true, mic),
+        };
+        // Native's are round symbol buttons beside the field, as a message field has them;
+        // their keys are in the tooltips. Send waits in grey until there is something to send.
+        let trailing: Vec<AnyElement> = [
+            mic.then(|| widgets::beside_field(self.mic_button(look, cx)).into_any_element()),
+            running.then(|| {
+                widgets::beside_field(
+                    if look.native {
+                        widgets::round_button(
+                            "chat-interrupt",
+                            "stop.fill",
+                            "Interrupt · ⌘.",
+                            Button::Secondary,
+                            look,
+                        )
+                    } else {
+                        button(
+                            "chat-interrupt",
+                            "Interrupt  ⌘.",
+                            Some(look.diff.removed),
+                            look,
+                        )
+                    }
+                    .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx))),
+                )
+                .into_any_element()
+            }),
+            Some(
+                widgets::beside_field(
+                    if look.native {
+                        let empty = self.draft_empty(cx) || self.pending_submission.is_some();
+                        widgets::round_button(
+                            "chat-send",
+                            "arrow.up",
+                            if running {
+                                "Send · ⏎ steers the turn · ⇧⏎ new line"
+                            } else {
+                                "Send · ⏎ · ⇧⏎ new line"
+                            },
+                            if empty {
+                                Button::Disabled
+                            } else {
+                                Button::Primary
+                            },
+                            look,
+                        )
+                    } else {
+                        button("chat-send", "Send", Some(colors.cyan), look)
+                            .child(tooltip::anchor("⏎ sends · ⇧⏎ new line", TipLook::Control))
+                    }
+                    .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx))),
+                )
+                .into_any_element(),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let field = div()
+            .flex_1()
+            .min_w_0()
+            .child(self.composer_editor(look, window, cx));
+        // The row's width as laid out, for the next frame's `fit`. It does not depend on
+        // where the buttons go, so it settles after one redraw.
+        let measured = self.composer_width.clone();
+        let measure = canvas(
+            move |bounds, window, _| {
+                let width = f32::from(bounds.size.width);
+                if (measured.get() - width).abs() >= 0.5 {
+                    measured.set(width);
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .w_full()
+        .h(px(0.));
+        let buttons_and_field = div().relative().w_full().child(measure).map(|frame| {
+            if stacked {
+                // The box on its own row; Attach at the start of the row under it and the
+                // rest at its end, as the row beside the box has them.
+                frame
+                    .flex()
+                    .flex_col()
+                    .gap(ui_text::space(BAR_GAP))
+                    .child(div().w_full().flex().child(field))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            // Wider than the pane only at extreme text sizes.
+                            .flex_wrap()
+                            .items_center()
+                            .gap(ui_text::space(BAR_GAP))
+                            .child(widgets::beside_field(attach))
+                            .child(div().flex_1())
+                            .children(trailing),
+                    )
+            } else {
+                // The buttons keep to the bottom, each centered on the box's last line
+                // (see `widgets::beside_field`): on the box's center while it has one
+                // line, beside its last line once it grows, as a message field keeps them.
+                frame
+                    .flex()
+                    .items_end()
+                    .gap(ui_text::space(BAR_GAP))
+                    .child(widgets::beside_field(attach))
+                    .child(field)
+                    .children(trailing)
+            }
+        });
         div()
             .id("chat-composer-bar")
             .w_full()
@@ -1300,72 +1441,7 @@ impl ChatView {
                     .child(self.attachment_chips(look, cx))
                     .child(self.submission_cards(look, cx))
             }))
-            .child(
-                // The buttons keep to the bottom, each centered on the box's last line (see
-                // `widgets::beside_field`): on the box's center while it has one line, beside
-                // its last line once it grows, as a message field keeps them.
-                div()
-                    .w_full()
-                    .flex()
-                    .items_end()
-                    .gap(ui_text::space(BAR_GAP))
-                    .child(widgets::beside_field(attach))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.composer_editor(look, window, cx)),
-                    )
-                    .children(mic.then(|| widgets::beside_field(self.mic_button(look, cx))))
-                    // Native's are round symbol buttons beside the field, as a message field
-                    // has them; their keys are in the tooltips. Send waits in grey until
-                    // there is something to send.
-                    .children(running.then(|| {
-                        widgets::beside_field(
-                            if look.native {
-                                widgets::round_button(
-                                    "chat-interrupt",
-                                    "stop.fill",
-                                    "Interrupt · ⌘.",
-                                    Button::Secondary,
-                                    look,
-                                )
-                            } else {
-                                button(
-                                    "chat-interrupt",
-                                    "Interrupt  ⌘.",
-                                    Some(look.diff.removed),
-                                    look,
-                                )
-                            }
-                            .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx))),
-                        )
-                    }))
-                    .child(widgets::beside_field(
-                        if look.native {
-                            let empty = self.draft_empty(cx) || self.pending_submission.is_some();
-                            widgets::round_button(
-                                "chat-send",
-                                "arrow.up",
-                                if running {
-                                    "Send · ⏎ steers the turn · ⇧⏎ new line"
-                                } else {
-                                    "Send · ⏎ · ⇧⏎ new line"
-                                },
-                                if empty {
-                                    Button::Disabled
-                                } else {
-                                    Button::Primary
-                                },
-                                look,
-                            )
-                        } else {
-                            button("chat-send", "Send", Some(colors.cyan), look)
-                                .child(tooltip::anchor("⏎ sends · ⇧⏎ new line", TipLook::Control))
-                        }
-                        .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx))),
-                    )),
-            )
+            .child(buttons_and_field)
             .children(status.map(|status| {
                 div()
                     .text_size(ui_text::text(9.0))

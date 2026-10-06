@@ -64,6 +64,43 @@ pub fn status(dictation: &Phase, mic: bool) -> Option<String> {
     }
 }
 
+/// The narrowest the message box may get beside its buttons, in design points.
+pub const MIN_FIELD: f32 = 120.0;
+
+/// Where the message box's buttons go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fit {
+    /// In one row with the box; `mic` is whether the mic still fits in it.
+    Inline { mic: bool },
+    /// The box takes the whole width, its buttons a row under it; `mic` as for `Inline`.
+    Stacked { mic: bool },
+}
+
+/// The buttons' place for a row `width` px wide (the bar inside its padding) at interface
+/// scale `scale`, with the mic shown (`mic`) and a turn running (`running`, which adds Stop).
+/// The box keeps at least `MIN_FIELD`: the mic goes first, then every button moves to a row
+/// under the box, where the mic comes back if that row has room for it. Lengths are design
+/// points, grown with the text the way `ui_text::space` grows them. A width not yet laid
+/// out (zero) keeps everything in the row.
+pub fn fit(width: f32, scale: f32, mic: bool, running: bool, button: f32, gap: f32) -> Fit {
+    let space = |base: f32| (base * scale.max(1.0)).round();
+    // Each button with the gap before it (under the box, the gap before the space that
+    // pushes the rest to the end stands in for the box's).
+    let buttons = |count: usize| count as f32 * (space(button) + space(gap));
+    // Attach and Send are always there.
+    let base = 2 + usize::from(running);
+    let all = base + usize::from(mic);
+    if width <= 0.0 || width >= space(MIN_FIELD) + buttons(all) {
+        Fit::Inline { mic }
+    } else if width >= space(MIN_FIELD) + buttons(base) {
+        Fit::Inline { mic: false }
+    } else {
+        Fit::Stacked {
+            mic: mic && width >= buttons(all),
+        }
+    }
+}
+
 /// The message to send for the box's text: without the blank lines around it, and nothing
 /// for a box that holds only spaces.
 pub fn message(text: &str) -> Option<String> {
@@ -176,6 +213,33 @@ mod tests {
             Some("Getting the microphone ready…")
         );
         assert_eq!(status(&preparing, false), None);
+    }
+
+    #[test]
+    fn the_box_keeps_its_minimum_width_dropping_the_mic_then_stacking_the_buttons() {
+        let fit = |width, scale, mic, running| fit(width, scale, mic, running, 26.0, 6.0);
+        // 120 for the box and 32 per button.
+        assert_eq!(fit(500.0, 1.0, true, true), Fit::Inline { mic: true });
+        assert_eq!(fit(248.0, 1.0, true, true), Fit::Inline { mic: true });
+        assert_eq!(fit(247.0, 1.0, true, true), Fit::Inline { mic: false });
+        assert_eq!(fit(216.0, 1.0, true, true), Fit::Inline { mic: false });
+        assert_eq!(fit(215.0, 1.0, true, true), Fit::Stacked { mic: true });
+        // The narrowest pane (160 pt, 140 inside the bar) stacks, running or not, and keeps
+        // the mic under the box while its row has room.
+        assert_eq!(fit(140.0, 1.0, true, true), Fit::Stacked { mic: true });
+        assert_eq!(fit(140.0, 1.0, false, false), Fit::Stacked { mic: false });
+        // Without Stop, more room; without the mic, nothing to drop first.
+        assert_eq!(fit(184.0, 1.0, false, false), Fit::Inline { mic: false });
+        assert_eq!(fit(216.0, 1.0, true, false), Fit::Inline { mic: true });
+        // Bigger text grows the box's minimum and the buttons with it: at 1.15 the 160 pt
+        // pane's row has no room for the mic even under the box.
+        assert_eq!(fit(248.0, 1.5, true, true), Fit::Stacked { mic: true });
+        assert_eq!(fit(372.0, 1.5, true, true), Fit::Inline { mic: true });
+        assert_eq!(fit(140.0, 1.15, true, true), Fit::Stacked { mic: false });
+        // Smaller text never shrinks them below their design size.
+        assert_eq!(fit(247.0, 0.8, true, true), Fit::Inline { mic: false });
+        // Not laid out yet: everything in the row.
+        assert_eq!(fit(0.0, 1.0, true, true), Fit::Inline { mic: true });
     }
 
     #[test]

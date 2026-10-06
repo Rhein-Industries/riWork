@@ -194,6 +194,9 @@ pub struct ChatView {
     copied: Option<String>,
     forget_copy: Option<Task<()>>,
     caches: RefCell<Caches>,
+    /// The message box row's width as last laid out, which decides where its buttons go
+    /// (see `composer::fit`); zero until it is first drawn.
+    composer_width: std::rc::Rc<std::cell::Cell<f32>>,
     /// What the mouse has selected in the transcript.
     selection: Option<select::Selection>,
     /// What the window was last told, so it hears of changes only.
@@ -286,6 +289,7 @@ impl ChatView {
             answers: HashMap::new(),
             model_seeded: false,
             focus_composer: false,
+            composer_width: Default::default(),
             editor_generation: 0,
             programmatic_changes: 0,
             enter_down: false,
