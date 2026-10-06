@@ -1,0 +1,11 @@
+   Compiling riwork v0.1.0 (/Users/dominik/orca/projects/riWork-feat-automations)
+    Finished `test` profile [unoptimized] target(s) in 14.29s
+     Running unittests src/main.rs (/tmp/riwork-automations-target/debug/deps/riwork-72c65fc1f45c3555)
+
+running 4 tests
+test schedules::tests::explicit_project_live_directory_drift_and_symlink_escape_fail_before_claim ... ok
+test schedules::tests::explicit_project_live_directory_drift_during_readiness_is_rechecked_under_input_lock ... ok
+test schedules::tests::explicit_project_live_directory_root_and_subdirectory_submit_once ... ok
+test schedules::tests::explicit_project_live_directory_unreadable_defers_before_claim ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1659 filtered out; finished in 7.32s

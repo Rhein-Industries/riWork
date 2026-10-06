@@ -1,0 +1,17 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized] target(s) in 0.64s
+     Running unittests src/main.rs (/tmp/riwork-automations-target/debug/deps/riwork-72c65fc1f45c3555)
+
+running 7 tests
+test session_input::tests::empty_text_only_sends_return ... ok
+test session_input::tests::failed_load_or_paste_deletes_the_buffer_and_never_sends_return ... ok
+test session_input::tests::gate_and_mode_check_run_before_any_buffer_is_created ... ok
+test session_input::tests::paste_chooses_by_the_foreground_program_and_sends_each_input_in_order ... ok
+test session_input::tests::paste_leaves_copy_mode_first_and_refuses_disabled_input ... ok
+test session_input::tests::paste_loads_on_stdin_and_pastes_bracketed_without_return ... ok
+test session_input::tests::text_reaches_tmux_on_stdin_never_as_an_argument ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1656 filtered out; finished in 0.52s

@@ -1461,6 +1461,9 @@ impl SessionManager {
                 )));
             }
         }
+        if let Err(outcome) = self.schedule_project_directory(target, state, &shell.id) {
+            return Ok(outcome);
+        }
         if let Scope::Workspace { worktree_id, .. } = &target.scope {
             let workspace = state
                 .worktrees
@@ -1547,6 +1550,13 @@ impl SessionManager {
                         return Err("schedule gate deferred".into());
                     }
                 };
+                // Readiness takes time and can wait for another input holder.
+                // Revalidate the live directory under that same input lock,
+                // immediately before persisting the dispatch claim.
+                if let Err(outcome) = self.schedule_project_directory(target, state, &shell.id) {
+                    gate_outcome = Some(outcome);
+                    return Err("schedule directory gate rejected".into());
+                }
                 match claim(&token) {
                     Ok(true) => {
                         claimed = true;
@@ -1576,6 +1586,48 @@ impl SessionManager {
             )),
             Err(error) => Delivery::Deferred(format!("Terminal input unavailable: {error}")),
         })
+    }
+
+    fn schedule_project_directory(
+        &self,
+        target: &crate::schedules::Target,
+        state: &crate::store::State,
+        id: &str,
+    ) -> Result<(), crate::schedules::Delivery> {
+        use crate::schedules::{Delivery, Scope};
+        // Old Project targets intentionally describe orchestrator context,
+        // rather than constraining the orchestrator's working directory.
+        let Scope::Project { project_id } = &target.scope else {
+            return Ok(());
+        };
+        if target.shell_kind != Some(ShellKind::Project) {
+            return Ok(());
+        }
+        let project = state
+            .projects
+            .iter()
+            .find(|p| &p.id == project_id)
+            .ok_or_else(|| Delivery::Failed("The selected project no longer exists.".into()))?;
+        let evidence = (|| -> Result<_, String> {
+            let root = project.root.canonicalize().map_err(|e| e.to_string())?;
+            let directory = self.current_directory(id)?;
+            if !directory.is_absolute() {
+                return Err("The worker's live directory is not absolute".into());
+            }
+            let directory = directory.canonicalize().map_err(|e| e.to_string())?;
+            Ok((root, directory))
+        })();
+        let (root, directory) = evidence.map_err(|error| {
+            Delivery::Deferred(format!(
+                "Cannot verify the worker's project directory: {error}"
+            ))
+        })?;
+        if !directory.starts_with(root) {
+            return Err(Delivery::Failed(
+                "Worker left the selected project root.".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn schedule_prompt_screen(&self, shell: &ShellSession) -> Result<String, String> {

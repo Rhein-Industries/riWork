@@ -6,6 +6,8 @@ Open **Automations** from the native application menu, a pane menu, or **Cmd+Shi
 
 **Existing AI shell** selects a specific live Codex or Claude shell. Project scope accepts an ordinary project-root shell without a worktree, or a project orchestrator. Workspace scope requires the exact project/worktree worker. App scope selects its global orchestrator shell. Existing schedules retain their older destination semantics and identities. Shell dispatch preserves the idle, approval, draft, provider/account, creation, pane and directory checks; scheduling never changes the shell's permissions.
 
+An explicitly selected ordinary project shell must remain within its selected project's canonical root, including subdirectories. Live directory evidence is checked again under the input lock immediately before dispatch claim. Symlink escapes or a known outside directory fail and pause the automation without input or a rate slot; unreadable evidence defers without a claim. Legacy project orchestrators retain their context behavior, and workspace directory rules are unchanged.
+
 The list shows the next run, last outcome, prompt and effective settings. Edit, pause/resume or delete using current revisions; conflicts preserve the draft for review. **Open created chat** opens the recorded result in an app tab. The Project chats list also retains earlier results after another occurrence or schedule deletion.
 
 ## CLI and MCP

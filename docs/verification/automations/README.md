@@ -13,6 +13,9 @@ All desktop screenshots were captured using RiWork's Cua.ai Driver MCP. No real 
 - `initial.png`, `current.png`, `menu.png`: preceding fixture source captures retained without claiming final-candidate input verification.
 - `test-logs/`: passing final engine, interfaces, host, CLI/MCP, native label and native build logs.
 - `test-logs/followup-*.log`: focused parent-review corrections: eight interface tests, 12 CLI/MCP contract tests and a compile check. Only the endings of the five original test logs were normalized; the scheduler and GUI suites were not repeated.
+- `test-logs/directory-*.log`: live project-directory fix: four targeted regressions, 47 scheduler tests (two existing opt-in/helper ignores), seven input tests and a desktop compile check. Fixtures verify real process directory changes and zero claim/input on rejection; root/subdirectory dispatch and legacy/explicit project orchestrator behavior pass.
+- `test-logs/independent-directory-drift-reproducer.log`: preserved independent evidence of the defect on a38ea39, where outside-project input was submitted. Its test intentionally confirmed the old defect; this is prior-failure evidence, not a passing acceptance result for the corrected candidate.
+- `directory-receipt.json`: exact corrected code candidate, source hashes, isolated test counts and committed base-diff check. No new GUI or production changes were made.
 
 Cua transport acknowledgements alone are not accepted as semantic proof. Final title/prompt replacement, mouse hit reliability, complete narrow keyboard navigation, GUI pause/resume/delete and revision-conflict flows remain unverified. Shared-service/CLI/MCP lifecycle tests pass; the Cua editor save is proven by revision 2→3 while retaining paused=true. The script initially paused the seeded schedule via the CLI; revision 3 does not establish a GUI resume/re-pause cycle.
 
