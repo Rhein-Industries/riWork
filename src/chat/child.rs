@@ -9,6 +9,7 @@
 
 use super::driver::DriverConfig;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +23,19 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub const GRACE: Duration = Duration::from_secs(5);
 /// How long it gets after SIGTERM before SIGKILL.
 pub const TERM_WAIT: Duration = Duration::from_secs(2);
+pub const WRITE_WAIT: Duration = Duration::from_secs(30);
+
+/// Zero written bytes are a refusal; any prefix may have reached the provider.
+#[derive(Debug)]
+pub struct WriteFailure {
+    pub written: usize,
+    pub message: String,
+}
+impl std::fmt::Display for WriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({} bytes written)", self.message, self.written)
+    }
+}
 /// The end of a child's stderr kept to explain why it died.
 const STDERR_TAIL_BYTES: usize = 4096;
 
@@ -126,6 +140,7 @@ pub struct Proc {
     /// The process has been reaped and its group swept: its pid may be reused,
     /// so the group is never signalled again.
     swept: AtomicBool,
+    writes_cancelled: AtomicBool,
 }
 
 impl Proc {
@@ -173,7 +188,25 @@ impl Proc {
             stderr_tail,
             stderr_done,
             swept: AtomicBool::new(false),
+            writes_cancelled: AtomicBool::new(false),
         };
+        // Do this after constructing the owner: a failure drops/reaps only this child.
+        if let Some(input) = proc
+            .stdin
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            let fd = input.as_raw_fd();
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(format!(
+                    "cannot make provider input nonblocking: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+        }
         Ok((Arc::new(proc), stdout))
     }
 
@@ -183,15 +216,98 @@ impl Proc {
 
     /// Write one line to the provider. Fails once its input is closed or gone.
     pub fn send_line(&self, line: &str) -> Result<(), String> {
-        let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
-        let input = stdin.as_mut().ok_or("the provider's input is closed")?;
+        self.send_line_until(line, Instant::now() + WRITE_WAIT)
+            .map_err(|e| {
+                if e.written == 0 {
+                    e.to_string()
+                } else {
+                    format!(
+                        "{} {e}; inspect the transcript before resending",
+                        super::attachments::UNKNOWN_SUBMISSION
+                    )
+                }
+            })
+    }
+
+    /// Covers mutex acquisition and pipe backpressure. No detached writer can outlive
+    /// the deadline. A partial JSON line poisons the input: never append another frame.
+    pub fn send_line_until(&self, line: &str, deadline: Instant) -> Result<(), WriteFailure> {
+        let failure = |written, message: &str| WriteFailure {
+            written,
+            message: message.into(),
+        };
+        let mut stdin = loop {
+            if self.writes_cancelled() {
+                return Err(failure(0, "provider input was cancelled"));
+            }
+            if Instant::now() >= deadline {
+                return Err(failure(0, "provider write deadline expired"));
+            }
+            match self.stdin.try_lock() {
+                Ok(input) => break input,
+                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(2)),
+            }
+        };
+        let input = stdin
+            .as_mut()
+            .ok_or_else(|| failure(0, "the provider's input is closed"))?;
         let mut bytes = Vec::with_capacity(line.len() + 1);
         bytes.extend_from_slice(line.as_bytes());
         bytes.push(b'\n');
-        input
-            .write_all(&bytes)
-            .and_then(|()| input.flush())
-            .map_err(|error| format!("cannot write to the provider: {error}"))
+        let mut written = 0;
+        let result = loop {
+            if self.writes_cancelled() {
+                break Err(failure(written, "provider input was cancelled"));
+            }
+            if Instant::now() >= deadline {
+                break Err(failure(written, "provider write deadline expired"));
+            }
+            match input.write(&bytes[written..]) {
+                Ok(0) => break Err(failure(written, "provider input closed during write")),
+                Ok(count) => {
+                    written += count;
+                    if written == bytes.len() {
+                        break Ok(());
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let mut fd = libc::pollfd {
+                        fd: input.as_raw_fd(),
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    let timeout = remaining.as_millis().min(20) as libc::c_int;
+                    let ready = unsafe { libc::poll(&mut fd, 1, timeout) };
+                    if ready < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+                    {
+                        break Err(failure(written, "cannot poll provider input"));
+                    }
+                }
+                Err(error) => {
+                    break Err(WriteFailure {
+                        written,
+                        message: format!("cannot write to provider: {error}"),
+                    });
+                }
+            }
+        };
+        if result.is_err() && written > 0 {
+            self.cancel_writes();
+            stdin.take();
+        }
+        result
+    }
+
+    /// Accessible without the driver or stdin mutex, including during backpressure.
+    /// Cancellation is terminal for this owned child, never a resend request.
+    pub fn cancel_writes(&self) {
+        self.writes_cancelled.store(true, Ordering::Release);
+    }
+    pub fn writes_cancelled(&self) -> bool {
+        self.writes_cancelled.load(Ordering::Acquire)
     }
 
     pub fn send(&self, value: &serde_json::Value) -> Result<(), String> {
@@ -200,6 +316,7 @@ impl Proc {
 
     /// Close the provider's input, which tells it to finish.
     pub fn close_stdin(&self) {
+        self.cancel_writes();
         self.stdin.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
@@ -280,8 +397,9 @@ impl Proc {
     }
 
     pub fn stop_after(&self, grace: Duration, term_wait: Duration) {
-        // A writer stuck on a provider that stopped reading holds the lock:
-        // then the input stays open and the signals do the work.
+        self.cancel_writes();
+        // A nonblocking writer releases the lock after observing cancellation.
+        // Keep the existing owned-child shutdown escalation policy.
         if let Ok(mut stdin) = self.stdin.try_lock() {
             stdin.take();
         }
@@ -361,6 +479,78 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg(body);
         command
+    }
+
+    #[test]
+    fn attachment_pipe_backpressure_has_a_real_deadline_and_poisoned_prefix() {
+        use crate::chat::{model::Provider, testkit::Fake};
+        let fake = Fake::new(&["{\"type\":\"hang\"}\n"]);
+        let (proc, _stdout) = Proc::spawn(command(&fake.config(Provider::Codex), &[])).unwrap();
+        let started = Instant::now();
+        let error = proc
+            .send_line_until(&"x".repeat(12 << 20), started + Duration::from_millis(200))
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            error.written > 0,
+            "a pipe prefix is ambiguous, never a known refusal"
+        );
+        assert!(proc.writes_cancelled());
+        let late = proc
+            .send_line_until(
+                "never append after a partial JSON frame",
+                Instant::now() + Duration::from_secs(1),
+            )
+            .unwrap_err();
+        assert_eq!(late.written, 0);
+        proc.stop_after(Duration::ZERO, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn attachment_pipe_cancellation_does_not_need_the_stdin_mutex() {
+        use crate::chat::{model::Provider, testkit::Fake};
+        let fake = Fake::new(&["{\"type\":\"hang\"}\n"]);
+        let (proc, _stdout) = Proc::spawn(command(&fake.config(Provider::Codex), &[])).unwrap();
+        let writing = proc.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let writer = thread::spawn(move || {
+            let result = writing.send_line_until(
+                &"x".repeat(12 << 20),
+                Instant::now() + Duration::from_secs(10),
+            );
+            sent.send(result).unwrap();
+        });
+        // Wait for the owned writer to hold stdin, without depending on pipe capacity.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while proc.stdin.try_lock().is_ok() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        proc.cancel_writes();
+        let error = received
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap_err();
+        assert!(error.message.contains("cancelled"));
+        writer.join().unwrap();
+        proc.stop_after(Duration::ZERO, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn attachment_write_deadline_covers_waiting_for_the_writer_mutex() {
+        use crate::chat::{model::Provider, testkit::Fake};
+        let fake = Fake::new(&["{\"type\":\"hang\"}\n"]);
+        let (proc, _stdout) = Proc::spawn(command(&fake.config(Provider::Codex), &[])).unwrap();
+        let held = proc.stdin.lock().unwrap();
+        let error = proc
+            .send_line_until("no bytes", Instant::now() + Duration::from_millis(30))
+            .unwrap_err();
+        assert_eq!(error.written, 0);
+        assert!(
+            !proc.writes_cancelled(),
+            "a zero-byte deadline does not corrupt the pipe"
+        );
+        drop(held);
+        proc.stop_after(Duration::ZERO, Duration::from_millis(100));
     }
 
     #[test]

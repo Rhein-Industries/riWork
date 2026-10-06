@@ -2,8 +2,11 @@
 use super::model::{ChatImage, ImageSource, MessagePhase, Presentation};
 use serde_json::Value;
 
-pub const IMAGE_BYTES: usize = 4 * 1024 * 1024;
-pub const ITEM_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+// Incoming echoes must retain every accepted outbound raw-byte set after base64
+// expansion. Still bounded below the provider's 16 MiB frame cap.
+pub const IMAGE_BYTES: usize = (super::attachments::FILE_BYTES as usize).div_ceil(3) * 4;
+pub const ITEM_IMAGE_BYTES: usize =
+    (super::attachments::SEND_BYTES as usize).div_ceil(3) * 4 + IMAGE_COUNT * 4;
 pub const IMAGE_COUNT: usize = 8;
 
 pub fn reference(label: &str, target: &str) -> ChatImage {
@@ -45,7 +48,7 @@ fn encoded(mime: &str, data: &str) -> ImageSource {
         return unavailable("Unsupported image media type");
     }
     if data.len() > IMAGE_BYTES {
-        return unavailable("Image exceeds the 4 MiB encoded limit");
+        return unavailable("Image exceeds the encoded attachment limit");
     }
     ImageSource::Data {
         mime: mime.into(),
@@ -63,7 +66,11 @@ pub fn presentation(value: &Value) -> Presentation {
     let mut images = Vec::new();
     let mut bytes = 0;
     collect(value, 0, &mut images, &mut bytes);
-    Presentation { phase, images }
+    Presentation {
+        phase,
+        images,
+        ..Default::default()
+    }
 }
 fn collect(value: &Value, depth: usize, images: &mut Vec<ChatImage>, bytes: &mut usize) {
     if depth > 6 || images.len() >= IMAGE_COUNT {
@@ -124,7 +131,7 @@ fn collect(value: &Value, depth: usize, images: &mut Vec<ChatImage>, bytes: &mut
     if let Some(mut source) = source {
         if let ImageSource::Data { base64, .. } = &source {
             if *bytes + base64.len() > ITEM_IMAGE_BYTES {
-                source = unavailable("Images exceed the 8 MiB item limit");
+                source = unavailable("Images exceed the encoded attachment item limit");
             } else {
                 *bytes += base64.len();
             }
@@ -171,6 +178,28 @@ pub fn without_payloads(value: &Value) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn accepted_attachment_image_echoes_fit_encoded_retention_bounds() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let bytes = vec![0x5a; super::super::attachments::FILE_BYTES as usize];
+        let encoded = STANDARD.encode(&bytes);
+        assert!(
+            encoded.len() > 4 << 20,
+            "exercise the former encoded limit mismatch"
+        );
+        let echo = json!({"type":"userMessage", "content":[
+            {"type":"image","url":format!("data:image/png;base64,{encoded}")},
+            {"type":"image","url":format!("data:image/jpeg;base64,{encoded}")}
+        ]});
+        let kept = presentation(&echo);
+        assert_eq!(kept.images.len(), 2);
+        for image in kept.images {
+            let ImageSource::Data { base64, .. } = image.source else {
+                panic!("accepted image was lost");
+            };
+            assert_eq!(STANDARD.decode(base64).unwrap(), bytes);
+        }
+    }
     #[test]
     fn real_provider_content_is_retained_with_bounds_and_phase() {
         let codex = json!({"type":"mcpToolCall","result":{"content":[{"type":"image","mimeType":"image/png","data":"aGVsbG8="}]}});

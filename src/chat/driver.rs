@@ -34,6 +34,10 @@ pub struct DriverConfig {
 
 /// A running provider process for one chat.
 pub trait Driver: Send {
+    /// Cancel owned-child I/O without acquiring the host's command mutex.
+    fn cancel_io(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
     /// Act on a user command. Errors are for commands the driver cannot carry
     /// out at all; provider failures arrive as events.
     fn command(&mut self, command: ChatCommand) -> Result<(), String>;

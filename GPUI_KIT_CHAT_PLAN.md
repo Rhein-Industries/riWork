@@ -146,3 +146,54 @@ native image/file clipboard precedence, picker/drop/staging/removal, saved-snaps
 palette/scale/squircle and Normal/Verbose/media/path rendering. Overall task remains
 in_progress until parent accepts compiled/runtime/GUI evidence. No production app/host,
 tmux, shell, installed/main/iOS/relay/OTA state, fixture cleanup or delegate was touched.
+
+## Independent attachment audit source follow-up (2026-10-06)
+
+Read the full independent `GPUI_KIT_ATTACHMENT_AUDIT.md` from the foundation worktree;
+no edits were made there. UI source commit is
+`9c005da857e180c307b40a2db2ded6d6ffd01c06`. This backend follow-up is also
+**source-only and uncompiled/unexecuted**, with the incident hold unchanged.
+
+- A1: owned provider stdin is nonblocking. `send_line_until` bounds mutex acquisition,
+  actual writes and pipe backpressure with a monotonic deadline and short poll waits.
+  Codex's same 30-second deadline includes serialization/write plus receipt wait;
+  Claude attachment deadlines start before enqueueing, so expired queued frames cannot
+  later be silently written. Host Run retains a cancellation closure independently of
+  the driver mutex; stop/reap cancels owned-child I/O before waiting for shutdown.
+  Receipt waits observe cancellation. Zero bytes written are a known refusal; a failed
+  prefix write is uncertain, closes/poisons that child's input, and never appends another
+  JSON frame or retries. No detached writer was added; existing child process-group
+  ownership, signal targets and shutdown escalation remain unchanged.
+- A2: Claude's local user item stores the complete bounded Attachment descriptors in an
+  additive, default-empty Presentation field. Durable history now links text and image
+  messages to owned id/path/fingerprint/preview metadata without inlining file payloads.
+  Equal-length same-name text versions remain distinguishable. Incoming ordinary text
+  and image user blocks are retained too; a provider UUID gives replayed echoes a stable
+  item identity. Local attempted user-item completion remains distinct from submission
+  acknowledgement and provider turn completion.
+- A3: incoming per-image and aggregate encoded retention limits derive from the accepted
+  raw-byte attachment limits with base64 expansion and per-image padding allowance.
+  The image renderer reads the same per-image limit. The bounds remain finite and below
+  the provider frame cap; accepted PNG/JPEG echoes no longer become unavailable solely
+  because encoding expanded their raw bytes.
+- Start receipts require a nonblank turn id. Dispatch serials prevent late start receipts
+  or refusals from mutating a newer lifecycle. A bounded completion cache also guards
+  completion-before-receipt and reordered older completions; overflow is uncertain rather
+  than reopening an already finished turn. Matching steer receipts acknowledge their
+  expected turn without inferring its completion. No ambiguous receipt/write retries.
+
+Deferred source fixtures now cover a live fake child that stops draining a large input,
+pipe deadline/cancellation/mutex acquisition, distinct durable text versions, ordinary
+user replay, a valid accepted PNG above the old encoded retention bound, aggregate raw
+image echo retention, blank/missing ids and reordered completions. The fake backpressure
+step records a consumed turn/start prefix before stopping reads, avoiding a timing-only
+partial-write assumption. None of these fixtures was launched under hold.
+
+After parent isolation release, run the UI handoff commands above plus focused
+`chat::host::tests::`, `chat::codex::tests::`, `chat::claude::tests::`,
+`chat::client::tests::`, and `schedule_chat::fresh_tests::` regressions with live provider
+tests ignored. Verify end-to-end socket stop/shutdown during backpressure, the total
+write/receipt deadline, cancellation before/after the first byte, pending answer replacement
+and stale receipt ordering, native clipboard/IME and picker/drop behavior. The previous
+Phase 1 receipts do not validate this follow-up. Parent owns build/runtime/GUI release and
+task acceptance; this worktree returns idle without production or installed-state actions.

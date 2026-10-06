@@ -266,12 +266,23 @@ struct ClaudeDriver {
 }
 
 impl Driver for ClaudeDriver {
+    fn cancel_io(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        let shared = Arc::downgrade(&self.shared);
+        Some(Arc::new(move || {
+            if let Some(shared) = shared.upgrade() {
+                if let Some(proc) = shared.lock().proc.clone() {
+                    proc.cancel_writes();
+                }
+            }
+        }))
+    }
     fn command(&mut self, command: ChatCommand) -> Result<(), String> {
         if matches!(command, ChatCommand::Stop) {
             self.shutdown();
             return Ok(());
         }
         if let ChatCommand::SendAttachments { text, attachments } = &command {
+            let deadline = Instant::now() + child::WRITE_WAIT;
             let content = super::attachments::inputs(text, attachments, true)?;
             let (receipt, wait) = mpsc::channel();
             {
@@ -283,6 +294,7 @@ impl Driver for ClaudeDriver {
                     );
                 }
                 let outgoing = Outgoing {
+                    deadline: Some(deadline),
                     line: json!({
                         "type":"user", "session_id":"", "message":{"role":"user","content":content},
                         "parent_tool_use_id":null,
@@ -316,6 +328,7 @@ impl Driver for ClaudeDriver {
                 core.born(Item {
                     presentation: super::model::Presentation {
                         images,
+                        attachments: attachments.clone(),
                         ..Default::default()
                     },
                     id: format!("user-{}", Uuid::new_v4()),
@@ -327,8 +340,29 @@ impl Driver for ClaudeDriver {
                 });
             }
             // Receipt means written to Claude's pipe, not provider acceptance/completion.
-            return wait.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|e| Err(e.to_string()))
-                .map_err(|e| format!("{} Claude submission write was not confirmed ({e}); inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION));
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let cancelled = self
+                    .shared
+                    .lock()
+                    .proc
+                    .as_ref()
+                    .is_none_or(|proc| proc.writes_cancelled());
+                if remaining.is_zero() || cancelled {
+                    // Prefer a writer's precise zero/partial classification if available.
+                    return wait.try_recv().unwrap_or_else(|_| Err(format!("{} Claude submission write was not confirmed; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION)));
+                }
+                match wait.recv_timeout(remaining.min(Duration::from_millis(20))) {
+                    Ok(result) => return result,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "{} Claude submission writer lost ({error}); inspect the transcript before resending",
+                            super::attachments::UNKNOWN_SUBMISSION
+                        ));
+                    }
+                }
+            }
         }
         let mut core = self.shared.lock();
         let result = core.command(command);
@@ -358,6 +392,7 @@ impl Drop for ClaudeDriver {
 /// State shared by the driver, the reader of each process and the watchdog.
 struct Outgoing {
     line: String,
+    deadline: Option<Instant>,
     receipt: Option<Sender<Result<(), String>>>,
 }
 
@@ -675,6 +710,7 @@ impl Core {
             .ok_or_else(|| "claude is not running".to_owned())?
             .send(Outgoing {
                 line: value.to_string(),
+                deadline: None,
                 receipt: None,
             })
             .map_err(|_| "claude has closed its input".to_owned())
@@ -1429,6 +1465,29 @@ impl Core {
         let Some(content) = frame.pointer("/message/content").and_then(Value::as_array) else {
             return;
         };
+        // Retain ordinary echoed/replayed user blocks as well as tool results.
+        // Provider UUIDs give replays the same item identity; payloads stay bounded.
+        let ordinary = content
+            .iter()
+            .filter(|block| matches!(str_of(block, "type"), Some("text" | "image")))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !ordinary.is_empty() {
+            let ordinary = Value::Array(ordinary);
+            let uuid = str_of(frame, "uuid")
+                .filter(|id| !id.trim().is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            self.born(Item {
+                id: format!("user-echo-{uuid}"),
+                turn_id: self.turn_id(),
+                status: ItemStatus::Completed,
+                presentation: super::media::presentation(&ordinary),
+                body: ItemBody::UserMessage {
+                    text: cap_text(&content_text(&ordinary), false),
+                },
+            });
+        }
         for block in content {
             if str_of(block, "type") != Some("tool_result") {
                 continue;
@@ -1841,7 +1900,23 @@ fn start_process(shared: &Arc<Shared>) -> Result<(), String> {
     let writer = Arc::clone(&proc);
     thread::spawn(move || {
         for outgoing in out_rx {
-            let result = writer.send_line(&outgoing.line);
+            let result = writer
+                .send_line_until(
+                    &outgoing.line,
+                    outgoing
+                        .deadline
+                        .unwrap_or_else(|| Instant::now() + child::WRITE_WAIT),
+                )
+                .map_err(|error| {
+                    if error.written == 0 {
+                        error.to_string()
+                    } else {
+                        format!(
+                            "{} {error}; inspect the transcript before resending",
+                            super::attachments::UNKNOWN_SUBMISSION
+                        )
+                    }
+                });
             let failed = result.is_err();
             if let Some(receipt) = outgoing.receipt {
                 let _ = receipt.send(result);

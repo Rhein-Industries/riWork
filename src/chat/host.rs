@@ -259,6 +259,7 @@ struct Run {
     generation: u64,
     /// `None` while `StartDriver` is still running.
     driver: Option<DriverHandle>,
+    cancel_io: Option<Arc<dyn Fn() + Send + Sync>>,
     /// A stop is shutting the driver down; its last events are still logged.
     stopping: bool,
     /// The driver reported that it ended before `StartDriver` returned.
@@ -272,6 +273,7 @@ impl Run {
         Self {
             generation,
             driver: None,
+            cancel_io: None,
             stopping: false,
             ended: false,
             reader_done: Arc::new(AtomicBool::new(false)),
@@ -284,6 +286,9 @@ impl Run {
 
     /// Reaps the process of a run that is over, without making the caller wait.
     fn reap(self) {
+        if let Some(cancel) = self.cancel_io {
+            cancel();
+        }
         if let Some(driver) = self.driver {
             thread::spawn(move || lock(&driver).shutdown());
         }
@@ -1407,6 +1412,7 @@ fn fail_start(chat: &Chat, generation: u64, message: String) -> Result<(), Strin
 /// Hands a started driver to its run.
 fn attach(chat: &Chat, generation: u64, driver: Box<dyn Driver>) -> Result<(), String> {
     let thread = driver.provider_thread_id();
+    let cancel_io = driver.cancel_io();
     let handle: DriverHandle = Arc::new(Mutex::new(driver));
     let mut inner = lock(&chat.inner);
     let Some(run) = inner
@@ -1419,6 +1425,7 @@ fn attach(chat: &Chat, generation: u64, driver: Box<dyn Driver>) -> Result<(), S
         return Err("the chat was stopped while it started".into());
     };
     run.driver = Some(handle);
+    run.cancel_io = cancel_io;
     let ended = run.ended;
     inner.learn(thread, None, None);
     if ended {
@@ -1525,16 +1532,23 @@ fn stop(chat: &Chat) {
 }
 
 fn stop_locked(chat: &Chat) {
-    let (driver, reader_done) = {
+    let (driver, reader_done, cancel_io) = {
         let mut inner = lock(&chat.inner);
         match inner.run.as_mut() {
             Some(run) => {
                 run.stopping = true;
-                (run.driver.take(), Some(run.reader_done.clone()))
+                (
+                    run.driver.take(),
+                    Some(run.reader_done.clone()),
+                    run.cancel_io.take(),
+                )
             }
-            None => (None, None),
+            None => (None, None, None),
         }
     };
+    if let Some(cancel) = cancel_io {
+        cancel();
+    }
     if let Some(driver) = driver {
         lock(&driver).shutdown();
         // A driver may hold its end of the event channel until it is dropped.
