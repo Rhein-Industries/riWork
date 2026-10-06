@@ -1179,8 +1179,7 @@ impl SessionManager {
     /// What `shell output --json` answers. Without `if_changed` this is one
     /// capture with its hash. With it, a capture whose hash is still
     /// `if_changed` is not returned: the shell is captured again, inside this
-    /// call, whenever tmux reports that its pane changed (and in any case every
-    /// `watch::SAFETY_POLL`; every `OUTPUT_POLL` where tmux cannot report), until
+    /// call, every `OUTPUT_POLL` (bounded by the remaining wait), until
     /// the hash differs or `wait` has passed, and only then is `Unchanged` the
     /// answer. Each capture is one bounded tmux call; `wait` is capped at
     /// `MAX_OUTPUT_WAIT`.
@@ -4963,9 +4962,9 @@ fn poll_output(
     }
 }
 
-/// How a waiting `read_output` passes the time between captures: it watches
-/// the pane through a control-mode client (`watch`) and captures when told
-/// something happened, or polls every `OUTPUT_POLL` when it cannot watch.
+/// How a waiting `read_output` passes the time between captures. Control-mode
+/// watching is temporarily disabled at `SessionManager::watch`, so every wait
+/// uses the existing `OUTPUT_POLL` fallback.
 struct Waiter<'a> {
     manager: &'a SessionManager,
     id: &'a str,
@@ -4973,7 +4972,7 @@ struct Waiter<'a> {
 }
 
 enum WaiterState {
-    /// No client yet: the first wait starts one.
+    /// No wait yet: the first pause selects polling while watching is disabled.
     Fresh,
     Watching(watch::PaneWatch),
     Polling,
@@ -5022,13 +5021,15 @@ impl<'a> Waiter<'a> {
 }
 
 impl SessionManager {
-    /// A control-mode client watching the pane of `id`, if one can be attached.
-    fn watch(&self, id: &str) -> Option<watch::PaneWatch> {
-        watch::PaneWatch::start(self.tmux_client(), id)
+    /// Temporarily use polling for all servers: control-client disconnects can
+    /// crash vulnerable tmux servers during client identification. A version
+    /// query cannot rule out replacement between the query and attachment.
+    fn watch(&self, _id: &str) -> Option<watch::PaneWatch> {
+        None
     }
 
-    /// The same client for the desktop's terminal links, which read a screen again only when it
-    /// may have changed. It blocks until attached (at most a second); call it off the UI thread.
+    /// Desktop terminal links use their existing polling fallback while
+    /// control-mode watching is disabled. This never starts a tmux client.
     pub(crate) fn watch_shell(&self, id: &str) -> Option<watch::PaneWatch> {
         validate_uuid(id).ok()?;
         self.watch(id)
@@ -5622,6 +5623,9 @@ fn strip_schedule_sgr(text: &str) -> String {
 
 #[cfg(test)]
 mod output_tests;
+
+#[cfg(all(test, unix))]
+mod polling_tests;
 
 #[cfg(test)]
 mod tmux_tests;

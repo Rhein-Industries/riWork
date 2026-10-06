@@ -2810,7 +2810,7 @@ fn a_history_page_is_what_the_capture_holds_and_never_more_than_the_history() {
     assert!(page("1\n2\n", 10, 9, 5).is_err());
 }
 
-// Waiting without polling, and the tmux processes a call costs.
+// Waiting with temporary universal polling, and the tmux processes a call costs.
 
 impl Fixture {
     /// A fixture whose tmux is a wrapper around the real one that records the
@@ -2945,7 +2945,7 @@ fn a_shell_that_is_gone_is_still_told_apart_from_a_tmux_error() {
 }
 
 #[test]
-fn a_waiting_read_watches_the_pane_instead_of_capturing_it_every_80_ms() {
+fn a_waiting_read_polls_without_attaching_a_control_client() {
     let Some(fixture) = Fixture::counting(false) else {
         return;
     };
@@ -2967,7 +2967,7 @@ fn a_waiting_read_watches_the_pane_instead_of_capturing_it_every_80_ms() {
             (read, started.elapsed())
         });
         std::thread::sleep(Duration::from_millis(1200));
-        // While it waits: one control client, and it neither resizes nor types.
+        // While it waits: no control client, and it neither resizes nor types.
         let clients = fixture
             .manager
             .tmux_text(&[
@@ -2996,16 +2996,12 @@ fn a_waiting_read_watches_the_pane_instead_of_capturing_it_every_80_ms() {
         elapsed < Duration::from_millis(2600),
         "returned at {elapsed:?}, long after the change"
     );
-    // A second of silence cost three tmux calls, not one per 80 ms.
-    // The capture that found nothing, one client, and the capture right after
-    // it attached: no matter how long the pane stays quiet.
+    // Silence uses repeated captures, with zero control-client attempts.
     let (clients, size_during, captures_during, clients_started) = during;
-    assert_eq!(captures_during, 2, "{:?}", fixture.calls());
-    assert_eq!(clients_started, 1, "{:?}", fixture.calls());
+    assert!(captures_during >= 2, "{:?}", fixture.calls());
+    assert_eq!(clients_started, 0, "{:?}", fixture.calls());
     let control: Vec<&str> = clients.lines().filter(|c| c.starts_with("1|")).collect();
-    assert_eq!(control.len(), 1, "{clients}");
-    assert!(!control[0].contains("read-only"), "{clients}");
-    assert!(control[0].contains("ignore-size"), "{clients}");
+    assert!(control.is_empty(), "{clients}");
     assert_eq!(size_during, size);
     // And nothing stays attached afterwards.
     let clients = fixture
@@ -3016,7 +3012,7 @@ fn a_waiting_read_watches_the_pane_instead_of_capturing_it_every_80_ms() {
 }
 
 #[test]
-fn a_quiet_pane_is_not_captured_while_watched_and_a_wait_times_out_on_time() {
+fn a_quiet_pane_is_polled_and_a_wait_times_out_on_time() {
     let Some(fixture) = Fixture::counting(false) else {
         return;
     };
@@ -3033,17 +3029,17 @@ fn a_quiet_pane_is_not_captured_while_watched_and_a_wait_times_out_on_time() {
     assert!(matches!(read, OutputRead::Unchanged { .. }), "{read:?}");
     assert!(elapsed >= Duration::from_millis(1500), "{elapsed:?}");
     assert!(elapsed < Duration::from_millis(5000), "{elapsed:?}");
-    // The first capture, the client, the capture right after it attached.
+    // Repeated captures until the deadline, without starting a control client.
     assert!(
-        fixture.calls_with("capture-pane") <= 3,
+        fixture.calls_with("capture-pane") >= 2,
         "{:?}",
         fixture.calls()
     );
-    assert_eq!(fixture.calls_with(" -C "), 1);
+    assert_eq!(fixture.calls_with(" -C "), 0);
 }
 
 #[test]
-fn a_pane_that_cannot_be_watched_is_polled_as_before() {
+fn a_control_client_that_would_be_refused_is_never_attempted() {
     let Some(fixture) = Fixture::counting(true) else {
         return;
     };
@@ -3072,8 +3068,8 @@ fn a_pane_that_cannot_be_watched_is_polled_as_before() {
     };
     assert!(capture.output.starts_with("firstsecond"), "{capture:?}");
     assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
-    // It tried to watch once, then captured about every 80 ms.
-    assert_eq!(fixture.calls_with(" -C "), 1, "{:?}", fixture.calls());
+    // It never tries to watch, and captures about every 80 ms.
+    assert_eq!(fixture.calls_with(" -C "), 0, "{:?}", fixture.calls());
     assert!(
         fixture.calls_with("capture-pane") >= 4,
         "{:?}",
@@ -3082,7 +3078,7 @@ fn a_pane_that_cannot_be_watched_is_polled_as_before() {
 }
 
 #[test]
-fn a_watched_wait_notices_a_pane_that_ends() {
+fn a_polled_wait_notices_a_pane_that_ends() {
     let Some(fixture) = Fixture::with_tmux() else {
         return;
     };
@@ -3103,12 +3099,12 @@ fn a_watched_wait_notices_a_pane_that_ends() {
     });
     let error = result.unwrap_err();
     assert!(error.contains("exited"), "{error}");
-    // The client leaving is the wake-up: not the four seconds of a safety poll.
+    // The next polling capture notices the shell ended.
     assert!(elapsed < Duration::from_millis(3500), "{elapsed:?}");
 }
 
 #[test]
-fn a_watched_wait_sees_scrollback_cleared_without_any_output_within_the_safety_poll() {
+fn a_polled_wait_sees_scrollback_cleared_without_any_output() {
     let Some(fixture) = Fixture::with_tmux() else {
         return;
     };
