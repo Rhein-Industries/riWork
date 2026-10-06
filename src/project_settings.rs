@@ -1723,6 +1723,9 @@ impl Render for FolderEditor {
         let colors = theme::palette(cx);
         let panel = div()
             .id("virtual-folder-editor")
+            // Pinned Base Dialog's focus-trap host omits its AX role.
+            .role(gpui::Role::Dialog)
+            .aria_label(if self.folder.is_some() { "Rename virtual folder" } else if self.parent_id.is_some() { "New subfolder" } else { "New virtual folder" })
             .occlude()
             .key_context("FolderEditor")
             .capture_key_down(cx.listener(Self::key_down))

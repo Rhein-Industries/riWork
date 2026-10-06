@@ -607,6 +607,9 @@ impl Render for RemotePrompt {
         let base = self.field_slots();
         let panel = div()
             .id("remote-prompt")
+            // Pinned Base Dialog's focus-trap host omits its AX role.
+            .role(gpui::Role::Dialog)
+            .aria_label(self.title())
             .occlude()
             .key_context("RemotePrompt")
             .capture_key_down(cx.listener(Self::key_down))

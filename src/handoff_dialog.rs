@@ -1006,6 +1006,9 @@ impl Render for HandoffDialog {
         };
         let panel = div()
             .id("handoff-dialog")
+            // Pinned Base Dialog's focus-trap host omits its AX role.
+            .role(gpui::Role::Dialog)
+            .aria_label("Hand off session")
             .occlude()
             .key_context("HandoffDialog")
             .capture_key_down(cx.listener(Self::key_down))

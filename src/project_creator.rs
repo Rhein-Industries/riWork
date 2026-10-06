@@ -518,6 +518,9 @@ impl Render for ProjectCreator {
         };
         let panel = div()
             .id("project-creator")
+            // Pinned Base Dialog's focus-trap host omits its AX role.
+            .role(gpui::Role::Dialog)
+            .aria_label("New project")
             .occlude()
             .key_context("ProjectCreator")
             .capture_key_down(cx.listener(Self::key_down))
