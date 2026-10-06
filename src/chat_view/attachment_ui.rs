@@ -370,6 +370,8 @@ impl ChatView {
                                     Some(look.colors.cyan),
                                     look,
                                 )
+                                .aria_expanded(chip.open)
+                                .accessibility_label(format!("Preview {}", chip.name))
                                 .on_click(cx.listener(
                                     move |view, _, _, cx| {
                                         if let Some(c) =
@@ -404,6 +406,7 @@ impl ChatView {
                             }))
                             .child(
                                 button(format!("attachment-remove-{remove}"), "Remove", None, look)
+                                    .accessibility_label(format!("Remove {}", chip.name))
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         view.remove_attachment(&remove, cx)
                                     })),
@@ -442,7 +445,7 @@ impl ChatView {
             let review_key = format!("submission:{id}"); let expanded = self.open.contains(&review_key);
             div().id(format!("chat-submission-{id}")).flex().flex_col().gap(ui_text::space(3.))
                 .child(div().text_size(ui_text::text(10.)).text_color(rgb(look.colors.gold)).child(label))
-                .child(button(format!("chat-review-{id}"), if expanded {"▾ Saved draft"} else {"▸ Saved draft"}, None, look).on_click(cx.listener(move |view, _, _, cx| view.toggle(&review_key, None, cx))))
+                .child(button(format!("chat-review-{id}"), if expanded {"▾ Saved draft"} else {"▸ Saved draft"}, None, look).aria_expanded(expanded).on_click(cx.listener(move |view, _, _, cx| view.toggle(&review_key, None, cx))))
                 .children(expanded.then(|| div().flex().flex_col().gap(ui_text::space(3.))
                     .child(div().id(format!("chat-saved-text-{id}")).max_h(ui_text::space(160.)).overflow_y_scroll().child(saved.snapshot.text.clone()))
                     .children(saved.snapshot.attachments.iter().map(|a| div().child(format!("{} ({} bytes)",a.name,a.bytes))))

@@ -1,152 +1,272 @@
-//! RiWork renderers participating in Base's window TextSelection.
-//!
-//! Base owns gestures, word/line selection, Shift extension, UTF-8 projection,
-//! scrolling and clipboard ordering. This module only retains participants,
-//! assigns transcript reading order and paints Base's projected ranges over
-//! RiWork's rich text. The window owner installs one Base Root/selection layer.
-
+//! One persistent Base participant for the virtual transcript document.
+//! Base owns all gestures/endpoints/multi-click/Shift/autoscroll. The renderer
+//! reports glyph runs; stable content keys and copy_with export current source,
+//! including leaves whose elements have genuinely left the virtual list.
+use super::{ChatView, selection_document::SourceLeaf, widgets::Look};
+use gpui::{
+    AnyElement, AnyWindowHandle, App, Bounds, Context, Element, ElementId, FocusHandle, Focusable,
+    GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, InspectorElementId, InteractiveText,
+    IntoElement, LayoutId, ListState, Pixels, Point, SharedString, StyledText, Subscription,
+    TextLayout, Window, div, prelude::*, rgb,
+};
+use gpui_kit::base::{
+    TestSupportExt as _, TextSelection, TextSelectionContentKey, TextSelectionEvent,
+    TextSelectionHandle, TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId,
+    TextSelectionSnapshot,
+};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     ops::Range,
+    rc::Rc,
 };
 
-use gpui::{
-    AnyElement, AnyWindowHandle, App, Bounds, Context, Element, ElementId, FocusHandle, Focusable,
-    GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, InspectorElementId, InteractiveText,
-    IntoElement, LayoutId, Pixels, Point, SharedString, StyledText, Subscription, TextLayout,
-    Window, div, prelude::*, rgb,
-};
-use gpui_kit::base::{
-    ElementExt as _, SelectableText, TestSupportExt as _, TextSelection, TextSelectionEvent,
-    TextSelectionHandle, TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId,
-};
-
-use super::{ChatView, widgets::Look};
-
-struct Run {
-    handle: TextSelectionHandle,
+#[derive(Clone)]
+struct PaintedLeaf {
+    key: String,
     text: SharedString,
-    row: usize,
-    _refresh: Subscription,
+    layout: TextLayout,
+    bounds: Bounds<Pixels>,
+    clip: Bounds<Pixels>,
+    order: u64,
+}
+#[derive(Default)]
+struct Document {
+    source: Vec<SourceLeaf>,
+    ids: HashMap<String, u32>,
+    next_id: u32,
+    frame: Vec<PaintedLeaf>,
+    origin: Point<Pixels>,
+    scroll: Point<Pixels>,
+    native: Option<bool>,
+    participant: Option<gpui::EntityId>,
 }
 
-/// Membership and presentation metadata only; selected ranges/text live in Base.
+impl Document {
+    fn endpoint(&self, key: TextSelectionContentKey) -> Option<(usize, usize)> {
+        let id = (key.value() >> 32) as u32;
+        let byte = key.value() as u32 as usize;
+        let at = self
+            .source
+            .iter()
+            .position(|leaf| self.ids.get(&leaf.key) == Some(&id))?;
+        let text = &self.source[at].text;
+        (byte <= text.len() && text.is_char_boundary(byte)).then_some((at, byte))
+    }
+    fn endpoints(
+        &self,
+        snapshot: TextSelectionSnapshot,
+    ) -> Option<((usize, usize), (usize, usize))> {
+        if snapshot.anchor().entity_id() != self.participant
+            || snapshot.cursor().entity_id() != self.participant
+        {
+            return None;
+        }
+        let a = self.endpoint(snapshot.anchor().content_key()?)?;
+        let b = self.endpoint(snapshot.cursor().content_key()?)?;
+        Some((a.min(b), a.max(b)))
+    }
+    fn export(&self, snapshot: Option<TextSelectionSnapshot>) -> String {
+        let Some((a, b)) = snapshot.and_then(|s| self.endpoints(s)) else {
+            return String::new();
+        };
+        if a == b {
+            return String::new();
+        }
+        // One newline between displayed leaves/cells/messages; code's embedded
+        // newlines and all indentation/trailing/blank-only bytes stay exact.
+        (a.0..=b.0)
+            .map(|at| {
+                let text = &self.source[at].text;
+                let start = if at == a.0 { a.1 } else { 0 };
+                let end = if at == b.0 { b.1 } else { text.len() };
+                &text[start..end]
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    fn rows(&self, snapshot: Option<TextSelectionSnapshot>) -> Vec<usize> {
+        let Some((a, b)) = snapshot.and_then(|s| self.endpoints(s)) else {
+            return Vec::new();
+        };
+        self.source[a.0..=b.0].iter().map(|leaf| leaf.row).collect()
+    }
+    fn content_key(&self, point: Point<Pixels>) -> Option<TextSelectionContentKey> {
+        let window_point = point + self.origin + self.scroll;
+        // Renderer mapping only: native TextLayout supplies Unicode/wrap-safe
+        // glyph hit testing. No mouse history, word or gesture algorithm here.
+        let leaf = self
+            .frame
+            .iter()
+            .filter(|leaf| leaf.bounds.intersect(&leaf.clip).contains(&window_point))
+            .min_by_key(|leaf| leaf.order)
+            .or_else(|| {
+                self.frame
+                    .iter()
+                    .filter(|leaf| leaf.bounds.top() <= window_point.y)
+                    .max_by_key(|leaf| leaf.order)
+            })
+            .or_else(|| self.frame.iter().min_by_key(|leaf| leaf.order))?;
+        let byte = leaf
+            .layout
+            .index_for_position(window_point)
+            .unwrap_or_else(|byte| byte)
+            .min(leaf.text.len());
+        if !leaf.text.is_char_boundary(byte) {
+            return None;
+        }
+        let id = *self.ids.get(&leaf.key)?;
+        Some(TextSelectionContentKey::new(
+            (u64::from(id) << 32) | u64::from(u32::try_from(byte).ok()?),
+        ))
+    }
+}
+
 pub(super) struct TranscriptSelection {
     pub scope: TextSelectionScopeId,
-    row: Cell<usize>,
-    ordinal: Cell<u32>,
-    runs: RefCell<HashMap<String, Run>>,
+    handle: TextSelectionHandle,
+    data: Rc<RefCell<Document>>,
+    dirty: Cell<bool>,
+    _refresh: Subscription,
 }
-
-impl Default for TranscriptSelection {
-    fn default() -> Self {
-        Self {
-            scope: TextSelectionScopeId::new(),
-            row: Cell::new(0),
-            ordinal: Cell::new(0),
-            runs: RefCell::new(HashMap::new()),
-        }
-    }
-}
-
 impl TranscriptSelection {
-    /// Rows can render/cache in any order. Within a row, the renderer builds
-    /// leaves in Vec/tree reading order, never HashMap or frame paint order.
-    pub fn begin_row(&self, row: usize) {
-        self.row.set(row);
-        self.ordinal.set(0);
-    }
-
-    fn participant(
-        &self,
-        key: &str,
-        text: SharedString,
+    pub fn new(
         focus: FocusHandle,
         window: AnyWindowHandle,
+        owner: gpui::WeakEntity<ChatView>,
         cx: &mut App,
-    ) -> (TextSelectionHandle, u64) {
-        let row = self.row.get();
-        let ordinal = self.ordinal.get();
-        self.ordinal
-            .set(ordinal.checked_add(1).expect("transcript row too large"));
-        let order = (u64::from(u32::try_from(row).expect("transcript too large")) << 32)
-            | u64::from(ordinal);
-        let key = format!("{row}:{key}");
-        let changed_selection = self
-            .runs
-            .borrow()
-            .get(&key)
-            .is_some_and(|run| run.text != text && run.handle.snapshot(cx).is_some());
-        if changed_selection {
-            self.clear(window, cx);
+    ) -> Self {
+        let handle = TextSelectionHandle::new("", cx);
+        let participant = handle.entity_id();
+        let data = Rc::new(RefCell::new(Document::default()));
+        data.borrow_mut().participant = Some(handle.entity_id());
+        handle.focus_with(move |window, cx| focus.focus(window, cx), cx);
+        let source = data.clone();
+        let weak = Rc::downgrade(&source);
+        handle.resolve_content_key_with(
+            move |point, _| weak.upgrade()?.borrow().content_key(point),
+            cx,
+        );
+        handle.copy_with(
+            move |cx| {
+                let Some(owner) = owner.upgrade() else {
+                    return String::new();
+                };
+                let selection = &owner.read(cx).transcript_selection;
+                if selection.handle.entity_id() != participant {
+                    return String::new();
+                }
+                selection
+                    .data
+                    .borrow()
+                    .export(selection.handle.snapshot(cx))
+            },
+            cx,
+        );
+        let refresh = handle.subscribe(
+            move |event, cx| {
+                if matches!(event, TextSelectionEvent::SelectionChanged(_)) {
+                    let _ = window.update(cx, |_, window, _| window.refresh());
+                }
+            },
+            cx,
+        );
+        Self {
+            scope: TextSelectionScopeId::new(),
+            handle,
+            data,
+            dirty: Cell::new(true),
+            _refresh: refresh,
         }
-        let mut runs = self.runs.borrow_mut();
-        let run = runs.entry(key).or_insert_with(|| {
-            let handle = TextSelectionHandle::new("", cx);
-            handle.focus_with(move |window, cx| focus.focus(window, cx), cx);
-            let refresh = handle.subscribe(
-                move |event, cx| {
-                    if matches!(event, TextSelectionEvent::SelectionChanged(_)) {
-                        let _ = window.update(cx, |_, window, _| window.refresh());
-                    }
-                },
-                cx,
-            );
-            Run {
-                handle,
-                text: text.clone(),
-                row,
-                _refresh: refresh,
-            }
-        });
-        if run.text != text {
-            // An old projection must not be copied between Change and paint.
-            run.handle.update_runs(&[], cx);
-            run.handle.set_fallback_copy_text("", cx);
-            run.text = text;
-        }
-        (run.handle.clone(), order)
     }
-
+    pub fn changed(&self) {
+        self.dirty.set(true);
+    }
     pub fn selected_rows(&self, cx: &App) -> Vec<usize> {
-        self.runs
-            .borrow()
-            .values()
-            .filter_map(|run| {
-                (run.handle.snapshot(cx).is_some() || run.handle.has_local_selection(cx))
-                    .then_some(run.row)
-            })
-            .collect()
+        self.data.borrow().rows(self.handle.snapshot(cx))
     }
-
     pub fn clear(&self, window: AnyWindowHandle, cx: &mut App) {
-        // A background chat must not clear another chat/window's selection.
-        if !self.selected_rows(cx).is_empty() {
+        if self.handle.snapshot(cx).is_some() || self.handle.has_local_selection(cx) {
             TextSelection::clear_for_window(window.window_id(), cx);
         }
     }
-
     pub fn retire(&mut self, window: AnyWindowHandle, cx: &mut App) {
         self.clear(window, cx);
-        for run in self.runs.borrow().values() {
-            run.handle.update_runs(&[], cx);
-        }
-        self.runs.get_mut().clear();
+        let scope = self.scope;
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                crate::behavior_controls::retire_content_scope(scope, window, cx)
+            });
+        });
+        self.data.borrow_mut().source.clear();
+        self.data.borrow_mut().frame.clear();
+        self.handle.update_runs(&[], cx);
         self.scope = TextSelectionScopeId::new();
+        self.changed();
+    }
+    pub fn viewport(&self, body: impl IntoElement, list: ListState, look: Look) -> AnyElement {
+        DocumentViewport {
+            body: body.into_any_element(),
+            data: self.data.clone(),
+            handle: self.handle.clone(),
+            scope: self.scope,
+            list,
+            color: rgb(look.tint(look.colors.cyan, 0.4)).into(),
+        }
+        .into_any_element()
+    }
+    #[cfg(test)]
+    pub(super) fn glyph_point(&self, key: &str, byte: usize) -> Option<Point<Pixels>> {
+        let data = self.data.borrow();
+        let leaf = data.frame.iter().find(|leaf| leaf.key == key)?;
+        let point = leaf.layout.position_for_index(byte)?;
+        Some(point + gpui::point(gpui::px(0.), leaf.layout.line_height() / 2.))
     }
 }
 
 impl ChatView {
-    /// Bubble after Base editors have had Copy. Base owns the projection and
-    /// ordering; this adapter only preserves code whitespace (stock Root trims).
+    pub(super) fn refresh_selection_document(&mut self, look: Look, cx: &mut Context<Self>) {
+        if !self.transcript_selection.dirty.replace(false)
+            && self.transcript_selection.data.borrow().native == Some(look.native)
+        {
+            return;
+        }
+        let source = super::selection_document::leaves(self, look);
+        let changed_selected = {
+            let old = self.transcript_selection.data.borrow();
+            old.rows(self.transcript_selection.handle.snapshot(cx))
+                .into_iter()
+                .any(|row| {
+                    old.source
+                        .iter()
+                        .filter(|leaf| leaf.row == row)
+                        .ne(source.iter().filter(|leaf| leaf.row == row))
+                })
+        };
+        if changed_selected {
+            self.transcript_selection.clear(self.window_handle, cx);
+        }
+        let mut data = self.transcript_selection.data.borrow_mut();
+        for leaf in &source {
+            if !data.ids.contains_key(&leaf.key) {
+                data.next_id = data
+                    .next_id
+                    .checked_add(1)
+                    .expect("transcript leaf identity exhausted");
+                let id = data.next_id;
+                data.ids.insert(leaf.key.clone(), id);
+            }
+        }
+        data.source = source;
+        data.native = Some(look.native);
+    }
     pub(super) fn copy_transcript(
         &mut self,
         _: &gpui_kit::base::input::Copy,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let editor_focused = self.composer.read(cx).focus_handle(cx).is_focused(window)
+        if self.composer.read(cx).focus_handle(cx).is_focused(window)
             || self
                 .model_input
                 .read(cx)
@@ -155,26 +275,21 @@ impl ChatView {
             || self
                 .answers
                 .values()
-                .any(|answer| answer.state.read(cx).focus_handle(cx).is_focused(window));
-        if editor_focused {
-            // Normally the Base editor consumes Copy, including an empty
-            // selection. Never let a disabled/unmounted editor fall through
-            // to an unrelated window projection.
+                .any(|answer| answer.state.read(cx).focus_handle(cx).is_focused(window))
+        {
             TextSelection::clear(window, cx);
             return;
         }
-        if self.transcript_selection.selected_rows(cx).is_empty() {
-            cx.propagate();
-            return;
-        }
-        let text = TextSelection::selected_text(window, cx);
+        // Query our source projection directly: Base's multi-participant
+        // compositor filters whitespace-only contributions before Root Copy.
+        let snapshot = self.transcript_selection.handle.snapshot(cx);
+        let text = self.transcript_selection.data.borrow().export(snapshot);
         if text.is_empty() {
             cx.propagate();
         } else {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
         }
     }
-
     pub(super) fn selectable(
         &self,
         key: &str,
@@ -187,7 +302,7 @@ impl ChatView {
         for (range, target) in super::links::detect(&text, key.starts_with("code:")) {
             if links
                 .iter()
-                .all(|(existing, _)| existing.end <= range.start || existing.start >= range.end)
+                .all(|(other, _)| other.end <= range.start || other.start >= range.end)
             {
                 if highlights.is_empty() {
                     highlights.push((
@@ -203,113 +318,79 @@ impl ChatView {
         }
         links.sort_by_key(|(range, _)| range.start);
         let text: SharedString = text.into();
-        let (handle, order) = self.transcript_selection.participant(
-            key,
-            text.clone(),
-            self.focus.clone(),
-            self.window_handle,
-            cx,
-        );
-        let color = rgb(look.tint(look.colors.cyan, 0.4)).into();
-        let body = if highlights.is_empty() && links.is_empty() {
-            // Use the complete library element wherever rich styling is unnecessary.
-            SelectableText::with_handle(
-                ElementId::Name(format!("plain:{key}").into()),
-                handle,
-                text.clone(),
-            )
-            .document_order(order)
-            .selection_color(color)
-            .into_any_element()
+        let styled = StyledText::new(text.clone()).with_highlights(highlights);
+        let layout = styled.layout().clone();
+        let body = if links.is_empty() {
+            styled.into_any_element()
         } else {
-            let styled = StyledText::new(text.clone()).with_highlights(highlights);
-            let layout = styled.layout().clone();
-            let body = if links.is_empty() {
-                styled.into_any_element()
-            } else {
-                let ranges = links.iter().map(|(range, _)| range.clone()).collect();
-                let targets = links
-                    .into_iter()
-                    .map(|(_, target)| target)
-                    .collect::<Vec<_>>();
-                let view = cx.weak_entity();
-                let click_handle = handle.clone();
-                InteractiveText::new(ElementId::Name(format!("links:{key}").into()), styled)
-                    .on_click(ranges, move |at, window, cx| {
-                        // InteractiveText's range click is not a selection gesture.
-                        // Base's projected selection vetoes drag, multi-click and
-                        // Shift extension before a link can activate.
-                        let moved = click_handle
-                            .snapshot(cx)
-                            .and_then(|snapshot| snapshot.window_points())
-                            .is_some_and(|points| points.anchor() != points.cursor());
-                        if moved || !TextSelection::selected_text(window, cx).is_empty() {
-                            return;
+            let ranges = links.iter().map(|(range, _)| range.clone()).collect();
+            let targets = links
+                .into_iter()
+                .map(|(_, target)| target)
+                .collect::<Vec<_>>();
+            let view = cx.weak_entity();
+            let handle = self.transcript_selection.handle.clone();
+            let data = self.transcript_selection.data.clone();
+            InteractiveText::new(ElementId::Name(format!("links:{key}").into()), styled)
+                .on_click(ranges, move |at, window, cx| {
+                    let snapshot = handle.snapshot(cx);
+                    if !data.borrow().export(snapshot).is_empty()
+                        || snapshot
+                            .and_then(|s| s.window_points())
+                            .is_some_and(|p| p.anchor() != p.cursor())
+                    {
+                        return;
+                    }
+                    if let Some(target) = targets.get(at) {
+                        if crate::terminal_links::is_openable_url(target) {
+                            cx.open_url(target);
+                        } else {
+                            let _ = view.update(cx, |_, cx| {
+                                cx.emit(super::ChatViewEvent::OpenFile {
+                                    target: target.clone(),
+                                })
+                            });
                         }
-                        if let Some(target) = targets.get(at) {
-                            if crate::terminal_links::is_openable_url(target) {
-                                cx.open_url(target);
-                            } else {
-                                let _ = view.update(cx, |_, cx| {
-                                    cx.emit(super::ChatViewEvent::OpenFile {
-                                        target: target.clone(),
-                                    })
-                                });
-                            }
-                        }
-                    })
-                    .into_any_element()
-            };
-            RichParticipant {
-                id: ElementId::Name(format!("rich:{key}").into()),
-                body,
-                text: text.clone(),
-                layout,
-                handle,
-                order,
-                scope: self.transcript_selection.scope,
-                color,
-            }
-            .into_any_element()
+                    }
+                })
+                .into_any_element()
         };
         div()
             .id(ElementId::Name(format!("transcript:{key}").into()))
             .min_w_0()
             .cursor_text()
             .role(gpui::Role::Label)
-            .aria_label(text)
-            .child(body)
+            .aria_label(text.clone())
+            .child(LeafRenderer {
+                body,
+                key: key.into(),
+                text,
+                layout,
+                data: self.transcript_selection.data.clone(),
+            })
             .test_support()
-            .text_selection_scope(self.transcript_selection.scope)
             .into_any_element()
     }
 }
 
-/// The documented participant seam for RiWork's styled/link renderer. No input
-/// handlers, selection endpoints, word boundaries or clipboard cache live here.
-struct RichParticipant {
-    id: ElementId,
+struct LeafRenderer {
     body: AnyElement,
+    key: String,
     text: SharedString,
     layout: TextLayout,
-    handle: TextSelectionHandle,
-    order: u64,
-    scope: TextSelectionScopeId,
-    color: Hsla,
+    data: Rc<RefCell<Document>>,
 }
-
-impl IntoElement for RichParticipant {
+impl IntoElement for LeafRenderer {
     type Element = Self;
     fn into_element(self) -> Self {
         self
     }
 }
-
-impl Element for RichParticipant {
+impl Element for LeafRenderer {
     type RequestLayoutState = ();
     type PrepaintState = ();
     fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
+        Some(ElementId::Name(format!("leaf:{}", self.key).into()))
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
@@ -327,50 +408,191 @@ impl Element for RichParticipant {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _: Bounds<Pixels>,
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
         self.body.prepaint(window, cx);
-        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        self.handle.register(
-            TextSelectionRegistration::new(hitbox, bounds)
-                .with_scope(self.scope)
-                .with_document_order(self.order)
-                .with_text_bounds(vec![self.layout.bounds()])
-                .with_rendered_element(&self.handle, window, cx),
-            window,
-            cx,
-        );
+        let mut data = self.data.borrow_mut();
+        if let Some(order) = data.source.iter().position(|leaf| leaf.key == self.key) {
+            debug_assert_eq!(
+                data.source[order].text.as_str(),
+                self.text.as_ref(),
+                "renderer/source export drift"
+            );
+            data.frame.push(PaintedLeaf {
+                key: self.key.clone(),
+                text: self.text.clone(),
+                layout: self.layout.clone(),
+                bounds: self.layout.bounds(),
+                clip: window.content_mask().bounds,
+                order: order as u64,
+            });
+        }
     }
     fn paint(
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _: Bounds<Pixels>,
         _: &mut (),
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
-        let before = TextSelection::selected_text(window, cx);
-        let projection = self.handle.update_runs(
-            &[
-                TextSelectionRun::new(self.text.clone(), self.layout.clone(), bounds)
-                    .with_document_order(self.order),
-            ],
+        self.body.paint(window, cx);
+    }
+}
+
+struct DocumentViewport {
+    body: AnyElement,
+    data: Rc<RefCell<Document>>,
+    handle: TextSelectionHandle,
+    scope: TextSelectionScopeId,
+    list: ListState,
+    color: Hsla,
+}
+impl IntoElement for DocumentViewport {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for DocumentViewport {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        Some("transcript-document".into())
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.body.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.data.borrow_mut().frame.clear();
+        self.body.prepaint(window, cx);
+        let bounds = self.list.viewport_bounds();
+        let scroll = self.list.scroll_px_offset_for_scrollbar();
+        let text_bounds = {
+            let mut data = self.data.borrow_mut();
+            data.origin = bounds.origin;
+            data.scroll = scroll;
+            data.frame
+                .iter()
+                .map(|leaf| leaf.bounds.intersect(&leaf.clip))
+                .collect()
+        };
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        self.handle.register(
+            TextSelectionRegistration::new(hitbox, bounds)
+                .with_scope(self.scope)
+                .with_scroll_offset(scroll)
+                .with_document_order(0)
+                .with_text_bounds(text_bounds)
+                .with_rendered_element(&self.handle, window, cx),
+            window,
             cx,
         );
+        let runs = self
+            .data
+            .borrow()
+            .frame
+            .iter()
+            .map(|leaf| {
+                TextSelectionRun::new(
+                    leaf.text.clone(),
+                    leaf.layout.clone(),
+                    leaf.bounds.intersect(&leaf.clip),
+                )
+                .with_document_order(leaf.order)
+            })
+            .collect::<Vec<_>>();
+        self.handle.update_runs(&runs, cx);
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         self.body.paint(window, cx);
-        // Preserve all RiWork foreground styles. Selection geometry comes only
-        // from Base's UTF-8 projection; these quads are renderer decoration.
-        for range in projection.ranges().iter().flatten() {
-            paint_projection(&self.layout, range.clone(), self.color, window, cx);
-        }
-        if before != TextSelection::selected_text(window, cx) {
-            window.refresh();
-        }
+        let data = self.data.borrow();
+        let runs = data
+            .frame
+            .iter()
+            .map(|leaf| {
+                TextSelectionRun::new(
+                    leaf.text.clone(),
+                    leaf.layout.clone(),
+                    leaf.bounds.intersect(&leaf.clip),
+                )
+                .with_document_order(leaf.order)
+            })
+            .collect::<Vec<_>>();
+        let projection = self.handle.update_runs(&runs, cx);
+        let endpoints = self
+            .handle
+            .snapshot(cx)
+            .and_then(|snapshot| data.endpoints(snapshot));
+        window.with_content_mask(
+            Some(gpui::ContentMask {
+                bounds: self.list.viewport_bounds(),
+            }),
+            |window| {
+                for (leaf, range) in data.frame.iter().zip(projection.ranges()) {
+                    // Source endpoints keep the decoration anchored when earlier
+                    // variable-height virtual rows are measured, or nested code
+                    // scrolling moves their glyphs. This is the same source copy
+                    // projection; Base still owns endpoint creation/extension.
+                    let source_range = endpoints.and_then(|(a, b)| {
+                        let order = leaf.order as usize;
+                        (a.0 <= order && order <= b.0).then(|| {
+                            (if order == a.0 { a.1 } else { 0 })..(if order == b.0 {
+                                b.1
+                            } else {
+                                leaf.text.len()
+                            })
+                        })
+                    });
+                    let range = if endpoints.is_some() {
+                        source_range
+                    } else {
+                        range.clone()
+                    };
+                    if let Some(range) = range {
+                        if !range.is_empty() {
+                            window.with_content_mask(
+                                Some(gpui::ContentMask { bounds: leaf.clip }),
+                                |window| {
+                                    paint_projection(&leaf.layout, range, self.color, window, cx)
+                                },
+                            );
+                        }
+                    }
+                }
+            },
+        );
     }
 }
 

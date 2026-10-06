@@ -125,6 +125,9 @@ impl ChatView {
             cx.processor(|view, ix, window, cx| view.render_row(ix, window, cx)),
         )
         .size_full();
+        let messages = self
+            .transcript_selection
+            .viewport(messages, self.list.clone(), look);
         // Scrolled up, not merely not yet following again after a scroll to the end.
         let behind = self.items_in_list > 0
             && !self.list.is_following_tail()
@@ -304,6 +307,15 @@ impl ChatView {
         };
         let picker = |name: &'static str, label: String, menu: Menu, cx: &mut Context<Self>| {
             let open = self.menu == Some(menu);
+            let accessible = format!(
+                "{}: {label}",
+                match menu {
+                    Menu::Mode => "Approval mode",
+                    Menu::Model => "Model",
+                    Menu::Effort => "Reasoning effort",
+                    _ => "Chat choices",
+                }
+            );
             let trigger = if look.native {
                 let fill = if open {
                     colors.divider
@@ -325,9 +337,14 @@ impl ChatView {
             };
             div()
                 .relative()
-                .child(trigger.on_click(
-                    cx.listener(move |view, _, window, cx| view.toggle_menu(menu, window, cx)),
-                ))
+                .child(
+                    trigger
+                        .accessibility_label(accessible)
+                        .aria_expanded(open)
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.toggle_menu(menu, window, cx)
+                        })),
+                )
                 .children(open.then(|| self.menu_popover(menu, look, window, cx)))
         };
 
@@ -343,7 +360,8 @@ impl ChatView {
             .border_color(rgb(colors.divider))
             .bg(rgb(colors.panel))
             .child(
-                div()
+                gpui_kit::base::ToggleGroup::new("chat-display-mode")
+                    .aria_label("Transcript display")
                     .flex()
                     .flex_none()
                     .gap(ui_text::space(1.0))
@@ -356,7 +374,7 @@ impl ChatView {
                         [super::DisplayMode::Normal, super::DisplayMode::Verbose]
                             .into_iter()
                             .map(|mode| {
-                                button(
+                                widgets::toggle_button(
                                     if mode == super::DisplayMode::Normal {
                                         "chat-display-normal"
                                     } else {
@@ -364,13 +382,16 @@ impl ChatView {
                                     },
                                     mode.label(),
                                     (self.display_mode == mode).then_some(colors.cyan),
+                                    self.display_mode == mode,
                                     look,
                                 )
-                                .on_click(
-                                    cx.listener(move |view, _, _, cx| {
-                                        view.choose_display(mode, cx)
-                                    }),
-                                )
+                                .on_change({
+                                    let owner = cx.weak_entity();
+                                    move |_, _, _, cx| {
+                                        let _ = owner
+                                            .update(cx, |view, cx| view.choose_display(mode, cx));
+                                    }
+                                })
                             }),
                     )
                     .child(tooltip::anchor(
@@ -408,7 +429,7 @@ impl ChatView {
                 // Native's is a capsule toggle with the bolt symbol: grey while off, and in
                 // the working color with the bolt filled while on, as the mic shows it listens.
                 let toggle = if look.native {
-                    capsule("chat-fast", "Fast", Button::Secondary, look)
+                    widgets::toggle_capsule("chat-fast", "Fast", fast, look)
                         .pl(ui_text::space(8.0))
                         .child(icons::symbol(
                             if fast { "bolt.fill" } else { "bolt" },
@@ -431,16 +452,22 @@ impl ChatView {
                             }))
                         })
                 } else {
-                    button(
+                    widgets::toggle_button(
                         "chat-fast",
                         toolbar::fast_label(fast),
                         fast.then_some(colors.cyan),
+                        fast,
                         look,
                     )
                 };
                 div()
                     .relative()
-                    .child(toggle.on_click(cx.listener(|view, _, _, cx| view.toggle_fast(cx))))
+                    .child(toggle.on_change({
+                        let owner = cx.weak_entity();
+                        move |_, _, _, cx| {
+                            let _ = owner.update(cx, |view, cx| view.toggle_fast(cx));
+                        }
+                    }))
                     .child(tooltip::anchor(
                         "Fast mode answers sooner and uses more of your limits",
                         TipLook::Control,
@@ -508,20 +535,23 @@ impl ChatView {
                             .child(toolbar::short_thread_id(&thread))
                     };
                     controls::button(
-                        div()
-                            .id("chat-thread")
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(ui_text::space(4.0))
-                            .py(ui_text::space(3.0))
-                            .text_size(ui_text::text(10.0))
-                            .child(id)
-                            .child(icons::symbol(
-                                if copied { "checkmark" } else { "doc.on.doc" },
-                                9.0,
-                                None,
-                            )),
+                        crate::behavior_controls::button_content(
+                            "chat-thread",
+                            "Copy provider thread ID",
+                            id,
+                        )
+                        .line_height(gpui::relative(1.618_034))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(4.0))
+                        .py(ui_text::space(3.0))
+                        .text_size(ui_text::text(10.0))
+                        .child(icons::symbol(
+                            if copied { "checkmark" } else { "doc.on.doc" },
+                            9.0,
+                            None,
+                        )),
                         Button::Secondary,
                         colors,
                     )
@@ -541,9 +571,16 @@ impl ChatView {
                 };
                 div()
                     .relative()
-                    .child(copy.on_click(cx.listener(move |view, _, _, cx| {
-                        view.copy(key.clone(), whole.clone(), cx);
-                    })))
+                    .child(
+                        copy.accessibility_label(if copied {
+                            "Provider thread ID copied"
+                        } else {
+                            "Copy provider thread ID"
+                        })
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.copy(key.clone(), whole.clone(), cx);
+                        })),
+                    )
                     .child(tooltip::anchor(
                         format!("Copy thread id {thread}"),
                         TipLook::Control,
@@ -558,13 +595,15 @@ impl ChatView {
                             let more =
                                 widgets::symbol_button("chat-more", "ellipsis", "More", look);
                             if open {
-                                controls::toolbar_button_on(more, colors)
+                                more.text_color(rgb(colors.text)).bg(rgb(colors.divider))
                             } else {
                                 more
                             }
                         } else {
                             button("chat-more", "⋯", open.then_some(colors.cyan), look)
+                                .accessibility_label("More chat actions")
                         }
+                        .aria_expanded(open)
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.toggle_menu(Menu::More, window, cx);
                         }))
@@ -592,7 +631,6 @@ impl ChatView {
         // drawn as its symbol.
         let row = |name: String, label: String, detail: Option<&str>, current: bool| {
             let row = div()
-                .id(id(name))
                 .w_full()
                 .flex()
                 .items_start()
@@ -607,7 +645,7 @@ impl ChatView {
                         style.bg(rgb(colors.panel_active))
                     })
                 });
-            controls::native(row, |row| controls::menu_row(row, colors))
+            let content = controls::native(row, |row| controls::menu_row(row, colors))
                 .child(if look.native {
                     controls::on_first_line(
                         div()
@@ -633,14 +671,27 @@ impl ChatView {
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .child(label)
+                        .child(label.clone())
                         .children(detail.map(|detail| {
                             div()
                                 .text_size(ui_text::text(10.0))
                                 .text_color(rgb(colors.muted))
                                 .child(detail.to_owned())
                         })),
-                )
+                );
+            widgets::content_button(id(name), label, content, look)
+                .role(if menu == Menu::More {
+                    gpui::Role::MenuItem
+                } else {
+                    gpui::Role::MenuItemRadio
+                })
+                .when(menu != Menu::More, |choice| {
+                    choice.aria_toggled(if current {
+                        gpui::accesskit::Toggled::True
+                    } else {
+                        gpui::accesskit::Toggled::False
+                    })
+                })
         };
         let content: Vec<AnyElement> = match menu {
             Menu::Mode => {
@@ -825,6 +876,8 @@ impl ChatView {
         deferred(
             controls::native(popover, |menu| controls::menu(menu, colors))
                 .occlude()
+                .role(gpui::Role::Menu)
+                .aria_label("Chat choices")
                 .on_mouse_down_out(cx.listener(|view, _, _, cx| view.close_menu(cx)))
                 .children(content),
         )
@@ -1009,16 +1062,13 @@ impl ChatView {
                 }))
                 .children((hidden > 0 || expanded).then(|| {
                     let key = key.clone();
-                    div()
-                        .id("approval-more")
+                    crate::behavior_controls::button_content("approval-more", if expanded { "Show less approval detail".to_owned() } else { format!("Show {hidden} more approval lines") },
+                            if expanded { widgets::sentence("show less", look) } else { widgets::sentence(&format!("show {hidden} more lines"), look) })
+                        .aria_expanded(expanded)
+                        .line_height(gpui::relative(1.618_034))
                         .cursor_pointer()
                         .text_size(ui_text::text(10.0))
                         .text_color(rgb(colors.cyan))
-                        .child(if expanded {
-                            widgets::sentence("show less", look)
-                        } else {
-                            widgets::sentence(&format!("show {hidden} more lines"), look)
-                        })
                         .on_click(cx.listener(move |view, _, _, cx| view.toggle(&key, None, cx)))
                 }))
                 .child(
@@ -1104,7 +1154,15 @@ impl ChatView {
                     .child(
                         div()
                             .text_size(ui_text::text(11.0))
-                            .child(prompt.question.clone()),
+                            .child(self.ordinary_prose(
+                                &format!(
+                                    "question:{}:{prompt_at}:{}",
+                                    question.request_id, prompt.question
+                                ),
+                                &prompt.question,
+                                look,
+                                cx,
+                            )),
                     )
                     .child(
                         div()
@@ -1123,7 +1181,7 @@ impl ChatView {
                                     } else {
                                         option.label.clone()
                                     };
-                                    let tick = |option: Stateful<gpui::Div>| {
+                                    let tick = |option: crate::behavior_controls::Toggle| {
                                         option.when(chosen && look.native, |option| {
                                             option
                                                 .flex_row_reverse()
@@ -1131,29 +1189,45 @@ impl ChatView {
                                                 .child(icons::symbol("checkmark", 9.0, None))
                                         })
                                     };
-                                    if answered {
-                                        return tick(dimmed(
-                                            id(format!("opt-{prompt_at}-{option_at}")),
-                                            label,
-                                            look,
-                                        ))
-                                        .into_any_element();
-                                    }
-                                    tick(button(
-                                        id(format!("opt-{prompt_at}-{option_at}")),
+                                    tick(widgets::toggle_button_with_disabled(
+                                        id(format!(
+                                            "opt-{}-{prompt_at}-{}-{option_at}",
+                                            question.request_id, prompt.question
+                                        )),
                                         label,
                                         chosen.then_some(colors.cyan),
+                                        chosen,
+                                        answered,
                                         look,
                                     ))
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.pick(
-                                            &option_request,
-                                            &option_prompt,
-                                            prompt_at,
-                                            option_at,
-                                            cx,
-                                        );
-                                    }))
+                                    .accessibility_label(option.label.clone())
+                                    .disabled(answered)
+                                    .when(answered, |control| {
+                                        if look.native {
+                                            control
+                                                .bg(rgb(colors.panel_active))
+                                                .text_color(rgb(colors.muted))
+                                        } else {
+                                            control
+                                                .bg(transparent_black())
+                                                .text_color(rgb(colors.muted))
+                                                .border_color(rgb(colors.divider))
+                                        }
+                                    })
+                                    .on_change({
+                                        let owner = cx.weak_entity();
+                                        move |_, _, _, cx| {
+                                            let _ = owner.update(cx, |view, cx| {
+                                                view.pick(
+                                                    &option_request,
+                                                    &option_prompt,
+                                                    prompt_at,
+                                                    option_at,
+                                                    cx,
+                                                )
+                                            });
+                                        }
+                                    })
                                     .into_any_element()
                                 },
                             )),
@@ -1306,6 +1380,7 @@ impl ChatView {
                             )
                         } else {
                             button("chat-send", "Send  ⏎", Some(colors.cyan), look)
+                                .disabled(self.draft_empty(cx) || self.pending_submission.is_some())
                         }
                         .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx))),
                     )),
@@ -1370,7 +1445,7 @@ impl ChatView {
                 Phase::Failed(_) => "mic.slash",
                 Phase::Idle => "mic",
             };
-            widgets::round_button("chat-dictate", symbol, tooltip, Button::Secondary, look)
+            widgets::round_toggle("chat-dictate", symbol, tooltip, phase.is_active(), look)
                 .when(phase.is_active(), |mic| mic.text_color(rgb(colors.working)))
         } else {
             let label = match phase {
@@ -1378,10 +1453,11 @@ impl ChatView {
                 Phase::Preparing { .. } | Phase::Finishing { .. } => "Mic …".to_owned(),
                 _ => format!("Mic  {key}"),
             };
-            button(
+            widgets::toggle_button(
                 "chat-dictate",
                 label,
                 phase.is_active().then_some(colors.working),
+                phase.is_active(),
                 look,
             )
             .child(tooltip::anchor(tooltip, TipLook::Control))
@@ -1389,7 +1465,12 @@ impl ChatView {
         .when(listening, |mic| {
             mic.bg(rgb(look.tint(colors.working, 0.18)))
         })
-        .on_click(cx.listener(|view, _, window, cx| view.toggle_dictation(window, cx)));
+        .on_change({
+            let owner = cx.weak_entity();
+            move |_, _, window, cx| {
+                let _ = owner.update(cx, |view, cx| view.toggle_dictation(window, cx));
+            }
+        });
         if busy {
             mic.with_animation(
                 "chat-dictate-busy",

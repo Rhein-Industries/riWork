@@ -19,6 +19,67 @@ use super::{
 };
 
 impl ChatView {
+    /// TextView is compatible with nonvirtual ordinary prompt prose. Its
+    /// parser/state and emphasis/headings are library owned. Selection here
+    /// stays disabled as before: these are question instructions, not part of
+    /// the transcript document. See the pinned API boundary in the handoff.
+    pub(super) fn ordinary_prose(
+        &self,
+        key: &str,
+        source: &str,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let blocks = super::markdown::parse(source);
+        let ordinary = blocks.iter().all(|block| match block {
+            Block::Paragraph(spans) | Block::Heading { spans, .. } => spans
+                .iter()
+                .all(|span| !span.image && span.link.is_none() && !span.style.code),
+            _ => false,
+        });
+        if !ordinary {
+            return div().child(source.to_owned()).into_any_element();
+        }
+        let style = gpui_kit::base::TextViewStyle::from_theme(gpui_kit::base::Theme::global(cx))
+            .with_foreground(rgb(look.colors.text).into())
+            .with_muted_foreground(rgb(look.colors.muted).into())
+            .with_link(rgb(look.colors.cyan).into())
+            .with_selection(rgb(look.tint(look.colors.cyan, 0.4)).into())
+            .with_paragraph_gap(gpui::rems(0.))
+            .with_heading(move |level| {
+                let factor = match level {
+                    1 => 1.35,
+                    2 => 1.2,
+                    3 => 1.1,
+                    _ => 1.,
+                };
+                let mut heading = div()
+                    .text_size(ui_text::text(12. * factor))
+                    .font_weight(if look.native {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::BOLD
+                    })
+                    .text_color(rgb(if level <= 2 {
+                        look.colors.cyan
+                    } else {
+                        look.colors.text
+                    }));
+                heading.style().clone()
+            });
+        gpui_kit::base::TextView::markdown(
+            SharedString::from(format!("kit-prose:{key}")),
+            source.to_owned(),
+        )
+        .style(style)
+        .selectable(false)
+        .scrollable(false)
+        // Prompt text had no navigation action. Never use the default URL
+        // opener if a parser recognizes an unexpected link/autolink.
+        .on_link_click(|_, _, _, _| {})
+        .into_any_element()
+    }
+
     /// The blocks of a message, one under the other. `key` tells this message's elements
     /// from the others'.
     pub(super) fn prose(

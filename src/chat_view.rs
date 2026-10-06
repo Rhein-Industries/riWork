@@ -56,6 +56,7 @@ mod panels;
 mod prose;
 mod rows;
 mod select;
+mod selection_document;
 #[cfg(test)]
 mod selection_tests;
 mod state;
@@ -263,6 +264,13 @@ impl ChatView {
             cx.subscribe_in(&composer, window, Self::composer_event),
             cx.subscribe_in(&model_input, window, Self::model_event),
         ];
+        let focus = cx.focus_handle();
+        let transcript_selection = select::TranscriptSelection::new(
+            focus.clone(),
+            window.window_handle(),
+            cx.weak_entity(),
+            cx,
+        );
         Self {
             config,
             window_handle: window.window_handle(),
@@ -283,7 +291,7 @@ impl ChatView {
             media: Default::default(),
             preview_root: None,
             scale: ui_text::scale(),
-            focus: cx.focus_handle(),
+            focus,
             composer,
             model_input,
             subscriptions,
@@ -312,7 +320,7 @@ impl ChatView {
             copied: None,
             forget_copy: None,
             caches: RefCell::new(Caches::default()),
-            transcript_selection: Default::default(),
+            transcript_selection,
             announced: None,
             dictation: dictate::Dictation::default(),
             speech_names: Vec::new(),
@@ -490,6 +498,7 @@ impl ChatView {
     /// Tell the list about the rows that came or changed. Rows are measured when they are
     /// drawn, so a row that changed must be measured again.
     fn sync_list(&mut self, applied: &Applied, cx: &mut Context<Self>) {
+        self.transcript_selection.changed();
         // Streaming content cannot leave an old copied projection. Unrelated
         // tail updates preserve selection and participant/editor identities.
         let selected_changed = self
@@ -525,6 +534,7 @@ impl ChatView {
     }
 
     fn refresh_projection(&mut self, cx: &mut Context<Self>) {
+        self.transcript_selection.changed();
         let rows = display::rows(
             &self.model.transcript,
             &self.model.completed,
@@ -824,6 +834,7 @@ impl ChatView {
     }
 
     fn toggle(&mut self, key: &str, item: Option<usize>, cx: &mut Context<Self>) {
+        self.transcript_selection.changed();
         // Disclosed/hidden text must not survive as a clipboard selection.
         self.transcript_selection.clear(self.window_handle, cx);
         if !self.open.remove(key) {
@@ -1010,9 +1021,19 @@ impl Render for ChatView {
         let colors = look.colors;
         if self.window_handle != window.window_handle() {
             self.transcript_selection.retire(self.window_handle, cx);
+            // A participant and its refresh subscription belong to one
+            // window. Old-frame sweeping must never clear the new window's
+            // selection through a reused participant entity.
+            self.transcript_selection = select::TranscriptSelection::new(
+                self.focus.clone(),
+                window.window_handle(),
+                cx.weak_entity(),
+                cx,
+            );
             self.window_handle = window.window_handle();
         }
         self.follow_text_size(cx);
+        self.refresh_selection_document(look, cx);
         self.ready_inputs(window, cx);
         if self.focus_composer {
             self.focus_composer = false;
@@ -1057,7 +1078,7 @@ impl Render for ChatView {
             .capture_any_mouse_down(cx.listener(
                 |view, event: &gpui::MouseDownEvent, window, cx| {
                     if event.button == gpui::MouseButton::Left {
-                        gpui_kit::base::TextSelection::activate_scope(
+                        crate::behavior_controls::activate_content_scope(
                             view.transcript_selection.scope,
                             window,
                             cx,

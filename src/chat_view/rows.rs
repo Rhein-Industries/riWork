@@ -36,7 +36,6 @@ impl ChatView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.transcript_selection.begin_row(ix);
         let look = Look::of(cx);
         let content = match self.visible.get(ix) {
             Some(row @ (super::display::Row::Item(at) | super::display::Row::Details(at))) => {
@@ -90,6 +89,7 @@ impl ChatView {
                             None,
                             look,
                         )
+                        .aria_expanded(open)
                         .on_click(cx.listener(move |view, _, _, cx| {
                             let offset = view.list.logical_scroll_top();
                             view.list.pause_following_tail();
@@ -188,16 +188,17 @@ impl ChatView {
                     })
                     .into_any_element()
             }
-            Some(super::display::Row::Outcome(_, outcome)) => div()
+            Some(super::display::Row::Outcome(turn, outcome)) => div()
                 .text_size(ui_text::text(11.0))
                 .text_color(rgb(look.colors.muted))
-                .child(match outcome {
-                    crate::chat::model::TurnOutcome::Completed => "Turn completed".to_owned(),
-                    crate::chat::model::TurnOutcome::Interrupted => "Turn interrupted".to_owned(),
-                    crate::chat::model::TurnOutcome::Failed { message } => {
-                        format!("Turn failed: {message}")
-                    }
-                })
+                .child(self.selectable(
+                    &format!("outcome:{turn}"),
+                    super::display::outcome_text(outcome),
+                    Vec::new(),
+                    Vec::new(),
+                    look,
+                    cx,
+                ))
                 .into_any_element(),
             None => self.footer(look),
         };
@@ -306,7 +307,14 @@ impl ChatView {
                 .text_size(ui_text::text(10.0))
                 .text_color(rgb(colors.muted))
                 .child(div().flex_1().h(px(1.0)).bg(rgb(colors.divider)))
-                .child(widgets::sentence("context compacted", look))
+                .child(self.selectable(
+                    &format!("compaction:{}", item.id),
+                    widgets::sentence("context compacted", look),
+                    Vec::new(),
+                    Vec::new(),
+                    look,
+                    cx,
+                ))
                 .child(div().flex_1().h(px(1.0)).bg(rgb(colors.divider)))
                 .into_any_element(),
             ItemBody::Notice { level, text } if look.native => {
@@ -395,7 +403,7 @@ impl ChatView {
     }
 
     /// The message's blocks, parsed again only when its text has changed.
-    fn parsed(&self, item: &Item, text: &str) -> Arc<Vec<markdown::Block>> {
+    pub(super) fn parsed(&self, item: &Item, text: &str) -> Arc<Vec<markdown::Block>> {
         use std::hash::{DefaultHasher, Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         text.hash(&mut hasher);
@@ -450,7 +458,6 @@ impl ChatView {
         // A command is code; the subtitles are folders, paths, arguments and line counts.
         let code_title = matches!(item.body, ItemBody::Command { .. });
         let header = div()
-            .id(id(format!("card:{}", item.id)))
             .w_full()
             .flex()
             .items_center()
@@ -459,14 +466,11 @@ impl ChatView {
             .py(ui_text::space(6.0))
             .text_size(ui_text::text(11.0))
             .when(head.expandable, |header| {
-                header
-                    .cursor_pointer()
-                    .hover(move |style| {
-                        controls::hovered(style, controls::row_hover(false, colors), |style| {
-                            style.bg(rgb(colors.panel_active))
-                        })
+                header.cursor_pointer().hover(move |style| {
+                    controls::hovered(style, controls::row_hover(false, colors), |style| {
+                        style.bg(rgb(colors.panel_active))
                     })
-                    .on_click(cx.listener(move |view, _, _, cx| view.toggle(&key, Some(ix), cx)))
+                })
             })
             .child(chevron(open, head.expandable, colors.muted))
             .child(
@@ -496,6 +500,15 @@ impl ChatView {
                     .as_ref()
                     .map(|badge| widgets::badge(id(format!("badge:{}", item.id)), badge, look)),
             );
+        let header = widgets::content_button(
+            id(format!("card:{}", item.id)),
+            head.title.clone(),
+            header,
+            look,
+        )
+        .disabled(!head.expandable)
+        .aria_expanded(open)
+        .on_click(cx.listener(move |view, _, _, cx| view.toggle(&key, Some(ix), cx)));
         card_box(look)
             .child(header)
             // The body is made only for a card that is open.
@@ -699,76 +712,79 @@ impl ChatView {
                     ChangeKind::Modify | ChangeKind::Rename => colors.gold,
                 };
                 let (added, removed) = stats.get(at).copied().unwrap_or((0, 0));
+                let header = div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(8.0))
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(4.0))
+                    .text_size(ui_text::text(11.0))
+                    .when(has_diff && !only_one, |row| {
+                        row.cursor_pointer().hover(move |style| {
+                            controls::hovered(style, controls::row_hover(false, colors), |style| {
+                                style.bg(rgb(colors.panel_active))
+                            })
+                        })
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(ui_text::space(14.))
+                            .text_color(rgb(letter_color))
+                            .child(letter),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(ui_text::mono_family())
+                            .child(change.path.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(rgb(colors.muted))
+                            .child(widgets::sentence(word, look)),
+                    )
+                    .when(added > 0, |row| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .text_color(rgb(look.diff.added))
+                                .child(format!("+{added}")),
+                        )
+                    })
+                    .when(removed > 0, |row| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .text_color(rgb(look.diff.removed))
+                                .child(format!("−{removed}")),
+                        )
+                    })
+                    .when(has_diff && !only_one, |row| {
+                        row.child(chevron(open, true, colors.muted))
+                    });
+                let toggle_key = key.clone();
+                let header = widgets::content_button(
+                    id(format!("file:{key}")),
+                    change.path.clone(),
+                    header,
+                    look,
+                )
+                .disabled(!has_diff || only_one)
+                .aria_expanded(open)
+                .on_click(
+                    cx.listener(move |view, _, _, cx| view.toggle(&toggle_key, Some(ix), cx)),
+                );
                 div()
                     .w_full()
                     .when(at > 0, |file| {
                         file.border_t_1().border_color(rgb(colors.divider))
                     })
-                    .child(
-                        div()
-                            .id(id(format!("file:{key}")))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap(ui_text::space(8.0))
-                            .px(ui_text::space(10.0))
-                            .py(ui_text::space(4.0))
-                            .text_size(ui_text::text(11.0))
-                            .when(has_diff && !only_one, |row| {
-                                let key = key.clone();
-                                row.cursor_pointer()
-                                    .hover(move |style| {
-                                        controls::hovered(
-                                            style,
-                                            controls::row_hover(false, colors),
-                                            |style| style.bg(rgb(colors.panel_active)),
-                                        )
-                                    })
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.toggle(&key, Some(ix), cx)
-                                    }))
-                            })
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(ui_text::space(14.0))
-                                    .text_color(rgb(letter_color))
-                                    .child(letter),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .font_family(ui_text::mono_family())
-                                    .child(change.path.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(rgb(colors.muted))
-                                    .child(widgets::sentence(word, look)),
-                            )
-                            .when(added > 0, |row| {
-                                row.child(
-                                    div()
-                                        .flex_none()
-                                        .text_color(rgb(look.diff.added))
-                                        .child(format!("+{added}")),
-                                )
-                            })
-                            .when(removed > 0, |row| {
-                                row.child(
-                                    div()
-                                        .flex_none()
-                                        .text_color(rgb(look.diff.removed))
-                                        .child(format!("−{removed}")),
-                                )
-                            })
-                            .when(has_diff && !only_one, |row| {
-                                row.child(chevron(open, true, colors.muted))
-                            }),
-                    )
+                    .child(header)
                     .children(
                         change
                             .diff
