@@ -212,7 +212,17 @@ impl<B: Primitive> InteractiveElement for Control<B> {
 }
 impl<B: Primitive> StatefulInteractiveElement for Control<B> {}
 impl<B: Primitive> RenderOnce for Control<B> {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Base's neutral relative(1.) must not change inherited RiWork row typography.
+        // Explicit caller line height and alignment always win.
+        if self.base.text_style().line_height.is_none() {
+            self.base = self.base.line_height(window.text_style().line_height);
+        }
+        if self.base.style().display == Some(gpui::Display::Flex)
+            && self.base.style().justify_content.is_none()
+        {
+            self.base = self.base.justify_start();
+        }
         AccessibleState {
             inner: self.base.prepare_disabled(self.disabled).render(window, cx).into_element(),
             disabled: self.disabled,

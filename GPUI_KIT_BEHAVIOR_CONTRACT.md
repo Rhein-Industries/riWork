@@ -19,7 +19,10 @@ integration with chat `84d6775` and Dock compatibility `a20465c`.
 `radio_content(id, name, content, checked) -> Radio = Control<base::Radio>`.
 These constructors install no hover, padding, background, corners, focus-visible
 style or extra visible label/mark. Caller content and styling remain intact;
-Base's intrinsic neutral control geometry remains. `.disabled(bool)` and the
+Base owns control geometry; the render-time RiWork style policy preserves
+inherited line height when the caller supplied none, and restores leading
+alignment when the caller explicitly chose flex without a justify override.
+Explicit line height/justification always wins. `.disabled(bool)` and the
 existing builders/AX disabled refinement apply to all four. Radio emits `true`
 only for an unchecked choice; activating the checked choice cannot deselect it.
 
@@ -290,7 +293,7 @@ Ghostty `=0.3.1`. Cached pinned source was inspected:
 - GPUI `element.rs`/`elements/div.rs` and `keymap.rs`: existing-node metadata/action
   dispatch and targeted `Unbind` resolution, rather than swallowing all keys.
 
-Fourteen tests are written in `src/behavior_controls/tests.rs`, **all unexecuted
+Fifteen tests are written in `src/behavior_controls/tests.rs`, **all unexecuted
 by this worker**. Seven original cases remain, with fixtures updated coherently:
 
 1. `base_button_pointer_keyboard_activate_once_and_disabled_does_not_bubble`
@@ -310,6 +313,7 @@ Seven follow-up cases:
 12. `native_edit_menu_uses_base_actions_and_preserves_editor_priority`
 13. `content_controls_keep_caller_hover_nested_isolation_and_radio_exclusivity`
 14. `content_adapter_ax_names_disabled_radio_and_focus_scope_metadata`
+15. `content_control_typography_and_row_bounds_match_legacy_at_scale_and_palette`
 
 The scope regression selects by pointer under a distinct chat scope, then forces
 the actual parent render path before Copy/assertions. It covers both current
@@ -347,8 +351,77 @@ env RIWORK_HOME="$review_child_home" RIWORK_RUNTIME_DIR="$review_child_runtime" 
 
 These are proposals, not receipts. This worker ran zero Cargo/build/test/native
 commands; only source reads/edits and Git inspection/commit. `git diff --check`
-passed with exit 0 for this source patch. Integrated compile, all fourteen
+passed with exit 0 for this source patch. Integrated compile, all fifteen
 cases and root-affected input regressions remain reviewer-owned. Chat helper/
 retirement integration and the parent Dock commit are acceptance dependencies;
 Hint requires no migration. Production activation is not authorized or claimed;
 no forced host refresh or live shell action.
+
+## Focused correction following the early reviewer receipts — 2026-10-06
+
+Starts at `d92cbb9bfc13e62d5be9ebd09b95ea9568bd6bb8`. Reviewer report line 927
+records immutable `6c1f5da944de019d550affeebd14a874853a44c4`: 24 exact cases,
+14 passed / 10 failed (foundation 4/7, selection 2/9, existing editor 8/8).
+The parent's later `6192c94` message-fixture correction reached selection 7/9.
+These are inherited receipts from different candidates, not this patch's results.
+The early run did not cover d92's seven added cases. No new execution here.
+
+Only parent 6c1's control-test hunks were inspected/incorporated: stable Harness
+ID before on_click; the FocusHandle clone before window.focus was already present
+in d92 and remains. No chat fixture file, branch cherry-pick or consumer source edit.
+
+Focused changes and exact affected fixture names:
+
+- `base_toggle_switch_link_share_pointer_and_keyboard_owner_callbacks`: Base Link
+  lacks test_support in the pinned source. A transparent Element probe forwards all
+  phases/AX metadata and captures the **actual Link** bounds/node after prepaint.
+  The fixture targets those coordinates via native synthetic pointer events and
+  checks Base's supplied focus handle before Enter/Space. No mirrored Link role,
+  proxy behavior or replacement hitbox; disabled activation assertions retained.
+- `accessible_nodes_keep_names_states_and_only_enabled_click_actions` and
+  `content_adapter_ax_names_disabled_radio_and_focus_scope_metadata`: controls now
+  mount in a retained NodeFixture under one Root; RenderOnce runs during GPUI drawing
+  with a current view. Refined AX metadata is collected during actual prepaint, then
+  read after the completed frame. All role/name/disabled/state/Click assertions
+  remain, including both checked Radio states and Menu Focus metadata.
+- `root_modal_scope_and_input_terminal_keys_do_not_cross_owner_boundaries` and
+  `single_line_owner_tab_and_shift_tab_preserve_ime_and_navigate_once`: focus asserted
+  immediately after click, after marking, after a frame, before/after Tab, and after
+  effects flush, with active contexts in failure diagnostics. The click-count probe
+  is now an untracked outer div; the normal domain focus container is a separate
+  keyed child with no on_click. Thus observation cannot synthesize its own focused
+  Enter/Space click. Both 6c and d92 already have the shared input padding handler's
+  window.prevent_default(), so that source was left intact. Workspace's production
+  tracked root already has no on_click. The early receipt does not establish the
+  exact loss phase; these stronger assertions retain that diagnosis for reviewer
+  execution rather than asserting a proven native fix.
+- `content_control_typography_and_row_bounds_match_legacy_at_scale_and_palette`:
+  renders real legacy Div and Base Button/Toggle text rows, compares descendant
+  inherited text styles and actual row/label bounds at 0.85/1/1.5 scale, Menlo/
+  colorful and system-face/Native tokens, default/inherited/explicit line height,
+  and leading/explicit centered alignment (24 configurations, 48 control comparisons).
+  No hover/padding/background/corners are added by the constructor. This is a
+  headless layout/style comparison, not native font/glyph acceptance.
+
+All existing scope/menu tests remain. The same Base Edit actions and Terminal
+guard are unchanged. `native_edit_menu_uses_base_actions_and_preserves_editor_priority`,
+`parent_rerender_preserves_nondefault_transcript_scope_after_pointer_selection` and
+`two_visible_transcript_scopes_switch_on_first_pointer_gesture` dispatch menu actions
+in separate `turn` calls, which leave update_window and drain effects before clipboard,
+model and counter assertions. No clipboard assertion occurs in the action-dispatch turn.
+
+**Forms/main integration boundary:** forms owns its actual Base Dialog states and
+keyboard containment. Once those modal modules are assembled, main's backdrop must
+use selection scoping only for the Dialog-owned families, avoiding redundant outer
+modal_scope focus traps and competing invoker-restoration policies. Parent must
+assemble that scoped main change together with the forms Dialog commit; removing
+the existing main traps in this earlier branch would leave its current old modal
+modules uncontained. This correction edits no main/form/chat source and does not
+claim the combined Dialog ownership has been verified. One trap and one restoration
+owner per active modal is the acceptance rule; no new keyboard policy is added.
+
+Reviewer proposal: compile once in the already approved private child/cache, then
+run the five corrected names above plus the new style case, and the retained scope/
+menu cases needed for integration. All 15 remain available under the existing
+behavior_controls::tests:: filter. No broader suite or native execution is requested
+by this worker. Source `git diff --check` is the only new check receipt.

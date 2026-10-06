@@ -3,12 +3,73 @@ use super::*;
 use gpui::{Context, Entity, FocusHandle, Focusable, Render, TestAppContext, WindowHandle, WindowOptions, canvas, point, px};
 use gpui_kit::base::{Root, TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionScopeId, TestSupportExt};
 use gpui_kit::test::TestWindowExt;
+use gpui::InputEvent as _;
+use std::{cell::RefCell, rc::Rc};
+
+#[derive(Clone)]
+struct Fact { node: Option<accesskit::Node>, bounds: Bounds<Pixels>, text: gpui::TextStyle }
+type Facts = Rc<RefCell<HashMap<&'static str, Fact>>>;
+
+// Transparent test observation of the actual library element, in its drawing lifecycle.
+// No substitute hitbox, focus, role, state or event handler is installed.
+struct Observed<E: Element> { inner: E, key: &'static str, facts: Facts }
+impl<E: Element> IntoElement for Observed<E> { type Element = Self; fn into_element(self) -> Self { self } }
+impl<E: Element> Element for Observed<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+    fn id(&self) -> Option<ElementId> { self.inner.id() }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> { self.inner.source_location() }
+    fn request_layout(&mut self, id: Option<&GlobalElementId>, inspector: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Self::RequestLayoutState) {
+        self.inner.request_layout(id, inspector, window, cx)
+    }
+    fn prepaint(&mut self, id: Option<&GlobalElementId>, inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, layout: &mut Self::RequestLayoutState, window: &mut Window, cx: &mut App) -> Self::PrepaintState {
+        let state = self.inner.prepaint(id, inspector, bounds, layout, window, cx);
+        let node = self.inner.a11y_role().map(|role| {
+            let mut node = accesskit::Node::new(role); self.inner.write_a11y_info(&mut node); node
+        });
+        self.facts.borrow_mut().insert(self.key, Fact { node, bounds, text: window.text_style() });
+        state
+    }
+    fn paint(&mut self, id: Option<&GlobalElementId>, inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, layout: &mut Self::RequestLayoutState, state: &mut Self::PrepaintState, window: &mut Window, cx: &mut App) {
+        self.inner.paint(id, inspector, bounds, layout, state, window, cx)
+    }
+    fn a11y_role(&self) -> Option<gpui::Role> { self.inner.a11y_role() }
+    fn write_a11y_info(&self, node: &mut accesskit::Node) { self.inner.write_a11y_info(node); }
+    fn a11y_synthetic_children(&mut self, state: &mut Self::PrepaintState, builder: &mut A11ySubtreeBuilder) { self.inner.a11y_synthetic_children(state, builder); }
+}
+fn observe(element: impl IntoElement, key: &'static str, facts: &Facts) -> impl IntoElement {
+    Observed { inner: element.into_element(), key, facts: facts.clone() }
+}
+#[derive(IntoElement)]
+struct ObservedControl<B: Primitive> { control: Control<B>, key: &'static str, facts: Facts }
+impl<B: Primitive> RenderOnce for ObservedControl<B> {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Executed by GPUI under the mounted view, never from update_window.
+        Observed { inner: self.control.render(window, cx).into_element(), key: self.key, facts: self.facts }
+    }
+}
+fn observe_control<B: Primitive>(control: Control<B>, key: &'static str, facts: &Facts) -> ObservedControl<B> {
+    ObservedControl { control, key, facts: facts.clone() }
+}
+fn fact(facts: &Facts, key: &'static str) -> Fact { facts.borrow().get(key).expect("actual element prepainted").clone() }
+fn ax(facts: &Facts, key: &'static str) -> accesskit::Node { fact(facts, key).node.expect("actual semantic node") }
+fn click_bounds(window: &mut Window, bounds: Bounds<Pixels>, cx: &mut App) {
+    let position = bounds.center();
+    window.dispatch_event(gpui::MouseMoveEvent { position, pressed_button: None, modifiers: Default::default() }.to_platform_input(), cx);
+    window.render_frame(cx);
+    window.dispatch_event(gpui::MouseDownEvent { position, button: gpui::MouseButton::Left, click_count: 1, modifiers: Default::default(), first_mouse: false }.to_platform_input(), cx);
+    window.render_frame(cx);
+    window.dispatch_event(gpui::MouseUpEvent { position, button: gpui::MouseButton::Left, click_count: 1, modifiers: Default::default() }.to_platform_input(), cx);
+    window.render_frame(cx);
+}
 
 struct Harness {
     focus: FocusHandle,
     button_focus: FocusHandle,
     terminal_focus: FocusHandle,
     chat_focus: FocusHandle,
+    link_focus: FocusHandle,
+    facts: Facts,
     button_calls: usize,
     parent_calls: usize,
     toggle_calls: usize,
@@ -56,8 +117,15 @@ impl Render for Harness {
         let colors = Palette::RIWORK;
         let toggle_owner = cx.entity().downgrade();
         let switch_owner = cx.entity().downgrade();
-        div().id("behavior-harness").track_focus(&self.focus).size_full().flex().flex_col()
+        let mut observed_link = link("link", "Read details", colors).disabled(self.disabled)
+            .w(px(160.)).h(px(24.))
+            .on_activate(cx.listener(|owner, _, _, _| owner.link_calls += 1));
+        observed_link.base = observed_link.base.track_focus(&self.link_focus);
+        // The click-count probe is not focusable. The domain container retains
+        // ordinary focus ancestry without turning observation into a keyboard button.
+        div().id("behavior-harness").size_full()
             .on_click(cx.listener(|owner, _, _, _| owner.parent_calls += 1))
+            .child(div().id("behavior-content").track_focus(&self.focus).size_full().flex().flex_col()
             .on_key_down(cx.listener(|owner, event: &gpui::KeyDownEvent, window, cx| {
                 if protect_terminal_edit_menu_fallback(event, window, cx) { owner.terminal_menu_guards += 1; }
             }))
@@ -121,8 +189,7 @@ impl Render for Harness {
                         owner.checked = next; owner.switch_calls += 1; cx.notify();
                     });
                 }))
-            .child(link("link", "Read details", colors).disabled(self.disabled)
-                .on_activate(cx.listener(|owner, _, _, _| owner.link_calls += 1)))
+            .child(observe_control(observed_link, "link", &self.facts))
             .child(crate::text_input::input("editor", &self.editor, window, cx))
             .child(crate::text_input::input("next-editor", &self.next_editor, window, cx))
             // An input nested below a terminal context still owns its Copy action.
@@ -133,7 +200,7 @@ impl Render for Harness {
                 .track_focus(&self.terminal_focus).h(px(24.))
                 .on_key_down(cx.listener(|owner, event: &gpui::KeyDownEvent, _, _| {
                     owner.terminal_keys.push(event.keystroke.key.clone());
-                })))
+                }))))
     }
 }
 
@@ -160,6 +227,7 @@ fn mount(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Harness>) {
                 Harness {
                 focus: cx.focus_handle(), button_focus: cx.focus_handle(), terminal_focus: cx.focus_handle(),
                 chat_focus,
+                link_focus: cx.focus_handle(), facts: Default::default(),
                 button_calls: 0, parent_calls: 0, toggle_calls: 0, switch_calls: 0, link_calls: 0,
                 pressed: false, checked: false, disabled: false, terminal_keys: Vec::new(), terminal_menu_guards: 0, raw_tabs: 0,
                 transcript_copies: 0, cancels: 0, modal_return: Default::default(), legacy_scope_capture: false, scope_capture_enabled: true,
@@ -191,6 +259,11 @@ fn turn(cx: &mut TestAppContext, handle: WindowHandle<Root>, f: impl FnOnce(&mut
         f(window, cx);
     }).unwrap();
     cx.run_until_parked();
+}
+fn assert_editor_focus(content: &Entity<Harness>, window: &Window, cx: &App, phase: &str) {
+    let editor = content.read(cx).editor.clone();
+    assert!(editor.read(cx).focus_handle(cx).is_focused(window),
+        "editor focus lost at {phase}; contexts={:?}", window.context_stack());
 }
 
 #[gpui::test]
@@ -262,43 +335,76 @@ fn root_modal_tab_controls_stay_within_base_focus_trap(cx: &mut TestAppContext) 
 fn base_toggle_switch_link_share_pointer_and_keyboard_owner_callbacks(cx: &mut TestAppContext) {
     setup(cx); let (handle, content) = mount(cx);
     for id in ["toggle", "switch", "link"] {
-        turn(cx, handle, |window, cx| window.click(id, cx));
+        turn(cx, handle, |window, cx| {
+            if id == "link" {
+                let actual = fact(&content.read(cx).facts, "link");
+                assert_eq!(actual.node.unwrap().role(), gpui::Role::Link);
+                assert!(actual.bounds.size.width > px(0.) && actual.bounds.size.height > px(0.));
+                click_bounds(window, actual.bounds, cx);
+            } else { window.click(id, cx); }
+        });
+        if id == "link" { turn(cx, handle, |window, cx| assert!(content.read(cx).link_focus.is_focused(window))); }
         turn(cx, handle, |window, cx| window.press("enter", cx));
         turn(cx, handle, |window, cx| window.press("space", cx));
     }
     assert_eq!(content.read_with(cx, |owner, _| (owner.toggle_calls, owner.switch_calls, owner.link_calls, owner.pressed, owner.checked)), (3, 3, 3, true, true));
     content.update(cx, |owner, cx| { owner.disabled = true; cx.notify(); });
-    for id in ["toggle", "switch", "link"] { turn(cx, handle, |window, cx| window.click(id, cx)); }
+    for id in ["toggle", "switch", "link"] { turn(cx, handle, |window, cx| {
+        if id == "link" {
+            let actual = fact(&content.read(cx).facts, "link");
+            assert!(actual.node.unwrap().is_disabled());
+            click_bounds(window, actual.bounds, cx);
+        } else { window.click(id, cx); }
+    }); }
     assert_eq!(content.read_with(cx, |owner, _| (owner.toggle_calls, owner.switch_calls, owner.link_calls)), (3, 3, 3));
 }
 
-fn node<B: Primitive>(control: Control<B>, window: &mut Window, cx: &mut App) -> accesskit::Node {
-    let element = control.render(window, cx).into_element();
-    let mut node = accesskit::Node::new(element.a11y_role().expect("semantic role"));
-    element.write_a11y_info(&mut node); node
+struct NodeFixture { disabled: bool, checked: bool, focus: FocusHandle, facts: Facts }
+impl Render for NodeFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let colors = Palette::RIWORK;
+        div().size_full().flex().flex_col()
+            .child(observe_control(button("node-button", "Apply", controls::Button::Secondary, colors).disabled(self.disabled).on_click(|_, _, _| {}), "button", &self.facts))
+            .child(observe_control(toggle("node-toggle", "Pin", true, colors).disabled(self.disabled).on_change(|_, _, _, _| {}), "toggle", &self.facts))
+            .child(observe_control(switch("node-switch", "Show details", false, colors).disabled(self.disabled).on_change(|_, _, _, _| {}), "switch", &self.facts))
+            .child(observe_control(link("node-link", "Read details", colors).disabled(self.disabled).on_activate(|_, _, _| {}), "link", &self.facts))
+            .child(observe_control(radio_content("node-radio", "Destination", "Different visible label", self.checked).disabled(self.disabled).on_change(|_, _, _, _| {}), "radio", &self.facts))
+            .child(observe_control(button_content("node-menu-item", "Refresh", "↻").role(gpui::Role::MenuItem).disabled(self.disabled).on_click(|_, _, _| {}), "menu-item", &self.facts))
+            .child(observe(focus_scope(div().role(gpui::Role::Menu).aria_label("Choices").h(px(24.)), "menu-scope", &self.focus), "scope", &self.facts))
+    }
+}
+fn mount_nodes(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<NodeFixture>) {
+    cx.update(|cx| {
+        let mut content = None;
+        let handle = cx.open_window(WindowOptions::default(), |window, cx| {
+            let view = cx.new(|cx| NodeFixture { disabled: false, checked: false, focus: cx.focus_handle(), facts: Default::default() });
+            content = Some(view.clone()); cx.new(|cx| Root::new(view, window, cx))
+        }).unwrap();
+        (handle, content.unwrap())
+    })
 }
 #[gpui::test]
 fn accessible_nodes_keep_names_states_and_only_enabled_click_actions(cx: &mut TestAppContext) {
-    setup(cx); let (handle, _) = mount(cx);
-    turn(cx, handle, |window, cx| {
-        let colors = Palette::RIWORK;
-        for disabled in [false, true] {
-            let b = node(button("node-button", "Apply", controls::Button::Secondary, colors).disabled(disabled).on_click(|_, _, _| {}), window, cx);
-            assert_eq!(b.role(), gpui::Role::Button); assert_eq!(b.label(), Some("Apply"));
-            assert_eq!(b.is_disabled(), disabled); assert_eq!(b.supports_action(accesskit::Action::Click), !disabled);
-            let t = node(toggle("node-toggle", "Pin", true, colors).disabled(disabled).on_change(|_, _, _, _| {}), window, cx);
-            assert_eq!(t.role(), gpui::Role::Button); assert_eq!(t.label(), Some("Pin"));
-            assert_eq!(t.toggled(), Some(accesskit::Toggled::True)); assert_eq!(t.is_disabled(), disabled);
-            assert_eq!(t.supports_action(accesskit::Action::Click), !disabled);
-            let s = node(switch("node-switch", "Show details", false, colors).disabled(disabled).on_change(|_, _, _, _| {}), window, cx);
-            assert_eq!(s.role(), gpui::Role::Switch); assert_eq!(s.label(), Some("Show details"));
-            assert_eq!(s.toggled(), Some(accesskit::Toggled::False)); assert_eq!(s.is_disabled(), disabled);
-            assert_eq!(s.supports_action(accesskit::Action::Click), !disabled);
-            let l = node(link("node-link", "Read details", colors).disabled(disabled).on_activate(|_, _, _| {}), window, cx);
-            assert_eq!(l.role(), gpui::Role::Link); assert_eq!(l.label(), Some("Read details"));
-            assert_eq!(l.is_disabled(), disabled); assert_eq!(l.supports_action(accesskit::Action::Click), !disabled);
-        }
-    });
+    setup(cx); let (handle, content) = mount_nodes(cx);
+    for disabled in [false, true] {
+        content.update(cx, |owner, cx| { owner.disabled = disabled; cx.notify(); });
+        turn(cx, handle, |_, _| {});
+        let facts = content.read_with(cx, |owner, _| owner.facts.clone());
+        let b = ax(&facts, "button");
+        assert_eq!(b.role(), gpui::Role::Button); assert_eq!(b.label(), Some("Apply"));
+        assert_eq!(b.is_disabled(), disabled); assert_eq!(b.supports_action(accesskit::Action::Click), !disabled);
+        let t = ax(&facts, "toggle");
+        assert_eq!(t.role(), gpui::Role::Button); assert_eq!(t.label(), Some("Pin"));
+        assert_eq!(t.toggled(), Some(accesskit::Toggled::True)); assert_eq!(t.is_disabled(), disabled);
+        assert_eq!(t.supports_action(accesskit::Action::Click), !disabled);
+        let s = ax(&facts, "switch");
+        assert_eq!(s.role(), gpui::Role::Switch); assert_eq!(s.label(), Some("Show details"));
+        assert_eq!(s.toggled(), Some(accesskit::Toggled::False)); assert_eq!(s.is_disabled(), disabled);
+        assert_eq!(s.supports_action(accesskit::Action::Click), !disabled);
+        let l = ax(&facts, "link");
+        assert_eq!(l.role(), gpui::Role::Link); assert_eq!(l.label(), Some("Read details"));
+        assert_eq!(l.is_disabled(), disabled); assert_eq!(l.supports_action(accesskit::Action::Click), !disabled);
+    }
 }
 
 #[gpui::test]
@@ -340,15 +446,23 @@ fn root_modal_scope_and_input_terminal_keys_do_not_cross_owner_boundaries(cx: &m
     turn(cx, handle, |window, cx| {
         window.render_frame(cx); assert!(!TextSelection::has_selection(window, cx));
         window.click("editor", cx);
+        assert_editor_focus(&content, window, cx, "after input click");
         let editor = content.read(cx).editor.clone();
         let mut handler = gpui::ElementInputHandler::new(window.find("editor").bounds(), editor);
         gpui::InputHandler::replace_and_mark_text_in_range(&mut handler, None, "日本", Some(2..2), window, cx);
-        window.render_frame(cx); window.press("tab", cx);
+        assert_editor_focus(&content, window, cx, "after marking");
+        window.render_frame(cx);
+        assert_editor_focus(&content, window, cx, "after marked frame / before Tab");
+    });
+    turn(cx, handle, |window, cx| {
+        assert_editor_focus(&content, window, cx, "before marked Tab after effect flush");
+        window.press("tab", cx);
+        assert_editor_focus(&content, window, cx, "immediately after marked Tab");
     });
     assert_eq!(content.read_with(cx, |owner, _| owner.raw_tabs), 0);
     turn(cx, handle, |window, cx| {
         let editor = content.read(cx).editor.clone();
-        assert!(editor.read(cx).focus_handle(cx).is_focused(window));
+        assert_editor_focus(&content, window, cx, "after marked Tab effect flush");
         editor.update(cx, |state, cx| gpui::EntityInputHandler::unmark_text(state, window, cx));
         window.press("tab", cx);
     });
@@ -443,11 +557,19 @@ fn single_line_owner_tab_and_shift_tab_preserve_ime_and_navigate_once(cx: &mut T
     setup(cx); let (handle, content) = mount(cx);
     turn(cx, handle, |window, cx| {
         window.click("editor", cx);
+        assert_editor_focus(&content, window, cx, "single-line after click");
         let editor = content.read(cx).editor.clone();
         let mut handler = gpui::ElementInputHandler::new(window.find("editor").bounds(), editor);
         gpui::InputHandler::replace_and_mark_text_in_range(&mut handler, None, "日本", Some(2..2), window, cx);
+        assert_editor_focus(&content, window, cx, "single-line after mark");
+        window.render_frame(cx);
+        assert_editor_focus(&content, window, cx, "single-line after marked frame");
     });
-    for key in ["tab", "shift-tab"] { turn(cx, handle, |window, cx| window.press(key, cx)); }
+    for key in ["tab", "shift-tab"] { turn(cx, handle, |window, cx| {
+        assert_editor_focus(&content, window, cx, "single-line before marked navigation");
+        window.press(key, cx);
+        assert_editor_focus(&content, window, cx, "single-line after marked navigation");
+    }); }
     assert_eq!(content.read_with(cx, |owner, _| owner.raw_tabs), 0);
     turn(cx, handle, |window, cx| {
         let editor = content.read(cx).editor.clone();
@@ -582,25 +704,89 @@ fn content_controls_keep_caller_hover_nested_isolation_and_radio_exclusivity(cx:
 
 #[gpui::test]
 fn content_adapter_ax_names_disabled_radio_and_focus_scope_metadata(cx: &mut TestAppContext) {
-    setup(cx); let (handle, content) = mount(cx);
-    turn(cx, handle, |window, cx| {
-        for disabled in [false, true] {
-            for checked in [false, true] {
-                let r = node(radio_content("node-radio", "Destination", "Different visible label", checked).disabled(disabled).on_change(|_, _, _, _| {}), window, cx);
-                assert_eq!(r.role(), gpui::Role::RadioButton); assert_eq!(r.label(), Some("Destination"));
-                assert_eq!(r.toggled(), Some(if checked { accesskit::Toggled::True } else { accesskit::Toggled::False }));
-                assert_eq!(r.is_selected(), Some(checked)); assert_eq!(r.is_disabled(), disabled);
-                assert_eq!(r.supports_action(accesskit::Action::Click), !disabled && !checked);
-            }
-            let b = node(button_content("node-menu-item", "Refresh", "↻").role(gpui::Role::MenuItem)
-                .disabled(disabled).on_click(|_, _, _| {}), window, cx);
+    setup(cx); let (handle, content) = mount_nodes(cx);
+    for disabled in [false, true] {
+        for checked in [false, true] {
+            content.update(cx, |owner, cx| { owner.disabled = disabled; owner.checked = checked; cx.notify(); });
+            turn(cx, handle, |_, _| {});
+            let facts = content.read_with(cx, |owner, _| owner.facts.clone());
+            let r = ax(&facts, "radio");
+            assert_eq!(r.role(), gpui::Role::RadioButton); assert_eq!(r.label(), Some("Destination"));
+            assert_eq!(r.toggled(), Some(if checked { accesskit::Toggled::True } else { accesskit::Toggled::False }));
+            assert_eq!(r.is_selected(), Some(checked)); assert_eq!(r.is_disabled(), disabled);
+            assert_eq!(r.supports_action(accesskit::Action::Click), !disabled && !checked);
+            let b = ax(&facts, "menu-item");
             assert_eq!(b.role(), gpui::Role::MenuItem); assert_eq!(b.label(), Some("Refresh"));
             assert_eq!(b.is_disabled(), disabled); assert_eq!(b.supports_action(accesskit::Action::Click), !disabled);
+            let metadata = ax(&facts, "scope");
+            assert_eq!(metadata.role(), gpui::Role::Menu);
+            assert_eq!(metadata.label(), Some("Choices")); assert!(metadata.supports_action(accesskit::Action::Focus));
         }
-        let focus = content.read(cx).modal_focus.clone();
-        let element = focus_scope(div().role(gpui::Role::Menu).aria_label("Choices"), "menu-scope", &focus).into_element();
-        assert_eq!(element.a11y_role(), Some(gpui::Role::Menu));
-        let mut metadata = accesskit::Node::new(gpui::Role::Menu); element.write_a11y_info(&mut metadata);
-        assert_eq!(metadata.label(), Some("Choices")); assert!(metadata.supports_action(accesskit::Action::Focus));
+    }
+}
+
+struct StyleFixture {
+    facts: Facts, native: bool, scale: f32, roomy: bool, explicit: bool, centered: bool,
+}
+impl Render for StyleFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let scale = self.scale;
+        let label = |id: &'static str, key: &'static str| observe(div().id(id).child("RiWork row label"), key, &self.facts);
+        let old = div().id("legacy-row").flex().items_center()
+            .w(px(360. * scale)).px(px(8. * scale)).py(px(4. * scale))
+            .when(self.explicit, |row| row.line_height(px(24. * scale)))
+            .when(self.centered, |row| row.justify_center())
+            .child(label("legacy-label", "legacy-label"));
+        let button = button_content("parity-button", "Row", label("button-label", "button-label"))
+            .flex().items_center().w(px(360. * scale)).px(px(8. * scale)).py(px(4. * scale))
+            .when(self.explicit, |row| row.line_height(px(24. * scale)))
+            .when(self.centered, |row| row.justify_center()).on_click(|_, _, _| {});
+        let toggle = toggle_content("parity-toggle", "Row", label("toggle-label", "toggle-label"), false)
+            .flex().items_center().w(px(360. * scale)).px(px(8. * scale)).py(px(4. * scale))
+            .when(self.explicit, |row| row.line_height(px(24. * scale)))
+            .when(self.centered, |row| row.justify_center()).on_change(|_, _, _, _| {});
+        div().size_full().flex().flex_col()
+            .font_family(if self.native { ".SystemUIFont" } else { "Menlo" })
+            .text_size(px(if self.native { 13. * scale } else { 11. * scale }))
+            .text_color(rgb(if self.native { Palette::NATIVE_LIGHT.text } else { Palette::RIWORK.text }))
+            .when(self.roomy, |row| row.line_height(gpui::relative(2.)))
+            .child(observe(old, "legacy", &self.facts))
+            .child(observe_control(button, "button", &self.facts))
+            .child(observe_control(toggle, "toggle", &self.facts))
+    }
+}
+#[gpui::test]
+fn content_control_typography_and_row_bounds_match_legacy_at_scale_and_palette(cx: &mut TestAppContext) {
+    setup(cx);
+    let (handle, content) = cx.update(|cx| {
+        let mut content = None;
+        let handle = cx.open_window(WindowOptions::default(), |window, cx| {
+            let view = cx.new(|_| StyleFixture { facts: Default::default(), native: false, scale: 1., roomy: false, explicit: false, centered: false });
+            content = Some(view.clone()); cx.new(|cx| Root::new(view, window, cx))
+        }).unwrap();
+        (handle, content.unwrap())
     });
+    for native in [false, true] {
+        for scale in [0.85, 1., 1.5] {
+            for (roomy, explicit, centered) in [(false, false, false), (true, false, false), (true, true, false), (false, true, true)] {
+                content.update(cx, |owner, cx| {
+                    owner.native = native; owner.scale = scale; owner.roomy = roomy;
+                    owner.explicit = explicit; owner.centered = centered; cx.notify();
+                });
+                turn(cx, handle, |_, _| {});
+                let facts = content.read_with(cx, |owner, _| owner.facts.clone());
+                let old = fact(&facts, "legacy"); let old_label = fact(&facts, "legacy-label");
+                for (row, label) in [("button", "button-label"), ("toggle", "toggle-label")] {
+                    let actual = fact(&facts, row); let actual_label = fact(&facts, label);
+                    assert_eq!(actual_label.text.line_height, old_label.text.line_height);
+                    assert_eq!(actual_label.text.font_size, old_label.text.font_size);
+                    assert_eq!(actual_label.text.font_family, old_label.text.font_family);
+                    assert_eq!(actual_label.text.color, old_label.text.color);
+                    assert!((actual.bounds.size.height - old.bounds.size.height).abs() <= px(1.), "row height parity at {native}/{scale}/{roomy}/{explicit}/{centered}");
+                    assert!((actual_label.bounds.origin.x - actual.bounds.origin.x - (old_label.bounds.origin.x - old.bounds.origin.x)).abs() <= px(1.), "leading/center alignment parity");
+                    assert!((actual_label.bounds.origin.y - actual.bounds.origin.y - (old_label.bounds.origin.y - old.bounds.origin.y)).abs() <= px(1.), "vertical alignment parity");
+                }
+            }
+        }
+    }
 }
