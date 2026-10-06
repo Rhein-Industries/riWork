@@ -82,6 +82,41 @@ commit. Changing a textarea between Submit and Newline requires updating
 both `state.set_submit_on_enter(...)` and the owner's `EnterBehavior` passed
 to `is_submit`. Attachment interception remains separate via `on_paste`.
 
+### Composition Escape and form navigation ownership
+
+Both shared frames capture **Base's bound Escape action**, before Base's state
+handler. For an editable focused child with marked text, the frame calls Base's
+native `unmark_text` and consumes the action. This ends the existing composition
+transaction while preserving the draft, caret and persistent state; it does not
+emit a submit or run Base's clean-on-Escape behavior on that composing gesture.
+The next plain Escape follows the existing Base/owner path. Masking and disabled/
+read-only behavior are unchanged; the new guard only acts on editable marked
+states. It does not replace keybindings or override user configuration.
+
+This pre-Base interception is deliberate: GPUI 0.3.8 dispatches matched actions
+before raw key capture/bubble (`window.rs:6013–6042,6079–6095,6130–6149`). Base
+0.7.1's Escape handler unmarks and then propagates (`input/base/state.rs:2079–2116`).
+A parent raw capture check alone therefore observes no marked range and can
+cancel the form on that same Escape. Consuming before Base prevents both its
+parent action propagation and GPUI's later raw-key fallback; no post-handler
+latch or second editor is needed. Base's `unmark_text` clears only the marked
+range and commits its existing undo transaction (`state.rs:3967–3970`).
+
+Owners must retain their normal close/cancel policy for plain Escape and choose
+one domain owner (action or raw callback). An enclosing **action capture** runs
+before a child capture: it must defer to the focused shared input. If user
+configuration unbinds/replaces Base's Escape action, raw owners must still check
+the **focused child's** marked range before cancel/navigation; the shared frame
+does not forcibly reinstate the binding. An unfocused sibling's marked range
+must not suppress a focused child's action or a parent-focused command.
+
+Single-line Tab/Shift-Tab use Base IndentInline/OutdentInline, which propagate
+without editing (`input/editor/indent.rs:244–257`). Their marked range is not
+cleared first. Forms retain their raw composition guard: while the focused
+field is marked, do not change focus or navigate; after native commit/unmark,
+perform one owner navigation. Textarea Tab editing remains Base-owned. Do not
+add a second Escape, Return or indentation engine in chat/forms.
+
 The real Base states expose `value() -> SharedString`,
 `set_value(value, window, cx)` (silent model replacement, clears history),
 `replace_all(value, window, cx)` (undoable, emits Change), and
@@ -106,7 +141,8 @@ changes. No default visual theme replaces RiWork's native/terminal palette.
 
 ## Verification status
 
-Foundation recovery verified on macOS on 2026-10-06:
+Foundation recovery verified on macOS on 2026-10-06 at immutable foundation
+`ea05f94d566cdd952b778a2edafcb13f42a1a65f` (before the Escape correction):
 
 - `cargo check --locked`: **passed** (6.17 s).
 - `cargo build --locked`: **passed** (11.74 s). Native GPUI and unchanged
@@ -138,3 +174,64 @@ or live Ghostty terminal session. Consumer migrations and their send/save
 integration checks belong to chat/forms owners. No production tmux/app/host
 restart, installation, settings/schedule/relay changes, real prompts, main
 merge, or push was performed. The prior worker exit cause remains unconfirmed.
+
+### Source-only Escape correction — execution still held
+
+Only `src/text_input.rs`, its tests and this contract changed in the correction.
+Polling commit `330d25413b99c03b9272f8e935c481d4c018d205` is preserved. Reviewed
+the independent Forms P2 finding at
+`/Users/dominik/orca/projects/riWork-review-manu-20261005/GPUI_KIT_REVIEW_REPORT.md:243`
+and the exact cached Base/GPUI sources cited above. `git diff --check` passed;
+no Cargo/build/test/listing/formatter, native GUI, process/service check or
+cleanup was run. **The eight-test receipt above does not validate this change.**
+Forms remains the sole build owner pending parent release.
+
+Seven new headless owner-counter tests plus the strengthened existing Return test
+are proposed. They use the foundation's existing mount, real persistent Base
+states and TestPlatform input/clipboard. Each gesture ends its outer window/App
+update, drains `TestAppContext::run_until_parked`, and asserts in a separate turn,
+including native commit before a fresh Return. Native OS input is not dispatched.
+The current harness uses GPUI's built-in `NoopTextSystem`, which supplies fixed
+glyph metrics/layout; there is no `TestTextSystem` symbol in this worktree or the
+cached crates. The requested existing TestTextSystem location was asked for;
+these tests currently reuse the established foundation harness rather than
+introducing a text engine or native platform initialization.
+
+Exact planned names (each must select **one** test; all are **unexecuted**):
+
+```text
+text_input::tests::composing_escape_cancels_only_composition_in_forms_and_chat
+text_input::tests::plain_escape_reaches_one_parent_cancel_through_action_or_raw_policy
+text_input::tests::composing_escape_defers_base_clean_on_escape_until_plain_escape
+text_input::tests::raw_escape_fallback_retains_owner_composition_guard_and_key_configuration
+text_input::tests::marked_tab_and_shift_tab_keep_child_focus_until_owner_navigation_is_safe
+text_input::tests::focused_child_and_parent_ignore_an_unfocused_siblings_marked_range
+text_input::tests::composing_escape_preserves_masking_and_disabled_escape_behavior
+text_input::tests::composition_return_cannot_submit_edit_or_bubble
+```
+
+The first test exercises physical bound Escape and deferred direct Escape for
+both single-line and chat states, checks zero parent action/raw/cancel/submission
+callbacks, preserved draft and undo of the completed composition transaction.
+Plain Escape tests action and raw owner policies independently, with one cancel.
+The clean-on-Escape test preserves that Base option: composing Escape retains
+the draft, and only the subsequent plain Escape clears it via Base.
+Raw fallback explicitly unbinds only its fixture's Escape, checks marked text
+still prevents owner cancellation, then checks one plain owner cancellation.
+Tab tests check no marked navigation/focus loss and one navigation after unmark.
+Sibling/parent-focus tests confirm events follow the focused dispatch path.
+Mask/disabled tests retain presentation and original disabled Escape routing.
+Return now asserts delivered zero submission/parent action/raw events after each
+marked Return variant, zero after native commit, and one after a fresh Return.
+
+After parent release, the forms build owner should use its audited private child
+home/runtime/TMPDIR/environment and exclusive target with the specified Zig.
+For each exact name above, the proposed command is:
+
+```sh
+cargo test --offline --locked --bin riwork text_input::tests::composing_escape_cancels_only_composition_in_forms_and_chat -- --exact --test-threads=1
+```
+
+Substitute each remaining exact name, record exit status/count/log independently,
+and stop on a failed/zero/extra selection. Do not broaden to a suite or launch
+Workspace/services/providers/native GUI. No executable acceptance is claimed.

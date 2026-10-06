@@ -11,7 +11,7 @@ use gpui::{
 pub use gpui_kit::base::input::{InputBase, InputEvent, InputState, TextareaState};
 use gpui_kit::base::{
     ColorTokens, Theme, ThemeAppearance,
-    input::{Enter, Input, InputBaseState, InputModeKind, Paste, Textarea},
+    input::{Enter, Escape, Input, InputBaseState, InputModeKind, Paste, Textarea},
 };
 
 use crate::{settings::Settings, theme, ui_text};
@@ -70,6 +70,7 @@ fn frame<M: InputModeKind>(
 ) -> InputBase {
     let colors = theme::palette(cx);
     let enter_state = state.clone();
+    let escape_state = state.clone();
     let retained = state.clone();
     let state = state.read(cx);
     InputBase::new(id)
@@ -88,6 +89,23 @@ fn frame<M: InputModeKind>(
         .line_height(ui_text::space(18.))
         .px(ui_text::space(6.))
         .py(ui_text::space(3.))
+        .capture_action(move |_: &Escape, window, cx| {
+            // Bound actions run before raw-key capture. Base would unmark then
+            // propagate Escape, letting a parent cancel on that same key.
+            // Use Base's native composition cancellation before its handler;
+            // consuming here also prevents GPUI's later raw-key fallback.
+            let cancelled = escape_state.update(cx, |state, cx| {
+                if !state.is_editable() || state.marked_text_range(window, cx).is_none() {
+                    return false;
+                }
+                state.unmark_text(window, cx);
+                cx.notify();
+                true
+            });
+            if cancelled {
+                cx.stop_propagation();
+            }
+        })
         .capture_action(move |_: &Enter, window, cx| {
             // Base 0.7.1 does not guard Enter against marked composition.
             // Native IME owns confirmation; a leaked action must neither edit
