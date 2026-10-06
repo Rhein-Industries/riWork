@@ -271,6 +271,65 @@ impl Driver for ClaudeDriver {
             self.shutdown();
             return Ok(());
         }
+        if let ChatCommand::SendAttachments { text, attachments } = &command {
+            let content = super::attachments::inputs(text, attachments, true)?;
+            let (receipt, wait) = mpsc::channel();
+            {
+                let mut core = self.shared.lock();
+                if !core.ready || core.restarting || core.stopped || core.dead.is_some() {
+                    return Err(
+                        "Claude is not ready; keep the attachment draft and send after it settles"
+                            .into(),
+                    );
+                }
+                let outgoing = Outgoing {
+                    line: json!({
+                        "type":"user", "session_id":"", "message":{"role":"user","content":content},
+                        "parent_tool_use_id":null,
+                    })
+                    .to_string(),
+                    receipt: Some(receipt),
+                };
+                core.out
+                    .as_ref()
+                    .ok_or("Claude is not running")?
+                    .send(outgoing)
+                    .map_err(|_| "Claude has closed its input")?;
+                core.session_used = true;
+                let turn_id = core.ensure_turn();
+                core.last_activity = Instant::now();
+                core.silent = false;
+                let images = attachments
+                    .iter()
+                    .filter_map(|a| match &a.kind {
+                        super::attachments::AttachmentKind::Image { .. } => {
+                            Some(super::model::ChatImage {
+                                label: a.name.clone(),
+                                source: super::model::ImageSource::Local {
+                                    path: a.path.display().to_string(),
+                                },
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                core.born(Item {
+                    presentation: super::model::Presentation {
+                        images,
+                        ..Default::default()
+                    },
+                    id: format!("user-{}", Uuid::new_v4()),
+                    turn_id: Some(turn_id),
+                    status: ItemStatus::Completed,
+                    body: ItemBody::UserMessage {
+                        text: super::attachments::summary(text, attachments),
+                    },
+                });
+            }
+            // Receipt means written to Claude's pipe, not provider acceptance/completion.
+            return wait.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|e| Err(e.to_string()))
+                .map_err(|e| format!("{} Claude submission write was not confirmed ({e}); inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION));
+        }
         let mut core = self.shared.lock();
         let result = core.command(command);
         let restart = core.restart_due();
@@ -297,6 +356,11 @@ impl Drop for ClaudeDriver {
 }
 
 /// State shared by the driver, the reader of each process and the watchdog.
+struct Outgoing {
+    line: String,
+    receipt: Option<Sender<Result<(), String>>>,
+}
+
 struct Shared {
     core: Mutex<Core>,
     /// Signalled when a restart is over, for `shutdown` to wait on.
@@ -408,7 +472,7 @@ struct Core {
     // The process.
     generation: u64,
     proc: Option<Arc<Proc>>,
-    out: Option<Sender<String>>,
+    out: Option<Sender<Outgoing>>,
     ready: bool,
     restarting: bool,
     stopped: bool,
@@ -609,7 +673,10 @@ impl Core {
         self.out
             .as_ref()
             .ok_or_else(|| "claude is not running".to_owned())?
-            .send(value.to_string())
+            .send(Outgoing {
+                line: value.to_string(),
+                receipt: None,
+            })
             .map_err(|_| "claude has closed its input".to_owned())
     }
 
@@ -682,6 +749,10 @@ impl Core {
                 } else {
                     self.send_user(text, true)
                 }
+            }
+            // The driver handles attachments outside the core lock and waits for a writer receipt.
+            ChatCommand::SendAttachments { .. } => {
+                Err("attachment submission requires a writer receipt".into())
             }
             ChatCommand::Compact => {
                 if self.restarting {
@@ -1730,7 +1801,7 @@ fn start_process(shared: &Arc<Shared>) -> Result<(), String> {
         .env_remove("ANTHROPIC_API_KEY");
     let (proc, stdout) = Proc::spawn(command)?;
     let (answer_tx, answer_rx) = mpsc::channel();
-    let (out_tx, out_rx) = mpsc::channel::<String>();
+    let (out_tx, out_rx) = mpsc::channel::<Outgoing>();
     let generation = {
         let mut core = shared.lock();
         if core.stopped {
@@ -1769,8 +1840,13 @@ fn start_process(shared: &Arc<Shared>) -> Result<(), String> {
     // stall the reader (and so every other command) behind a full pipe.
     let writer = Arc::clone(&proc);
     thread::spawn(move || {
-        for line in out_rx {
-            if writer.send_line(&line).is_err() {
+        for outgoing in out_rx {
+            let result = writer.send_line(&outgoing.line);
+            let failed = result.is_err();
+            if let Some(receipt) = outgoing.receipt {
+                let _ = receipt.send(result);
+            }
+            if failed {
                 break;
             }
         }

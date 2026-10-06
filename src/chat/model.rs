@@ -502,6 +502,11 @@ pub enum ChatCommand {
     Send {
         text: String,
     },
+    /// A distinct command: legacy hosts must refuse rather than discard attachments.
+    SendAttachments {
+        text: String,
+        attachments: Vec<super::attachments::Attachment>,
+    },
     Interrupt,
     Approve {
         request_id: String,

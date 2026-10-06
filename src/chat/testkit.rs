@@ -35,6 +35,7 @@ impl Fake {
     pub fn new(fixtures: &[&str]) -> Self {
         let dir = env::temp_dir().join(format!("riwork-chat-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         let dir = dir.canonicalize().unwrap();
         let script = dir.join("fake_provider.py");
         fs::write(&script, FAKE_PROVIDER).unwrap();
@@ -72,8 +73,30 @@ impl Fake {
             fast: false,
             resume: None,
             extra_args: Vec::new(),
-            env: Vec::new(),
-            env_remove: Vec::new(),
+            // Child-only homes; never change this test process's inherited RIWORK_HOME.
+            env: [
+                "HOME",
+                "RIWORK_HOME",
+                "RIWORK_RUNTIME_DIR",
+                "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
+            ]
+            .into_iter()
+            .map(|key| {
+                let path = self.dir.join(key.to_ascii_lowercase());
+                fs::create_dir_all(&path).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+                (key.into(), path.into_os_string())
+            })
+            .collect(),
+            env_remove: [
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
         }
     }
 

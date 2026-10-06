@@ -86,11 +86,14 @@ impl Client {
         if response.ok {
             Ok(response.result)
         } else {
-            Err(CallError::Refused(
-                response
-                    .error
-                    .unwrap_or_else(|| "chat host refused the request".into()),
-            ))
+            let message = response
+                .error
+                .unwrap_or_else(|| "chat host refused the request".into());
+            if message.starts_with(super::attachments::UNKNOWN_SUBMISSION) {
+                Err(CallError::Broken(message))
+            } else {
+                Err(CallError::Refused(message))
+            }
         }
     }
 
@@ -143,6 +146,20 @@ impl Client {
             .map_err(|e| CallError::Broken(e.to_string()))?;
         let capabilities: super::wire::Capabilities = decode(result?).map_err(CallError::Broken)?;
         Ok(capabilities.identified_create)
+    }
+
+    /// No fallback on old hosts. The source path belongs to the host's local filesystem.
+    pub fn stage_attachment(
+        &mut self,
+        chat_id: &str,
+        path: &Path,
+    ) -> Result<super::attachments::Attachment, CallError> {
+        let value = self.exchange(Request::StageAttachment {
+            id: new_id(),
+            chat_id: chat_id.into(),
+            path: path.into(),
+        })?;
+        decode(value).map_err(CallError::Broken)
     }
 
     pub fn list(&mut self) -> Result<Vec<ChatInfo>, String> {
@@ -316,6 +333,7 @@ fn new_id() -> String {
 fn request_id(request: &Request) -> &str {
     match request {
         Request::Capabilities { id }
+        | Request::StageAttachment { id, .. }
         | Request::Create { id, .. }
         | Request::List { id }
         | Request::Command { id, .. }

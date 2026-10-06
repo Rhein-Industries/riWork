@@ -39,6 +39,7 @@ use crate::{
 };
 
 mod approval;
+mod attachment_draft;
 mod cards;
 mod composer;
 mod dictate;
@@ -407,6 +408,14 @@ impl ChatView {
                         self.feed = None;
                     }
                 }
+                // The Kit composer integration will settle its snapshot from this receipt.
+                // Current text-only controls never enqueue SendAttachments.
+                FeedMsg::AttachmentSubmission {
+                    result: Err(error), ..
+                } => {
+                    self.notice = Some(error.to_string());
+                }
+                FeedMsg::AttachmentSubmission { result: Ok(()), .. } => {}
                 FeedMsg::CommandFailed { command, error } => {
                     self.command_failed(command, error);
                 }

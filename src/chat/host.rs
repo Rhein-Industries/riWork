@@ -1025,6 +1025,16 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
                 identified_create: true,
             }),
         ),
+        Request::StageAttachment { id, chat_id, path } => answer(
+            id,
+            shared.find(&chat_id).and_then(|chat| {
+                let inner = lock(&chat.inner);
+                if inner.deleted {
+                    return Err(format!("unknown chat {chat_id}"));
+                }
+                super::attachments::stage(&chat.dir, &path)
+            }),
+        ),
         Request::Create { id, chat, chat_id } => {
             answer(id, create_identified(shared, chat, chat_id))
         }
@@ -1556,6 +1566,14 @@ fn live_driver(chat: &Chat) -> Option<DriverHandle> {
 /// Routes a user command to the chat's driver, starting (resuming) the driver
 /// first for a command that needs a process.
 fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Result<(), String> {
+    if let ChatCommand::SendAttachments { text, attachments } = &command {
+        if text.len() > super::attachments::TEXT_BYTES {
+            return Err("attachment message text exceeds 1 MiB".into());
+        }
+        super::attachments::validate_owned(&chat.dir, attachments)?;
+        // Encoding bounds apply before a stopped chat can start a provider, too.
+        super::attachments::inputs(text, attachments, chat.info().provider == Provider::Claude)?;
+    }
     if matches!(command, ChatCommand::Stop) {
         stop(chat);
         return Ok(());
@@ -1570,7 +1588,12 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
             fast: None,
         }
     );
-    if retry || matches!(command, ChatCommand::Send { .. } | ChatCommand::Compact) {
+    if retry
+        || matches!(
+            command,
+            ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. } | ChatCommand::Compact
+        )
+    {
         ensure_running(shared, chat)?;
     }
     let Some(driver) = live_driver(chat) else {

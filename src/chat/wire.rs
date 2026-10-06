@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 pub enum Request {
     /// Non-mutating feature inspection. Older hosts reject this operation.
     Capabilities { id: String },
+    /// Copy a local file into this chat. Legacy hosts refuse this operation.
+    StageAttachment {
+        id: String,
+        chat_id: String,
+        path: std::path::PathBuf,
+    },
     /// Start a chat. The result is its `ChatInfo`. A chat that makes itself an
     /// orchestrator of a scope that has one is refused (`ORCHESTRATOR_EXISTS`).
     Create {

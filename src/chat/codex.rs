@@ -957,6 +957,10 @@ impl Codex {
         }
         match command {
             ChatCommand::Send { text } => self.send_text(text),
+            ChatCommand::SendAttachments { text, attachments } => {
+                let input = super::attachments::inputs(&text, &attachments, false)?;
+                self.send_attachments(input)
+            }
             ChatCommand::Interrupt => self.interrupt(),
             ChatCommand::Approve {
                 request_id,
@@ -1053,6 +1057,66 @@ impl Codex {
             });
         }
         sent
+    }
+
+    /// Unlike legacy text steering, attachment submission has no implicit retry/queue.
+    /// A reply acknowledges submission; the separate turn events describe completion.
+    fn send_attachments(&self, input: Value) -> Result<(), String> {
+        let thread = self.thread()?;
+        let (answer, wait) = mpsc::channel();
+        let frame = self.with(|session| {
+            if session.finished || session.interrupting || session.starting {
+                return Err("Codex is starting or interrupting a turn; keep the draft and send after it settles".to_owned());
+            }
+            let expected_turn = session.turn.clone();
+            let (method, params, starting) = if let Some(turn) = &session.turn {
+                ("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"input":input}), false)
+            } else {
+                let mut params = session.turn_params(&thread, "");
+                params["input"] = input;
+                session.starting = true;
+                session.refresh_state();
+                ("turn/start", params, true)
+            };
+            Ok(session.request(method, params, Box::new(move |codex, outcome| {
+                let result = match outcome {
+                    Ok(value) => {
+                        if starting {
+                            if let Some(id) = value["turn"]["id"].as_str() {
+                                let frames = codex.with(|s| s.begin_turn(id));
+                                codex.send_all(frames);
+                                Ok(())
+                            } else {
+                                Err(format!("{} Codex acknowledged a turn without its id; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION))
+                            }
+                        } else if value["turnId"].as_str() == expected_turn.as_deref() {
+                            Ok(())
+                        } else {
+                            Err(format!("{} Codex steering receipt did not identify the expected turn; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION))
+                        }
+                    }
+                    Err(message) => {
+                        if starting { codex.with(|s| { s.starting = false; s.refresh_state(); }); }
+                        Err(message)
+                    }
+                };
+                let _ = answer.send(result);
+            })))
+        })?;
+        // Even a partial pipe write can have submitted the request. Never retry it.
+        self.proc.send(&frame).map_err(|e| {
+            format!(
+                "{} {e}; inspect the transcript before resending",
+                super::attachments::UNKNOWN_SUBMISSION
+            )
+        })?;
+        wait.recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|e| {
+                Err(format!(
+                    "{} Codex submission reply lost ({e}); inspect the transcript before resending",
+                    super::attachments::UNKNOWN_SUBMISSION
+                ))
+            })
     }
 
     fn interrupt(&self) -> Result<(), String> {

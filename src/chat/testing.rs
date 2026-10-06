@@ -113,8 +113,9 @@ impl Driver for FakeDriver {
     /// ends, and `flood:N:BYTES` streams N deltas of that size.
     fn command(&mut self, command: ChatCommand) -> Result<(), String> {
         self.fake.commands.lock().unwrap().push(command.clone());
-        let ChatCommand::Send { text } = command else {
-            return Ok(());
+        let text = match command {
+            ChatCommand::Send { text } | ChatCommand::SendAttachments { text, .. } => text,
+            _ => return Ok(()),
         };
         self.turn += 1;
         let turn = format!("turn-{}", self.turn);
