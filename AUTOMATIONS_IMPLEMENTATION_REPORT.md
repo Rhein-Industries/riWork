@@ -5,8 +5,9 @@ Completed the desktop engine task `c2250f68-0cd7-4d5d-8cd0-6bb86ba2e025` and nat
 ## Frozen candidate and commits
 
 - Branch: `feat/automations`; base: `edcaf5799038de8769d985700858323a47fe6b1e`.
-- Frozen implementation candidate: **`a38ea39ec5a0de607698e8cab88adad0c6b17680`** — `Implement desktop Automations with guarded fresh chats and explicit AI shells`.
-- The subsequent commit adds only this report. The frozen handoff commit is the report commit at branch HEAD; its exact hash is returned to the parent in the final handoff. Implementation, tests, build receipts and GUI artifacts are unchanged from the implementation candidate above.
+- Original implementation candidate: **`a38ea39ec5a0de607698e8cab88adad0c6b17680`** — `Implement desktop Automations with guarded fresh chats and explicit AI shells`; original report commit: `e46f03325fd4dfe983e02d891f0d6fc3055b3629`.
+- Current frozen implementation candidate: **`8f4d966983d8fa0ae436d6b0b536282f0945b648`** — `Reject create-only automation options outside create and explicit fresh-chat shells`. This is the small parent-review follow-up to the original candidate.
+- The next report-only commit records this exact follow-up and its receipt; the final handoff HEAD hash is returned to the parent. Scheduler/host/UI code and GUI artifacts are unchanged; only CLI/MCP validation, focused interface tests, documentation and log endings changed.
 - No main merge, push, deployment, production host replacement, connector restart or OTA restart occurred. Independent acceptance review is pending.
 
 ## Result
@@ -39,7 +40,7 @@ The implementation commit contains 37 files. `git show --stat a38ea39ec5a0de6076
 
 ## Build and focused verification
 
-All final checks below passed. Used **`CARGO_TARGET_DIR=/tmp/riwork-automations-target`** and installed Zig via PATH prefix **`/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0`** (binary `/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig`). Inherited RIWORK_HOME was preserved; `scripts/check-schedules.sh` overrides home/runtime only in child test processes. No authenticated model/provider test ran.
+The original implementation checks below passed; their receipts are retained. They were not rerun for the small interface-only follow-up except the affected CLI/MCP/interface checks listed in the next section. Used **`CARGO_TARGET_DIR=/tmp/riwork-automations-target`** and installed Zig via PATH prefix **`/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0`** (binary `/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig`). Inherited RIWORK_HOME was preserved; `scripts/check-schedules.sh` overrides home/runtime only in child test processes. No authenticated model/provider test ran.
 
 | Command after the environment prefix | Result | Original log | Committed receipt |
 | --- | --- | --- | --- |
@@ -49,11 +50,29 @@ All final checks below passed. Used **`CARGO_TARGET_DIR=/tmp/riwork-automations-
 | `scripts/check-schedules.sh --bin riwork chat::host::tests` | 39 passed | `/tmp/riwork-automations-chat-host.log` | `docs/verification/automations/test-logs/chat-host.log` |
 | `scripts/check-schedules.sh --bin riwork workspace_tab_tests::icon_only_panel_tabs_name_their_panel_in_the_tooltip` | 1 passed | `/tmp/riwork-automations-native-label.log` | `docs/verification/automations/test-logs/native-label.log` |
 | `cargo build --offline` | Native desktop debug build passed | `/tmp/riwork-automations-build.log` | `docs/verification/automations/test-logs/build.log` |
-| `cargo fmt --all -- --check`; `git diff --check` | Passed | Final tool receipts | No formatting/diff errors |
+| `cargo fmt --all -- --check`; working-tree `git diff --check` | Passed for the original candidate; scope of the original diff check was insufficient to catch committed log EOF blanks | Original tool receipts | Base-to-HEAD correction is recorded below |
 
 Fake-driver lifecycle coverage includes Codex/Claude ordinary fresh creation, one prompt per occurrence, concurrent ticks, persistent IDs across host/scheduler restart, failed startup, create/send refusal or broken exchange, missing log proof, positive capability with mismatched ID/root/project/account/permission/model/effort/fast, interrupted claims and old serialized schedules. The creation stand-in asserts the on-disk Dispatching claim and created_chat_id before handling Create. Direct UUID creation races permit only one winner and refuse reuse after host restart.
 
 Capability stand-ins reject or omit support, return false/malformed/unreadable/wrong IDs, disconnect or time out. They assert zero Create/Command calls, zero chats, no consumed fresh rate slot/claim, repeated/reloaded Deferred checks, eventual Missed and non-starvation of a due legacy schedule. Ordinary root Codex/Claude shell fixtures use inert deterministic harnesses and real guarded input code, verify one dispatch, legacy-marker absence semantics and changed scope/kind/creation/account/root rejection. Existing shell readiness/races and old schedules remain covered. CLI and real MCP stdio tests cover fresh/shell requests, defaults, invalid destination/project/account/permission, stale revisions and retained markers through update/pause/resume/delete.
+
+## Focused parent-review follow-up
+
+Frozen code commit: **`8f4d966983d8fa0ae436d6b0b536282f0945b648`**. Shared MCP runtime validation now rejects the presence of destination/provider/model/effort/fast/permission/codex_account_id on every non-create schedule operation, including explicit nulls, before opening the service. Legacy accepted fields are unchanged. Fresh CLI/MCP creation rejects any supplied --shell/shell_id, even empty/null; the shared service retains its internal empty sentinel.
+
+Two real CLI/MCP interface regressions were added. A batch tests all seven new create-only fields (including null) across update/pause/resume/delete/list/show, receives invalid_argument for each and verifies the saved revision, full target and schedule remain unchanged. Provider/model options on CLI update remain rejected. Explicit empty/null/nonempty fresh shell values are rejected without a saved schedule or chat; shell omission still succeeds.
+
+Parent review found blank lines at EOF in five committed original logs that a clean-working-tree diff check did not detect. Only EOF endings were normalized in chat-host.log, cli-mcp.log, engine.log, interfaces.log and native-label.log. Original log contents/results remain intact. The corrected verification explicitly compares the base commit to the committed candidate.
+
+| Follow-up check (same isolated target/Zig setup) | Result | Original log | Committed receipt |
+| --- | --- | --- | --- |
+| `scripts/check-schedules.sh --test schedule_interfaces` | 8 passed, 0 failed | `/tmp/riwork-automations-followup-interfaces.log` | `docs/verification/automations/test-logs/followup-interfaces.log` |
+| `scripts/check-schedules.sh --test cli_mcp_contract` | 12 passed, 0 failed | `/tmp/riwork-automations-followup-cli-mcp.log` | `docs/verification/automations/test-logs/followup-cli-mcp.log` |
+| `cargo check --offline` | Passed | `/tmp/riwork-automations-followup-check.log` | `docs/verification/automations/test-logs/followup-check.log` |
+| `cargo fmt --all -- --check` | Passed | Tool receipt | `docs/verification/automations/followup-receipt.json` |
+| `git diff edcaf579 8f4d966983d8fa0ae436d6b0b536282f0945b648 --check` | Passed, exit 0 | Tool receipt | `docs/verification/automations/followup-receipt.json` |
+
+The final report-only HEAD is also checked against edcaf579 after commit. The passing unchanged scheduler/host/GUI suites were not repeated. No Cua ownership was acquired, and no production host, OTA, connector, main or deployment change was made in this follow-up. Old-host safe deferral and the desktop-only scope remain unchanged. The independent reviewer can inspect the focused follow-up diff from a38ea39 to this candidate.
 
 ## Cua verification and honest limits
 
