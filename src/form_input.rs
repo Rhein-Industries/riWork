@@ -180,6 +180,162 @@ pub(crate) fn test_turn(
     cx.run_until_parked();
 }
 
+/// Keep production element construction unchanged; test builds observe the real
+/// refined control only after GPUI mounts and prepaints it. No input/style proxy.
+pub(crate) fn control_element<R: gpui::RenderOnce + gpui::IntoElement>(
+    id: impl Into<gpui::ElementId>,
+    control: R,
+) -> gpui::AnyElement {
+    #[cfg(test)]
+    {
+        ax_probe::Mounted {
+            control,
+            id: id.into(),
+        }
+        .into_any_element()
+    }
+    #[cfg(not(test))]
+    {
+        let _ = id;
+        control.into_any_element()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_ax_node(
+    window: &Window,
+    cx: &App,
+    id: impl Into<gpui::ElementId>,
+) -> gpui::accesskit::Node {
+    let fact = ax_probe::fact(window, cx, id.into());
+    assert!(
+        fact.bounds.size.width > gpui::px(0.) && fact.bounds.size.height > gpui::px(0.),
+        "the probe must capture real nonempty layout bounds"
+    );
+    fact.node.expect("mounted refined semantic node")
+}
+
+#[cfg(test)]
+mod ax_probe {
+    use gpui::{
+        A11ySubtreeBuilder, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId,
+        IntoElement, LayoutId, Pixels, RenderOnce, Window,
+    };
+    use std::collections::HashMap;
+
+    #[derive(Clone)]
+    pub(super) struct Fact {
+        pub node: Option<gpui::accesskit::Node>,
+        pub bounds: Bounds<Pixels>,
+    }
+    #[derive(Default)]
+    struct Facts(HashMap<(gpui::WindowId, ElementId), Fact>);
+    impl gpui::Global for Facts {}
+
+    pub(super) fn fact(window: &Window, cx: &App, id: ElementId) -> Fact {
+        cx.global::<Facts>()
+            .0
+            .get(&(window.window_handle().window_id(), id))
+            .expect("the actual refined element must have completed prepaint")
+            .clone()
+    }
+
+    // Like the reviewed foundation/chat probe: every lifecycle and AX method
+    // forwards to the actual element. Capture no reconstructed control metadata.
+    struct Observed<E: Element> {
+        inner: E,
+        id: ElementId,
+    }
+    impl<E: Element> IntoElement for Observed<E> {
+        type Element = Self;
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+    impl<E: Element> Element for Observed<E> {
+        type RequestLayoutState = E::RequestLayoutState;
+        type PrepaintState = E::PrepaintState;
+        fn id(&self) -> Option<ElementId> {
+            self.inner.id()
+        }
+        fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+            self.inner.source_location()
+        }
+        fn request_layout(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            inspector: Option<&InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, Self::RequestLayoutState) {
+            self.inner.request_layout(id, inspector, window, cx)
+        }
+        fn prepaint(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            inspector: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            layout: &mut Self::RequestLayoutState,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> Self::PrepaintState {
+            let state = self
+                .inner
+                .prepaint(id, inspector, bounds, layout, window, cx);
+            let node = self.inner.a11y_role().map(|role| {
+                let mut node = gpui::accesskit::Node::new(role);
+                self.inner.write_a11y_info(&mut node);
+                node
+            });
+            cx.default_global::<Facts>().0.insert(
+                (window.window_handle().window_id(), self.id.clone()),
+                Fact { node, bounds },
+            );
+            state
+        }
+        fn paint(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            inspector: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            layout: &mut Self::RequestLayoutState,
+            state: &mut Self::PrepaintState,
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            self.inner
+                .paint(id, inspector, bounds, layout, state, window, cx)
+        }
+        fn a11y_role(&self) -> Option<gpui::Role> {
+            self.inner.a11y_role()
+        }
+        fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+            self.inner.write_a11y_info(node);
+        }
+        fn a11y_synthetic_children(
+            &mut self,
+            state: &mut Self::PrepaintState,
+            builder: &mut A11ySubtreeBuilder,
+        ) {
+            self.inner.a11y_synthetic_children(state, builder);
+        }
+    }
+    #[derive(gpui::IntoElement)]
+    pub(super) struct Mounted<R: RenderOnce + IntoElement> {
+        pub control: R,
+        pub id: ElementId,
+    }
+    impl<R: RenderOnce + IntoElement> RenderOnce for Mounted<R> {
+        fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+            // Only GPUI's mounted request_layout calls this, never update_window.
+            Observed {
+                inner: self.control.render(window, cx).into_element(),
+                id: self.id,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -101,6 +101,7 @@ fn action_control(
     activate: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let id = control_id(action);
+    let ax_id = id.clone();
     if matches!(action, Control::Permission(_) | Control::Repeat(_)) {
         return paint_action(
             behavior::radio_content(id, label.clone(), label, selected)
@@ -111,6 +112,7 @@ fn action_control(
             colors,
         )
         .on_change(move |_, event, window, cx| activate(event, window, cx))
+        .map(|control| crate::form_input::control_element(ax_id, control))
         .into_any_element();
     }
     if matches!(
@@ -126,6 +128,7 @@ fn action_control(
             colors,
         )
         .on_change(move |_, event, window, cx| activate(event, window, cx))
+        .map(|control| crate::form_input::control_element(ax_id, control))
         .into_any_element();
     }
     paint_action(
@@ -138,6 +141,7 @@ fn action_control(
         colors,
     )
     .on_click(activate)
+    .map(|control| crate::form_input::control_element(ax_id, control))
     .into_any_element()
 }
 
@@ -2109,10 +2113,14 @@ mod kit_control_tests {
                     Control::Permission(ApprovalMode::Full)
                 ]
             );
-            let radio = window.find(control_id(&Control::Permission(ApprovalMode::Full)));
-            assert_eq!(radio.role(), Some(gpui::Role::RadioButton));
+            let radio = crate::form_input::test_ax_node(
+                window,
+                app,
+                control_id(&Control::Permission(ApprovalMode::Full)),
+            );
+            assert_eq!(radio.role(), gpui::Role::RadioButton);
             assert_eq!(radio.label(), Some("Same display label"));
-            assert_eq!(radio.checked(), Some(true));
+            assert_eq!(radio.toggled(), Some(gpui::accesskit::Toggled::True));
             window.click(control_id(&Control::Fast), app);
         });
         test_turn(cx, window, |window, app| window.press("space", app));
@@ -2126,9 +2134,14 @@ mod kit_control_tests {
             window.click(control_id(&Control::Fast), app)
         });
         test_turn(cx, window, |window, app| window.press("enter", app));
-        test_turn(cx, window, |_, app| {
+        test_turn(cx, window, |window, app| {
             assert!(!owner.read(app).fast);
             assert_eq!(owner.read(app).calls.len(), 6);
+            for action in [Control::Permission(ApprovalMode::Full), Control::Fast] {
+                let node = crate::form_input::test_ax_node(window, app, control_id(&action));
+                assert!(node.is_disabled());
+                assert!(!node.supports_action(gpui::accesskit::Action::Click));
+            }
         });
     }
 }

@@ -2312,6 +2312,7 @@ impl FileExplorer {
                 hint,
             )
             .on_change(move |_, event, window, cx| click(event, window, cx))
+            .map(|control| crate::form_input::control_element(id, control))
             .into_any_element();
         }
         paint_file_action(
@@ -2328,6 +2329,7 @@ impl FileExplorer {
             hint,
         )
         .on_click(click)
+        .map(|control| crate::form_input::control_element(id, control))
         .into_any_element()
     }
 
@@ -4678,10 +4680,22 @@ mod kit_control_tests {
             assert!(owner.tree.directories.is_empty());
             assert!(owner.preview_task.is_none() && owner.copy_task.is_none());
             assert_eq!(
-                window.find("file-explorer-refresh").role(),
-                Some(gpui::Role::Button)
+                crate::form_input::test_ax_node(window, app, "file-explorer-refresh").role(),
+                gpui::Role::Button
             );
-            assert_eq!(window.find("file-explorer-hidden").checked(), Some(false));
+            assert_eq!(
+                crate::form_input::test_ax_node(window, app, "file-explorer-hidden").toggled(),
+                Some(gpui::accesskit::Toggled::False)
+            );
+            for id in [
+                "file-explorer-refresh",
+                "file-explorer-hidden",
+                "file-explorer-reveal-root",
+            ] {
+                let node = crate::form_input::test_ax_node(window, app, id);
+                assert!(node.is_disabled());
+                assert!(!node.supports_action(gpui::accesskit::Action::Click));
+            }
         });
     }
 
@@ -4719,8 +4733,8 @@ mod kit_control_tests {
             );
             assert!(explorer.focus_of(Mode::CopyContents).is_focused(window));
             assert_eq!(
-                window.find("file-explorer-copy-contents").role(),
-                Some(gpui::Role::Button)
+                crate::form_input::test_ax_node(window, app, "file-explorer-copy-contents").role(),
+                gpui::Role::Button
             );
         });
     }

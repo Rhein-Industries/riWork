@@ -6,6 +6,7 @@
     "status_bar::kit_control_tests::status_switch_keyboard_ax_and_exact_item_routing",
     "status_bar::kit_control_tests::status_disabled_reorder_and_keyboard_reset_keep_domain_defaults",
     "panels::kit_control_tests::panel_rows_keyboard_ax_and_nested_actions_keep_exact_project_identity",
+    "panels::kit_control_tests::native_project_actions_reveal_for_keyboard_scope_and_keep_pointer_hover",
     "panels::kit_control_tests::sort_popover_keyboard_reselect_dismissal_and_refresh_preserve_focus",
     "remote_prompt::kit_control_tests::remote_dialog_base_cancel_enter_and_space_emit_once",
     "remote_prompt::kit_control_tests::remote_dialog_tab_traps_focus_and_busy_buttons_preserve_draft",
@@ -20,17 +21,20 @@
     "text_input::init",
     "behavior_controls::init",
     "Base Root::new",
-    "form_input::test_turn (drain after Window update)"
+    "form_input::test_turn (drain after Window update)",
+    "form_input::control_element -> ax_probe::Mounted::render (mounted request_layout only) -> actual refined Element request_layout/prepaint/paint",
+    "form_input::test_ax_node (actual role/write_a11y_info after prepaint with nonempty measured bounds)"
   ],
   "helper_chains": {
     "status_bar": "actual render_settings/render_item/move_button; in-memory preference snapshots only",
-    "panels": "actual project_row/project_control/project_sort_controls/anchored_sort_menu; ProjectSortUi owns Base PopoverState; in-memory PanelAction log",
+    "panels": "actual project_row/project_control/project_sort_controls/anchored_sort_menu; ProjectSortUi owns Base PopoverState; in-memory PanelAction log; native reveal fixture uses persistent row handle and actual project_action_strip, synthetic pointer/key events and painted TestSupport visibility; no Native theme/Ghostty configuration",
     "remote_prompt": "NewProject kind, synthetic host, backend Err; actual RemotePrompt::new/render/button/focus; ReturnFixture owns subscription and removes prompt on Closed; only cancel keys and synthetic pending/draft input, no submit",
     "schedule_panel": "action_control and paint_action with typed Control values; in-memory callbacks; no SchedulePanel/Editor/Store/SessionManager or save",
     "file_explorer": "FileExplorer::new root None and empty TreeModel/Preview; FilePreview::new/preview_panel; disabled browser controls and CopyContents refusal returns before background work/clipboard/filesystem"
   },
   "native_limits": [
-    "Observation derives AX role/label/checked/selected/focus from rendered Base nodes; disabled wrapper native nodes remain foundation/reviewer coverage",
-    "No actual native AX, clipboard, IME, SF-symbol/text-scale visual or Cua QA performed"
+    "AX role/label/toggled/selected/disabled/Click capability comes from the actual refined element after mounted layout/prepaint; find is retained only for real focus/paint visibility and events",
+    "No actual native AX, clipboard, IME, SF-symbol/text-scale visual or Cua QA performed",
+    "Pinned Base 0.7.1 FocusTrapContainer omits host AX forwarding: Dialog host role is lost; ordinary descendant Drawables still prepaint. Dialog child probes do not establish the native host tree as accepted."
   ]
 }

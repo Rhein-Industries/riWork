@@ -66,3 +66,7 @@ There is no StateStore/SessionManager/SettingsStore construction, shell/server/s
 Only source reads/rewrites, source formatting and git review/commit operations were performed. Source formatter: approved toolchain `1.95.0-aarch64-apple-darwin/bin/rustfmt --edition 2024 --config skip_children=true` on the ten owned files. Final source formatting and `git diff --check` results are recorded in the delivery message; neither is a compile/test result. No Cargo/check/build/test/listing/runtime/native/GUI/provider/tmux command ran. Inherited environment was not changed, no build slot was acquired, no production settings changed, and no old log/fixture was cleaned.
 
 Existing untracked `GPUI_KIT_NATIVE_FIXTURE_AUDIT.md` remains preserved; SHA-256 `5d5b74a4fe5f33c3d0491df533b0aa4e514d9febbd9897ebb9308e62fce4ef4e`. Parent integrates and reviewer checks before acceptance. This source receipt does not declare the task done.
+
+## Focused followup after a57 integration
+
+See [GPUI_KIT_CONTROLS_FOCUSED_REVIEW.md](GPUI_KIT_CONTROLS_FOCUSED_REVIEW.md) for mounted refined AX probes, Native project keyboard/hover visibility, shared alignment defaults and the precise pinned Dialog-host AX limitation. It supersedes the earlier source-only keyboard-visibility and inner-node-observation limits above; native acceptance remains held. The proposed owned allowlist now has 11 names.

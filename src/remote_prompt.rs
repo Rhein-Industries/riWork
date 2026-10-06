@@ -537,6 +537,7 @@ impl RemotePrompt {
                 }
                 prompt.press(press, cx);
             }))
+            .map(|control| crate::form_input::control_element(id, control))
             .into_any_element()
     }
 }
@@ -945,13 +946,14 @@ mod kit_control_tests {
             });
             test_turn(cx, window, |window, app| {
                 let prompt = owner.read(app).prompt.clone().unwrap();
-                prompt.read(app).button_focus[0].focus(window, app);
+                let focus = prompt.read(app).button_focus[0].clone();
+                focus.focus(window, app);
             });
-            test_turn(cx, window, |window, _| {
-                let cancel = window.find("remote-prompt-first");
-                assert_eq!(cancel.role(), Some(gpui::Role::Button));
+            test_turn(cx, window, |window, app| {
+                let cancel = crate::form_input::test_ax_node(window, app, "remote-prompt-first");
+                assert_eq!(cancel.role(), gpui::Role::Button);
                 assert_eq!(cancel.label(), Some("Cancel"));
-                assert_eq!(cancel.focused(), Some(true));
+                assert_eq!(window.find("remote-prompt-first").focused(), Some(true));
             });
             test_turn(cx, window, |window, app| window.press(key, app));
             assert_eq!(
@@ -976,7 +978,8 @@ mod kit_control_tests {
             )
         });
         test_turn(cx, window, |window, app| {
-            prompt.read(app).button_focus[1].focus(window, app);
+            let focus = prompt.read(app).button_focus[1].clone();
+            focus.focus(window, app);
             window.press("tab", app);
         });
         test_turn(cx, window, |window, app| {
@@ -996,12 +999,19 @@ mod kit_control_tests {
         test_turn(cx, window, |window, app| {
             window.click("remote-prompt-first", app)
         });
-        test_turn(cx, window, |_, app| {
+        test_turn(cx, window, |window, app| {
             let prompt = prompt.read(app);
             assert_eq!(prompt.input_states[0].read(app).value(), "Synthetic draft");
             assert_eq!(prompt.busy, Some("Synthetic pending"));
             assert!(prompt.error.is_none());
             assert_eq!(prompt.parent_enter_actions, 0);
+            // Actual Dialog descendants completed layout despite the upstream host-role gap.
+            for id in ["remote-prompt-first", "remote-prompt-second"] {
+                let node = crate::form_input::test_ax_node(window, app, id);
+                assert_eq!(node.role(), gpui::Role::Button);
+                assert!(node.is_disabled());
+                assert!(!node.supports_action(gpui::accesskit::Action::Click));
+            }
         });
     }
 
@@ -1063,7 +1073,8 @@ mod kit_control_tests {
         });
         test_turn(cx, window, |window, app| {
             let prompt = owner.read(app).prompt.clone().unwrap();
-            prompt.read(app).button_focus[0].focus(window, app);
+            let focus = prompt.read(app).button_focus[0].clone();
+            focus.focus(window, app);
             window.press("space", app);
         });
         test_turn(cx, window, |window, app| {

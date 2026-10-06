@@ -349,6 +349,9 @@ pub fn render_settings<V: 'static>(
                             master_change(view, next, window, cx);
                         });
                         move |checked, _, window, cx| listener(&checked, window, cx)
+                    })
+                    .map(|control| {
+                        crate::form_input::control_element("status-bar-visible", control)
                     }),
                 )
                 .child(
@@ -384,7 +387,8 @@ pub fn render_settings<V: 'static>(
                     })
                     .on_click(cx.listener(move |view, _, window, cx| {
                         reset(view, StatusBarSettings::default(), window, cx)
-                    })),
+                    }))
+                    .map(|control| crate::form_input::control_element("status-bar-reset", control)),
                 ),
         );
     for side in [StatusSide::Left, StatusSide::Right] {
@@ -537,7 +541,13 @@ fn render_item<V: 'static>(
                 let mut next = route_settings.clone();
                 next.set_side(item.kind, item.side.opposite());
                 route(view, next, window, cx);
-            })),
+            }))
+            .map(|control| {
+                crate::form_input::control_element(
+                    format!("status-item-{}-side", item.kind.key()),
+                    control,
+                )
+            }),
         )
         .child(move_button(
             item.kind,
@@ -614,6 +624,16 @@ fn move_button<V: 'static>(
             }
         }
     }))
+    .map(|control| {
+        crate::form_input::control_element(
+            format!(
+                "status-item-{}-{}",
+                kind.key(),
+                if up { "up" } else { "down" }
+            ),
+            control,
+        )
+    })
     .into_any_element()
 }
 
@@ -957,11 +977,11 @@ mod kit_control_tests {
         test_turn(cx, window, |window, app| window.press("space", app));
         test_turn(cx, window, |window, app| window.press("enter", app));
         test_turn(cx, window, |window, app| {
-            let control = window.find("status-bar-visible");
-            assert_eq!(control.role(), Some(gpui::Role::Switch));
+            let control = crate::form_input::test_ax_node(window, app, "status-bar-visible");
+            assert_eq!(control.role(), gpui::Role::Switch);
             assert_eq!(control.label(), Some("Show status bar"));
-            assert_eq!(control.checked(), Some(false));
-            assert_eq!(control.focused(), Some(true));
+            assert_eq!(control.toggled(), Some(gpui::accesskit::Toggled::False));
+            assert_eq!(window.find("status-bar-visible").focused(), Some(true));
             assert_eq!(owner.read(app).changes.len(), 3);
             window.click("status-item-project-visible", app);
         });
@@ -996,7 +1016,7 @@ mod kit_control_tests {
             assert!(!project.enabled);
             assert_eq!(owner.read(app).changes.len(), 5);
             assert_eq!(
-                window.find("status-item-project-side").label(),
+                crate::form_input::test_ax_node(window, app, "status-item-project-side").label(),
                 Some("Move Current project to the Left side")
             );
         });
@@ -1006,6 +1026,10 @@ mod kit_control_tests {
     fn status_disabled_reorder_and_keyboard_reset_keep_domain_defaults(cx: &mut TestAppContext) {
         let (window, owner) = mount(cx);
         test_turn(cx, window, |window, app| {
+            let disabled = crate::form_input::test_ax_node(window, app, "status-item-project-up");
+            assert_eq!(disabled.role(), gpui::Role::Button);
+            assert!(disabled.is_disabled());
+            assert!(!disabled.supports_action(gpui::accesskit::Action::Click));
             window.click("status-item-project-up", app)
         });
         test_turn(cx, window, |window, app| {
@@ -1026,11 +1050,11 @@ mod kit_control_tests {
             assert_eq!(owner.read(app).changes.len(), 3);
             assert_eq!(owner.read(app).settings, StatusBarSettings::default());
             assert_eq!(
-                window.find("status-bar-reset").role(),
-                Some(gpui::Role::Button)
+                crate::form_input::test_ax_node(window, app, "status-bar-reset").role(),
+                gpui::Role::Button
             );
             assert_eq!(
-                window.find("status-bar-reset").label(),
+                crate::form_input::test_ax_node(window, app, "status-bar-reset").label(),
                 Some("Reset defaults")
             );
         });

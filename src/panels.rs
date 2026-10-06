@@ -644,41 +644,52 @@ pub fn render_panel<V: Render + 'static>(
                             ActivityCounts::for_project(&project.id, data.shells, data.activity)
                                 .with_chats_in_project(&project.id, data.chats);
                         let selected = data.project_id == project.id;
-                        let controls = div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(ui_text::space(4.0))
-                            // Native shows a row's buttons only while it is pointed at or chosen.
-                            .when(ui_text::is_native() && !selected, |controls| {
-                                controls
-                                    .invisible()
-                                    .group_hover(PROJECT_ROW_GROUP, |style| style.visible())
-                            })
-                            .child(project_notification_control(
-                                &project.id,
-                                project.notify_on_agent_done,
-                                on_action.clone(),
+                        // Keyed by the visible surface and immutable project identity.
+                        // Base receives the same persistent handle; refreshing/reordering never focuses it.
+                        let scope = data
+                            .project_sort_ui
+                            .expect("Projects surface requires persistent sort UI")
+                            .state
+                            .entity_id();
+                        let row_focus = window
+                            .use_keyed_state(
+                                format!("project-row-focus-{scope}-{}", project.id),
                                 cx,
-                            ))
-                            .child(project_control(
-                                &project.id,
-                                "settings",
-                                "⚙",
-                                "Project settings",
-                                PanelAction::ProjectSettings(project.id.clone()),
-                                on_action.clone(),
-                                cx,
-                            ))
-                            .child(project_control(
-                                &project.id,
-                                "open",
-                                "↗",
-                                "Open project in another window",
-                                PanelAction::OpenProject(project.id.clone()),
-                                on_action.clone(),
-                                cx,
-                            ));
+                                |_, cx| cx.focus_handle(),
+                            )
+                            .read(cx)
+                            .clone();
+                        let controls = project_action_strip(
+                            ui_text::is_native(),
+                            selected,
+                            &row_focus,
+                            window,
+                            cx,
+                        )
+                        .child(project_notification_control(
+                            &project.id,
+                            project.notify_on_agent_done,
+                            on_action.clone(),
+                            cx,
+                        ))
+                        .child(project_control(
+                            &project.id,
+                            "settings",
+                            "⚙",
+                            "Project settings",
+                            PanelAction::ProjectSettings(project.id.clone()),
+                            on_action.clone(),
+                            cx,
+                        ))
+                        .child(project_control(
+                            &project.id,
+                            "open",
+                            "↗",
+                            "Open project in another window",
+                            PanelAction::OpenProject(project.id.clone()),
+                            on_action.clone(),
+                            cx,
+                        ));
                         let title = div()
                             .flex()
                             .items_center()
@@ -701,6 +712,7 @@ pub fn render_panel<V: Render + 'static>(
                                 selected,
                                 depth,
                                 dimmed: false,
+                                focus: Some(row_focus),
                             },
                             vec![
                                 title.into_any_element(),
@@ -1786,6 +1798,29 @@ fn sort_menu_row<V: 'static>(
     .into_any_element()
 }
 
+/// Preserve Native's pointer hover policy and reveal the action strip whenever
+/// keyboard focus is on the row or one of its nested Base controls.
+fn project_action_strip(
+    native: bool,
+    selected: bool,
+    row_focus: &FocusHandle,
+    window: &Window,
+    cx: &gpui::App,
+) -> Div {
+    let keyboard_within =
+        window.last_input_was_keyboard() && row_focus.contains_focused(window, cx);
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(ui_text::space(4.0))
+        .when(native && !selected && !keyboard_within, |strip| {
+            strip
+                .invisible()
+                .group_hover(PROJECT_ROW_GROUP, |style| style.visible())
+        })
+}
+
 fn project_control<V: 'static>(
     project_id: &str,
     name: &str,
@@ -1808,6 +1843,7 @@ fn project_control<V: 'static>(
     .w(ui_text::space(20.0))
     .h(ui_text::space(18.0))
     .text_color(rgb(colors.cyan))
+    .focus_visible(move |style| style.bg(rgb(colors.divider)))
     .hover(move |style| {
         let style = style.bg(rgb(colors.divider));
         if ui_text::is_native() {
@@ -1831,6 +1867,9 @@ fn project_control<V: 'static>(
         cx.stop_propagation();
         on_action(view, action.clone(), window, cx);
     }))
+    .map(|control| {
+        crate::form_input::control_element(format!("{name}-project-{project_id}"), control)
+    })
     .into_any_element()
 }
 
@@ -1858,6 +1897,7 @@ fn project_notification_control<V: 'static>(
     .justify_center()
     .w(ui_text::space(20.0))
     .h(ui_text::space(18.0))
+    .focus_visible(move |style| style.bg(rgb(colors.divider)))
     .hover(move |style| {
         let style = style.bg(rgb(colors.divider));
         if ui_text::is_native() {
@@ -2080,6 +2120,7 @@ fn remote_project_row<V: 'static>(
             selected: project.selected,
             depth: 1,
             dimmed: project.dimmed,
+            focus: None,
         },
         vec![
             div()
@@ -2519,7 +2560,6 @@ fn folder_bar(
     colors: Palette,
 ) -> behavior::Button {
     behavior::button_content(id, name.to_owned(), content)
-        .justify_start()
         .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex()
         .items_center()
@@ -2547,6 +2587,9 @@ fn folder_bar(
                     .text_color(rgb(colors.muted))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_size(ui_text::text(10.0))
+                    .focus_visible(move |style| {
+                        style.bg(rgb(colors.divider)).text_color(rgb(colors.text))
+                    })
             })
         })
 }
@@ -2697,12 +2740,13 @@ fn folder_header<V: 'static>(
 }
 
 /// How a project row is drawn.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ProjectRowLook {
     selected: bool,
     depth: usize,
     /// What the row says may be out of date, as when its host cannot be reached.
     dimmed: bool,
+    focus: Option<FocusHandle>,
 }
 
 /// A project of a folder. A local project can be dragged to another folder; one that belongs
@@ -2722,15 +2766,16 @@ fn project_row<V: 'static>(
         selected,
         depth,
         dimmed,
+        focus,
     } = look;
     let drag_view = cx.entity();
     let drag_action = on_action.clone();
     let mut children = children.into_iter();
     let first = children.next().unwrap_or_else(|| div().into_any_element());
     behavior::button_content(format!("project-{id}"), accessible_name.to_owned(), first)
+        .when_some(focus, |row, focus| row.track_focus(&focus))
         .aria_selected(selected)
         .items_stretch()
-        .justify_start()
         .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex()
         .flex_col()
@@ -2770,6 +2815,7 @@ fn project_row<V: 'static>(
                 cx.new(|_| drag.clone())
             })
         })
+        .map(|control| crate::form_input::control_element(format!("project-{id}"), control))
         .into_any_element()
 }
 
@@ -2787,6 +2833,9 @@ fn sidebar_row<E: gpui::Styled + gpui::InteractiveElement>(
         .mx(ui_text::space(controls::LIST_MARGIN))
         .border_l_0()
         .border_0()
+        // The shared ring uses a border; Native deliberately removes it.
+        // A keyboard-only fill shows focus without changing layout or hover.
+        .focus_visible(move |style| style.bg(rgb(colors.divider)))
 }
 
 /// How far Native indents a project row's text at `depth`: a level's step is a disclosure
@@ -2816,7 +2865,6 @@ fn row<V: 'static>(
     behavior::button_content(id, accessible_name, first)
         .aria_selected(selected)
         .items_stretch()
-        .justify_start()
         .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex()
         .flex_col()
@@ -3557,6 +3605,7 @@ mod tests {
 mod kit_control_tests {
     use super::*;
     use crate::form_input::{test_turn, test_window};
+    use gpui::InputEvent as _;
     use gpui::TestAppContext;
     use gpui_kit::test::TestWindowExt;
 
@@ -3564,6 +3613,8 @@ mod kit_control_tests {
         sort: ProjectSortUi,
         order: ProjectOrder,
         actions: Vec<PanelAction>,
+        row_focus: FocusHandle,
+        native_reveal: bool,
     }
     impl Fixture {
         fn action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
@@ -3580,7 +3631,7 @@ mod kit_control_tests {
         }
     }
     impl Render for Fixture {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             div()
                 .size_full()
                 .flex()
@@ -3597,9 +3648,10 @@ mod kit_control_tests {
                     "Same title",
                     None,
                     ProjectRowLook {
-                        selected: true,
+                        selected: !self.native_reveal,
                         depth: 0,
                         dimmed: false,
+                        focus: Some(self.row_focus.clone()),
                     },
                     vec![
                         div()
@@ -3607,15 +3659,24 @@ mod kit_control_tests {
                             .items_center()
                             .w_full()
                             .child(div().flex_1().child("Same title"))
-                            .child(project_control(
-                                "synthetic-project-id",
-                                "settings",
-                                "⚙",
-                                "Project settings",
-                                PanelAction::ProjectSettings("synthetic-project-id".into()),
-                                Self::action,
-                                cx,
-                            ))
+                            .child(
+                                project_action_strip(
+                                    self.native_reveal,
+                                    !self.native_reveal,
+                                    &self.row_focus,
+                                    window,
+                                    cx,
+                                )
+                                .child(project_control(
+                                    "synthetic-project-id",
+                                    "settings",
+                                    "⚙",
+                                    "Project settings",
+                                    PanelAction::ProjectSettings("synthetic-project-id".into()),
+                                    Self::action,
+                                    cx,
+                                )),
+                            )
                             .into_any_element(),
                     ],
                     PanelAction::Project("synthetic-project-id".into()),
@@ -3629,6 +3690,8 @@ mod kit_control_tests {
             sort: ProjectSortUi::new(cx),
             order: ProjectOrder::default(),
             actions: Vec::new(),
+            row_focus: cx.focus_handle(),
+            native_reveal: false,
         })
     }
 
@@ -3647,10 +3710,10 @@ mod kit_control_tests {
             assert!(actions.iter().all(
                 |a| matches!(a, PanelAction::ProjectSettings(id) if id == "synthetic-project-id")
             ));
-            let row = window.find("project-synthetic-project-id");
-            assert_eq!(row.role(), Some(gpui::Role::Button));
+            let row = crate::form_input::test_ax_node(window, app, "project-synthetic-project-id");
+            assert_eq!(row.role(), gpui::Role::Button);
             assert_eq!(row.label(), Some("Same title"));
-            assert_eq!(row.selected(), Some(true));
+            assert_eq!(row.is_selected(), Some(true));
             window.click("project-synthetic-project-id", app);
         });
         test_turn(cx, window, |window, app| window.press("enter", app));
@@ -3662,6 +3725,129 @@ mod kit_control_tests {
                     .iter()
                     .all(|a| matches!(a, PanelAction::Project(id) if id == "synthetic-project-id"))
             );
+        });
+    }
+
+    #[gpui::test]
+    fn native_project_actions_reveal_for_keyboard_scope_and_keep_pointer_hover(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, owner) = mount(cx);
+        // Exercise Native's actual visibility policy without loading a native
+        // theme, Ghostty settings, StateStore, Workspace or any service.
+        test_turn(cx, window, |window, app| {
+            owner.update(app, |owner, cx| {
+                owner.native_reveal = true;
+                cx.notify();
+            });
+            window.dispatch_event(
+                gpui::MouseMoveEvent {
+                    position: gpui::point(
+                        window.viewport_size().width - px(2.),
+                        window.viewport_size().height - px(2.),
+                    ),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                app,
+            );
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                !window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            let position = window
+                .find("project-synthetic-project-id")
+                .bounds()
+                .center();
+            window.dispatch_event(
+                gpui::MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                app,
+            );
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            assert!(owner.read(app).actions.is_empty());
+            window.dispatch_event(
+                gpui::MouseMoveEvent {
+                    position: gpui::point(
+                        window.viewport_size().width - px(2.),
+                        window.viewport_size().height - px(2.),
+                    ),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                app,
+            );
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                !window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            let focus = owner.read(app).row_focus.clone();
+            focus.focus(window, app);
+            // Programmatic focus preserves pointer modality. A non-activating
+            // key establishes keyboard focus and lets the row reveal its child
+            // before Root's next Tab enumerates the actually painted tab stops.
+            window.press("right", app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(owner.read(app).row_focus.is_focused(window));
+            assert!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            assert!(owner.read(app).actions.is_empty());
+            window.press("tab", app);
+        });
+        test_turn(cx, window, |window, app| {
+            let nested = window.find("settings-project-synthetic-project-id");
+            assert_eq!(nested.focused(), Some(true));
+            assert!(
+                nested.visible(),
+                "keyboard focus within the row reveals Native actions"
+            );
+            let node = crate::form_input::test_ax_node(
+                window,
+                app,
+                "settings-project-synthetic-project-id",
+            );
+            assert_eq!(node.role(), gpui::Role::Button);
+            assert_eq!(node.label(), Some("Project settings"));
+            assert!(!node.is_disabled());
+            assert!(node.supports_action(gpui::accesskit::Action::Click));
+            window.press("space", app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                matches!(owner.read(app).actions.as_slice(), [PanelAction::ProjectSettings(id)] if id == "synthetic-project-id")
+            );
+            let focus = owner.read(app).sort.trigger_focus.clone();
+            focus.focus(window, app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                !window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
         });
     }
 
