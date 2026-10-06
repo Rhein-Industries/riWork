@@ -131,7 +131,7 @@ pub fn search_frame(
 }
 
 #[cfg(test)]
-use gpui_kit::TestWindowExt as _;
+use gpui_kit::test::TestWindowExt as _;
 
 #[cfg(test)]
 pub(crate) fn test_window<V: gpui::Render + 'static>(
