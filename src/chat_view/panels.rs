@@ -343,27 +343,19 @@ impl ChatView {
             .border_color(rgb(colors.divider))
             .bg(rgb(colors.panel))
             .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .gap(ui_text::space(1.0))
-                    .p(ui_text::space(2.0))
-                    .rounded(ui_text::space(6.0))
-                    .border_1()
-                    .border_color(rgb(colors.divider))
-                    .bg(rgb(colors.panel_active))
+                widgets::segments(look)
                     .children(
                         [super::DisplayMode::Normal, super::DisplayMode::Verbose]
                             .into_iter()
                             .map(|mode| {
-                                button(
+                                widgets::segment(
                                     if mode == super::DisplayMode::Normal {
                                         "chat-display-normal"
                                     } else {
                                         "chat-display-verbose"
                                     },
                                     mode.label(),
-                                    (self.display_mode == mode).then_some(colors.cyan),
+                                    self.display_mode == mode,
                                     look,
                                 )
                                 .on_click(

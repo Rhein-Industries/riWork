@@ -94,7 +94,7 @@ pub(super) fn button(
         .id(id)
         .flex_none()
         .px(ui_text::space(8.0))
-        .py(ui_text::space(3.0))
+        .py(ui_text::space(CAPSULE_PAD_Y))
         .border_1()
         .border_color(rgb(accent.unwrap_or(colors.divider)))
         .rounded(px(3.0))
@@ -120,7 +120,7 @@ pub(super) fn dimmed(
         .id(id)
         .flex_none()
         .px(ui_text::space(8.0))
-        .py(ui_text::space(3.0))
+        .py(ui_text::space(CAPSULE_PAD_Y))
         .border_1()
         .border_color(rgb(colors.divider))
         .rounded(px(3.0))
@@ -128,6 +128,11 @@ pub(super) fn dimmed(
         .text_color(rgb(colors.muted))
         .child(label.into())
 }
+
+/// The vertical padding of a `capsule` (and of the colorful themes' `button`) inside its
+/// hairline edge, which sets the height of the toolbar's controls; a `segments` track is
+/// built to the same height from it.
+pub(super) const CAPSULE_PAD_Y: f32 = 3.0;
 
 /// Native's push button at the chat's size, without its hover. Its children line up in a
 /// row, so a caller can add a symbol after the label.
@@ -144,12 +149,64 @@ pub(super) fn capsule(
             .flex()
             .items_center()
             .gap(ui_text::space(4.0))
-            .py(ui_text::space(3.0))
+            .py(ui_text::space(CAPSULE_PAD_Y))
             .text_size(ui_text::text(10.0))
             .child(label.into()),
         kind,
         look.colors,
     )
+}
+
+/// A segmented control's track: one continuous pill in the toolbar's grey control fill,
+/// without an edge, that holds its `segment`s side by side with no gap. It adds nothing
+/// around them, so it is exactly as tall as a `capsule` beside it.
+pub(super) fn segments(look: Look) -> Div {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .rounded_full()
+        .bg(rgb(look.colors.panel_active))
+}
+
+/// One option of a `segments` track, exactly a `capsule`'s height: a clear margin where a
+/// capsule has its hairline edge and a point more, and a pill inside it a point less
+/// padded. The selected one's pill is filled in the primary color a `button` gives the
+/// primary choice; the others are bare labels in the secondary color whose pill fills
+/// under the pointer. The whole segment, margin included, takes the click, which the
+/// caller adds.
+pub(super) fn segment(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    selected: bool,
+    look: Look,
+) -> Stateful<Div> {
+    let colors = look.colors;
+    let (fill, ink, hover) = if selected {
+        (Some(colors.cyan), colors.bg, Button::Primary.hover(colors))
+    } else {
+        (None, colors.muted, Button::Secondary.hover(colors))
+    };
+    let margin = px(2.0);
+    div()
+        .id(id)
+        .group(id)
+        .flex_none()
+        .p(margin)
+        .cursor_pointer()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .px(ui_text::space(10.0))
+                .py(ui_text::space(CAPSULE_PAD_Y) + px(1.0) - margin)
+                .rounded_full()
+                .when_some(fill, |pill, fill| pill.bg(rgb(fill)))
+                .text_size(ui_text::text(10.0))
+                .text_color(rgb(ink))
+                .group_hover(id, move |style| style.bg(rgb(hover)))
+                .child(label.into()),
+        )
 }
 
 /// A bare SF Symbol button with its name in a tooltip, as Native's panel headers have one,
