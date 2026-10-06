@@ -25,7 +25,7 @@ enum Control {
     Fast,
     OpenChat(String),
     Scope(usize),
-    Target(String),
+    Target(ExistingTarget),
     Workspace(String),
     Repeat(u64),
     FirstIn(u64),
@@ -37,10 +37,40 @@ enum Control {
     Pause(String),
     Delete(String),
 }
+/// Retains the displayed destination type through the asynchronous save.
+#[derive(Clone, PartialEq, Eq)]
+enum ExistingTarget {
+    Shell(String),
+    LegacyChat(String),
+}
+impl ExistingTarget {
+    fn id(&self) -> &str {
+        match self {
+            Self::Shell(id) | Self::LegacyChat(id) => id,
+        }
+    }
+    fn bind(
+        &self,
+        scope: Scope,
+        state: &State,
+        sessions: &SessionManager,
+        schedules: &ScheduleStore,
+    ) -> Result<Target, String> {
+        match self {
+            Self::Shell(id) => Target::bind_shell(scope, state, sessions, id),
+            Self::LegacyChat(id) => {
+                let chats = schedules.chat_orchestrators();
+                let chat = chats.iter().find(|chat| &chat.id == id)
+                    .ok_or("Selected legacy chat is unavailable; reopen the editor and select an existing target")?;
+                Target::bind_chat(scope, state, chat)
+            }
+        }
+    }
+}
 struct Editor {
     previous: Option<Schedule>,
     scope: usize,
-    target_id: Option<String>,
+    selection: Option<ExistingTarget>,
     pinned: Option<Target>,
     repeat: u64,
     first_quick: Option<u64>,
@@ -52,6 +82,15 @@ struct Editor {
     fast: bool,
 }
 impl Editor {
+    fn select_target(&mut self, selection: ExistingTarget) {
+        self.selection = Some(selection);
+        self.pinned = None;
+    }
+    fn select_scope(&mut self, scope: usize) {
+        self.scope = scope;
+        self.selection = None;
+        self.pinned = None;
+    }
     fn pinned_target(&self) -> Result<Option<Target>, String> {
         let mut target = self.pinned.clone();
         if self.fresh
@@ -74,7 +113,7 @@ impl Editor {
             permission: ApprovalMode::Supervised,
             fast: false,
             scope: 1,
-            target_id: None,
+            selection: None,
             pinned: None,
             repeat: 0,
             first_quick: Some(600),
@@ -342,7 +381,7 @@ impl SchedulePanel {
                 if let Some(e) = &mut self.editor {
                     e.fresh = fresh;
                     e.pinned = None;
-                    e.target_id = None;
+                    e.selection = None;
                     e.scope = 1;
                 }
             }
@@ -373,21 +412,18 @@ impl SchedulePanel {
             }
             Control::Scope(scope) => {
                 if let Some(e) = &mut self.editor {
-                    e.scope = scope;
-                    e.target_id = None;
-                    e.pinned = None;
+                    e.select_scope(scope);
                 }
             }
-            Control::Target(id) => {
+            Control::Target(selection) => {
                 if let Some(e) = &mut self.editor {
-                    e.target_id = Some(id);
-                    e.pinned = None;
+                    e.select_target(selection);
                 }
             }
             Control::Workspace(id) => {
                 self.workspace_id = Some(id);
                 if let Some(e) = &mut self.editor {
-                    e.target_id = None;
+                    e.selection = None;
                     e.pinned = None;
                 }
             }
@@ -442,7 +478,11 @@ impl SchedulePanel {
                             Input::new(fresh.and_then(|f| f.effort.clone()).unwrap_or_default()),
                         ],
                         scope,
-                        target_id: Some(s.target.shell_id.clone()),
+                        selection: Some(if s.target.chat.is_some() {
+                            ExistingTarget::LegacyChat(s.target.shell_id.clone())
+                        } else {
+                            ExistingTarget::Shell(s.target.shell_id.clone())
+                        }),
                         pinned: Some(s.target.clone()),
                         first_quick: None,
                         exact_time: true,
@@ -503,19 +543,21 @@ impl SchedulePanel {
             let at = u64::try_from(parsed.timestamp()).map_err(|_| "Date must be after 1970")?;
             let timing = selected_timing(e.repeat, at, &e.fields[3].text)?;
             let scope = self.scope(e.scope)?;
-            let id = if e.fresh {
-                String::new()
+            let selection = if e.fresh {
+                None
             } else {
-                e.target_id
-                    .clone()
-                    .ok_or("Choose an existing target session")?
+                Some(
+                    e.selection
+                        .clone()
+                        .ok_or("Choose an existing target session")?,
+                )
             };
             Ok::<_, String>((
                 e.previous.as_ref().map(|s| (s.id.clone(), s.revision)),
                 e.fields[0].text.clone(),
                 e.fields[1].text.clone(),
                 scope,
-                id,
+                selection,
                 e.pinned_target()?,
                 timing,
                 e.fresh,
@@ -531,7 +573,7 @@ impl SchedulePanel {
             title,
             prompt,
             scope,
-            id,
+            selection,
             pinned,
             timing,
             fresh,
@@ -568,7 +610,9 @@ impl SchedulePanel {
                     permission,
                     None,
                 )?,
-                None => Target::bind_shell(scope, &state, &sessions, &id)?,
+                None => selection
+                    .ok_or("Choose an existing target session")?
+                    .bind(scope, &state, &sessions, &schedules)?,
             };
             if target.new_chat.is_some() {
                 target.validate_new_chat(sessions.state_home(), &state)?;
@@ -805,7 +849,10 @@ impl Render for SchedulePanel {
             let permission = editor.permission;
             let fast = editor.fast;
             let repeat = editor.repeat;
-            let selected = editor.target_id.clone();
+            let selected = editor
+                .selection
+                .as_ref()
+                .map(|target| target.id().to_owned());
             let editing = editor.previous.is_some();
             let first_quick = editor.first_quick;
             let exact_time = editor.exact_time;
@@ -1002,7 +1049,7 @@ impl Render for SchedulePanel {
                 for target in targets {
                     choices = choices.child(self.button(
                         format!("{} · {}", target.harness.unwrap().program(), target.id),
-                        Control::Target(target.id.clone()),
+                        Control::Target(ExistingTarget::Shell(target.id.clone())),
                         selected.as_ref() == Some(&target.id),
                         window,
                         cx,
@@ -1015,7 +1062,7 @@ impl Render for SchedulePanel {
                             schedules::chat_harness(chat.provider).program(),
                             chat.id
                         ),
-                        Control::Target(chat.id.clone()),
+                        Control::Target(ExistingTarget::LegacyChat(chat.id.clone())),
                         selected.as_ref() == Some(&chat.id),
                         window,
                         cx,
@@ -1377,6 +1424,267 @@ fn optional_option(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::{
+        model::{ChatState, OrchestratorScope},
+        testing::TestHost,
+    };
+    use std::fs;
+
+    struct LegacyEditorFixture {
+        sessions: SessionManager,
+        host: TestHost,
+        schedules: ScheduleStore,
+        state: State,
+        global: ChatInfo,
+        project: ChatInfo,
+    }
+    impl LegacyEditorFixture {
+        fn new() -> Self {
+            let host = TestHost::new();
+            let sessions = SessionManager::at(host.home.clone()).unwrap();
+            let store = Store::open(host.home.clone()).unwrap();
+            let root = host.home.join("project");
+            fs::create_dir(&root).unwrap();
+            let project = store.add_project(&root, None).unwrap();
+            let mut global = host.new_chat(Provider::Codex);
+            global.orchestrator = Some(OrchestratorScope::Global);
+            let global = host.client().create(global).unwrap();
+            let global = host.wait_for_state(&global.id, |state| *state == ChatState::Idle);
+            let mut scoped = host.new_chat(Provider::Claude);
+            scoped.cwd = project.root;
+            scoped.project_id = Some(project.id.clone());
+            scoped.orchestrator = Some(OrchestratorScope::Project {
+                project_id: project.id,
+            });
+            let scoped = host.client().create(scoped).unwrap();
+            let scoped = host.wait_for_state(&scoped.id, |state| *state == ChatState::Idle);
+            let schedules = ScheduleStore::at(host.home.clone()).unwrap();
+            Self {
+                sessions,
+                host,
+                schedules,
+                state: store.snapshot().unwrap(),
+                global,
+                project: scoped,
+            }
+        }
+        fn edit_global(&self) -> Editor {
+            let target = Target::bind_chat(Scope::App, &self.state, &self.global).unwrap();
+            let row = self
+                .schedules
+                .save(
+                    None,
+                    "Legacy editor fixture".into(),
+                    "Inert fixture draft".into(),
+                    target.clone(),
+                    Timing::Once { at: 1000 },
+                    999,
+                )
+                .unwrap();
+            let mut editor = Editor::new();
+            editor.fresh = false;
+            editor.scope = 0;
+            editor.selection = Some(ExistingTarget::LegacyChat(self.global.id.clone()));
+            editor.pinned = Some(target);
+            editor.previous = Some(row);
+            editor
+        }
+        fn save_selection(&self, editor: &mut Editor, scope: Scope) -> Target {
+            assert!(!editor.fresh);
+            assert!(editor.pinned_target().unwrap().is_none());
+            let target = editor
+                .selection
+                .as_ref()
+                .unwrap()
+                .bind(scope, &self.state, &self.sessions, &self.schedules)
+                .unwrap();
+            let previous = editor.previous.as_ref().unwrap();
+            let saved = self
+                .schedules
+                .save(
+                    Some((&previous.id, previous.revision)),
+                    "Edited legacy fixture".into(),
+                    "Edited inert draft".into(),
+                    target.clone(),
+                    Timing::Once { at: 1000 },
+                    999,
+                )
+                .unwrap();
+            assert_eq!(saved.revision, previous.revision + 1);
+            assert_eq!(saved.target, target);
+            assert_eq!(saved.id, previous.id);
+            editor.previous = Some(saved);
+            target
+        }
+        fn ordinary_shell(&self) -> String {
+            // A disposable cat pane and synthetic Claude identity exercise the
+            // real shell binder without starting a provider or submitting input.
+            let project = &self.state.projects[0];
+            let shell = self
+                .sessions
+                .create(
+                    project.id.clone(),
+                    None,
+                    project.root.clone(),
+                    Some("/bin/cat".into()),
+                )
+                .unwrap();
+            let registry = self.host.home.join("sessions.json");
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&fs::read(&registry).unwrap()).unwrap();
+            for entry in value["sessions"].as_array_mut().unwrap() {
+                if entry["id"] == shell.id {
+                    entry["harness"] = "claude".into();
+                }
+            }
+            fs::write(registry, serde_json::to_vec(&value).unwrap()).unwrap();
+            let hooks = self.host.home.join("agent-hooks/claude");
+            fs::create_dir_all(&hooks).unwrap();
+            fs::write(
+                hooks.join(format!("{}.json", shell.id)),
+                r#"{"session_id":"fixture-claude","turn_id":"fixture-turn","completed":true}"#,
+            )
+            .unwrap();
+            shell.id
+        }
+    }
+    impl Drop for LegacyEditorFixture {
+        fn drop(&mut self) {
+            self.sessions.kill_server();
+        }
+    }
+
+    #[test]
+    fn legacy_editor_same_chat_reselection_saves_a_chat_binding() {
+        let fixture = LegacyEditorFixture::new();
+        let mut editor = fixture.edit_global();
+        let before = editor.pinned.clone().unwrap();
+        // This is the same operation used by the displayed chat button.
+        editor.select_target(ExistingTarget::LegacyChat(fixture.global.id.clone()));
+        let rebound = fixture.save_selection(&mut editor, Scope::App);
+        assert_eq!(rebound, before);
+        assert!(
+            rebound.chat.is_some() && rebound.new_chat.is_none() && rebound.shell_kind.is_none()
+        );
+        assert_eq!(fixture.schedules.list().unwrap().len(), 1);
+        assert!(fixture.host.fake().commands().is_empty());
+    }
+
+    #[test]
+    fn legacy_editor_scope_changes_rebind_only_the_matching_app_or_project_chat() {
+        let fixture = LegacyEditorFixture::new();
+        let mut editor = fixture.edit_global();
+        let scope = Scope::Project {
+            project_id: fixture.state.projects[0].id.clone(),
+        };
+        editor.select_scope(1);
+        assert!(editor.selection.is_none() && editor.pinned.is_none());
+        assert!(
+            ExistingTarget::LegacyChat(fixture.global.id.clone())
+                .bind(
+                    scope.clone(),
+                    &fixture.state,
+                    &fixture.sessions,
+                    &fixture.schedules
+                )
+                .is_err()
+        );
+        editor.select_target(ExistingTarget::LegacyChat(fixture.project.id.clone()));
+        let rebound = fixture.save_selection(&mut editor, scope);
+        assert!(rebound.matches_chat(&fixture.state, &fixture.project));
+        assert_eq!(rebound.harness, HarnessKind::Claude);
+        assert_eq!(
+            rebound.chat.as_ref().unwrap().codex_account_id,
+            fixture.project.codex_account_id
+        );
+        editor.select_scope(0);
+        assert!(
+            ExistingTarget::LegacyChat(fixture.project.id.clone())
+                .bind(
+                    Scope::App,
+                    &fixture.state,
+                    &fixture.sessions,
+                    &fixture.schedules
+                )
+                .is_err()
+        );
+        editor.select_target(ExistingTarget::LegacyChat(fixture.global.id.clone()));
+        let rebound = fixture.save_selection(&mut editor, Scope::App);
+        assert!(rebound.matches_chat(&fixture.state, &fixture.global));
+        assert_eq!(
+            rebound.chat.as_ref().unwrap().codex_account_id,
+            fixture.global.codex_account_id
+        );
+    }
+
+    #[test]
+    fn legacy_editor_ordinary_shell_selection_stays_explicit_and_never_falls_back() {
+        let fixture = LegacyEditorFixture::new();
+        let mut editor = fixture.edit_global();
+        let id = fixture.ordinary_shell();
+        let scope = Scope::Project {
+            project_id: fixture.state.projects[0].id.clone(),
+        };
+        // The legacy terminal binder used by omitted CLI destinations is unchanged.
+        assert!(Target::bind(scope.clone(), &fixture.state, &fixture.sessions, &id).is_err());
+        assert!(
+            ExistingTarget::LegacyChat(id.clone())
+                .bind(
+                    scope.clone(),
+                    &fixture.state,
+                    &fixture.sessions,
+                    &fixture.schedules
+                )
+                .is_err()
+        );
+        assert!(
+            ExistingTarget::Shell(fixture.global.id.clone())
+                .bind(
+                    Scope::App,
+                    &fixture.state,
+                    &fixture.sessions,
+                    &fixture.schedules
+                )
+                .unwrap_err()
+                .starts_with("unknown shell")
+        );
+        for choice in [
+            ExistingTarget::Shell(uuid::Uuid::new_v4().to_string()),
+            ExistingTarget::LegacyChat(uuid::Uuid::new_v4().to_string()),
+        ] {
+            assert!(
+                choice
+                    .bind(
+                        scope.clone(),
+                        &fixture.state,
+                        &fixture.sessions,
+                        &fixture.schedules
+                    )
+                    .is_err()
+            );
+        }
+        let ordinary_chat = fixture.host.create(Provider::Claude);
+        assert!(
+            ExistingTarget::LegacyChat(ordinary_chat.id)
+                .bind(
+                    Scope::App,
+                    &fixture.state,
+                    &fixture.sessions,
+                    &fixture.schedules
+                )
+                .is_err()
+        );
+        editor.select_scope(1);
+        editor.select_target(ExistingTarget::Shell(id.clone()));
+        let rebound = fixture.save_selection(&mut editor, scope);
+        assert_eq!(rebound.shell_id, id);
+        assert!(rebound.chat.is_none() && rebound.new_chat.is_none());
+        assert_eq!(
+            rebound.shell_kind,
+            Some(crate::sessions::ShellKind::Project)
+        );
+        assert!(rebound.matches(&fixture.state, &fixture.sessions.get(&id).unwrap()));
+    }
 
     #[test]
     fn editor_defaults_and_options_edit_keep_the_pinned_account_and_destination() {
@@ -1436,7 +1744,9 @@ mod tests {
         let mut editor = Editor::new();
         editor.fields[0] = Input::new("Title".into());
         editor.fields[1] = Input::new("Prompt".into());
-        editor.target_id = Some("00000000-0000-4000-8000-000000000123".into());
+        editor.selection = Some(ExistingTarget::Shell(
+            "00000000-0000-4000-8000-000000000123".into(),
+        ));
         let now = 1_790_000_000;
         for seconds in [600, 1800, 3600, 86400] {
             editor.first_in(seconds, now);
@@ -1449,7 +1759,7 @@ mod tests {
             assert_eq!(editor.fields[0].text, "Title");
             assert_eq!(editor.fields[1].text, "Prompt");
             assert_eq!(
-                editor.target_id.as_deref(),
+                editor.selection.as_ref().map(ExistingTarget::id),
                 Some("00000000-0000-4000-8000-000000000123")
             );
             assert!(!editor.exact_time);

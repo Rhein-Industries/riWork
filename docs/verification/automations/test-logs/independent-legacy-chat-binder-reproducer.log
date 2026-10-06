@@ -1,0 +1,9 @@
+   Compiling riwork v0.1.0 (/Users/dominik/orca/projects/riWork-review-manu-20261005/.review/automations-candidate-a38ea39/repro-source)
+    Finished `test` profile [unoptimized] target(s) in 17.26s
+     Running unittests src/main.rs (/Users/dominik/orca/projects/riWork-review-manu-20261005/target/debug/deps/riwork-72c65fc1f45c3555)
+
+running 1 test
+test schedule_chat::tests::independent_legacy_chat_reselection_binder_rejects_a_valid_chat ... CONFIRMED: legacy chat selection offered by panel is rejected by its unpinned save binder: unknown shell 8741f191-1b8d-4e1f-ad2d-1a92f30dd795
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1659 filtered out; finished in 0.11s

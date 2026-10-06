@@ -8,6 +8,8 @@ Open **Automations** from the native application menu, a pane menu, or **Cmd+Shi
 
 An explicitly selected ordinary project shell must remain within its selected project's canonical root, including subdirectories. Live directory evidence is checked again under the input lock immediately before dispatch claim. Symlink escapes or a known outside directory fail and pause the automation without input or a rate slot; unreadable evidence defers without a claim. Legacy project orchestrators retain their context behavior, and workspace directory rules are unchanged.
 
+Editing an existing legacy orchestrator-chat automation retains its chat choices. Explicitly selecting a displayed app/project chat rebinds that chat in the selected scope; selecting an ordinary shell uses explicit shell binding. Unknown IDs are rejected. Omitted CLI/MCP destinations retain their existing legacy semantics.
+
 The list shows the next run, last outcome, prompt and effective settings. Edit, pause/resume or delete using current revisions; conflicts preserve the draft for review. **Open created chat** opens the recorded result in an app tab. The Project chats list also retains earlier results after another occurrence or schedule deletion.
 
 ## CLI and MCP

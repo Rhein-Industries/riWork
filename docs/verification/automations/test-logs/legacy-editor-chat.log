@@ -1,0 +1,22 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized] target(s) in 0.69s
+     Running unittests src/main.rs (/tmp/riwork-automations-target/debug/deps/riwork-72c65fc1f45c3555)
+
+running 13 tests
+test schedule_chat::tests::a_chat_at_work_defers_without_sending_and_is_asked_again ... ok
+test schedule_chat::tests::a_chat_orchestrator_is_a_target_of_its_own_scope_only ... ok
+test schedule_chat::tests::a_host_that_cannot_be_reached_defers_and_the_schedule_goes_on ... ok
+test schedule_chat::tests::a_host_that_refuses_the_message_fails_the_schedule_after_the_claim_with_nothing_sent ... ok
+test schedule_chat::tests::a_recurring_schedule_delivers_each_occurrence_once_however_often_it_is_asked ... ok
+test schedule_chat::tests::a_stopped_chat_is_resumed_by_the_delivery_and_a_failed_one_is_not_written_to ... ok
+test schedule_chat::tests::a_target_that_is_not_the_pinned_chat_fails_instead_of_retargeting ... ok
+test schedule_chat::tests::an_acknowledged_message_the_log_never_shows_is_uncertain ... ok
+test schedule_chat::tests::an_exchange_that_breaks_after_the_claim_is_uncertain_and_never_retried ... ok
+test schedule_chat::tests::an_idle_orchestrator_chat_gets_the_prompt_once_and_its_log_shows_it ... ok
+test schedule_chat::tests::only_a_message_with_the_prompts_own_text_after_the_mark_is_the_proof ... ok
+test schedule_chat::tests::schedulers_that_race_for_one_occurrence_deliver_it_once ... ok
+test schedule_chat::tests::the_service_binds_a_chat_orchestrator_by_its_id_and_the_ledger_keeps_terminal_targets_as_they_were ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 1653 filtered out; finished in 3.29s
