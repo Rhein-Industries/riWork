@@ -141,14 +141,14 @@ An active modal must exclude background participants; focus mode/restore must
 reuse this same window root. Base input editors own their own copy/drag engine;
 native terminal input/selection remains terminal-owned. `behavior::init` runs
 after `text_input::init` and targets only `root::Tab`/`root::TabPrev` with GPUI
-`Unbind` in `Root && (Terminal || Input)`. Thus adding Root does not move focus
+`Unbind` in `Root > (Terminal || Input)`. Thus adding Root does not move focus
 before an editor owner's marked-Tab check; input indentation/navigation bindings
 and owner raw navigation remain. Pinned Input registers IndentInline/OutdentInline
 handlers only for multiline mode (`input/base/state.rs:4480–4484`); a single-line
 Tab can therefore reach its existing owner navigation after the Root traversal
 unbind. The fixture checks marked Tab and ShiftTab preserve composition/focus,
 then ordinary Tab and ShiftTab navigate once after unmarking. `input::Copy` is unbound only in
-`Root && Terminal && !Input`, so Root cannot consume the terminal's native copy
+`(Root > Terminal) && !Input`, so Root cannot consume the terminal's native copy
 gesture. A focused editor nested under a terminal context still owns input Copy.
 
 The native Edit menu installs `Cut`, `Copy`, `Paste`, `Select All` using exactly

@@ -317,3 +317,25 @@ cargo test --offline --locked --bin riwork text_input::tests::frame_padding_keep
 Each must select exactly one test. Use the reviewer's approved private child
 home/runtime/target/Zig boundaries and preserve separate logs. Both corrected
 cases are **unexecuted here**; no broader suite rerun is requested by this fix.
+
+### 2026-10-06 — Source-only marked Tab correction
+
+Reviewer receipts at combined `5e73c1c`, `/private/tmp/rw2-2jhb4co_/logs/`,
+reported 50 exact cases executed, 41 passing and 9 failing, including 10/15
+foundation behavior cases. Two behavior fixtures lost focus immediately on
+marked Tab; those receipts do not establish deferred-focus or native IME proof.
+
+Pinned GPUI predicates evaluate positive `&&` identifiers in the same context.
+Root and Input are separate ancestors/descendants, so the shared Root traversal
+exclusions now use `Root > (Terminal || Input)`. Plain single-line Tab reaches
+the existing owner's raw navigation; unmarked textarea Tab still reaches Base
+indentation. The frame captures `IndentInline`/`OutdentInline` only while an
+editable state has marked text, before Base can edit a composing textarea or
+fall through to an enclosing owner. Plain, read-only/disabled, Enter/Escape and
+user-configured action policies are otherwise unchanged.
+
+Existing behavior fixtures keep strict immediate and drained focus checks,
+zero marked-navigation counts, exact once-only ordinary Tab/ShiftTab navigation,
+and now check marked bytes/range survive both directions in single-line and
+textarea states. Corrected sources have not been compiled or executed here.
+Native IME and terminal delivery remain parent-owned acceptance limits.

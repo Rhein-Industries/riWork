@@ -22,15 +22,16 @@ pub type Popup = base::Popup;
 
 /// Run after text_input::init; do not initialize Base a second time.
 pub fn init(cx: &mut App) {
-    // Suppress only Base Root traversal in editors/terminals. Input's own
-    // indentation/navigation actions and owner raw composition policy remain.
+    // `&&` tests one context. Root and its focused descendant are separate
+    // contexts, so use `>` to suppress only the ancestor Base bindings.
+    // Input indentation/navigation and user/domain bindings remain intact.
     cx.bind_keys([
-        gpui::KeyBinding::new("tab", gpui::Unbind("root::Tab".into()), Some("Root && (Terminal || Input)")),
-        gpui::KeyBinding::new("shift-tab", gpui::Unbind("root::TabPrev".into()), Some("Root && (Terminal || Input)")),
+        gpui::KeyBinding::new("tab", gpui::Unbind("root::Tab".into()), Some("Root > (Terminal || Input)")),
+        gpui::KeyBinding::new("shift-tab", gpui::Unbind("root::TabPrev".into()), Some("Root > (Terminal || Input)")),
         #[cfg(target_os = "macos")]
-        gpui::KeyBinding::new("cmd-c", gpui::Unbind("input::Copy".into()), Some("Root && Terminal && !Input")),
+        gpui::KeyBinding::new("cmd-c", gpui::Unbind("input::Copy".into()), Some("(Root > Terminal) && !Input")),
         #[cfg(not(target_os = "macos"))]
-        gpui::KeyBinding::new("ctrl-c", gpui::Unbind("input::Copy".into()), Some("Root && Terminal && !Input")),
+        gpui::KeyBinding::new("ctrl-c", gpui::Unbind("input::Copy".into()), Some("(Root > Terminal) && !Input")),
     ]);
     cx.on_window_closed(|cx, id| {
         if cx.has_global::<SelectionScopes>() {

@@ -11,7 +11,7 @@ use gpui::{
 pub use gpui_kit::base::input::{InputBase, InputEvent, InputState, TextareaState};
 use gpui_kit::base::{
     ColorTokens, Theme, ThemeAppearance,
-    input::{Enter, Escape, Input, InputBaseState, InputModeKind, Paste, Textarea},
+    input::{Enter, Escape, IndentInline, Input, InputBaseState, InputModeKind, OutdentInline, Paste, Textarea},
 };
 
 use crate::{settings::Settings, theme, ui_text};
@@ -71,6 +71,8 @@ fn frame<M: InputModeKind>(
     let colors = theme::palette(cx);
     let enter_state = state.clone();
     let escape_state = state.clone();
+    let indent_state = state.clone();
+    let outdent_state = state.clone();
     let retained = state.clone();
     let state = state.read(cx);
     InputBase::new(id)
@@ -122,6 +124,24 @@ fn frame<M: InputModeKind>(
             // event. Owners submit only from that event, once; keep the action
             // away from enclosing dialogs/workspace handlers.
             cx.stop_propagation();
+        })
+        .capture_action(move |_: &IndentInline, window, cx| {
+            // Bound Input actions precede parent raw capture. Base indentation
+            // does not check marked composition, including in a textarea.
+            let composing = indent_state.update(cx, |state, cx| {
+                state.is_editable() && state.marked_text_range(window, cx).is_some()
+            });
+            if composing {
+                cx.stop_propagation();
+            }
+        })
+        .capture_action(move |_: &OutdentInline, window, cx| {
+            let composing = outdent_state.update(cx, |state, cx| {
+                state.is_editable() && state.marked_text_range(window, cx).is_some()
+            });
+            if composing {
+                cx.stop_propagation();
+            }
         })
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             // Padding is part of the control's click target. Base still places

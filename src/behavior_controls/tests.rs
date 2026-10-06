@@ -68,7 +68,7 @@ struct Harness {
     button_focus: FocusHandle,
     terminal_focus: FocusHandle,
     chat_focus: FocusHandle,
-    link_focus: FocusHandle,
+    link_focus: Option<FocusHandle>,
     facts: Facts,
     button_calls: usize,
     parent_calls: usize,
@@ -80,6 +80,7 @@ struct Harness {
     disabled: bool,
     terminal_keys: Vec<String>,
     terminal_menu_guards: usize,
+    terminal_paste_actions: usize,
     raw_tabs: usize,
     transcript_copies: usize,
     cancels: usize,
@@ -120,7 +121,13 @@ impl Render for Harness {
         let mut observed_link = link("link", "Read details", colors).disabled(self.disabled)
             .w(px(160.)).h(px(24.))
             .on_activate(cx.listener(|owner, _, _, _| owner.link_calls += 1));
-        observed_link.base = observed_link.base.track_focus(&self.link_focus);
+        // Link owns a private keyed focus handle and replaces track_focus in
+        // its render. Observe the actual handle after its native mouse focus,
+        // without installing a substitute focus handle or focus operation.
+        observed_link.base = observed_link.base.on_mouse_up(
+            gpui::MouseButton::Left,
+            cx.listener(|owner, _, window, cx| owner.link_focus = window.focused(cx)),
+        );
         // The click-count probe is not focusable. The domain container retains
         // ordinary focus ancestry without turning observation into a keyboard button.
         div().id("behavior-harness").size_full()
@@ -134,6 +141,13 @@ impl Render for Harness {
                 if text.is_empty() { cx.propagate(); return; }
                 owner.transcript_copies += 1;
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            }))
+            .on_action(cx.listener(|owner, _: &crate::PasteInTerminal, _, cx| {
+                // Pure observation of main's real Terminal binding. Text/no-file
+                // paste propagates to Ghostty's raw handler; no native surface
+                // or terminal_drop/provider work is constructed by this fixture.
+                owner.terminal_paste_actions += 1;
+                cx.propagate();
             }))
             .capture_key_down(cx.listener(|owner, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && owner.modal {
@@ -213,6 +227,9 @@ fn setup(cx: &mut TestAppContext) {
         });
         crate::text_input::init(cx);
         init(cx);
+        // Same action/key/context and initialization order as main. This is a
+        // binding-only fixture: never call terminal_paste or construct Ghostty.
+        cx.bind_keys([gpui::KeyBinding::new("cmd-v", crate::PasteInTerminal, Some("Terminal"))]);
     });
 }
 fn mount(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Harness>) {
@@ -227,9 +244,9 @@ fn mount(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Harness>) {
                 Harness {
                 focus: cx.focus_handle(), button_focus: cx.focus_handle(), terminal_focus: cx.focus_handle(),
                 chat_focus,
-                link_focus: cx.focus_handle(), facts: Default::default(),
+                link_focus: None, facts: Default::default(),
                 button_calls: 0, parent_calls: 0, toggle_calls: 0, switch_calls: 0, link_calls: 0,
-                pressed: false, checked: false, disabled: false, terminal_keys: Vec::new(), terminal_menu_guards: 0, raw_tabs: 0,
+                pressed: false, checked: false, disabled: false, terminal_keys: Vec::new(), terminal_menu_guards: 0, terminal_paste_actions: 0, raw_tabs: 0,
                 transcript_copies: 0, cancels: 0, modal_return: Default::default(), legacy_scope_capture: false, scope_capture_enabled: true,
                 editor: crate::text_input::single_line("", "Editor", window, cx),
                 next_editor: crate::text_input::single_line("", "Next editor", window, cx),
@@ -343,7 +360,11 @@ fn base_toggle_switch_link_share_pointer_and_keyboard_owner_callbacks(cx: &mut T
                 click_bounds(window, actual.bounds, cx);
             } else { window.click(id, cx); }
         });
-        if id == "link" { turn(cx, handle, |window, cx| assert!(content.read(cx).link_focus.is_focused(window))); }
+        if id == "link" { turn(cx, handle, |window, cx| {
+            let owner = content.read(cx);
+            assert!(owner.link_focus.as_ref().expect("observed native Link focus").is_focused(window));
+            assert!(!owner.focus.is_focused(window));
+        }); }
         turn(cx, handle, |window, cx| window.press("enter", cx));
         turn(cx, handle, |window, cx| window.press("space", cx));
     }
@@ -479,6 +500,23 @@ fn root_modal_scope_and_input_terminal_keys_do_not_cross_owner_boundaries(cx: &m
     assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "  ");
     assert_eq!(content.read_with(cx, |owner, _| owner.terminal_menu_guards), 0);
     turn(cx, handle, |window, cx| {
+        let notes = content.read(cx).notes.clone();
+        let mut handler = gpui::ElementInputHandler::new(window.find("notes").bounds(), notes);
+        gpui::InputHandler::replace_and_mark_text_in_range(&mut handler, None, "日本", Some(2..2), window, cx);
+        window.render_frame(cx);
+    });
+    for key in ["tab", "shift-tab"] {
+        turn(cx, handle, |window, cx| window.press(key, cx));
+        turn(cx, handle, |window, cx| {
+            let notes = content.read(cx).notes.clone();
+            assert!(notes.read(cx).focus_handle(cx).is_focused(window));
+            notes.update(cx, |state, cx| {
+                assert_eq!(state.value(), "日本");
+                assert_eq!(gpui::EntityInputHandler::marked_text_range(state, window, cx), Some(0..2));
+            });
+        });
+    }
+    turn(cx, handle, |window, cx| {
         let terminal_focus = content.read(cx).terminal_focus.clone();
         window.focus(&terminal_focus, cx); window.render_frame(cx);
         for key in ["tab", "shift-tab", "cmd-c"] { window.press(key, cx); }
@@ -569,7 +607,15 @@ fn single_line_owner_tab_and_shift_tab_preserve_ime_and_navigate_once(cx: &mut T
         assert_editor_focus(&content, window, cx, "single-line before marked navigation");
         window.press(key, cx);
         assert_editor_focus(&content, window, cx, "single-line after marked navigation");
-    }); }
+    });
+        turn(cx, handle, |window, cx| {
+            assert_editor_focus(&content, window, cx, "single-line marked navigation after effect flush");
+            content.read(cx).editor.clone().update(cx, |state, cx| {
+                assert_eq!(state.value(), "日本");
+                assert_eq!(gpui::EntityInputHandler::marked_text_range(state, window, cx), Some(0..2));
+            });
+        });
+    }
     assert_eq!(content.read_with(cx, |owner, _| owner.raw_tabs), 0);
     turn(cx, handle, |window, cx| {
         let editor = content.read(cx).editor.clone();
@@ -614,7 +660,20 @@ fn native_edit_menu_uses_base_actions_and_preserves_editor_priority(cx: &mut Tes
     turn(cx, handle, |window, cx| window.dispatch_action(menu_action("Paste"), cx));
     assert_eq!(content.read_with(cx, |owner, cx| owner.editor.read(cx).value()), "editor bytes");
     assert_eq!(content.read_with(cx, |owner, _| owner.terminal_menu_guards), 0);
-    // Editor-only bindings remain absent in a terminal context; Copy is scoped-unbound.
+    // An Input nested under Terminal outranks both Root Copy and main's native
+    // paste binding. Its actual Base handler remains the only editor owner.
+    turn(cx, handle, |window, cx| {
+        let notes = content.read(cx).notes.clone();
+        notes.update(cx, |state, cx| state.set_value("nested editor bytes", window, cx));
+        notes.read(cx).focus_handle(cx).focus(window, cx);
+    });
+    turn(cx, handle, |window, cx| window.press("cmd-a", cx));
+    turn(cx, handle, |window, cx| window.press("cmd-c", cx));
+    assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "nested editor bytes");
+    turn(cx, handle, |window, cx| window.press("cmd-v", cx));
+    assert_eq!(content.read_with(cx, |owner, cx| owner.notes.read(cx).value()), "nested editor bytes");
+    assert_eq!(content.read_with(cx, |owner, _| (owner.terminal_menu_guards, owner.terminal_paste_actions, owner.transcript_copies)), (0, 0, 2));
+    // The Terminal binding propagates text paste; Root Copy/Tab are scoped-unbound.
     turn(cx, handle, |window, cx| {
         let focus = content.read(cx).terminal_focus.clone();
         focus.focus(window, cx); window.render_frame(cx);
@@ -622,6 +681,7 @@ fn native_edit_menu_uses_base_actions_and_preserves_editor_priority(cx: &mut Tes
     });
     assert_eq!(content.read_with(cx, |owner, _| owner.terminal_keys.clone()), ["x", "c", "v", "a", "tab", "tab"]);
     assert_eq!(content.read_with(cx, |owner, _| owner.terminal_menu_guards), 4);
+    assert_eq!(content.read_with(cx, |owner, _| owner.terminal_paste_actions), 1);
     turn(cx, handle, |window, cx| window.press("cmd-shift-c", cx));
     assert_eq!(content.read_with(cx, |owner, _| owner.terminal_menu_guards), 4);
 }
@@ -641,7 +701,10 @@ impl Render for ContentControls {
                 .child(button_content("content-close", "Close item", "×")
                     .size(px(24.)).disabled(self.disabled)
                     .hover(|style| style.bg(rgb(0x445566)))
-                    .on_click(cx.listener(|owner, _, _, _| owner.calls.push("close"))))
+                    // Same owner isolation as real nested tab/project controls.
+                    .on_click(cx.listener(|owner, _, _, cx| {
+                        cx.stop_propagation(); owner.calls.push("close");
+                    })))
                 .child(radio_content("nested-disabled-radio", "Unavailable destination", "Unavailable", false)
                     .disabled(true).w(px(60.)).h(px(24.)).on_change(|_, _, _, _| panic!("disabled radio activated"))))
             .child(toggle_content("content-toggle", "Pin item", "Owner pin mark", self.pressed)
