@@ -175,8 +175,8 @@ pub struct ChatView {
     submissions: Vec<attachment_draft::Submission>,
     pending_submission: Option<u64>,
     next_submission: u64,
-    answer_submissions: HashMap<u64, (String, ChatCommand)>,
-    answer_failures: HashMap<String, (ChatCommand, crate::chat::client::CallError)>,
+    answer_submissions: HashMap<u64, editors::AnswerSnapshot>,
+    answer_failures: HashMap<String, editors::AnswerFailure>,
     menu: Option<Menu>,
     /// The menu that a click outside just closed, and when. The click that closes an open
     /// menu on its own button must not open it again.

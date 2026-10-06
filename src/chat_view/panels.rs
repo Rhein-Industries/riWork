@@ -1203,7 +1203,9 @@ impl ChatView {
                 }))
                 .bg(rgb(colors.panel))
                 .children(prompts)
-                .children(self.answer_failures.get(&question.request_id).map(|(command, error)| {
+                .children(self.answer_failures.get(&question.request_id).map(|failure| {
+                    let command = &failure.snapshot.command;
+                    let error = &failure.error;
                     let request = question.request_id.clone();
                     div().flex().flex_col().gap(ui_text::space(4.))
                         .child(div().text_color(rgb(colors.gold)).child(format!("Answer submission retained: {error}")))

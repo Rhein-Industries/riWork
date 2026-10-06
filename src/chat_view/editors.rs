@@ -44,6 +44,37 @@ pub(super) struct AnswerEditor {
     pub _subscription: Subscription,
 }
 
+#[derive(Clone)]
+pub(super) struct AnswerSnapshot {
+    pub question: Question,
+    pub command: ChatCommand,
+}
+impl AnswerSnapshot {
+    fn matches_question(&self, question: &Question) -> bool {
+        self.question.request_id == question.request_id
+            && self.question.questions.len() == question.questions.len()
+            && self
+                .question
+                .questions
+                .iter()
+                .zip(&question.questions)
+                .all(|(old, new)| {
+                    old.question == new.question
+                        && old.multi_select == new.multi_select
+                        && old
+                            .options
+                            .iter()
+                            .map(|o| &o.label)
+                            .eq(new.options.iter().map(|o| &o.label))
+                })
+    }
+}
+#[derive(Clone)]
+pub(super) struct AnswerFailure {
+    pub snapshot: AnswerSnapshot,
+    pub error: CallError,
+}
+
 impl ChatView {
     pub(super) fn composer_text(&self, cx: &gpui::App) -> String {
         self.composer.read(cx).value().to_string()
@@ -352,16 +383,34 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some((request_id, expected)) = self.answer_submissions.get(&id) {
-            if &command != expected {
+        if let Some(saved) = self.answer_submissions.get(&id).cloned() {
+            if command != saved.command {
                 return;
             }
-            let request_id = request_id.clone();
+            let request_id = saved.question.request_id.clone();
             self.answer_submissions.remove(&id);
+            if !self
+                .model
+                .transcript
+                .questions
+                .iter()
+                .any(|q| saved.matches_question(q))
+                || self
+                    .answer_submissions
+                    .values()
+                    .any(|s| s.question.request_id == request_id)
+            {
+                return;
+            }
             if let Err(error) = result {
                 self.answered.remove(&request_id);
-                self.answer_failures
-                    .insert(request_id, (command, error.clone()));
+                self.answer_failures.insert(
+                    request_id,
+                    AnswerFailure {
+                        snapshot: saved,
+                        error: error.clone(),
+                    },
+                );
                 self.notice = Some(format!("Answer submission: {error}"));
             }
             // Answers and choices are retained until RequestResolved, even on success.
@@ -404,10 +453,23 @@ impl ChatView {
 
     pub(super) fn ready_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let questions = self.model.transcript.questions.clone();
+        for saved in self.answer_submissions.values() {
+            if !questions.iter().any(|q| saved.matches_question(q))
+                && !self.answer_submissions.values().any(|current| {
+                    current.question.request_id == saved.question.request_id
+                        && questions.iter().any(|q| current.matches_question(q))
+                })
+            {
+                self.answered.remove(&saved.question.request_id);
+            }
+        }
         self.answers
             .retain(|key, _| questions.iter().any(|q| key.still_in(q)));
-        self.answer_failures
-            .retain(|request, _| questions.iter().any(|q| &q.request_id == request));
+        self.answer_failures.retain(|_, failure| {
+            questions
+                .iter()
+                .any(|q| failure.snapshot.matches_question(q))
+        });
         for question in questions {
             for at in 0..question.questions.len() {
                 let key = AnswerKey::of(&question, at);
@@ -503,7 +565,9 @@ impl ChatView {
         if self
             .answer_failures
             .get(&request_id)
-            .is_some_and(|(old, error)| old == &command && matches!(error, CallError::Broken(_)))
+            .is_some_and(|failure| {
+                failure.snapshot.command == command && matches!(failure.error, CallError::Broken(_))
+            })
         {
             self.notice = Some(
                 "Inspect the transcript before explicitly resending the saved answers.".into(),
@@ -514,6 +578,17 @@ impl ChatView {
         self.dispatch_answers(request_id, command, cx);
     }
     fn dispatch_answers(&mut self, request: String, command: ChatCommand, cx: &mut Context<Self>) {
+        let Some(question) = self
+            .pending_question()
+            .filter(|q| q.request_id == request)
+            .cloned()
+        else {
+            return;
+        };
+        let snapshot = AnswerSnapshot {
+            question,
+            command: command.clone(),
+        };
         self.next_submission = self
             .next_submission
             .checked_add(1)
@@ -527,13 +602,13 @@ impl ChatView {
         match result {
             Ok(()) => {
                 self.answered.insert(request.clone());
-                self.answer_submissions
-                    .insert(id, (request.clone(), command));
+                self.answer_submissions.insert(id, snapshot);
                 self.answer_failures.remove(&request);
             }
             Err(error) => {
                 self.notice = Some(error.to_string());
-                self.answer_failures.insert(request, (command, error));
+                self.answer_failures
+                    .insert(request, AnswerFailure { snapshot, error });
             }
         }
         cx.notify();
@@ -546,8 +621,13 @@ impl ChatView {
         {
             return;
         }
-        if let Some((command, _)) = self.answer_failures.get(request).cloned() {
-            self.dispatch_answers(request.into(), command, cx);
+        if let Some(failure) = self.answer_failures.get(request).cloned() {
+            if self
+                .pending_question()
+                .is_some_and(|q| failure.snapshot.matches_question(q))
+            {
+                self.dispatch_answers(request.into(), failure.snapshot.command, cx);
+            }
         }
     }
 }
