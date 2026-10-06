@@ -1307,8 +1307,6 @@ impl Global for AccountUsage {}
 
 struct Workspace {
     modal_selection_scope: gpui_kit::base::TextSelectionScopeId,
-    modal_focus: [FocusHandle; 4],
-    modal_return: behavior_controls::FocusReturn,
     menu_focus: FocusHandle,
     menu_return: behavior_controls::FocusReturn,
     project_creator: Option<Entity<ProjectCreator>>,
@@ -1425,6 +1423,8 @@ struct Workspace {
     search_focused: bool,
     search: String,
     search_inputs: BTreeMap<TabId, (Entity<InputState>, gpui::Subscription)>,
+    /// One Base popover owner per visible Projects tab, including sibling panes.
+    project_sort_uis: BTreeMap<TabId, panels::ProjectSortUi>,
     search_synced: BTreeMap<TabId, String>,
     search_sync_events: BTreeMap<TabId, usize>,
     focused_search: Option<TabId>,
@@ -1947,8 +1947,6 @@ impl Workspace {
         let file_explorer = panel;
         let mut workspace = Self {
             modal_selection_scope: gpui_kit::base::TextSelectionScopeId::new(),
-            modal_focus: std::array::from_fn(|_| cx.focus_handle()),
-            modal_return: Default::default(),
             menu_focus: cx.focus_handle(),
             menu_return: Default::default(),
             project_creator: None,
@@ -2034,6 +2032,7 @@ impl Workspace {
             search_focused: false,
             search: String::new(),
             search_inputs: BTreeMap::new(),
+            project_sort_uis: BTreeMap::new(),
             search_synced: BTreeMap::new(),
             search_sync_events: BTreeMap::new(),
             focused_search: None,
@@ -2494,7 +2493,7 @@ impl Workspace {
     fn apply_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = cx.global::<Settings>().clone();
         if settings.project_order != self.settings.project_order {
-            self.project_sort_menu_open = false;
+            self.dismiss_project_sort_menus(window, cx);
         }
         if cx.global::<Appearance>().selected != settings.theme {
             sync_appearance(cx);
@@ -2734,26 +2733,73 @@ impl Workspace {
         }
     }
 
+    /// External dismissal uses the live Base state; an already closed popup is a no-op.
+    fn dismiss_project_sort_menus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for ui in self.project_sort_uis.values() {
+            ui.dismiss(window, cx);
+        }
+        self.project_sort_menu_open = false;
+    }
+
+    fn set_project_sort_menu_open(
+        &mut self,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The trigger has already transitioned its state and focused that scope.
+        let owner = if open {
+            self.project_sort_uis.iter().find_map(|(id, ui)| {
+                let state = ui.state.read(cx);
+                (state.is_open() && state.focus_handle(cx).contains_focused(window, cx))
+                    .then_some(*id)
+            })
+        } else {
+            None
+        };
+        if let Some(owner) = owner {
+            for (id, ui) in &self.project_sort_uis {
+                if *id != owner {
+                    // Focus is in the new scope, so closing a peer cannot restore it.
+                    ui.dismiss(window, cx);
+                }
+            }
+            self.project_sort_menu_open = true;
+            self.panel_menu = None;
+            self.finish_tab_drag(cx);
+        } else {
+            // A stale/unowned request must not open a popup on another surface.
+            self.dismiss_project_sort_menus(window, cx);
+        }
+        cx.notify();
+    }
+
     fn panel_action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             PanelAction::ToggleProjectSortMenu => {
-                self.project_sort_menu_open = !self.project_sort_menu_open;
-                if self.project_sort_menu_open {
-                    self.panel_menu = None;
-                    self.finish_tab_drag(cx);
-                    self.focus.focus(window, cx);
-                } else {
-                    self.focus_active(window, cx);
+                // Compatibility for old callers; converted triggers emit the controlled action.
+                let open = !self.project_sort_menu_open;
+                if open {
+                    if let Some(ui) = self
+                        .project_sort_uis
+                        .values()
+                        .find(|ui| ui.trigger_focus.is_focused(window))
+                    {
+                        ui.state
+                            .update(cx, |state, cx| state.sync_open(true, window, cx));
+                    }
                 }
-                cx.notify();
+                self.set_project_sort_menu_open(open, window, cx);
+            }
+            PanelAction::SetProjectSortMenuOpen(open) => {
+                self.set_project_sort_menu_open(open, window, cx);
             }
             PanelAction::CloseProjectSortMenu => {
-                self.project_sort_menu_open = false;
-                self.focus_active(window, cx);
+                self.dismiss_project_sort_menus(window, cx);
                 cx.notify();
             }
             PanelAction::SetProjectOrder(order) => {
-                self.project_sort_menu_open = false;
+                self.dismiss_project_sort_menus(window, cx);
                 match self
                     .settings_store
                     .update(|settings| settings.project_order = order)
@@ -2764,7 +2810,6 @@ impl Workspace {
                     }
                     Err(error) => self.notice = Some(error),
                 }
-                self.focus_active(window, cx);
                 cx.notify();
             }
             PanelAction::CreateProject => self.begin_project_creation(window, cx),
@@ -2775,7 +2820,7 @@ impl Workspace {
             PanelAction::EditFolder(id) => self.begin_folder_edit(Some(&id), window, cx),
             PanelAction::BeginProjectDrag => {
                 self.panel_menu = None;
-                self.project_sort_menu_open = false;
+                self.dismiss_project_sort_menus(window, cx);
                 self.search_focused = false;
                 self.begin_tab_drag(cx);
             }
@@ -3154,7 +3199,7 @@ impl Workspace {
         let folder = id
             .and_then(|id| self.state.project_folder(id).ok())
             .cloned();
-        self.modal_return.capture(window, cx);
+        self.dismiss_project_sort_menus(window, cx);
         self.search_focused = false;
         self.panel_menu = None;
         self.notice = None;
@@ -3174,9 +3219,6 @@ impl Workspace {
                 workspace.expand_project_folder(Some(&folder.id));
             }
             if matches!(event, FolderEditorEvent::Saved(_)) {
-                workspace.modal_return.forget();
-                workspace.focus_active(window, cx);
-            } else if !workspace.modal_return.restore_within(&workspace.focus, window, cx) {
                 workspace.focus_active(window, cx);
             }
             cx.notify();
@@ -3682,6 +3724,9 @@ impl Workspace {
         self.session_refresh_generation = self.session_refresh_generation.wrapping_add(1);
         // The tabs below are rebuilt from the layout, which claims what is kept again.
         self.release_tab_claims();
+        // A new project's restored tabs can reuse numeric IDs. Retire old owners
+        // without restoring their removed trigger before rebuilding the panes.
+        self.retain_project_sort_uis(&BTreeSet::new(), cx);
         self.project_sort_menu_open = false;
         if self.focus_mode {
             self.set_focus_mode(false, window, cx);
@@ -4904,7 +4949,7 @@ impl Workspace {
         if self.modal_open() {
             return;
         }
-        self.modal_return.capture(window, cx);
+        self.dismiss_project_sort_menus(window, cx);
         self.search_focused = false;
         self.panel_menu = None;
         self.notice = None;
@@ -4933,10 +4978,8 @@ impl Workspace {
                     workspace.create_remote_project(host_id.clone(), name.clone(), cx);
                 }
             }
-            if matches!(event, RemotePromptEvent::Closed) {
-                if !workspace.modal_return.restore_within(&workspace.focus, window, cx) { workspace.focus_active(window, cx); }
-            } else {
-                workspace.modal_return.forget();
+            // Cancel/Hide has already restored the invoker in the dialog owner.
+            if !matches!(event, RemotePromptEvent::Closed) {
                 workspace.focus_active(window, cx);
             }
             cx.notify();
@@ -4970,7 +5013,7 @@ impl Workspace {
         }
         self.search_focused = false;
         self.notice = None;
-        self.modal_return.capture(window, cx);
+        self.dismiss_project_sort_menus(window, cx);
         self.begin_tab_drag(cx);
         let home = self.sessions.state_home().to_path_buf();
         let config = self.chat_config();
@@ -5002,10 +5045,8 @@ impl Workspace {
             }
             workspace.handoff_dialog = None;
             workspace.finish_tab_drag(cx);
-            if matches!(event, HandoffEvent::Closed) {
-                if !workspace.modal_return.restore_within(&workspace.focus, window, cx) { workspace.focus_active(window, cx); }
-            } else {
-                workspace.modal_return.forget();
+            // Both Cancel and busy Hide are dialog-owned dismissal/restoration.
+            if !matches!(event, HandoffEvent::Closed | HandoffEvent::Detached) {
                 workspace.focus_active(window, cx);
             }
             cx.notify();
@@ -6225,8 +6266,8 @@ impl Workspace {
             self.close_layout_menu(window, cx);
             return;
         }
+        self.dismiss_project_sort_menus(window, cx);
         if self.panel_menu.is_none() { self.menu_return.capture(window, cx); }
-        self.project_sort_menu_open = false;
         self.panel_menu = None;
         self.layout_menu_open = true;
         // Terminals are native views drawn above everything of ours; the menu is drawn over
@@ -6687,8 +6728,8 @@ impl Workspace {
     }
 
     fn toggle_panel_menu(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_project_sort_menus(window, cx);
         if self.panel_menu.is_none() && !self.layout_menu_open { self.menu_return.capture(window, cx); }
-        self.project_sort_menu_open = false;
         self.layout_menu_open = false;
         self.active_pane = pane_id;
         self.panel_menu = if self.panel_menu == Some(pane_id) {
@@ -7120,7 +7161,7 @@ impl Workspace {
                 return;
             }
         };
-        self.modal_return.capture(window, cx);
+        self.dismiss_project_sort_menus(window, cx);
         self.search_focused = false;
         self.panel_menu = None;
         self.notice = None;
@@ -7132,13 +7173,10 @@ impl Workspace {
             workspace.finish_tab_drag(cx);
             match event {
                 ProjectCreationEvent::Created(project) => {
-                    workspace.modal_return.forget();
                     workspace.activate_project(&project.id, true, window, cx);
                     workspace.open_panel(PanelKind::Projects, workspace.active_pane, window, cx);
                 }
-                ProjectCreationEvent::Cancelled => {
-                    if !workspace.modal_return.restore_within(&workspace.focus, window, cx) { workspace.focus_active(window, cx); }
-                }
+                ProjectCreationEvent::Cancelled => {}
             }
             cx.notify();
         })
@@ -7381,6 +7419,50 @@ impl Workspace {
         self.set_focus_mode(!self.focus_mode, window, cx);
     }
 
+    /// Retiring a hidden surface must not restore a trigger that is no longer drawn.
+    fn retain_project_sort_uis(&mut self, visible: &BTreeSet<TabId>, cx: &mut Context<Self>) {
+        self.project_sort_uis.retain(|id, ui| {
+            if visible.contains(id) {
+                return true;
+            }
+            ui.state.update(cx, |state, cx| {
+                if state.is_open() {
+                    // Base's non-focusing controlled close; the retired owner is dropped.
+                    state.set_open(false, cx);
+                    cx.notify();
+                }
+            });
+            false
+        });
+    }
+
+    /// Reconcile visible surface membership, never ordinary render focus.
+    fn ensure_project_sort_uis(&mut self, cx: &mut Context<Self>) {
+        let mut visible = BTreeSet::new();
+        for (pane_id, pane) in &self.panes {
+            for (index, tab) in pane.tabs.iter().enumerate() {
+                if matches!(tab.content, TabContent::Panel(PanelKind::Projects))
+                    && terminal_lifecycle::is_shown(
+                        index, pane.active, *pane_id, self.active_pane, self.focus_mode,
+                    )
+                {
+                    visible.insert(tab.id);
+                }
+            }
+        }
+        self.retain_project_sort_uis(&visible, cx);
+        for id in visible {
+            self.project_sort_uis
+                .entry(id)
+                .or_insert_with(|| panels::ProjectSortUi::new(cx));
+        }
+        // Base dismissal can also close a state without a domain action callback.
+        self.project_sort_menu_open = self
+            .project_sort_uis
+            .values()
+            .any(|ui| ui.state.read(cx).is_open());
+    }
+
     /// One retained editor for each navigation tab, including duplicate visible panels.
     fn ensure_search_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let files: Vec<TabId> = self
@@ -7599,8 +7681,14 @@ impl Workspace {
             return;
         }
         if event.keystroke.key == "escape" && self.project_sort_menu_open {
-            self.project_sort_menu_open = false;
-            self.focus_active(window, cx);
+            if self.project_sort_uis.values().any(|ui| {
+                let state = ui.state.read(cx);
+                state.is_open() && state.focus_handle(cx).contains_focused(window, cx)
+            }) {
+                // The focused popup handles Escape and restores its trigger once.
+                return;
+            }
+            self.dismiss_project_sort_menus(window, cx);
             cx.stop_propagation();
             cx.notify();
             return;
@@ -7704,7 +7792,7 @@ impl Workspace {
         width: f32,
         x: f32,
         at_window_top: bool,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
@@ -7848,7 +7936,7 @@ impl Workspace {
         pane_width: f32,
         x: f32,
         at_window_top: bool,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
@@ -8558,6 +8646,8 @@ impl Workspace {
                     project_order: self.settings.project_order,
                     project_last_edits: &self.project_last_edits,
                     project_sort_menu_open: self.project_sort_menu_open,
+                    project_sort_ui: active_tab
+                        .and_then(|tab| self.project_sort_uis.get(&tab.id)),
                 },
                 Self::panel_action,
                 window,
@@ -9738,7 +9828,7 @@ impl Workspace {
         cards
     }
 
-    fn render_focus(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_focus(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
         let show_window_controls = window_controls_visible(window);
         let viewport = window.viewport_size();
@@ -10163,6 +10253,7 @@ impl Render for Workspace {
             // Some tab just went off screen or came back; look at what is hidden.
             self.schedule_terminal_release(Some(terminal_lifecycle::MIN_RECHECK), cx);
         }
+        self.ensure_project_sort_uis(cx);
         div()
             .id("riwork")
             .relative()
@@ -10289,7 +10380,8 @@ impl Render for Workspace {
             )
             .children(show_window_controls.then(|| window_controls_island(cx)))
             .children(self.project_creator.as_ref().map(|creator| {
-                behavior_controls::modal_scope(
+                // The child Base Dialog owns the only focus trap and restoration.
+                behavior_controls::selection_scope(
                     div()
                         .absolute()
                         .inset_0()
@@ -10302,12 +10394,10 @@ impl Render for Workspace {
                         .occlude()
                         .child(creator.clone()),
                     self.modal_selection_scope,
-                    "project-creator-scope",
-                    &self.modal_focus[0],
                 )
             }))
             .children(self.folder_editor.as_ref().map(|editor| {
-                behavior_controls::modal_scope(
+                behavior_controls::selection_scope(
                     div()
                         .absolute()
                         .inset_0()
@@ -10320,12 +10410,10 @@ impl Render for Workspace {
                         .occlude()
                         .child(editor.clone()),
                     self.modal_selection_scope,
-                    "folder-editor-scope",
-                    &self.modal_focus[1],
                 )
             }))
             .children(self.remote_prompt.as_ref().map(|prompt| {
-                behavior_controls::modal_scope(
+                behavior_controls::selection_scope(
                     div()
                         .absolute()
                         .inset_0()
@@ -10338,12 +10426,10 @@ impl Render for Workspace {
                         .occlude()
                         .child(prompt.clone()),
                     self.modal_selection_scope,
-                    "remote-prompt-scope",
-                    &self.modal_focus[2],
                 )
             }))
             .children(self.handoff_dialog.as_ref().map(|dialog| {
-                behavior_controls::modal_scope(
+                behavior_controls::selection_scope(
                     div()
                         .absolute()
                         .inset_0()
@@ -10356,8 +10442,6 @@ impl Render for Workspace {
                         .occlude()
                         .child(dialog.clone()),
                     self.modal_selection_scope,
-                    "handoff-dialog-scope",
-                    &self.modal_focus[3],
                 )
             }))
             .children(self.notice.as_ref().map(|notice| {
