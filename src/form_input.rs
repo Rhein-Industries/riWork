@@ -131,11 +131,14 @@ pub fn search_frame(
 }
 
 #[cfg(test)]
+use gpui_kit::TestWindowExt as _;
+
+#[cfg(test)]
 pub(crate) fn test_window<V: gpui::Render + 'static>(
     cx: &mut gpui::TestAppContext,
     build: impl FnOnce(&mut Window, &mut gpui::Context<V>) -> V + 'static,
 ) -> (gpui::AnyWindowHandle, Entity<V>) {
-    let (handle, view) = cx.update(|app| {
+    let (handle, view): (gpui::AnyWindowHandle, Entity<V>) = cx.update(|app| {
         app.set_global(crate::settings::Settings::default());
         app.set_global(crate::theme::Appearance {
             selected: crate::theme::ThemeChoice::RiWork,
