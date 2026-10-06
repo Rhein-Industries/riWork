@@ -46,4 +46,3 @@ test chat::host::tests::the_socket_is_private_and_a_dead_hosts_leftovers_are_rep
 test chat::host::tests::what_the_driver_learns_is_merged_into_the_chats_own_info ... ok
 
 test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 1619 filtered out; finished in 14.89s
-

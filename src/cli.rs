@@ -2614,12 +2614,17 @@ fn schedule_command_inner(
             let every_minutes = schedule_minutes(option(&mut args, "--every-minutes")?)?;
             schedule_empty(&args)?;
             if fresh {
+                if shell_id.is_some() {
+                    return Err(schedule_cli_error(
+                        "New chat requires --shell to be omitted",
+                    ));
+                }
                 let (provider, permission) = crate::schedule_service::chat_options(
                     provider.as_deref(),
                     permission.as_deref(),
                 )?;
                 Ok(json!({"schedule":service.create_chat(CreateRequest {
-                    scope: identity, shell_id: shell_id.unwrap_or_default(), title, prompt, at, every_minutes,
+                    scope: identity, shell_id: String::new(), title, prompt, at, every_minutes,
                 }, provider, model, effort, fast, permission, account.as_deref())?}))
             } else {
                 if provider.is_some()

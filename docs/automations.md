@@ -27,6 +27,8 @@ Use `--account ACCOUNT_ID` for an explicit saved Codex account. Omit model/effor
 
 `riwork_schedule_create` accepts `destination: "new_chat"`, project scope/project_id, provider, model, effort, fast, permission and codex_account_id; shell_id must be omitted. `destination: "existing_shell"` requires an explicit live shell_id and pins its shell kind. Omitting destination keeps legacy semantics, including project-orchestrator-only shell matching. New fields are additive; old saved schedules need no migration.
 
+The new destination/provider/model/effort/fast/permission/account fields are create-only; other MCP schedule operations reject their presence. Fresh creation requires `--shell` / `shell_id` to be absent, including explicitly empty or null values.
+
 ## Dispatch and compatibility
 
 RiWork's existing desktop scheduler runs while the app is open. It skips missed occurrences beyond the five-minute grace window, backs off unavailable/busy targets, and admits at most four claimed attempts per minute.

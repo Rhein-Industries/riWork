@@ -81,4 +81,3 @@ test schedules::tests::two_schedules_cannot_consume_the_same_idle_turn ... ok
 test schedules::tests::unreadable_evidence_defers_without_pausing_and_recovers ... ok
 
 test result: ok. 74 passed; 0 failed; 2 ignored; 0 measured; 1582 filtered out; finished in 48.67s
-

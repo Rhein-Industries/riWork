@@ -1,13 +1,15 @@
    Compiling riwork v0.1.0 (/Users/dominik/orca/projects/riWork-feat-automations)
-    Finished `test` profile [unoptimized] target(s) in 10.64s
+    Finished `test` profile [unoptimized] target(s) in 11.47s
      Running tests/schedule_interfaces.rs (/tmp/riwork-automations-target/debug/deps/schedule_interfaces-ca89bdfc201f187e)
 
-running 6 tests
+running 8 tests
 test cli_and_mcp_share_three_scope_lifecycle_and_stdio_protocol ... ok
 test explicit_existing_shell_interfaces_pin_ordinary_project_kind_and_preserve_legacy_defaults ... ok
 test fresh_chat_cli_mcp_create_revision_lifecycle_and_invalid_destinations ... ok
+test fresh_create_rejects_explicit_shell_presence_even_when_empty ... ok
 test grok_sessions_and_control_character_titles_are_refused_by_cli_and_mcp ... ok
 test invalid_ids_scope_time_revision_and_target_are_structured_errors ... ok
+test new_create_only_fields_are_rejected_on_every_other_mcp_operation_without_mutation ... ok
 test two_cli_processes_cannot_apply_the_same_revision ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.65s

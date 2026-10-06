@@ -290,6 +290,26 @@ fn schedule_argument(message: impl Into<String>) -> ScheduleError {
 }
 
 fn execute_schedule_tool(name: &str, args: &Value) -> Result<Value, ScheduleError> {
+    // These additive fields are advertised only for create. Check presence,
+    // including null, without changing legacy non-create argument acceptance.
+    if name != "riwork_schedule_create"
+        && let Some(field) = [
+            "destination",
+            "provider",
+            "model",
+            "effort",
+            "fast",
+            "permission",
+            "codex_account_id",
+        ]
+        .into_iter()
+        .find(|field| args.get(*field).is_some())
+    {
+        return Err(schedule_argument(format!(
+            "{field} is only valid for create"
+        )));
+    }
+    let shell_supplied = args.get("shell_id").is_some();
     let args: ScheduleArguments = serde_json::from_value(args.clone())
         .map_err(|error| schedule_argument(format!("Invalid schedule arguments: {error}")))?;
     let service = ScheduleService::open_default()?;
@@ -328,12 +348,17 @@ fn execute_schedule_tool(name: &str, args: &Value) -> Result<Value, ScheduleErro
             };
             let scope = args.scope()?;
             if fresh {
+                if shell_supplied {
+                    return Err(schedule_argument(
+                        "New chat requires shell_id to be omitted",
+                    ));
+                }
                 let (provider, permission) = crate::schedule_service::chat_options(
                     args.provider.as_deref(),
                     args.permission.as_deref(),
                 )?;
                 Ok(json!({"schedule":service.create_chat(CreateRequest {
-                    scope, shell_id: args.shell_id.unwrap_or_default(),
+                    scope, shell_id: String::new(),
                     title: required(args.title, "title")?, prompt: required(args.prompt, "prompt")?,
                     at: required(args.at, "at")?, every_minutes: args.every_minutes,
                 }, provider, args.model, args.effort, args.fast.unwrap_or(false), permission, args.codex_account_id.as_deref())?}))

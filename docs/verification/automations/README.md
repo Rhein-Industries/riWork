@@ -12,6 +12,7 @@ All desktop screenshots were captured using RiWork's Cua.ai Driver MCP. No real 
 - `cleanup-receipt.json`: exact fixture GUI/host shutdown and production PID 78989 preserved.
 - `initial.png`, `current.png`, `menu.png`: preceding fixture source captures retained without claiming final-candidate input verification.
 - `test-logs/`: passing final engine, interfaces, host, CLI/MCP, native label and native build logs.
+- `test-logs/followup-*.log`: focused parent-review corrections: eight interface tests, 12 CLI/MCP contract tests and a compile check. Only the endings of the five original test logs were normalized; the scheduler and GUI suites were not repeated.
 
 Cua transport acknowledgements alone are not accepted as semantic proof. Final title/prompt replacement, mouse hit reliability, complete narrow keyboard navigation, GUI pause/resume/delete and revision-conflict flows remain unverified. Shared-service/CLI/MCP lifecycle tests pass; the Cua editor save is proven by revision 2→3 while retaining paused=true. The script initially paused the seeded schedule via the CLI; revision 3 does not establish a GUI resume/re-pause cycle.
 

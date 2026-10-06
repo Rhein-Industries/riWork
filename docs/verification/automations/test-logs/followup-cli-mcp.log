@@ -1,8 +1,7 @@
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
-   Compiling riwork v0.1.0 (/Users/dominik/orca/projects/riWork-feat-automations)
-    Finished `test` profile [unoptimized] target(s) in 11.62s
+    Finished `test` profile [unoptimized] target(s) in 0.62s
      Running tests/cli_mcp_contract.rs (/tmp/riwork-automations-target/debug/deps/cli_mcp_contract-6ad9e2f8c2197670)
 
 running 12 tests
@@ -19,4 +18,4 @@ test shell_keys_types_into_a_pane_and_output_json_reports_the_screen ... ok
 test unknown_arguments_fail_with_usage_instead_of_opening_the_workspace ... ok
 test version_prints_the_crate_version_and_never_starts_the_gui ... ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.10s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.55s
