@@ -197,3 +197,31 @@ write/receipt deadline, cancellation before/after the first byte, pending answer
 and stale receipt ordering, native clipboard/IME and picker/drop behavior. The previous
 Phase 1 receipts do not validate this follow-up. Parent owns build/runtime/GUI release and
 task acceptance; this worktree returns idle without production or installed-state actions.
+
+## Reviewer compile corrections, source-only (2026-10-06)
+
+Reviewer checked immutable combined candidate
+`7adede9e1dc35109346278190e8983af851aa759` and rejected it with three compiler
+errors; **zero tests ran**. The report's diagnostics start at
+`GPUI_KIT_REVIEW_REPORT.md:338` in the review worktree. This author follow-up
+uses signed `as_i64()` for zero-byte refusal removal from Codex's
+`HashMap<i64, Reply>`, matching insertion and response lookup. Chat creation
+and cross-window dictation cancellation both use pinned GPUI 0.3.8's inherent
+`window.window_handle()` accessor. Owning-window identity is preserved.
+
+These are source corrections, **not compiled/tested evidence**. Backend
+`1f0af2b5a9f29f70f3454981ee69505ef1997469`, foundation cherry-pick
+`d37d4d98b9c151f199b51ba5635990dd3296ddbc`, UI `9c005da857e180c307b40a2db2ded6d6ffd01c06`
+and backend audit follow-up `e61c76721e6fd204bcb28e3f5b994e148a04a9f6` are preserved;
+new follow-up commits do not amend them. No main/forms/shared-input changes.
+
+The reviewer remains the sole build owner. The earlier module-wide command
+suggestions in this plan are **superseded as runtime authorization**: do not run
+those filters. The reviewer must first archive/rehash the new combined immutable
+candidate, rerun the isolated locked/offline check, then compile/build/list only
+within parent release and execute exact source-classified test names. No prior
+binary or Phase 1 receipt validates this candidate. Process-backed cases retain
+the reviewer's owned-child lifetime gate pending the source fix and review;
+native Cua.ai Driver MCP acceptance still requires parent GUI ownership.
+This author runs no Cargo command, test, fixture, native GUI or process probe
+under the runtime hold. Parent acceptance remains outstanding.

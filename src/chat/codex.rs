@@ -1180,7 +1180,7 @@ impl Codex {
             // response cannot turn that known refusal into an accepted dispatch.
             if error.written == 0 {
                 self.with(|s| {
-                    if let Some(id) = frame["id"].as_u64() {
+                    if let Some(id) = frame["id"].as_i64() {
                         s.waiting.remove(&id);
                     }
                     if frame["method"] == "turn/start" {

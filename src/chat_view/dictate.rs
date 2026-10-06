@@ -200,7 +200,7 @@ impl ChatView {
         if let Some(other) = other.filter(|other| other != &me) {
             let handle = other.read_with(cx, |view, _| view.window_handle).ok();
             if let Some(handle) = handle {
-                if handle == window.handle() {
+                if handle == window.window_handle() {
                     let _ = other.update(cx, |view, cx| view.cancel_dictation(window, cx));
                 } else {
                     let _ = handle.update(cx, |_, window, cx| {

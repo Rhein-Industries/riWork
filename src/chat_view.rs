@@ -261,7 +261,7 @@ impl ChatView {
         ];
         Self {
             config,
-            window_handle: window.handle(),
+            window_handle: window.window_handle(),
             chat_id: None,
             creation: None,
             model: ChatModel::new(),
