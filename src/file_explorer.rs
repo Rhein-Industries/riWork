@@ -1028,6 +1028,9 @@ pub struct FileExplorer {
     show_hidden: bool,
     filter: FilterInput,
     filter_state: Entity<InputState>,
+    base_filter_state: Entity<InputState>,
+    filter_synced: BTreeMap<gpui::EntityId, String>,
+    filter_sync_events: BTreeMap<gpui::EntityId, usize>,
     filter_surfaces: BTreeMap<u64, (Entity<InputState>, Subscription)>,
     _input_subscription: Subscription,
     focus: FocusHandle,
@@ -1107,6 +1110,9 @@ impl FileExplorer {
         );
         let subscription = cx.subscribe_in(&filter_state, window, Self::filter_event);
         Self {
+            base_filter_state: filter_state.clone(),
+            filter_synced: BTreeMap::from([(filter_state.entity_id(), String::new())]),
+            filter_sync_events: BTreeMap::new(),
             filter_state,
             filter_surfaces: BTreeMap::new(),
             _input_subscription: subscription,
@@ -1145,27 +1151,61 @@ impl FileExplorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.owns_filter(state) {
+            return;
+        }
+        let id = state.entity_id();
+        if matches!(event, InputEvent::Change)
+            && let Some(count) = self.filter_sync_events.get_mut(&id)
+            && *count > 0
+        {
+            *count -= 1;
+            return;
+        }
         match event {
             InputEvent::Change => {
                 self.filter.text = state.read(cx).value().to_string();
-                for (input, _) in self.filter_surfaces.values() {
-                    if input.entity_id() != state.entity_id()
-                        && input.read(cx).value().as_ref() != self.filter.text.as_str()
-                    {
-                        input.update(cx, |input, cx| {
-                            input.set_value(self.filter.text.clone(), window, cx)
-                        });
+                self.filter_synced.insert(id, self.filter.text.clone());
+                let siblings: Vec<_> = self
+                    .filter_surfaces
+                    .values()
+                    .map(|(input, _)| input.clone())
+                    .collect();
+                for input in siblings {
+                    let other = input.entity_id();
+                    if other != id {
+                        let previous = self.filter_synced.get(&other).cloned().unwrap_or_default();
+                        if crate::form_input::sync_value(
+                            &input,
+                            &previous,
+                            &self.filter.text,
+                            window,
+                            cx,
+                        ) {
+                            *self.filter_sync_events.entry(other).or_default() += 1;
+                            self.filter_synced.insert(other, self.filter.text.clone());
+                        }
                     }
                 }
                 self.ensure_selection(cx);
                 cx.notify();
             }
             InputEvent::Focus => {
+                if !state.read(cx).focus_handle(cx).is_focused(window) {
+                    return;
+                }
                 self.filter_state = state.clone();
+                if !crate::form_input::is_composing(state, window, cx) {
+                    self.filter.text = state.read(cx).value().to_string();
+                    self.filter_synced.insert(id, self.filter.text.clone());
+                    self.ensure_selection(cx);
+                }
                 self.mode = Mode::Search;
                 cx.notify();
             }
             _ if text_input::is_submit(event, EnterBehavior::Submit) => {
+                self.filter.text = state.read(cx).value().to_string();
+                self.filter_synced.insert(id, self.filter.text.clone());
                 self.mode = Mode::Tree;
                 self.ensure_selection(cx);
                 self.focus.focus(window, cx);
@@ -1196,6 +1236,8 @@ impl FileExplorer {
                 cx,
             );
             let subscription = cx.subscribe_in(&input, window, Self::filter_event);
+            self.filter_synced
+                .insert(input.entity_id(), self.filter.text.clone());
             self.filter_surfaces
                 .insert(id, (input.clone(), subscription));
             input
@@ -1207,22 +1249,58 @@ impl FileExplorer {
         })
     }
 
-    pub fn retain_surfaces(&mut self, ids: &[u64]) {
-        self.filter_surfaces.retain(|id, _| ids.contains(id));
+    fn owns_filter(&self, state: &Entity<InputState>) -> bool {
+        (self.filter_surfaces.is_empty() && state.entity_id() == self.base_filter_state.entity_id())
+            || self
+                .filter_surfaces
+                .values()
+                .any(|(input, _)| input.entity_id() == state.entity_id())
     }
 
-    fn clear_filter(&mut self, cx: &mut Context<Self>) {
-        self.filter = FilterInput::default();
-        let current = self.filter_state.entity_id();
-        crate::form_input::set_value(&self.filter_state, String::new(), cx);
-        for (input, _) in self.filter_surfaces.values() {
-            if input.entity_id() != current {
-                crate::form_input::set_value(input, String::new(), cx);
+    pub fn retain_surfaces(&mut self, ids: &[u64], cx: &mut Context<Self>) {
+        self.filter_surfaces.retain(|id, _| ids.contains(id));
+        let live: Vec<_> = self
+            .filter_surfaces
+            .values()
+            .map(|(input, _)| input.entity_id())
+            .chain(std::iter::once(self.base_filter_state.entity_id()))
+            .collect();
+        self.filter_synced.retain(|id, _| live.contains(id));
+        self.filter_sync_events.retain(|id, _| live.contains(id));
+        if !self.owns_filter(&self.filter_state) {
+            self.filter_state = self
+                .filter_surfaces
+                .values()
+                .next()
+                .map(|(input, _)| input.clone())
+                .unwrap_or_else(|| self.base_filter_state.clone());
+            if self.mode == Mode::Search {
+                self.mode = Mode::Tree;
             }
+        }
+        cx.notify();
+    }
+
+    fn clear_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter = FilterInput::default();
+        let inputs: Vec<_> = self
+            .filter_surfaces
+            .values()
+            .map(|(input, _)| input.clone())
+            .chain(std::iter::once(self.base_filter_state.clone()))
+            .collect();
+        for input in inputs {
+            crate::form_input::set_value(&input, String::new(), window, cx);
+            self.filter_synced.insert(input.entity_id(), String::new());
         }
     }
 
-    pub fn set_root(&mut self, root: Option<ExplorerRoot>, cx: &mut Context<Self>) {
+    pub fn set_root(
+        &mut self,
+        root: Option<ExplorerRoot>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.root == root {
             return;
         }
@@ -1246,7 +1324,7 @@ impl FileExplorer {
         self.preview_identity = None;
         self.preview_kind = None;
         self.set_preview(PreviewState::Empty, None, cx);
-        self.clear_filter(cx);
+        self.clear_filter(window, cx);
         self.scroll = UniformListScrollHandle::new();
         if let Some(root) = &self.root {
             self.load(root.path.clone(), cx);
@@ -1520,9 +1598,10 @@ impl FileExplorer {
         &mut self,
         path: &Path,
         line: Option<u32>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        self.reveal_inner(path, line, true, cx)
+        self.reveal_inner(path, line, true, window, cx)
     }
 
     /// Chat links always stay inside the read-only preview, even if listings change.
@@ -1530,9 +1609,10 @@ impl FileExplorer {
         &mut self,
         path: &Path,
         line: Option<u32>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        self.reveal_inner(path, line, false, cx)
+        self.reveal_inner(path, line, false, window, cx)
     }
 
     fn reveal_inner(
@@ -1540,6 +1620,7 @@ impl FileExplorer {
         path: &Path,
         line: Option<u32>,
         external_fallback: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let root = self
@@ -1552,7 +1633,7 @@ impl FileExplorer {
         if hidden {
             self.show_hidden = true;
         }
-        self.clear_filter(cx);
+        self.clear_filter(window, cx);
         if self.mode == Mode::Search {
             self.mode = Mode::Tree;
         }
@@ -1953,7 +2034,7 @@ impl FileExplorer {
             };
             self.mode = order[(index + step) % order.len()];
         } else if key == "escape" && self.mode == Mode::Search {
-            self.clear_filter(cx);
+            self.clear_filter(window, cx);
             self.mode = Mode::Tree;
             self.ensure_selection(cx);
         } else if self.mode == Mode::Search {
@@ -3279,6 +3360,9 @@ pub struct FileExplorerSurface {
 impl FileExplorerSurface {
     pub fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.explorer.update(cx, |explorer, cx| {
+            if !explorer.owns_filter(&self.input) {
+                return;
+            }
             explorer.filter_state = self.input.clone();
             explorer.focus_search(window, cx);
         });
@@ -4264,17 +4348,171 @@ mod kit_filter_tests {
     use gpui::TestAppContext;
     use gpui_kit::test::TestWindowExt;
 
+    struct VisibleFilters {
+        explorer: Entity<FileExplorer>,
+        left: Entity<FileExplorerSurface>,
+        right: Entity<FileExplorerSurface>,
+    }
+    impl Render for VisibleFilters {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .gap(px(20.))
+                .child(div().w(px(300.)).child(self.left.clone()))
+                .child(div().w(px(300.)).child(self.right.clone()))
+        }
+    }
+
+    #[gpui::test]
+    fn kit_visible_filters_protect_composition_history_and_focus(cx: &mut TestAppContext) {
+        use gpui::{ElementInputHandler, InputHandler};
+        let (handle, pair) = crate::form_input::test_window(cx, |window, cx| {
+            let explorer = cx.new(|cx| FileExplorer::new(window, cx));
+            let left = explorer.update(cx, |explorer, cx| explorer.surface(301, window, cx));
+            let right = explorer.update(cx, |explorer, cx| explorer.surface(302, window, cx));
+            VisibleFilters {
+                explorer,
+                left,
+                right,
+            }
+        });
+        let (left, right) = cx
+            .update_window(handle.into(), |_, window, app| {
+                window.render_frame(app);
+                let left = pair.read(app).left.read(app).input.clone();
+                let right = pair.read(app).right.read(app).input.clone();
+                assert_ne!(
+                    left.read(app).presentation().input_bounds(),
+                    right.read(app).presentation().input_bounds()
+                );
+                left.read(app).focus_handle(app).focus(window, app);
+                window.render_frame(app);
+                window.input("A", app);
+                (left, right)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.background_executor()
+            .advance_clock(Duration::from_secs(3));
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(right.read(app).value(), "A");
+            window.render_frame(app);
+            window.input("B", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(right.read(app).value(), "AB");
+            right.read(app).focus_handle(app).focus(window, app);
+            window.render_frame(app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            window.press("cmd-z", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(right.read(app).value(), "A");
+            let mut handler = ElementInputHandler::new(
+                right.read(app).presentation().input_bounds(),
+                right.clone(),
+            );
+            handler.replace_and_mark_text_in_range(None, "日本", Some(2..2), window, app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            left.read(app).focus_handle(app).focus(window, app);
+            window.render_frame(app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let marked = cx
+            .update_window(handle.into(), |_, window, app| {
+                let marked = right.read(app).value();
+                window.input("C", app);
+                marked
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(right.read(app).value(), marked);
+            assert!(crate::form_input::is_composing(&right, window, app));
+            assert!(left.read(app).focus_handle(app).is_focused(window));
+            assert!(pair.read(app).explorer.read(app).root.is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn kit_removed_filter_rejects_stale_events_and_reopens_without_subscriptions(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, explorer) = crate::form_input::test_window(cx, FileExplorer::new);
+        let stale = cx
+            .update_window(handle.into(), |_, window, app| {
+                let surface =
+                    explorer.update(app, |explorer, cx| explorer.surface(201, window, cx));
+                let state = surface.read(app).input.clone();
+                explorer.update(app, |explorer, cx| {
+                    explorer.filter_state = state.clone();
+                    explorer.mode = Mode::Search;
+                    explorer.retain_surfaces(&[], cx);
+                    explorer.filter_event(&state, &InputEvent::Focus, window, cx);
+                });
+                state.update(app, |input, cx| {
+                    input.replace_all("stale draft", window, cx)
+                });
+                state
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            explorer.update(app, |explorer, cx| {
+                assert!(!explorer.owns_filter(&stale));
+                assert_eq!(
+                    explorer.filter_state.entity_id(),
+                    explorer.base_filter_state.entity_id()
+                );
+                assert_eq!(explorer.filter.text, "");
+                assert!(explorer.filter_surfaces.is_empty());
+                assert!(matches!(explorer.mode, Mode::Tree));
+                for id in 202..210 {
+                    explorer.surface(id, window, cx);
+                    explorer.retain_surfaces(&[], cx);
+                    assert!(explorer.filter_surfaces.is_empty());
+                    assert_eq!(explorer.filter_synced.len(), 1);
+                    assert!(explorer.filter_sync_events.is_empty());
+                }
+            });
+        })
+        .unwrap();
+    }
+
     #[gpui::test]
     fn kit_duplicate_filters_keep_distinct_persistent_geometry(cx: &mut TestAppContext) {
         let (handle, explorer) = crate::form_input::test_window(cx, FileExplorer::new);
+        let (first_input, second_input) = cx
+            .update_window(handle.into(), |_, window, app| {
+                let first = explorer.update(app, |explorer, cx| explorer.surface(101, window, cx));
+                let second = explorer.update(app, |explorer, cx| explorer.surface(102, window, cx));
+                (
+                    first.read(app).input.clone(),
+                    second.read(app).input.clone(),
+                )
+            })
+            .unwrap();
+        cx.run_until_parked();
         cx.update_window(handle.into(), |_, window, app| {
-            let first = explorer.update(app, |explorer, cx| explorer.surface(101, window, cx));
-            let second = explorer.update(app, |explorer, cx| explorer.surface(102, window, cx));
-            let first_input = first.read(app).input.clone();
-            let second_input = second.read(app).input.clone();
             assert_ne!(first_input.entity_id(), second_input.entity_id());
             first_input.update(app, |input, cx| input.replace("A🦀中", window, cx));
             first_input.update(app, |input, cx| input.set_selected_range(1..5, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             assert_eq!(second_input.read(app).value(), "A🦀中");
             let remounted = explorer.update(app, |explorer, cx| explorer.surface(101, window, cx));
             assert_eq!(
@@ -4282,7 +4520,9 @@ mod kit_filter_tests {
                 first_input.entity_id()
             );
             assert_eq!(first_input.read(app).selected_range(), 1..5);
-            explorer.update(app, |explorer, _| explorer.retain_surfaces(&[101, 102]));
+            explorer.update(app, |explorer, cx| {
+                explorer.retain_surfaces(&[101, 102], cx)
+            });
             assert_eq!(explorer.read(app).filter_surfaces.len(), 2);
         })
         .unwrap();
@@ -4291,28 +4531,54 @@ mod kit_filter_tests {
     #[gpui::test]
     fn kit_filter_persists_selection_and_owns_enter_escape_and_tab(cx: &mut TestAppContext) {
         let (handle, explorer) = crate::form_input::test_window(cx, FileExplorer::new);
+        let state = cx
+            .update_window(handle.into(), |_, window, app| {
+                explorer.update(app, |explorer, cx| explorer.focus_search(window, cx));
+                window.render_frame(app);
+                window.input("A🦀中", app);
+                let state = explorer.read(app).filter_state.clone();
+                state.update(app, |state, cx| state.set_selected_range(1..5, cx));
+                state
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let identity = state.entity_id();
         cx.update_window(handle.into(), |_, window, app| {
-            let state = explorer.read(app).filter_state.clone();
-            explorer.update(app, |explorer, cx| explorer.focus_search(window, cx));
-            window.render_frame(app);
-            window.input("A🦀中", app);
-            state.update(app, |state, cx| state.set_selected_range(1..5, cx));
-            let identity = state.entity_id();
             explorer.update(app, |_, cx| cx.notify());
             window.render_frame(app);
             assert_eq!(explorer.read(app).filter_state.entity_id(), identity);
             assert_eq!(state.read(app).selected_range(), 1..5);
             window.press("enter", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             assert!(matches!(explorer.read(app).mode, Mode::Tree));
             assert_eq!(state.read(app).value(), "A🦀中");
             explorer.update(app, |explorer, cx| explorer.focus_search(window, cx));
             window.render_frame(app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             window.press("escape", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             assert!(matches!(explorer.read(app).mode, Mode::Tree));
             assert_eq!(state.read(app).value(), "");
             explorer.update(app, |explorer, cx| explorer.focus_search(window, cx));
             window.render_frame(app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             window.press("tab", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             assert!(!state.read(app).focus_handle(app).is_focused(window));
         })
         .unwrap();

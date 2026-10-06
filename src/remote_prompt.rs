@@ -82,6 +82,10 @@ pub struct RemotePrompt {
     link: Option<PairingLink>,
     copied: bool,
     focus: FocusHandle,
+    #[cfg(test)]
+    parent_enter_actions: usize,
+    #[cfg(test)]
+    parent_enter_keys: usize,
 }
 
 impl EventEmitter<RemotePromptEvent> for RemotePrompt {}
@@ -211,6 +215,10 @@ impl RemotePrompt {
             link: None,
             copied: false,
             focus: cx.focus_handle(),
+            #[cfg(test)]
+            parent_enter_actions: 0,
+            #[cfg(test)]
+            parent_enter_keys: 0,
         }
     }
 
@@ -384,6 +392,10 @@ impl RemotePrompt {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        if matches!(event.keystroke.key.as_str(), "enter" | "return") {
+            self.parent_enter_keys += 1;
+        }
         if self.accepts_input()
             && matches!(event.keystroke.key.as_str(), "escape" | "tab")
             && crate::form_input::is_composing(&self.input_states[self.active], window, cx)
@@ -564,7 +576,7 @@ impl Render for RemotePrompt {
             ("Cancel", self.action_label())
         };
         let base = self.field_slots();
-        div()
+        let panel = div()
             .id("remote-prompt")
             .occlude()
             .track_focus(&self.focus)
@@ -625,7 +637,14 @@ impl Render for RemotePrompt {
                         1,
                         cx,
                     )),
-            )
+            );
+        #[cfg(test)]
+        let panel = panel.on_action(cx.listener(
+            |prompt, _: &gpui_kit::base::input::Enter, _, _| {
+                prompt.parent_enter_actions += 1;
+            },
+        ));
+        panel
     }
 }
 
@@ -699,25 +718,53 @@ mod kit_form_tests {
                 }
             })
         });
+        let state = cx
+            .update_window(handle.into(), |_, window, app| {
+                window.render_frame(app);
+                window.click(("remote-input", 0usize), app);
+                window.input("Draft", app);
+                prompt.read(app).input_states[0].clone()
+            })
+            .unwrap();
         cx.run_until_parked();
+        let identity = state.entity_id();
         cx.update_window(handle.into(), |_, window, app| {
-            let state = prompt.read(app).input_states[0].clone();
-            window.click(("remote-input", 0usize), app);
-            window.input("Draft", app);
-            let identity = state.entity_id();
             state.update(app, |state, cx| state.set_selected_range(0..5, cx));
             let mut handler = ElementInputHandler::new(
                 window.find(("remote-input", 0usize)).bounds(),
                 state.clone(),
             );
             handler.replace_and_mark_text_in_range(None, "日本", Some(2..2), window, app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             window.render_frame(app);
             window.press("enter", app);
-            assert!(names.borrow().is_empty());
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(names.borrow().is_empty());
+        cx.update_window(handle.into(), |_, window, app| {
+            let mut handler = ElementInputHandler::new(
+                window.find(("remote-input", 0usize)).bounds(),
+                state.clone(),
+            );
             handler.replace_text_in_range(None, "日本語", window, app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(names.borrow().is_empty());
+        cx.update_window(handle.into(), |_, window, app| {
             window.render_frame(app);
             window.press("enter", app);
-            assert_eq!(names.borrow().as_slice(), &["日本語"]);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(names.borrow().as_slice(), &["日本語"]);
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(prompt.read(app).parent_enter_actions, 0);
+            assert_eq!(prompt.read(app).parent_enter_keys, 0);
             prompt.update(app, |_, cx| cx.notify());
             window.render_frame(app);
             assert_eq!(prompt.read(app).input_states[0].entity_id(), identity);
@@ -731,28 +778,51 @@ mod kit_form_tests {
         let (handle, prompt) = crate::form_input::test_window(cx, |window, cx| {
             RemotePrompt::new(PromptKind::AddHost, Err("inert backend".into()), window, cx)
         });
+        let state = cx
+            .update_window(handle.into(), |_, window, app| {
+                window.render_frame(app);
+                window.click(("remote-input", 0usize), app);
+                window.input("riwork://pair?synthetic-secret", app);
+                prompt.read(app).input_states[0].clone()
+            })
+            .unwrap();
+        cx.run_until_parked();
         cx.update_window(handle.into(), |_, window, app| {
-            let state = prompt.read(app).input_states[0].clone();
-            assert!(state.read(app).is_masked());
-            window.click(("remote-input", 0usize), app);
-            window.input("riwork://pair?synthetic-secret", app);
+            assert!(state.read(app).presentation().is_masked());
             window.press("cmd-a", app);
             app.write_to_clipboard(ClipboardItem::new_string("synthetic-sentinel".into()));
             window.press("cmd-c", app);
             window.press("cmd-x", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, _, app| {
             assert_eq!(
                 app.read_from_clipboard().unwrap().text().as_deref(),
                 Some("synthetic-sentinel")
             );
             assert_eq!(state.read(app).value(), "riwork://pair?synthetic-secret");
+        })
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, app| {
+            window.render_frame(app);
             window.press("tab", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             assert!(
                 prompt.read(app).input_states[1]
                     .read(app)
                     .focus_handle(app)
                     .is_focused(window)
             );
+            window.render_frame(app);
             window.press("shift-tab", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             assert!(state.read(app).focus_handle(app).is_focused(window));
             prompt.update(app, |prompt, cx| {
                 prompt.busy = Some("Inert pending");
@@ -760,13 +830,21 @@ mod kit_form_tests {
             });
             window.render_frame(app);
             window.input("ignored", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
             assert_eq!(state.read(app).value(), "riwork://pair?synthetic-secret");
             prompt.update(app, |prompt, cx| {
                 prompt.busy = None;
                 cx.notify();
             });
             window.render_frame(app);
-            assert_eq!(state.read(app).value(), "riwork://pair?synthetic-secret");
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, _, app| {
+            assert_eq!(state.read(app).value(), "riwork://pair?synthetic-secret")
         })
         .unwrap();
     }
@@ -785,14 +863,20 @@ mod kit_form_tests {
                 cx,
             )
         });
-        cx.update_window(handle.into(), |_, window, app| {
-            let states = prompt.read(app).input_states.clone();
+        let states = cx
+            .update_window(handle.into(), |_, window, app| {
+                let states = prompt.read(app).input_states.clone();
+                prompt.update(app, |_, cx| cx.notify());
+                window.render_frame(app);
+                states
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, _, app| {
             assert_eq!(states.len(), 3);
             assert_eq!(states[0].read(app).value(), "Fixture Mac");
             assert_eq!(states[1].read(app).value(), "wss://fixture.invalid/ws");
             assert_eq!(states[2].read(app).value(), "/inert/relay-routes.json");
-            prompt.update(app, |_, cx| cx.notify());
-            window.render_frame(app);
             assert_eq!(
                 prompt.read(app).input_states[2].entity_id(),
                 states[2].entity_id()

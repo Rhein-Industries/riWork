@@ -1,17 +1,57 @@
 //! Form-owned presentation, paste policies, and explicit draft replacements.
 use crate::text_input::{self, InputBase, InputState};
-use gpui::{App, Context, Entity, EntityInputHandler, Window, prelude::*};
+use gpui::{App, Entity, EntityInputHandler, Focusable, Window, prelude::*};
 
-/// Replace a domain draft intentionally from a callback without a Window.
-/// Refresh/render never call this unless the domain value actually changed.
-pub fn set_value<V: 'static>(state: &Entity<InputState>, value: String, cx: &mut Context<V>) {
-    let state = state.clone();
-    let owner = cx.entity_id();
-    cx.defer(move |app| {
-        app.with_window(owner, |window, app| {
-            state.update(app, |input, cx| input.set_value(value, window, cx));
-        });
+/// Intentional domain replacements happen synchronously in the owning callback.
+pub fn set_value(state: &Entity<InputState>, value: String, window: &mut Window, cx: &mut App) {
+    state.update(cx, |input, cx| input.set_value(value, window, cx));
+}
+
+/// An untouched metadata field can follow external changes; any user edit (even
+/// whitespace or edit/undo ABA) protects its draft until an explicit save.
+pub fn refresh_unedited(
+    state: &Entity<InputState>,
+    previous: &str,
+    value: String,
+    touched: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    if touched || state.read(cx).value().as_ref() != previous || is_composing(state, window, cx) {
+        return false;
+    }
+    if state.read(cx).value().as_ref() != value.as_str() {
+        set_value(state, value, window, cx);
+    }
+    true
+}
+
+/// Mirror only an acknowledged, inactive, unmarked draft. Preserve selection,
+/// scrolling and undo history. The owner must ignore the one emitted Change;
+/// that event is a mirror update, not a new canonical query or user edit.
+pub fn sync_value(
+    state: &Entity<InputState>,
+    previous: &str,
+    value: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    let input = state.read(cx);
+    if input.value().as_ref() == value
+        || input.value().as_ref() != previous
+        || input.focus_handle(cx).is_focused(window)
+        || is_composing(state, window, cx)
+    {
+        return false;
+    }
+    state.update(cx, |input, cx| {
+        let selection = input.selected_range();
+        let scroll = input.scroll_offset();
+        input.replace_all(value.to_owned(), window, cx);
+        input.set_selected_range(selection, cx);
+        input.set_scroll_offset(scroll, cx);
     });
+    true
 }
 
 pub fn is_composing(state: &Entity<InputState>, window: &mut Window, cx: &mut App) -> bool {
@@ -93,7 +133,7 @@ pub fn search_frame(
 #[cfg(test)]
 pub(crate) fn test_window<V: gpui::Render + 'static>(
     cx: &mut gpui::TestAppContext,
-    build: impl FnOnce(&mut Window, &mut Context<V>) -> V + 'static,
+    build: impl FnOnce(&mut Window, &mut gpui::Context<V>) -> V + 'static,
 ) -> (gpui::WindowHandle<V>, Entity<V>) {
     let (handle, view) = cx.update(|app| {
         app.set_global(crate::settings::Settings::default());
@@ -123,6 +163,123 @@ pub(crate) fn test_window<V: gpui::Render + 'static>(
 mod tests {
     use super::*;
 
+    struct DraftFixture {
+        state: Entity<InputState>,
+        touched: bool,
+        _subscription: gpui::Subscription,
+    }
+    impl gpui::Render for DraftFixture {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            frame("draft", &self.state, false, window, cx)
+        }
+    }
+
+    #[gpui::test]
+    fn synchronous_replacements_and_refresh_preserve_newer_whitespace_and_aba_drafts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui_kit::test::TestWindowExt;
+        let (handle, owner) = test_window(cx, |window, cx| {
+            let state = text_input::single_line("A", "Draft", window, cx);
+            let subscription = cx.subscribe_in(
+                &state,
+                window,
+                |owner: &mut DraftFixture, _, event, _, _| {
+                    if matches!(event, text_input::InputEvent::Change) {
+                        owner.touched = true;
+                    }
+                },
+            );
+            DraftFixture {
+                state,
+                touched: false,
+                _subscription: subscription,
+            }
+        });
+        let state = cx
+            .update_window(handle.into(), |_, window, app| {
+                let state = owner.read(app).state.clone();
+                assert!(refresh_unedited(
+                    &state,
+                    "A",
+                    "metadata B".into(),
+                    false,
+                    window,
+                    app
+                ));
+                assert!(refresh_unedited(
+                    &state,
+                    "metadata B",
+                    "A".into(),
+                    false,
+                    window,
+                    app
+                ));
+                set_value(&state, "saved A".into(), window, app);
+                state.update(app, |input, cx| input.replace_all("newer B", window, cx));
+                state
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(state.read(app).value(), "newer B");
+            assert!(!refresh_unedited(
+                &state,
+                "saved A",
+                "stale metadata".into(),
+                owner.read(app).touched,
+                window,
+                app
+            ));
+            state.update(app, |input, cx| input.replace_all(" A ", window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert!(!refresh_unedited(
+                &state,
+                "A",
+                "metadata".into(),
+                false,
+                window,
+                app
+            ));
+            set_value(&state, "A".into(), window, app);
+            window.render_frame(app);
+            state.read(app).focus_handle(app).focus(window, app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            window.render_frame(app);
+            window.input("B", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            window.press("cmd-z", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(state.read(app).value(), "A");
+            assert!(owner.read(app).touched);
+            assert!(!refresh_unedited(
+                &state,
+                "A",
+                "metadata".into(),
+                owner.read(app).touched,
+                window,
+                app
+            ));
+        })
+        .unwrap();
+    }
+
     #[test]
     fn original_form_and_workspace_paste_policies_remain_distinct() {
         let pasted = "\r\nA🦀\r\n中\u{2028}e\u{301}\n";
@@ -137,41 +294,14 @@ mod tests {
     }
 }
 
-/// An external metadata refresh must not overwrite a newly edited or marked draft.
-pub fn refresh_value<V: 'static>(
-    state: &Entity<InputState>,
-    previous: String,
-    value: String,
-    cx: &mut Context<V>,
-) {
-    let state = state.clone();
-    let owner = cx.entity_id();
-    cx.defer(move |app| {
-        app.with_window(owner, |window, app| {
-            state.update(app, |input, cx| {
-                if input.value().trim() == previous && input.marked_text_range(window, cx).is_none()
-                {
-                    input.set_value(value, window, cx);
-                }
-            });
-        });
-    });
-}
-
 /// Presentation-only changes do not replace the draft or its editing history.
-pub fn placeholder<V: 'static>(
+pub fn placeholder(
     state: &Entity<InputState>,
     value: &'static str,
-    cx: &mut Context<V>,
+    window: &mut Window,
+    cx: &mut App,
 ) {
-    if state.read(cx).presentation().placeholder().as_ref() == value {
-        return;
+    if state.read(cx).presentation().placeholder().as_ref() != value {
+        state.update(cx, |input, cx| input.set_placeholder(value, window, cx));
     }
-    let state = state.clone();
-    let owner = cx.entity_id();
-    cx.defer(move |app| {
-        app.with_window(owner, |window, app| {
-            state.update(app, |input, cx| input.set_placeholder(value, window, cx));
-        });
-    });
 }

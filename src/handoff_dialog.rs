@@ -528,7 +528,7 @@ impl HandoffDialog {
         selected: bool,
         enabled: bool,
         cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> AnyElement {
         let colors = theme::palette(cx);
         div()
@@ -566,8 +566,9 @@ impl HandoffDialog {
                 })
             })
             .when(enabled, |chip| {
-                chip.cursor_pointer()
-                    .on_click(cx.listener(move |dialog, _, _, cx| on_click(dialog, cx)))
+                chip.cursor_pointer().on_click(
+                    cx.listener(move |dialog, _, window, cx| on_click(dialog, window, cx)),
+                )
             })
             .child(label)
             .into_any_element()
@@ -736,7 +737,7 @@ impl Render for HandoffDialog {
                         self.choices.kind == kind,
                         true,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
                             dialog.pick(Row::Target, |dialog| dialog.choices.set_kind(kind), cx)
                         },
                     )
@@ -756,7 +757,7 @@ impl Render for HandoffDialog {
                         self.choices.provider == harness,
                         enabled,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
                             dialog.pick(Row::Agent, |dialog| dialog.choices.provider = harness, cx)
                         },
                     )
@@ -779,11 +780,16 @@ impl Render for HandoffDialog {
                         selected,
                         true,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
                             if dialog.busy.is_some() {
                                 return;
                             }
-                            crate::form_input::set_value(&dialog.model_state, name.clone(), cx);
+                            crate::form_input::set_value(
+                                &dialog.model_state,
+                                name.clone(),
+                                _window,
+                                cx,
+                            );
                             dialog.pick(
                                 Row::Model,
                                 |dialog| {
@@ -825,7 +831,7 @@ impl Render for HandoffDialog {
                         self.account == index,
                         true,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
                             dialog.pick(Row::Account, |dialog| dialog.account = index, cx)
                         },
                     )
@@ -844,7 +850,7 @@ impl Render for HandoffDialog {
                         self.choices.context == context,
                         true,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
                             dialog.pick(Row::Context, |dialog| dialog.choices.context = context, cx)
                         },
                     )

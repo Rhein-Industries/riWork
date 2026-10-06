@@ -175,7 +175,7 @@ impl ProjectCreator {
                                 }
                                 Field::Name => form.name = value,
                             }
-                            form.inspect(cx);
+                            form.inspect(window, cx);
                         }
                         InputEvent::Focus => {
                             form.active = field;
@@ -212,7 +212,7 @@ impl ProjectCreator {
         resolve_folder(&self.path, std::env::var_os("HOME").as_deref())
     }
 
-    fn inspect(&mut self, cx: &mut Context<Self>) {
+    fn inspect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.generation += 1;
         self.inspection = None;
         self.error = None;
@@ -230,7 +230,7 @@ impl ProjectCreator {
                         self.path.push('/');
                     }
 
-                    crate::form_input::set_value(&self.path_state, self.path.clone(), cx);
+                    crate::form_input::set_value(&self.path_state, self.path.clone(), window, cx);
                 }
                 Err(error) => {
                     self.error = Some(error);
@@ -315,7 +315,7 @@ impl ProjectCreator {
                     form.path_state.update(cx, |state, cx| {
                         state.set_value(form.path.clone(), window, cx)
                     });
-                    form.inspect(cx);
+                    form.inspect(window, cx);
                 });
             }
         })

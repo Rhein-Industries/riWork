@@ -390,6 +390,7 @@ pub struct ProjectSettingsPanel {
     project: Project,
     name: Input,
     name_state: Entity<InputState>,
+    name_touched: bool,
     _input_subscriptions: Vec<Subscription>,
     folder_name: Input,
     folder_name_state: Entity<InputState>,
@@ -448,17 +449,20 @@ impl ProjectSettingsPanel {
                     InputEvent::Change => {
                         let value = state.read(cx).value().to_string();
                         match field {
-                            Field::Name => form.name.text = value,
+                            Field::Name => {
+                                form.name.text = value;
+                                form.name_touched = true;
+                            }
                             _ => form.folder_name.text = value,
                         }
-                        form.edited(cx);
+                        form.edited(window, cx);
                     }
                     InputEvent::Focus => {
                         form.active = field;
                         cx.notify();
                     }
                     _ if text_input::is_submit(event, EnterBehavior::Submit) => match field {
-                        Field::Name => form.save(cx),
+                        Field::Name => form.save(window, cx),
                         _ => form.create_folder(window, cx),
                     },
                     _ => {}
@@ -467,6 +471,7 @@ impl ProjectSettingsPanel {
         }
         Self {
             name_state,
+            name_touched: false,
             folder_name_state,
             _input_subscriptions: subscriptions,
             name: Input::new(project.name.clone()),
@@ -496,7 +501,7 @@ impl ProjectSettingsPanel {
     }
 
     /// Refresh choices without replacing the user's partially edited project name.
-    pub fn refresh_folders(&mut self, cx: &mut Context<Self>) {
+    pub fn refresh_folders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.store.snapshot() {
             Ok(state) => {
                 let focused_folder = match self.active {
@@ -512,16 +517,16 @@ impl ProjectSettingsPanel {
                     .into_iter()
                     .find(|project| project.id == self.project.id)
                 {
-                    if self.name_state.read(cx).value().trim() == self.project.name
-                        && project.name != self.project.name
-                    {
-                        self.name = Input::new(project.name.clone());
-                        crate::form_input::refresh_value(
+                    if project.name != self.project.name {
+                        crate::form_input::refresh_unedited(
                             &self.name_state,
-                            self.project.name.clone(),
+                            &self.project.name,
                             project.name.clone(),
+                            self.name_touched,
+                            window,
                             cx,
                         );
+                        self.name.text = self.name_state.read(cx).value().to_string();
                     }
                     if self.folder_id == self.project.folder_id {
                         self.folder_id = project.folder_id.clone();
@@ -555,7 +560,7 @@ impl ProjectSettingsPanel {
         cx.notify();
     }
 
-    fn edited(&mut self, cx: &mut Context<Self>) {
+    fn edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         crate::form_input::placeholder(
             &self.folder_name_state,
             if self.folder_id.is_some() {
@@ -563,6 +568,7 @@ impl ProjectSettingsPanel {
             } else {
                 "New virtual folder"
             },
+            window,
             cx,
         );
         self.status.edited();
@@ -576,14 +582,14 @@ impl ProjectSettingsPanel {
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active {
-            Field::Name | Field::Save => self.save(cx),
+            Field::Name | Field::Save => self.save(window, cx),
             Field::FolderName | Field::AddFolder => self.create_folder(window, cx),
             Field::Folder(index) => {
                 self.folder_id = index
                     .checked_sub(1)
                     .and_then(|index| self.folders.get(index))
                     .map(|folder| folder.id.clone());
-                self.edited(cx);
+                self.edited(window, cx);
             }
             Field::Account(index) => {
                 if let Some((choice, _, available)) = self.account_choices(cx).get(index) {
@@ -658,7 +664,7 @@ impl ProjectSettingsPanel {
         cx.notify();
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.name.text = self.name_state.read(cx).value().to_string();
         match self.store.update_project_metadata(
             &self.project.id,
@@ -667,7 +673,8 @@ impl ProjectSettingsPanel {
         ) {
             Ok(project) => {
                 self.name = Input::new(project.name.clone());
-                crate::form_input::set_value(&self.name_state, project.name.clone(), cx);
+                crate::form_input::set_value(&self.name_state, project.name.clone(), window, cx);
+                self.name_touched = false;
                 self.project = project.clone();
                 self.error = None;
                 self.status.details_saved();
@@ -687,12 +694,12 @@ impl ProjectSettingsPanel {
             Ok(folder) => {
                 self.folder_id = Some(folder.id.clone());
                 self.folder_name = Input::default();
-                crate::form_input::set_value(&self.folder_name_state, String::new(), cx);
+                crate::form_input::set_value(&self.folder_name_state, String::new(), window, cx);
                 self.folders.push(folder);
                 self.active = Field::Name;
                 self.error = None;
                 self.status.edited();
-                self.refresh_folders(cx);
+                self.refresh_folders(window, cx);
                 self.focus(window, cx);
                 cx.emit(ProjectSettingsEvent::FolderChanged);
             }
@@ -747,7 +754,7 @@ impl ProjectSettingsPanel {
                 true
             }
             "s" if event.keystroke.modifiers.platform => {
-                self.save(cx);
+                self.save(window, cx);
                 true
             }
             "tab" => {
@@ -841,7 +848,7 @@ impl Render for ProjectSettingsPanel {
                     form.active = Field::Folder(0);
                     form.focus.focus(window, cx);
                     form.folder_id = None;
-                    form.edited(cx);
+                    form.edited(window, cx);
                 })),
         );
         for (index, folder) in self.folders.iter().enumerate() {
@@ -888,7 +895,7 @@ impl Render for ProjectSettingsPanel {
                         form.active = Field::Folder(index + 1);
                         form.focus.focus(window, cx);
                         form.folder_id = Some(id.clone());
-                        form.edited(cx);
+                        form.edited(window, cx);
                     })),
             );
         }
@@ -1178,7 +1185,7 @@ impl Render for ProjectSettingsPanel {
                     .on_click(cx.listener(|form, _, window, cx| {
                         form.active = Field::Save;
                         form.focus.focus(window, cx);
-                        form.save(cx);
+                        form.save(window, cx);
                     })),
             );
         let locations = section_box(12.0)
