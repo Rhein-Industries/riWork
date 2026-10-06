@@ -16,15 +16,13 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    ops::Range,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use gpui::{
-    Bounds, Context, EntityInputHandler, EventEmitter, FocusHandle, FollowMode, KeyDownEvent,
-    ListAlignment, ListState, Pixels, Point, Render, ScrollHandle, Task, UTF16Selection, Window,
-    actions, div, prelude::*, px, rgb,
+    Context, Entity, EventEmitter, FocusHandle, Focusable, FollowMode, KeyDownEvent, ListAlignment,
+    ListState, Render, Subscription, Task, Window, actions, div, prelude::*, px, rgb,
 };
 
 use crate::{
@@ -34,17 +32,21 @@ use crate::{
             ApprovalMode, ChatCommand, ChatInfo, Decision, ItemBody, NewChat, Provider, Question,
         },
     },
-    project_settings::Input,
-    ui_text, utf16_to_byte,
+    text_input::{self, EnterBehavior, InputEvent, InputState, TextareaState},
+    ui_text,
 };
 
 mod approval;
 mod attachment_draft;
+mod attachment_ui;
 mod cards;
 mod composer;
 mod dictate;
 mod diff;
 mod display;
+#[cfg(test)]
+mod editor_tests;
+mod editors;
 mod feed;
 mod host;
 mod links;
@@ -95,16 +97,6 @@ enum Creation {
     Failed(NewChat, String),
 }
 
-/// Which input the keys type into.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Field {
-    Composer,
-    /// The model name in the model menu.
-    Model,
-    /// The free-text answer to question number `n` of the question that waits.
-    Answer(usize),
-}
-
 /// The popover that is open under the toolbar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Menu {
@@ -120,6 +112,7 @@ enum Menu {
 #[derive(Default)]
 struct Draft {
     picked: Vec<Vec<usize>>,
+    prompts: Vec<crate::chat::model::QuestionPrompt>,
 }
 
 /// Work done on the way to drawing, kept while its input is the same.
@@ -145,6 +138,7 @@ struct DrawnDiff {
 
 pub struct ChatView {
     config: HostConfig,
+    window_handle: gpui::AnyWindowHandle,
     /// The host's id for the chat; none while a new chat is being made.
     chat_id: Option<String>,
     creation: Option<Creation>,
@@ -165,17 +159,28 @@ pub struct ChatView {
     /// The interface text scale the list's rows were measured at.
     scale: f32,
     focus: FocusHandle,
-    field: Field,
-    composer: Input,
-    model_input: Input,
-    answers: Vec<Input>,
-    composer_scroll: ScrollHandle,
+    composer: Entity<TextareaState>,
+    model_input: Entity<InputState>,
+    answers: HashMap<editors::AnswerKey, editors::AnswerEditor>,
+    subscriptions: Vec<Subscription>,
+    model_seeded: bool,
+    focus_composer: bool,
+    editor_generation: u64,
+    programmatic_changes: usize,
+    enter_down: bool,
+    enter_repeated: bool,
+    escape_down: bool,
+    attachments: Vec<attachment_ui::Chip>,
+    attachment_tasks: Vec<Task<()>>,
+    submissions: Vec<attachment_draft::Submission>,
+    pending_submission: Option<u64>,
+    next_submission: u64,
+    answer_submissions: HashMap<u64, (String, ChatCommand)>,
+    answer_failures: HashMap<String, (ChatCommand, crate::chat::client::CallError)>,
     menu: Option<Menu>,
     /// The menu that a click outside just closed, and when. The click that closes an open
     /// menu on its own button must not open it again.
     menu_closed: Option<(Menu, Instant)>,
-    /// Whether the tab had the keys when it was last drawn.
-    has_focus: bool,
     /// When the last message was sent: an Enter right after it is not an answer to a request.
     sent_at: Option<Instant>,
     /// Item ids (and `item#n` for the files of a change) that are expanded.
@@ -210,35 +215,53 @@ impl ChatView {
     }
     /// The tab of a chat the host already has: it subscribes from the start and builds the
     /// transcript again.
-    pub fn open(chat_id: String, config: HostConfig, cx: &mut Context<Self>) -> Self {
-        let mut view = Self::blank(config, cx);
+    pub fn open(
+        chat_id: String,
+        config: HostConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::blank(config, window, cx);
         view.chat_id = Some(chat_id.clone());
         view.follow_display_setting(cx);
-        view.start_feed(chat_id, 0, cx);
+        view.start_feed(chat_id, 0, window, cx);
         view
     }
 
     /// The tab of a chat that is yet to be made: the host makes it, and the tab follows it.
-    pub fn create(chat: NewChat, config: HostConfig, cx: &mut Context<Self>) -> Self {
-        let mut view = Self::blank(config, cx);
-        view.begin_creation(chat, cx);
+    pub fn create(
+        chat: NewChat,
+        config: HostConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::blank(config, window, cx);
+        view.begin_creation(chat, window, cx);
         view
     }
 
-    fn blank(config: HostConfig, cx: &mut Context<Self>) -> Self {
+    fn blank(config: HostConfig, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // One row for the footer. Rows are added before it as items arrive, and the list
         // follows the end while the user has not scrolled up.
         let list = ListState::new(1, ListAlignment::Top, px(600.0));
         list.set_follow_mode(FollowMode::Tail);
         // Settings shows or hides the mic in every open chat at once.
-        cx.observe_global::<crate::settings::Settings>(|view, cx| {
-            view.follow_mic_setting(cx);
+        cx.observe_global_in::<crate::settings::Settings>(window, |view, window, cx| {
+            view.follow_mic_setting(window, cx);
             view.follow_display_setting(cx);
         })
         .detach();
         cx.on_release(|view, cx| view.release_images(cx)).detach();
+        let composer =
+            text_input::multiline("", "Message", 1, 8, EnterBehavior::Submit, window, cx);
+        let model_input = text_input::single_line("", "model name, then ⏎", window, cx);
+        let subscriptions = vec![
+            cx.subscribe_in(&composer, window, Self::composer_event),
+            cx.subscribe_in(&model_input, window, Self::model_event),
+        ];
         Self {
             config,
+            window_handle: window.handle(),
             chat_id: None,
             creation: None,
             model: ChatModel::new(),
@@ -257,14 +280,26 @@ impl ChatView {
             preview_root: None,
             scale: ui_text::scale(),
             focus: cx.focus_handle(),
-            field: Field::Composer,
-            composer: Input::default(),
-            model_input: Input::default(),
-            answers: Vec::new(),
-            composer_scroll: ScrollHandle::new(),
+            composer,
+            model_input,
+            subscriptions,
+            answers: HashMap::new(),
+            model_seeded: false,
+            focus_composer: false,
+            editor_generation: 0,
+            programmatic_changes: 0,
+            enter_down: false,
+            enter_repeated: false,
+            escape_down: false,
+            attachments: Vec::new(),
+            attachment_tasks: Vec::new(),
+            submissions: Vec::new(),
+            pending_submission: None,
+            next_submission: 0,
+            answer_submissions: HashMap::new(),
+            answer_failures: HashMap::new(),
             menu: None,
             menu_closed: None,
-            has_focus: false,
             sent_at: None,
             open: HashSet::new(),
             answered: HashSet::new(),
@@ -301,8 +336,7 @@ impl ChatView {
 
     /// Give the keys to the message box.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.field = Field::Composer;
-        self.focus.focus(window, cx);
+        self.composer.read(cx).focus_handle(cx).focus(window, cx);
     }
 
     /// The names and folders around the chat that dictation should know: the project, its
@@ -330,21 +364,26 @@ impl ChatView {
     // Making and following a chat
     // -----------------------------------------------------------------------------------
 
-    fn begin_creation(&mut self, chat: NewChat, cx: &mut Context<Self>) {
+    fn begin_creation(&mut self, chat: NewChat, window: &mut Window, cx: &mut Context<Self>) {
         self.creation = Some(Creation::Pending(chat.clone()));
         let ensure = self.config.ensure.clone();
         let work = cx.background_executor().spawn(async move {
             let socket = ensure()?;
             Client::connect(&socket)?.create(chat)
         });
-        self.working = Some(cx.spawn(async move |this, cx| {
+        self.working = Some(cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |view, cx| view.created(result, cx));
+            let _ = this.update_in(cx, |view, window, cx| view.created(result, window, cx));
         }));
         cx.notify();
     }
 
-    fn created(&mut self, result: Result<ChatInfo, String>, cx: &mut Context<Self>) {
+    fn created(
+        &mut self,
+        result: Result<ChatInfo, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(creation) = self.creation.take() else {
             return;
         };
@@ -356,7 +395,7 @@ impl ChatView {
                 } else {
                     self.follow_display_setting(cx);
                 }
-                self.start_feed(info.id.clone(), 0, cx);
+                self.start_feed(info.id.clone(), 0, window, cx);
                 cx.emit(ChatViewEvent::Created(info.id));
             }
             Err(error) => self.creation = Some(Creation::Failed(creation.into_chat(), error)),
@@ -365,13 +404,19 @@ impl ChatView {
         cx.notify();
     }
 
-    fn retry_creation(&mut self, cx: &mut Context<Self>) {
+    fn retry_creation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(Creation::Failed(chat, _)) = self.creation.take() {
-            self.begin_creation(chat, cx);
+            self.begin_creation(chat, window, cx);
         }
     }
 
-    fn start_feed(&mut self, chat_id: String, since: u64, cx: &mut Context<Self>) {
+    fn start_feed(
+        &mut self,
+        chat_id: String,
+        since: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (sender, receiver) = async_channel::unbounded();
         self.feed = Some(Feed::start(
             self.config.ensure.clone(),
@@ -380,14 +425,17 @@ impl ChatView {
             sender,
             Backoff::DEFAULT,
         ));
-        self.pump = Some(cx.spawn(async move |this, cx| {
+        self.pump = Some(cx.spawn_in(window, async move |this, cx| {
             while let Ok(first) = receiver.recv().await {
                 // Everything that is waiting is one redraw, however fast it arrives.
                 let mut batch = vec![first];
                 while let Ok(more) = receiver.try_recv() {
                     batch.push(more);
                 }
-                if this.update(cx, |view, cx| view.accept(batch, cx)).is_err() {
+                if this
+                    .update_in(cx, |view, window, cx| view.accept(batch, window, cx))
+                    .is_err()
+                {
                     return;
                 }
                 cx.background_executor()
@@ -397,7 +445,7 @@ impl ChatView {
         }));
     }
 
-    fn accept(&mut self, batch: Vec<FeedMsg>, cx: &mut Context<Self>) {
+    fn accept(&mut self, batch: Vec<FeedMsg>, window: &mut Window, cx: &mut Context<Self>) {
         let mut events = Vec::new();
         for message in batch {
             match message {
@@ -408,14 +456,18 @@ impl ChatView {
                         self.feed = None;
                     }
                 }
-                // The Kit composer integration will settle its snapshot from this receipt.
-                // Current text-only controls never enqueue SendAttachments.
-                FeedMsg::AttachmentSubmission {
-                    result: Err(error), ..
+                FeedMsg::Submission {
+                    id,
+                    command,
+                    result,
                 } => {
-                    self.notice = Some(error.to_string());
+                    self.submission_receipt(id, command, result, window, cx);
                 }
-                FeedMsg::AttachmentSubmission { result: Ok(()), .. } => {}
+                FeedMsg::AttachmentSubmission { result, .. } => {
+                    if let Err(error) = result {
+                        self.notice = Some(error.to_string());
+                    }
+                }
                 FeedMsg::CommandFailed { command, error } => {
                     self.command_failed(command, error);
                 }
@@ -424,6 +476,7 @@ impl ChatView {
         let applied = self.model.apply(&events);
         self.sync_list(&applied);
         self.forget_settled();
+        self.ready_inputs(window, cx);
         self.announce(cx);
         cx.notify();
     }
@@ -582,29 +635,12 @@ impl ChatView {
 
     fn command_failed(&mut self, command: ChatCommand, error: String) {
         match command {
-            // The words go back in the box, unless the user has started on something else.
-            ChatCommand::Send { text } if self.composer.text.is_empty() => {
-                self.composer = Input::new(text);
-            }
             ChatCommand::Approve { request_id, .. } | ChatCommand::Answer { request_id, .. } => {
                 self.answered.remove(&request_id);
             }
             _ => {}
         }
         self.notice = Some(format!("Could not reach the chat: {error}"));
-    }
-
-    fn send_message(&mut self, cx: &mut Context<Self>) {
-        let Some(text) = composer::message(&self.composer.text) else {
-            return;
-        };
-        self.composer = Input::default();
-        self.sent_at = Some(Instant::now());
-        self.notice = None;
-        // Sending is asking to see the answer.
-        self.list.set_follow_mode(FollowMode::Tail);
-        self.command(ChatCommand::Send { text });
-        cx.notify();
     }
 
     fn interrupt(&mut self, cx: &mut Context<Self>) {
@@ -619,9 +655,14 @@ impl ChatView {
     }
 
     /// ⌃⌥D. With the mic hidden the key is not this tab's: it goes on as if unbound.
-    fn dictation_action(&mut self, _: &ToggleDictation, _: &mut Window, cx: &mut Context<Self>) {
+    fn dictation_action(
+        &mut self,
+        _: &ToggleDictation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if dictate::mic_shown(cx) {
-            self.toggle_dictation(cx);
+            self.toggle_dictation(window, cx);
         } else {
             cx.propagate();
         }
@@ -646,7 +687,7 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) {
         self.menu = None;
-        self.field = Field::Composer;
+        self.focus_composer = true;
         self.command(ChatCommand::Configure {
             model,
             effort,
@@ -777,7 +818,7 @@ impl ChatView {
     fn close_menu(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = self.menu.take() {
             self.menu_closed = Some((menu, Instant::now()));
-            self.field = Field::Composer;
+            self.focus_composer = true;
             cx.notify();
         }
     }
@@ -793,25 +834,27 @@ impl ChatView {
         }
         if self.menu == Some(menu) {
             self.menu = None;
-            self.field = Field::Composer;
+            self.focus_composer = true;
         } else {
             self.menu = Some(menu);
-            // The model name is typed only when the driver has not listed its models.
-            self.field = if menu == Menu::Model && self.model.transcript.models.is_empty() {
-                self.model_input = Input::new(
-                    self.model
+            if menu == Menu::Model && self.model.transcript.models.is_empty() {
+                if !self.model_seeded {
+                    let value = self
+                        .model
                         .transcript
                         .info
                         .as_ref()
                         .and_then(|info| info.model.clone())
-                        .unwrap_or_default(),
-                );
-                Field::Model
+                        .unwrap_or_default();
+                    self.model_input
+                        .update(cx, |state, cx| state.set_value(value, window, cx));
+                    self.model_seeded = true;
+                }
+                self.model_input.read(cx).focus_handle(cx).focus(window, cx);
             } else {
-                Field::Composer
-            };
+                self.focus(window, cx);
+            }
         }
-        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -842,20 +885,6 @@ impl ChatView {
             .map(|approval| (approval, approvals.len() - 1))
     }
 
-    /// The decisions a key may make now. None for a key held down, or pressed just after a
-    /// message was sent: that Enter was meant for the message, and a bounce of the key must
-    /// not allow a command.
-    fn offered_to_key(&self, event: &KeyDownEvent) -> Vec<Decision> {
-        let just_sent = self
-            .sent_at
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(700));
-        if event.is_held || just_sent {
-            Vec::new()
-        } else {
-            self.offered()
-        }
-    }
-
     /// The decisions the bar offers now: none for a request already answered.
     fn offered(&self) -> Vec<Decision> {
         match self.pending_approval() {
@@ -875,142 +904,10 @@ impl ChatView {
     // -----------------------------------------------------------------------------------
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_key(event, cx) {
+        // Editing, Enter, clipboard text, and cursor motion belong exclusively to Kit.
+        if event.keystroke.modifiers.platform && event.keystroke.key == "." {
+            self.interrupt(cx);
             cx.stop_propagation();
-            cx.notify();
-        }
-    }
-
-    fn handle_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        if self.chat_id.is_none() || self.deleted() {
-            return false;
-        }
-        let key = event.keystroke.key.as_str();
-        if key == "escape" {
-            if self.media.viewer.take().is_some() {
-                cx.notify();
-                return true;
-            }
-            if self.menu.is_some() {
-                self.close_menu(cx);
-                return true;
-            }
-            // ⎋ while dictating takes out what was dictated, and nothing else.
-            if self.dictation.phase().is_active() {
-                self.cancel_dictation(cx);
-                return true;
-            }
-            let empty = self.composer.text.trim().is_empty();
-            return match composer::escape(empty, &self.offered_to_key(event)) {
-                Some(decision) => {
-                    if let Some((approval, _)) = self.pending_approval() {
-                        let request_id = approval.request_id.clone();
-                        self.approve(request_id, decision, cx);
-                    }
-                    true
-                }
-                None => false,
-            };
-        }
-        match self.field {
-            Field::Composer => {
-                let handled = self.composer_key(event, cx);
-                if handled {
-                    self.keep_cursor_in_view();
-                }
-                handled
-            }
-            Field::Model => self.model_key(event, cx),
-            Field::Answer(at) => self.answer_key(at, event, cx),
-        }
-    }
-
-    fn composer_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        let mods = event.keystroke.modifiers;
-        let key = event.keystroke.key.as_str();
-        match key {
-            "enter" | "return" => {
-                let action = composer::enter(
-                    mods.shift,
-                    mods.alt,
-                    self.composer.marked.is_some(),
-                    self.composer.text.trim().is_empty(),
-                    &self.offered_to_key(event),
-                );
-                match action {
-                    composer::Enter::Ignore => return false,
-                    composer::Enter::NewLine => self.composer.replace_lines(None, "\n"),
-                    composer::Enter::Send => self.send_message(cx),
-                    composer::Enter::Approve(decision) => {
-                        if let Some((approval, _)) = self.pending_approval() {
-                            let request_id = approval.request_id.clone();
-                            self.approve(request_id, decision, cx);
-                        }
-                    }
-                }
-                true
-            }
-            "up" | "down" if !mods.platform && !mods.shift && !mods.alt => {
-                let cursor = self.composer.cursor();
-                if let Some(to) = composer::vertical(&self.composer.text, cursor, key == "up") {
-                    place_cursor(&mut self.composer, to);
-                }
-                true
-            }
-            "home" | "end" if !mods.shift => {
-                let cursor = self.composer.cursor();
-                let to = if key == "home" {
-                    composer::line_start(&self.composer.text, cursor)
-                } else {
-                    composer::line_end(&self.composer.text, cursor)
-                };
-                place_cursor(&mut self.composer, to);
-                true
-            }
-            // What the mouse selected in the transcript, unless the box has a selection of its own.
-            "c" if mods.platform && self.composer.selection.is_empty() => self.copy_selection(cx),
-            // The same as the key binding, for where the system takes the binding first.
-            "." if mods.platform => {
-                self.interrupt(cx);
-                true
-            }
-            "d" if mods.control && mods.alt && !mods.platform && dictate::mic_shown(cx) => {
-                self.toggle_dictation(cx);
-                true
-            }
-            "v" if mods.platform => {
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    self.composer.replace_lines(None, &text);
-                }
-                true
-            }
-            _ => self.composer.key(event, cx),
-        }
-    }
-
-    fn model_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        match event.keystroke.key.as_str() {
-            "enter" | "return" => {
-                let model = self.model_input.text.trim().to_owned();
-                if !model.is_empty() {
-                    self.configure(Some(model), None, None, None, cx);
-                }
-                true
-            }
-            _ => self.model_input.key(event, cx),
-        }
-    }
-
-    fn answer_key(&mut self, at: usize, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        match event.keystroke.key.as_str() {
-            "enter" | "return" => {
-                self.submit_answers(cx);
-                true
-            }
-            _ => match self.answers.get_mut(at) {
-                Some(input) => input.key(event, cx),
-                None => false,
-            },
         }
     }
 
@@ -1020,10 +917,23 @@ impl ChatView {
 
     /// Pick option `option` of prompt `prompt` of the question that waits. A prompt that takes
     /// one answer is changed to it; one that takes several toggles it.
-    fn pick(&mut self, prompt: usize, option: usize, cx: &mut Context<Self>) {
+    fn pick(
+        &mut self,
+        request: &str,
+        expected: &crate::chat::model::QuestionPrompt,
+        prompt: usize,
+        option: usize,
+        cx: &mut Context<Self>,
+    ) {
         let Some(question) = self.pending_question() else {
             return;
         };
+        if question.request_id != request {
+            return;
+        }
+        if question.questions.get(prompt) != Some(expected) || option >= expected.options.len() {
+            return;
+        }
         let request_id = question.request_id.clone();
         let prompts = question.questions.len();
         // The question may have changed since this button was drawn.
@@ -1048,98 +958,8 @@ impl ChatView {
         }
     }
 
-    fn submit_answers(&mut self, cx: &mut Context<Self>) {
-        let Some(question) = self.pending_question() else {
-            return;
-        };
-        let request_id = question.request_id.clone();
-        if self.answered.contains(&request_id) {
-            return;
-        }
-        let draft = self.drafts.get(&request_id);
-        let answers = panels::answers_of(question, draft, &self.answers);
-        if answers.iter().any(Vec::is_empty) {
-            self.notice = Some("Answer every question first.".to_owned());
-            cx.notify();
-            return;
-        }
-        self.answered.insert(request_id.clone());
-        self.answers.clear();
-        self.field = Field::Composer;
-        self.command(ChatCommand::Answer {
-            request_id,
-            answers,
-        });
-        cx.notify();
-    }
-
-    /// Make room for a free-text answer to each prompt of the question that waits, and take
-    /// the keys back from an input that is no longer there.
-    fn ready_inputs(&mut self) {
-        let wanted = self.pending_question().map_or(0, |q| q.questions.len());
-        if self.answers.len() != wanted {
-            self.answers.resize_with(wanted, Input::default);
-        }
-        let gone = match self.field {
-            Field::Composer => false,
-            Field::Model => self.menu != Some(Menu::Model),
-            Field::Answer(at) => at >= wanted,
-        };
-        if gone {
-            self.field = Field::Composer;
-        }
-    }
-
-    // -----------------------------------------------------------------------------------
-    // The active input
-    // -----------------------------------------------------------------------------------
-
-    fn input(&self) -> &Input {
-        match self.field {
-            Field::Composer => &self.composer,
-            Field::Model => &self.model_input,
-            Field::Answer(at) => self.answers.get(at).unwrap_or(&self.composer),
-        }
-    }
-
-    fn input_mut(&mut self) -> &mut Input {
-        match self.field {
-            Field::Composer => &mut self.composer,
-            Field::Model => &mut self.model_input,
-            Field::Answer(at) => {
-                if at < self.answers.len() {
-                    &mut self.answers[at]
-                } else {
-                    &mut self.composer
-                }
-            }
-        }
-    }
-
     fn accepts_input(&self) -> bool {
         self.chat_id.is_some() && !self.deleted()
-    }
-
-    fn edited(&mut self, cx: &mut Context<Self>) {
-        self.notice = None;
-        if self.field == Field::Composer {
-            self.keep_cursor_in_view();
-        }
-        cx.notify();
-    }
-
-    /// Scroll the message box so that the cursor shows. Lines are not measured: the cursor's
-    /// share of the text stands for its share of the height, which is exact at the ends.
-    fn keep_cursor_in_view(&self) {
-        let (cursor, length) = (self.composer.cursor(), self.composer.text.len());
-        let max = self.composer_scroll.max_offset();
-        if cursor >= length {
-            self.composer_scroll.scroll_to_bottom();
-        } else if max.y > px(0.0) {
-            let mut offset = self.composer_scroll.offset();
-            offset.y = -(max.y * (cursor as f32 / length as f32));
-            self.composer_scroll.set_offset(offset);
-        }
     }
 }
 
@@ -1157,25 +977,22 @@ impl Creation {
     }
 }
 
-fn place_cursor(input: &mut Input, at: usize) {
-    input.selection = at..at;
-    input.reversed = false;
-    input.marked = None;
-}
-
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
         let colors = look.colors;
         self.follow_text_size();
-        self.ready_inputs();
-        self.has_focus = self.focus.is_focused(window);
+        self.ready_inputs(window, cx);
+        if self.focus_composer {
+            self.focus_composer = false;
+            self.focus(window, cx);
+        }
         let body = if self.chat_id.is_none() {
             self.render_starting(look, cx)
         } else if self.deleted() {
             self.render_deleted(look, cx)
         } else {
-            self.render_chat(look, cx)
+            self.render_chat(look, window, cx)
         };
         div()
             .id("chat-view")
@@ -1194,136 +1011,17 @@ impl Render for ChatView {
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(Self::interrupt_action))
             .on_action(cx.listener(Self::dictation_action))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|view, _, window, cx| {
-                    if view.field != Field::Composer && view.menu.is_none() {
-                        view.field = Field::Composer;
-                    }
-                    // A press on selectable text stops here before it gets this far.
-                    if view.selection.take().is_some() {
-                        cx.notify();
-                    }
-                    view.focus.focus(window, cx);
-                }),
-            )
+            .on_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, _| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "return") {
+                    view.enter_down = false;
+                    view.enter_repeated = false;
+                }
+                if event.keystroke.key == "escape" {
+                    view.escape_down = false;
+                }
+            }))
+            .capture_action(cx.listener(Self::escape_action))
+            .capture_action(cx.listener(Self::copy_action))
             .child(body)
-    }
-}
-
-impl EntityInputHandler for ChatView {
-    fn text_for_range(
-        &mut self,
-        range: Range<usize>,
-        actual: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
-        let input = self.input();
-        let start = utf16_to_byte(&input.text, range.start);
-        let end = utf16_to_byte(&input.text, range.end);
-        *actual = Some(
-            input.text[..start].encode_utf16().count()..input.text[..end].encode_utf16().count(),
-        );
-        Some(input.text[start..end].to_owned())
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        let input = self.input();
-        Some(UTF16Selection {
-            range: input.text[..input.selection.start].encode_utf16().count()
-                ..input.text[..input.selection.end].encode_utf16().count(),
-            reversed: input.reversed,
-        })
-    }
-
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        let input = self.input();
-        input.marked.as_ref().map(|range| {
-            input.text[..range.start].encode_utf16().count()
-                ..input.text[..range.end].encode_utf16().count()
-        })
-    }
-
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.input_mut().marked = None;
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.replace_in_active(range, text);
-        self.edited(cx);
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        _: Option<Range<usize>>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let start = self.replace_in_active(range, text);
-        let input = self.input_mut();
-        // What was inserted is from where it went in to where the cursor is now.
-        let end = input.selection.end;
-        input.marked = (end > start).then_some(start..end);
-        self.edited(cx);
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        _: Range<usize>,
-        bounds: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        Some(bounds)
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        _: Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
-        Some(self.input().text.encode_utf16().count())
-    }
-
-    fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
-        Some(self.input().text.encode_utf16().count())
-    }
-
-    fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
-        self.accepts_input()
-    }
-}
-
-impl ChatView {
-    /// The message box takes line breaks; the model name and the answers are one line. Where
-    /// the text went in, as a byte offset.
-    fn replace_in_active(&mut self, range: Option<Range<usize>>, text: &str) -> usize {
-        let multiline = self.field == Field::Composer;
-        let input = self.input_mut();
-        let start = match &range {
-            Some(range) => utf16_to_byte(&input.text, range.start),
-            None => input.marked.as_ref().unwrap_or(&input.selection).start,
-        };
-        if multiline {
-            input.replace_lines(range, text);
-        } else {
-            input.replace(range, text);
-        }
-        start
     }
 }

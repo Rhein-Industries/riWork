@@ -4,9 +4,9 @@
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, ElementId, ElementInputHandler, FollowMode,
-    HighlightStyle, MouseButton, PathBuilder, SharedString, Stateful, StyledText, canvas, deferred,
-    div, list, point, prelude::*, pulsating_between, px, relative, rgb, transparent_black,
+    Animation, AnimationExt, AnyElement, Context, ElementId, Focusable, FollowMode, PathBuilder,
+    SharedString, Stateful, Window, canvas, deferred, div, list, point, prelude::*,
+    pulsating_between, px, relative, rgb, transparent_black,
 };
 
 use crate::{
@@ -14,14 +14,13 @@ use crate::{
     controls::{self, Button},
     dictation::{self, Phase},
     icons::{self, Icon},
-    project_settings::Input,
-    theme,
+    text_input, theme,
     tooltip::{self, Look as TipLook},
     ui_text,
 };
 
 use super::{
-    ChatView, ChatViewEvent, Creation, Draft, Field, Menu, approval, composer, dictate,
+    ChatView, ChatViewEvent, Creation, Draft, Menu, approval, composer, dictate,
     state::provider_name,
     toolbar,
     widgets::{self, Look, button, capsule, dimmed},
@@ -86,7 +85,7 @@ fn headline_text(text: String, failed: bool, look: Look) -> gpui::Div {
 pub(super) fn answers_of(
     question: &Question,
     draft: Option<&Draft>,
-    typed: &[Input],
+    typed: &[String],
 ) -> Vec<Vec<String>> {
     question
         .questions
@@ -102,7 +101,7 @@ pub(super) fn answers_of(
                 .collect();
             if let Some(text) = typed
                 .get(at)
-                .map(|input| input.text.trim())
+                .map(|input| input.trim())
                 .filter(|t| !t.is_empty())
             {
                 answer.push(text.to_owned());
@@ -114,7 +113,12 @@ pub(super) fn answers_of(
 
 impl ChatView {
     /// The whole tab of a chat that exists.
-    pub(super) fn render_chat(&mut self, look: Look, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_chat(
+        &mut self,
+        look: Look,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = look.colors;
         let messages = list(
             self.list.clone(),
@@ -129,7 +133,7 @@ impl ChatView {
             .size_full()
             .flex()
             .flex_col()
-            .child(self.toolbar(look, cx))
+            .child(self.toolbar(look, window, cx))
             .child(
                 div()
                     .relative()
@@ -168,8 +172,8 @@ impl ChatView {
             )
             .children(self.banner(look, cx))
             .children(self.approval_bar(look, cx))
-            .children(self.question_panel(look, cx))
-            .child(self.composer_box(look, cx));
+            .children(self.question_panel(look, window, cx))
+            .child(self.composer_box(look, window, cx));
         div()
             .relative()
             .size_full()
@@ -224,8 +228,9 @@ impl ChatView {
                     .flex()
                     .gap(ui_text::space(8.0))
                     .child(
-                        button("chat-retry-create", "Retry", Some(colors.cyan), look)
-                            .on_click(cx.listener(|view, _, _, cx| view.retry_creation(cx))),
+                        button("chat-retry-create", "Retry", Some(colors.cyan), look).on_click(
+                            cx.listener(|view, _, window, cx| view.retry_creation(window, cx)),
+                        ),
                     )
                     .child(
                         button("chat-close-failed", "Close", None, look)
@@ -274,7 +279,7 @@ impl ChatView {
     // The toolbar
     // -----------------------------------------------------------------------------------
 
-    fn toolbar(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
+    fn toolbar(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let info = self.model.transcript.info.as_ref();
         let mode = info.map(|info| info.approval_mode).unwrap_or_default();
@@ -323,7 +328,7 @@ impl ChatView {
                 .child(trigger.on_click(
                     cx.listener(move |view, _, window, cx| view.toggle_menu(menu, window, cx)),
                 ))
-                .children(open.then(|| self.menu_popover(menu, look, cx)))
+                .children(open.then(|| self.menu_popover(menu, look, window, cx)))
         };
 
         div()
@@ -565,15 +570,22 @@ impl ChatView {
                         }))
                     })
                     .children(
-                        matches!(self.menu, Some(Menu::More | Menu::ConfirmDelete))
-                            .then(|| self.menu_popover(self.menu.unwrap_or(Menu::More), look, cx)),
+                        matches!(self.menu, Some(Menu::More | Menu::ConfirmDelete)).then(|| {
+                            self.menu_popover(self.menu.unwrap_or(Menu::More), look, window, cx)
+                        }),
                     ),
             )
             .into_any_element()
     }
 
     /// The popover under a toolbar button.
-    fn menu_popover(&self, menu: Menu, look: Look, cx: &mut Context<Self>) -> AnyElement {
+    fn menu_popover(
+        &self,
+        menu: Menu,
+        look: Look,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = look.colors;
         let info = self.model.transcript.info.as_ref();
         // Native's rows are its menus' rows: rounded fills inside a raised panel, the tick
@@ -697,7 +709,12 @@ impl ChatView {
                     div()
                         .px(ui_text::space(10.0))
                         .py(ui_text::space(6.0))
-                        .child(self.editor(Field::Model, "model name, then ⏎", false, look, cx))
+                        .child(text_input::input(
+                            "chat-model-input",
+                            &self.model_input,
+                            window,
+                            cx,
+                        ))
                         .into_any_element(),
                 ];
                 rows.extend(suggestions.iter().map(|model| {
@@ -871,14 +888,17 @@ impl ChatView {
                             Some(colors.cyan),
                             look,
                         )
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            cx.open_url(url);
-                            view.dismiss_dictation(cx);
-                        }))
+                        .on_click(cx.listener(
+                            move |view, _, window, cx| {
+                                cx.open_url(url);
+                                view.dismiss_dictation(window, cx);
+                            },
+                        ))
                     }))
                     .child(
-                        button("chat-dictation-dismiss", "Dismiss", None, look)
-                            .on_click(cx.listener(|view, _, _, cx| view.dismiss_dictation(cx))),
+                        button("chat-dictation-dismiss", "Dismiss", None, look).on_click(
+                            cx.listener(|view, _, window, cx| view.dismiss_dictation(window, cx)),
+                        ),
                     )
                     .into_any_element(),
             );
@@ -1009,7 +1029,7 @@ impl ChatView {
                         .gap(ui_text::space(6.0))
                         .children(pending.choices.iter().map(|decision| {
                             let decision: Decision = *decision;
-                            let label = match approval::decision_key(decision) {
+                            let label = match approval::decision_key(decision).filter(|_| decision != Decision::AcceptForSession) {
                                 Some(key) => format!("{}  {key}", approval::decision_label(decision)),
                                 None => approval::decision_label(decision).to_owned(),
                             };
@@ -1038,13 +1058,18 @@ impl ChatView {
                     div()
                         .text_size(ui_text::text(9.0))
                         .text_color(rgb(colors.muted))
-                        .child("With the message box empty: ⏎ allows, ⇧⏎ allows for the session, ⎋ denies.")
+                        .child("With the message box empty: ⏎ allows, ⎋ denies. ⇧⏎ and ⌥⏎ insert a new line; session approval uses its button.")
                 }))
                 .into_any_element(),
         )
     }
 
-    fn question_panel(&self, look: Look, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn question_panel(
+        &self,
+        look: Look,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let colors = look.colors;
         let question = self.pending_question()?.clone();
         let answered = self.answered.contains(&question.request_id);
@@ -1089,6 +1114,8 @@ impl ChatView {
                             .gap(ui_text::space(6.0))
                             .children(prompt.options.iter().enumerate().map(
                                 |(option_at, option)| {
+                                    let option_request = question.request_id.clone();
+                                    let option_prompt = prompt.clone();
                                     let chosen = picked.contains(&option_at);
                                     // Native leads a chosen option with the tick symbol.
                                     let label = if chosen && !look.native {
@@ -1119,7 +1146,13 @@ impl ChatView {
                                         look,
                                     ))
                                     .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.pick(prompt_at, option_at, cx);
+                                        view.pick(
+                                            &option_request,
+                                            &option_prompt,
+                                            prompt_at,
+                                            option_at,
+                                            cx,
+                                        );
                                     }))
                                     .into_any_element()
                                 },
@@ -1137,13 +1170,18 @@ impl ChatView {
                                     .child(format!("{}: {}", option.label, option.description))
                             }),
                     )
-                    .child(self.editor(
-                        Field::Answer(prompt_at),
-                        "or type an answer",
-                        false,
-                        look,
-                        cx,
-                    ))
+                    .children(
+                        self.answers
+                            .get(&super::editors::AnswerKey::of(&question, prompt_at))
+                            .map(|editor| {
+                                text_input::input(
+                                    format!("chat-answer-{}", editor.state.entity_id().as_u64()),
+                                    &editor.state,
+                                    window,
+                                    cx,
+                                )
+                            }),
+                    )
             })
             .collect::<Vec<_>>();
         Some(
@@ -1165,6 +1203,18 @@ impl ChatView {
                 }))
                 .bg(rgb(colors.panel))
                 .children(prompts)
+                .children(self.answer_failures.get(&question.request_id).map(|(command, error)| {
+                    let request = question.request_id.clone();
+                    div().flex().flex_col().gap(ui_text::space(4.))
+                        .child(div().text_color(rgb(colors.gold)).child(format!("Answer submission retained: {error}")))
+                        .child(div().id("saved-question-answers").max_h(ui_text::space(120.)).overflow_y_scroll().child(match command {
+                            crate::chat::model::ChatCommand::Answer { answers, .. } => format!("Saved answers: {answers:?}"),
+                            _ => String::new(),
+                        }))
+                        .children(matches!(error, crate::chat::client::CallError::Broken(_)).then(|| div().child("Inspect the transcript before explicitly resending.")))
+                        .child(button("retry-saved-answers", "Resend saved answers", Some(colors.cyan), look)
+                            .on_click(cx.listener(move |view, _, _, cx| view.resend_answers(&request, cx))))
+                }))
                 .children((!single).then(|| {
                     div().flex().child(if answered {
                         dimmed("answers-sent", "Sent", look).into_any_element()
@@ -1182,7 +1232,7 @@ impl ChatView {
     // The message box
     // -----------------------------------------------------------------------------------
 
-    fn composer_box(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
+    fn composer_box(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let running = self.running();
         let dictation = self.dictation.phase();
@@ -1207,13 +1257,12 @@ impl ChatView {
                     .flex()
                     .items_end()
                     .gap(ui_text::space(8.0))
-                    .child(div().flex_1().min_w_0().child(self.editor(
-                        Field::Composer,
-                        "Message",
-                        true,
-                        look,
-                        cx,
-                    )))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.composer_editor(look, window, cx)),
+                    )
                     .children(mic.then(|| widgets::beside_field(self.mic_button(look, cx))))
                     // Native's are round symbol buttons beside the field, as a message field
                     // has them; their keys are in the tooltips and the hint below. Send waits
@@ -1241,7 +1290,7 @@ impl ChatView {
                     }))
                     .child(widgets::beside_field(
                         if look.native {
-                            let empty = composer::message(&self.composer.text).is_none();
+                            let empty = self.draft_empty(cx) || self.pending_submission.is_some();
                             widgets::round_button(
                                 "chat-send",
                                 "arrow.up",
@@ -1256,8 +1305,31 @@ impl ChatView {
                         } else {
                             button("chat-send", "Send  ⏎", Some(colors.cyan), look)
                         }
-                        .on_click(cx.listener(|view, _, _, cx| view.send_message(cx))),
+                        .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx))),
                     )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(6.))
+                    .child(button("chat-attach", "Attach…", None, look).on_click(
+                        cx.listener(|view, _, window, cx| view.attach_picker(window, cx)),
+                    ))
+                    .child(
+                        div()
+                            .text_size(ui_text::text(9.))
+                            .text_color(rgb(colors.muted))
+                            .child("UTF-8 text · PNG · JPEG · paste or drop files"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("chat-attachment-queue")
+                    .max_h(ui_text::space(280.))
+                    .overflow_y_scroll()
+                    .child(self.attachment_chips(look, cx))
+                    .child(self.submission_cards(look, cx)),
             )
             .child(
                 div()
@@ -1315,7 +1387,7 @@ impl ChatView {
         .when(listening, |mic| {
             mic.bg(rgb(look.tint(colors.working, 0.18)))
         })
-        .on_click(cx.listener(|view, _, _, cx| view.toggle_dictation(cx)));
+        .on_click(cx.listener(|view, _, window, cx| view.toggle_dictation(window, cx)));
         if busy {
             mic.with_animation(
                 "chat-dictate-busy",
@@ -1331,166 +1403,83 @@ impl ChatView {
         }
     }
 
-    /// A box that shows one of the inputs and takes the keys when it is the active one.
-    /// `tall` lets it grow to several lines and scroll.
-    fn editor(
+    /// Kit's transparent textarea inside the existing continuous-corner shell.
+    fn composer_editor(
         &self,
-        field: Field,
-        placeholder: &'static str,
-        tall: bool,
         look: Look,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<gpui::Div> {
         let colors = look.colors;
-        let input = match field {
-            Field::Composer => Some(&self.composer),
-            Field::Model => Some(&self.model_input),
-            Field::Answer(at) => self.answers.get(at),
-        };
-        let blank = Input::default();
-        let input = input.unwrap_or(&blank);
-        let active = self.field == field && self.has_focus && self.chat_id.is_some();
-        let mut shown = if input.text.is_empty() {
-            widgets::sentence(placeholder, look)
-        } else {
-            input.text.clone()
-        };
-        // The cursor is a character of the text: a block in the colorful themes' terminal
-        // face, a thin bar in Native's, like the system's insertion point.
-        let caret = if look.native { '|' } else { '▌' };
-        let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
-        if active {
-            if input.selection.is_empty() {
-                let cursor = if input.text.is_empty() {
-                    0
-                } else {
-                    input.cursor()
-                };
-                shown.insert(cursor, caret);
-                highlights.push((
-                    cursor..cursor + caret.len_utf8(),
-                    HighlightStyle {
-                        color: Some(rgb(colors.cyan).into()),
-                        ..Default::default()
-                    },
-                ));
+        let active = self.composer.read(cx).focus_handle(cx).is_focused(window);
+        let radius = ui_text::space(16.);
+        let outline = if active {
+            if look.native {
+                colors.focus
             } else {
-                highlights.push((
-                    input.selection.clone(),
-                    HighlightStyle {
-                        color: Some(rgb(colors.cyan).into()),
-                        background_color: Some(rgb(colors.divider).into()),
-                        ..Default::default()
-                    },
-                ));
+                colors.cyan
             }
-        }
-        let handler = active.then(|| {
-            let focus = self.focus.clone();
-            let entity = cx.entity();
-            canvas(
-                |_, _, _| {},
-                move |bounds, _, window, cx| {
-                    window.handle_input(
-                        &focus,
-                        ElementInputHandler::new(bounds, entity.clone()),
-                        cx,
-                    );
-                },
-            )
-            .absolute()
-            .inset_0()
-        });
-        let name = match field {
-            Field::Composer => "chat-composer".to_owned(),
-            Field::Model => "chat-model-input".to_owned(),
-            Field::Answer(at) => format!("chat-answer-{at}"),
+        } else {
+            colors.divider
         };
-        let text = StyledText::new(shown).with_highlights(highlights);
-        let field_box = div()
-            .id(id(name.clone()))
+        let surface = canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let bounds = bounds.inset(px(0.5));
+                if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+                    return;
+                }
+                for (mut path, color) in [
+                    (PathBuilder::fill(), colors.bg),
+                    (PathBuilder::stroke(px(1.)), outline),
+                ] {
+                    composer_path(&mut path, bounds, radius);
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, rgb(color));
+                    }
+                }
+            },
+        )
+        .absolute()
+        .inset_0();
+        let weak = cx.weak_entity();
+        let editor = text_input::on_paste(
+            text_input::textarea("chat-composer", &self.composer, window, cx),
+            &self.composer,
+            move |item, window, cx| {
+                weak.update(cx, |view, cx| view.paste_attachments(item, window, cx))
+                    .unwrap_or(false)
+            },
+        )
+        .border_0()
+        .bg(transparent_black())
+        .rounded(px(0.))
+        .styles(|styles| {
+            styles.focused(|style| {
+                style
+                    .border_color(transparent_black())
+                    .bg(transparent_black())
+            })
+        })
+        .px(ui_text::space(8.))
+        .py(ui_text::space(widgets::FIELD_PAD_Y))
+        .text_size(ui_text::text(widgets::FIELD_TEXT))
+        .font_family(ui_text::ui_family())
+        .capture_action(cx.listener(Self::capture_enter));
+        div()
+            .id("chat-composer-shell")
             .relative()
             .w_full()
-            .rounded(px(3.0))
             .border_1()
-            .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-            .bg(rgb(colors.bg));
-        let composer_surface = (field == Field::Composer).then(|| {
-            let radius = ui_text::space(16.0);
-            let outline = if active {
-                if look.native {
-                    colors.focus
-                } else {
-                    colors.cyan
-                }
-            } else {
-                colors.divider
-            };
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    // Inset the stroke center so its outer edge stays inside the field.
-                    let bounds = bounds.inset(px(0.5));
-                    if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
-                        return;
-                    }
-                    for (mut path, color) in [
-                        (PathBuilder::fill(), colors.bg),
-                        (PathBuilder::stroke(px(1.0)), outline),
-                    ] {
-                        composer_path(&mut path, bounds, radius);
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, rgb(color));
-                        }
-                    }
-                },
+            .bg(transparent_black())
+            .border_color(transparent_black())
+            .child(surface)
+            .child(editor)
+            .on_drop(
+                cx.listener(|view, paths: &gpui::ExternalPaths, window, cx| {
+                    view.dropped_attachments(paths, window, cx)
+                }),
             )
-            .absolute()
-            .inset_0()
-        });
-        controls::native(field_box, |field| {
-            controls::field(field, colors)
-                .when(tall, |field| {
-                    field.rounded(controls::radius(controls::ROW_RADIUS))
-                })
-                .when(active, |field| field.border_color(rgb(colors.focus)))
-        })
-        .when(field == Field::Composer, |field| {
-            // Keep the existing border's layout space and all input/hit-test behavior.
-            field
-                .bg(transparent_black())
-                .border_color(transparent_black())
-        })
-        .text_size(ui_text::text(widgets::FIELD_TEXT))
-        .text_color(rgb(if input.text.is_empty() {
-            colors.muted
-        } else {
-            colors.text
-        }))
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |view, _, window, cx| {
-                view.field = field;
-                view.focus.focus(window, cx);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .children(composer_surface)
-        .child(
-            div()
-                .id(id(format!("{name}-text")))
-                .w_full()
-                .px(ui_text::space(8.0))
-                .py(ui_text::space(widgets::FIELD_PAD_Y))
-                .when(tall, |area| {
-                    area.max_h(ui_text::space(180.0))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.composer_scroll)
-                })
-                .child(text),
-        )
-        .children(handler)
     }
 }
 
@@ -1556,8 +1545,9 @@ mod tests {
     fn an_answer_is_the_options_picked_then_the_text_typed() {
         let draft = Draft {
             picked: vec![vec![1], vec![0, 2]],
+            ..Default::default()
         };
-        let typed = [Input::default(), Input::new("  and the docs  ".to_owned())];
+        let typed = [String::new(), "  and the docs  ".to_owned()];
         assert_eq!(
             answers_of(&question(), Some(&draft), &typed),
             vec![
@@ -1579,8 +1569,9 @@ mod tests {
         // Free text alone answers a prompt, and an option that is not there is ignored.
         let draft = Draft {
             picked: vec![vec![7], vec![]],
+            ..Default::default()
         };
-        let typed = [Input::new("something else".to_owned()), Input::default()];
+        let typed = ["something else".to_owned(), String::new()];
         assert_eq!(
             answers_of(&question(), Some(&draft), &typed),
             vec![vec!["something else".to_owned()], Vec::new()]

@@ -5078,7 +5078,7 @@ impl Workspace {
             }
             handoff::Started::Chat(chat) => {
                 let config = self.chat_config();
-                let view = cx.new(|cx| ChatView::open(chat.id.clone(), config, cx));
+                let view = cx.new(|cx| ChatView::open(chat.id.clone(), config, window, cx));
                 let tab = self.chat_tab(chat.id.clone(), view, window, cx);
                 self.place_new_tab(pane, tab, cx)
             }
@@ -6440,7 +6440,7 @@ impl Workspace {
             .unwrap_or_else(|| self.cwd.clone());
         let request = new_chat_request(provider, unrestricted, &self.project_id, worktree_id, cwd);
         let config = self.chat_config();
-        let view = cx.new(|cx| ChatView::create(request, config, cx));
+        let view = cx.new(|cx| ChatView::create(request, config, window, cx));
         let tab = self.chat_tab(String::new(), view, window, cx);
         if let Err(error) = self.place_new_tab(self.new_tab_pane(), tab, cx) {
             self.notice = Some(error);
@@ -6469,7 +6469,7 @@ impl Workspace {
             return;
         }
         let config = self.chat_config();
-        let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, cx));
+        let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, window, cx));
         let tab = self.chat_tab(chat_id, view, window, cx);
         let Some(pane) = self.panes.get_mut(&pane_id) else {
             return;
@@ -7315,7 +7315,7 @@ impl Workspace {
             ChatOrchestratorTab::Open { pane } => {
                 let config = self.chat_config();
                 let chat_id = chat.id.clone();
-                let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, cx));
+                let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, window, cx));
                 let mut tab = self.chat_tab(chat_id, view, window, cx);
                 if let Some(scope) = &chat.orchestrator {
                     tab.title = orchestrators::tab_title(scope).to_owned();

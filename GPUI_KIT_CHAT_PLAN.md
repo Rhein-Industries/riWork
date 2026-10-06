@@ -9,7 +9,7 @@ The foundation owner in `riWork-feat-gpui-kit-foundation` supplies a pinned GPUI
 
 No applicable AGENTS.md was found in the checkout or its parent chain. Native host PID 78989, inherited RIWORK_HOME and production sessions remain untouched. All runtime verification uses fake provider processes/private fixture homes. Cargo uses `/tmp/riwork-chat-96f8a1ee-target` and installed Zig 0.16.0. No GUI verification until parent grants GUI ownership; desktop inspection and interaction must use RiWork Cua.ai Driver MCP, never a replacement provider.
 
-## Current integration inventory
+## Baseline integration inventory (before migration)
 
 - `chat_view.rs`: `ChatView::blank/open/create` owns a single FocusHandle, Field routing, legacy composer Input, model Input and Vec<Input> answers. Feed creation/subscription replays host history. `accept` batches events, failures and link changes; ChatModel tracks gapless sequence and completed turns. `ready_inputs` currently sizes answers by prompt count, not request identity: migration must key them by request id and prompt id/index to avoid copying an answer to a later request with the same count.
 - `panels.rs::editor`: constructs StyledText, inserts a fake caret character, paints selection, attaches a canvas ElementInputHandler and only focuses on mouse-down. ChatView's `character_index_for_point` always returns end-of-text and `bounds_for_range` returns the entire box. These shortcuts explain missing click placement/drag selection and IME geometry. Replace the whole editor implementation with real input entities; do not retain a second entity input handler.
@@ -77,3 +77,72 @@ Recovery evidence (all fake/private runtime; no GUI, real provider, production h
 - Logs: `/tmp/riwork-chat-96f8a1ee-recovery-{attachments,regressions,build}.log`. Target: `/tmp/riwork-chat-96f8a1ee-target`; Zig PATH prefix: `/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0`. Test-process home/runtime and profile overrides were child-scoped; fake providers have their own private homes.
 
 Phase 2 awaits the foundation owner's compiled commit and adapter contract. The existing draft helper is an integration seam, not an active composer: wire receipts to submission/editor generations so a newer edit that returns to identical content is still preserved, correlate pending submissions, and retain reviewable failed snapshots. Replace composer/model/request-keyed answer editors, preserve dictation/squircle/approval behavior, add picker/paste/drop/chips/previews, and perform parent-authorized RiWork Driver GUI acceptance. Do not mark the overall task completed from this backend commit.
+
+## Phase 2 source-only UI handoff (2026-10-06)
+
+Runtime incident hold is active. These changes have **not been compiled or executed**.
+Backend `1f0af2b5a9f29f70f3454981ee69505ef1997469` is preserved. Foundation
+`ea05f94d566cdd952b778a2edafcb13f42a1a65f` was cherry-picked as
+`d37d4d98b9c151f199b51ba5635990dd3296ddbc`; `GPUI_KIT_INPUT_CONTRACT.md`
+is the adapter contract. No foundation verification receipt proves these consumer changes.
+
+Composer uses one persistent Kit Textarea entity; typed model entry and request/prompt
+answers use retained Input entities and subscriptions. The old ChatView input handler,
+fake caret, manual editing/key routing and estimated composer scrolling are removed.
+Render builds frames without replacing editor values. Native text editing, selection,
+clipboard text, undo and composition stay with Kit. Only the four authorized ChatView
+constructor calls changed in main; Cargo/shared input/forms/settings/init are unchanged.
+Dictation bridges UTF-8 value/selection snapshots into undoable Kit replacements, retains
+legacy helper compatibility and explicitly reanchors on user Change, including equal-text
+undo/edit cycles. Continuous corners, palettes/fonts/scale, display/media/path previews,
+transcript copy, tabs, focus, interruption and model/effort/fast controls remain in place.
+
+Submission snapshots carry dispatch id, original editor identity and editor generation.
+Receipts must also match the command. Success clears only that exact dispatched editor
+generation; repeated/stale receipts cannot clear newer edits. Refusal and uncertainty keep
+the exact saved snapshot and current draft, with review/copy/explicit resend/replace actions.
+The UI delivery route performs one exchange for text, attachment and answer snapshots;
+legacy Send serialization is unchanged. A receipt is submission acknowledgement, never
+turn completion. Question editors include request id, prompt index and prompt text, retain
+answers on refresh/failure, and discard entities when that identity leaves the transcript.
+Choices reject stale buttons and do not transfer indexes into changed/reordered options.
+
+Picker, native PNG/JPEG clipboard images, native file paste and external paths drop share
+owned-byte staging. Chips retain source/error identity until staged, can be removed/retried
+explicitly, and disclose bounded text/image previews. Pending/failed chips block partial
+submission. Mixed clipboard policy: all file paths win over images/filename text; otherwise
+all images win over accompanying text; ordinary text stays with Kit. This does not recover
+formats the platform clipboard API itself omits. Unsupported image formats are visibly
+refused. Any attachment chip makes the draft nonempty for approval policy. Kit's contract
+reserves Shift/Alt+Enter for newline; session approval remains available through its button,
+and the old Shift+Enter session-approval hint is removed from this UI.
+
+Eight deferred ChatView tests mount the actual editors with a recording Feed (no socket,
+provider or host startup) and cover composer dispatch/generation/stale receipts, uncertain
+resend, model Enter/persistence, request-keyed answer Enter/refresh/refusal, IME and Alt
+newline, mixed file paste, attachment-only approval guard and dictation partial/final/cancel
+with intervening user edits. Snapshot helper tests also cover replacement editor identity.
+These are authored source, **not passing test evidence**. Formatting and `git diff --check`
+are source hygiene only.
+
+After parent runtime/isolation release, the build owner must run locked offline check/build
+and focused tests in audited private child HOME/runtime directories, without mutating the
+inherited RIWORK_HOME. Reuse `/tmp/riwork-chat-96f8a1ee-target` and installed Zig prefix.
+Required commands (not run under hold):
+
+```text
+cargo check --offline --locked
+cargo build --offline --locked
+cargo test --offline --locked --bin riwork chat_view::editor_tests:: -- --test-threads=1
+cargo test --offline --locked --bin riwork attachment -- --test-threads=1
+cargo test --offline --locked --bin riwork chat_view::feed::tests:: -- --test-threads=1
+cargo test --offline --locked --bin riwork dictation::tests:: -- --test-threads=1
+cargo test --offline --locked --bin riwork text_input::tests:: -- --test-threads=1
+```
+
+Native Cua.ai Driver acceptance still requires parent GUI ownership: caret/drag/wrapped
+selection, physical IME commit, repeated-key approval guard, tabs/focus/dictation switching,
+native image/file clipboard precedence, picker/drop/staging/removal, saved-snapshot recovery,
+palette/scale/squircle and Normal/Verbose/media/path rendering. Overall task remains
+in_progress until parent accepts compiled/runtime/GUI evidence. No production app/host,
+tmux, shell, installed/main/iOS/relay/OTA state, fixture cleanup or delegate was touched.
