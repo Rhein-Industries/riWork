@@ -225,3 +225,53 @@ the reviewer's owned-child lifetime gate pending the source fix and review;
 native Cua.ai Driver MCP acceptance still requires parent GUI ownership.
 This author runs no Cargo command, test, fixture, native GUI or process probe
 under the runtime hold. Parent acceptance remains outstanding.
+
+## Owned-child lifetime correction, source-only (2026-10-06)
+
+Compile correction commit: `f2684e5cdb82ba28b64d7cfeb50b5911515beb8a`.
+The retained Proc P2 is corrected separately in source. `OwnedChild` puts
+signal eligibility, all signals and every consuming wait under the same
+lifetime mutex. `waitid(P_PID, WEXITED | WNOHANG | WNOWAIT)` observes this
+exact owned child without releasing its PID. On exit, private-group cleanup
+precedes reaping while that unreaped leader still pins the identity. Retirement
+is set before the consuming wait; cached exit status never authorizes another
+signal. Cancellation of bounded nonblocking writes remains independently
+accessible without the child, stdin or driver mutex.
+
+Owned-child contract: a signal requires `pid > 1`, exact `Child::id()` equality
+and unreaped ownership confirmed under the lifetime lock. A group signal also
+requires OS `getpgid(pid) == pid` and a group distinct from the caller's
+`getpgrp()`. There is no caller-supplied group/PID, broadcast target or sweep
+after reaping. Unconfirmed ownership fails closed. If non-consuming observation
+fails during final shutdown, a locked `Child::try_wait()` may confirm a still
+running child; an exit result returns immediately without signalling. If the
+private group cannot be verified, final shutdown may kill only the confirmed
+owned leader, never its new/shared group. Stop and Drop retain consuming RAII
+waits. No broader cleanup, process-discovery or installed-service path is added.
+
+The nonblocking writer, write deadline/prefix poisoning, accessible cancellation,
+UNKNOWN_SUBMISSION/no automatic retry, provider configuration/approval/interrupt,
+legacy Send/Capabilities wire and additive iOS compatibility are unchanged.
+Group-lifetime corrections make no claim about the production incident trigger.
+
+Two new assertions are authored, **not executed**:
+
+- Pure: `chat::child::tests::owned_signal_targets_reject_broadcast_shared_mismatched_and_retired_ids`
+  treats invalid, shared, mismatched and retired identifiers only as data.
+- Owned fake: `chat::child::tests::owned_fake_signalling_and_reaping_share_the_lifetime_lock`
+  uses the fixed Fake/private child home, holds the lifetime lock across concurrent
+  signal/reap attempts, checks independent cancellation, then checks retired status
+  and cached exit status. It has no production targets or process discovery.
+
+Required remaining checks belong to the sole reviewer build owner: source-review
+this lifetime fix and reclassify its helper chain; rehash/archive the new combined
+candidate; isolated locked/offline check, build, test compilation/listing; run only
+parent-released exact pure/headless names. The new owned-fake assertion, existing
+13 attachment process-backed cases and owned-child escalation/RAII regressions
+remain conditional on explicit ownership review and the reviewer's allowed list.
+Native IME/clipboard, pointer/focus/dictation and picker/drop acceptance still
+requires parent GUI release. Formatting and `git diff --check` are the only source
+hygiene receipts here, not compilation or test evidence. No Cargo/runtime/GUI
+command, fixture launch, process probe/signal, production settings/service change,
+shell/tmux cleanup, main edit or delegation was performed by this follow-up.
+Return idle for immutable combined verification; task acceptance is still pending.
