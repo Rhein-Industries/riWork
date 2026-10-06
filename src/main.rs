@@ -2,6 +2,7 @@ mod activity;
 mod agent_hooks;
 mod appearance_file;
 mod appearance_sync;
+mod behavior_controls;
 mod chat;
 mod chat_view;
 mod cli;
@@ -1305,6 +1306,8 @@ struct CodexUsageEntry {
 impl Global for AccountUsage {}
 
 struct Workspace {
+    modal_selection_scope: gpui_kit::base::TextSelectionScopeId,
+    modal_focus: [FocusHandle; 4],
     project_creator: Option<Entity<ProjectCreator>>,
     folder_editor: Option<Entity<FolderEditor>>,
     /// The modal for adding a host, pairing another Mac or naming a project on a host.
@@ -1940,6 +1943,8 @@ impl Workspace {
         let file_preview = cx.new(|cx| FilePreview::new(panel.clone(), cx));
         let file_explorer = panel;
         let mut workspace = Self {
+            modal_selection_scope: gpui_kit::base::TextSelectionScopeId::new(),
+            modal_focus: std::array::from_fn(|_| cx.focus_handle()),
             project_creator: None,
             folder_editor: None,
             remote_prompt: None,
@@ -8983,8 +8988,7 @@ impl Workspace {
                 let name = self
                     .project_display_name(cx)
                     .unwrap_or_else(|| "Project unavailable".to_owned());
-                div()
-                    .id("status-current-project")
+                behavior_controls::action("status-current-project", format!("Project {name}"), colors)
                     .max_w(ui_text::space(240.0))
                     .min_w_0()
                     .text_ellipsis()
@@ -9020,8 +9024,7 @@ impl Workspace {
                         .map(|worktree| worktree.branch.clone()),
                 }
                 .unwrap_or_else(|| "No worktree".to_owned());
-                div()
-                    .id("status-current-worktree")
+                behavior_controls::action("status-current-worktree", format!("Worktree {branch}"), colors)
                     .max_w(ui_text::space(220.0))
                     .min_w_0()
                     .font_family(ui_text::mono_family())
@@ -9072,8 +9075,7 @@ impl Workspace {
                     &self.agent_activity,
                 )
                 .with_chats_in_project(&self.project_id, &self.chat_activity(cx));
-                div()
-                    .id("status-agent-activity")
+                behavior_controls::action("status-agent-activity", "Show agent sessions", colors)
                     .max_w(ui_text::space(250.0))
                     .min_w_0()
                     .text_ellipsis()
@@ -9132,8 +9134,8 @@ impl Workspace {
                             .or_else(|| tab.remote().map(|(_, shell)| shell))
                     })
                     .map(str::to_owned);
-                div()
-                    .id("copy-active-shell-id")
+                behavior_controls::action("copy-active-shell-id", "Copy active session ID", colors)
+                    .disabled(id.is_none())
                     .flex_none()
                     .font_family(ui_text::mono_family())
                     .text_color(rgb(status_accent(colors.cyan, colors)))
@@ -9145,8 +9147,7 @@ impl Workspace {
                     })
                     .into_any_element()
             }
-            StatusItemKind::GlobalOrchestrator => div()
-                .id("top-orchestrator")
+            StatusItemKind::GlobalOrchestrator => behavior_controls::action("top-orchestrator", "Open global orchestrator", colors)
                 .flex_none()
                 .text_color(rgb(status_accent(colors.magenta, colors)))
                 .child(ui_text::quiet(format!(
@@ -9159,8 +9160,7 @@ impl Workspace {
                     cx.listener(|workspace, _, window, cx| workspace.open_orchestrator(window, cx)),
                 )
                 .into_any_element(),
-            StatusItemKind::ProjectOrchestrator => div()
-                .id("project-orchestrator")
+            StatusItemKind::ProjectOrchestrator => behavior_controls::action("project-orchestrator", "Open project orchestrator", colors)
                 .flex_none()
                 .text_color(rgb(status_accent(colors.cyan, colors)))
                 .child(ui_text::quiet(format!(
@@ -9189,8 +9189,8 @@ impl Workspace {
         let open = self.layout_menu_open;
         let color = if open { colors.cyan } else { colors.muted };
         let bounds = self.layout_item_bounds.clone();
-        div()
-            .id("status-layout")
+        behavior_controls::action("status-layout", "Layout menu", colors)
+            .aria_expanded(open)
             .relative()
             .flex_none()
             .flex()
@@ -9759,8 +9759,15 @@ impl Workspace {
                     ),
             )
             .child(
-                div()
-                    .id("focus-layout-toggle")
+                behavior_controls::button(
+                    "focus-layout-toggle",
+                    if centered { "⛶ FILL WINDOW" } else { "⊙ CENTER FOCUS" },
+                    controls::Button::Secondary, colors,
+                )
+                    .accessibility_label(if centered { "Fill window" } else { "Center focus" })
+                    .rounded_none()
+                    .bg(gpui::transparent_black())
+                    .border_color(gpui::transparent_black())
                     .flex_none()
                     .px(ui_text::space(8.0))
                     .py(ui_text::space(5.0))
@@ -9770,11 +9777,6 @@ impl Workspace {
                             .bg(rgb(colors.panel_active))
                             .text_color(rgb(colors.cyan))
                     })
-                    .child(if centered {
-                        "⛶ FILL WINDOW"
-                    } else {
-                        "⊙ CENTER FOCUS"
-                    })
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         workspace.focus_centered = !workspace.focus_centered;
                         workspace.focus_active(window, cx);
@@ -9782,8 +9784,13 @@ impl Workspace {
                     })),
             )
             .child(
-                div()
-                    .id("restore-workspace")
+                behavior_controls::button(
+                    "restore-workspace",
+                    if width >= 600.0 { "↙ RESTORE  ⌘⇧F" } else { "↙ RESTORE" },
+                    controls::Button::Secondary, colors,
+                )
+                    .accessibility_label("Restore workspace")
+                    .rounded_none()
                     .flex_none()
                     .px(ui_text::space(10.0))
                     .py(ui_text::space(5.0))
@@ -9792,11 +9799,6 @@ impl Workspace {
                     .bg(rgb(colors.panel_active))
                     .text_color(rgb(colors.cyan))
                     .hover(|style| style.border_color(rgb(colors.cyan)))
-                    .child(if width >= 600.0 {
-                        "↙ RESTORE  ⌘⇧F"
-                    } else {
-                        "↙ RESTORE"
-                    })
                     .on_click(cx.listener(|workspace, _, window, cx| {
                         workspace.set_focus_mode(false, window, cx);
                     })),
@@ -10063,6 +10065,12 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Base Root owns one window selection layer. Active modal selection
+        // excludes participants in the background; the scope survives renders.
+        gpui_kit::base::TextSelection::activate_scope(
+            if self.modal_open() { self.modal_selection_scope } else { Default::default() },
+            window, cx,
+        );
         if let Some(chat_id) = self.pending_automation_chat.take() {
             let existing = self.panes.iter().find_map(|(id, pane)| pane.tabs.iter().position(|tab| matches!(&tab.content, TabContent::Chat { chat_id: current, .. } if current == &chat_id)).map(|index| (*id, index)));
             if let Some((pane, index)) = existing {
@@ -10230,56 +10238,76 @@ impl Render for Workspace {
             )
             .children(show_window_controls.then(|| window_controls_island(cx)))
             .children(self.project_creator.as_ref().map(|creator| {
-                div()
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .p(ui_text::space(16.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::rgba(0x00000099))
-                    .occlude()
-                    .child(creator.clone())
+                behavior_controls::modal_scope(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .p(ui_text::space(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::rgba(0x00000099))
+                        .occlude()
+                        .child(creator.clone()),
+                    self.modal_selection_scope,
+                    "project-creator-scope",
+                    &self.modal_focus[0],
+                )
             }))
             .children(self.folder_editor.as_ref().map(|editor| {
-                div()
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .p(ui_text::space(16.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::rgba(0x00000099))
-                    .occlude()
-                    .child(editor.clone())
+                behavior_controls::modal_scope(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .p(ui_text::space(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::rgba(0x00000099))
+                        .occlude()
+                        .child(editor.clone()),
+                    self.modal_selection_scope,
+                    "folder-editor-scope",
+                    &self.modal_focus[1],
+                )
             }))
             .children(self.remote_prompt.as_ref().map(|prompt| {
-                div()
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .p(ui_text::space(16.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::rgba(0x00000099))
-                    .occlude()
-                    .child(prompt.clone())
+                behavior_controls::modal_scope(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .p(ui_text::space(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::rgba(0x00000099))
+                        .occlude()
+                        .child(prompt.clone()),
+                    self.modal_selection_scope,
+                    "remote-prompt-scope",
+                    &self.modal_focus[2],
+                )
             }))
             .children(self.handoff_dialog.as_ref().map(|dialog| {
-                div()
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .p(ui_text::space(16.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::rgba(0x00000099))
-                    .occlude()
-                    .child(dialog.clone())
+                behavior_controls::modal_scope(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .p(ui_text::space(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::rgba(0x00000099))
+                        .occlude()
+                        .child(dialog.clone()),
+                    self.modal_selection_scope,
+                    "handoff-dialog-scope",
+                    &self.modal_focus[3],
+                )
             }))
             .children(self.notice.as_ref().map(|notice| {
                 div()
@@ -11242,6 +11270,7 @@ fn main() {
         cx.set_global(settings);
         ui_text::init(cx);
         text_input::init(cx);
+        behavior_controls::init(cx);
         // After both globals exist: publishes now and again on every change.
         appearance_sync::start(state_home, cx);
         settings::refresh_codex_accounts(cx);
@@ -11268,9 +11297,7 @@ fn main() {
         .detach();
         cx.on_action(|_: &Quit, cx| {
             for handle in cx.windows() {
-                if let Some(handle) = handle.downcast::<Workspace>() {
-                    let _ = handle.update(cx, |workspace, _, _| workspace.save_layout());
-                }
+                let _ = with_workspace(handle, cx, |workspace, _, _| workspace.save_layout());
             }
             cx.quit();
         });
@@ -11484,31 +11511,24 @@ fn open_completed_agent(project_id: &str, shell_id: &str, cx: &mut App) -> Resul
         return Err("This agent no longer belongs to that project".to_owned());
     }
     for handle in cx.windows() {
-        let Some(handle) = handle.downcast::<Workspace>() else {
-            continue;
-        };
-        let opened = handle
-            .update(cx, |workspace, window, cx| {
-                if workspace.project_id != project_id {
-                    return false;
-                }
-                workspace.show_shell(shell_id, window, cx);
-                window.activate_window();
-                true
-            })
-            .map_err(|error| error.to_string())?;
-        if opened {
+        let opened = with_workspace(handle, cx, |workspace, window, cx| {
+            if workspace.project_id != project_id {
+                return false;
+            }
+            workspace.show_shell(shell_id, window, cx);
+            window.activate_window();
+            true
+        })?;
+        if opened == Some(true) {
             cx.activate(true);
             return Ok(());
         }
     }
     let handle = open_workspace_window(Some(project.root.clone()), project.root, None, cx)?;
-    handle
-        .update(cx, |workspace, window, cx| {
-            workspace.show_shell(shell_id, window, cx);
-            window.activate_window();
-        })
-        .map_err(|error| error.to_string())?;
+    with_workspace(handle.into(), cx, |workspace, window, cx| {
+        workspace.show_shell(shell_id, window, cx);
+        window.activate_window();
+    })?;
     cx.activate(true);
     Ok(())
 }
@@ -11517,17 +11537,29 @@ fn runtime_windows(cx: &mut App, save: bool) -> Vec<runtime::RuntimeWindow> {
     cx.windows()
         .into_iter()
         .filter_map(|handle| {
-            let handle = handle.downcast::<Workspace>()?;
-            handle
-                .update(cx, |workspace, window, _| {
-                    if save {
-                        workspace.save_layout();
-                    }
-                    workspace.runtime_window(window)
-                })
-                .ok()
+            with_workspace(handle, cx, |workspace, window, _| {
+                if save {
+                    workspace.save_layout();
+                }
+                workspace.runtime_window(window)
+            })
+            .ok()
+            .flatten()
         })
         .collect()
+}
+
+fn with_workspace<R>(
+    handle: gpui::AnyWindowHandle,
+    cx: &mut App,
+    update: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> R,
+) -> Result<Option<R>, String> {
+    handle
+        .update(cx, |view, window, cx| {
+            let content = behavior_controls::content_view::<Workspace>(view, cx)?;
+            Some(content.update(cx, |workspace, cx| update(workspace, window, cx)))
+        })
+        .map_err(|error| error.to_string())
 }
 
 /// The window's frame when it is an ordinary window, None in full screen or
@@ -11558,7 +11590,7 @@ fn open_startup_window(
     };
     eprintln!("riwork: {error}");
     let handle = open_workspace_window(None, fallback_cwd, None, cx)?;
-    let _ = handle.update(cx, |workspace, _, cx| {
+    let _ = with_workspace(handle.into(), cx, |workspace, _, cx| {
         workspace.notice = Some(error);
         cx.notify();
     });
@@ -11570,7 +11602,7 @@ fn open_workspace_window(
     fallback_cwd: PathBuf,
     restore: Option<runtime::RuntimeWindow>,
     cx: &mut App,
-) -> Result<WindowHandle<Workspace>, String> {
+) -> Result<WindowHandle<gpui_kit::base::Root>, String> {
     let ordinary = startup_path.is_none() && restore.is_none();
     let mut startup = WorkspaceStartup::prepare(startup_path, fallback_cwd)?;
     if ordinary {
@@ -11640,9 +11672,8 @@ fn open_workspace_window(
         },
         |window, cx| {
             metal_layer::limit_drawables(window);
-            #[cfg(target_os = "macos")]
-            gpui_kit::base::install_window_hit_test_forwarder(window);
-            cx.new(|cx| Workspace::new(startup, restore, window, cx))
+            let workspace = cx.new(|cx| Workspace::new(startup, restore, window, cx));
+            cx.new(|cx| gpui_kit::base::Root::new(workspace, window, cx))
         },
     )
     .map_err(|error| error.to_string())
