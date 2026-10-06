@@ -36,6 +36,7 @@ impl ChatView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.transcript_selection.begin_row(ix);
         let look = Look::of(cx);
         let content = match self.visible.get(ix) {
             Some(row @ (super::display::Row::Item(at) | super::display::Row::Details(at))) => {
@@ -274,19 +275,24 @@ impl ChatView {
             }
             ItemBody::ToolCall { input, output, .. } => {
                 let head = cards::head(item, None).expect("a tool call has a head");
-                let body = |view: &Self, _: &mut Context<Self>| {
-                    view.tool_body(item, input, output.as_deref(), look)
+                let body = |view: &Self, cx: &mut Context<Self>| {
+                    view.tool_body(item, input, output.as_deref(), look, cx)
                 };
                 self.card(ix, item, &head, Some(&body), look, cx)
             }
             ItemBody::Plan { explanation, steps } => {
                 let head = cards::head(item, None).expect("a plan has a head");
-                let body = checklist(steps, explanation.as_deref(), look);
+                let body = checklist(self, &item.id, steps, explanation.as_deref(), look, cx);
                 self.always_open(ix, &head, body, look)
             }
             ItemBody::Todo { items } => {
                 let head = cards::head(item, None).expect("a todo list has a head");
-                self.always_open(ix, &head, checklist(items, None, look), look)
+                self.always_open(
+                    ix,
+                    &head,
+                    checklist(self, &item.id, items, None, look, cx),
+                    look,
+                )
             }
             ItemBody::WebSearch { .. } => {
                 let head = cards::head(item, None).expect("a search has a head");
@@ -318,20 +324,34 @@ impl ChatView {
                             widgets::BODY_LINE,
                         )
                     }))
-                    .child(div().flex_1().min_w_0().child(text.clone()))
+                    .child(div().flex_1().min_w_0().child(self.selectable(
+                        &format!("notice:{}", item.id),
+                        text.clone(),
+                        Vec::new(),
+                        Vec::new(),
+                        look,
+                        cx,
+                    )))
                     .into_any_element()
             }
             ItemBody::Notice { level, text } => div()
                 .w_full()
                 .text_size(ui_text::text(11.0))
                 .text_color(rgb(look.tone(cards::notice_tone(*level))))
-                .child(format!(
-                    "{}{text}",
-                    match level {
-                        NoticeLevel::Info => "",
-                        NoticeLevel::Warning => "! ",
-                        NoticeLevel::Error => "✕ ",
-                    }
+                .child(self.selectable(
+                    &format!("notice:{}", item.id),
+                    format!(
+                        "{}{text}",
+                        match level {
+                            NoticeLevel::Info => "",
+                            NoticeLevel::Warning => "! ",
+                            NoticeLevel::Error => "✕ ",
+                        }
+                    ),
+                    Vec::new(),
+                    Vec::new(),
+                    look,
+                    cx,
                 ))
                 .into_any_element(),
         }
@@ -393,15 +413,11 @@ impl ChatView {
         blocks
     }
 
-    /// Lines added and removed in each file, counted again only when the diffs changed size.
+    /// Counts follow the exact source, including same-length streaming edits.
     fn change_stats(&self, item: &Item, changes: &[FileChange]) -> cards::FileStats {
-        let size: usize = changes
-            .iter()
-            .map(|change| change.diff.as_ref().map_or(0, String::len) + 1)
-            .sum();
         let mut caches = self.caches.borrow_mut();
         if let Some((known, stats)) = caches.changes.get(&item.id)
-            && *known == size
+            && known == changes
         {
             return stats.clone();
         }
@@ -414,7 +430,7 @@ impl ChatView {
             .collect();
         caches
             .changes
-            .insert(item.id.clone(), (size, stats.clone()));
+            .insert(item.id.clone(), (changes.to_vec(), stats.clone()));
         stats
     }
 
@@ -586,7 +602,14 @@ impl ChatView {
                         .text_color(rgb(colors.cyan))
                         .border_b_1()
                         .border_color(rgb(colors.divider))
-                        .child(command.trim().to_owned()),
+                        .child(self.selectable(
+                            &format!("command:{}", item.id),
+                            command.trim().to_owned(),
+                            Vec::new(),
+                            Vec::new(),
+                            look,
+                            cx,
+                        )),
                 )
             })
             .child(
@@ -632,13 +655,16 @@ impl ChatView {
                         .bg(rgb(colors.bg))
                         .text_size(ui_text::text(11.0))
                         .font_family(ui_text::code_family())
-                        .child(
-                            div()
-                                .flex_none()
-                                .min_w_full()
-                                .whitespace_nowrap()
-                                .child(shown),
-                        ),
+                        .child(div().flex_none().min_w_full().whitespace_nowrap().child(
+                            self.selectable(
+                                &format!("output:{}", item.id),
+                                shown,
+                                Vec::new(),
+                                Vec::new(),
+                                look,
+                                cx,
+                            ),
+                        )),
                 ),
             )
             .into_any_element()
@@ -748,7 +774,7 @@ impl ChatView {
                             .diff
                             .as_ref()
                             .filter(|_| open)
-                            .map(|text| self.diff_lines(&key, text, change.kind, look)),
+                            .map(|text| self.diff_lines(&key, text, change.kind, look, cx)),
                     )
             }))
             .into_any_element()
@@ -760,10 +786,11 @@ impl ChatView {
         input: &serde_json::Value,
         output: Option<&str>,
         look: Look,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = look.colors;
         let pretty = cards::input_pretty(input);
-        let part = |label: &'static str, text: String, at: usize| {
+        let mut part = |label: &'static str, text: String, at: usize| {
             let name = format!("tool-{label}:{}", item.id);
             div()
                 .w_full()
@@ -781,7 +808,7 @@ impl ChatView {
                 .child(
                     self.scroller(&name).attach(
                         div()
-                            .id(id(name))
+                            .id(id(name.clone()))
                             .max_h(ui_text::space(240.0))
                             .flex()
                             // Items keep their own height, so what is taller than the box scrolls.
@@ -789,13 +816,9 @@ impl ChatView {
                             .overflow_scroll()
                             .text_size(ui_text::text(11.0))
                             .font_family(ui_text::code_family())
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .min_w_full()
-                                    .whitespace_nowrap()
-                                    .child(text),
-                            ),
+                            .child(div().flex_none().min_w_full().whitespace_nowrap().child(
+                                self.selectable(&name, text, Vec::new(), Vec::new(), look, cx),
+                            )),
                     ),
                 )
         };
@@ -809,12 +832,14 @@ impl ChatView {
                 .to_owned()
         });
         let output_at = usize::from(input.is_some());
+        let input = input.map(|text| part("input", text, 0));
+        let output = output.map(|text| part("output", text, output_at));
         div()
             .w_full()
             .flex()
             .flex_col()
-            .children(input.map(|text| part("input", text, 0)))
-            .children(output.map(|text| part("output", text, output_at)))
+            .children(input)
+            .children(output)
             .into_any_element()
     }
 
@@ -959,7 +984,14 @@ fn step_symbol(status: StepStatus) -> &'static str {
 }
 
 /// The steps of a plan or todo list, each with its mark.
-fn checklist(steps: &[Step], explanation: Option<&str>, look: Look) -> AnyElement {
+fn checklist(
+    view: &ChatView,
+    key: &str,
+    steps: &[Step],
+    explanation: Option<&str>,
+    look: Look,
+    cx: &mut Context<ChatView>,
+) -> AnyElement {
     let colors = look.colors;
     div()
         .w_full()
@@ -972,9 +1004,16 @@ fn checklist(steps: &[Step], explanation: Option<&str>, look: Look) -> AnyElemen
             div()
                 .pb(ui_text::space(4.0))
                 .text_color(rgb(colors.muted))
-                .child(text.trim().to_owned())
+                .child(view.selectable(
+                    &format!("plan:{key}:explanation"),
+                    text.trim().to_owned(),
+                    Vec::new(),
+                    Vec::new(),
+                    look,
+                    cx,
+                ))
         }))
-        .children(steps.iter().map(|step| {
+        .children(steps.iter().enumerate().map(|(at, step)| {
             let (mark_color, text_color) = match step.status {
                 StepStatus::Pending => (colors.muted, colors.text),
                 // Native says what is under way with its mark alone, in the working color.
@@ -1011,7 +1050,14 @@ fn checklist(steps: &[Step], explanation: Option<&str>, look: Look) -> AnyElemen
                         .flex_1()
                         .min_w_0()
                         .text_color(rgb(text_color))
-                        .child(step.text.clone()),
+                        .child(view.selectable(
+                            &format!("plan:{key}:{at}"),
+                            step.text.clone(),
+                            Vec::new(),
+                            Vec::new(),
+                            look,
+                            cx,
+                        )),
                 )
         }))
         .into_any_element()
@@ -1019,13 +1065,24 @@ fn checklist(steps: &[Step], explanation: Option<&str>, look: Look) -> AnyElemen
 
 impl ChatView {
     /// The lines of one file's diff, added and removed ones tinted. `key` names the file's
-    /// box; the lines are read once and again only when the diff changes size.
-    fn diff_lines(&self, key: &str, text: &str, kind: ChangeKind, look: Look) -> AnyElement {
+    /// box; text/kind changes invalidate the renderer even at the same byte length.
+    fn diff_lines(
+        &self,
+        key: &str,
+        text: &str,
+        kind: ChangeKind,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = look.colors;
         let drawn = {
             let mut caches = self.caches.borrow_mut();
             match caches.diffs.get(key) {
-                Some((size, drawn)) if *size == text.len() => drawn.clone(),
+                Some((previous, previous_kind, drawn))
+                    if previous == text && *previous_kind == kind =>
+                {
+                    drawn.clone()
+                }
                 _ => {
                     let (lines, hidden) = diff::display(text, kind);
                     let drawn = Arc::new(DrawnDiff {
@@ -1037,7 +1094,7 @@ impl ChatView {
                     });
                     caches
                         .diffs
-                        .insert(key.to_owned(), (text.len(), drawn.clone()));
+                        .insert(key.to_owned(), (text.to_owned(), kind, drawn.clone()));
                     drawn
                 }
             }
@@ -1065,34 +1122,51 @@ impl ChatView {
                                 .min_w_full()
                                 .flex()
                                 .flex_col()
-                                .children(drawn.lines.iter().map(|(kind, shown)| {
-                                    let (ink, tint) = match kind {
-                                        LineKind::Add => (look.diff.added, Some(look.diff.added)),
-                                        LineKind::Remove => {
-                                            (look.diff.removed, Some(look.diff.removed))
-                                        }
-                                        LineKind::Hunk => (colors.cyan, Some(colors.cyan)),
-                                        LineKind::Header | LineKind::Note => (colors.muted, None),
-                                        LineKind::Context => (colors.text, None),
-                                    };
-                                    div()
-                                        .min_w_full()
-                                        .flex_none()
-                                        .px(ui_text::space(10.0))
-                                        .text_color(rgb(ink))
-                                        .when_some(tint, |row, tint| {
-                                            row.bg(rgb(look.tint(
-                                                tint,
-                                                if *kind == LineKind::Hunk { 0.08 } else { 0.16 },
-                                            )))
-                                        })
-                                        .whitespace_nowrap()
-                                        .child(if shown.is_empty() {
-                                            " ".to_owned()
-                                        } else {
-                                            shown.clone()
-                                        })
-                                }))
+                                .children(drawn.lines.iter().enumerate().map(
+                                    |(at, (kind, shown))| {
+                                        let (ink, tint) = match kind {
+                                            LineKind::Add => {
+                                                (look.diff.added, Some(look.diff.added))
+                                            }
+                                            LineKind::Remove => {
+                                                (look.diff.removed, Some(look.diff.removed))
+                                            }
+                                            LineKind::Hunk => (colors.cyan, Some(colors.cyan)),
+                                            LineKind::Header | LineKind::Note => {
+                                                (colors.muted, None)
+                                            }
+                                            LineKind::Context => (colors.text, None),
+                                        };
+                                        div()
+                                            .min_w_full()
+                                            .flex_none()
+                                            .px(ui_text::space(10.0))
+                                            .text_color(rgb(ink))
+                                            .when_some(tint, |row, tint| {
+                                                row.bg(rgb(look.tint(
+                                                    tint,
+                                                    if *kind == LineKind::Hunk {
+                                                        0.08
+                                                    } else {
+                                                        0.16
+                                                    },
+                                                )))
+                                            })
+                                            .whitespace_nowrap()
+                                            .child(self.selectable(
+                                                &format!("diff:{key}:{at}"),
+                                                if shown.is_empty() {
+                                                    " ".to_owned()
+                                                } else {
+                                                    shown.clone()
+                                                },
+                                                Vec::new(),
+                                                Vec::new(),
+                                                look,
+                                                cx,
+                                            ))
+                                    },
+                                ))
                                 .children((drawn.hidden > 0).then(|| {
                                     div()
                                         .px(ui_text::space(10.0))

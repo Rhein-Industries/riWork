@@ -12,10 +12,10 @@ use gpui::{
 use gpui_kit::test::TestWindowExt;
 use std::sync::mpsc::Receiver;
 
-fn mount(
+pub(super) fn mount(
     cx: &mut TestAppContext,
 ) -> (
-    WindowHandle<ChatView>,
+    WindowHandle<gpui_kit::base::Root>,
     Entity<ChatView>,
     Receiver<feed::Delivery>,
 ) {
@@ -30,6 +30,7 @@ fn mount(
         });
         text_input::init(cx);
         let (recording_feed, recording) = Feed::recording();
+        let mut chat = None;
         let handle = cx
             .open_window(
                 WindowOptions {
@@ -40,7 +41,7 @@ fn mount(
                     ..Default::default()
                 },
                 |window, cx| {
-                    cx.new(|cx| {
+                    let view = cx.new(|cx| {
                         let mut view = ChatView::blank(
                             HostConfig {
                                 ensure: Arc::new(|| Err("fixture staging is disabled".into())),
@@ -51,11 +52,13 @@ fn mount(
                         view.chat_id = Some("fixture-chat".into());
                         view.feed = Some(recording_feed);
                         view
-                    })
+                    });
+                    chat = Some(view.clone());
+                    cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))
                 },
             )
             .unwrap();
-        let view = handle.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let view = chat.unwrap();
         (handle, view, recording)
     });
     cx.update_window(handle.into(), |_, window, _| window.activate_window())
