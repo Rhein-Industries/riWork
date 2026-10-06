@@ -169,24 +169,55 @@ pub(super) fn segments(look: Look) -> Div {
         .bg(rgb(look.colors.panel_active))
 }
 
+/// The colors of a `segment`: its pill's fill (none for a bare label) and label, at rest
+/// and under the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SegmentColors {
+    fill: Option<u32>,
+    ink: u32,
+    hover: u32,
+    hover_ink: u32,
+}
+
+impl SegmentColors {
+    fn of(selected: bool, colors: Palette) -> Self {
+        if selected {
+            Self {
+                fill: Some(colors.cyan),
+                ink: colors.bg,
+                hover: Button::Primary.hover(colors),
+                hover_ink: colors.bg,
+            }
+        } else {
+            Self {
+                fill: None,
+                ink: colors.muted,
+                hover: Button::Secondary.hover(colors),
+                hover_ink: colors.text,
+            }
+        }
+    }
+}
+
 /// One option of a `segments` track, exactly a `capsule`'s height: a clear margin where a
 /// capsule has its hairline edge and a point more, and a pill inside it a point less
 /// padded. The selected one's pill is filled in the primary color a `button` gives the
 /// primary choice; the others are bare labels in the secondary color whose pill fills
-/// under the pointer. The whole segment, margin included, takes the click, which the
-/// caller adds.
+/// under the pointer, their label then in the text color as an ordinary button's is. The
+/// whole segment, margin included, takes the click, which the caller adds.
 pub(super) fn segment(
     id: &'static str,
     label: impl Into<SharedString>,
     selected: bool,
     look: Look,
 ) -> Stateful<Div> {
-    let colors = look.colors;
-    let (fill, ink, hover) = if selected {
-        (Some(colors.cyan), colors.bg, Button::Primary.hover(colors))
-    } else {
-        (None, colors.muted, Button::Secondary.hover(colors))
-    };
+    let SegmentColors {
+        fill,
+        ink,
+        hover,
+        hover_ink,
+    } = SegmentColors::of(selected, look.colors);
+    let label: SharedString = label.into();
     let margin = px(2.0);
     div()
         .id(id)
@@ -194,18 +225,43 @@ pub(super) fn segment(
         .flex_none()
         .p(margin)
         .cursor_pointer()
+        .text_size(ui_text::text(10.0))
+        .text_color(rgb(ink))
         .child(
             div()
+                .relative()
                 .flex()
                 .items_center()
                 .px(ui_text::space(10.0))
                 .py(ui_text::space(CAPSULE_PAD_Y) + px(1.0) - margin)
                 .rounded_full()
                 .when_some(fill, |pill, fill| pill.bg(rgb(fill)))
-                .text_size(ui_text::text(10.0))
-                .text_color(rgb(ink))
                 .group_hover(id, move |style| style.bg(rgb(hover)))
-                .child(label.into()),
+                // A text's color is fixed when it is laid out, before the pointer is known,
+                // so a label whose color changes under the pointer is drawn twice, in both
+                // colors, and the pointer only chooses which one shows.
+                .map(|pill| {
+                    if hover_ink == ink {
+                        return pill.child(label);
+                    }
+                    pill.child(
+                        div()
+                            .group_hover(id, |style| style.opacity(0.0))
+                            .child(label.clone()),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(rgb(hover_ink))
+                            .opacity(0.0)
+                            .group_hover(id, |style| style.opacity(1.0))
+                            .child(label),
+                    )
+                }),
         )
 }
 
@@ -435,6 +491,38 @@ mod tests {
                 removed: 0xff0000,
             },
             native,
+        }
+    }
+
+    #[test]
+    fn segment_labels_stay_readable_under_the_pointer() {
+        let mut palettes = vec![
+            ("Native light", Palette::native(false)),
+            ("Native dark", Palette::native(true)),
+        ];
+        for choice in [
+            theme::ThemeChoice::RiWork,
+            theme::ThemeChoice::Catppuccin,
+            theme::ThemeChoice::TokyoNight,
+            theme::ThemeChoice::GruvboxLight,
+        ] {
+            palettes.push((
+                choice.label(),
+                theme::Appearance::resolve(choice, false).palette,
+            ));
+        }
+        for (name, colors) in palettes {
+            let track = colors.panel_active;
+            for selected in [false, true] {
+                let segment = SegmentColors::of(selected, colors);
+                let rest = theme::contrast(segment.ink, segment.fill.unwrap_or(track));
+                let hover = theme::contrast(segment.hover_ink, segment.hover);
+                eprintln!("{name} selected={selected}: rest {rest:.2}:1, hover {hover:.2}:1");
+                assert!(
+                    hover >= 4.5,
+                    "{name} selected={selected} hovered: {hover:.2}"
+                );
+            }
         }
     }
 

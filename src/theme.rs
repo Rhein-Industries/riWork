@@ -500,7 +500,8 @@ pub fn is_dark(color: u32) -> bool {
     luminance(color) < 0.5
 }
 
-fn contrast(first: u32, second: u32) -> f64 {
+/// The WCAG contrast ratio of two colors, from 1 to 21.
+pub fn contrast(first: u32, second: u32) -> f64 {
     let first = luminance(first);
     let second = luminance(second);
     (first.max(second) + 0.05) / (first.min(second) + 0.05)
