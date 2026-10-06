@@ -127,8 +127,10 @@ import RiWorkCore
             try await shot(window, prefix + "-1-shell")
             // The key bar scrolled part of the way: its keys must stay inside the bar's own shape.
             if let bar = keyBar() {
-                bar.scrollView.setContentOffset(CGPoint(x: 120, y: 0), animated: false)
+                bar.scrollView.setContentOffset(CGPoint(x: 137, y: 0), animated: false)
                 try await shot(window, prefix + "-1b-shell-keybar-scrolled")
+                bar.scrollView.setContentOffset(CGPoint(x: 155, y: 0), animated: false)
+                try await shot(window, prefix + "-1c-shell-keybar-scrolled-partial")
                 bar.scrollView.setContentOffset(.zero, animated: false)
             }
             model.selectChat(chatID)

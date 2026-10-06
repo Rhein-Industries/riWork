@@ -140,7 +140,8 @@ private struct LivePill: View {
                 .padding(.horizontal, 12).frame(minHeight: style.pt(30))
                 .background(.ultraThinMaterial, in: Capsule())
                 .overlay(Capsule().stroke(style.divider, lineWidth: 1))
-                .contentShape(Capsule())
+                // A 44-point target around the 30-point pill, without moving it.
+                .padding(.vertical, style.pt(7)).contentShape(Rectangle()).padding(.vertical, -style.pt(7))
         }
         .buttonStyle(.plain)
         .padding(.trailing, 10).padding(.bottom, 8 + floatingInset)

@@ -218,7 +218,7 @@ struct ChatComposer: View {
                 HStack(alignment: .top, spacing: 6) {
                     Text(notice).font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button("Dismiss message", systemImage: "xmark") { conversation.notice = nil }.labelStyle(.iconOnly).font(style.system(.caption)).foregroundStyle(style.muted).frame(minWidth: 44, minHeight: 44)
+                    Button("Dismiss message", systemImage: "xmark") { conversation.notice = nil }.labelStyle(.iconOnly).font(style.system(.caption)).foregroundStyle(style.muted).buttonStyle(TargetButtonStyle())
                 }
                 .padding(.horizontal, 12)
                 .accessibilityElement(children: .combine)
@@ -242,7 +242,7 @@ struct ChatComposer: View {
                     .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, typeSize)] d in d.height - band / 2 }
                 if state.isBusy {
                     Button(action: interrupt) { Image(systemName: "stop.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(style.gold).frame(width: 36, height: 36).background(style.gold.opacity(0.12), in: Circle()) }
-                        .buttonStyle(.plain).frame(width: 44, height: 44).contentShape(Rectangle())
+                        .buttonStyle(TargetButtonStyle(dims: false))
                         .disabled(!connected)
                         .accessibilityLabel("Interrupt").accessibilityHint("Stops what \(provider.title) is doing now")
                 }
@@ -253,13 +253,16 @@ struct ChatComposer: View {
                         .foregroundStyle(canSend ? style.background : style.muted)
                         .frame(width: 36, height: 36).background(canSend ? style.accent : style.active, in: Circle())
                 }
-                .buttonStyle(.plain).frame(width: 44, height: 44).contentShape(Rectangle())
+                .buttonStyle(TargetButtonStyle(dims: false))
                 .disabled(!canSend)
                 .accessibilityLabel("Send").accessibilityHint(conversation.sending ? "Sending" : "Sends the message")
             }
-            .padding(.horizontal, 6).padding(.vertical, 3)
+            .padding(.horizontal, BottomBarGeometry.composerInnerInset).padding(.vertical, 3)
         }
-        .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10)
+        // Lined up with the terminal's key bar: the paperclip and Send sit where its first key and Hide do, and the row stands as close
+        // above the keyboard as the key bar's capsule (`BottomBarGeometry.composerInsets`).
+        .padding(.horizontal, BottomBarGeometry.composerInsets(glass: style.glass).horizontal).padding(.top, 8)
+        .padding(.bottom, BottomBarGeometry.composerInsets(glass: style.glass).bottom)
         .background(style.glass ? style.surface : style.background)
     }
 
@@ -294,8 +297,10 @@ private struct ComposerPaperclip: View, Equatable {
     var body: some View {
         AttachMenu(choose: choose) {
             Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
-                .frame(width: style.pt(40), height: style.pt(44)).contentShape(Rectangle())
+                .frame(width: style.pt(44), height: style.pt(44)).contentShape(Rectangle())
         }
+        // No padding of the menu's own around the 44-point target, so the paperclip lines up with the key bar's first key.
+        .menuStyle(.button).buttonStyle(.plain)
         .disabled(!connected)
         .accessibilityHint("Sends it to the Mac and puts its path in the message")
     }

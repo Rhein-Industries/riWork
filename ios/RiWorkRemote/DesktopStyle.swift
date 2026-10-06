@@ -150,7 +150,7 @@ extension View {
 struct DesktopButtonStyle: ButtonStyle {
     @Environment(\.desktopStyle) private var style
     var prominent = false
-    /// Terminal chrome: 40-point targets instead of 44 so the shell gets the room.
+    /// Terminal and chat chrome: less padding beside the label. The target is still at least 44 points either way.
     var compact = false
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
@@ -161,7 +161,7 @@ struct DesktopButtonStyle: ButtonStyle {
         let label = configuration.label
             .font(style.face(12, bold: prominent, relativeTo: .subheadline))
             .foregroundStyle(prominent ? style.background : style.text)
-            .padding(.horizontal, style.pt(compact ? 6 : (prominent ? 16 : 10))).frame(minWidth: style.pt(compact ? 40 : 44), minHeight: style.pt(compact ? 40 : 44))
+            .padding(.horizontal, style.pt(compact ? 6 : (prominent ? 16 : 10))).frame(minWidth: style.pt(44), minHeight: style.pt(44))
         Group {
             if !prominent {
                 label
@@ -177,10 +177,27 @@ struct DesktopButtonStyle: ButtonStyle {
         configuration.label
             .font(style.mono(12, relativeTo: .subheadline))
             .foregroundStyle(prominent ? style.accent : style.text)
-            .padding(.horizontal, style.pt(compact ? 6 : 10)).frame(minWidth: style.pt(compact ? 40 : 44), minHeight: style.pt(compact ? 40 : 44))
+            .padding(.horizontal, style.pt(compact ? 6 : 10)).frame(minWidth: style.pt(44), minHeight: style.pt(44))
             .background(configuration.isPressed ? style.active : (prominent ? style.active : .clear))
             .overlay(alignment: .bottom) { if prominent { Rectangle().fill(style.accent).frame(height: 1) } }
             .contentShape(Rectangle()).opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
+/// A plain button whose whole 44-point square (at the interface size) is the target, not only its glyph: a frame put around a plain
+/// button from outside makes it bigger without making more of it tappable.
+struct TargetButtonStyle: ButtonStyle {
+    @Environment(\.desktopStyle) private var style
+    @Environment(\.isEnabled) private var isEnabled
+    /// In the tint color, as a borderless system button is; otherwise in the surrounding text color, as a plain one is.
+    var tinted = false
+    /// Dims while disabled; off for a button whose label already draws its disabled look.
+    var dims = true
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(tinted ? AnyShapeStyle(.tint) : AnyShapeStyle(.foreground))
+            .frame(minWidth: style.pt(44), minHeight: style.pt(44)).contentShape(Rectangle())
+            .opacity((isEnabled || !dims ? 1 : 0.45) * (configuration.isPressed ? 0.6 : 1))
     }
 }
 

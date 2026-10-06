@@ -20,7 +20,11 @@ struct KeyPreviewChip: View {
                 .lineLimit(1).truncationMode(.head).frame(maxWidth: .infinity, alignment: .leading)
             Text(preview.label).font(style.face(10, relativeTo: .caption2)).foregroundStyle(tint)
                 .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
-            Button { discard() } label: { Image(systemName: "xmark.circle.fill").font(.system(size: style.pt(13))).frame(width: style.pt(30), height: style.pt(28)).contentShape(Rectangle()) }
+            // A 44-point target over a 28-point chip: the extra height reaches over the chip's edges without making it taller.
+            Button { discard() } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: style.pt(13))).frame(width: style.pt(44), height: style.pt(44)).contentShape(Rectangle())
+            }
+            .padding(.vertical, -style.pt(8))
                 .buttonStyle(.plain).foregroundStyle(style.muted).accessibilityLabel("Discard pending input")
         }
         .padding(.leading, 8).frame(minHeight: style.pt(28)).background(style.panel)

@@ -61,3 +61,34 @@ final class KeyBarGeometryTests: XCTestCase {
         XCTAssertEqual(KeyBarGeometry.position(barMaxY: 0, screenHeight: 0), .aboveKeyboard, "no window yet")
     }
 }
+
+final class BottomBarGeometryTests: XCTestCase {
+    func testGlassRowIsClippedToTheCapsule() {
+        let clip = BottomBarGeometry.rowClip(barWidth: 402, barHeight: 44, glass: true)
+        XCTAssertEqual(clip, .init(x: 6, y: 2, width: 390, height: 40, cornerRadius: 20))
+        XCTAssertGreaterThan(BottomBarGeometry.keysInset(glass: true), clip.x, "the first key rests inside the capsule")
+        XCTAssertEqual(BottomBarGeometry.rowClip(barWidth: 402, barHeight: 44, glass: false), .init(x: 0, y: 0, width: 402, height: 44, cornerRadius: 0))
+    }
+
+    func testOnlyAnEndWithKeysPastItFades() {
+        let atStart = BottomBarGeometry.fade(offset: 0, contentWidth: 1200, visibleWidth: 300)
+        XCTAssertEqual(atStart.leading, 0); XCTAssertEqual(atStart.trailing, 1)
+        let middle = BottomBarGeometry.fade(offset: 8, contentWidth: 1200, visibleWidth: 300)
+        XCTAssertEqual(middle.leading, 0.5, accuracy: 0.001); XCTAssertEqual(middle.trailing, 1)
+        let atEnd = BottomBarGeometry.fade(offset: 900, contentWidth: 1200, visibleWidth: 300)
+        XCTAssertEqual(atEnd.leading, 1); XCTAssertEqual(atEnd.trailing, 0)
+        let bounced = BottomBarGeometry.fade(offset: -20, contentWidth: 200, visibleWidth: 300)
+        XCTAssertEqual(bounced.leading, 0); XCTAssertEqual(bounced.trailing, 0, "a row that fits never fades")
+    }
+
+    func testComposerLinesUpWithTheKeyBar() {
+        for glass in [true, false] {
+            let insets = BottomBarGeometry.composerInsets(glass: glass)
+            XCTAssertGreaterThanOrEqual(insets.horizontal, 0)
+            XCTAssertEqual(insets.horizontal + BottomBarGeometry.composerInnerInset, max(BottomBarGeometry.keysInset(glass: glass), BottomBarGeometry.composerInnerInset))
+            XCTAssertEqual(insets.bottom, BottomBarGeometry.capsuleEndInset)
+        }
+        XCTAssertEqual(BottomBarGeometry.composerInsets(glass: true).horizontal + BottomBarGeometry.composerInnerInset, 12)
+        XCTAssertEqual(BottomBarGeometry.minimumTarget, 44)
+    }
+}

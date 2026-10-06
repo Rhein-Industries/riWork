@@ -185,18 +185,18 @@ struct ConnectionPanel: View {
                 Spacer(minLength: 4)
                 if model.state == .connecting { ProgressView().controlSize(.small) }
                 if model.state == .connected {
-                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }.labelStyle(.iconOnly).disabled(model.loading)
-                    Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } }.labelStyle(.iconOnly)
+                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }.labelStyle(.iconOnly).buttonStyle(TargetButtonStyle(tinted: true)).disabled(model.loading)
+                    Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } }.labelStyle(.iconOnly).buttonStyle(TargetButtonStyle(tinted: true))
                 } else {
                     Button(model.state == .connecting ? "Cancel" : "Reconnect", systemImage: model.state == .connecting ? "xmark" : "arrow.clockwise") {
                         Task { if model.state == .connecting { await model.disconnect() } else { await model.connect() } }
-                    }
+                    }.buttonStyle(TargetButtonStyle(tinted: true))
                 }
             }
             if let error = model.error {
                 HStack(alignment: .top) {
                     Text(error).font(style.system(.caption)).foregroundStyle(style.warning).textSelection(.enabled)
-                    Button("Dismiss message", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly)
+                    Button("Dismiss message", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly).buttonStyle(TargetButtonStyle(tinted: true))
                 }
             }
         }.padding(.horizontal, 12).background(style.panel)
@@ -368,11 +368,10 @@ struct TerminalTabsView: View {
         .onChange(of: model.state) { _, _ in openRequestedNewTerminal() }
     }
     /// Back, the tab strip, New terminal and the menu: the same row, at the same height, over a terminal and over a chat. With no tab
-    /// open the project’s name stands where the strip would be. A double tap on the row enters focus mode on a terminal.
+    /// open the project’s name stands where the strip would be.
     private func navigationRow(_ chrome: TabScreenChrome) -> some View {
         HStack(spacing: 4) {
-            Button("Back to projects", systemImage: "chevron.left", action: onBack).labelStyle(.iconOnly)
-                .frame(minWidth: 44, minHeight: 44).buttonStyle(.plain)
+            Button("Back to projects", systemImage: "chevron.left", action: onBack).labelStyle(.iconOnly).buttonStyle(TargetButtonStyle())
             if model.tabs.isEmpty {
                 Text(project.name).font(style.face(13, bold: true, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -380,15 +379,13 @@ struct TerminalTabsView: View {
                 tabStrip
             }
             Button("New terminal", systemImage: "plus") { openNewTerminal() }.labelStyle(.iconOnly)
-                .frame(minWidth: 44, minHeight: 44).buttonStyle(.plain).disabled(model.state != .connected || model.projectID != project.id)
+                .buttonStyle(TargetButtonStyle()).disabled(model.state != .connected || model.projectID != project.id)
                 // A desktop that is too old still answers a tap, with the reason.
                 .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
                 .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
             screenMenu(chrome)
         }
         .frame(minHeight: style.pt(TabScreenChrome.rowHeight))
-        .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture(count: 2).onEnded { if chrome.terminalActions { model.setFocusMode(true) } }, including: chrome.terminalActions ? .all : .subviews)
         .chatLayoutProbe("navigation")
     }
     /// The screen's menu. The project, Session info, the tabs and the connection are there for every tab; a terminal adds its own section.
@@ -427,8 +424,11 @@ struct TerminalTabsView: View {
             Divider()
             if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
             else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
-        } label: { Label("Terminal tabs and connection", systemImage: "ellipsis") }
-            .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).buttonStyle(.plain)
+        } label: {
+            Label("Terminal tabs and connection", systemImage: "ellipsis").labelStyle(.iconOnly)
+                .frame(minWidth: style.pt(44), minHeight: style.pt(44)).contentShape(Rectangle())
+        }
+            .buttonStyle(.plain)
     }
     private func showSessionInfo() {
         if let chat = model.selectedChat {
@@ -602,7 +602,7 @@ private struct NoteLine: View {
                 Text(text).lineLimit(2)
             }
             .font(style.system(.footnote)).foregroundStyle(style.muted)
-            .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .modifier(NoteSurface())
         }
         .buttonStyle(.plain)
@@ -693,7 +693,7 @@ private struct PendingInputNotice: View {
                 Text(pending.line).font(style.mono(12, relativeTo: .caption)).lineLimit(4).textSelection(.enabled)
                 if !model.sending {
                     Text("Check that session’s output. This input will not be resent.").font(style.system(.footnote))
-                    Button("I reviewed the output…") { acknowledge = true }.font(style.system(.subheadline))
+                    Button("I reviewed the output…") { acknowledge = true }.font(style.system(.subheadline)).buttonStyle(TargetButtonStyle(tinted: true))
                 }
             }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(style.warning.opacity(0.12))
                 .alert("Acknowledge unconfirmed input?", isPresented: $acknowledge) {
@@ -740,7 +740,7 @@ struct SessionConsole: View {
                                 Image(systemName: "exclamationmark.circle")
                                 Text(error).font(style.system(.footnote))
                                 Spacer(minLength: 0)
-                                Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly)
+                                Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly).buttonStyle(TargetButtonStyle(tinted: true))
                             }.padding(.horizontal, 12).padding(.vertical, 8).background(style.warning.opacity(0.1))
                         }
                         PendingInputNotice(model: model)

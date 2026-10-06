@@ -103,7 +103,7 @@ struct TerminalMicButton: View {
     var body: some View {
         let phase = controller.phase(for: .terminal)
         Button(action: action) { DictationGlyph(phase: phase, level: controller.level, size: 20) }
-            .buttonStyle(.plain).frame(width: style.pt(44), height: style.pt(44)).contentShape(Rectangle())
+            .buttonStyle(TargetButtonStyle(dims: false))
             .disabled(!isEnabled && !phase.isActive)
             .accessibilityLabel(phase.isActive ? "Stop dictation" : "Dictate").accessibilityIdentifier("dictation.terminal")
             .dictationAlert(controller, owner: .terminal)

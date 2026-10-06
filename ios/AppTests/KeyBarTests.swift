@@ -281,4 +281,34 @@ import RiWorkCore
         try? await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(got.items.count, held, "and stops on release")
     }
+
+    // MARK: Targets and clipping
+
+    func testEveryKeyIsAFullTargetAndTheRowStaysInsideTheBar() throws {
+        for native in [false, true] {
+            var theme = DesktopTheme.builtIn
+            theme.native = native
+            theme.mic = true
+            let bar = makeBar()
+            bar.style = DesktopStyle(theme)
+            layout(bar)
+            for (action, button) in bar.buttons where !button.isHidden {
+                let frame = button.convert(button.bounds, to: bar)
+                XCTAssertGreaterThanOrEqual(frame.width, 44 - 0.5, "\(action) is at least 44 points wide")
+                XCTAssertGreaterThanOrEqual(frame.height, 44 - 0.5, "\(action) is at least 44 points tall")
+            }
+            let glass = bar.style.glass
+            let clip = BottomBarGeometry.rowClip(barWidth: Double(bar.bounds.width), barHeight: Double(bar.bounds.height), glass: glass)
+            let path = try XCTUnwrap(bar.rowClipPath)
+            let box = path.boundingBox
+            for (got, want) in [(box.minX, clip.x), (box.minY, clip.y), (box.width, clip.width), (box.height, clip.height)] {
+                XCTAssertEqual(Double(got), want, accuracy: 0.01, "native \(native): the row is clipped to the bar's shape")
+            }
+            XCTAssertEqual(bar.rowFadeEnds.leading, 1, accuracy: 0.01, "at rest the first key is not faded")
+            bar.scrollView.contentOffset = CGPoint(x: 137, y: 0)
+            XCTAssertEqual(bar.rowFadeEnds.leading, 0, accuracy: 0.01, "keys scrolled past the leading end fade out there")
+            bar.scrollView.contentOffset = CGPoint(x: bar.scrollView.contentSize.width - bar.scrollView.bounds.width, y: 0)
+            XCTAssertEqual(bar.rowFadeEnds.trailing, 1, accuracy: 0.01, "at the far end the last key is not faded")
+        }
+    }
 }
