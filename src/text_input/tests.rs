@@ -2,7 +2,8 @@
 use super::*;
 use gpui::{
     Bounds, ClipboardEntry, Context, ElementInputHandler, ExternalPaths, FocusHandle, InputHandler,
-    IntoElement, Render, Subscription, TestAppContext, WindowBounds, WindowHandle, WindowOptions,
+    InputEvent as _, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, Subscription,
+    TestAppContext, WindowBounds, WindowHandle, WindowOptions,
     div, point, px, size,
 };
 use gpui_kit::test::TestWindowExt;
@@ -802,6 +803,9 @@ fn glyph_hit_testing_drag_selection_and_compact_wrapped_layout(cx: &mut TestAppC
         let state = fields.read(cx).first.clone();
         let from = state.read(cx).range_to_bounds(&(1..1)).unwrap().center();
         let to = state.read(cx).range_to_bounds(&(4..4)).unwrap().center();
+        let bounds = window.find("first").bounds();
+        window.click_at("first", to - bounds.origin, cx);
+        assert_eq!(state.read(cx).cursor(), 4, "glyph click places the caret");
         window.drag(from, to, cx);
         assert_eq!(state.read(cx).selected_range(), 1..4);
         window.input("X", cx);
@@ -812,6 +816,7 @@ fn glyph_hit_testing_drag_selection_and_compact_wrapped_layout(cx: &mut TestAppC
             single.size.height >= px(24.) && single.size.height <= px(30.),
             "{single:?}"
         );
+        window.click("composer", cx);
         window.click_at("first", point(px(2.), px(2.)), cx);
         assert!(
             state.read(cx).focus_handle(cx).is_focused(window),
@@ -837,6 +842,127 @@ fn glyph_hit_testing_drag_selection_and_compact_wrapped_layout(cx: &mut TestAppC
         assert!(window.find("notes").bounds().origin.y >= multi.bottom());
     })
     .unwrap();
+}
+
+#[gpui::test]
+fn frame_padding_keeps_focus_and_selection_after_pointer_down_and_up(cx: &mut TestAppContext) {
+    let (handle, fields) = mount(cx);
+    for id in ["first", "composer"] {
+        for (readonly, disabled) in [(false, false), (true, false), (false, true)] {
+            for corner in 0..4 {
+                let mut position = point(px(0.), px(0.));
+                action_turn(cx, handle, |window, cx| {
+                    let (first, composer, parent_focus) = {
+                        let owner = fields.read(cx);
+                        (
+                            owner.first.clone(),
+                            owner.composer.clone(),
+                            owner.parent_focus.clone(),
+                        )
+                    };
+                    if id == "first" {
+                        first.update(cx, |state, cx| {
+                            state.set_value("abcdef", window, cx);
+                            state.set_selected_range(1..4, cx);
+                            state.set_readonly(readonly, cx);
+                            state.set_disabled(disabled, cx);
+                        });
+                    } else {
+                        composer.update(cx, |state, cx| {
+                            state.set_value("abcdef", window, cx);
+                            state.set_selected_range(1..4, cx);
+                            state.set_readonly(readonly, cx);
+                            state.set_disabled(disabled, cx);
+                        });
+                    }
+                    window.focus(&parent_focus, cx);
+                    window.render_frame(cx);
+                    let bounds = window.find(id).bounds();
+                    // All four points are inside the frame but outside Base's
+                    // text child: exercise the surrounding padding hitbox.
+                    position = bounds.origin
+                        + point(
+                            if corner % 2 == 0 {
+                                px(2.)
+                            } else {
+                                bounds.size.width - px(2.)
+                            },
+                            if corner < 2 {
+                                px(2.)
+                            } else {
+                                bounds.size.height - px(2.)
+                            },
+                        );
+                    window.dispatch_event(
+                        MouseMoveEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers: Default::default(),
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                });
+                for down in [true, false] {
+                    action_turn(cx, handle, |window, cx| {
+                        if down {
+                            window.dispatch_event(
+                                MouseDownEvent {
+                                    button: MouseButton::Left,
+                                    position,
+                                    modifiers: Default::default(),
+                                    click_count: 1,
+                                    first_mouse: false,
+                                }
+                                .to_platform_input(),
+                                cx,
+                            );
+                        } else {
+                            window.dispatch_event(
+                                MouseUpEvent {
+                                    button: MouseButton::Left,
+                                    position,
+                                    modifiers: Default::default(),
+                                    click_count: 1,
+                                }
+                                .to_platform_input(),
+                                cx,
+                            );
+                        }
+                        window.render_frame(cx);
+                    });
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        let owner = fields.read(cx);
+                        let (value, selection, focus) = if id == "first" {
+                            let state = owner.first.read(cx);
+                            (
+                                state.value(),
+                                state.selected_range(),
+                                state.focus_handle(cx),
+                            )
+                        } else {
+                            let state = owner.composer.read(cx);
+                            (
+                                state.value(),
+                                state.selected_range(),
+                                state.focus_handle(cx),
+                            )
+                        };
+                        assert_eq!(value, "abcdef");
+                        assert_eq!(selection, 1..4, "padding must not move the caret");
+                        assert_eq!(
+                            focus.is_focused(window),
+                            !disabled,
+                            "{id}, corner {corner}, down={down}"
+                        );
+                        assert_eq!(owner.parent_focus.is_focused(window), disabled);
+                    })
+                    .unwrap();
+                }
+            }
+        }
+    }
 }
 
 #[gpui::test]

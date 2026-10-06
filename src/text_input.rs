@@ -129,6 +129,10 @@ fn frame<M: InputModeKind>(
             let state = retained.read(cx);
             if !state.presentation().is_disabled() {
                 window.focus(&state.focus_handle(cx), cx);
+                // This bubble handler runs after Base's glyph/drag handler.
+                // Keep an enclosing focusable view's default mouse handler
+                // from taking focus back when only our padding was hit.
+                window.prevent_default();
             }
         })
 }

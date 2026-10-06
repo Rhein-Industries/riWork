@@ -130,6 +130,12 @@ collapsed caret. IME uses GPUI's native UTF-16 input handler, including marked t
 Base owns actual glyph hit testing, dragging, clipboard text, undo/redo, and
 keyboard editing; owners must not route these through old workspace text handlers.
 
+The whole shared frame, including padding, focuses its retained state on a left
+press unless disabled. Its bubble handler prevents the enclosing focusable view's
+default focus transfer after handling that press; it does not stop propagation
+or run before Base's glyph/drag handlers. Read-only fields remain focusable and
+selectable, while disabled padding leaves the owner's focus policy unchanged.
+
 `on_paste` captures Base's Paste action before insertion. Return true only after
 handling an app-owned image/file attachment; this consumes paste. Return false
 for ordinary text so Base inserts it normally. Disabled/read-only controls do not
@@ -255,3 +261,59 @@ The correction and proposed Escape/Return tests remain **unexecuted here**.
 The reviewer remains the sole build/test owner and must compile the test target
 and record fresh results for the integrated correction. Earlier passing receipts
 do not validate this correction. The untracked rollout audit is preserved.
+
+### Source-only frame-padding focus correction — execution still held
+
+The reviewer reports combined candidate
+`23d01018f59f16932a840698bda3e9e23108020e` builds and compiles tests, with
+76/78 selected cases passing and a separate 16-case polling receipt. The exact
+`glyph_hit_testing_drag_selection_and_compact_wrapped_layout` log at
+`/private/tmp/rwv-k_qkvg6s/logs/test-text_input-tests-glyph_hit_testing_drag_selection_and_compact_wrapped_layout.log`
+records **0 passed, 1 failed** at the `padding focuses` assertion. These are
+reviewer receipts, not new executions here; the second failing case is outside
+this focused correction.
+
+Source inspection identifies a shared-frame focus defect exposed by the
+fixture's enclosing `track_focus(&parent_focus)`. InputBase 0.7.1 forwards
+interaction to its frame but `focused(bool)` only sets presentation
+(`gpui-base/src/input/base/mod.rs:137–157,219–240`). Base's text child tracks the
+state's focus (`input/base/state.rs:4461–4464`). GPUI 0.3.8 registers an
+automatic mouse-down focus handler for every tracked focusable div; it transfers
+focus unless the event's default was prevented (`elements/div.rs:2770–2785`).
+Mouse bubble listeners run in reverse paint order (`window.rs:5792–5829`).
+When padding is hit, the adapter focuses the state, then the parent's automatic
+handler takes focus back. The child glyph path already prevents that ancestor
+default through its own focus handler. Kit's click helper renders, moves the
+pointer, dispatches mouse-down, renders, dispatches mouse-up and renders
+(`gpui-kit/src/test.rs:105–168`); the failing helper was not omitting mouse-up
+or using a stale frame. This diagnosis is source-based, not a fresh reproduction.
+
+The shared frame now calls `window.prevent_default()` immediately after its
+existing non-disabled left-press focus operation. That operation is in the
+bubble phase after Base's text handler; Base still owns caret placement and
+dragging. No duplicate focus handle is attached to the frame, no event is
+redispatched, and disabled behavior is unchanged. The original failed assertion
+is retained and strengthened by switching focus to the composer before clicking
+single-line padding. Its glyph hit test now also checks a click places the caret
+at byte 4; drag selection, replacement and compact wrapping assertions remain.
+
+A narrow new headless case checks all four padding corners of both single-line
+and textarea frames, with editable, read-only and disabled states. Each case
+starts with parent focus and selection `1..4`; mouse-down and mouse-up each get
+their own action/drain/assert turns. It asserts the appropriate child/parent
+focus and unchanged text/selection after both phases: 24 configurations and 48
+phase assertions. The fixture uses native GPUI event dispatch and actual Base
+states with the existing **NoopTextSystem**. Real-font cursor geometry, native
+macOS pointer/IME behavior and OS GUI proof remain pending parent review.
+
+No Cargo/build/test/listing/formatter/runtime/GUI/process/tmux/host execution or
+cleanup occurred. Proposed verification by the sole reviewer after integration:
+
+```sh
+cargo test --offline --locked --bin riwork text_input::tests::glyph_hit_testing_drag_selection_and_compact_wrapped_layout -- --exact --test-threads=1
+cargo test --offline --locked --bin riwork text_input::tests::frame_padding_keeps_focus_and_selection_after_pointer_down_and_up -- --exact --test-threads=1
+```
+
+Each must select exactly one test. Use the reviewer's approved private child
+home/runtime/target/Zig boundaries and preserve separate logs. Both corrected
+cases are **unexecuted here**; no broader suite rerun is requested by this fix.
