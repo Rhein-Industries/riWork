@@ -1,27 +1,19 @@
-//! Waking a waiting `shell output` when its pane may have changed, instead of
-//! capturing the pane every 80 ms to find out.
-//!
-//! A tmux control-mode client attached to the shell's own session
-//! (`tmux -C attach-session -f ignore-size`) gets a line for every
-//! write the pane's program makes (`%output`), and for layout and mode changes.
-//! It is only an alarm: the waiting call still captures and hashes the pane
-//! itself, so what it answers is what it always answered. The client never
-//! sends a command and never sizes a window (`ignore-size`). It is not
-//! `read-only`: tmux runs a `send-keys` that names no client for the most
-//! recently active one, and refuses it when that client is read-only, so a
-//! watching phone would lock every key out of the shell it watches.
-//!
-//! A quiet pane then costs nothing: no process starts until something is
-//! written. A change in a pane that tmux announces nothing about (such as
-//! `clear-history`) is still found by a slow safety capture, and a client that
-//! cannot attach (an old tmux, a session that just ended) leaves the caller on
-//! the 80 ms loop it always had.
+//! Legacy control-mode watcher, retained for caller/type compatibility.
+//! Creation is temporarily disabled both here and at `SessionManager::watch`:
+//! vulnerable tmux servers can crash when a control client disconnects during
+//! identification. All production callers use their existing polling fallback.
 use std::{
-    io::{self, BufRead, BufReader},
-    process::{Child, Command, Stdio},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
+    process::{Child, Command},
+    sync::mpsc::{Receiver, RecvTimeoutError},
     thread,
     time::{Duration, Instant},
+};
+
+#[cfg(test)]
+use std::{
+    io::{self, BufRead, BufReader},
+    process::Stdio,
+    sync::mpsc::{self, SyncSender},
 };
 
 /// How long a change keeps being collected before the pane is captured, so that
@@ -36,14 +28,14 @@ pub(super) const FIRST_GAP: Duration = Duration::from_millis(10);
 pub(super) const SAFETY_POLL: Duration = Duration::from_secs(4);
 /// The shortest wait that is worth starting a client for.
 pub(super) const MIN_WATCHED_WAIT: Duration = Duration::from_millis(250);
-/// How long a client may take to attach before the caller polls instead.
-const ATTACH_TIMEOUT: Duration = Duration::from_secs(1);
 /// Bytes of each line that are looked at; the rest of a long `%output` is
 /// read and dropped.
+#[cfg(test)]
 const LINE_HEAD: usize = 32;
 
 /// What one line of a control client means to a waiting caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Parser variants retained for legacy watcher tests.
 pub(super) enum Notice {
     /// Attached: from here on nothing the pane does can be missed.
     Attached,
@@ -56,6 +48,7 @@ pub(super) enum Notice {
 }
 
 /// The meaning of a control-mode line, from its first bytes.
+#[cfg(test)]
 pub(super) fn notice(head: &[u8]) -> Notice {
     let word = head
         .iter()
@@ -89,6 +82,7 @@ pub(super) fn notice(head: &[u8]) -> Notice {
 
 /// The head of the next line (at most `LINE_HEAD` bytes, newline included if
 /// it fits), and whether there was one. The rest of the line is consumed.
+#[cfg(test)]
 fn next_line_head(reader: &mut impl BufRead, head: &mut Vec<u8>) -> io::Result<bool> {
     head.clear();
     let mut any = false;
@@ -137,42 +131,11 @@ pub(crate) struct PaneWatch {
 }
 
 impl PaneWatch {
-    /// Attach `command` (a tmux client set up for the right server) to
-    /// `session` and wait for it to be attached. `None` when it cannot be.
-    pub(super) fn start(mut command: Command, session: &str) -> Option<Self> {
-        let mut child = command
-            .args(["-C", "attach-session", "-t"])
-            .arg(format!("={session}"))
-            .args(["-f", "ignore-size"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let (Some(input), Some(output)) = (child.stdin.take(), child.stdout.take()) else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        };
-        let (sender, notices) = mpsc::sync_channel(8);
-        thread::spawn(move || read_notices(output, &sender));
-        let watch = Self {
-            child,
-            _input: input,
-            notices,
-            woken: false,
-            gap: Duration::ZERO,
-        };
-        let deadline = Instant::now() + ATTACH_TIMEOUT;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match watch.notices.recv_timeout(left) {
-                Ok(Notice::Attached) => return Some(watch),
-                // Anything else before that is not an attached client.
-                Ok(Notice::Closed) | Err(_) => return None,
-                Ok(_) => {}
-            }
-        }
+    /// Disabled even for accidental direct callers. Do not spawn a control
+    /// client just to discover it cannot be watched safely; use polling.
+    #[allow(dead_code)] // Defensive entrypoint; the shared seam returns None first.
+    pub(super) fn start(_command: Command, _session: &str) -> Option<Self> {
+        None
     }
 
     /// Wait up to `longest` for the pane to change, then, if it did, let the
@@ -212,21 +175,6 @@ impl Drop for PaneWatch {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-}
-
-fn read_notices(output: impl io::Read, sender: &SyncSender<Notice>) {
-    let mut reader = BufReader::with_capacity(64 * 1024, output);
-    let mut head = Vec::with_capacity(LINE_HEAD);
-    while matches!(next_line_head(&mut reader, &mut head), Ok(true)) {
-        match notice(&head) {
-            Notice::Ignore => {}
-            // A full channel already holds news for the waiter.
-            other => {
-                let _ = sender.try_send(other);
-            }
-        }
-    }
-    // The waiter sees the channel close once the queue has been read.
 }
 
 #[cfg(test)]

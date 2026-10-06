@@ -190,3 +190,146 @@ fn is_user_message(event: &ChatEvent, prompt: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// Fresh ordinary project chat: the claim includes its preassigned ID before
+/// any creation request. After any creation/send ambiguity this occurrence is
+/// paused, never retried. The ID remains visible even if the host reply is lost.
+pub fn deliver_new(
+    host: &ChatHost,
+    proof: Proof,
+    target: &Target,
+    state: &State,
+    prompt: &str,
+    claim: &mut dyn FnMut(&str) -> Result<bool, String>,
+) -> Result<Delivery, String> {
+    if let Err(error) = target.validate_new_chat(host.home, state) {
+        return Ok(Delivery::Failed(error));
+    }
+    let fresh = target
+        .new_chat
+        .as_ref()
+        .ok_or("Missing fresh chat destination")?;
+    let crate::schedules::Scope::Project { project_id } = &target.scope else {
+        return Ok(Delivery::Failed("New chats require a project".into()));
+    };
+    let mut client = match host.connect() {
+        Ok(client) => client,
+        Err(error) => {
+            return Ok(Delivery::Deferred(format!(
+                "Chat host unavailable: {error}"
+            )));
+        }
+    };
+    // Same connection as Create. The installed binary may be newer than the
+    // running host; unknown operations on old hosts are non-mutating refusals.
+    match client.supports_identified_create(proof.wait.min(Duration::from_secs(2))) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Ok(Delivery::Deferred(
+                "Chat host does not support identified creation; waiting for a compatible host"
+                    .into(),
+            ));
+        }
+        Err(error) => {
+            return Ok(Delivery::Deferred(format!(
+                "Cannot confirm identified chat creation support: {error}"
+            )));
+        }
+    }
+    let chat_id = Uuid::new_v4().to_string();
+    if !claim(&format!("new-chat:{chat_id}"))? {
+        return Ok(Delivery::Deferred(
+            "Waiting for the four-attempts-per-minute delivery limit".into(),
+        ));
+    }
+    let chat = match client.create_identified(
+        &chat_id,
+        chat::model::NewChat {
+            provider: fresh.provider,
+            project_id: Some(project_id.clone()),
+            worktree_id: None,
+            cwd: fresh.root.clone(),
+            codex_account_id: fresh.codex_account_id.clone().or_else(|| {
+                (fresh.provider == chat::model::Provider::Codex)
+                    .then(|| crate::codex_accounts::SYSTEM_DEFAULT_ID.to_owned())
+            }),
+            title: fresh.title.clone(),
+            approval_mode: fresh.approval_mode,
+            model: fresh.model.clone(),
+            effort: fresh.effort.clone(),
+            fast: fresh.fast,
+            orchestrator: None,
+        },
+    ) {
+        Ok(chat) => chat,
+        Err(CallError::Refused(error)) => {
+            return Ok(Delivery::Failed(format!(
+                "Chat creation refused: {error}. No automatic retry."
+            )));
+        }
+        Err(CallError::Broken(error)) => {
+            return Ok(Delivery::Uncertain(format!(
+                "Chat creation may have succeeded: {error}. Open the recorded chat; no automatic retry."
+            )));
+        }
+    };
+    if chat.id != chat_id
+        || chat.project_id.as_ref() != Some(project_id)
+        || chat.worktree_id.is_some()
+        || chat.orchestrator.is_some()
+        || chat.cwd != fresh.root
+        || chat.provider != fresh.provider
+        || chat.codex_account_id != fresh.codex_account_id
+        || chat.approval_mode != fresh.approval_mode
+        || chat.model != fresh.model
+        || chat.effort != fresh.effort
+        || chat.fast != fresh.fast
+    {
+        return Ok(Delivery::Uncertain("Created chat identity differs from the requested destination; review it. No prompt sent.".into()));
+    }
+    // Creation can return while initialization is still running. Observe the same
+    // chat only; do not defer a claimed occurrence or create another chat.
+    let deadline = Instant::now() + proof.wait;
+    loop {
+        let current = match client.list() {
+            Ok(chats) => chats.into_iter().find(|chat| chat.id == chat_id),
+            Err(error) => {
+                return Ok(Delivery::Uncertain(format!(
+                    "Created chat cannot be inspected: {error}. No automatic retry."
+                )));
+            }
+        };
+        match current.map(|chat| chat.state) {
+            Some(ChatState::Idle) => break,
+            Some(ChatState::Starting) if Instant::now() < deadline => {
+                std::thread::sleep(proof.poll)
+            }
+            Some(ChatState::Failed { message }) => {
+                return Ok(Delivery::Failed(format!(
+                    "Created chat failed to start: {message}. No prompt sent."
+                )));
+            }
+            _ => return Ok(Delivery::Uncertain(
+                "Created chat is not ready for its prompt; open it for review. No automatic retry."
+                    .into(),
+            )),
+        }
+    }
+    let mark = match chat::log::mark(host.home, &chat_id) {
+        Ok(mark) => mark,
+        Err(error) => {
+            return Ok(Delivery::Uncertain(format!(
+                "Cannot inspect created chat log: {error}. No prompt sent."
+            )));
+        }
+    };
+    match client.command_checked(&chat_id, ChatCommand::Send { text: prompt.into() }) {
+        Ok(()) if seen_in_log(host, &chat_id, mark, prompt, proof) => Ok(Delivery::Submitted),
+        Ok(()) => Ok(Delivery::Uncertain("Prompt accepted but log proof is unavailable; open the created chat. No automatic retry.".into())),
+        Err(CallError::Refused(error)) => Ok(Delivery::Failed(format!("Created chat refused prompt: {error}. No automatic retry."))),
+        Err(CallError::Broken(error)) => Ok(Delivery::Uncertain(format!("Prompt may have been sent: {error}. Open the created chat; no automatic retry."))),
+    }
+}
+
+#[cfg(test)]
+mod fresh_tests;

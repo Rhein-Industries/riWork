@@ -36,6 +36,8 @@ impl Fixture {
             pane_identity: "fixture-pane".into(),
             provider_session: Uuid::new_v4().to_string(),
             chat: None,
+            new_chat: None,
+            shell_kind: None,
         }
     }
     fn add(&self, timing: Timing) -> Schedule {
@@ -448,6 +450,7 @@ impl Drop for ServerGuard {
         self.0.kill_server();
     }
 }
+type ProcessProbeHook = Arc<dyn Fn(&str) + Send + Sync>;
 struct RealFixture {
     _server: ServerGuard,
     f: Fixture,
@@ -456,6 +459,7 @@ struct RealFixture {
     ids: Vec<String>,
     foreground: Arc<Mutex<String>>,
     pids: Arc<Mutex<HashMap<String, u32>>>,
+    process_probe_hook: Arc<Mutex<Option<ProcessProbeHook>>>,
     _probe: crate::sessions::schedule_probe::Installed,
 }
 /// Fixture `lsof`: prints the canned descriptor listing for the queried PID.
@@ -485,8 +489,17 @@ os.write(1,('\x1b[2J\x1b[H'+prompt+' ').encode())
 buf=b''
 home=Path(os.environ['RIWORK_HOME'])
 screen_path=home/('screen-'+os.environ['RIWORK_SHELL_ID'])
+cwd_request=home/('cwd-request-'+os.environ['RIWORK_SHELL_ID'])
+cwd_ack=home/('cwd-ack-'+os.environ['RIWORK_SHELL_ID'])
 last_screen=None
+last_cwd=None
 while True:
+ if cwd_request.exists():
+  requested=cwd_request.read_text()
+  if requested!=last_cwd:
+   os.chdir(requested)
+   last_cwd=requested
+   cwd_ack.write_text(requested)
  if screen_path.exists():
   screen=screen_path.read_bytes()
   if screen!=last_screen:
@@ -495,6 +508,7 @@ while True:
    (home/('painted-'+os.environ['RIWORK_SHELL_ID'])).write_bytes(screen)
  if not select.select([0],[],[],0.02)[0]: continue
  b=os.read(0,1)
+ with open(home/('input-bytes-'+os.environ['RIWORK_SHELL_ID']), 'ab') as f: f.write(b)
  if b in (b'\r',b'\n'):
   with open(Path(os.environ['RIWORK_HOME'])/('received-'+os.environ['RIWORK_SHELL_ID']), 'ab') as f: f.write(buf+b'\n')
   buf=b''
@@ -537,11 +551,16 @@ while True:
         // fixture `lsof` show its rollout, so the real proof code runs.
         let foreground = Arc::new(Mutex::new(String::from("codex")));
         let pids = Arc::new(Mutex::new(HashMap::new()));
+        let process_probe_hook: Arc<Mutex<Option<ProcessProbeHook>>> = Arc::new(Mutex::new(None));
         let probe = crate::sessions::schedule_probe::install(
             &f.home,
             {
                 let (foreground, pids) = (foreground.clone(), pids.clone());
+                let hook = process_probe_hook.clone();
                 Arc::new(move |id: &str| {
+                    if let Some(hook) = hook.lock().unwrap().clone() {
+                        hook(id);
+                    }
                     Ok(format!(
                         "{}|{}",
                         fixture_pid(&pids, id),
@@ -559,6 +578,7 @@ while True:
             ids,
             foreground,
             pids,
+            process_probe_hook,
             _probe: probe,
         };
         for id in &result.ids {
@@ -568,6 +588,34 @@ while True:
             result.wait_for_prompt(id, "›");
         }
         result
+    }
+    fn project_root_target(&self, id: &str) -> Target {
+        let registry = self.f.home.join("sessions.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry).unwrap()).unwrap();
+        for shell in json["sessions"].as_array_mut().unwrap() {
+            if shell["id"] == id {
+                shell["worktree_id"] = serde_json::Value::Null;
+                shell["cwd"] = serde_json::json!(self.state.projects[0].root);
+            }
+        }
+        fs::write(registry, serde_json::to_vec(&json).unwrap()).unwrap();
+        Target::bind_shell(self.scopes().remove(1), &self.state, &self.sessions, id).unwrap()
+    }
+    fn change_directory(&self, id: &str, directory: &Path) {
+        request_fixture_directory(&self.f.home, id, directory);
+        let expected = directory.canonicalize().unwrap();
+        for _ in 0..150 {
+            if self
+                .sessions
+                .current_directory(id)
+                .is_ok_and(|path| path.canonicalize().is_ok_and(|path| path == expected))
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("The fixture's live directory did not change to {directory:?}");
     }
     fn wait_for_prompt(&self, id: &str, prompt: &str) {
         for _ in 0..150 {
@@ -650,6 +698,18 @@ while True:
             },
         ]
     }
+}
+fn request_fixture_directory(home: &Path, id: &str, directory: &Path) {
+    let requested = directory.to_str().unwrap();
+    fs::write(home.join(format!("cwd-request-{id}")), requested).unwrap();
+    for _ in 0..150 {
+        if fs::read_to_string(home.join(format!("cwd-ack-{id}"))).is_ok_and(|ack| ack == requested)
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("The fixture did not acknowledge its directory change");
 }
 impl Drop for RealFixture {
     fn drop(&mut self) {
@@ -2025,4 +2085,319 @@ fn copy_and_cut_have_nothing_to_write_without_a_selection() {
     assert_eq!(input.selected_text(), None);
     input.selection = 1..3;
     assert_eq!(input.selected_text(), Some("ra"));
+}
+
+#[test]
+fn explicit_project_root_shells_dispatch_once_and_legacy_kind_semantics_stay_pinned() {
+    for harness in [HarnessKind::Codex, HarnessKind::Claude] {
+        let mut f = RealFixture::new();
+        let id = if harness == HarnessKind::Codex {
+            f.ids[2].clone()
+        } else {
+            let shell = f.add_claude_worker();
+            let (provider, turn) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+            f.claude_hook(
+                &shell.id,
+                claude_event("UserPromptSubmit", &provider, &turn),
+            );
+            f.claude_hook(&shell.id, claude_event("Stop", &provider, &turn));
+            f.set_foreground("claude");
+            f.wait_for_prompt(&shell.id, "❯");
+            shell.id
+        };
+        let registry = f.f.home.join("sessions.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry).unwrap()).unwrap();
+        for shell in json["sessions"].as_array_mut().unwrap() {
+            if shell["id"] == id {
+                shell["worktree_id"] = serde_json::Value::Null;
+                shell["cwd"] = serde_json::json!(f.state.projects[0].root);
+            }
+        }
+        fs::write(&registry, serde_json::to_vec(&json).unwrap()).unwrap();
+        let scope = f.scopes().remove(1);
+        assert!(Target::bind(scope.clone(), &f.state, &f.sessions, &id).is_err());
+        let target = Target::bind_shell(scope.clone(), &f.state, &f.sessions, &id).unwrap();
+        assert_eq!(target.shell_kind, Some(ShellKind::Project));
+        let selected = f.sessions.get(&id).unwrap();
+        assert!(target.matches(&f.state, &selected));
+        for change in ["project", "worktree", "kind", "created", "account", "root"] {
+            let mut changed = selected.clone();
+            match change {
+                "project" => changed.project_id = Some(Uuid::new_v4().to_string()),
+                "worktree" => changed.worktree_id = Some(f.state.worktrees[0].id.clone()),
+                "kind" => changed.kind = ShellKind::Orchestrator,
+                "created" => changed.created_at_unix += 1,
+                "account" => changed.codex_home = Some(f.f.home.join("different-account")),
+                "root" => changed.cwd = f.f.home.clone(),
+                _ => unreachable!(),
+            }
+            assert!(!target.matches(&f.state, &changed), "{change}");
+        }
+        let mut old = serde_json::to_value(&target).unwrap();
+        old.as_object_mut().unwrap().remove("shell_kind");
+        let old: Target = serde_json::from_value(old).unwrap();
+        assert!(old.shell_kind.is_none());
+        assert!(!old.matches(&f.state, &selected));
+        f.set_foreground("codex");
+        let legacy = Target::bind(scope, &f.state, &f.sessions, &f.ids[1]).unwrap();
+        assert!(legacy.shell_kind.is_none());
+        assert!(legacy.matches(&f.state, &f.sessions.get(&f.ids[1]).unwrap()));
+        let worker = Target::bind_shell(f.scopes().remove(2), &f.state, &f.sessions, &f.ids[0]);
+        assert!(worker.is_err());
+        f.set_foreground(harness.program());
+        let prompt = format!("ordinary project root {}", harness.program());
+        f.f.store
+            .save(
+                None,
+                "Project root".into(),
+                prompt.clone(),
+                target.clone(),
+                Timing::Once { at: 1000 },
+                999,
+            )
+            .unwrap();
+        f.f.store.tick(1000).unwrap();
+        assert_eq!(
+            f.f.row().last_run.as_ref().unwrap().outcome,
+            Outcome::Submitted,
+            "{:?}",
+            f.f.row().last_run
+        );
+        let reloaded = ScheduleStore::at(f.f.home.clone()).unwrap();
+        assert_eq!(reloaded.list().unwrap()[0].target, target);
+        reloaded.tick(1001).unwrap();
+        for _ in 0..100 {
+            if received_prompt(&f, &id).exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            fs::read_to_string(received_prompt(&f, &id)).unwrap(),
+            format!("{prompt}\n")
+        );
+    }
+}
+
+fn save_directory_fixture(f: &RealFixture, target: Target) {
+    f.f.store
+        .save(
+            None,
+            "Live directory guard".into(),
+            "Inert directory fixture instruction".into(),
+            target,
+            Timing::Once { at: 1000 },
+            999,
+        )
+        .unwrap();
+}
+
+fn tick_directory_fixture(f: &RealFixture) -> usize {
+    let mut claims = 0;
+    let mut tracker = crate::activity::ActivityTracker::at(f.f.home.clone());
+    f.f.store
+        .tick_with(1000, |target, prompt, claim| {
+            f.sessions
+                .send_scheduled(target, &f.state, prompt, &mut tracker, &mut |token| {
+                    claims += 1;
+                    claim(token)
+                })
+        })
+        .unwrap();
+    claims
+}
+
+fn assert_directory_rejected_without_input(f: &RealFixture, id: &str, outcome: Outcome) {
+    let row = f.f.row();
+    assert_eq!(
+        row.last_run.as_ref().unwrap().outcome,
+        outcome,
+        "{:?}",
+        row.last_run
+    );
+    assert_eq!(row.paused, outcome == Outcome::Failed);
+    assert_eq!(row.review_required, outcome == Outcome::Failed);
+    let ledger: Ledger =
+        serde_json::from_slice(&fs::read(f.f.home.join("schedules.json")).unwrap()).unwrap();
+    assert_eq!(ledger.sends_in_window, 0);
+    assert!(ledger.consumed.is_empty());
+    // The real terminal harness records every input byte, including an empty
+    // Return. A missing record proves neither paste nor Return reached it.
+    assert!(!f.f.home.join(format!("input-bytes-{id}")).exists());
+    assert!(!received_prompt(f, id).exists());
+}
+
+#[test]
+fn explicit_project_live_directory_drift_and_symlink_escape_fail_before_claim() {
+    for symlink_escape in [false, true] {
+        let f = RealFixture::new();
+        let id = &f.ids[2];
+        let target = f.project_root_target(id);
+        let outside = f.f.home.join("outside-project");
+        fs::create_dir(&outside).unwrap();
+        let directory = if symlink_escape {
+            let link = f.state.projects[0].root.join("escape");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            link
+        } else {
+            outside.clone()
+        };
+        f.change_directory(id, &directory);
+        assert_eq!(
+            f.sessions
+                .current_directory(id)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            outside.canonicalize().unwrap()
+        );
+        // Reproduce independent review: the saved identity still matches even
+        // though the actual process is now outside its selected project.
+        assert!(target.matches(&f.state, &f.sessions.get(id).unwrap()));
+        save_directory_fixture(&f, target);
+        assert_eq!(tick_directory_fixture(&f), 0);
+        assert_directory_rejected_without_input(&f, id, Outcome::Failed);
+        assert!(
+            f.f.row()
+                .last_run
+                .unwrap()
+                .message
+                .contains("left the selected project root")
+        );
+    }
+}
+
+#[test]
+fn explicit_project_live_directory_root_and_subdirectory_submit_once() {
+    for subdirectory in [false, true] {
+        let f = RealFixture::new();
+        let id = &f.ids[2];
+        let target = f.project_root_target(id);
+        let mut directory = f.state.projects[0].root.clone();
+        if subdirectory {
+            directory = directory.join("nested");
+            fs::create_dir(&directory).unwrap();
+        }
+        f.change_directory(id, &directory);
+        save_directory_fixture(&f, target);
+        assert_eq!(tick_directory_fixture(&f), 1);
+        assert_eq!(f.f.row().last_run.unwrap().outcome, Outcome::Submitted);
+        f.f.store.tick(1001).unwrap();
+        for _ in 0..100 {
+            if received_prompt(&f, id).exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            fs::read_to_string(received_prompt(&f, id)).unwrap(),
+            "Inert directory fixture instruction\n"
+        );
+        assert_eq!(
+            fs::read(f.f.home.join(format!("input-bytes-{id}"))).unwrap(),
+            b"Inert directory fixture instruction\r"
+        );
+    }
+}
+
+#[test]
+fn explicit_project_live_directory_unreadable_defers_before_claim() {
+    let f = RealFixture::new();
+    let id = &f.ids[2];
+    let target = f.project_root_target(id);
+    let removed = f.state.projects[0].root.join("removed-cwd");
+    fs::create_dir(&removed).unwrap();
+    f.change_directory(id, &removed);
+    fs::remove_dir(&removed).unwrap();
+    let live = f.sessions.current_directory(id);
+    assert!(
+        match &live {
+            Ok(path) => path.canonicalize().is_err(),
+            Err(_) => true,
+        },
+        "expected unreadable live directory evidence, got {live:?}"
+    );
+    save_directory_fixture(&f, target);
+    assert_eq!(tick_directory_fixture(&f), 0);
+    assert_directory_rejected_without_input(&f, id, Outcome::Deferred);
+    assert!(
+        f.f.row()
+            .last_run
+            .unwrap()
+            .message
+            .contains("Cannot verify")
+    );
+}
+
+#[test]
+fn explicit_project_live_directory_drift_during_readiness_is_rechecked_under_input_lock() {
+    use fs2::FileExt;
+    let f = RealFixture::new();
+    let id = &f.ids[2];
+    let target = f.project_root_target(id);
+    f.change_directory(id, &f.state.projects[0].root);
+    let outside = f.f.home.join("outside-during-readiness");
+    fs::create_dir(&outside).unwrap();
+    let drifted = Arc::new(AtomicUsize::new(0));
+    *f.process_probe_hook.lock().unwrap() = Some({
+        let home = f.f.home.clone();
+        let id = id.clone();
+        let drifted = drifted.clone();
+        Arc::new(move |probed| {
+            if probed != id || drifted.load(Ordering::SeqCst) != 0 {
+                return;
+            }
+            let path = home.join(format!("terminal-control/{id}-input.lock"));
+            let Ok(lock) = fs::OpenOptions::new().read(true).write(true).open(path) else {
+                return;
+            };
+            match lock.try_lock_exclusive() {
+                Ok(()) => {
+                    FileExt::unlock(&lock).unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    // This provider proof is sampled during readiness with the
+                    // input lock held, after the initial live-directory gate.
+                    drifted.fetch_add(1, Ordering::SeqCst);
+                    request_fixture_directory(&home, &id, &outside);
+                    let sessions = SessionManager::at(home.clone()).unwrap();
+                    assert_eq!(
+                        sessions
+                            .current_directory(&id)
+                            .unwrap()
+                            .canonicalize()
+                            .unwrap(),
+                        outside.canonicalize().unwrap()
+                    );
+                }
+                Err(error) => panic!("Cannot inspect fixture input lock: {error}"),
+            }
+        })
+    });
+    save_directory_fixture(&f, target);
+    assert_eq!(tick_directory_fixture(&f), 0);
+    assert_eq!(drifted.load(Ordering::SeqCst), 1);
+    assert_directory_rejected_without_input(&f, id, Outcome::Failed);
+}
+
+#[test]
+fn project_orchestrator_live_directory_remains_context_only() {
+    for explicit in [false, true] {
+        let f = RealFixture::new();
+        let id = &f.ids[1];
+        let scope = f.scopes().remove(1);
+        let target = if explicit {
+            Target::bind_shell(scope, &f.state, &f.sessions, id).unwrap()
+        } else {
+            Target::bind(scope, &f.state, &f.sessions, id).unwrap()
+        };
+        assert_ne!(target.shell_kind, Some(ShellKind::Project));
+        let outside = f.f.home.join("orchestrator-context");
+        fs::create_dir(&outside).unwrap();
+        f.change_directory(id, &outside);
+        save_directory_fixture(&f, target);
+        assert_eq!(tick_directory_fixture(&f), 1);
+        assert_eq!(f.f.row().last_run.unwrap().outcome, Outcome::Submitted);
+    }
 }

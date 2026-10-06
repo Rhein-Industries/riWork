@@ -1,0 +1,58 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized] target(s) in 0.57s
+     Running unittests src/main.rs (/tmp/riwork-automations-target/debug/deps/riwork-72c65fc1f45c3555)
+
+running 49 tests
+test schedules::tests::a_failed_claim_write_is_still_an_error_and_never_a_recorded_deferral ... ok
+test schedules::tests::a_grok_session_is_refused_at_bind ... ok
+test schedules::tests::a_missed_window_keeps_the_last_deferral_reason ... ok
+test schedules::tests::a_real_fixture_leaves_no_tmux_server_behind ... ok
+test schedules::tests::a_real_subagent_start_and_stop_pair_in_an_unseen_turn_withdraws_the_completion ... ok
+test schedules::tests::a_stray_subagent_stop_after_a_reply_does_not_stop_a_schedule ... ok
+test schedules::tests::a_target_that_is_truly_gone_or_replaced_still_fails_and_pauses ... ok
+test schedules::tests::child_tick_worker ... ignored, launched only by isolated concurrency parent
+test schedules::tests::claude_clear_and_resume_rebind_so_the_old_completion_cannot_admit_a_prompt ... ok
+test schedules::tests::claude_identity_comes_from_the_hook_cursor_alone ... ok
+test schedules::tests::claude_shell_foreground_and_stale_completion_defer_until_a_real_stop ... ok
+test schedules::tests::codex_proof_distinguishes_a_different_thread_from_unreadable_evidence ... ok
+test schedules::tests::codex_proof_drains_large_descriptor_listings ... ok
+test schedules::tests::codex_proof_needs_the_foreground_process_to_hold_the_bound_rollout ... ok
+test schedules::tests::codex_that_left_a_shell_prompt_is_deferred_and_never_typed_into ... ok
+test schedules::tests::codex_without_a_binding_binds_only_a_proven_rollout ... ok
+test schedules::tests::concurrent_processes_send_once ... ok
+test schedules::tests::concurrent_threads_send_once ... ok
+test schedules::tests::copy_and_cut_have_nothing_to_write_without_a_selection ... ok
+test schedules::tests::deferred_is_bounded_and_grace_is_inclusive ... ok
+test schedules::tests::delete_waits_for_claimed_delivery_and_cannot_overwrite_its_outcome ... ok
+test schedules::tests::dispatch_errors_are_deferred_with_backoff_so_other_schedules_still_run ... ok
+test schedules::tests::due_boundary_one_time_and_restart_do_not_duplicate ... ok
+test schedules::tests::durable_inflight_claim_is_uncertain_after_owner_crash ... ok
+test schedules::tests::explicit_project_live_directory_drift_and_symlink_escape_fail_before_claim ... ok
+test schedules::tests::explicit_project_live_directory_drift_during_readiness_is_rechecked_under_input_lock ... ok
+test schedules::tests::explicit_project_live_directory_root_and_subdirectory_submit_once ... ok
+test schedules::tests::explicit_project_live_directory_unreadable_defers_before_claim ... ok
+test schedules::tests::explicit_project_root_shells_dispatch_once_and_legacy_kind_semantics_stay_pinned ... ok
+test schedules::tests::failure_and_uncertainty_pause_until_reviewed_future_edit ... ok
+test schedules::tests::global_delivery_limit_bounds_simultaneous_due_schedules ... ok
+test schedules::tests::invalid_store_and_timing_fail_closed ... ok
+test schedules::tests::isolated_live_provider_acceptance ... ignored, requires explicitly provisioned disposable provider sessions
+test schedules::tests::only_codex_and_claude_can_be_scheduled ... ok
+test schedules::tests::pasted_line_breaks_become_one_space ... ok
+test schedules::tests::pause_resume_edit_delete_and_revision_conflicts ... ok
+test schedules::tests::project_orchestrator_live_directory_remains_context_only ... ok
+test schedules::tests::rate_window_restarts_after_the_clock_steps_backward ... ok
+test schedules::tests::real_claude_worker_waits_for_completed_hook_before_dispatch ... ok
+test schedules::tests::real_dispatch_accepts_completed_history_and_refuses_current_interaction ... ok
+test schedules::tests::real_dispatch_rejects_wrong_scope_busy_provider_change_and_exit ... ok
+test schedules::tests::real_lsof_sees_a_rollout_held_by_a_launcher_child_of_the_pane_group ... ok
+test schedules::tests::real_tmux_dispatch_for_all_three_scopes_preserves_identity ... ok
+test schedules::tests::recurring_cadence_skips_backlog_and_clock_rewind ... ok
+test schedules::tests::shared_service_requires_future_edit_before_failed_or_uncertain_rearm ... ok
+test schedules::tests::titles_and_prompts_reject_control_characters ... ok
+test schedules::tests::tracked_scheduler_catches_up_large_rollout_without_startup_alerts_or_duplicate ... ok
+test schedules::tests::two_schedules_cannot_consume_the_same_idle_turn ... ok
+test schedules::tests::unreadable_evidence_defers_without_pausing_and_recovers ... ok
+
+test result: ok. 47 passed; 0 failed; 2 ignored; 0 measured; 1614 filtered out; finished in 48.66s

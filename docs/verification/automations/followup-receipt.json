@@ -1,0 +1,30 @@
+{
+  "code_candidate": "8f4d966983d8fa0ae436d6b0b536282f0945b648",
+  "original_candidate": "a38ea39ec5a0de607698e8cab88adad0c6b17680",
+  "base": "edcaf5799038de8769d985700858323a47fe6b1e",
+  "scope": "CLI/MCP presence validation, focused regressions and log EOF normalization only",
+  "checks": {
+    "schedule_interfaces": {
+      "passed": 8,
+      "failed": 0
+    },
+    "cli_mcp_contract": {
+      "passed": 12,
+      "failed": 0
+    },
+    "cargo_check_offline": "passed",
+    "cargo_fmt_check": "passed",
+    "base_to_code_candidate_diff_check": {
+      "command": "git diff edcaf579 8f4d966983d8fa0ae436d6b0b536282f0945b648 --check",
+      "exit_code": 0
+    }
+  },
+  "source_sha256": {
+    "src/cli.rs": "8b08c7e701ac925ea950957e9afd018780a5204f71843770546cd4d4e615439a",
+    "src/mcp.rs": "bb5d87eb2730a705714d23c9c3e7f987c1806ec1a31b68f52b36c66dc90b2904",
+    "tests/schedule_interfaces.rs": "a9166e0d555335d242cfe2949f9f7791f688402260cf95c83efa2f0fa851053f"
+  },
+  "cua_ownership": "not acquired",
+  "scheduler_gui_rerun": false,
+  "production_changes": false
+}

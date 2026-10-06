@@ -157,11 +157,11 @@ use super::model::{
     QuestionOption, QuestionPrompt, Step, StepStatus, TurnOutcome, Usage,
 };
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const _: StartDriver = start;
@@ -245,6 +245,10 @@ impl CodexDriver {
 }
 
 impl Driver for CodexDriver {
+    fn cancel_io(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        let proc = Arc::clone(&self.codex.proc);
+        Some(Arc::new(move || proc.cancel_writes()))
+    }
     fn command(&mut self, command: ChatCommand) -> Result<(), String> {
         if matches!(command, ChatCommand::Stop) {
             self.shutdown();
@@ -343,6 +347,11 @@ struct Session {
     turn: Option<String>,
     /// A `turn/start` is in flight and its turn id is not known yet.
     starting: bool,
+    start_serial: u64,
+    /// Completions observed during this start dispatch, including before its
+    /// receipt. Bounded; overflow makes the receipt uncertain rather than reopening.
+    completed_before_receipt: HashSet<String>,
+    completion_overflow: bool,
     /// Messages sent before the turn id was known, steered in once it is.
     queued: Vec<String>,
     interrupt_wanted: bool,
@@ -386,6 +395,9 @@ impl Session {
             ready: false,
             turn: None,
             starting: false,
+            start_serial: 0,
+            completed_before_receipt: HashSet::new(),
+            completion_overflow: false,
             queued: Vec::new(),
             interrupt_wanted: false,
             interrupting: false,
@@ -457,6 +469,27 @@ impl Session {
     /// send: queued messages steered in, a wanted interrupt.
     fn begin_turn(&mut self, turn_id: &str) -> Vec<Value> {
         let mut frames = Vec::new();
+        if turn_id.trim().is_empty() {
+            return frames;
+        }
+        // A delayed receipt for an old turn must not drain its queued text into a
+        // newer turn. Completion can also precede the start receipt.
+        if self.last_finished_turn.as_deref() == Some(turn_id)
+            || self.completed_before_receipt.contains(turn_id)
+        {
+            if self.turn.is_none() {
+                self.starting = false;
+                self.refresh_state();
+            }
+            return frames;
+        }
+        if self
+            .turn
+            .as_deref()
+            .is_some_and(|current| current != turn_id)
+        {
+            return frames;
+        }
         // Both the `turn/start` result and `turn/started` come here, and either
         // can arrive after the turn is over.
         if self.turn.is_none() && self.last_finished_turn.as_deref() != Some(turn_id) {
@@ -635,6 +668,16 @@ impl Session {
 
     /// The end of the turn `turn_id`; frames to send for messages still queued.
     fn finish_turn(&mut self, turn_id: &str, outcome: TurnOutcome) -> Vec<Value> {
+        if turn_id.trim().is_empty() {
+            return Vec::new();
+        }
+        if turn_id.len() > 512 {
+            self.completion_overflow = true;
+        } else if self.completed_before_receipt.len() < 64 {
+            self.completed_before_receipt.insert(turn_id.to_owned());
+        } else if !self.completed_before_receipt.contains(turn_id) {
+            self.completion_overflow = true;
+        }
         self.last_finished_turn = Some(turn_id.to_owned());
         if self.turn.as_deref() != Some(turn_id) {
             return Vec::new();
@@ -667,19 +710,32 @@ impl Session {
     /// A `turn/start` for `text`, marking the chat busy.
     fn start_frame(&mut self, thread: &str, text: String) -> Value {
         self.starting = true;
+        self.start_serial += 1;
+        self.completed_before_receipt.clear();
+        self.completion_overflow = false;
+        let serial = self.start_serial;
         self.refresh_state();
         let params = self.turn_params(thread, &text);
         self.request(
             "turn/start",
             params,
-            Box::new(|codex, outcome| match outcome {
+            Box::new(move |codex, outcome| match outcome {
                 Ok(result) => {
                     if let Some(turn_id) = result["turn"]["id"].as_str() {
-                        let frames = codex.with(|session| session.begin_turn(turn_id));
+                        let frames = codex.with(|session| {
+                            if session.start_serial == serial {
+                                session.begin_turn(turn_id)
+                            } else {
+                                Vec::new()
+                            }
+                        });
                         codex.send_all(frames);
                     }
                 }
                 Err(message) => codex.with(|session| {
+                    if session.start_serial != serial {
+                        return;
+                    }
                     session.starting = false;
                     session.queued.clear();
                     session.interrupt_wanted = false;
@@ -957,6 +1013,10 @@ impl Codex {
         }
         match command {
             ChatCommand::Send { text } => self.send_text(text),
+            ChatCommand::SendAttachments { text, attachments } => {
+                let input = super::attachments::inputs(&text, &attachments, false)?;
+                self.send_attachments(input)
+            }
             ChatCommand::Interrupt => self.interrupt(),
             ChatCommand::Approve {
                 request_id,
@@ -1053,6 +1113,110 @@ impl Codex {
             });
         }
         sent
+    }
+
+    /// Unlike legacy text steering, attachment submission has no implicit retry/queue.
+    /// A reply acknowledges submission; the separate turn events describe completion.
+    fn send_attachments(&self, input: Value) -> Result<(), String> {
+        let deadline = Instant::now() + child::WRITE_WAIT;
+        let thread = self.thread()?;
+        let (answer, wait) = mpsc::channel();
+        let frame = self.with(|session| {
+            if session.finished || session.interrupting || session.starting {
+                return Err("Codex is starting or interrupting a turn; keep the draft and send after it settles".to_owned());
+            }
+            let expected_turn = session.turn.clone();
+            let (method, params, starting) = if let Some(turn) = &session.turn {
+                ("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"input":input}), false)
+            } else {
+                let mut params = session.turn_params(&thread, "");
+                params["input"] = input;
+                session.starting = true;
+                session.start_serial += 1;
+                session.completed_before_receipt.clear();
+                session.completion_overflow = false;
+                session.refresh_state();
+                ("turn/start", params, true)
+            };
+            let serial = session.start_serial;
+            Ok(session.request(method, params, Box::new(move |codex, outcome| {
+                let result = match outcome {
+                    Ok(value) => {
+                        if starting {
+                            if let Some(id) = value["turn"]["id"].as_str().filter(|id| !id.trim().is_empty()) {
+                                let frames = codex.with(|s| {
+                                    if s.finished || s.start_serial != serial || s.completion_overflow || s.turn.as_deref().is_some_and(|current| current != id) {
+                                        Err(format!("{} Codex start receipt arrived after another lifecycle; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION))
+                                    } else { Ok(s.begin_turn(id)) }
+                                });
+                                frames.map(|frames| codex.send_all(frames))
+                            } else {
+                                Err(format!("{} Codex acknowledged a turn without its id; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION))
+                            }
+                        } else if value["turnId"].as_str() == expected_turn.as_deref() {
+                            Ok(())
+                        } else {
+                            Err(format!("{} Codex steering receipt did not identify the expected turn; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION))
+                        }
+                    }
+                    Err(message) => {
+                        if starting {
+                            codex.with(|s| {
+                                if s.start_serial != serial || s.turn.is_some() {
+                                    Err(format!("{} Codex refusal arrived after a different lifecycle ({message}); inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION))
+                                } else {
+                                    s.starting = false; s.refresh_state(); Err(message)
+                                }
+                            })
+                        } else { Err(message) }
+                    }
+                };
+                let _ = answer.send(result);
+            })))
+        })?;
+        // Even a partial pipe write can have submitted the request. Never retry it.
+        if let Err(error) = self.proc.send_line_until(&frame.to_string(), deadline) {
+            // No bytes means no submission. Remove its callback so a delayed unrelated
+            // response cannot turn that known refusal into an accepted dispatch.
+            if error.written == 0 {
+                self.with(|s| {
+                    if let Some(id) = frame["id"].as_i64() {
+                        s.waiting.remove(&id);
+                    }
+                    if frame["method"] == "turn/start" {
+                        s.starting = false;
+                        s.refresh_state();
+                    }
+                });
+                return Err(error.to_string());
+            }
+            return Err(format!(
+                "{} {error}; inspect the transcript before resending",
+                super::attachments::UNKNOWN_SUBMISSION
+            ));
+        }
+        loop {
+            if let Ok(result) = wait.try_recv() {
+                return result;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || self.proc.writes_cancelled() {
+                return Err(format!(
+                    "{} Codex submission reply timed out or was cancelled; inspect the transcript before resending",
+                    super::attachments::UNKNOWN_SUBMISSION
+                ));
+            }
+            match wait.recv_timeout(remaining.min(Duration::from_millis(20))) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "{} Codex submission reply lost ({error}); inspect the transcript before resending",
+                        super::attachments::UNKNOWN_SUBMISSION
+                    ));
+                }
+            }
+        }
     }
 
     fn interrupt(&self) -> Result<(), String> {

@@ -254,6 +254,7 @@ mod tests {
             presentation: Presentation {
                 phase,
                 images: vec![],
+                ..Default::default()
             },
             body,
         }

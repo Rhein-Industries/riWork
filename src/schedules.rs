@@ -1,6 +1,6 @@
 //! Durable, at-most-once scheduled prompt attempts. No harnesses are created here.
 use crate::{
-    chat::model::{ChatInfo, OrchestratorScope, Provider},
+    chat::model::{ApprovalMode, ChatInfo, OrchestratorScope, Provider},
     sessions::{HarnessKind, SessionManager, ShellKind, ShellSession},
     store::{State, Store},
 };
@@ -88,6 +88,23 @@ impl Scope {
             }
         }
     }
+    /// Explicit shell automation semantics. Unmarked legacy targets continue
+    /// using `matches`, where project scope means its orchestrator only.
+    pub fn matches_explicit_shell(&self, state: &State, shell: &ShellSession) -> bool {
+        if let Self::Project { project_id } = self
+            && shell.kind == ShellKind::Project
+        {
+            return state.projects.iter().any(|p| {
+                &p.id == project_id
+                    && p.root.is_dir()
+                    && p.root
+                        .canonicalize()
+                        .is_ok_and(|root| shell.cwd.canonicalize().ok().as_ref() == Some(&root))
+            }) && shell.project_id.as_ref() == Some(project_id)
+                && shell.worktree_id.is_none();
+        }
+        self.matches(state, shell)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
@@ -106,6 +123,148 @@ pub struct Target {
     /// are empty, and the chat's own identity is pinned instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<ChatTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_chat: Option<NewChatTarget>,
+    /// Present only for an explicitly selected AI shell. Absence preserves the
+    /// legacy project-orchestrator interpretation of saved schedules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_kind: Option<ShellKind>,
+}
+/// A fresh ordinary project chat each occurrence. Root and account are pinned;
+/// an unavailable root/account binding requires an explicit edit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewChatTarget {
+    #[serde(default)]
+    pub title: Option<String>,
+    pub root: PathBuf,
+    pub provider: Provider,
+    pub codex_account_id: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub fast: bool,
+    #[serde(default)]
+    pub approval_mode: ApprovalMode,
+}
+impl Target {
+    pub fn bind_new_chat(
+        home: &Path,
+        state: &State,
+        project_id: &str,
+        provider: Provider,
+        model: Option<String>,
+        effort: Option<String>,
+        fast: bool,
+        approval_mode: ApprovalMode,
+        requested_account: Option<&str>,
+    ) -> Result<Self, String> {
+        canonical_id(project_id)?;
+        let project = state
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or("Selected project no longer exists")?;
+        if !project.root.is_absolute() || !project.root.is_dir() {
+            return Err("Selected project root must be an existing absolute directory".into());
+        }
+        for value in [&model, &effort].into_iter().flatten() {
+            if value.is_empty() || value.len() > 200 || !single_line(value) {
+                return Err("Invalid model or effort".into());
+            }
+        }
+        let account =
+            crate::chat::launch::account_for(home, provider, Some(project_id), requested_account)?;
+        let codex_home = if provider == Provider::Codex {
+            Some(crate::codex_accounts::resolve_launch_binding(home, account.as_deref())?.home)
+        } else {
+            None
+        };
+        Ok(Self {
+            scope: Scope::Project {
+                project_id: project_id.into(),
+            },
+            // Destination identity used by old revision/CRUD interfaces; never a live shell.
+            shell_id: Uuid::new_v4().to_string(),
+            created_at: now(),
+            command: None,
+            harness: chat_harness(provider),
+            codex_home,
+            pane_identity: String::new(),
+            provider_session: String::new(),
+            chat: None,
+            shell_kind: None,
+            new_chat: Some(NewChatTarget {
+                title: None,
+                root: project.root.canonicalize().map_err(|e| e.to_string())?,
+                provider,
+                codex_account_id: account,
+                model,
+                effort,
+                fast,
+                approval_mode,
+            }),
+        })
+    }
+    pub fn validate_new_chat(&self, home: &Path, state: &State) -> Result<(), String> {
+        let fresh = self.new_chat.as_ref().ok_or("Not a new chat destination")?;
+        let Scope::Project { project_id } = &self.scope else {
+            return Err("New chats require project scope".into());
+        };
+        let project = state
+            .projects
+            .iter()
+            .find(|p| &p.id == project_id)
+            .ok_or("Selected project no longer exists")?;
+        if !project.root.is_absolute()
+            || !project.root.is_dir()
+            || project.root.canonicalize().ok().as_ref() != Some(&fresh.root)
+        {
+            return Err(
+                "Selected project root changed or is unavailable; edit the automation".into(),
+            );
+        }
+        let account = crate::chat::launch::account_for(
+            home,
+            fresh.provider,
+            Some(project_id),
+            fresh.codex_account_id.as_deref(),
+        )?;
+        let binding = if fresh.provider == Provider::Codex {
+            Some(crate::codex_accounts::resolve_launch_binding(home, account.as_deref())?.home)
+        } else {
+            None
+        };
+        if account != fresh.codex_account_id
+            || binding != self.codex_home
+            || self.harness != chat_harness(fresh.provider)
+            || self.chat.is_some()
+            || self.shell_kind.is_some()
+        {
+            return Err(
+                "Selected account or destination identity changed; edit the automation".into(),
+            );
+        }
+        Ok(())
+    }
+    /// Options-only editing retains the pinned root/account and destination ID.
+    pub fn set_new_chat_options(
+        &mut self,
+        model: Option<String>,
+        effort: Option<String>,
+        fast: bool,
+        permission: ApprovalMode,
+    ) -> Result<(), String> {
+        for value in [&model, &effort].into_iter().flatten() {
+            if value.is_empty() || value.len() > 200 || !single_line(value) {
+                return Err("Invalid model or effort".into());
+            }
+        }
+        let fresh = self.new_chat.as_mut().ok_or("Not a new chat destination")?;
+        fresh.model = model;
+        fresh.effort = effort;
+        fresh.fast = fast;
+        fresh.approval_mode = permission;
+        Ok(())
+    }
 }
 /// What a chat target pins besides the chat's id (`shell_id`), creation time and
 /// agent (`harness`).
@@ -143,9 +302,32 @@ impl Target {
         sessions: &SessionManager,
         id: &str,
     ) -> Result<Self, String> {
+        Self::bind_terminal(scope, state, sessions, id, false)
+    }
+    pub fn bind_shell(
+        scope: Scope,
+        state: &State,
+        sessions: &SessionManager,
+        id: &str,
+    ) -> Result<Self, String> {
+        Self::bind_terminal(scope, state, sessions, id, true)
+    }
+    fn bind_terminal(
+        scope: Scope,
+        state: &State,
+        sessions: &SessionManager,
+        id: &str,
+        explicit: bool,
+    ) -> Result<Self, String> {
         canonical_id(id)?;
         let shell = sessions.get(id)?;
-        if !shell.alive || !scope.matches(state, &shell) {
+        if !shell.alive
+            || !(if explicit {
+                scope.matches_explicit_shell(state, &shell)
+            } else {
+                scope.matches(state, &shell)
+            })
+        {
             return Err("Select an existing live session in this scope".into());
         }
         let harness = shell
@@ -162,6 +344,8 @@ impl Target {
             pane_identity: sessions.schedule_pane_identity(id)?,
             provider_session: sessions.schedule_provider_identity(&shell)?,
             chat: None,
+            new_chat: None,
+            shell_kind: explicit.then_some(shell.kind),
         })
     }
     /// Pins an orchestrator that runs as a chat. A chat is an orchestrator of
@@ -181,6 +365,8 @@ impl Target {
             codex_home: None,
             pane_identity: String::new(),
             provider_session: String::new(),
+            new_chat: None,
+            shell_kind: None,
             chat: Some(ChatTarget {
                 codex_account_id: chat.codex_account_id.clone(),
             }),
@@ -212,12 +398,16 @@ impl Target {
     }
     pub fn matches(&self, state: &State, shell: &ShellSession) -> bool {
         self.chat.is_none()
+            && self.new_chat.is_none()
             && self.shell_id == shell.id
             && self.created_at == shell.created_at_unix
             && self.command == shell.command
             && Some(self.harness) == shell.harness
             && self.codex_home == shell.codex_home
-            && self.scope.matches(state, shell)
+            && match self.shell_kind {
+                Some(kind) => kind == shell.kind && self.scope.matches_explicit_shell(state, shell),
+                None => self.scope.matches(state, shell),
+            }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,6 +466,8 @@ pub struct Run {
     pub observed_at: u64,
     pub outcome: Outcome,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_chat_id: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Schedule {
@@ -414,7 +606,7 @@ impl ScheduleStore {
         previous: Option<(&str, u64)>,
         title: String,
         prompt: String,
-        target: Target,
+        mut target: Target,
         timing: Timing,
         now: u64,
     ) -> Result<Schedule, String> {
@@ -430,6 +622,9 @@ impl ScheduleStore {
         }
         if prompt.trim().is_empty() || prompt.len() > 16 * 1024 || !single_line(&prompt) {
             return Err("Enter a single-line prompt (up to 16 KiB, no control characters)".into());
+        }
+        if let Some(fresh) = &mut target.new_chat {
+            fresh.title = Some(title.trim().into());
         }
         self.mutate(|ledger| {
             let (id, revision, paused, last_run) = if let Some((id, revision)) = previous {
@@ -535,6 +730,21 @@ impl ScheduleStore {
             .collect();
         trackers.retain(|id, _| ids.contains(id));
         self.tick_with(now, |target, prompt, claim| {
+            if target.new_chat.is_some() {
+                let state = Store::open(self.home.clone())?.snapshot()?;
+                let host = crate::orchestrators::ChatHost {
+                    home: &self.home,
+                    ensure: &self.chat.ensure,
+                };
+                return crate::schedule_chat::deliver_new(
+                    &host,
+                    self.chat.proof,
+                    target,
+                    &state,
+                    prompt,
+                    claim,
+                );
+            }
             if target.chat.is_some() {
                 let state = Store::open(self.home.clone())?.snapshot()?;
                 let host = crate::orchestrators::ChatHost {
@@ -560,7 +770,7 @@ impl ScheduleStore {
     }
     // Hold the same cross-process lock for CRUD and dispatch. A durable claim is
     // synced before any terminal mutation. A dead owner leaves an uncertain run.
-    fn tick_with(
+    pub(crate) fn tick_with(
         &self,
         now: u64,
         mut dispatch: impl FnMut(
@@ -624,6 +834,7 @@ impl ScheduleStore {
                 observed_at: now,
                 outcome: Outcome::Missed,
                 message,
+                created_chat_id: None,
             });
             current.revision += 1;
             return self.write(&ledger);
@@ -631,6 +842,9 @@ impl ScheduleStore {
         let mut claimed = false;
         let mut claim_write_started = false;
         let result = dispatch(&s.target, &s.prompt, &mut |token| {
+            if claimed {
+                return Ok(false);
+            }
             // A backward clock step also starts a new window; otherwise the old
             // one would outlast the step by up to 60 s.
             if now < ledger.window_started || now >= ledger.window_started.saturating_add(60) {
@@ -663,6 +877,7 @@ impl ScheduleStore {
                 observed_at: now,
                 outcome: Outcome::Dispatching,
                 message: "Delivery in progress".into(),
+                created_chat_id: token.strip_prefix("new-chat:").map(str::to_owned),
             });
             current.revision += 1;
             claim_write_started = true;
@@ -685,7 +900,7 @@ impl ScheduleStore {
         let (outcome, message, pause) = match result {
             Delivery::Submitted => (
                 Outcome::Submitted,
-                "Submitted once to the pinned session; agent completion is separate.".into(),
+                "Prompt submitted once; agent completion is separate.".into(),
                 false,
             ),
             Delivery::Deferred(e) => (Outcome::Deferred, one_line(&e), false),
@@ -704,7 +919,16 @@ impl ScheduleStore {
         } else {
             current.check_after = now.saturating_add(15);
         }
+        let created_chat_id = if claimed {
+            current
+                .last_run
+                .as_ref()
+                .and_then(|r| r.created_chat_id.clone())
+        } else {
+            None
+        };
         current.last_run = Some(Run {
+            created_chat_id,
             due_at: due,
             observed_at: now,
             outcome,

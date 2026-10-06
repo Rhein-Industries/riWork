@@ -1,0 +1,13 @@
+   Compiling riwork v0.1.0 (/Users/dominik/orca/projects/riWork-feat-automations)
+    Finished `test` profile [unoptimized] target(s) in 17.30s
+     Running unittests src/main.rs (/tmp/riwork-automations-target/debug/deps/riwork-72c65fc1f45c3555)
+
+running 6 tests
+test schedule_panel::tests::custom_zero_minutes_cannot_become_a_one_time_schedule ... ok
+test schedule_panel::tests::editor_defaults_and_options_edit_keep_the_pinned_account_and_destination ... ok
+test schedule_panel::tests::legacy_editor_ordinary_shell_selection_stays_explicit_and_never_falls_back ... ok
+test schedule_panel::tests::legacy_editor_same_chat_reselection_saves_a_chat_binding ... ok
+test schedule_panel::tests::legacy_editor_scope_changes_rebind_only_the_matching_app_or_project_chat ... ok
+test schedule_panel::tests::quick_first_run_choices_select_future_instants_without_editing_other_fields ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1660 filtered out; finished in 0.57s

@@ -259,6 +259,7 @@ struct Run {
     generation: u64,
     /// `None` while `StartDriver` is still running.
     driver: Option<DriverHandle>,
+    cancel_io: Option<Arc<dyn Fn() + Send + Sync>>,
     /// A stop is shutting the driver down; its last events are still logged.
     stopping: bool,
     /// The driver reported that it ended before `StartDriver` returned.
@@ -272,6 +273,7 @@ impl Run {
         Self {
             generation,
             driver: None,
+            cancel_io: None,
             stopping: false,
             ended: false,
             reader_done: Arc::new(AtomicBool::new(false)),
@@ -284,6 +286,9 @@ impl Run {
 
     /// Reaps the process of a run that is over, without making the caller wait.
     fn reap(self) {
+        if let Some(cancel) = self.cancel_io {
+            cancel();
+        }
         if let Some(driver) = self.driver {
             thread::spawn(move || lock(&driver).shutdown());
         }
@@ -1019,7 +1024,25 @@ fn answer<T: serde::Serialize>(id: String, result: Result<T, String>) -> Respons
 /// Everything but `Subscribe`, which takes over its connection.
 fn dispatch(shared: &Shared, request: Request) -> Response {
     match request {
-        Request::Create { id, chat } => answer(id, create(shared, chat)),
+        Request::Capabilities { id } => answer(
+            id,
+            Ok(super::wire::Capabilities {
+                identified_create: true,
+            }),
+        ),
+        Request::StageAttachment { id, chat_id, path } => answer(
+            id,
+            shared.find(&chat_id).and_then(|chat| {
+                let inner = lock(&chat.inner);
+                if inner.deleted {
+                    return Err(format!("unknown chat {chat_id}"));
+                }
+                super::attachments::stage(&chat.dir, &path)
+            }),
+        ),
+        Request::Create { id, chat, chat_id } => {
+            answer(id, create_identified(shared, chat, chat_id))
+        }
         Request::List { id } => answer(id, Ok(list(shared))),
         Request::Command {
             id,
@@ -1119,7 +1142,28 @@ fn client_left(stream: &mut UnixStream) -> bool {
 
 // ---- Chats: create, load, delete ------------------------------------------------------------
 
+#[cfg(test)]
 fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
+    create_identified(shared, new, None)
+}
+
+fn create_identified(
+    shared: &Shared,
+    new: NewChat,
+    requested_id: Option<String>,
+) -> Result<ChatInfo, String> {
+    // Serialize caller-owned IDs as well as orchestrators. Never overwrite an
+    // existing chat, including one saved by an interrupted host.
+    let creation = lock(&shared.orchestrator_creation);
+    let id = requested_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    if !Uuid::parse_str(&id).is_ok_and(|uuid| uuid.to_string() == id) {
+        return Err("invalid chat id".into());
+    }
+    if shared.find(&id).is_ok() || log::chat_dir(&shared.home, &id).is_some_and(|dir| dir.exists())
+    {
+        return Err("chat identity already exists; review it without retrying".into());
+    }
+
     if !new.cwd.is_absolute() || !new.cwd.is_dir() {
         return Err(format!(
             "the working directory {} is not an existing absolute directory",
@@ -1130,29 +1174,23 @@ fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
         return Err("the chat host is shutting down".into());
     }
     // Held until the chat is listed: see `Shared::orchestrator_creation`.
-    let creation = match &new.orchestrator {
-        Some(scope) => {
-            check_orchestrator_scope(&new, scope)?;
-            let creation = lock(&shared.orchestrator_creation);
-            if let Some(existing) = shared
-                .all()
-                .iter()
-                .map(|chat| chat.info())
-                .find(|info| info.orchestrator.as_ref() == Some(scope))
-            {
-                return Err(format!("{ORCHESTRATOR_EXISTS} {}", existing.id));
-            }
-            Some(creation)
+    if let Some(scope) = &new.orchestrator {
+        check_orchestrator_scope(&new, scope)?;
+        if let Some(existing) = shared
+            .all()
+            .iter()
+            .map(|chat| chat.info())
+            .find(|info| info.orchestrator.as_ref() == Some(scope))
+        {
+            return Err(format!("{ORCHESTRATOR_EXISTS} {}", existing.id));
         }
-        None => None,
-    };
+    }
     let account = (shared.providers.account)(
         &shared.home,
         new.provider,
         new.project_id.as_deref(),
         new.codex_account_id.as_deref(),
     )?;
-    let id = Uuid::new_v4().to_string();
     let title = new
         .title
         .as_deref()
@@ -1374,6 +1412,7 @@ fn fail_start(chat: &Chat, generation: u64, message: String) -> Result<(), Strin
 /// Hands a started driver to its run.
 fn attach(chat: &Chat, generation: u64, driver: Box<dyn Driver>) -> Result<(), String> {
     let thread = driver.provider_thread_id();
+    let cancel_io = driver.cancel_io();
     let handle: DriverHandle = Arc::new(Mutex::new(driver));
     let mut inner = lock(&chat.inner);
     let Some(run) = inner
@@ -1386,6 +1425,7 @@ fn attach(chat: &Chat, generation: u64, driver: Box<dyn Driver>) -> Result<(), S
         return Err("the chat was stopped while it started".into());
     };
     run.driver = Some(handle);
+    run.cancel_io = cancel_io;
     let ended = run.ended;
     inner.learn(thread, None, None);
     if ended {
@@ -1492,16 +1532,23 @@ fn stop(chat: &Chat) {
 }
 
 fn stop_locked(chat: &Chat) {
-    let (driver, reader_done) = {
+    let (driver, reader_done, cancel_io) = {
         let mut inner = lock(&chat.inner);
         match inner.run.as_mut() {
             Some(run) => {
                 run.stopping = true;
-                (run.driver.take(), Some(run.reader_done.clone()))
+                (
+                    run.driver.take(),
+                    Some(run.reader_done.clone()),
+                    run.cancel_io.take(),
+                )
             }
-            None => (None, None),
+            None => (None, None, None),
         }
     };
+    if let Some(cancel) = cancel_io {
+        cancel();
+    }
     if let Some(driver) = driver {
         lock(&driver).shutdown();
         // A driver may hold its end of the event channel until it is dropped.
@@ -1533,6 +1580,14 @@ fn live_driver(chat: &Chat) -> Option<DriverHandle> {
 /// Routes a user command to the chat's driver, starting (resuming) the driver
 /// first for a command that needs a process.
 fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Result<(), String> {
+    if let ChatCommand::SendAttachments { text, attachments } = &command {
+        if text.len() > super::attachments::TEXT_BYTES {
+            return Err("attachment message text exceeds 1 MiB".into());
+        }
+        super::attachments::validate_owned(&chat.dir, attachments)?;
+        // Encoding bounds apply before a stopped chat can start a provider, too.
+        super::attachments::inputs(text, attachments, chat.info().provider == Provider::Claude)?;
+    }
     if matches!(command, ChatCommand::Stop) {
         stop(chat);
         return Ok(());
@@ -1547,7 +1602,12 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
             fast: None,
         }
     );
-    if retry || matches!(command, ChatCommand::Send { .. } | ChatCommand::Compact) {
+    if retry
+        || matches!(
+            command,
+            ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. } | ChatCommand::Compact
+        )
+    {
         ensure_running(shared, chat)?;
     }
     let Some(driver) = live_driver(chat) else {

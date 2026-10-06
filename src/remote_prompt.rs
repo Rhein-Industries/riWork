@@ -2,26 +2,26 @@
 //! link, pairing another Mac to this one, and naming a project on a host.
 //!
 //! Pairing links are secrets. They are held only while the modal is open, never written to
-//! disk or a log, never echoed into an error message, and shown cut short.
+//! disk or a log, never echoed into an error message, and displayed through a masked library input.
 
 use std::{
-    ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
+use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use gpui::{
-    AnyElement, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle,
-    IntoElement, KeyDownEvent, MouseButton, Pixels, Point, Render, UTF16Selection, Window, div,
-    prelude::*, rgb,
+    AnyElement, ClipboardItem, Context, EventEmitter, FocusHandle, IntoElement, KeyDownEvent,
+    MouseButton, Render, Window, div, prelude::*, rgb,
 };
+use gpui::{Entity, Focusable, Subscription};
 
 use crate::{
-    project_settings::{Input, impl_input_handler, input_content},
+    project_settings::Input,
     remote_hosts::{PairRequest, PairingLink},
     remote_service::Backend,
     remote_tree::validate_project_name,
-    theme, ui_text, utf16_to_byte,
+    theme, ui_text,
 };
 
 /// What the modal is for.
@@ -71,6 +71,8 @@ pub struct RemotePrompt {
     kind: PromptKind,
     backend: Result<Arc<Backend>, String>,
     fields: Vec<Field>,
+    input_states: Vec<Entity<InputState>>,
+    _input_subscriptions: Vec<Subscription>,
     /// Which field is being typed in; past the last field are CANCEL, then the action.
     active: usize,
     /// What the work in flight is doing; the modal ignores input meanwhile.
@@ -80,6 +82,10 @@ pub struct RemotePrompt {
     link: Option<PairingLink>,
     copied: bool,
     focus: FocusHandle,
+    #[cfg(test)]
+    parent_enter_actions: usize,
+    #[cfg(test)]
+    parent_enter_keys: usize,
 }
 
 impl EventEmitter<RemotePromptEvent> for RemotePrompt {}
@@ -116,6 +122,7 @@ impl RemotePrompt {
     pub fn new(
         kind: PromptKind,
         backend: Result<Arc<Backend>, String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
@@ -158,21 +165,72 @@ impl RemotePrompt {
             .iter()
             .position(|field| field.input.text.is_empty())
             .unwrap_or(0);
+        let input_states: Vec<_> = fields
+            .iter()
+            .map(|field| {
+                let state = text_input::single_line(
+                    field.input.text.clone(),
+                    field.placeholder,
+                    window,
+                    cx,
+                );
+                state.update(cx, |input, cx| input.set_masked(field.secret, window, cx));
+                state
+            })
+            .collect();
+        let subscriptions = input_states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| {
+                cx.subscribe_in(state, window, move |prompt, state, event, _, cx| {
+                    if prompt.busy.is_some() || prompt.link.is_some() {
+                        return;
+                    }
+                    match event {
+                        InputEvent::Change => {
+                            prompt.fields[index].input.text = state.read(cx).value().to_string();
+                            prompt.edited(cx);
+                        }
+                        InputEvent::Focus => {
+                            prompt.active = index;
+                            cx.notify();
+                        }
+                        _ if text_input::is_submit(event, EnterBehavior::Submit) => {
+                            prompt.submit(cx)
+                        }
+                        _ => {}
+                    }
+                })
+            })
+            .collect();
         Self {
             kind,
             backend,
             fields,
+            input_states,
+            _input_subscriptions: subscriptions,
             active,
             busy: None,
             error: None,
             link: None,
             copied: false,
             focus: cx.focus_handle(),
+            #[cfg(test)]
+            parent_enter_actions: 0,
+            #[cfg(test)]
+            parent_enter_keys: 0,
         }
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus.focus(window, cx);
+        if self.accepts_input() {
+            self.input_states[self.active]
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx);
+        } else {
+            self.focus.focus(window, cx);
+        }
     }
 
     /// The relay and name of a pairing, to start the next one from. Neither is secret.
@@ -204,15 +262,6 @@ impl RemotePrompt {
         self.busy.is_none() && self.active < self.field_slots()
     }
 
-    fn input(&self) -> &Input {
-        &self.fields[self.active.min(self.fields.len() - 1)].input
-    }
-
-    fn input_mut(&mut self) -> &mut Input {
-        let index = self.active.min(self.fields.len() - 1);
-        &mut self.fields[index].input
-    }
-
     fn edited(&mut self, cx: &mut Context<Self>) {
         self.error = None;
         cx.notify();
@@ -225,6 +274,9 @@ impl RemotePrompt {
     fn submit(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() || self.link.is_some() {
             return;
+        }
+        for (field, state) in self.fields.iter_mut().zip(&self.input_states) {
+            field.input.text = state.read(cx).value().to_string();
         }
         self.error = None;
         match &self.kind {
@@ -339,7 +391,21 @@ impl RemotePrompt {
         }
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        if matches!(event.keystroke.key.as_str(), "enter" | "return") {
+            self.parent_enter_keys += 1;
+        }
+        if self.accepts_input()
+            && matches!(event.keystroke.key.as_str(), "escape" | "tab")
+            && crate::form_input::is_composing(&self.input_states[self.active], window, cx)
+        {
+            return;
+        }
+        if self.busy.is_some() {
+            cx.stop_propagation();
+            return;
+        }
         let handled = match event.keystroke.key.as_str() {
             "escape" => {
                 if self.busy.is_none() {
@@ -347,7 +413,7 @@ impl RemotePrompt {
                 }
                 true
             }
-            "enter" | "return" => {
+            "enter" | "return" if !self.accepts_input() => {
                 match self.button_at(self.active) {
                     Some(button) => self.press(button, cx),
                     None => self.submit(cx),
@@ -368,15 +434,10 @@ impl RemotePrompt {
                     1
                 };
                 self.active = (self.active + step) % slots;
+                self.focus(window, cx);
                 true
             }
-            _ => {
-                let handled = self.accepts_input() && self.input_mut().key(event, cx);
-                if handled {
-                    self.edited(cx);
-                }
-                handled
-            }
+            _ => false,
         };
         if handled {
             cx.stop_propagation();
@@ -464,30 +525,12 @@ impl Render for RemotePrompt {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
         let focused = self.focus.is_focused(window);
-        let entity = cx.entity();
         let fields = self
             .fields
             .iter()
             .enumerate()
             .filter(|_| self.link.is_none())
             .map(|(index, field)| {
-                let active = self.active == index && focused && self.busy.is_none();
-                let shown = if field.secret {
-                    let text = masked(&field.input.text);
-                    let end = text.len();
-                    Input {
-                        text,
-                        selection: end..end,
-                        ..Input::default()
-                    }
-                } else {
-                    Input {
-                        text: field.input.text.clone(),
-                        selection: field.input.selection.clone(),
-                        reversed: field.input.reversed,
-                        marked: field.input.marked.clone(),
-                    }
-                };
                 div()
                     .id(("remote-prompt-field", index))
                     .flex()
@@ -499,18 +542,17 @@ impl Render for RemotePrompt {
                             .text_color(rgb(colors.muted))
                             .child(ui_text::cased(field.label)),
                     )
-                    .child(input_content(
-                        &shown,
-                        active,
-                        field.placeholder,
-                        &self.focus,
-                        entity.clone(),
-                        colors,
+                    .child(crate::form_input::frame(
+                        ("remote-input", index),
+                        &self.input_states[index],
+                        self.busy.is_some(),
+                        window,
+                        cx,
                     ))
                     .on_click(cx.listener(move |prompt, _, window, cx| {
                         if prompt.busy.is_none() {
                             prompt.active = index;
-                            prompt.focus.focus(window, cx);
+                            prompt.focus(window, cx);
                             cx.notify();
                         }
                     }))
@@ -534,12 +576,12 @@ impl Render for RemotePrompt {
             ("Cancel", self.action_label())
         };
         let base = self.field_slots();
-        div()
+        let panel = div()
             .id("remote-prompt")
             .occlude()
             .track_focus(&self.focus)
             .key_context("RemotePrompt")
-            .on_key_down(cx.listener(Self::key_down))
+            .capture_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation())
             .w(ui_text::space(480.0))
@@ -595,11 +637,16 @@ impl Render for RemotePrompt {
                         1,
                         cx,
                     )),
-            )
+            );
+        #[cfg(test)]
+        let panel = panel.on_action(cx.listener(
+            |prompt, _: &gpui_kit::base::input::Enter, _, _| {
+                prompt.parent_enter_actions += 1;
+            },
+        ));
+        panel
     }
 }
-
-impl_input_handler!(RemotePrompt);
 
 #[cfg(test)]
 mod tests {
@@ -639,5 +686,202 @@ mod tests {
             default_routes_file(Path::new("/Users/me/.local/share/riwork")),
             PathBuf::from("/Users/me/.local/share/riwork/remote/relay-routes.json")
         );
+    }
+}
+
+#[cfg(test)]
+mod kit_form_tests {
+    use super::*;
+    use gpui::{ElementInputHandler, InputHandler, TestAppContext};
+    use gpui_kit::test::TestWindowExt;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[gpui::test]
+    fn kit_project_name_has_one_submit_and_preserves_composition(cx: &mut TestAppContext) {
+        let (handle, prompt) = crate::form_input::test_window(cx, |window, cx| {
+            RemotePrompt::new(
+                PromptKind::NewProject {
+                    host_id: "inert-host".into(),
+                    host_label: "Fixture".into(),
+                },
+                Err("inert backend".into()),
+                window,
+                cx,
+            )
+        });
+        let names = Rc::new(RefCell::new(Vec::new()));
+        let observed = names.clone();
+        let _subscription = cx.update(|app| {
+            app.subscribe(&prompt, move |_, event, _| {
+                if let RemotePromptEvent::NewProject { name, .. } = event {
+                    observed.borrow_mut().push(name.clone());
+                }
+            })
+        });
+        let state = cx
+            .update_window(handle.into(), |_, window, app| {
+                window.render_frame(app);
+                window.click(("remote-input", 0usize), app);
+                window.input("Draft", app);
+                prompt.read(app).input_states[0].clone()
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let identity = state.entity_id();
+        cx.update_window(handle.into(), |_, window, app| {
+            state.update(app, |state, cx| state.set_selected_range(0..5, cx));
+            let mut handler = ElementInputHandler::new(
+                window.find(("remote-input", 0usize)).bounds(),
+                state.clone(),
+            );
+            handler.replace_and_mark_text_in_range(None, "日本", Some(2..2), window, app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            window.render_frame(app);
+            window.press("enter", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(names.borrow().is_empty());
+        cx.update_window(handle.into(), |_, window, app| {
+            let mut handler = ElementInputHandler::new(
+                window.find(("remote-input", 0usize)).bounds(),
+                state.clone(),
+            );
+            handler.replace_text_in_range(None, "日本語", window, app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(names.borrow().is_empty());
+        cx.update_window(handle.into(), |_, window, app| {
+            window.render_frame(app);
+            window.press("enter", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(names.borrow().as_slice(), &["日本語"]);
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(prompt.read(app).parent_enter_actions, 0);
+            assert_eq!(prompt.read(app).parent_enter_keys, 0);
+            prompt.update(app, |_, cx| cx.notify());
+            window.render_frame(app);
+            assert_eq!(prompt.read(app).input_states[0].entity_id(), identity);
+            assert_eq!(state.read(app).value(), "日本語");
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn kit_pairing_secret_is_masked_and_busy_keeps_its_draft(cx: &mut TestAppContext) {
+        let (handle, prompt) = crate::form_input::test_window(cx, |window, cx| {
+            RemotePrompt::new(PromptKind::AddHost, Err("inert backend".into()), window, cx)
+        });
+        let state = cx
+            .update_window(handle.into(), |_, window, app| {
+                window.render_frame(app);
+                window.click(("remote-input", 0usize), app);
+                window.input("riwork://pair?synthetic-secret", app);
+                prompt.read(app).input_states[0].clone()
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert!(state.read(app).presentation().is_masked());
+            window.press("cmd-a", app);
+            app.write_to_clipboard(ClipboardItem::new_string("synthetic-sentinel".into()));
+            window.press("cmd-c", app);
+            window.press("cmd-x", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, _, app| {
+            assert_eq!(
+                app.read_from_clipboard().unwrap().text().as_deref(),
+                Some("synthetic-sentinel")
+            );
+            assert_eq!(state.read(app).value(), "riwork://pair?synthetic-secret");
+        })
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, app| {
+            window.render_frame(app);
+            window.press("tab", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert!(
+                prompt.read(app).input_states[1]
+                    .read(app)
+                    .focus_handle(app)
+                    .is_focused(window)
+            );
+            window.render_frame(app);
+            window.press("shift-tab", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert!(state.read(app).focus_handle(app).is_focused(window));
+            prompt.update(app, |prompt, cx| {
+                prompt.busy = Some("Inert pending");
+                cx.notify();
+            });
+            window.render_frame(app);
+            window.input("ignored", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(state.read(app).value(), "riwork://pair?synthetic-secret");
+            prompt.update(app, |prompt, cx| {
+                prompt.busy = None;
+                cx.notify();
+            });
+            window.render_frame(app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, _, app| {
+            assert_eq!(state.read(app).value(), "riwork://pair?synthetic-secret")
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn kit_pair_fields_retain_supplied_defaults(cx: &mut TestAppContext) {
+        let (handle, prompt) = crate::form_input::test_window(cx, |window, cx| {
+            RemotePrompt::new(
+                PromptKind::PairMac {
+                    name: "Fixture Mac".into(),
+                    relay: "wss://fixture.invalid/ws".into(),
+                    routes: PathBuf::from("/inert/relay-routes.json"),
+                },
+                Err("inert backend".into()),
+                window,
+                cx,
+            )
+        });
+        let states = cx
+            .update_window(handle.into(), |_, window, app| {
+                let states = prompt.read(app).input_states.clone();
+                prompt.update(app, |_, cx| cx.notify());
+                window.render_frame(app);
+                states
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, _, app| {
+            assert_eq!(states.len(), 3);
+            assert_eq!(states[0].read(app).value(), "Fixture Mac");
+            assert_eq!(states[1].read(app).value(), "wss://fixture.invalid/ws");
+            assert_eq!(states[2].read(app).value(), "/inert/relay-routes.json");
+            assert_eq!(
+                prompt.read(app).input_states[2].entity_id(),
+                states[2].entity_id()
+            );
+        })
+        .unwrap();
     }
 }

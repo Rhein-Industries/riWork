@@ -3,21 +3,22 @@
 use std::{
     ffi::OsStr,
     fs,
-    ops::Range,
     path::{Path, PathBuf},
     time::Duration,
 };
 
+use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use gpui::{
-    AnyElement, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, Modifiers, MouseButton,
-    PathPromptOptions, Pixels, Point, Render, StyledText, UTF16Selection, Window, canvas, div,
-    prelude::*, rgb,
+    AnyElement, Context, EventEmitter, FocusHandle, IntoElement, KeyDownEvent, Modifiers,
+    MouseButton, PathPromptOptions, Render, Window, div, prelude::*, rgb,
 };
+use gpui::{Entity, Focusable, Subscription};
+#[cfg(test)]
+use std::ops::Range;
 
 use crate::{
     store::{Project, ProjectInspection, Store},
-    theme, ui_text, utf16_to_byte,
+    theme, ui_text,
 };
 
 pub enum ProjectCreationEvent {
@@ -31,38 +32,11 @@ enum Field {
     Name,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Input {
     text: String,
     selection: Range<usize>,
-    reversed: bool,
-    marked: Option<Range<usize>>,
-}
-
-impl Input {
-    fn cursor(&self) -> usize {
-        if self.reversed {
-            self.selection.start
-        } else {
-            self.selection.end
-        }
-    }
-
-    fn move_cursor(&mut self, offset: usize, select: bool) {
-        if select {
-            let anchor = if self.reversed {
-                self.selection.end
-            } else {
-                self.selection.start
-            };
-            self.selection = anchor.min(offset)..anchor.max(offset);
-            self.reversed = offset < anchor;
-        } else {
-            self.selection = offset..offset;
-            self.reversed = false;
-        }
-        self.marked = None;
-    }
 }
 
 /// Expands `~` and requires an absolute folder. A bare or relative path would
@@ -96,6 +70,7 @@ fn resolve_folder(text: &str, home: Option<&OsStr>) -> Result<PathBuf, String> {
 
 /// The text a copy or cut would place on the clipboard; an empty selection must
 /// leave the clipboard alone.
+#[cfg(test)]
 fn selected_text(input: &Input) -> Option<String> {
     let text = &input.text[input.selection.clone()];
     (!text.is_empty()).then(|| text.to_owned())
@@ -143,8 +118,11 @@ fn create_project_cleaning_up(
 }
 
 pub struct ProjectCreator {
-    path: Input,
-    name: Input,
+    path: String,
+    path_state: Entity<InputState>,
+    name_state: Entity<InputState>,
+    _input_subscriptions: Vec<Subscription>,
+    name: String,
     default_directory: PathBuf,
     path_follows_name: bool,
     active: Field,
@@ -172,14 +150,50 @@ impl ProjectCreator {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let path = format!("{}/", default_directory.display());
-        let end = path.len();
+
+        let path_state = text_input::single_line(path.clone(), "/path/to/project", window, cx);
+        let name_state = text_input::single_line("", "my-project", window, cx);
+        let mut subscriptions = Vec::new();
+        for (field, state) in [(Field::Path, &path_state), (Field::Name, &name_state)] {
+            subscriptions.push(cx.subscribe_in(
+                state,
+                window,
+                move |form, state, event, window, cx| {
+                    if form.creating {
+                        return;
+                    }
+                    match event {
+                        InputEvent::Change => {
+                            let value = state.read(cx).value().to_string();
+                            match field {
+                                Field::Path => {
+                                    form.path = value;
+                                    form.path_follows_name = false;
+                                    form.name_state.update(cx, |state, cx| {
+                                        state.set_placeholder("Use folder name", window, cx)
+                                    });
+                                }
+                                Field::Name => form.name = value,
+                            }
+                            form.inspect(window, cx);
+                        }
+                        InputEvent::Focus => {
+                            form.active = field;
+                            cx.notify();
+                        }
+                        _ if text_input::is_submit(event, EnterBehavior::Submit) => form.submit(cx),
+                        _ => {}
+                    }
+                },
+            ));
+        }
+        name_state.read(cx).focus_handle(cx).focus(window, cx);
         Self {
-            path: Input {
-                text: path,
-                selection: end..end,
-                ..Default::default()
-            },
-            name: Input::default(),
+            path_state,
+            name_state,
+            _input_subscriptions: subscriptions,
+            path,
+            name: String::new(),
             default_directory,
             path_follows_name: true,
             active: Field::Name,
@@ -194,30 +208,16 @@ impl ProjectCreator {
         }
     }
 
-    fn input(&self) -> &Input {
-        match self.active {
-            Field::Path => &self.path,
-            Field::Name => &self.name,
-        }
-    }
-
-    fn input_mut(&mut self) -> &mut Input {
-        match self.active {
-            Field::Path => &mut self.path,
-            Field::Name => &mut self.name,
-        }
-    }
-
     fn path_value(&self) -> Result<PathBuf, String> {
-        resolve_folder(&self.path.text, std::env::var_os("HOME").as_deref())
+        resolve_folder(&self.path, std::env::var_os("HOME").as_deref())
     }
 
-    fn inspect(&mut self, cx: &mut Context<Self>) {
+    fn inspect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.generation += 1;
         self.inspection = None;
         self.error = None;
         if self.path_follows_name {
-            let name = self.name.text.trim();
+            let name = self.name.trim();
             let path = if name.is_empty() {
                 Ok(self.default_directory.clone())
             } else {
@@ -225,14 +225,12 @@ impl ProjectCreator {
             };
             match path {
                 Ok(path) => {
-                    self.path.text = path.to_string_lossy().into_owned();
+                    self.path = path.to_string_lossy().into_owned();
                     if name.is_empty() {
-                        self.path.text.push('/');
+                        self.path.push('/');
                     }
-                    let end = self.path.text.len();
-                    self.path.selection = end..end;
-                    self.path.reversed = false;
-                    self.path.marked = None;
+
+                    crate::form_input::set_value(&self.path_state, self.path.clone(), window, cx);
                 }
                 Err(error) => {
                     self.error = Some(error);
@@ -247,7 +245,7 @@ impl ProjectCreator {
                 return;
             }
         }
-        if self.path.text.trim().is_empty() {
+        if self.path.trim().is_empty() {
             self.inspecting = false;
             cx.notify();
             return;
@@ -307,14 +305,17 @@ impl ProjectCreator {
             {
                 let _ = this.update_in(cx, |form, window, cx| {
                     form.path_follows_name = false;
-                    form.path.text = path.to_string_lossy().into_owned();
-                    let end = form.path.text.len();
-                    form.path.selection = end..end;
-                    form.path.reversed = false;
-                    form.path.marked = None;
+                    form.name_state.update(cx, |state, cx| {
+                        state.set_placeholder("Use folder name", window, cx)
+                    });
+                    form.path = path.to_string_lossy().into_owned();
+
                     form.active = Field::Path;
-                    form.focus.focus(window, cx);
-                    form.inspect(cx);
+                    form.path_state.read(cx).focus_handle(cx).focus(window, cx);
+                    form.path_state.update(cx, |state, cx| {
+                        state.set_value(form.path.clone(), window, cx)
+                    });
+                    form.inspect(window, cx);
                 });
             }
         })
@@ -322,6 +323,8 @@ impl ProjectCreator {
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
+        self.name = self.name_state.read(cx).value().to_string();
+        self.path = self.path_state.read(cx).value().to_string();
         if self.creating || self.inspecting || self.inspection.is_none() {
             return;
         }
@@ -333,7 +336,7 @@ impl ProjectCreator {
                 return;
             }
         };
-        let name = self.name.text.trim().to_owned();
+        let name = self.name.trim().to_owned();
         let init_git = self.init_git
             && self
                 .inspection
@@ -365,30 +368,16 @@ impl ProjectCreator {
         cx.notify();
     }
 
-    fn replace(&mut self, range: Option<Range<usize>>, text: &str, cx: &mut Context<Self>) {
-        if self.creating {
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let state = match self.active {
+            Field::Path => &self.path_state,
+            Field::Name => &self.name_state,
+        };
+        if matches!(event.keystroke.key.as_str(), "escape" | "tab")
+            && crate::form_input::is_composing(state, window, cx)
+        {
             return;
         }
-        let input = self.input_mut();
-        let range = range
-            .map(|range| {
-                utf16_to_byte(&input.text, range.start)..utf16_to_byte(&input.text, range.end)
-            })
-            .or(input.marked.take())
-            .unwrap_or_else(|| input.selection.clone());
-        let text = text.replace(['\n', '\r'], "");
-        input.text.replace_range(range.clone(), &text);
-        let end = range.start + text.len();
-        input.selection = end..end;
-        input.reversed = false;
-        if self.active == Field::Path {
-            self.path_follows_name = false;
-        }
-        self.inspect(cx);
-        cx.notify();
-    }
-
-    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.creating {
             cx.stop_propagation();
             return;
@@ -399,17 +388,14 @@ impl ProjectCreator {
                 cx.emit(ProjectCreationEvent::Cancelled);
                 true
             }
-            "enter" | "return" => {
-                self.submit(cx);
-                true
-            }
+
             "tab" => {
                 self.active = if self.active == Field::Path {
                     Field::Name
                 } else {
                     Field::Path
                 };
-                self.focus.focus(window, cx);
+                self.focus_input(window, cx);
                 true
             }
             "g" if init_git_shortcut(&event.keystroke.modifiers) => {
@@ -426,77 +412,6 @@ impl ProjectCreator {
                 self.browse(window, cx);
                 true
             }
-            "a" if platform => {
-                let input = self.input_mut();
-                input.selection = 0..input.text.len();
-                input.reversed = false;
-                true
-            }
-            "c" | "x" if platform => {
-                if let Some(text) = selected_text(self.input()) {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                    if event.keystroke.key == "x" {
-                        self.replace(None, "", cx);
-                    }
-                }
-                true
-            }
-            "v" if platform => {
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    self.replace(None, &text, cx);
-                }
-                true
-            }
-            "backspace" | "delete" => {
-                let input = self.input_mut();
-                if input.selection.is_empty() {
-                    let cursor = input.selection.end;
-                    input.selection = if event.keystroke.key == "backspace" {
-                        input.text[..cursor]
-                            .char_indices()
-                            .next_back()
-                            .map(|(offset, _)| offset)
-                            .unwrap_or(0)..cursor
-                    } else {
-                        cursor
-                            ..input.text[cursor..]
-                                .chars()
-                                .next()
-                                .map(|ch| cursor + ch.len_utf8())
-                                .unwrap_or(cursor)
-                    };
-                }
-                self.replace(None, "", cx);
-                true
-            }
-            "left" | "right" | "home" | "end" => {
-                let input = self.input_mut();
-                let cursor = input.cursor();
-                let offset = match event.keystroke.key.as_str() {
-                    "home" => 0,
-                    "end" => input.text.len(),
-                    "left" if platform => 0,
-                    "right" if platform => input.text.len(),
-                    "left" if !event.keystroke.modifiers.shift && !input.selection.is_empty() => {
-                        input.selection.start
-                    }
-                    "right" if !event.keystroke.modifiers.shift && !input.selection.is_empty() => {
-                        input.selection.end
-                    }
-                    "left" => input.text[..cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(offset, _)| offset)
-                        .unwrap_or(0),
-                    _ => input.text[cursor..]
-                        .chars()
-                        .next()
-                        .map(|ch| cursor + ch.len_utf8())
-                        .unwrap_or(cursor),
-                };
-                input.move_cursor(offset, event.keystroke.modifiers.shift);
-                true
-            }
             _ => false,
         };
         if handled {
@@ -505,60 +420,27 @@ impl ProjectCreator {
         }
     }
 
+    fn focus_input(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = match self.active {
+            Field::Path => &self.path_state,
+            Field::Name => &self.name_state,
+        };
+        state.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
     fn render_field(
         &self,
         field: Field,
         label: &str,
-        placeholder: &str,
+        _placeholder: &str,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
-        let input = match field {
-            Field::Path => &self.path,
-            Field::Name => &self.name,
+        let (state, id) = match field {
+            Field::Path => (&self.path_state, "project-path"),
+            Field::Name => (&self.name_state, "project-name"),
         };
-        let active = self.active == field;
-        let input_handler = active.then(|| {
-            let view = cx.entity();
-            let focus = self.focus.clone();
-            canvas(
-                |_, _, _| {},
-                move |bounds, _, window, cx| {
-                    window.handle_input(&focus, ElementInputHandler::new(bounds, view.clone()), cx);
-                },
-            )
-            .absolute()
-            .inset_0()
-            .into_any_element()
-        });
-        let mut text = if input.text.is_empty() {
-            placeholder.to_owned()
-        } else {
-            input.text.clone()
-        };
-        let mut highlights = Vec::new();
-        if active {
-            if input.selection.is_empty() {
-                let cursor = input.cursor();
-                text.insert(cursor, '▌');
-                highlights.push((
-                    cursor..cursor + '▌'.len_utf8(),
-                    HighlightStyle {
-                        color: Some(rgb(colors.cyan).into()),
-                        ..Default::default()
-                    },
-                ));
-            } else {
-                highlights.push((
-                    input.selection.clone(),
-                    HighlightStyle {
-                        background_color: Some(rgb(colors.divider).into()),
-                        color: Some(rgb(colors.cyan).into()),
-                        ..Default::default()
-                    },
-                ));
-            }
-        }
         div()
             .flex()
             .flex_col()
@@ -569,49 +451,19 @@ impl ProjectCreator {
                     .text_size(ui_text::text(9.0))
                     .child(ui_text::cased(label.to_owned())),
             )
-            .child(
-                div()
-                    .id(if field == Field::Path {
-                        "project-path"
-                    } else {
-                        "project-name"
-                    })
-                    .relative()
-                    .cursor_text()
-                    .h(ui_text::space(32.0))
-                    .px(ui_text::space(8.0))
-                    .flex()
-                    .items_center()
-                    .min_w_0()
-                    .bg(rgb(colors.bg))
-                    .border_1()
-                    .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-                    .text_color(rgb(if input.text.is_empty() {
-                        colors.muted
-                    } else {
-                        colors.text
-                    }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(StyledText::new(text).with_highlights(highlights)),
-                    )
-                    .children(input_handler)
-                    .on_click(cx.listener(move |form, _, window, cx| {
-                        form.active = field;
-                        form.focus.focus(window, cx);
-                        cx.notify();
-                    })),
-            )
+            .child(crate::form_input::plain_frame(
+                id,
+                state,
+                self.creating,
+                window,
+                cx,
+            ))
             .into_any_element()
     }
 }
 
 impl Render for ProjectCreator {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
         let ready = !self.creating && !self.inspecting && self.inspection.is_some();
         let can_init = self
@@ -661,7 +513,7 @@ impl Render for ProjectCreator {
             .occlude()
             .track_focus(&self.focus)
             .key_context("ProjectCreator")
-            .on_key_down(cx.listener(Self::key_down))
+            .capture_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation())
             .w(ui_text::space(540.0))
@@ -709,6 +561,7 @@ impl Render for ProjectCreator {
                         Field::Path,
                         "Folder",
                         "/path/to/project",
+                        window,
                         cx,
                     )))
                     .child(
@@ -737,6 +590,7 @@ impl Render for ProjectCreator {
                 } else {
                     "Use folder name"
                 },
+                window,
                 cx,
             ))
             .child(
@@ -835,95 +689,6 @@ impl Render for ProjectCreator {
                             .on_click(cx.listener(|form, _, _, cx| form.submit(cx))),
                     ),
             )
-    }
-}
-
-impl EntityInputHandler for ProjectCreator {
-    fn text_for_range(
-        &mut self,
-        range: Range<usize>,
-        actual: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
-        let input = self.input();
-        let start = utf16_to_byte(&input.text, range.start);
-        let end = utf16_to_byte(&input.text, range.end);
-        *actual = Some(
-            input.text[..start].encode_utf16().count()..input.text[..end].encode_utf16().count(),
-        );
-        Some(input.text[start..end].to_owned())
-    }
-    fn selected_text_range(
-        &mut self,
-        _: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        let input = self.input();
-        Some(UTF16Selection {
-            range: input.text[..input.selection.start].encode_utf16().count()
-                ..input.text[..input.selection.end].encode_utf16().count(),
-            reversed: input.reversed,
-        })
-    }
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        let input = self.input();
-        input.marked.as_ref().map(|range| {
-            input.text[..range.start].encode_utf16().count()
-                ..input.text[..range.end].encode_utf16().count()
-        })
-    }
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.input_mut().marked = None;
-    }
-    fn replace_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.replace(range, text, cx);
-    }
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        _: Option<Range<usize>>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.replace(range, text, cx);
-        if !text.is_empty() {
-            let input = self.input_mut();
-            let end = input.selection.end;
-            let length = text.replace(['\n', '\r'], "").len();
-            input.marked = (length > 0).then_some(end - length..end);
-        }
-    }
-    fn bounds_for_range(
-        &mut self,
-        _: Range<usize>,
-        bounds: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        Some(bounds)
-    }
-    fn character_index_for_point(
-        &mut self,
-        _: Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
-        Some(self.input().text.encode_utf16().count())
-    }
-    fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
-        Some(self.input().text.encode_utf16().count())
-    }
-    fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
-        !self.creating
     }
 }
 

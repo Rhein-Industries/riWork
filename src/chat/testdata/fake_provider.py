@@ -19,6 +19,7 @@ newline-delimited JSON, one step per line; blank lines and lines starting with
   {"type":"sleep","ms":N}
   {"type":"ignore_signals"}            keep running when SIGINT or SIGTERM arrives
   {"type":"hang"}                      do nothing until killed
+  {"type":"attachment_backpressure"}   read a turn/start prefix, then stop draining
   {"type":"exit","code":N,             optionally write `stderr`, then exit
    "stderr":"..."}
 
@@ -194,6 +195,23 @@ for step in steps:
     elif kind == "ignore_signals":
         ignoring = True
     elif kind == "hang":
+        while True:
+            signal.pause()
+    elif kind == "attachment_backpressure":
+        # A deterministic proof of partial delivery: do not parse/read the giant
+        # line, and never drain it after recording the prefix. Only fake runtimes.
+        prefix, buffer = buffer, b""
+        while b"turn/start" not in prefix:
+            ready, _, _ = select.select([sys.stdin.buffer], [], [], TIMEOUT)
+            if not ready:
+                record({"timeout": True})
+                sys.exit(99)
+            chunk = os.read(sys.stdin.fileno(), 512)
+            if not chunk or len(prefix) + len(chunk) > 65536:
+                record({"mismatch": "attachment prefix missing"})
+                sys.exit(98)
+            prefix += chunk
+        record({"backpressure": True, "prefix_bytes": len(prefix)})
         while True:
             signal.pause()
     elif kind == "exit":

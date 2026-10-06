@@ -304,10 +304,14 @@ pub struct Presentation {
     pub phase: Option<MessagePhase>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ChatImage>,
+    /// Owned, bounded submitted snapshots, including text files. Durable history
+    /// can distinguish equal-length versions without inlining their payloads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<super::attachments::Attachment>,
 }
 impl Presentation {
     pub fn is_empty(&self) -> bool {
-        self.phase.is_none() && self.images.is_empty()
+        self.phase.is_none() && self.images.is_empty() && self.attachments.is_empty()
     }
 }
 
@@ -501,6 +505,11 @@ pub enum ChatCommand {
     /// provider allows it.
     Send {
         text: String,
+    },
+    /// A distinct command: legacy hosts must refuse rather than discard attachments.
+    SendAttachments {
+        text: String,
+        attachments: Vec<super::attachments::Attachment>,
     },
     Interrupt,
     Approve {

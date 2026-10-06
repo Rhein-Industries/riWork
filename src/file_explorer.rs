@@ -12,7 +12,6 @@ use std::{
     collections::{BTreeMap, HashSet},
     ffi::OsStr,
     fs,
-    ops::Range,
     os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
     rc::Rc,
@@ -20,13 +19,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent,
-    Pixels, Point, Render, RenderImage, ScrollStrategy, SharedString, StyledText, Task,
-    UTF16Selection, UniformListScrollHandle, Window, canvas, div, img, prelude::*, px, rgb,
-    uniform_list,
+    AnyElement, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, IntoElement,
+    KeyDownEvent, Render, RenderImage, ScrollStrategy, SharedString, Task, UniformListScrollHandle,
+    Window, div, img, prelude::*, px, rgb, uniform_list,
 };
+use gpui::{Focusable, Subscription};
 
 use crate::{
     controls,
@@ -35,7 +34,7 @@ use crate::{
     settings::Settings,
     theme,
     tooltip::{self, Look},
-    ui_text, utf16_to_byte,
+    ui_text,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -722,24 +721,8 @@ impl Mode {
 
 #[derive(Default)]
 struct FilterInput {
+    // Domain snapshot only. The retained Kit state owns all editing and selection.
     text: String,
-    selection: Range<usize>,
-    marked: Option<Range<usize>>,
-}
-
-impl FilterInput {
-    fn replace(&mut self, range: Option<Range<usize>>, text: &str) {
-        let range = range
-            .map(|range| {
-                utf16_to_byte(&self.text, range.start)..utf16_to_byte(&self.text, range.end)
-            })
-            .or(self.marked.take())
-            .unwrap_or_else(|| self.selection.clone());
-        let text = text.replace(['\n', '\r'], "");
-        self.text.replace_range(range.clone(), &text);
-        let end = range.start + text.len();
-        self.selection = end..end;
-    }
 }
 
 /// How a row came to be selected. Only deliberate choices may parse a PDF;
@@ -1044,6 +1027,12 @@ pub struct FileExplorer {
     selected: Option<PathBuf>,
     show_hidden: bool,
     filter: FilterInput,
+    filter_state: Entity<InputState>,
+    base_filter_state: Entity<InputState>,
+    filter_synced: BTreeMap<gpui::EntityId, String>,
+    filter_sync_events: BTreeMap<gpui::EntityId, usize>,
+    filter_surfaces: BTreeMap<u64, (Entity<InputState>, Subscription)>,
+    _input_subscription: Subscription,
     focus: FocusHandle,
     mode: Mode,
     scroll: UniformListScrollHandle,
@@ -1098,7 +1087,7 @@ impl PreviewState {
 impl EventEmitter<FileExplorerEvent> for FileExplorer {}
 
 impl FileExplorer {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
         // The preview toolbar swaps between words and glyphs with this setting.
@@ -1109,7 +1098,24 @@ impl FileExplorer {
             }
         })
         .detach();
+        let filter_state = text_input::single_line(
+            "",
+            if ui_text::is_native() {
+                "Filter"
+            } else {
+                "Filter loaded files…"
+            },
+            window,
+            cx,
+        );
+        let subscription = cx.subscribe_in(&filter_state, window, Self::filter_event);
         Self {
+            base_filter_state: filter_state.clone(),
+            filter_synced: BTreeMap::from([(filter_state.entity_id(), String::new())]),
+            filter_sync_events: BTreeMap::new(),
+            filter_state,
+            filter_surfaces: BTreeMap::new(),
+            _input_subscription: subscription,
             root: None,
             tree: TreeModel::default(),
             selected: None,
@@ -1138,7 +1144,163 @@ impl FileExplorer {
         }
     }
 
-    pub fn set_root(&mut self, root: Option<ExplorerRoot>, cx: &mut Context<Self>) {
+    fn filter_event(
+        &mut self,
+        state: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_filter(state) {
+            return;
+        }
+        let id = state.entity_id();
+        if matches!(event, InputEvent::Change)
+            && let Some(count) = self.filter_sync_events.get_mut(&id)
+            && *count > 0
+        {
+            *count -= 1;
+            return;
+        }
+        match event {
+            InputEvent::Change => {
+                self.filter.text = state.read(cx).value().to_string();
+                self.filter_synced.insert(id, self.filter.text.clone());
+                let siblings: Vec<_> = self
+                    .filter_surfaces
+                    .values()
+                    .map(|(input, _)| input.clone())
+                    .collect();
+                for input in siblings {
+                    let other = input.entity_id();
+                    if other != id {
+                        let previous = self.filter_synced.get(&other).cloned().unwrap_or_default();
+                        if crate::form_input::sync_value(
+                            &input,
+                            &previous,
+                            &self.filter.text,
+                            window,
+                            cx,
+                        ) {
+                            *self.filter_sync_events.entry(other).or_default() += 1;
+                            self.filter_synced.insert(other, self.filter.text.clone());
+                        }
+                    }
+                }
+                self.ensure_selection(cx);
+                cx.notify();
+            }
+            InputEvent::Focus => {
+                if !state.read(cx).focus_handle(cx).is_focused(window) {
+                    return;
+                }
+                self.filter_state = state.clone();
+                if !crate::form_input::is_composing(state, window, cx) {
+                    self.filter.text = state.read(cx).value().to_string();
+                    self.filter_synced.insert(id, self.filter.text.clone());
+                    self.ensure_selection(cx);
+                }
+                self.mode = Mode::Search;
+                cx.notify();
+            }
+            _ if text_input::is_submit(event, EnterBehavior::Submit) => {
+                self.filter.text = state.read(cx).value().to_string();
+                self.filter_synced.insert(id, self.filter.text.clone());
+                self.mode = Mode::Tree;
+                self.ensure_selection(cx);
+                self.focus.focus(window, cx);
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    /// Create tab geometry once at the Workspace's tab/layout boundary.
+    pub fn surface(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<FileExplorerSurface> {
+        let input = if let Some((input, _)) = self.filter_surfaces.get(&id) {
+            input.clone()
+        } else {
+            let input = text_input::single_line(
+                self.filter.text.clone(),
+                if ui_text::is_native() {
+                    "Filter"
+                } else {
+                    "Filter loaded files…"
+                },
+                window,
+                cx,
+            );
+            let subscription = cx.subscribe_in(&input, window, Self::filter_event);
+            self.filter_synced
+                .insert(input.entity_id(), self.filter.text.clone());
+            self.filter_surfaces
+                .insert(id, (input.clone(), subscription));
+            input
+        };
+        let explorer = cx.entity();
+        cx.new(|cx| {
+            cx.observe(&explorer, |_, _, cx| cx.notify()).detach();
+            FileExplorerSurface { explorer, input }
+        })
+    }
+
+    fn owns_filter(&self, state: &Entity<InputState>) -> bool {
+        (self.filter_surfaces.is_empty() && state.entity_id() == self.base_filter_state.entity_id())
+            || self
+                .filter_surfaces
+                .values()
+                .any(|(input, _)| input.entity_id() == state.entity_id())
+    }
+
+    pub fn retain_surfaces(&mut self, ids: &[u64], cx: &mut Context<Self>) {
+        self.filter_surfaces.retain(|id, _| ids.contains(id));
+        let live: Vec<_> = self
+            .filter_surfaces
+            .values()
+            .map(|(input, _)| input.entity_id())
+            .chain(std::iter::once(self.base_filter_state.entity_id()))
+            .collect();
+        self.filter_synced.retain(|id, _| live.contains(id));
+        self.filter_sync_events.retain(|id, _| live.contains(id));
+        if !self.owns_filter(&self.filter_state) {
+            self.filter_state = self
+                .filter_surfaces
+                .values()
+                .next()
+                .map(|(input, _)| input.clone())
+                .unwrap_or_else(|| self.base_filter_state.clone());
+            if self.mode == Mode::Search {
+                self.mode = Mode::Tree;
+            }
+        }
+        cx.notify();
+    }
+
+    fn clear_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter = FilterInput::default();
+        let inputs: Vec<_> = self
+            .filter_surfaces
+            .values()
+            .map(|(input, _)| input.clone())
+            .chain(std::iter::once(self.base_filter_state.clone()))
+            .collect();
+        for input in inputs {
+            crate::form_input::set_value(&input, String::new(), window, cx);
+            self.filter_synced.insert(input.entity_id(), String::new());
+        }
+    }
+
+    pub fn set_root(
+        &mut self,
+        root: Option<ExplorerRoot>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.root == root {
             return;
         }
@@ -1162,7 +1324,7 @@ impl FileExplorer {
         self.preview_identity = None;
         self.preview_kind = None;
         self.set_preview(PreviewState::Empty, None, cx);
-        self.filter = FilterInput::default();
+        self.clear_filter(window, cx);
         self.scroll = UniformListScrollHandle::new();
         if let Some(root) = &self.root {
             self.load(root.path.clone(), cx);
@@ -1204,13 +1366,24 @@ impl FileExplorer {
     }
 
     /// Whether `mode` is the current control of the pane that has the keys.
-    fn is_current(&self, mode: Mode, window: &Window) -> bool {
-        self.mode == mode && self.focus_of(mode).is_focused(window)
+    fn is_current(&self, mode: Mode, window: &Window, cx: &App) -> bool {
+        self.mode == mode
+            && if mode == Mode::Search {
+                self.filter_state
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            } else {
+                self.focus_of(mode).is_focused(window)
+            }
     }
 
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mode = Mode::Search;
-        self.focus.focus(window, cx);
+        self.filter_state
+            .read(cx)
+            .focus_handle(cx)
+            .focus(window, cx);
         cx.notify();
     }
 
@@ -1425,9 +1598,10 @@ impl FileExplorer {
         &mut self,
         path: &Path,
         line: Option<u32>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        self.reveal_inner(path, line, true, cx)
+        self.reveal_inner(path, line, true, window, cx)
     }
 
     /// Chat links always stay inside the read-only preview, even if listings change.
@@ -1435,9 +1609,10 @@ impl FileExplorer {
         &mut self,
         path: &Path,
         line: Option<u32>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        self.reveal_inner(path, line, false, cx)
+        self.reveal_inner(path, line, false, window, cx)
     }
 
     fn reveal_inner(
@@ -1445,6 +1620,7 @@ impl FileExplorer {
         path: &Path,
         line: Option<u32>,
         external_fallback: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let root = self
@@ -1457,7 +1633,7 @@ impl FileExplorer {
         if hidden {
             self.show_hidden = true;
         }
-        self.filter = FilterInput::default();
+        self.clear_filter(window, cx);
         if self.mode == Mode::Search {
             self.mode = Mode::Tree;
         }
@@ -1819,6 +1995,12 @@ impl FileExplorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mode == Mode::Search
+            && matches!(event.keystroke.key.as_str(), "escape" | "tab" | "down")
+            && crate::form_input::is_composing(&self.filter_state, window, cx)
+        {
+            return;
+        }
         // A click on empty space gives a pane the keys without choosing one of its controls.
         if self.mode.in_preview_pane() != in_preview {
             self.mode = if in_preview {
@@ -1852,68 +2034,13 @@ impl FileExplorer {
             };
             self.mode = order[(index + step) % order.len()];
         } else if key == "escape" && self.mode == Mode::Search {
-            self.filter = FilterInput::default();
+            self.clear_filter(window, cx);
             self.mode = Mode::Tree;
             self.ensure_selection(cx);
         } else if self.mode == Mode::Search {
-            if key == "enter" || key == "down" {
+            if key == "down" {
                 self.mode = Mode::Tree;
                 self.ensure_selection(cx);
-            } else if platform && key == "a" {
-                self.filter.selection = 0..self.filter.text.len();
-            } else if platform && (key == "c" || key == "x") {
-                cx.write_to_clipboard(ClipboardItem::new_string(
-                    self.filter.text[self.filter.selection.clone()].to_owned(),
-                ));
-                if key == "x" {
-                    self.filter.replace(None, "");
-                    self.ensure_selection(cx);
-                }
-            } else if platform && key == "v" {
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    self.filter.replace(None, &text);
-                    self.ensure_selection(cx);
-                }
-            } else if key == "backspace" || key == "delete" {
-                if self.filter.selection.is_empty() {
-                    let cursor = self.filter.selection.end;
-                    self.filter.selection = if key == "backspace" {
-                        self.filter.text[..cursor]
-                            .char_indices()
-                            .next_back()
-                            .map(|(offset, _)| offset)
-                            .unwrap_or(0)..cursor
-                    } else {
-                        cursor
-                            ..self.filter.text[cursor..]
-                                .chars()
-                                .next()
-                                .map(|ch| cursor + ch.len_utf8())
-                                .unwrap_or(cursor)
-                    };
-                }
-                self.filter.replace(None, "");
-                self.ensure_selection(cx);
-            } else if matches!(key, "left" | "right" | "home" | "end") {
-                let cursor = self.filter.selection.end;
-                let offset = match key {
-                    "home" => 0,
-                    "end" => self.filter.text.len(),
-                    "left" if platform => 0,
-                    "right" if platform => self.filter.text.len(),
-                    "left" => self.filter.text[..cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(offset, _)| offset)
-                        .unwrap_or(0),
-                    _ => self.filter.text[cursor..]
-                        .chars()
-                        .next()
-                        .map(|ch| cursor + ch.len_utf8())
-                        .unwrap_or(cursor),
-                };
-                self.filter.selection = offset..offset;
-                self.filter.marked = None;
             } else {
                 return;
             }
@@ -2008,6 +2135,14 @@ impl FileExplorer {
         } else {
             return;
         }
+        if self.mode == Mode::Search {
+            self.filter_state
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx);
+        } else {
+            self.focus_of(self.mode).focus(window, cx);
+        }
         cx.stop_propagation();
         cx.notify();
     }
@@ -2047,7 +2182,7 @@ impl FileExplorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
-        let active = self.is_current(mode, window);
+        let active = self.is_current(mode, window, cx);
         let available = match mode {
             Mode::Edit => self.selected_editable().is_some(),
             Mode::CopyContents => self.copy_contents_refusal().is_none(),
@@ -2180,89 +2315,14 @@ impl FileExplorer {
             .into_any_element()
     }
 
-    fn search(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme::palette(cx);
-        let active = self.is_current(Mode::Search, window);
-        let mut text = if self.filter.text.is_empty() {
-            if ui_text::is_native() {
-                "Filter".to_owned()
-            } else {
-                "Filter loaded files…".to_owned()
-            }
-        } else {
-            self.filter.text.clone()
-        };
-        let mut highlights = Vec::new();
-        if active && !self.filter.text.is_empty() {
-            if self.filter.selection.is_empty() {
-                let cursor = self.filter.selection.end;
-                text.insert(cursor, '▌');
-            } else {
-                highlights.push((
-                    self.filter.selection.clone(),
-                    HighlightStyle {
-                        color: Some(rgb(colors.cyan).into()),
-                        background_color: Some(rgb(colors.divider).into()),
-                        ..Default::default()
-                    },
-                ));
-            }
-        }
-        let entity = cx.entity();
-        let focus = self.focus.clone();
-        let handler = active.then(|| {
-            canvas(
-                |_, _, _| {},
-                move |bounds, _, window, cx| {
-                    window.handle_input(
-                        &focus,
-                        ElementInputHandler::new(bounds, entity.clone()),
-                        cx,
-                    );
-                },
-            )
-            .absolute()
-            .inset_0()
-        });
-        div()
-            .id("file-explorer-filter")
-            .relative()
-            .cursor_text()
-            .h(ui_text::space(29.0))
-            .px(ui_text::space(8.0))
-            .flex()
-            .items_center()
-            .min_w_0()
-            .bg(rgb(colors.bg))
-            .border_1()
-            .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-            .text_color(rgb(if self.filter.text.is_empty() {
-                colors.muted
-            } else {
-                colors.text
-            }))
-            // Native: the capsule every navigation panel searches with.
-            .map(|field| {
-                controls::native(field, |field| {
-                    controls::search_field(field, active, colors)
-                        .mb_0()
-                        .text_color(rgb(if self.filter.text.is_empty() {
-                            colors.muted
-                        } else {
-                            colors.text
-                        }))
-                        .child(icons::mark("⌕", 10.0, colors.muted))
-                })
-            })
-            .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(StyledText::new(text).with_highlights(highlights)),
-            )
-            .children(handler)
-            .on_click(cx.listener(|view, _, window, cx| view.focus_search(window, cx)))
+    fn search(
+        &self,
+        input: &Entity<InputState>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        crate::form_input::plain_frame("file-explorer-filter", input, false, window, cx)
+            .when(ui_text::is_native(), |frame| frame.rounded_full())
             .into_any_element()
     }
 
@@ -2654,7 +2714,7 @@ impl FileExplorer {
             .font_family(panel_family())
             .text_size(ui_text::text(11.0))
             .border_1()
-            .border_color(rgb(if self.is_current(Mode::Preview, window) {
+            .border_color(rgb(if self.is_current(Mode::Preview, window, cx) {
                 colors.focus
             } else {
                 colors.divider
@@ -3035,8 +3095,13 @@ enum Face<'a> {
     Glyph(ActionGlyph, &'static str),
 }
 
-impl Render for FileExplorer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl FileExplorer {
+    fn panel_for(
+        &mut self,
+        input: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme::palette(cx);
         let rows = self.rows();
         let item_count = rows
@@ -3125,7 +3190,7 @@ impl Render for FileExplorer {
                     div()
                         .flex_none()
                         .pb(ui_text::space(6.0))
-                        .child(self.search(window, cx)),
+                        .child(self.search(input, window, cx)),
                 )
                 .children(message.map(|message| {
                     if error {
@@ -3148,7 +3213,8 @@ impl Render for FileExplorer {
                 )
                 .track_focus(&self.focus)
                 .key_context("FileExplorer")
-                .on_key_down(cx.listener(Self::key_down));
+                .capture_key_down(cx.listener(Self::key_down))
+                .into_any_element();
         }
         let browser = div()
             .id("file-explorer-browser")
@@ -3236,7 +3302,7 @@ impl Render for FileExplorer {
                                 cx,
                             )),
                     )
-                    .child(self.search(window, cx)),
+                    .child(self.search(input, window, cx)),
             )
             .children(message.map(|message| {
                 div()
@@ -3273,13 +3339,45 @@ impl Render for FileExplorer {
         browser
             .track_focus(&self.focus)
             .key_context("FileExplorer")
-            .on_key_down(cx.listener(Self::key_down))
+            .capture_key_down(cx.listener(Self::key_down))
+            .into_any_element()
     }
 }
 
-/// The Preview panel: a second view of the window's `FileExplorer`, drawn in a pane of its
-/// own. It holds nothing but the explorer it follows, so what it shows is always the
-/// explorer's selection, and its buttons and keys act on the explorer.
+impl Render for FileExplorer {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let input = self.filter_state.clone();
+        self.panel_for(&input, window, cx)
+    }
+}
+
+/// A Files tab shares the tree/domain query while retaining its own input geometry.
+pub struct FileExplorerSurface {
+    explorer: Entity<FileExplorer>,
+    input: Entity<InputState>,
+}
+
+impl FileExplorerSurface {
+    pub fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.explorer.update(cx, |explorer, cx| {
+            if !explorer.owns_filter(&self.input) {
+                return;
+            }
+            explorer.filter_state = self.input.clone();
+            explorer.focus_search(window, cx);
+        });
+    }
+}
+
+impl Render for FileExplorerSurface {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.explorer.update(cx, |explorer, cx| {
+            explorer.panel_for(&self.input, window, cx)
+        })
+    }
+}
+
+/// The Preview panel shares the explorer's selection and preview lifecycle.
 pub struct FilePreview {
     explorer: Entity<FileExplorer>,
 }
@@ -3302,104 +3400,6 @@ impl Render for FilePreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.explorer
             .update(cx, |explorer, cx| explorer.preview_panel(window, cx))
-    }
-}
-
-impl EntityInputHandler for FileExplorer {
-    fn text_for_range(
-        &mut self,
-        range: Range<usize>,
-        actual: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
-        let start = utf16_to_byte(&self.filter.text, range.start);
-        let end = utf16_to_byte(&self.filter.text, range.end);
-        *actual = Some(
-            self.filter.text[..start].encode_utf16().count()
-                ..self.filter.text[..end].encode_utf16().count(),
-        );
-        Some(self.filter.text[start..end].to_owned())
-    }
-    fn selected_text_range(
-        &mut self,
-        _: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
-            range: self.filter.text[..self.filter.selection.start]
-                .encode_utf16()
-                .count()
-                ..self.filter.text[..self.filter.selection.end]
-                    .encode_utf16()
-                    .count(),
-            reversed: false,
-        })
-    }
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        self.filter.marked.as_ref().map(|range| {
-            self.filter.text[..range.start].encode_utf16().count()
-                ..self.filter.text[..range.end].encode_utf16().count()
-        })
-    }
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.filter.marked = None;
-    }
-    fn replace_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.mode != Mode::Search {
-            return;
-        }
-        self.filter.replace(range, text);
-        self.ensure_selection(cx);
-        cx.notify();
-    }
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        _: Option<Range<usize>>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.mode != Mode::Search {
-            return;
-        }
-        self.filter.replace(range, text);
-        let length = text.replace(['\n', '\r'], "").len();
-        let end = self.filter.selection.end;
-        self.filter.marked = (length > 0).then_some(end - length..end);
-        self.ensure_selection(cx);
-        cx.notify();
-    }
-    fn bounds_for_range(
-        &mut self,
-        _: Range<usize>,
-        bounds: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        Some(bounds)
-    }
-    fn character_index_for_point(
-        &mut self,
-        _: Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
-        Some(self.filter.text.encode_utf16().count())
-    }
-    fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
-        Some(self.filter.text.encode_utf16().count())
-    }
-    fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
-        self.mode == Mode::Search
     }
 }
 
@@ -4339,5 +4339,245 @@ fn accent_family() -> SharedString {
         ui_text::mono_family()
     } else {
         "SF Mono".into()
+    }
+}
+
+#[cfg(test)]
+mod kit_filter_tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
+
+    struct VisibleFilters {
+        explorer: Entity<FileExplorer>,
+        left: Entity<FileExplorerSurface>,
+        right: Entity<FileExplorerSurface>,
+    }
+    impl Render for VisibleFilters {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .gap(px(20.))
+                .child(div().w(px(300.)).child(self.left.clone()))
+                .child(div().w(px(300.)).child(self.right.clone()))
+        }
+    }
+
+    #[gpui::test]
+    fn kit_visible_filters_protect_composition_history_and_focus(cx: &mut TestAppContext) {
+        use gpui::{ElementInputHandler, InputHandler};
+        let (handle, pair) = crate::form_input::test_window(cx, |window, cx| {
+            let explorer = cx.new(|cx| FileExplorer::new(window, cx));
+            let left = explorer.update(cx, |explorer, cx| explorer.surface(301, window, cx));
+            let right = explorer.update(cx, |explorer, cx| explorer.surface(302, window, cx));
+            VisibleFilters {
+                explorer,
+                left,
+                right,
+            }
+        });
+        let (left, right) = cx
+            .update_window(handle.into(), |_, window, app| {
+                window.render_frame(app);
+                let left = pair.read(app).left.read(app).input.clone();
+                let right = pair.read(app).right.read(app).input.clone();
+                assert_ne!(
+                    left.read(app).input_bounds(),
+                    right.read(app).input_bounds()
+                );
+                left.read(app).focus_handle(app).focus(window, app);
+                window.render_frame(app);
+                window.input("A", app);
+                (left, right)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.background_executor.advance_clock(Duration::from_secs(3));
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(right.read(app).value(), "A");
+            window.render_frame(app);
+            window.input("B", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(right.read(app).value(), "AB");
+            right.read(app).focus_handle(app).focus(window, app);
+            window.render_frame(app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            window.press("cmd-z", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(right.read(app).value(), "A");
+            let mut handler =
+                ElementInputHandler::new(right.read(app).input_bounds(), right.clone());
+            handler.replace_and_mark_text_in_range(None, "日本", Some(2..2), window, app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            left.read(app).focus_handle(app).focus(window, app);
+            window.render_frame(app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let marked = cx
+            .update_window(handle.into(), |_, window, app| {
+                let marked = right.read(app).value();
+                window.input("C", app);
+                marked
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(right.read(app).value(), marked);
+            assert!(crate::form_input::is_composing(&right, window, app));
+            assert!(left.read(app).focus_handle(app).is_focused(window));
+            assert!(pair.read(app).explorer.read(app).root.is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn kit_removed_filter_rejects_stale_events_and_reopens_without_subscriptions(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, explorer) = crate::form_input::test_window(cx, FileExplorer::new);
+        let stale = cx
+            .update_window(handle.into(), |_, window, app| {
+                let surface =
+                    explorer.update(app, |explorer, cx| explorer.surface(201, window, cx));
+                let state = surface.read(app).input.clone();
+                explorer.update(app, |explorer, cx| {
+                    explorer.filter_state = state.clone();
+                    explorer.mode = Mode::Search;
+                    explorer.retain_surfaces(&[], cx);
+                    explorer.filter_event(&state, &InputEvent::Focus, window, cx);
+                });
+                state.update(app, |input, cx| {
+                    input.replace_all("stale draft", window, cx)
+                });
+                state
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            explorer.update(app, |explorer, cx| {
+                assert!(!explorer.owns_filter(&stale));
+                assert_eq!(
+                    explorer.filter_state.entity_id(),
+                    explorer.base_filter_state.entity_id()
+                );
+                assert_eq!(explorer.filter.text, "");
+                assert!(explorer.filter_surfaces.is_empty());
+                assert!(matches!(explorer.mode, Mode::Tree));
+                for id in 202..210 {
+                    explorer.surface(id, window, cx);
+                    explorer.retain_surfaces(&[], cx);
+                    assert!(explorer.filter_surfaces.is_empty());
+                    assert_eq!(explorer.filter_synced.len(), 1);
+                    assert!(explorer.filter_sync_events.is_empty());
+                }
+            });
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn kit_duplicate_filters_keep_distinct_persistent_geometry(cx: &mut TestAppContext) {
+        let (handle, explorer) = crate::form_input::test_window(cx, FileExplorer::new);
+        let (first_input, second_input) = cx
+            .update_window(handle.into(), |_, window, app| {
+                let first = explorer.update(app, |explorer, cx| explorer.surface(101, window, cx));
+                let second = explorer.update(app, |explorer, cx| explorer.surface(102, window, cx));
+                (
+                    first.read(app).input.clone(),
+                    second.read(app).input.clone(),
+                )
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_ne!(first_input.entity_id(), second_input.entity_id());
+            first_input.update(app, |input, cx| input.replace("A🦀中", window, cx));
+            first_input.update(app, |input, cx| input.set_selected_range(1..5, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert_eq!(second_input.read(app).value(), "A🦀中");
+            let remounted = explorer.update(app, |explorer, cx| explorer.surface(101, window, cx));
+            assert_eq!(
+                remounted.read(app).input.entity_id(),
+                first_input.entity_id()
+            );
+            assert_eq!(first_input.read(app).selected_range(), 1..5);
+            explorer.update(app, |explorer, cx| {
+                explorer.retain_surfaces(&[101, 102], cx)
+            });
+            assert_eq!(explorer.read(app).filter_surfaces.len(), 2);
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn kit_filter_persists_selection_and_owns_enter_escape_and_tab(cx: &mut TestAppContext) {
+        let (handle, explorer) = crate::form_input::test_window(cx, FileExplorer::new);
+        let state = cx
+            .update_window(handle.into(), |_, window, app| {
+                explorer.update(app, |explorer, cx| explorer.focus_search(window, cx));
+                window.render_frame(app);
+                window.input("A🦀中", app);
+                let state = explorer.read(app).filter_state.clone();
+                state.update(app, |state, cx| state.set_selected_range(1..5, cx));
+                state
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let identity = state.entity_id();
+        cx.update_window(handle.into(), |_, window, app| {
+            explorer.update(app, |_, cx| cx.notify());
+            window.render_frame(app);
+            assert_eq!(explorer.read(app).filter_state.entity_id(), identity);
+            assert_eq!(state.read(app).selected_range(), 1..5);
+            window.press("enter", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert!(matches!(explorer.read(app).mode, Mode::Tree));
+            assert_eq!(state.read(app).value(), "A🦀中");
+            explorer.update(app, |explorer, cx| explorer.focus_search(window, cx));
+            window.render_frame(app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            window.press("escape", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert!(matches!(explorer.read(app).mode, Mode::Tree));
+            assert_eq!(state.read(app).value(), "");
+            explorer.update(app, |explorer, cx| explorer.focus_search(window, cx));
+            window.render_frame(app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            window.press("tab", app);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, app| {
+            assert!(!state.read(app).focus_handle(app).is_focused(window));
+        })
+        .unwrap();
     }
 }

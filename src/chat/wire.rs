@@ -12,9 +12,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    /// Non-mutating feature inspection. Older hosts reject this operation.
+    Capabilities { id: String },
+    /// Copy a local file into this chat. Legacy hosts refuse this operation.
+    StageAttachment {
+        id: String,
+        chat_id: String,
+        path: std::path::PathBuf,
+    },
     /// Start a chat. The result is its `ChatInfo`. A chat that makes itself an
     /// orchestrator of a scope that has one is refused (`ORCHESTRATOR_EXISTS`).
-    Create { id: String, chat: NewChat },
+    Create {
+        id: String,
+        chat: NewChat,
+        /// Optional caller-owned identity, persisted before an automation creates it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chat_id: Option<String>,
+    },
     /// All chats the host knows, running or not. The result is `[ChatInfo]`.
     List { id: String },
     /// Act on a chat. A stopped chat is resumed first.
@@ -34,6 +48,12 @@ pub enum Request {
     Close { id: String, chat_id: String },
     /// Stop the chat and delete its history.
     Delete { id: String, chat_id: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Capabilities {
+    pub identified_create: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -9,6 +9,7 @@
 
 use super::driver::DriverConfig;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +23,19 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub const GRACE: Duration = Duration::from_secs(5);
 /// How long it gets after SIGTERM before SIGKILL.
 pub const TERM_WAIT: Duration = Duration::from_secs(2);
+pub const WRITE_WAIT: Duration = Duration::from_secs(30);
+
+/// Zero written bytes are a refusal; any prefix may have reached the provider.
+#[derive(Debug)]
+pub struct WriteFailure {
+    pub written: usize,
+    pub message: String,
+}
+impl std::fmt::Display for WriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({} bytes written)", self.message, self.written)
+    }
+}
 /// The end of a child's stderr kept to explain why it died.
 const STDERR_TAIL_BYTES: usize = 4096;
 
@@ -117,15 +131,152 @@ pub fn command(config: &DriverConfig, driver_args: &[&str]) -> Command {
 /// signals that stop it. It leads a process group of its own, so everything it
 /// starts (shell commands, MCP servers) can be stopped with it.
 pub struct Proc {
-    child: Mutex<Child>,
+    // All signals and consuming waits use this same lifetime lock. An atomic
+    // "reaped" flag alone cannot prevent a signal racing PID reuse.
+    child: Mutex<OwnedChild>,
     pid: libc::pid_t,
     stdin: Mutex<Option<ChildStdin>>,
     stderr_tail: Arc<Mutex<Vec<u8>>>,
     /// The stderr drain has seen the end of the stream.
     stderr_done: Arc<AtomicBool>,
-    /// The process has been reaped and its group swept: its pid may be reused,
-    /// so the group is never signalled again.
-    swept: AtomicBool,
+    writes_cancelled: AtomicBool,
+}
+
+struct OwnedChild {
+    child: Child,
+    /// Set before any consuming wait, never reset after reaping.
+    retired: bool,
+}
+
+/// Group targets must be this child's positive, private group, never 0/-1,
+/// the caller's group, or a group supplied by a caller. This is only a target
+/// guard: the caller must also hold the lifetime lock and confirm an unreaped
+/// child immediately before signalling.
+fn owned_signal_target(
+    pid: libc::pid_t,
+    child_id: u32,
+    retired: bool,
+    group: Option<(libc::pid_t, libc::pid_t)>,
+) -> Option<libc::pid_t> {
+    if retired || pid <= 1 || u32::try_from(pid).ok() != Some(child_id) {
+        return None;
+    }
+    match group {
+        Some((actual, caller)) if actual == pid && actual != caller => Some(-pid),
+        Some(_) => None,
+        None => Some(pid),
+    }
+}
+
+impl OwnedChild {
+    /// Observe without reaping. Even an exited child pins its PID until our
+    /// consuming wait, so group cleanup can safely precede that wait.
+    fn exited(&mut self, pid: libc::pid_t) -> io::Result<bool> {
+        if owned_signal_target(pid, self.child.id(), self.retired, None).is_none() {
+            return Err(io::Error::from_raw_os_error(libc::ECHILD));
+        }
+        loop {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result == 0 {
+                let observed = unsafe { info.si_pid() };
+                if observed == 0 {
+                    return Ok(false);
+                }
+                if observed == pid {
+                    return Ok(true);
+                }
+                // Fail closed if the OS did not confirm this exact child.
+                self.retired = true;
+                return Err(io::Error::from_raw_os_error(libc::ECHILD));
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            if error.raw_os_error() == Some(libc::ECHILD) {
+                self.retired = true;
+            }
+            return Err(error);
+        }
+    }
+
+    /// Only after a non-consuming observation (or try_wait == None on the
+    /// shutdown fallback), with the lifetime lock held through kill. No other
+    /// Proc method can release this PID between confirmation and signalling.
+    fn signal_pinned(&self, pid: libc::pid_t, signal: libc::c_int, group: bool) -> bool {
+        if owned_signal_target(pid, self.child.id(), self.retired, None).is_none() {
+            return false;
+        }
+        let group = group.then(|| unsafe { (libc::getpgid(pid), libc::getpgrp()) });
+        let Some(target) = owned_signal_target(pid, self.child.id(), self.retired, group) else {
+            return false;
+        };
+        unsafe { libc::kill(target, signal) == 0 }
+    }
+
+    fn reap_exited(&mut self, pid: libc::pid_t) -> Option<ExitStatus> {
+        // WNOWAIT confirmed an exited, still-owned leader. Sweep only now,
+        // before reaping; never send a signal using its cached exit status.
+        self.signal_pinned(pid, libc::SIGKILL, true);
+        self.retired = true;
+        self.child.try_wait().ok().flatten()
+    }
+
+    fn try_wait(&mut self, pid: libc::pid_t) -> Option<ExitStatus> {
+        if self.retired {
+            return self.child.try_wait().ok().flatten();
+        }
+        match self.exited(pid) {
+            Ok(true) => self.reap_exited(pid),
+            Ok(false) => None,
+            Err(_) if self.retired => self.child.try_wait().ok().flatten(),
+            Err(_) => None,
+        }
+    }
+
+    fn signal(&mut self, pid: libc::pid_t, signal: libc::c_int, group: bool) {
+        match self.exited(pid) {
+            Ok(false) => {
+                self.signal_pinned(pid, signal, group);
+            }
+            Ok(true) => {
+                self.reap_exited(pid);
+            }
+            Err(_) => {} // Unconfirmed/reaped ownership never permits a signal.
+        }
+    }
+
+    fn kill_and_wait(&mut self, pid: libc::pid_t) -> Option<ExitStatus> {
+        if self.retired {
+            return self.child.wait().ok();
+        }
+        if self.exited(pid).is_err() {
+            // If WNOWAIT failed, a consuming try_wait may still confirm a
+            // running child. Retire before that wait; never sweep after Some.
+            let unconfirmed = self.retired;
+            self.retired = true;
+            match self.child.try_wait() {
+                Ok(Some(status)) => return Some(status),
+                Ok(None) if !unconfirmed => self.retired = false,
+                _ => return None,
+            }
+        }
+        if !self.signal_pinned(pid, libc::SIGKILL, true) {
+            // An owned child may have left its private group. Finish only the
+            // confirmed, unreaped child; never target its new/shared group.
+            self.signal_pinned(pid, libc::SIGKILL, false);
+        }
+        self.retired = true;
+        self.child.wait().ok()
+    }
 }
 
 impl Proc {
@@ -168,12 +319,32 @@ impl Proc {
         }
         let proc = Proc {
             pid: child.id() as libc::pid_t,
-            child: Mutex::new(child),
+            child: Mutex::new(OwnedChild {
+                child,
+                retired: false,
+            }),
             stdin: Mutex::new(stdin),
             stderr_tail,
             stderr_done,
-            swept: AtomicBool::new(false),
+            writes_cancelled: AtomicBool::new(false),
         };
+        // Do this after constructing the owner: a failure drops/reaps only this child.
+        if let Some(input) = proc
+            .stdin
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            let fd = input.as_raw_fd();
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(format!(
+                    "cannot make provider input nonblocking: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+        }
         Ok((Arc::new(proc), stdout))
     }
 
@@ -183,15 +354,98 @@ impl Proc {
 
     /// Write one line to the provider. Fails once its input is closed or gone.
     pub fn send_line(&self, line: &str) -> Result<(), String> {
-        let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
-        let input = stdin.as_mut().ok_or("the provider's input is closed")?;
+        self.send_line_until(line, Instant::now() + WRITE_WAIT)
+            .map_err(|e| {
+                if e.written == 0 {
+                    e.to_string()
+                } else {
+                    format!(
+                        "{} {e}; inspect the transcript before resending",
+                        super::attachments::UNKNOWN_SUBMISSION
+                    )
+                }
+            })
+    }
+
+    /// Covers mutex acquisition and pipe backpressure. No detached writer can outlive
+    /// the deadline. A partial JSON line poisons the input: never append another frame.
+    pub fn send_line_until(&self, line: &str, deadline: Instant) -> Result<(), WriteFailure> {
+        let failure = |written, message: &str| WriteFailure {
+            written,
+            message: message.into(),
+        };
+        let mut stdin = loop {
+            if self.writes_cancelled() {
+                return Err(failure(0, "provider input was cancelled"));
+            }
+            if Instant::now() >= deadline {
+                return Err(failure(0, "provider write deadline expired"));
+            }
+            match self.stdin.try_lock() {
+                Ok(input) => break input,
+                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(2)),
+            }
+        };
+        let input = stdin
+            .as_mut()
+            .ok_or_else(|| failure(0, "the provider's input is closed"))?;
         let mut bytes = Vec::with_capacity(line.len() + 1);
         bytes.extend_from_slice(line.as_bytes());
         bytes.push(b'\n');
-        input
-            .write_all(&bytes)
-            .and_then(|()| input.flush())
-            .map_err(|error| format!("cannot write to the provider: {error}"))
+        let mut written = 0;
+        let result = loop {
+            if self.writes_cancelled() {
+                break Err(failure(written, "provider input was cancelled"));
+            }
+            if Instant::now() >= deadline {
+                break Err(failure(written, "provider write deadline expired"));
+            }
+            match input.write(&bytes[written..]) {
+                Ok(0) => break Err(failure(written, "provider input closed during write")),
+                Ok(count) => {
+                    written += count;
+                    if written == bytes.len() {
+                        break Ok(());
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let mut fd = libc::pollfd {
+                        fd: input.as_raw_fd(),
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    let timeout = remaining.as_millis().min(20) as libc::c_int;
+                    let ready = unsafe { libc::poll(&mut fd, 1, timeout) };
+                    if ready < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+                    {
+                        break Err(failure(written, "cannot poll provider input"));
+                    }
+                }
+                Err(error) => {
+                    break Err(WriteFailure {
+                        written,
+                        message: format!("cannot write to provider: {error}"),
+                    });
+                }
+            }
+        };
+        if result.is_err() && written > 0 {
+            self.cancel_writes();
+            stdin.take();
+        }
+        result
+    }
+
+    /// Accessible without the driver or stdin mutex, including during backpressure.
+    /// Cancellation is terminal for this owned child, never a resend request.
+    pub fn cancel_writes(&self) {
+        self.writes_cancelled.store(true, Ordering::Release);
+    }
+    pub fn writes_cancelled(&self) -> bool {
+        self.writes_cancelled.load(Ordering::Acquire)
     }
 
     pub fn send(&self, value: &serde_json::Value) -> Result<(), String> {
@@ -200,21 +454,16 @@ impl Proc {
 
     /// Close the provider's input, which tells it to finish.
     pub fn close_stdin(&self) {
+        self.cancel_writes();
         self.stdin.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     /// The exit status once the process has ended, or `None` while it runs.
     pub fn try_wait(&self) -> Option<ExitStatus> {
-        let status = {
-            let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
-            child.try_wait().ok().flatten()
-        };
-        if status.is_some() && !self.swept.swap(true, Ordering::AcqRel) {
-            // Whatever the process left running in its group goes with it, now,
-            // while the group id still means this process.
-            unsafe { libc::kill(-self.pid, libc::SIGKILL) };
-        }
-        status
+        self.child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_wait(self.pid)
     }
 
     /// Wait up to `timeout` for the process to end.
@@ -233,17 +482,18 @@ impl Proc {
 
     /// Signal the process itself, not what it started.
     pub fn signal(&self, signal: libc::c_int) {
-        if self.try_wait().is_none() {
-            unsafe { libc::kill(self.pid, signal) };
-        }
+        self.child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .signal(self.pid, signal, false);
     }
 
     /// Signal the whole process group (not once the process is gone).
     pub fn signal_group(&self, signal: libc::c_int) {
-        if !self.swept.load(Ordering::Acquire) {
-            // The process leads its group (`process_group(0)`), so the id is the pid.
-            unsafe { libc::kill(-self.pid, signal) };
-        }
+        self.child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .signal(self.pid, signal, true);
     }
 
     /// Why the process ended, for a message to the user: its status (waiting up
@@ -280,33 +530,30 @@ impl Proc {
     }
 
     pub fn stop_after(&self, grace: Duration, term_wait: Duration) {
-        // A writer stuck on a provider that stopped reading holds the lock:
-        // then the input stays open and the signals do the work.
+        self.cancel_writes();
+        // A nonblocking writer releases the lock after observing cancellation.
+        // Keep the existing owned-child shutdown escalation policy.
         if let Ok(mut stdin) = self.stdin.try_lock() {
             stdin.take();
         }
         if self.wait_exit(grace).is_none() {
             self.signal_group(libc::SIGTERM);
             if self.wait_exit(term_wait).is_none() {
-                self.signal_group(libc::SIGKILL);
-                let _ = self.child.lock().unwrap_or_else(|e| e.into_inner()).wait();
+                self.child
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .kill_and_wait(self.pid);
             }
         }
-        // Reaping sweeps the group; make sure it has been.
-        let _ = self.try_wait();
     }
 }
 
 impl Drop for Proc {
     fn drop(&mut self) {
-        if self.try_wait().is_none() {
-            unsafe { libc::kill(-self.pid, libc::SIGKILL) };
-            let _ = self
-                .child
-                .get_mut()
-                .unwrap_or_else(|e| e.into_inner())
-                .wait();
-        }
+        self.child
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .kill_and_wait(self.pid);
     }
 }
 
@@ -357,10 +604,158 @@ mod tests {
         assert_eq!(frames(b"abcde\n", 4), vec![Frame::Oversized(5)]);
     }
 
+    #[test]
+    fn owned_signal_targets_reject_broadcast_shared_mismatched_and_retired_ids() {
+        // Pure policy assertions: these numbers are data, never OS targets.
+        for pid in [libc::pid_t::MIN, -1, 0, 1] {
+            assert_eq!(owned_signal_target(pid, 42, false, None), None);
+            assert_eq!(owned_signal_target(pid, 42, false, Some((pid, 7))), None);
+        }
+        assert_eq!(owned_signal_target(42, 43, false, None), None);
+        assert_eq!(owned_signal_target(42, 42, false, Some((43, 7))), None);
+        assert_eq!(owned_signal_target(42, 42, false, Some((-1, 7))), None);
+        assert_eq!(owned_signal_target(42, 42, false, Some((42, 42))), None);
+        assert_eq!(owned_signal_target(42, 42, true, None), None);
+        assert_eq!(owned_signal_target(42, 42, true, Some((42, 7))), None);
+        assert_eq!(owned_signal_target(42, 42, false, None), Some(42));
+        assert_eq!(owned_signal_target(42, 42, false, Some((42, 7))), Some(-42));
+    }
+
+    #[test]
+    fn owned_fake_signalling_and_reaping_share_the_lifetime_lock() {
+        use crate::chat::{model::Provider, testkit::Fake};
+        use std::sync::{Barrier, mpsc};
+        let fake = Fake::new(&["{\"type\":\"hang\"}\n"]);
+        let (proc, _stdout) = Proc::spawn(command(&fake.config(Provider::Codex), &[])).unwrap();
+        let held = proc.child.lock().unwrap();
+        let ready = Arc::new(Barrier::new(3));
+        let (signal_sent, signal_done) = mpsc::channel();
+        let signalling = proc.clone();
+        let signal_ready = ready.clone();
+        let signaller = thread::spawn(move || {
+            signal_ready.wait();
+            signalling.signal_group(libc::SIGTERM);
+            signal_sent.send(()).unwrap();
+        });
+        let (reap_sent, reap_done) = mpsc::channel();
+        let reaping = proc.clone();
+        let reap_ready = ready.clone();
+        let reaper = thread::spawn(move || {
+            reap_ready.wait();
+            reap_sent
+                .send(reaping.wait_exit(Duration::from_secs(2)))
+                .unwrap();
+        });
+        ready.wait();
+        // Both operations must wait for ownership, while writer cancellation
+        // remains accessible independently of this lock and of stdin.
+        assert!(matches!(
+            signal_done.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(matches!(
+            reap_done.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        proc.cancel_writes();
+        assert!(proc.writes_cancelled());
+        drop(held);
+        signal_done.recv_timeout(Duration::from_secs(2)).unwrap();
+        let status = reap_done
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .expect("only the fixed owned fake must exit");
+        signaller.join().unwrap();
+        reaper.join().unwrap();
+        assert!(proc.child.lock().unwrap().retired);
+        // Repeated callers receive the cached status and cannot
+        // restore signal eligibility once the child has been consumed.
+        proc.signal_group(libc::SIGKILL);
+        proc.signal(libc::SIGINT);
+        assert_eq!(proc.try_wait(), Some(status));
+        let owned = proc.child.lock().unwrap();
+        assert_eq!(
+            owned_signal_target(proc.pid, owned.child.id(), owned.retired, None),
+            None
+        );
+    }
+
     fn script(body: &str) -> Command {
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg(body);
         command
+    }
+
+    #[test]
+    fn attachment_pipe_backpressure_has_a_real_deadline_and_poisoned_prefix() {
+        use crate::chat::{model::Provider, testkit::Fake};
+        let fake = Fake::new(&["{\"type\":\"hang\"}\n"]);
+        let (proc, _stdout) = Proc::spawn(command(&fake.config(Provider::Codex), &[])).unwrap();
+        let started = Instant::now();
+        let error = proc
+            .send_line_until(&"x".repeat(12 << 20), started + Duration::from_millis(200))
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            error.written > 0,
+            "a pipe prefix is ambiguous, never a known refusal"
+        );
+        assert!(proc.writes_cancelled());
+        let late = proc
+            .send_line_until(
+                "never append after a partial JSON frame",
+                Instant::now() + Duration::from_secs(1),
+            )
+            .unwrap_err();
+        assert_eq!(late.written, 0);
+        proc.stop_after(Duration::ZERO, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn attachment_pipe_cancellation_does_not_need_the_stdin_mutex() {
+        use crate::chat::{model::Provider, testkit::Fake};
+        let fake = Fake::new(&["{\"type\":\"hang\"}\n"]);
+        let (proc, _stdout) = Proc::spawn(command(&fake.config(Provider::Codex), &[])).unwrap();
+        let writing = proc.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let writer = thread::spawn(move || {
+            let result = writing.send_line_until(
+                &"x".repeat(12 << 20),
+                Instant::now() + Duration::from_secs(10),
+            );
+            sent.send(result).unwrap();
+        });
+        // Wait for the owned writer to hold stdin, without depending on pipe capacity.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while proc.stdin.try_lock().is_ok() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        proc.cancel_writes();
+        let error = received
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap_err();
+        assert!(error.message.contains("cancelled"));
+        writer.join().unwrap();
+        proc.stop_after(Duration::ZERO, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn attachment_write_deadline_covers_waiting_for_the_writer_mutex() {
+        use crate::chat::{model::Provider, testkit::Fake};
+        let fake = Fake::new(&["{\"type\":\"hang\"}\n"]);
+        let (proc, _stdout) = Proc::spawn(command(&fake.config(Provider::Codex), &[])).unwrap();
+        let held = proc.stdin.lock().unwrap();
+        let error = proc
+            .send_line_until("no bytes", Instant::now() + Duration::from_millis(30))
+            .unwrap_err();
+        assert_eq!(error.written, 0);
+        assert!(
+            !proc.writes_cancelled(),
+            "a zero-byte deadline does not corrupt the pipe"
+        );
+        drop(held);
+        proc.stop_after(Duration::ZERO, Duration::from_millis(100));
     }
 
     #[test]

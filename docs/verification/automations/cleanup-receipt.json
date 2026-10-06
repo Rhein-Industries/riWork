@@ -1,0 +1,17 @@
+{
+  "closed_gui_pids": [
+    37032,
+    55868,
+    93223
+  ],
+  "closed_fixture_host_pid": 1877,
+  "removed_bundles": [
+    "f351330d",
+    "8723414c",
+    "5e472dab"
+  ],
+  "production_host": "78989 /Users/dominik/orca/projects/riWork/target/release/RiWork.app/Contents/MacOS/riwork chat serve",
+  "fixture_home_preserved": "/private/tmp/rwa-ui-dudv4q4g/home",
+  "schedules_paused": true,
+  "cua_ownership": "ended"
+}

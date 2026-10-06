@@ -3,6 +3,24 @@ use crate::chat::model::{Provider, Transcript};
 use crate::chat::testkit::{Fake, fixture, fold, until};
 use std::sync::mpsc::Receiver;
 
+#[test]
+fn attachment_ordinary_user_echo_retains_text_and_images_with_replay_identity() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    let frame = json!({"type":"user","uuid":"replayed-user","message":{"content":[
+        {"type":"text","text":"actual echoed text 🦀"},
+        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}
+    ]}});
+    core.on_user(&frame);
+    core.on_user(&frame);
+    let transcript = fold(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(transcript.items.len(), 1);
+    assert!(
+        matches!(&transcript.items[0].body, ItemBody::UserMessage { text } if text.contains("actual echoed text 🦀"))
+    );
+    assert_eq!(transcript.items[0].presentation.images.len(), 1);
+}
+
 /// Short waits, so the escalation paths take milliseconds.
 fn fast() -> Tuning {
     Tuning {

@@ -997,12 +997,14 @@ impl Workspace {
         if !self.ensure_layout(window, cx) {
             return;
         }
-        self.ensure_file_explorer(cx);
+        self.sync_file_explorer(window, cx);
         let Some(explorer) = self.file_explorer.clone() else {
             self.notice = Some("Files are not available for this project.".to_owned());
             return;
         };
-        if let Err(error) = explorer.update(cx, |explorer, cx| explorer.reveal(&path, line, cx)) {
+        if let Err(error) =
+            explorer.update(cx, |explorer, cx| explorer.reveal(&path, line, window, cx))
+        {
             self.notice = Some(error);
             return;
         }
@@ -1030,12 +1032,13 @@ impl Workspace {
         if !self.ensure_layout(window, cx) {
             return;
         }
-        self.ensure_file_explorer(cx);
+        self.sync_file_explorer(window, cx);
         let Some(explorer) = self.file_explorer.clone() else {
             return;
         };
         if path != root
-            && let Err(error) = explorer.update(cx, |explorer, cx| explorer.reveal(&path, None, cx))
+            && let Err(error) =
+                explorer.update(cx, |explorer, cx| explorer.reveal(&path, None, window, cx))
         {
             self.notice = Some(error);
             return;

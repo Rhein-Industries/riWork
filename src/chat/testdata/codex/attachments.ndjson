@@ -1,0 +1,7 @@
+# Runtime is fake. Input shapes checked against installed 0.160.0 schema and official docs.
+{"type":"expect","frame":{"method":"initialize"},"reply":[{"id":"$id","result":{}}]}
+{"type":"expect","frame":{"method":"initialized"}}
+{"type":"expect","frame":{"method":"thread/start"},"reply":[{"id":"$id","result":{"thread":{"id":"attachment-thread"},"model":"fixture"}}]}
+{"type":"expect","frame":{"method":"turn/start","params":{"input":"<any>"}},"reply":[{"id":"$id","result":{"turn":{"id":"attachment-turn","status":"inProgress"}}}]}
+{"type":"expect","frame":{"method":"turn/steer","params":{"expectedTurnId":"attachment-turn","input":"<any>"}},"reply":[{"id":"$id","error":{"code":-32600,"message":"attachment steer refused"}}]}
+{"type":"expect","frame":{"method":"turn/steer","params":{"input":[{"type":"text","text":"legacy"}]}},"reply":[{"id":"$id","result":{"turnId":"attachment-turn"}}]}

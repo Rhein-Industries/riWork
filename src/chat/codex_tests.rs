@@ -6,6 +6,24 @@ use std::fs;
 use std::sync::mpsc::{self, Receiver};
 use uuid::Uuid;
 
+#[test]
+fn attachment_late_turn_receipt_cannot_steer_queued_text_into_a_newer_turn() {
+    let fake = Fake::new(&[]);
+    let (tx, _rx) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), tx);
+    session.thread_id = Some("thread".into());
+    session.ready = true;
+    session.begin_turn("old");
+    session.finish_turn("old", TurnOutcome::Completed);
+    session.begin_turn("new");
+    session.queued.push("for the newer turn".into());
+    assert!(session.begin_turn("old").is_empty());
+    assert_eq!(session.turn.as_deref(), Some("new"));
+    assert_eq!(session.queued, vec!["for the newer turn"]);
+    assert!(session.begin_turn("").is_empty());
+    assert_eq!(session.turn.as_deref(), Some("new"));
+}
+
 /// A driver running against the fake `codex app-server` replaying `name`.
 struct Run {
     fake: Fake,
@@ -177,6 +195,7 @@ fn a_whole_turn_becomes_items_usage_and_states() {
             phase: matches!(body, ItemBody::AgentMessage { .. })
                 .then_some(crate::chat::model::MessagePhase::Final),
             images: vec![],
+            ..Default::default()
         },
         id: id.into(),
         turn_id: Some("turn-1".into()),

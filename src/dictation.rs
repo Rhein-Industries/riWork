@@ -323,29 +323,82 @@ impl Insertion {
     /// says whether the input has the keys: one that never had them has its caret at the start,
     /// and dictation then adds to the end.
     pub fn show(&mut self, input: &mut Input, heard: &str, focused: bool) {
-        if self.base.is_none() || self.written.as_deref() != Some(input.text.as_str()) {
-            let anchor = if !focused && input.cursor() == 0 && !input.text.is_empty() {
-                input.text.len()..input.text.len()
-            } else {
-                input.selection.clone()
-            };
-            self.base = Some((input.text.clone(), anchor));
+        let (text, selection) = self.show_snapshot(
+            &input.text,
+            input.selection.clone(),
+            input.cursor(),
+            heard,
+            focused,
+        );
+        if input.text != text || input.selection != selection {
+            input.text = text;
+            input.selection = selection;
+            input.reversed = false;
+            input.marked = None;
         }
-        let Some((base, anchor)) = &self.base else {
-            return;
-        };
-        let (text, caret) = if heard.trim().is_empty() {
+    }
+
+    /// Rebase on an explicit user Change even if undo/edit returns to equal text before
+    /// the next speech update. The authoritative editor remains the caller's Kit entity.
+    pub fn user_edited(&mut self) {
+        self.written = None;
+    }
+
+    /// Editor-independent bridge, in UTF-8 byte offsets. Legacy helpers above/below stay
+    /// available for their tests; production chat passes Kit's value/selection/cursor.
+    pub fn show_snapshot(
+        &mut self,
+        text: &str,
+        selection: Range<usize>,
+        cursor: usize,
+        heard: &str,
+        focused: bool,
+    ) -> (String, Range<usize>) {
+        if self.base.is_none() || self.written.as_deref() != Some(text) {
+            let anchor = if !focused && cursor == 0 && !text.is_empty() {
+                text.len()..text.len()
+            } else {
+                selection
+            };
+            self.base = Some((text.to_owned(), anchor));
+        }
+        let (base, anchor) = self
+            .base
+            .as_ref()
+            .expect("dictation anchor was initialized");
+        let (next, caret) = if heard.trim().is_empty() {
             (base.clone(), anchor.end)
         } else {
             insert(heard, base, anchor.clone())
         };
-        if input.text != text || input.selection != (caret..caret) {
-            input.text = text;
-            input.selection = caret..caret;
-            input.reversed = false;
-            input.marked = None;
-        }
-        self.written = Some(input.text.clone());
+        self.written = Some(next.clone());
+        (next, caret..caret)
+    }
+    pub fn commit_snapshot(
+        &mut self,
+        text: &str,
+        selection: Range<usize>,
+        cursor: usize,
+        heard: &str,
+        focused: bool,
+    ) -> (String, Range<usize>) {
+        let result = self.show_snapshot(text, selection, cursor, heard, focused);
+        *self = Self::default();
+        result
+    }
+    pub fn discard_snapshot(
+        &mut self,
+        text: &str,
+        selection: Range<usize>,
+        cursor: usize,
+    ) -> (String, Range<usize>) {
+        let result = if self.base.is_some() {
+            self.show_snapshot(text, selection, cursor, "", true)
+        } else {
+            (text.to_owned(), selection)
+        };
+        *self = Self::default();
+        result
     }
 
     /// The final text, at the caret. The next dictation starts from where this one left it.

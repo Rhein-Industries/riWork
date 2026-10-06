@@ -20,13 +20,16 @@
 // The contract lands before the host and the tabs that use it.
 #![allow(dead_code)]
 
+#[cfg(test)]
+mod attachment_driver_tests;
+pub mod attachments;
 pub mod child;
 pub mod claude;
 pub mod client;
 pub mod codex;
 pub mod driver;
 pub mod host;
-mod launch;
+pub(crate) mod launch;
 pub(crate) mod log;
 pub mod media;
 pub mod model;

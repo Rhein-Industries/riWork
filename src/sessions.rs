@@ -1179,8 +1179,7 @@ impl SessionManager {
     /// What `shell output --json` answers. Without `if_changed` this is one
     /// capture with its hash. With it, a capture whose hash is still
     /// `if_changed` is not returned: the shell is captured again, inside this
-    /// call, whenever tmux reports that its pane changed (and in any case every
-    /// `watch::SAFETY_POLL`; every `OUTPUT_POLL` where tmux cannot report), until
+    /// call, every `OUTPUT_POLL` (bounded by the remaining wait), until
     /// the hash differs or `wait` has passed, and only then is `Unchanged` the
     /// answer. Each capture is one bounded tmux call; `wait` is capped at
     /// `MAX_OUTPUT_WAIT`.
@@ -1461,6 +1460,9 @@ impl SessionManager {
                 )));
             }
         }
+        if let Err(outcome) = self.schedule_project_directory(target, state, &shell.id) {
+            return Ok(outcome);
+        }
         if let Scope::Workspace { worktree_id, .. } = &target.scope {
             let workspace = state
                 .worktrees
@@ -1547,6 +1549,13 @@ impl SessionManager {
                         return Err("schedule gate deferred".into());
                     }
                 };
+                // Readiness takes time and can wait for another input holder.
+                // Revalidate the live directory under that same input lock,
+                // immediately before persisting the dispatch claim.
+                if let Err(outcome) = self.schedule_project_directory(target, state, &shell.id) {
+                    gate_outcome = Some(outcome);
+                    return Err("schedule directory gate rejected".into());
+                }
                 match claim(&token) {
                     Ok(true) => {
                         claimed = true;
@@ -1576,6 +1585,48 @@ impl SessionManager {
             )),
             Err(error) => Delivery::Deferred(format!("Terminal input unavailable: {error}")),
         })
+    }
+
+    fn schedule_project_directory(
+        &self,
+        target: &crate::schedules::Target,
+        state: &crate::store::State,
+        id: &str,
+    ) -> Result<(), crate::schedules::Delivery> {
+        use crate::schedules::{Delivery, Scope};
+        // Old Project targets intentionally describe orchestrator context,
+        // rather than constraining the orchestrator's working directory.
+        let Scope::Project { project_id } = &target.scope else {
+            return Ok(());
+        };
+        if target.shell_kind != Some(ShellKind::Project) {
+            return Ok(());
+        }
+        let project = state
+            .projects
+            .iter()
+            .find(|p| &p.id == project_id)
+            .ok_or_else(|| Delivery::Failed("The selected project no longer exists.".into()))?;
+        let evidence = (|| -> Result<_, String> {
+            let root = project.root.canonicalize().map_err(|e| e.to_string())?;
+            let directory = self.current_directory(id)?;
+            if !directory.is_absolute() {
+                return Err("The worker's live directory is not absolute".into());
+            }
+            let directory = directory.canonicalize().map_err(|e| e.to_string())?;
+            Ok((root, directory))
+        })();
+        let (root, directory) = evidence.map_err(|error| {
+            Delivery::Deferred(format!(
+                "Cannot verify the worker's project directory: {error}"
+            ))
+        })?;
+        if !directory.starts_with(root) {
+            return Err(Delivery::Failed(
+                "Worker left the selected project root.".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn schedule_prompt_screen(&self, shell: &ShellSession) -> Result<String, String> {
@@ -4911,9 +4962,9 @@ fn poll_output(
     }
 }
 
-/// How a waiting `read_output` passes the time between captures: it watches
-/// the pane through a control-mode client (`watch`) and captures when told
-/// something happened, or polls every `OUTPUT_POLL` when it cannot watch.
+/// How a waiting `read_output` passes the time between captures. Control-mode
+/// watching is temporarily disabled at `SessionManager::watch`, so every wait
+/// uses the existing `OUTPUT_POLL` fallback.
 struct Waiter<'a> {
     manager: &'a SessionManager,
     id: &'a str,
@@ -4921,7 +4972,7 @@ struct Waiter<'a> {
 }
 
 enum WaiterState {
-    /// No client yet: the first wait starts one.
+    /// No wait yet: the first pause selects polling while watching is disabled.
     Fresh,
     Watching(watch::PaneWatch),
     Polling,
@@ -4970,13 +5021,15 @@ impl<'a> Waiter<'a> {
 }
 
 impl SessionManager {
-    /// A control-mode client watching the pane of `id`, if one can be attached.
-    fn watch(&self, id: &str) -> Option<watch::PaneWatch> {
-        watch::PaneWatch::start(self.tmux_client(), id)
+    /// Temporarily use polling for all servers: control-client disconnects can
+    /// crash vulnerable tmux servers during client identification. A version
+    /// query cannot rule out replacement between the query and attachment.
+    fn watch(&self, _id: &str) -> Option<watch::PaneWatch> {
+        None
     }
 
-    /// The same client for the desktop's terminal links, which read a screen again only when it
-    /// may have changed. It blocks until attached (at most a second); call it off the UI thread.
+    /// Desktop terminal links use their existing polling fallback while
+    /// control-mode watching is disabled. This never starts a tmux client.
     pub(crate) fn watch_shell(&self, id: &str) -> Option<watch::PaneWatch> {
         validate_uuid(id).ok()?;
         self.watch(id)
@@ -5570,6 +5623,9 @@ fn strip_schedule_sgr(text: &str) -> String {
 
 #[cfg(test)]
 mod output_tests;
+
+#[cfg(all(test, unix))]
+mod polling_tests;
 
 #[cfg(test)]
 mod tmux_tests;

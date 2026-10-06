@@ -19,7 +19,7 @@ use std::{
 };
 
 use crate::chat::{
-    client::{Client, Subscription, SubscriptionCloser},
+    client::{CallError, Client, Subscription, SubscriptionCloser},
     model::{ChatCommand, ChatEvent, Item, ItemBody, ItemStatus, NoticeLevel},
     wire::Envelope,
 };
@@ -31,6 +31,17 @@ use super::state::Link;
 pub enum FeedMsg {
     /// Events, in order, none of them seen before.
     Events(Vec<Envelope>),
+    /// Attachment submission receipt. Success is submission, not turn completion.
+    AttachmentSubmission {
+        command: ChatCommand,
+        result: Result<(), CallError>,
+    },
+    /// A single-attempt UI dispatch, correlated to an immutable editor snapshot.
+    Submission {
+        id: u64,
+        command: ChatCommand,
+        result: Result<(), CallError>,
+    },
     Link(Link),
     /// A command could not be delivered, and why.
     CommandFailed {
@@ -82,10 +93,15 @@ pub fn sequence(last: u64, seq: u64) -> Sequence {
     }
 }
 
+pub(super) enum Delivery {
+    Command(ChatCommand),
+    Submission { id: u64, command: ChatCommand },
+}
+
 pub struct Feed {
     stop: Arc<AtomicBool>,
     closer: Arc<Mutex<Option<SubscriptionCloser>>>,
-    commands: Option<mpsc::Sender<ChatCommand>>,
+    commands: Option<mpsc::Sender<Delivery>>,
     /// Kept to wait for the threads in tests; a window never waits for them.
     #[cfg(test)]
     threads: Vec<thread::JoinHandle<()>>,
@@ -121,11 +137,35 @@ impl Feed {
         }
     }
 
+    /// Deterministic UI/action tests: record queue entries without sockets, threads, or providers.
+    #[cfg(test)]
+    pub(super) fn recording() -> (Self, mpsc::Receiver<Delivery>) {
+        let (commands, queue) = mpsc::channel();
+        (
+            Self {
+                stop: Arc::new(AtomicBool::new(false)),
+                closer: Arc::new(Mutex::new(None)),
+                commands: Some(commands),
+                threads: Vec::new(),
+            },
+            queue,
+        )
+    }
+
     /// Queue a command. Commands reach the host one at a time, in the order sent.
     pub fn send(&self, command: ChatCommand) {
         if let Some(commands) = &self.commands {
-            let _ = commands.send(command);
+            let _ = commands.send(Delivery::Command(command));
         }
+    }
+
+    /// Unlike legacy generic commands, UI drafts are exchanged exactly once, with a receipt.
+    pub fn submit(&self, id: u64, command: ChatCommand) -> Result<(), CallError> {
+        self.commands
+            .as_ref()
+            .ok_or_else(|| CallError::Refused("chat connection is closed".into()))?
+            .send(Delivery::Submission { id, command })
+            .map_err(|_| CallError::Refused("chat delivery queue is closed".into()))
     }
 
     /// End both threads. Does not wait for them.
@@ -293,13 +333,52 @@ fn pause(delay: Duration, stop: &AtomicBool) {
 fn deliver(
     ensure: &Ensure,
     chat_id: &str,
-    queue: mpsc::Receiver<ChatCommand>,
+    queue: mpsc::Receiver<Delivery>,
     messages: &async_channel::Sender<FeedMsg>,
 ) {
     let mut client: Option<Client> = None;
     // Ends when the queue is closed and empty: commands sent just before a tab closed are
     // still delivered.
-    for command in queue {
+    for delivery in queue {
+        let command = match delivery {
+            Delivery::Submission { id, command } => {
+                let result = ensure()
+                    .map_err(CallError::Broken)
+                    .and_then(|socket| Client::connect(&socket).map_err(CallError::Broken))
+                    .and_then(|mut connection| {
+                        connection.command_checked(chat_id, command.clone())
+                    });
+                client = None;
+                if messages
+                    .send_blocking(FeedMsg::Submission {
+                        id,
+                        command,
+                        result,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                continue;
+            }
+            Delivery::Command(command) => command,
+        };
+        if matches!(command, ChatCommand::SendAttachments { .. }) {
+            // Connect anew and exchange exactly once. A lost reply can follow a successful
+            // submission, so neither Broken nor refusal permits an automatic resend.
+            let result = ensure()
+                .map_err(CallError::Broken)
+                .and_then(|socket| Client::connect(&socket).map_err(CallError::Broken))
+                .and_then(|mut connection| connection.command_checked(chat_id, command.clone()));
+            client = None;
+            if messages
+                .send_blocking(FeedMsg::AttachmentSubmission { command, result })
+                .is_err()
+            {
+                return;
+            }
+            continue;
+        }
         // A connection kept from an earlier command may have been the old host's: one
         // fresh attempt before giving up.
         let mut result = Err("no connection".to_owned());
@@ -383,6 +462,9 @@ mod tests {
                 Ok(FeedMsg::Link(link)) => links.push(link),
                 Ok(FeedMsg::Events(events)) => seqs.extend(events.iter().map(|e| e.seq)),
                 Ok(FeedMsg::CommandFailed { error, .. }) => panic!("{error}"),
+                Ok(FeedMsg::AttachmentSubmission { .. } | FeedMsg::Submission { .. }) => {
+                    panic!("unexpected submission receipt")
+                }
                 Err(_) => thread::sleep(Duration::from_millis(5)),
             }
         }
@@ -656,6 +738,52 @@ mod tests {
             }
         }
         feed.join();
+    }
+
+    #[test]
+    fn attachment_delivery_lost_reply_is_uncertain_and_attempted_once() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+        let home = crate::chat::testing::short_home();
+        let socket = home.join("lost.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            let request: crate::chat::wire::Request = serde_json::from_str(&line).unwrap();
+            // The host acted, then its response was lost. A retry would duplicate the action.
+            request
+        });
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let count = attempts.clone();
+        let ensure: Ensure = Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(socket.clone())
+        });
+        let (commands, queue) = mpsc::channel();
+        let (messages, receiver) = async_channel::unbounded();
+        let command = ChatCommand::SendAttachments {
+            text: "exact draft".into(),
+            attachments: Vec::new(),
+        };
+        commands.send(Delivery::Command(command.clone())).unwrap();
+        drop(commands);
+        deliver(&ensure, "chat", queue, &messages);
+        let FeedMsg::AttachmentSubmission {
+            command: returned,
+            result,
+        } = receiver.recv_blocking().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(returned, command);
+        assert!(matches!(result, Err(CallError::Broken(_))));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(
+            matches!(server.join().unwrap(),crate::chat::wire::Request::Command {command:c,..} if c==command)
+        );
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

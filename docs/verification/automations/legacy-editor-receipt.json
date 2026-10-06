@@ -1,0 +1,50 @@
+{
+  "code_candidate": "46b492fd006616d92a2e9c2b5af4e6845b36b3c3",
+  "parent": "4f0525005b54d54fc26a9092faf6dcfeb36c988c",
+  "base": "edcaf5799038de8769d985700858323a47fe6b1e",
+  "scope": "Private native editor typed legacy chat/shell selection and binding, isolated regressions and documentation; desktop only",
+  "checks": {
+    "schedule_panel_tests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "schedule_chat_tests": {
+      "passed": 13,
+      "failed": 0
+    },
+    "cargo_check_offline": "passed",
+    "cargo_fmt_check": "passed",
+    "base_to_code_candidate_diff_check": {
+      "command": "git diff edcaf579 46b492fd006616d92a2e9c2b5af4e6845b36b3c3 --check",
+      "exit_code": 0
+    }
+  },
+  "source_sha256": {
+    "src/schedule_panel.rs": "c6cc47c84838d088b127ba493c2362974561e38015576451a71bbcc51aceca52"
+  },
+  "independent_prior_defect_evidence": {
+    "candidate": "a38ea39ec5a0de607698e8cab88adad0c6b17680",
+    "source": "/Users/dominik/orca/projects/riWork-review-manu-20261005/.review/automations-candidate-a38ea39/repro-source/src/schedule_chat/tests.rs",
+    "source_sha256": "56318a0df0c7760f4e7d6e4683b1d9e88dd36560927f0bf74c850165e4cb90ce",
+    "test": "independent_legacy_chat_reselection_binder_rejects_a_valid_chat",
+    "log_artifact": "test-logs/independent-legacy-chat-binder-reproducer.log",
+    "meaning": "Old unpinned editor binder rejects a displayed valid legacy chat UUID; intentional prior-defect confirmation"
+  },
+  "regression_evidence": [
+    "same-chat reselection preserves full chat target and saves next revision",
+    "app/project/app rebinding validates scope/provider/account",
+    "ordinary root shell retains explicit binding and identity",
+    "wrong-scope/unknown/cross-type/non-orchestrator chat choices have no fallback",
+    "legacy terminal binder remains orchestrator-only"
+  ],
+  "verification_limit": "Private code-level checks, no GUI input or click/save verification",
+  "environment": {
+    "cargo_target_dir": "/tmp/riwork-automations-target",
+    "zig": "/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig",
+    "riwork_home": "inherited unchanged; isolated test children only"
+  },
+  "task_status_changes": false,
+  "cua_ownership": "not acquired",
+  "production_changes": false,
+  "unchanged_broad_checks_rerun": false
+}

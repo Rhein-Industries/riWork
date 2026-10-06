@@ -4,20 +4,22 @@
 //! note. The work is `crate::handoff`; this runs it off the UI thread, says what it is doing
 //! ("Writing summary…"), and tells the window when the new tab is there to open.
 
-use std::{ops::Range, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
+use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use gpui::{
-    AnyElement, Bounds, Context, EntityInputHandler, EventEmitter, FocusHandle, IntoElement,
-    KeyDownEvent, MouseButton, Pixels, Point, Render, UTF16Selection, Window, div, prelude::*, rgb,
+    AnyElement, Context, EventEmitter, FocusHandle, IntoElement, KeyDownEvent, MouseButton, Render,
+    Window, div, prelude::*, rgb,
 };
+use gpui::{Entity, Focusable, Subscription};
 
 use crate::{
     codex_accounts,
     controls::{self, Button},
     handoff::{self, Context as Passing, Kind, Outcome, Request},
-    project_settings::{Input, impl_input_handler, input_content},
+    project_settings::Input,
     sessions::HarnessKind,
-    theme, ui_text, utf16_to_byte,
+    theme, ui_text,
 };
 
 /// How the dialog reaches the chat host: it starts it when it is not running.
@@ -169,6 +171,9 @@ pub struct HandoffDialog {
     accounts: Vec<AccountChoice>,
     account: usize,
     model: Input,
+    model_state: Entity<InputState>,
+    note_state: Entity<InputState>,
+    _input_subscriptions: Vec<Subscription>,
     note: Input,
     active: Row,
     /// What the work in flight is doing; the dialog ignores input meanwhile.
@@ -186,6 +191,7 @@ impl HandoffDialog {
         source: HandoffSource,
         home: PathBuf,
         ensure: Ensure,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
@@ -197,7 +203,43 @@ impl HandoffDialog {
             askable: source.askable,
         };
         let accounts = account_choices(&home);
+        let model_state = text_input::single_line("", "The agent's own default", window, cx);
+        let note_state =
+            text_input::single_line("", "Anything the new agent should know", window, cx);
+        let mut subscriptions = Vec::new();
+        for (row, state) in [(Row::Model, &model_state), (Row::Note, &note_state)] {
+            subscriptions.push(cx.subscribe_in(
+                state,
+                window,
+                move |dialog, state, event, _, cx| {
+                    if dialog.busy.is_some() {
+                        return;
+                    }
+                    match event {
+                        InputEvent::Change => {
+                            let value = state.read(cx).value().to_string();
+                            match row {
+                                Row::Model => dialog.model.text = value,
+                                _ => dialog.note.text = value,
+                            }
+                            dialog.edited(cx);
+                        }
+                        InputEvent::Focus => {
+                            dialog.active = row;
+                            cx.notify();
+                        }
+                        _ if text_input::is_submit(event, EnterBehavior::Submit) => {
+                            dialog.submit(cx)
+                        }
+                        _ => {}
+                    }
+                },
+            ));
+        }
         Self {
+            model_state,
+            note_state,
+            _input_subscriptions: subscriptions,
             source,
             home,
             ensure,
@@ -215,25 +257,19 @@ impl HandoffDialog {
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus.focus(window, cx);
+        match self.active {
+            Row::Model if self.busy.is_none() => {
+                self.model_state.read(cx).focus_handle(cx).focus(window, cx)
+            }
+            Row::Note if self.busy.is_none() => {
+                self.note_state.read(cx).focus_handle(cx).focus(window, cx)
+            }
+            _ => self.focus.focus(window, cx),
+        }
     }
 
     fn accepts_input(&self) -> bool {
         self.busy.is_none() && matches!(self.active, Row::Model | Row::Note)
-    }
-
-    fn input(&self) -> &Input {
-        match self.active {
-            Row::Note => &self.note,
-            _ => &self.model,
-        }
-    }
-
-    fn input_mut(&mut self) -> &mut Input {
-        match self.active {
-            Row::Note => &mut self.note,
-            _ => &mut self.model,
-        }
     }
 
     fn edited(&mut self, cx: &mut Context<Self>) {
@@ -324,6 +360,8 @@ impl HandoffDialog {
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
+        self.model.text = self.model_state.read(cx).value().to_string();
+        self.note.text = self.note_state.read(cx).value().to_string();
         if self.busy.is_some() {
             return;
         }
@@ -332,10 +370,12 @@ impl HandoffDialog {
             self.error = Some(format!(
                 "A model name is at most {MAX_MODEL_CHARS} characters."
             ));
+            cx.notify();
             return;
         }
         if self.note.text.chars().count() > MAX_NOTE_CHARS {
             self.error = Some(format!("A note is at most {MAX_NOTE_CHARS} characters."));
+            cx.notify();
             return;
         }
         self.busy = Some(
@@ -419,7 +459,17 @@ impl HandoffDialog {
         }
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let state = match self.active {
+            Row::Model => Some(&self.model_state),
+            Row::Note => Some(&self.note_state),
+            _ => None,
+        };
+        if matches!(event.keystroke.key.as_str(), "escape" | "tab")
+            && state.is_some_and(|state| crate::form_input::is_composing(state, window, cx))
+        {
+            return;
+        }
         let handled = match event.keystroke.key.as_str() {
             "escape" => {
                 if self.busy.is_none() {
@@ -430,7 +480,7 @@ impl HandoffDialog {
                 true
             }
             _ if self.busy.is_some() => true,
-            "enter" | "return" => {
+            "enter" | "return" if !self.accepts_input() => {
                 self.press(self.active, cx);
                 true
             }
@@ -440,10 +490,12 @@ impl HandoffDialog {
                 } else {
                     1
                 });
+                self.focus(window, cx);
                 true
             }
-            "up" | "down" => {
+            "up" | "down" if !self.accepts_input() => {
                 self.move_active(if event.keystroke.key == "up" { -1 } else { 1 });
+                self.focus(window, cx);
                 true
             }
             "left" | "right"
@@ -459,13 +511,7 @@ impl HandoffDialog {
                 }
                 true
             }
-            _ => {
-                let handled = self.accepts_input() && self.input_mut().key(event, cx);
-                if handled {
-                    self.edited(cx);
-                }
-                handled
-            }
+            _ => false,
         };
         if handled {
             cx.stop_propagation();
@@ -482,7 +528,7 @@ impl HandoffDialog {
         selected: bool,
         enabled: bool,
         cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> AnyElement {
         let colors = theme::palette(cx);
         div()
@@ -520,8 +566,9 @@ impl HandoffDialog {
                 })
             })
             .when(enabled, |chip| {
-                chip.cursor_pointer()
-                    .on_click(cx.listener(move |dialog, _, _, cx| on_click(dialog, cx)))
+                chip.cursor_pointer().on_click(
+                    cx.listener(move |dialog, _, window, cx| on_click(dialog, window, cx)),
+                )
             })
             .child(label)
             .into_any_element()
@@ -557,7 +604,7 @@ impl HandoffDialog {
             .on_click(cx.listener(move |dialog, _, window, cx| {
                 if dialog.busy.is_none() {
                     dialog.active = row;
-                    dialog.focus.focus(window, cx);
+                    dialog.focus(window, cx);
                     cx.notify();
                 }
             }))
@@ -677,7 +724,6 @@ impl Render for HandoffDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
         let focused = self.focus.is_focused(window);
-        let entity = cx.entity();
         let busy = self.busy.is_some();
 
         let target = {
@@ -691,7 +737,7 @@ impl Render for HandoffDialog {
                         self.choices.kind == kind,
                         true,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
                             dialog.pick(Row::Target, |dialog| dialog.choices.set_kind(kind), cx)
                         },
                     )
@@ -711,7 +757,7 @@ impl Render for HandoffDialog {
                         self.choices.provider == harness,
                         enabled,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
                             dialog.pick(Row::Agent, |dialog| dialog.choices.provider = harness, cx)
                         },
                     )
@@ -720,7 +766,6 @@ impl Render for HandoffDialog {
             self.line(Row::Agent, "Agent", self.chips(chips, cx), cx)
         };
         let model = {
-            let active = self.active == Row::Model && focused && !busy;
             let suggestions: Vec<AnyElement> = self
                 .choices
                 .suggestions()
@@ -735,10 +780,21 @@ impl Render for HandoffDialog {
                         selected,
                         true,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
+                            if dialog.busy.is_some() {
+                                return;
+                            }
+                            crate::form_input::set_value(
+                                &dialog.model_state,
+                                name.clone(),
+                                _window,
+                                cx,
+                            );
                             dialog.pick(
                                 Row::Model,
-                                |dialog| dialog.model = Input::new(name.clone()),
+                                |dialog| {
+                                    dialog.model = Input::new(name.clone());
+                                },
                                 cx,
                             )
                         },
@@ -749,14 +805,16 @@ impl Render for HandoffDialog {
                 .flex()
                 .flex_col()
                 .gap(ui_text::space(6.0))
-                .child(input_content(
-                    &self.model,
-                    active,
-                    "The agent's own default",
-                    &self.focus,
-                    entity.clone(),
-                    colors,
-                ))
+                .child(
+                    crate::form_input::frame(
+                        "handoff-model-input",
+                        &self.model_state,
+                        busy,
+                        window,
+                        cx,
+                    )
+                    .into_any_element(),
+                )
                 .children((!suggestions.is_empty()).then(|| self.chips(suggestions, cx)))
                 .into_any_element();
             self.line(Row::Model, "Model", content, cx)
@@ -773,7 +831,7 @@ impl Render for HandoffDialog {
                         self.account == index,
                         true,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
                             dialog.pick(Row::Account, |dialog| dialog.account = index, cx)
                         },
                     )
@@ -792,7 +850,7 @@ impl Render for HandoffDialog {
                         self.choices.context == context,
                         true,
                         cx,
-                        move |dialog, cx| {
+                        move |dialog, _window, cx| {
                             dialog.pick(Row::Context, |dialog| dialog.choices.context = context, cx)
                         },
                     )
@@ -801,18 +859,11 @@ impl Render for HandoffDialog {
             self.line(Row::Context, "What it reads", self.chips(chips, cx), cx)
         });
         let note = {
-            let active = self.active == Row::Note && focused && !busy;
             self.line(
                 Row::Note,
                 "Note (optional)",
-                input_content(
-                    &self.note,
-                    active,
-                    "Anything the new agent should know",
-                    &self.focus,
-                    entity.clone(),
-                    colors,
-                ),
+                crate::form_input::frame("handoff-note-input", &self.note_state, busy, window, cx)
+                    .into_any_element(),
                 cx,
             )
         };
@@ -829,7 +880,7 @@ impl Render for HandoffDialog {
             .occlude()
             .track_focus(&self.focus)
             .key_context("HandoffDialog")
-            .on_key_down(cx.listener(Self::key_down))
+            .capture_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation())
             .w(ui_text::space(480.0))
@@ -923,8 +974,6 @@ impl Render for HandoffDialog {
             )
     }
 }
-
-impl_input_handler!(HandoffDialog);
 
 #[cfg(test)]
 mod tests {

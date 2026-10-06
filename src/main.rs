@@ -13,6 +13,7 @@ mod dictation;
 mod dock_menu;
 mod file_explorer;
 mod file_preview;
+mod form_input;
 mod handoff;
 mod handoff_dialog;
 mod icons;
@@ -53,6 +54,7 @@ mod symbols;
 mod terminal_drop;
 mod terminal_lifecycle;
 mod terminal_links;
+mod text_input;
 mod theme;
 mod tooltip;
 mod ui_text;
@@ -64,23 +66,25 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet, HashSet},
     env,
-    ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::text_input::{EnterBehavior, InputEvent, InputState};
 use activity::{ActivityTracker, AgentActivity, AgentState, ChatActivity};
 use chat::model::{ApprovalMode, ChatInfo, NewChat, OrchestratorScope, Provider};
 use chat_view::{ChatView, ChatViewEvent, HostConfig, ToggleDictation};
-use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
+use file_explorer::{
+    ExplorerRoot, FileExplorer, FileExplorerEvent, FileExplorerSurface, FilePreview,
+};
+use gpui::Focusable;
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity,
-    EntityInputHandler, FocusHandle, Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem,
-    MouseButton, Pixels, Point, Render, Stateful, StatefulInteractiveElement, TitlebarOptions,
-    UTF16Selection, Window, WindowBounds, WindowHandle, WindowOptions, actions, canvas, div, img,
-    point, prelude::*, px, rgb, size,
+    AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity, FocusHandle,
+    Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, Pixels, Point,
+    Render, Stateful, StatefulInteractiveElement, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, actions, canvas, div, img, point, prelude::*, px, rgb, size,
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
@@ -1318,7 +1322,9 @@ struct Workspace {
     collapsed_project_folders: HashSet<String>,
     project_settings_panel: Option<Entity<ProjectSettingsPanel>>,
     schedule_panel: Option<Entity<schedule_panel::SchedulePanel>>,
+    pending_automation_chat: Option<String>,
     file_explorer: Option<Entity<FileExplorer>>,
+    file_surfaces: BTreeMap<TabId, Entity<FileExplorerSurface>>,
     /// The Preview panel's view of `file_explorer`. Created and dropped with it.
     file_preview: Option<Entity<FilePreview>>,
     locked_panes: Option<HashSet<PaneId>>,
@@ -1412,7 +1418,10 @@ struct Workspace {
     attach_retry: Option<gpui::Task<()>>,
     search_focused: bool,
     search: String,
-    search_marked: Option<Range<usize>>,
+    search_inputs: BTreeMap<TabId, (Entity<InputState>, gpui::Subscription)>,
+    search_synced: BTreeMap<TabId, String>,
+    search_sync_events: BTreeMap<TabId, usize>,
+    focused_search: Option<TabId>,
     cwd: PathBuf,
     shell_name: String,
     notice: Option<String>,
@@ -1839,7 +1848,7 @@ impl Workspace {
             window,
             |workspace, _, event, window, cx| match event {
                 SettingsEvent::OrcaImported => {
-                    workspace.refresh_project_metadata(cx);
+                    workspace.refresh_project_metadata(window, cx);
                     workspace.notice = Some("Orca import completed".to_owned());
                     cx.notify();
                 }
@@ -1892,6 +1901,44 @@ impl Workspace {
         );
         // A window restored on, or launched with, a project on another Mac opens that one.
         let remote_start = remote_start_project(restore.as_ref(), remote_start.as_deref());
+        let panel = cx.new(|cx| FileExplorer::new(window, cx));
+        cx.subscribe(&panel, |workspace, _, event, cx| match event {
+            FileExplorerEvent::Edit {
+                root,
+                path,
+                identity,
+            } => {
+                let view = cx.weak_entity();
+                let entity_id = cx.entity_id();
+                let (root, path, identity) = (root.clone(), path.clone(), *identity);
+                cx.defer(move |app| {
+                    app.with_window(entity_id, |window, app| {
+                        let _ = view.update(app, |workspace, cx| {
+                            workspace.open_file_editor(root, path, identity, None, window, cx);
+                        });
+                    });
+                });
+            }
+            FileExplorerEvent::Open(path) => cx.open_with_system(path),
+            FileExplorerEvent::Reveal(path) => cx.reveal_path(path),
+            FileExplorerEvent::CopyRelativePath(path) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    path.to_string_lossy().into_owned(),
+                ));
+                workspace.notice = Some(format!("Copied {}", path.display()));
+                cx.notify();
+            }
+            FileExplorerEvent::Selected => workspace.reveal_preview(false, cx),
+            FileExplorerEvent::Revealed => workspace.reveal_preview(true, cx),
+            FileExplorerEvent::NotListed(path) => workspace.open_unlisted(path.clone(), cx),
+            FileExplorerEvent::RevealFailed(message) => {
+                workspace.notice = Some(message.clone());
+                cx.notify();
+            }
+        })
+        .detach();
+        let file_preview = cx.new(|cx| FilePreview::new(panel.clone(), cx));
+        let file_explorer = panel;
         let mut workspace = Self {
             project_creator: None,
             folder_editor: None,
@@ -1903,8 +1950,10 @@ impl Workspace {
             collapsed_project_folders: HashSet::new(),
             project_settings_panel: None,
             schedule_panel: None,
-            file_explorer: None,
-            file_preview: None,
+            pending_automation_chat: None,
+            file_explorer: Some(file_explorer),
+            file_surfaces: BTreeMap::new(),
+            file_preview: Some(file_preview),
             locked_panes: None,
             main_pane: None,
             carry_layout: None,
@@ -1973,7 +2022,10 @@ impl Workspace {
             attach_retry: None,
             search_focused: false,
             search: String::new(),
-            search_marked: None,
+            search_inputs: BTreeMap::new(),
+            search_synced: BTreeMap::new(),
+            search_sync_events: BTreeMap::new(),
+            focused_search: None,
             cwd: project.root,
             shell_name,
             notice: None,
@@ -2311,7 +2363,7 @@ impl Workspace {
     ) -> Result<(), String> {
         let terminal = self.spawn_terminal(&shell, true, window, cx)?;
         let tab = self.shell_tab(shell, Some(terminal));
-        self.place_new_tab(pane_id, tab, cx)
+        self.place_new_tab(pane_id, tab, window, cx)
     }
 
     /// Add a tab whose terminal has just taken focus, and make it the pane's selected tab.
@@ -2319,11 +2371,12 @@ impl Workspace {
         &mut self,
         pane_id: PaneId,
         tab: Tab,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         // The new terminal takes focus on spawn.
         self.search_focused = false;
-        self.search_marked = None;
+
         let pane = self
             .panes
             .get_mut(&pane_id)
@@ -2337,7 +2390,7 @@ impl Workspace {
         self.notice = None;
         self.session_refresh_generation = self.session_refresh_generation.wrapping_add(1);
         if self.layout_ready {
-            self.remember_active_worktree(cx);
+            self.remember_active_worktree(window, cx);
         }
         cx.notify();
         Ok(())
@@ -2551,33 +2604,49 @@ impl Workspace {
             PanelKind::Shells => "SHELLS",
             PanelKind::Usage => "USAGE",
             PanelKind::Settings => "SETTINGS",
-            PanelKind::Schedules => "SCHEDULES",
+            PanelKind::Schedules => "AUTOMATIONS",
             PanelKind::ProjectSettings => "PROJECT SETTINGS",
         }
     }
 
-    fn attach_panel(&mut self, pane_id: PaneId, panel: PanelKind, cx: &mut Context<Self>) {
-        self.attach_panel_as(pane_id, panel, true, cx);
+    fn attach_panel(
+        &mut self,
+        pane_id: PaneId,
+        panel: PanelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.attach_panel_as(pane_id, panel, true, window, cx);
     }
 
     /// Make what a tab for `panel` shows: the window's schedules, project settings or file
     /// explorer, for the panels that have one. Opening the tab needs it; the tab itself is made
     /// by `attach_panel_as` or, for the default layout, by `default_layout_panes`.
-    fn prepare_panel(&mut self, panel: PanelKind, cx: &mut Context<Self>) {
+    fn prepare_panel(&mut self, panel: PanelKind, window: &mut Window, cx: &mut Context<Self>) {
         if panel == PanelKind::Schedules && self.schedule_panel.is_none() && !self.is_remote() {
             let store = self.store.clone();
             let sessions = self.sessions.clone();
             let project = self.project_id.clone();
             let workspace = self.selected_worktree_id.clone();
-            self.schedule_panel = Some(cx.new(|cx| {
+            let panel = cx.new(|cx| {
                 schedule_panel::SchedulePanel::new(store, sessions, project, workspace, cx)
-            }));
+            });
+            cx.subscribe(
+                &panel,
+                |workspace, _, event: &schedule_panel::SchedulePanelEvent, cx| {
+                    let schedule_panel::SchedulePanelEvent::OpenChat(id) = event;
+                    workspace.pending_automation_chat = Some(id.clone());
+                    cx.notify();
+                },
+            )
+            .detach();
+            self.schedule_panel = Some(panel);
         }
         if panel == PanelKind::ProjectSettings {
-            self.ensure_project_settings(cx);
+            self.ensure_project_settings(window, cx);
         }
         if matches!(panel, PanelKind::Files | PanelKind::Preview) {
-            self.ensure_file_explorer(cx);
+            self.sync_file_explorer(window, cx);
         }
     }
 
@@ -2588,9 +2657,10 @@ impl Workspace {
         pane_id: PaneId,
         panel: PanelKind,
         select: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.prepare_panel(panel, cx);
+        self.prepare_panel(panel, window, cx);
         if let Some(pane) = self.panes.get_mut(&pane_id) {
             if select {
                 for tab in &pane.tabs {
@@ -2601,9 +2671,10 @@ impl Workspace {
             self.next_tab_id += 1;
             push_panel_tab(pane, id, Self::panel_title(panel), panel, select);
         }
+        self.ensure_search_inputs(window, cx);
     }
 
-    fn add_navigation_pane(&mut self, cx: &mut Context<Self>) {
+    fn add_navigation_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
         self.panes.insert(
@@ -2614,7 +2685,7 @@ impl Workspace {
             },
         );
         for panel in NAVIGATION_PANELS {
-            self.attach_panel(pane_id, panel, cx);
+            self.attach_panel(pane_id, panel, window, cx);
         }
         self.panes.get_mut(&pane_id).unwrap().active = 0;
         self.layout = Layout::navigation_beside(pane_id, self.layout.clone());
@@ -2640,7 +2711,7 @@ impl Workspace {
         if let Some((pane_id, tab_id)) = existing {
             self.select_tab(pane_id, tab_id, window, cx);
         } else {
-            self.attach_panel(pane_id, panel, cx);
+            self.attach_panel(pane_id, panel, window, cx);
             self.active_pane = pane_id;
             self.focus_active(window, cx);
             self.save_layout();
@@ -2707,7 +2778,7 @@ impl Workspace {
                 {
                     Ok(_) => {
                         self.notice = None;
-                        self.refresh_project_metadata(cx);
+                        self.refresh_project_metadata(window, cx);
                         self.expand_project_folder(folder_id.as_deref());
                     }
                     Err(error) => self.notice = Some(error),
@@ -2725,7 +2796,7 @@ impl Workspace {
                 {
                     Ok(_) => {
                         self.notice = None;
-                        self.refresh_project_metadata(cx);
+                        self.refresh_project_metadata(window, cx);
                         self.expand_project_folder(parent_id.as_deref());
                     }
                     Err(error) => self.notice = Some(error),
@@ -2737,7 +2808,7 @@ impl Workspace {
                 match self.store.remove_project_folder(&id) {
                     Ok(()) => {
                         self.collapsed_project_folders.remove(&id);
-                        self.refresh_project_metadata(cx);
+                        self.refresh_project_metadata(window, cx);
                     }
                     Err(error) => self.notice = Some(error),
                 }
@@ -2790,7 +2861,7 @@ impl Workspace {
                         {
                             self.notice = Some(error);
                         }
-                        self.refresh_project_metadata(cx);
+                        self.refresh_project_metadata(window, cx);
                         cx.refresh_windows();
                     }
                     Err(error) => {
@@ -2804,16 +2875,12 @@ impl Workspace {
             PanelAction::Worktree(id) => self.select_worktree(&id, window, cx),
             PanelAction::Task(id) => self.select_task(&id, window, cx),
             PanelAction::Shell(id) => self.show_shell(&id, window, cx),
-            PanelAction::Search => {
-                self.search_focused = true;
-                self.focus.focus(window, cx);
-                cx.notify();
-            }
+            PanelAction::Search => self.focus_search_input(window, cx),
             PanelAction::Remote(action) => self.remote_action(action, window, cx),
         }
     }
 
-    fn refresh_project_metadata(&mut self, cx: &mut Context<Self>) {
+    fn refresh_project_metadata(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.store.snapshot() {
             Ok(state) => self.state = state,
             Err(error) => self.notice = Some(error),
@@ -2821,12 +2888,12 @@ impl Workspace {
         self.project_recency_sampled_at = None;
         self.refresh_project_recency(cx);
         if let Some(panel) = &self.project_settings_panel {
-            panel.update(cx, |panel, cx| panel.refresh_folders(cx));
+            panel.update(cx, |panel, cx| panel.refresh_folders(window, cx));
         }
         cx.notify();
     }
 
-    fn ensure_project_settings(&mut self, cx: &mut Context<Self>) {
+    fn ensure_project_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.project_settings_panel.is_some() {
             return;
         }
@@ -2834,73 +2901,25 @@ impl Workspace {
             return;
         };
         let store = self.store.clone();
-        let panel = cx.new(|cx| ProjectSettingsPanel::new(store, project, cx));
-        cx.subscribe(&panel, |workspace, _, event, cx| {
+        let panel = cx.new(|cx| ProjectSettingsPanel::new(store, project, window, cx));
+        cx.subscribe_in(&panel, window, |workspace, _, event, window, cx| {
             if let ProjectSettingsEvent::Saved(project) = event {
                 workspace.notice = Some(format!("Saved {}", project.name));
             }
-            workspace.refresh_project_metadata(cx);
+            workspace.refresh_project_metadata(window, cx);
         })
         .detach();
         self.project_settings_panel = Some(panel);
     }
 
-    fn ensure_file_explorer(&mut self, cx: &mut Context<Self>) {
-        // Another Mac's files are not browsable from here, and this Mac's would be the wrong ones.
-        if self.is_remote() {
-            return;
-        }
-        if self.file_explorer.is_none() {
-            let panel = cx.new(FileExplorer::new);
-            cx.subscribe(&panel, |workspace, _, event, cx| match event {
-                FileExplorerEvent::Edit {
-                    root,
-                    path,
-                    identity,
-                } => {
-                    let view = cx.weak_entity();
-                    let entity_id = cx.entity_id();
-                    let (root, path, identity) = (root.clone(), path.clone(), *identity);
-                    cx.defer(move |app| {
-                        app.with_window(entity_id, |window, app| {
-                            let _ = view.update(app, |workspace, cx| {
-                                workspace.open_file_editor(root, path, identity, None, window, cx);
-                            });
-                        });
-                    });
-                }
-                FileExplorerEvent::Open(path) => cx.open_with_system(path),
-                FileExplorerEvent::Reveal(path) => cx.reveal_path(path),
-                FileExplorerEvent::CopyRelativePath(path) => {
-                    cx.write_to_clipboard(ClipboardItem::new_string(
-                        path.to_string_lossy().into_owned(),
-                    ));
-                    workspace.notice = Some(format!("Copied {}", path.display()));
-                    cx.notify();
-                }
-                FileExplorerEvent::Selected => workspace.reveal_preview(false, cx),
-                FileExplorerEvent::Revealed => workspace.reveal_preview(true, cx),
-                FileExplorerEvent::NotListed(path) => workspace.open_unlisted(path.clone(), cx),
-                FileExplorerEvent::RevealFailed(message) => {
-                    workspace.notice = Some(message.clone());
-                    cx.notify();
-                }
-            })
-            .detach();
-            self.file_preview = Some(cx.new(|cx| FilePreview::new(panel.clone(), cx)));
-            self.file_explorer = Some(panel);
-        }
-        self.sync_file_explorer(cx);
-    }
-
-    fn sync_file_explorer(&mut self, cx: &mut Context<Self>) {
+    fn sync_file_explorer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = &self.file_explorer {
             let root = file_explorer_root(
                 &self.state,
                 &self.project_id,
                 self.selected_worktree_id.as_deref(),
             );
-            panel.update(cx, |panel, cx| panel.set_root(root, cx));
+            panel.update(cx, |panel, cx| panel.set_root(root, window, cx));
         }
     }
 
@@ -3033,7 +3052,7 @@ impl Workspace {
     }
 
     /// Follow the active tab to its worktree. Returns whether the selection moved.
-    fn remember_active_worktree(&mut self, cx: &mut Context<Self>) -> bool {
+    fn remember_active_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let worktree_id = self
             .panes
             .get(&self.active_pane)
@@ -3086,7 +3105,7 @@ impl Workspace {
         if let Some(id) = worktree_id {
             self.selected_worktree_id = Some(id);
         }
-        self.sync_file_explorer(cx);
+        self.sync_file_explorer(window, cx);
         moved
     }
 
@@ -3131,15 +3150,15 @@ impl Workspace {
         let store = self.store.clone();
         let parent_id = parent_id.map(str::to_owned);
         let editor = cx.new(|cx| match parent_id {
-            Some(parent_id) => FolderEditor::new_in(store, folder, Some(parent_id), cx),
-            None => FolderEditor::new(store, folder, cx),
+            Some(parent_id) => FolderEditor::new_in(store, folder, Some(parent_id), window, cx),
+            None => FolderEditor::new(store, folder, window, cx),
         });
         editor.update(cx, |editor, cx| editor.focus(window, cx));
         cx.subscribe_in(&editor, window, |workspace, _, event, window, cx| {
             workspace.folder_editor = None;
             workspace.finish_tab_drag(cx);
             if let FolderEditorEvent::Saved(folder) = event {
-                workspace.refresh_project_metadata(cx);
+                workspace.refresh_project_metadata(window, cx);
                 workspace.expand_project_folder(Some(&folder.id));
             }
             workspace.focus_active(window, cx);
@@ -3204,7 +3223,7 @@ impl Workspace {
         }
         self.active_pane = target;
         self.search_focused = false;
-        self.search_marked = None;
+
         self.drop_target = None;
         self.focus_active(window, cx);
         self.save_layout();
@@ -3839,7 +3858,9 @@ impl Workspace {
                                     self.restore_shell_tab(*pane_id, shell.clone());
                                 }
                             }
-                            SavedTab::Panel { panel } => self.attach_panel(*pane_id, *panel, cx),
+                            SavedTab::Panel { panel } => {
+                                self.attach_panel(*pane_id, *panel, window, cx)
+                            }
                             SavedTab::RemoteShell {
                                 desktop_id,
                                 shell_id,
@@ -3904,9 +3925,10 @@ impl Workspace {
             .map(|saved| !saved.panels_initialized && saved.sidebar_visible)
             .unwrap_or(true)
         {
-            self.add_navigation_pane(cx);
+            self.add_navigation_pane(window, cx);
             self.active_pane = active_pane;
         }
+        self.ensure_search_inputs(window, cx);
         self.shells = self.sessions.list().unwrap_or(shells);
         self.focus_active(window, cx);
         if let Some(error) = restore_error {
@@ -4085,8 +4107,9 @@ impl Workspace {
         self.project_id = project.id;
         self.project_settings_panel = None;
         self.schedule_panel = None;
-        self.file_explorer = None;
-        self.file_preview = None;
+        self.pending_automation_chat = None;
+        // Retain the Files editor; sync_file_explorer explicitly resets changed roots.
+
         self.set_window_title(&project.name, window);
         self.cwd = project.root;
         self.selected_worktree_id = self
@@ -4097,8 +4120,8 @@ impl Workspace {
             .map(|worktree| worktree.id.clone());
         self.selected_task_id = None;
         self.search_focused = false;
-        self.search.clear();
-        self.search_marked = None;
+        self.set_search(String::new(), None, window, cx);
+
         self.load_project(window, cx);
         self.announce_to_dock(window, cx);
     }
@@ -4121,13 +4144,14 @@ impl Workspace {
         self.project_id = key.to_owned();
         self.project_settings_panel = None;
         self.schedule_panel = None;
-        self.file_explorer = None;
-        self.file_preview = None;
+        self.pending_automation_chat = None;
+        // Retain the Files editor; sync_file_explorer explicitly resets changed roots.
+
         self.selected_worktree_id = None;
         self.selected_task_id = None;
         self.search_focused = false;
-        self.search.clear();
-        self.search_marked = None;
+        self.set_search(String::new(), None, window, cx);
+
         remote_service::select(Some(key.to_owned()), cx);
         self.refresh_window_title(window, cx);
         self.load_project(window, cx);
@@ -4287,7 +4311,7 @@ impl Workspace {
             .clone()
             .or(self.selected_worktree_id.clone());
         self.selected_task_id = Some(task.id);
-        self.sync_file_explorer(cx);
+        self.sync_file_explorer(window, cx);
         self.save_layout();
         cx.notify();
     }
@@ -4618,7 +4642,7 @@ impl Workspace {
             .spawn_remote_terminal(&desktop_id, &shell.id, true, window, cx)
             .and_then(|terminal| {
                 let tab = self.remote_tab(desktop_id, shell.id, Some(terminal), cx);
-                self.place_new_tab(pane_id, tab, cx)
+                self.place_new_tab(pane_id, tab, window, cx)
             });
         if let Err(error) = result {
             self.notice = Some(error);
@@ -4869,7 +4893,7 @@ impl Workspace {
         self.notice = None;
         self.begin_tab_drag(cx);
         let backend = cx.global_mut::<RemoteState>().backend();
-        let prompt = cx.new(|cx| RemotePrompt::new(kind, backend, cx));
+        let prompt = cx.new(|cx| RemotePrompt::new(kind, backend, window, cx));
         prompt.update(cx, |prompt, cx| prompt.focus(window, cx));
         cx.subscribe_in(&prompt, window, |workspace, prompt, event, window, cx| {
             if let Some(defaults) = prompt.read(cx).pair_defaults() {
@@ -4927,8 +4951,9 @@ impl Workspace {
         self.begin_tab_drag(cx);
         let home = self.sessions.state_home().to_path_buf();
         let config = self.chat_config();
-        let dialog =
-            cx.new(|cx| HandoffDialog::new(source, home, Arc::new(move || config.ensure()), cx));
+        let dialog = cx.new(|cx| {
+            HandoffDialog::new(source, home, Arc::new(move || config.ensure()), window, cx)
+        });
         dialog.update(cx, |dialog, cx| dialog.focus(window, cx));
         cx.subscribe_in(&dialog, window, |workspace, dialog, event, window, cx| {
             match event {
@@ -5049,9 +5074,9 @@ impl Workspace {
             }
             handoff::Started::Chat(chat) => {
                 let config = self.chat_config();
-                let view = cx.new(|cx| ChatView::open(chat.id.clone(), config, cx));
+                let view = cx.new(|cx| ChatView::open(chat.id.clone(), config, window, cx));
                 let tab = self.chat_tab(chat.id.clone(), view, window, cx);
-                self.place_new_tab(pane, tab, cx)
+                self.place_new_tab(pane, tab, window, cx)
             }
         };
         // After the tab is placed, which clears the notice.
@@ -5154,15 +5179,15 @@ impl Workspace {
             panel_on_screen(PanelKind::Files) || panel_on_screen(PanelKind::Preview);
         let project_settings_visible = panel_on_screen(PanelKind::ProjectSettings);
         if project_settings_visible && let Some(panel) = &self.project_settings_panel {
-            panel.update(cx, |panel, cx| panel.refresh_folders(cx));
+            panel.update(cx, |panel, cx| panel.refresh_folders(window, cx));
         }
         if !self.layout_ready {
             self.load_project(window, cx);
             changed = true;
         }
-        self.refresh_sessions(cx);
+        self.refresh_sessions(window, cx);
         request_codex_usage(false, cx);
-        changed |= self.remember_active_worktree(cx);
+        changed |= self.remember_active_worktree(window, cx);
         if files_visible {
             if let Some(panel) = &self.file_explorer {
                 panel.update(cx, |panel, cx| panel.refresh(cx));
@@ -5181,7 +5206,7 @@ impl Workspace {
         }
     }
 
-    fn refresh_sessions(&mut self, cx: &mut Context<Self>) {
+    fn refresh_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.session_refresh_pending {
             return;
         }
@@ -5233,9 +5258,9 @@ impl Workspace {
             }
             Ok::<_, String>((shells, metrics, cwds, claude_usage, chats))
         });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |workspace, cx| {
+            let _ = this.update_in(cx, |workspace, window, cx| {
                 workspace.session_refresh_pending = false;
                 // Project switches and local launches invalidate an older snapshot,
                 // including a switch away from and back to the same project.
@@ -5283,7 +5308,7 @@ impl Workspace {
                 }
                 workspace.refresh_grok_usage(false, cx);
                 workspace.refresh_agent_activity(cx);
-                changed |= workspace.remember_active_worktree(cx);
+                changed |= workspace.remember_active_worktree(window, cx);
                 changed |= workspace.refresh_shell_titles();
                 if changed {
                     cx.notify();
@@ -5615,7 +5640,7 @@ impl Workspace {
     }
 
     fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.remember_active_worktree(cx);
+        self.remember_active_worktree(window, cx);
         let files_active = self
             .panes
             .get(&self.active_pane)
@@ -5623,7 +5648,7 @@ impl Workspace {
             .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)));
         if files_active {
             self.search_focused = false;
-            self.ensure_file_explorer(cx);
+            self.sync_file_explorer(window, cx);
             if let Some(panel) = &self.file_explorer {
                 panel.update(cx, |panel, cx| {
                     panel.refresh(cx);
@@ -5639,7 +5664,7 @@ impl Workspace {
             .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Preview)));
         if preview_active {
             self.search_focused = false;
-            self.ensure_file_explorer(cx);
+            self.sync_file_explorer(window, cx);
             if let Some(panel) = &self.file_explorer {
                 panel.update(cx, |panel, cx| panel.refresh(cx));
             }
@@ -5657,7 +5682,7 @@ impl Workspace {
             });
         if project_settings_active {
             self.search_focused = false;
-            self.ensure_project_settings(cx);
+            self.ensure_project_settings(window, cx);
             if let Some(panel) = &self.project_settings_panel {
                 panel.update(cx, |panel, cx| panel.focus(window, cx));
             }
@@ -5693,7 +5718,7 @@ impl Workspace {
             .and_then(|tab| tab.chat().cloned());
         if let Some(view) = chat_active {
             self.search_focused = false;
-            self.search_marked = None;
+
             view.update(cx, |view, cx| view.focus(window, cx));
             return;
         }
@@ -5716,7 +5741,7 @@ impl Workspace {
             // The terminal takes the keys, so a search left open must not also
             // act on them: the adapter does not stop them bubbling to us.
             self.search_focused = false;
-            self.search_marked = None;
+
             terminal.update(cx, |terminal, cx| terminal.focus(window, cx));
         } else {
             self.focus.focus(window, cx);
@@ -5759,7 +5784,7 @@ impl Workspace {
         }
         self.active_pane = pane_id;
         self.search_focused = false;
-        self.search_marked = None;
+
         self.focus_active(window, cx);
         self.save_layout();
         cx.notify();
@@ -5818,6 +5843,7 @@ impl Workspace {
             self.focus_active(window, cx);
         }
         self.save_layout();
+        self.ensure_search_inputs(window, cx);
         cx.notify();
     }
 
@@ -5844,6 +5870,7 @@ impl Workspace {
             }
             self.focus_active(window, cx);
             self.save_layout();
+            self.ensure_search_inputs(window, cx);
             cx.notify();
             return;
         }
@@ -5883,6 +5910,7 @@ impl Workspace {
                 self.focus_active(window, cx);
             }
             self.save_layout();
+            self.ensure_search_inputs(window, cx);
             cx.notify();
         }
     }
@@ -6116,8 +6144,9 @@ impl Workspace {
             cx.notify();
             return;
         };
+        self.ensure_search_inputs(window, cx);
         for panel in &applied.opened {
-            self.prepare_panel(*panel, cx);
+            self.prepare_panel(*panel, window, cx);
         }
         // The lock is chosen, not inferred: the navigation pane stays the locked one wherever it
         // goes, and the main pane is not.
@@ -6407,9 +6436,9 @@ impl Workspace {
             .unwrap_or_else(|| self.cwd.clone());
         let request = new_chat_request(provider, unrestricted, &self.project_id, worktree_id, cwd);
         let config = self.chat_config();
-        let view = cx.new(|cx| ChatView::create(request, config, cx));
+        let view = cx.new(|cx| ChatView::create(request, config, window, cx));
         let tab = self.chat_tab(String::new(), view, window, cx);
-        if let Err(error) = self.place_new_tab(self.new_tab_pane(), tab, cx) {
+        if let Err(error) = self.place_new_tab(self.new_tab_pane(), tab, window, cx) {
             self.notice = Some(error);
         }
         self.focus_active(window, cx);
@@ -6436,7 +6465,7 @@ impl Workspace {
             return;
         }
         let config = self.chat_config();
-        let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, cx));
+        let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, window, cx));
         let tab = self.chat_tab(chat_id, view, window, cx);
         let Some(pane) = self.panes.get_mut(&pane_id) else {
             return;
@@ -6477,7 +6506,7 @@ impl Workspace {
         &mut self,
         view: Entity<ChatView>,
         target: String,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(info) = view.read(cx).info().cloned() else {
@@ -6503,19 +6532,19 @@ impl Workspace {
         let work = cx
             .background_executor()
             .spawn(async move { chat_view::resolve_file(&root.path, &info.cwd, &target) });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |workspace, cx| {
+            let _ = this.update_in(cx, |workspace, window, cx| {
                 if workspace.project_id != project_id {
                     return;
                 }
                 match result {
                     Ok((path, line)) => {
                         workspace.selected_worktree_id = worktree;
-                        workspace.ensure_file_explorer(cx);
+                        workspace.sync_file_explorer(window, cx);
                         if let Some(explorer) = &workspace.file_explorer {
                             if let Err(error) = explorer.update(cx, |explorer, cx| {
-                                explorer.reveal_read_only(&path, line, cx)
+                                explorer.reveal_read_only(&path, line, window, cx)
                             }) {
                                 workspace.notice = Some(error);
                             }
@@ -6936,10 +6965,6 @@ impl Workspace {
         reveal: PreviewReveal,
         cx: &mut Context<Self>,
     ) -> Option<PaneId> {
-        if reveal != PreviewReveal::Leave && matches!(panel, PanelKind::Files | PanelKind::Preview)
-        {
-            self.ensure_file_explorer(cx);
-        }
         let (pane_id, selected) = apply_panel_reveal_to_panes(
             &mut self.layout,
             &mut self.panes,
@@ -6958,6 +6983,16 @@ impl Workspace {
         if let PreviewReveal::Move { from, .. } = reveal {
             self.show_pane_tabs(from, cx);
         }
+        let owner = cx.entity_id();
+        let view = cx.weak_entity();
+        cx.defer(move |app| {
+            app.with_window(owner, |window, app| {
+                let _ = view.update(app, |workspace, cx| {
+                    workspace.ensure_search_inputs(window, cx);
+                    cx.notify();
+                });
+            });
+        });
         self.save_layout();
         cx.notify();
         Some(pane_id)
@@ -7003,10 +7038,8 @@ impl Workspace {
             .and_then(|pane| pane.tabs.get(pane.active))
             .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)));
         if files_active {
-            self.ensure_file_explorer(cx);
-            if let Some(panel) = &self.file_explorer {
-                panel.update(cx, |panel, cx| panel.focus_search(window, cx));
-            }
+            self.sync_file_explorer(window, cx);
+            self.focus_file_search(window, cx);
             return;
         }
         let preview_active = self
@@ -7019,10 +7052,8 @@ impl Workspace {
             // the preview alone if not. Searching Projects from here would be a surprise.
             if let Some((pane_id, _, true)) = self.panel_tab(PanelKind::Files) {
                 self.active_pane = pane_id;
-                self.ensure_file_explorer(cx);
-                if let Some(panel) = &self.file_explorer {
-                    panel.update(cx, |panel, cx| panel.focus_search(window, cx));
-                }
+                self.sync_file_explorer(window, cx);
+                self.focus_file_search(window, cx);
                 cx.notify();
             }
             return;
@@ -7035,9 +7066,7 @@ impl Workspace {
         if !active_panel {
             self.open_panel(PanelKind::Projects, self.active_pane, window, cx);
         }
-        self.search_focused = true;
-        self.focus.focus(window, cx);
-        cx.notify();
+        self.focus_search_input(window, cx);
     }
 
     fn create_project_action(
@@ -7278,12 +7307,12 @@ impl Workspace {
             ChatOrchestratorTab::Open { pane } => {
                 let config = self.chat_config();
                 let chat_id = chat.id.clone();
-                let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, cx));
+                let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, window, cx));
                 let mut tab = self.chat_tab(chat_id, view, window, cx);
                 if let Some(scope) = &chat.orchestrator {
                     tab.title = orchestrators::tab_title(scope).to_owned();
                 }
-                if let Err(error) = self.place_new_tab(pane, tab, cx) {
+                if let Err(error) = self.place_new_tab(pane, tab, window, cx) {
                     self.notice = Some(error);
                 } else {
                     self.focus_active(window, cx);
@@ -7318,20 +7347,204 @@ impl Workspace {
         self.set_focus_mode(!self.focus_mode, window, cx);
     }
 
-    fn replace_search_text(
+    /// One retained editor for each navigation tab, including duplicate visible panels.
+    fn ensure_search_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let files: Vec<TabId> = self
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .filter(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)))
+            .map(|tab| tab.id)
+            .collect();
+        self.file_surfaces.retain(|id, _| files.contains(id));
+        if let Some(explorer) = &self.file_explorer {
+            explorer.update(cx, |explorer, cx| explorer.retain_surfaces(&files, cx));
+            for id in files {
+                if !self.file_surfaces.contains_key(&id) {
+                    let surface =
+                        explorer.update(cx, |explorer, cx| explorer.surface(id, window, cx));
+                    self.file_surfaces.insert(id, surface);
+                }
+            }
+        }
+        let tabs: Vec<TabId> = self
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .filter(|tab| {
+                matches!(
+                    tab.content,
+                    TabContent::Panel(
+                        PanelKind::Projects
+                            | PanelKind::Worktrees
+                            | PanelKind::Tasks
+                            | PanelKind::Shells
+                    )
+                )
+            })
+            .map(|tab| tab.id)
+            .collect();
+        self.search_inputs.retain(|id, _| tabs.contains(id));
+        self.search_synced.retain(|id, _| tabs.contains(id));
+        self.search_sync_events.retain(|id, _| tabs.contains(id));
+        if self.focused_search.is_some_and(|id| !tabs.contains(&id)) {
+            self.focused_search = None;
+            self.search_focused = false;
+        }
+        for id in tabs {
+            if self.search_inputs.contains_key(&id) {
+                continue;
+            }
+            let input = text_input::single_line(self.search.clone(), "Search  ⌘F", window, cx);
+            let subscription = cx.subscribe_in(
+                &input,
+                window,
+                move |workspace, input, event, window, cx| {
+                    if !workspace
+                        .search_inputs
+                        .get(&id)
+                        .is_some_and(|(live, _)| live.entity_id() == input.entity_id())
+                    {
+                        return;
+                    }
+                    if matches!(event, InputEvent::Change)
+                        && let Some(count) = workspace.search_sync_events.get_mut(&id)
+                        && *count > 0
+                    {
+                        *count -= 1;
+                        return;
+                    }
+                    match event {
+                        InputEvent::Change => workspace.set_search(
+                            input.read(cx).value().to_string(),
+                            Some(id),
+                            window,
+                            cx,
+                        ),
+                        InputEvent::Focus => {
+                            if !input.read(cx).focus_handle(cx).is_focused(window) {
+                                return;
+                            }
+                            if !crate::form_input::is_composing(input, window, cx) {
+                                workspace.set_search(
+                                    input.read(cx).value().to_string(),
+                                    Some(id),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            workspace.focused_search = Some(id);
+                            workspace.search_focused = true;
+                            if let Some(pane) = workspace.panes.iter().find_map(|(pane, state)| {
+                                state.tabs.iter().any(|tab| tab.id == id).then_some(*pane)
+                            }) {
+                                workspace.active_pane = pane;
+                            }
+                            cx.notify();
+                        }
+                        InputEvent::Blur => {
+                            if workspace.focused_search == Some(id)
+                                && !input.read(cx).focus_handle(cx).is_focused(window)
+                            {
+                                workspace.focused_search = None;
+                                workspace.search_focused = false;
+                            }
+                            cx.notify();
+                        }
+                        _ if text_input::is_submit(event, EnterBehavior::Submit) => {
+                            workspace.set_search(
+                                input.read(cx).value().to_string(),
+                                Some(id),
+                                window,
+                                cx,
+                            );
+                            workspace.submit_search(window, cx)
+                        }
+                        _ => {}
+                    }
+                },
+            );
+            self.search_synced.insert(id, self.search.clone());
+            self.search_inputs.insert(id, (input, subscription));
+        }
+    }
+
+    fn set_search(
         &mut self,
-        range_utf16: Option<Range<usize>>,
-        text: &str,
-    ) -> Range<usize> {
-        let marked = self.search_marked.take();
-        let range = if let Some(range) = range_utf16 {
-            utf16_to_byte(&self.search, range.start)..utf16_to_byte(&self.search, range.end)
-        } else {
-            marked.unwrap_or(self.search.len()..self.search.len())
-        };
-        let text = text.replace('\n', " ").replace('\r', " ");
-        self.search.replace_range(range.clone(), &text);
-        range.start..range.start + text.len()
+        value: String,
+        source: Option<TabId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search = value;
+        if let Some(id) = source {
+            self.search_synced.insert(id, self.search.clone());
+        }
+        for (id, (input, _)) in &self.search_inputs {
+            if Some(*id) == source {
+                continue;
+            }
+            if source.is_none() {
+                // Explicit project/query reset, synchronously at its domain boundary.
+                crate::form_input::set_value(input, self.search.clone(), window, cx);
+                self.search_synced.insert(*id, self.search.clone());
+            } else {
+                let previous = self.search_synced.get(id).cloned().unwrap_or_default();
+                if crate::form_input::sync_value(input, &previous, &self.search, window, cx) {
+                    *self.search_sync_events.entry(*id).or_default() += 1;
+                    self.search_synced.insert(*id, self.search.clone());
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn focus_file_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_search_inputs(window, cx);
+        if let Some(surface) = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .and_then(|tab| self.file_surfaces.get(&tab.id))
+        {
+            surface.update(cx, |surface, cx| surface.focus_search(window, cx));
+        }
+    }
+
+    fn focus_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_search_inputs(window, cx);
+        let id = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .map(|tab| tab.id);
+        if let Some((input, _)) = id.and_then(|id| self.search_inputs.get(&id)) {
+            self.search_focused = true;
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn search_has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.search_inputs
+            .values()
+            .any(|(input, _)| input.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    fn submit_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() || !self.search_has_focus(window, cx) {
+            return;
+        }
+        if let Some(hit) = self.state.search(&self.search).into_iter().next() {
+            match hit {
+                SearchHit::Project(project) => self.activate_project(&project.id, true, window, cx),
+                SearchHit::Worktree(worktree) => self.select_worktree(&worktree.id, window, cx),
+                SearchHit::Task(task) => self.select_task(&task.id, window, cx),
+            }
+        }
+        self.search_focused = false;
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     fn search_key_down(
@@ -7379,40 +7592,14 @@ impl Workspace {
         // Keys reach this handler from every focused descendant, including
         // terminals, so the search only owns them while the workspace itself
         // holds focus.
-        if !self.search_focused || !self.focus.is_focused(window) {
+        if !self.search_has_focus(window, cx) {
             return;
         }
         let handled = match event.keystroke.key.as_str() {
             "escape" => {
                 self.search_focused = false;
-                self.search_marked = None;
+
                 self.focus_active(window, cx);
-                true
-            }
-            "backspace" => {
-                self.search.pop();
-                self.search_marked = None;
-                true
-            }
-            "enter" | "return" => {
-                if let Some(hit) = self.state.search(&self.search).into_iter().next() {
-                    match hit {
-                        SearchHit::Project(project) => {
-                            self.activate_project(&project.id, true, window, cx)
-                        }
-                        SearchHit::Worktree(worktree) => {
-                            self.select_worktree(&worktree.id, window, cx)
-                        }
-                        SearchHit::Task(task) => self.select_task(&task.id, window, cx),
-                    }
-                }
-                self.search_focused = false;
-                self.search_marked = None;
-                true
-            }
-            "a" if event.keystroke.modifiers.platform => {
-                self.search.clear();
-                self.search_marked = None;
                 true
             }
             _ => false,
@@ -7480,11 +7667,12 @@ impl Workspace {
         width: f32,
         x: f32,
         at_window_top: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
         match layout {
-            Layout::Pane(id) => self.render_pane(*id, width, x, at_window_top, cx),
+            Layout::Pane(id) => self.render_pane(*id, width, x, at_window_top, window, cx),
             Layout::Split {
                 axis,
                 ratio,
@@ -7581,6 +7769,7 @@ impl Workspace {
                                 },
                                 x,
                                 at_window_top,
+                                window,
                                 cx,
                             )),
                     )
@@ -7607,6 +7796,7 @@ impl Workspace {
                                     x
                                 },
                                 at_window_top && horizontal,
+                                window,
                                 cx,
                             )),
                     )
@@ -7621,6 +7811,7 @@ impl Workspace {
         pane_width: f32,
         x: f32,
         at_window_top: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
@@ -8285,9 +8476,8 @@ impl Workspace {
             Some(TabContent::Panel(PanelKind::Settings)) => {
                 self.settings_panel.clone().into_any_element()
             }
-            Some(TabContent::Panel(PanelKind::Files)) => self
-                .file_explorer
-                .as_ref()
+            Some(TabContent::Panel(PanelKind::Files)) => active_tab
+                .and_then(|tab| self.file_surfaces.get(&tab.id))
                 .map(|panel| panel.clone().into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
             Some(TabContent::Panel(PanelKind::Preview)) => self
@@ -8315,8 +8505,14 @@ impl Workspace {
                     activity: &self.agent_activity,
                     chats: &chats,
                     query: &self.search,
-                    search_focused: self.search_focused && selected,
-                    focus: self.focus.clone(),
+                    search_focused: active_tab
+                        .and_then(|tab| self.search_inputs.get(&tab.id))
+                        .is_some_and(|(input, _)| {
+                            input.read(cx).focus_handle(cx).is_focused(window)
+                        }),
+                    search_input: active_tab
+                        .and_then(|tab| self.search_inputs.get(&tab.id))
+                        .map(|(input, _)| input),
                     control_inset: 0.0,
                     collapsed_folders: &self.collapsed_project_folders,
                     state_home: self.sessions.state_home(),
@@ -8325,6 +8521,7 @@ impl Workspace {
                     project_sort_menu_open: self.project_sort_menu_open,
                 },
                 Self::panel_action,
+                window,
                 cx,
             ),
             None => div()
@@ -8348,7 +8545,12 @@ impl Workspace {
                 MouseButton::Left,
                 cx.listener(move |workspace, _, window, cx| {
                     if workspace.active_pane != pane_id {
-                        workspace.select_pane(pane_id, window, cx);
+                        if workspace.search_has_focus(window, cx) {
+                            workspace.active_pane = pane_id;
+                            cx.notify();
+                        } else {
+                            workspace.select_pane(pane_id, window, cx);
+                        }
                     }
                 }),
             )
@@ -9623,6 +9825,7 @@ impl Workspace {
                             content_width - 2.0,
                             0.0,
                             false,
+                            window,
                             cx,
                         )),
                 )
@@ -9632,7 +9835,7 @@ impl Workspace {
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(self.render_pane(self.active_pane, width, 0.0, false, cx))
+                .child(self.render_pane(self.active_pane, width, 0.0, false, window, cx))
                 .into_any_element()
         };
         div()
@@ -9858,112 +10061,24 @@ impl Workspace {
     }
 }
 
-impl EntityInputHandler for Workspace {
-    fn text_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        actual_range: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
-        let start = utf16_to_byte(&self.search, range_utf16.start);
-        let end = utf16_to_byte(&self.search, range_utf16.end);
-        let range = start.min(end)..start.max(end);
-        *actual_range = Some(
-            self.search[..range.start].encode_utf16().count()
-                ..self.search[..range.end].encode_utf16().count(),
-        );
-        Some(self.search[range].to_owned())
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        let end = self.search.encode_utf16().count();
-        Some(UTF16Selection {
-            range: end..end,
-            reversed: false,
-        })
-    }
-
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        self.search_marked.as_ref().map(|range| {
-            self.search[..range.start].encode_utf16().count()
-                ..self.search[..range.end].encode_utf16().count()
-        })
-    }
-
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.search_marked = None;
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.replace_search_text(range_utf16, text);
-        cx.notify();
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        text: &str,
-        _: Option<Range<usize>>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let inserted = self.replace_search_text(range_utf16, text);
-        if !text.is_empty() {
-            self.search_marked = Some(inserted);
-        }
-        cx.notify();
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        _: Range<usize>,
-        bounds: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        Some(bounds)
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        _: Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
-        Some(self.search.encode_utf16().count())
-    }
-
-    fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
-        Some(self.search.encode_utf16().count())
-    }
-
-    fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
-        self.search_focused
-    }
-}
-
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(chat_id) = self.pending_automation_chat.take() {
+            let existing = self.panes.iter().find_map(|(id, pane)| pane.tabs.iter().position(|tab| matches!(&tab.content, TabContent::Chat { chat_id: current, .. } if current == &chat_id)).map(|index| (*id, index)));
+            if let Some((pane, index)) = existing {
+                self.active_pane = pane;
+                if let Some(pane) = self.panes.get_mut(&pane) {
+                    pane.active = index;
+                }
+            } else {
+                self.restore_chat_tab(self.new_tab_pane(), chat_id, window, cx);
+            }
+            self.focus_active(window, cx);
+            self.save_layout();
+        }
+
         let colors = theme::palette(cx);
         let show_window_controls = window_controls_visible(window);
-        if self.search_focused && !self.focus.is_focused(window) {
-            // Focus moved elsewhere (a click on a terminal, say) without going
-            // through the workspace.
-            self.search_focused = false;
-            self.search_marked = None;
-        }
         // The menu belongs to a status bar item; without the item it has nothing to hang from.
         // It also needs the terminals frozen: a shortcut that unfroze them (a new tab, a gather,
         // a modal closing) ends it, rather than leave it under the native terminals.
@@ -10020,6 +10135,18 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_focus_mode_action))
             .on_action(cx.listener(Self::open_orchestrator_action))
             .on_action(cx.listener(Self::open_project_orchestrator_action))
+            .capture_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    if let Some((input, _)) = workspace
+                        .focused_search
+                        .and_then(|id| workspace.search_inputs.get(&id))
+                        && crate::form_input::is_composing(input, window, cx)
+                    {
+                        return;
+                    }
+                    workspace.search_key_down(event, window, cx);
+                }
+            }))
             .on_key_down(cx.listener(Self::search_key_down))
             .on_modifiers_changed(cx.listener(
                 |workspace, event: &gpui::ModifiersChangedEvent, window, cx| {
@@ -10077,6 +10204,7 @@ impl Render for Workspace {
                             window.viewport_size().width.as_f32(),
                             0.0,
                             show_window_controls,
+                            window,
                             cx,
                         )
                     }),
@@ -10410,7 +10538,7 @@ fn panel_tooltip(panel: PanelKind) -> &'static str {
         PanelKind::Usage => "Usage",
         PanelKind::Settings => "Settings · ⌘,",
         PanelKind::ProjectSettings => "Project Settings · ⌘⌥A",
-        PanelKind::Schedules => "Schedules · ⌘⇧S",
+        PanelKind::Schedules => "Automations · ⌘⇧S",
     }
 }
 
@@ -11113,6 +11241,7 @@ fn main() {
         ));
         cx.set_global(settings);
         ui_text::init(cx);
+        text_input::init(cx);
         // After both globals exist: publishes now and again on every change.
         appearance_sync::start(state_home, cx);
         settings::refresh_codex_accounts(cx);
@@ -11202,7 +11331,7 @@ fn main() {
             Menu::new("RiWork").items([
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::action("Project Settings…", OpenProjectSettings),
-                MenuItem::action("Schedules", OpenSchedules),
+                MenuItem::action("Automations", OpenSchedules),
                 MenuItem::separator(),
                 MenuItem::action("Quit RiWork", Quit),
             ]),
@@ -11511,6 +11640,8 @@ fn open_workspace_window(
         },
         |window, cx| {
             metal_layer::limit_drawables(window);
+            #[cfg(target_os = "macos")]
+            gpui_kit::base::install_window_hit_test_forwarder(window);
             cx.new(|cx| Workspace::new(startup, restore, window, cx))
         },
     )
@@ -11849,7 +11980,7 @@ mod workspace_tab_tests {
             (PanelKind::Usage, "Usage"),
             (PanelKind::Settings, "Settings"),
             (PanelKind::ProjectSettings, "Project Settings"),
-            (PanelKind::Schedules, "Schedules"),
+            (PanelKind::Schedules, "Automations"),
         ];
         for (panel, name) in panels {
             assert!(panel_tooltip(panel).starts_with(name), "{panel:?}");
