@@ -683,7 +683,7 @@ fn icon_tooltip(name: &str, detail: Option<&str>) -> String {
     }
 }
 
-fn paint_file_action<E: gpui::Styled + gpui::InteractiveElement + gpui::ParentElement>(
+fn paint_file_action<E: gpui::Styled + gpui::InteractiveElement + gpui::ParentElement + gpui::prelude::FluentBuilder>(
     element: E,
     native: bool,
     glyph: bool,

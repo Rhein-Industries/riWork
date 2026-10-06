@@ -44,7 +44,7 @@ fn control_id(control: &Control) -> String {
     format!("schedule-control-{control:?}")
 }
 
-fn paint_action<E: gpui::Styled + gpui::InteractiveElement>(
+fn paint_action<E: gpui::Styled + gpui::InteractiveElement + gpui::prelude::FluentBuilder>(
     element: E,
     selected: bool,
     focused: bool,

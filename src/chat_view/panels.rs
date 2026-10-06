@@ -861,6 +861,7 @@ impl ChatView {
         // The last button of the toolbar opens its menu toward the left, into the window.
         let toward_left = matches!(menu, Menu::More | Menu::ConfirmDelete);
         let popover = div()
+            .id("chat-choices-popover")
             .absolute()
             .top(relative(1.0))
             .when(toward_left, |menu| menu.right(px(0.0)))

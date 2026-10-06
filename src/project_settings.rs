@@ -1520,7 +1520,7 @@ impl Render for ProjectSettingsPanel {
 
 /// Native's choice among a few options (a folder, an account): a capsule, filled with the
 /// primary color when chosen. The colorful themes keep their outlined boxes.
-fn native_choice<E: gpui::Styled + gpui::InteractiveElement>(
+fn native_choice<E: gpui::Styled + gpui::InteractiveElement + gpui::prelude::FluentBuilder>(
     chip: E,
     selected: bool,
     ring: bool,

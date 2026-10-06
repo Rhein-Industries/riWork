@@ -40,7 +40,7 @@ impl ChatView {
         if !ordinary {
             return div().child(source.to_owned()).into_any_element();
         }
-        let style = gpui_kit::base::TextViewStyle::from_theme(gpui_kit::base::Theme::global(cx))
+        let style = gpui_kit::base::TextViewStyle::from_theme(&gpui_kit::base::Theme::global(cx))
             .with_foreground(rgb(look.colors.text).into())
             .with_muted_foreground(rgb(look.colors.muted).into())
             .with_link(rgb(look.colors.cyan).into())
