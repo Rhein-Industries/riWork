@@ -370,7 +370,7 @@ impl Render for NodeFixture {
             .child(observe_control(link("node-link", "Read details", colors).disabled(self.disabled).on_activate(|_, _, _| {}), "link", &self.facts))
             .child(observe_control(radio_content("node-radio", "Destination", "Different visible label", self.checked).disabled(self.disabled).on_change(|_, _, _, _| {}), "radio", &self.facts))
             .child(observe_control(button_content("node-menu-item", "Refresh", "↻").role(gpui::Role::MenuItem).disabled(self.disabled).on_click(|_, _, _| {}), "menu-item", &self.facts))
-            .child(observe(focus_scope(div().role(gpui::Role::Menu).aria_label("Choices").h(px(24.)), "menu-scope", &self.focus), "scope", &self.facts))
+            .child(observe(focus_scope(div().id("node-menu-scope").role(gpui::Role::Menu).aria_label("Choices").h(px(24.)), "menu-scope", &self.focus), "scope", &self.facts))
     }
 }
 fn mount_nodes(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<NodeFixture>) {
