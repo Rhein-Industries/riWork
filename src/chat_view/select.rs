@@ -12,7 +12,7 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, AnyWindowHandle, App, Bounds, Context, Element, ElementId, FocusHandle,
+    AnyElement, AnyWindowHandle, App, Bounds, Context, Element, ElementId, FocusHandle, Focusable,
     GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, InspectorElementId, InteractiveText,
     IntoElement, LayoutId, Pixels, Point, SharedString, StyledText, Subscription, TextLayout,
     Window, div, prelude::*, rgb,
@@ -276,7 +276,7 @@ impl ChatView {
             .id(ElementId::Name(format!("transcript:{key}").into()))
             .min_w_0()
             .cursor_text()
-            .role(gpui::Role::StaticText)
+            .role(gpui::Role::Label)
             .aria_label(text)
             .child(body)
             .test_support()

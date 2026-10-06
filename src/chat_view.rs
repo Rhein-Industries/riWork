@@ -1054,15 +1054,17 @@ impl Render for ChatView {
             }))
             .capture_action(cx.listener(Self::escape_action))
             // Scope ownership only: Base's window layer handles every gesture.
-            .capture_any_mouse_down(cx.listener(|view, event, window, cx| {
-                if event.button == gpui::MouseButton::Left {
-                    gpui_kit::base::TextSelection::activate_scope(
-                        view.transcript_selection.scope,
-                        window,
-                        cx,
-                    );
-                }
-            }))
+            .capture_any_mouse_down(cx.listener(
+                |view, event: &gpui::MouseDownEvent, window, cx| {
+                    if event.button == gpui::MouseButton::Left {
+                        gpui_kit::base::TextSelection::activate_scope(
+                            view.transcript_selection.scope,
+                            window,
+                            cx,
+                        );
+                    }
+                },
+            ))
             .child(body)
     }
 }

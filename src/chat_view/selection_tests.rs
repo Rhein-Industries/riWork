@@ -68,7 +68,7 @@ fn base_drag_crosses_unicode_paragraphs_and_messages_in_reading_order(cx: &mut T
             cx,
         );
         let ax = window.find("transcript:first/0");
-        assert_eq!(ax.role(), Some(gpui::Role::StaticText));
+        assert_eq!(ax.role(), Some(gpui::Role::Label));
         assert_eq!(ax.label(), Some("alpha 🦀 café"));
         select_between(window, "transcript:first/0", "transcript:second/0", cx);
         assert_eq!(copied(window, cx), "alpha 🦀 café\nbeta\ngamma");
