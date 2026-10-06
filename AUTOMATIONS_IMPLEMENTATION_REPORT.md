@@ -6,8 +6,9 @@ Completed the desktop engine task `c2250f68-0cd7-4d5d-8cd0-6bb86ba2e025` and nat
 
 - Branch: `feat/automations`; base: `edcaf5799038de8769d985700858323a47fe6b1e`.
 - Original implementation candidate: **`a38ea39ec5a0de607698e8cab88adad0c6b17680`** — `Implement desktop Automations with guarded fresh chats and explicit AI shells`; original report commit: `e46f03325fd4dfe983e02d891f0d6fc3055b3629`.
-- Current frozen implementation candidate: **`8f4d966983d8fa0ae436d6b0b536282f0945b648`** — `Reject create-only automation options outside create and explicit fresh-chat shells`. This is the small parent-review follow-up to the original candidate.
-- The next report-only commit records this exact follow-up and its receipt; the final handoff HEAD hash is returned to the parent. Scheduler/host/UI code and GUI artifacts are unchanged; only CLI/MCP validation, focused interface tests, documentation and log endings changed.
+- Interface correction: `8f4d966983d8fa0ae436d6b0b536282f0945b648` — `Reject create-only automation options outside create and explicit fresh-chat shells`; receipt/report commit: `b6465173078c4fdd5eee76448b4fb28e4f3dde3d`.
+- Current frozen implementation candidate: **`b1cd7051ead7aaf30b0487fce88571a51c7f69f0`** — `Gate explicit project shell dispatch on its live canonical directory`. This separate correction addresses the independent directory-drift reproduction against a38ea39 and includes the interface correction.
+- The next report-only commit records this exact directory correction and its receipt; the final handoff HEAD hash is returned to the parent. Only the existing shell dispatch directory gate, isolated scheduler fixtures/tests, documentation and test receipts changed in this correction. Host/UI/interface code and GUI artifacts are unchanged.
 - No main merge, push, deployment, production host replacement, connector restart or OTA restart occurred. Independent acceptance review is pending.
 
 ## Result
@@ -30,7 +31,7 @@ The original schedule CLI/MCP names and omitted-destination behavior remain. `au
 
 ## Files
 
-- Engine/serialization: `src/schedules.rs`, `src/schedule_chat.rs`, `src/chat/wire.rs`, `src/chat/client.rs`, `src/chat/host.rs`, `src/chat/mod.rs`.
+- Engine/serialization: `src/schedules.rs`, `src/sessions.rs`, `src/schedule_chat.rs`, `src/chat/wire.rs`, `src/chat/client.rs`, `src/chat/host.rs`, `src/chat/mod.rs`.
 - Shared interfaces: `src/schedule_service.rs`, `src/cli.rs`, `src/mcp.rs`.
 - Native UI/layout: `src/schedule_panel.rs`, `src/main.rs`, `src/layouts.rs`.
 - Tests/fixtures: `src/schedule_chat/fresh_tests.rs`, `src/schedules_tests.rs`, `src/chat/testing.rs`, `src/chat_view/testing.rs`, `tests/schedule_interfaces.rs`, `scripts/automations-ui-fixture.py`.
@@ -40,7 +41,7 @@ The implementation commit contains 37 files. `git show --stat a38ea39ec5a0de6076
 
 ## Build and focused verification
 
-The original implementation checks below passed; their receipts are retained. They were not rerun for the small interface-only follow-up except the affected CLI/MCP/interface checks listed in the next section. Used **`CARGO_TARGET_DIR=/tmp/riwork-automations-target`** and installed Zig via PATH prefix **`/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0`** (binary `/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig`). Inherited RIWORK_HOME was preserved; `scripts/check-schedules.sh` overrides home/runtime only in child test processes. No authenticated model/provider test ran.
+The original implementation checks below passed; their receipts are retained. Follow-ups reran only affected checks, listed separately below: CLI/MCP/interface validation, then scheduler/input tests for the directory gate. Used **`CARGO_TARGET_DIR=/tmp/riwork-automations-target`** and installed Zig via PATH prefix **`/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0`** (binary `/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig`). Inherited RIWORK_HOME was preserved; `scripts/check-schedules.sh` overrides home/runtime only in child test processes. No authenticated model/provider test ran.
 
 | Command after the environment prefix | Result | Original log | Committed receipt |
 | --- | --- | --- | --- |
@@ -73,6 +74,25 @@ Parent review found blank lines at EOF in five committed original logs that a cl
 | `git diff edcaf579 8f4d966983d8fa0ae436d6b0b536282f0945b648 --check` | Passed, exit 0 | Tool receipt | `docs/verification/automations/followup-receipt.json` |
 
 The final report-only HEAD is also checked against edcaf579 after commit. The passing unchanged scheduler/host/GUI suites were not repeated. No Cua ownership was acquired, and no production host, OTA, connector, main or deployment change was made in this follow-up. Old-host safe deferral and the desktop-only scope remain unchanged. The independent reviewer can inspect the focused follow-up diff from a38ea39 to this candidate.
+
+## Independent directory-scope correction
+
+Frozen code commit: **`b1cd7051ead7aaf30b0487fce88571a51c7f69f0`**, parent `b6465173078c4fdd5eee76448b4fb28e4f3dde3d`. Independent test `independent_project_root_actual_directory_drift_is_not_gated` in `/Users/dominik/orca/projects/riWork-review-manu-20261005/.review/automations-candidate-a38ea39/repro-source/src/schedules_tests.rs` changed the real process directory while saved shell metadata remained pinned to the project root. Its log confirms the old candidate submitted outside the project. That original evidence is preserved in `test-logs/independent-directory-drift-reproducer.log`; its intentional old-defect confirmation is not treated as corrected-candidate acceptance.
+
+`SessionManager::send_scheduled` now gates only explicitly marked `shell_kind=Project` plus `Scope::Project` ordinary root shells using the live `current_directory`, canonicalized against the selected project's canonical root. Root and nested directories are allowed; symlink escapes and known outside directories fail/pause without claim or input. Missing, relative or unresolvable evidence defers without consuming a claim or rate slot. The same check runs after readiness under the input lock immediately before the durable claim. Legacy missing-marker project orchestrator context, explicitly selected project orchestrators, workspace rules and all pane/provider/account/creation/readiness checks are preserved.
+
+The deterministic fixture now supports per-shell real `os.chdir` requests with acknowledgements and records every input byte. New regressions preserve matching saved root metadata while moving the actual process outside, test symlink escape, remove a live working directory to prove unreadable evidence defers, and trigger directory drift synchronously during provider readiness while the input lock is proven held. Rejected paths assert zero claim calls, zero consumed rate slots, zero pasted bytes and zero Return. Positive root/subdirectory cases claim and submit exactly once. A separate regression proves both legacy and explicitly selected project orchestrators still dispatch with an outside context directory.
+
+| Directory correction check (same isolated target/Zig setup) | Result | Original log | Committed receipt |
+| --- | --- | --- | --- |
+| `scripts/check-schedules.sh --bin riwork explicit_project_live_directory` | 4 passed, 0 failed | `/tmp/riwork-automations-directory-regressions.log` | `docs/verification/automations/test-logs/directory-regressions.log` |
+| `scripts/check-schedules.sh --bin riwork schedules::tests` | 47 passed, 0 failed, 2 existing opt-in/helper tests ignored | `/tmp/riwork-automations-directory-scheduler.log` | `docs/verification/automations/test-logs/directory-scheduler.log` |
+| `scripts/check-schedules.sh --bin riwork session_input::tests` | 7 passed, 0 failed | `/tmp/riwork-automations-directory-input.log` | `docs/verification/automations/test-logs/directory-input.log` |
+| `cargo check --offline` | Desktop compile check passed | `/tmp/riwork-automations-directory-check.log` | `docs/verification/automations/test-logs/directory-check.log` |
+| `cargo fmt --all -- --check` | Passed | Tool receipt | `docs/verification/automations/directory-receipt.json` |
+| `git diff edcaf579 b1cd7051ead7aaf30b0487fce88571a51c7f69f0 --check` | Passed, exit 0 | Tool receipt | `docs/verification/automations/directory-receipt.json` |
+
+The final report-only committed HEAD is also checked against the base. The unchanged passing CLI/MCP, fresh-chat, host, GUI and full native build checks were not repeated; the existing native build log remains available. No Cua ownership, production input/schedule, production host/connector/OTA restart, iOS, main, merge or push changes occurred. The desktop-only scope, old-host capability deferral and earlier honest GUI limits remain unchanged. The corrected candidate is ready for independent review; no active fixture ownership remains.
 
 ## Cua verification and honest limits
 

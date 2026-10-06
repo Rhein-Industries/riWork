@@ -1,0 +1,55 @@
+{
+  "code_candidate": "b1cd7051ead7aaf30b0487fce88571a51c7f69f0",
+  "parent": "b6465173078c4fdd5eee76448b4fb28e4f3dde3d",
+  "base": "edcaf5799038de8769d985700858323a47fe6b1e",
+  "scope": "Explicit ordinary Project shell live directory gate, isolated scheduler/input regressions and documentation only; desktop scope",
+  "checks": {
+    "explicit_project_live_directory": {
+      "passed": 4,
+      "failed": 0
+    },
+    "schedules_tests": {
+      "passed": 47,
+      "failed": 0,
+      "ignored": 2
+    },
+    "session_input_tests": {
+      "passed": 7,
+      "failed": 0
+    },
+    "cargo_check_offline": "passed",
+    "cargo_fmt_check": "passed",
+    "base_to_code_candidate_diff_check": {
+      "command": "git diff edcaf579 b1cd7051ead7aaf30b0487fce88571a51c7f69f0 --check",
+      "exit_code": 0
+    }
+  },
+  "source_sha256": {
+    "src/sessions.rs": "5a25dbfff8c850459f7e1525582b529f5abc4db73e3a3fae7c407fe8abd3181a",
+    "src/schedules_tests.rs": "25e6a12cf233dd4504bbee32de7ccb685cea728d6fd1abac59332ee3f1cb5bb0"
+  },
+  "independent_prior_defect_evidence": {
+    "candidate": "a38ea39ec5a0de607698e8cab88adad0c6b17680",
+    "source": "/Users/dominik/orca/projects/riWork-review-manu-20261005/.review/automations-candidate-a38ea39/repro-source/src/schedules_tests.rs",
+    "source_sha256": "501d46c339aac17ba3f56e1b5872ce303a5e92ab7a30e0e3bd30dfc643a5a450",
+    "test": "independent_project_root_actual_directory_drift_is_not_gated",
+    "log_artifact": "test-logs/independent-directory-drift-reproducer.log",
+    "meaning": "Prior candidate submitted outside project after live cwd drift; intentional old-defect confirmation, not corrected-candidate acceptance"
+  },
+  "rejected_dispatch_evidence": [
+    "zero claim callbacks",
+    "zero consumed rate slots",
+    "zero terminal bytes including Return",
+    "outside/symlink Failed and paused",
+    "unreadable Deferred without pause"
+  ],
+  "readiness_race": "real process cwd drift triggered synchronously during provider proof with input lock proven held",
+  "environment": {
+    "cargo_target_dir": "/tmp/riwork-automations-target",
+    "zig": "/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig",
+    "riwork_home": "inherited unchanged; isolated test children only"
+  },
+  "cua_ownership": "not acquired",
+  "production_changes": false,
+  "unchanged_broad_checks_rerun": false
+}
