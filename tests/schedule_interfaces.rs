@@ -671,3 +671,143 @@ fn grok_sessions_and_control_character_titles_are_refused_by_cli_and_mcp() {
         1
     );
 }
+
+#[test]
+fn fresh_chat_cli_mcp_create_revision_lifecycle_and_invalid_destinations() {
+    let fixture = Fixture::new();
+    let at = future_at(8);
+    let cli = fixture.cli_ok(&[
+        "automation",
+        "create",
+        "--new-chat",
+        "--scope",
+        "project",
+        "--project",
+        &fixture.project_id,
+        "--provider",
+        "claude",
+        "--title",
+        "Fresh CLI",
+        "--prompt",
+        "Fixture only",
+        "--at",
+        &at,
+        "--model",
+        "fixture-model",
+        "--effort",
+        "high",
+        "--fast",
+        "--json",
+    ])["schedule"]
+        .clone();
+    assert_eq!(cli["target"]["new_chat"]["provider"], "claude");
+    assert_eq!(cli["target"]["new_chat"]["approval_mode"], "supervised");
+    assert_eq!(cli["target"]["new_chat"]["model"], "fixture-model");
+    assert_eq!(cli["target"]["new_chat"]["fast"], true);
+    let created=fixture.tool_ok("riwork_schedule_create",json!({"destination":"new_chat","scope":"project","project_id":fixture.project_id,"provider":"claude","permission":"plan","title":"Fresh MCP","prompt":"Fixture only","at":at,"every_minutes":5}))["schedule"].clone();
+    assert_eq!(created["target"]["new_chat"]["approval_mode"], "plan");
+    let key = json!({"schedule_id":created["id"],"revision":created["revision"],"scope":"project","project_id":fixture.project_id,"shell_id":created["target"]["shell_id"]});
+    let paused = fixture.tool_ok("riwork_schedule_pause", key.clone())["schedule"].clone();
+    assert_eq!(paused["paused"], true);
+    fixture.tool_error("riwork_schedule_resume", key, "revision_conflict");
+    let edited=fixture.tool_ok("riwork_schedule_update",json!({"schedule_id":created["id"],"revision":paused["revision"],"scope":"project","project_id":fixture.project_id,"shell_id":created["target"]["shell_id"],"title":"Edited automation","at":future_at(9),"once":true}))["schedule"].clone();
+    let mut expected_target = created["target"].clone();
+    expected_target["new_chat"]["title"] = json!("Edited automation");
+    assert_eq!(edited["target"], expected_target);
+    assert_eq!(edited["timing"]["kind"], "once");
+    fixture.tool_error("riwork_schedule_create",json!({"destination":"new_chat","scope":"project","project_id":fixture.project_id,"shell_id":fixture.shells[1],"title":"Invalid","prompt":"Fixture","at":at}),"invalid_argument");
+    fixture.tool_error("riwork_schedule_create",json!({"destination":"new_chat","scope":"app","title":"Invalid","prompt":"Fixture","at":at}),"invalid_argument");
+    fixture.tool_error("riwork_schedule_create",json!({"destination":"new_chat","scope":"project","project_id":Uuid::new_v4(),"title":"Invalid","prompt":"Fixture","at":at}),"binding_failed");
+    fixture.tool_error("riwork_schedule_create",json!({"destination":"new_chat","scope":"project","project_id":fixture.project_id,"codex_account_id":"missing-account","title":"Invalid","prompt":"Fixture","at":at}),"binding_failed");
+    fixture.tool_error("riwork_schedule_create",json!({"destination":"new_chat","scope":"project","project_id":fixture.project_id,"permission":"danger","title":"Invalid","prompt":"Fixture","at":at}),"invalid_argument");
+    fixture.cli_error(
+        &[
+            "schedule",
+            "create",
+            "--new-chat",
+            "--scope",
+            "project",
+            "--project",
+            &fixture.project_id,
+            "--shell",
+            &fixture.shells[1],
+            "--title",
+            "Invalid",
+            "--prompt",
+            "Fixture",
+            "--at",
+            &at,
+            "--json",
+        ],
+        "invalid_argument",
+    );
+    assert!(
+        !fixture.home.join("chats").exists(),
+        "Saving must not start a provider or create a chat"
+    );
+}
+
+#[test]
+fn explicit_existing_shell_interfaces_pin_ordinary_project_kind_and_preserve_legacy_defaults() {
+    let fixture = Fixture::new();
+    let shell = &fixture.shells[2];
+    let path = fixture.home.join("sessions.json");
+    let mut registry: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for entry in registry["sessions"].as_array_mut().unwrap() {
+        if entry["id"] == *shell {
+            entry["worktree_id"] = Value::Null;
+        }
+    }
+    fs::write(path, serde_json::to_vec(&registry).unwrap()).unwrap();
+    let at = future_at(10);
+    let cli = fixture.cli_ok(&[
+        "automation",
+        "create",
+        "--existing-shell",
+        "--scope",
+        "project",
+        "--project",
+        &fixture.project_id,
+        "--shell",
+        shell,
+        "--title",
+        "Root shell CLI",
+        "--prompt",
+        "Fixture only",
+        "--at",
+        &at,
+        "--json",
+    ])["schedule"]
+        .clone();
+    assert_eq!(cli["target"]["shell_kind"], "project");
+    assert!(cli["target"].get("new_chat").is_none());
+    let created = fixture.tool_ok("riwork_schedule_create", json!({"destination":"existing_shell","scope":"project","project_id":fixture.project_id,"shell_id":shell,"title":"Root shell MCP","prompt":"Fixture only","at":at}))["schedule"].clone();
+    assert_eq!(created["target"], cli["target"]);
+    fixture.tool_error("riwork_schedule_create", json!({"scope":"project","project_id":fixture.project_id,"shell_id":shell,"title":"Legacy ordinary rejection","prompt":"Fixture only","at":at}), "binding_failed");
+    fixture.tool_error("riwork_schedule_create", json!({"destination":"existing_shell","scope":"workspace","project_id":fixture.project_id,"worktree_id":fixture.worktree_id,"shell_id":shell,"title":"Wrong workspace","prompt":"Fixture only","at":at}), "binding_failed");
+    let old = fixture.tool_ok("riwork_schedule_create", json!({"scope":"project","project_id":fixture.project_id,"shell_id":fixture.shells[1],"title":"Legacy orchestrator","prompt":"Fixture only","at":at}))["schedule"].clone();
+    assert!(old["target"].get("shell_kind").is_none());
+    let mut key = json!({"schedule_id":created["id"],"revision":1,"scope":"project","project_id":fixture.project_id,"shell_id":shell});
+    let paused = fixture.tool_ok("riwork_schedule_pause", key.clone())["schedule"].clone();
+    assert_eq!(paused["target"], created["target"]);
+    key["revision"] = 2.into();
+    let resumed = fixture.tool_ok("riwork_schedule_resume", key.clone())["schedule"].clone();
+    assert_eq!(resumed["target"], created["target"]);
+    key["revision"] = 3.into();
+    key["at"] = future_at(11).into();
+    key["title"] = "Edited root shell".into();
+    let updated = fixture.tool_ok("riwork_schedule_update", key.clone())["schedule"].clone();
+    assert_eq!(updated["target"], created["target"]);
+    key["revision"] = 4.into();
+    key.as_object_mut().unwrap().remove("at");
+    key.as_object_mut().unwrap().remove("title");
+    assert_eq!(
+        fixture.tool_ok("riwork_schedule_delete", key)["deleted"],
+        true
+    );
+    assert_eq!(
+        fixture.cli_ok(&["schedule", "show", cli["id"].as_str().unwrap(), "--json"])["schedule"]["target"],
+        cli["target"]
+    );
+    assert!(!fixture.home.join("chats").exists());
+}

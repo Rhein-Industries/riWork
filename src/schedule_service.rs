@@ -160,6 +160,16 @@ impl ScheduleService {
     }
 
     pub fn create(&self, request: CreateRequest) -> Result<Schedule, ScheduleError> {
+        self.create_existing(request, false)
+    }
+    pub fn create_shell(&self, request: CreateRequest) -> Result<Schedule, ScheduleError> {
+        self.create_existing(request, true)
+    }
+    fn create_existing(
+        &self,
+        request: CreateRequest,
+        explicit_shell: bool,
+    ) -> Result<Schedule, ScheduleError> {
         let scope = request.scope.resolve()?;
         full_id(Some(&request.shell_id), "shell_id")?;
         let timing = timing(&request.at, request.every_minutes)?;
@@ -167,8 +177,12 @@ impl ScheduleService {
         // `bind_any` verifies a live, scoped, known provider session (or the chat of
         // an orchestrator that runs as one) and pins its identity.
         let chats = self.schedules.chat_orchestrators();
-        let target = Target::bind_any(scope, &state, &self.sessions, &chats, &request.shell_id)
-            .map_err(|error| ScheduleError::new("binding_failed", error))?;
+        let target = (if explicit_shell {
+            Target::bind_shell(scope, &state, &self.sessions, &request.shell_id)
+        } else {
+            Target::bind_any(scope, &state, &self.sessions, &chats, &request.shell_id)
+        })
+        .map_err(|error| ScheduleError::new("binding_failed", error))?;
         self.schedules
             .save(
                 None,
@@ -176,6 +190,51 @@ impl ScheduleService {
                 request.prompt,
                 target,
                 timing,
+                schedules::now(),
+            )
+            .map_err(classify_save_error)
+    }
+
+    /// Shared fresh-chat creation path for native UI, CLI and MCP. Saving never
+    /// starts a host or provider; the desktop scheduler owns dispatch.
+    pub fn create_chat(
+        &self,
+        request: CreateRequest,
+        provider: crate::chat::model::Provider,
+        model: Option<String>,
+        effort: Option<String>,
+        fast: bool,
+        permission: crate::chat::model::ApprovalMode,
+        account: Option<&str>,
+    ) -> Result<Schedule, ScheduleError> {
+        let Scope::Project { project_id } = request.scope.resolve()? else {
+            return Err(ScheduleError::invalid("New chats require project scope"));
+        };
+        if !request.shell_id.is_empty() {
+            return Err(ScheduleError::invalid(
+                "New chat cannot also name an existing shell",
+            ));
+        }
+        let state = self.workspace.snapshot().map_err(ScheduleError::store)?;
+        let target = Target::bind_new_chat(
+            self.sessions.state_home(),
+            &state,
+            &project_id,
+            provider,
+            model,
+            effort,
+            fast,
+            permission,
+            account,
+        )
+        .map_err(|error| ScheduleError::new("binding_failed", error))?;
+        self.schedules
+            .save(
+                None,
+                request.title,
+                request.prompt,
+                target,
+                timing(&request.at, request.every_minutes)?,
                 schedules::now(),
             )
             .map_err(classify_save_error)
@@ -254,6 +313,36 @@ impl ScheduleService {
             _ => classify_save_error(error),
         }
     }
+}
+
+pub fn chat_options(
+    provider: Option<&str>,
+    permission: Option<&str>,
+) -> Result<
+    (
+        crate::chat::model::Provider,
+        crate::chat::model::ApprovalMode,
+    ),
+    ScheduleError,
+> {
+    use crate::chat::model::{ApprovalMode, Provider};
+    let provider = match provider {
+        None | Some("codex") => Provider::Codex,
+        Some("claude") => Provider::Claude,
+        _ => return Err(ScheduleError::invalid("provider must be codex or claude")),
+    };
+    let permission = match permission {
+        None | Some("supervised") => ApprovalMode::Supervised,
+        Some("auto-edit") | Some("auto_edit") => ApprovalMode::AutoEdit,
+        Some("full") => ApprovalMode::Full,
+        Some("plan") => ApprovalMode::Plan,
+        _ => {
+            return Err(ScheduleError::invalid(
+                "permission must be supervised, auto-edit, full, or plan",
+            ));
+        }
+    };
+    Ok((provider, permission))
 }
 
 fn classify_save_error(error: String) -> ScheduleError {

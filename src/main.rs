@@ -1318,6 +1318,7 @@ struct Workspace {
     collapsed_project_folders: HashSet<String>,
     project_settings_panel: Option<Entity<ProjectSettingsPanel>>,
     schedule_panel: Option<Entity<schedule_panel::SchedulePanel>>,
+    pending_automation_chat: Option<String>,
     file_explorer: Option<Entity<FileExplorer>>,
     /// The Preview panel's view of `file_explorer`. Created and dropped with it.
     file_preview: Option<Entity<FilePreview>>,
@@ -1903,6 +1904,7 @@ impl Workspace {
             collapsed_project_folders: HashSet::new(),
             project_settings_panel: None,
             schedule_panel: None,
+            pending_automation_chat: None,
             file_explorer: None,
             file_preview: None,
             locked_panes: None,
@@ -2551,7 +2553,7 @@ impl Workspace {
             PanelKind::Shells => "SHELLS",
             PanelKind::Usage => "USAGE",
             PanelKind::Settings => "SETTINGS",
-            PanelKind::Schedules => "SCHEDULES",
+            PanelKind::Schedules => "AUTOMATIONS",
             PanelKind::ProjectSettings => "PROJECT SETTINGS",
         }
     }
@@ -2569,9 +2571,19 @@ impl Workspace {
             let sessions = self.sessions.clone();
             let project = self.project_id.clone();
             let workspace = self.selected_worktree_id.clone();
-            self.schedule_panel = Some(cx.new(|cx| {
+            let panel = cx.new(|cx| {
                 schedule_panel::SchedulePanel::new(store, sessions, project, workspace, cx)
-            }));
+            });
+            cx.subscribe(
+                &panel,
+                |workspace, _, event: &schedule_panel::SchedulePanelEvent, cx| {
+                    let schedule_panel::SchedulePanelEvent::OpenChat(id) = event;
+                    workspace.pending_automation_chat = Some(id.clone());
+                    cx.notify();
+                },
+            )
+            .detach();
+            self.schedule_panel = Some(panel);
         }
         if panel == PanelKind::ProjectSettings {
             self.ensure_project_settings(cx);
@@ -4085,6 +4097,7 @@ impl Workspace {
         self.project_id = project.id;
         self.project_settings_panel = None;
         self.schedule_panel = None;
+        self.pending_automation_chat = None;
         self.file_explorer = None;
         self.file_preview = None;
         self.set_window_title(&project.name, window);
@@ -4121,6 +4134,7 @@ impl Workspace {
         self.project_id = key.to_owned();
         self.project_settings_panel = None;
         self.schedule_panel = None;
+        self.pending_automation_chat = None;
         self.file_explorer = None;
         self.file_preview = None;
         self.selected_worktree_id = None;
@@ -9956,6 +9970,20 @@ impl EntityInputHandler for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(chat_id) = self.pending_automation_chat.take() {
+            let existing = self.panes.iter().find_map(|(id, pane)| pane.tabs.iter().position(|tab| matches!(&tab.content, TabContent::Chat { chat_id: current, .. } if current == &chat_id)).map(|index| (*id, index)));
+            if let Some((pane, index)) = existing {
+                self.active_pane = pane;
+                if let Some(pane) = self.panes.get_mut(&pane) {
+                    pane.active = index;
+                }
+            } else {
+                self.restore_chat_tab(self.new_tab_pane(), chat_id, window, cx);
+            }
+            self.focus_active(window, cx);
+            self.save_layout();
+        }
+
         let colors = theme::palette(cx);
         let show_window_controls = window_controls_visible(window);
         if self.search_focused && !self.focus.is_focused(window) {
@@ -10410,7 +10438,7 @@ fn panel_tooltip(panel: PanelKind) -> &'static str {
         PanelKind::Usage => "Usage",
         PanelKind::Settings => "Settings · ⌘,",
         PanelKind::ProjectSettings => "Project Settings · ⌘⌥A",
-        PanelKind::Schedules => "Schedules · ⌘⇧S",
+        PanelKind::Schedules => "Automations · ⌘⇧S",
     }
 }
 
@@ -11202,7 +11230,7 @@ fn main() {
             Menu::new("RiWork").items([
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::action("Project Settings…", OpenProjectSettings),
-                MenuItem::action("Schedules", OpenSchedules),
+                MenuItem::action("Automations", OpenSchedules),
                 MenuItem::separator(),
                 MenuItem::action("Quit RiWork", Quit),
             ]),
@@ -11849,7 +11877,7 @@ mod workspace_tab_tests {
             (PanelKind::Usage, "Usage"),
             (PanelKind::Settings, "Settings"),
             (PanelKind::ProjectSettings, "Project Settings"),
-            (PanelKind::Schedules, "Schedules"),
+            (PanelKind::Schedules, "Automations"),
         ];
         for (panel, name) in panels {
             assert!(panel_tooltip(panel).starts_with(name), "{panel:?}");

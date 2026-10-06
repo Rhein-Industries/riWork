@@ -233,6 +233,15 @@ The remote connector creates the phone's projects this way.
 ";
 
 const SCHEDULE_HELP: &str = "\
+Automations (schedule and automation are aliases):
+  riwork automation create --new-chat --scope project --project UUID --title TITLE --prompt TEXT --at RFC3339 [--provider codex|claude] [--model MODEL] [--effort EFFORT] [--fast] [--permission supervised|auto-edit|full|plan] [--account ID] [--every-minutes N]
+  riwork automation create --existing-shell --scope app|project|workspace --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--project UUID] [--worktree UUID] [--every-minutes N]
+Explicit existing-shell mode pins the selected shell kind; project scope also
+ accepts an ordinary project-root AI shell. Omitted preserves legacy semantics.
+New chat runs create an ordinary project chat each occurrence. Permission defaults
+ to supervised. The returned target.shell_id is the destination UUID for subsequent
+ revision-checked commands; results include last_run.created_chat_id.
+
 Schedule management (add --json to any command for structured stdout):
   riwork schedule list [--scope app|project|workspace] [--project UUID] [--worktree UUID]
   riwork schedule show SCHEDULE_UUID
@@ -311,6 +320,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "chat"
             | "handoff"
             | "schedule"
+            | "automation"
             | "search"
             | "usage"
             | "appearance"
@@ -402,7 +412,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         "orchestrator" => orchestrator_command(args, json)?,
         "chat" => chat_command(args, json)?,
         "handoff" => handoff::command(args, json)?,
-        "schedule" => schedule_command(args, json)?,
+        "schedule" | "automation" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
         "mcp" => {
             ensure_empty(&args)?;
@@ -2585,16 +2595,54 @@ fn schedule_command_inner(
             Ok(json!({"schedule":service.show(&id)?}))
         }
         "create" => {
+            let fresh = take_flag(&mut args, "--new-chat");
+            let explicit_shell = take_flag(&mut args, "--existing-shell");
+            if fresh && explicit_shell {
+                return Err(schedule_cli_error("Choose --new-chat or --existing-shell"));
+            }
             let identity = scope(&mut args)?;
-            let shell_id = required(option(&mut args, "--shell")?, "--shell")?;
+            let shell_id = option(&mut args, "--shell")?;
+            let provider = option(&mut args, "--provider")?;
+            let permission = option(&mut args, "--permission")?;
+            let model = option(&mut args, "--model")?;
+            let effort = option(&mut args, "--effort")?;
+            let account = option(&mut args, "--account")?;
+            let fast = take_flag(&mut args, "--fast");
             let title = required(option(&mut args, "--title")?, "--title")?;
             let prompt = required(option(&mut args, "--prompt")?, "--prompt")?;
             let at = required(option(&mut args, "--at")?, "--at")?;
             let every_minutes = schedule_minutes(option(&mut args, "--every-minutes")?)?;
             schedule_empty(&args)?;
-            Ok(json!({"schedule":service.create(CreateRequest {
-                scope: identity, shell_id, title, prompt, at, every_minutes,
-            })?}))
+            if fresh {
+                let (provider, permission) = crate::schedule_service::chat_options(
+                    provider.as_deref(),
+                    permission.as_deref(),
+                )?;
+                Ok(json!({"schedule":service.create_chat(CreateRequest {
+                    scope: identity, shell_id: shell_id.unwrap_or_default(), title, prompt, at, every_minutes,
+                }, provider, model, effort, fast, permission, account.as_deref())?}))
+            } else {
+                if provider.is_some()
+                    || permission.is_some()
+                    || model.is_some()
+                    || effort.is_some()
+                    || account.is_some()
+                    || fast
+                {
+                    return Err(schedule_cli_error("Chat options require --new-chat"));
+                }
+                let request = CreateRequest {
+                    scope: identity,
+                    shell_id: required(shell_id, "--shell")?,
+                    title,
+                    prompt,
+                    at,
+                    every_minutes,
+                };
+                Ok(
+                    json!({"schedule":if explicit_shell { service.create_shell(request)? } else { service.create(request)? }}),
+                )
+            }
         }
         "update" => {
             // Parse optional edits before the positional schedule ID.

@@ -26,7 +26,7 @@ pub mod client;
 pub mod codex;
 pub mod driver;
 pub mod host;
-mod launch;
+pub(crate) mod launch;
 pub(crate) mod log;
 pub mod media;
 pub mod model;

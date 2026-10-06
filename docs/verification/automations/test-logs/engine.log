@@ -1,0 +1,84 @@
+   Compiling riwork v0.1.0 (/Users/dominik/orca/projects/riWork-feat-automations)
+    Finished `test` profile [unoptimized] target(s) in 15.92s
+     Running unittests src/main.rs (/tmp/riwork-automations-target/debug/deps/riwork-72c65fc1f45c3555)
+
+running 76 tests
+test activity::tests::scheduled_readiness_cannot_transfer_to_a_replacement_provider_thread ... ok
+test agent_hooks::tests::a_cursor_from_an_older_build_still_reads_and_still_schedules ... ok
+test agent_hooks::tests::the_stray_subagent_stop_after_a_reply_leaves_the_turn_completed_for_the_scheduler ... ok
+test cli::tests::schedule_text_output_escapes_control_characters_but_json_stays_exact ... ok
+test handoff::summary::tests::a_claude_terminal_at_its_prompt_is_asked_the_way_a_schedule_asks ... ok
+test mcp::tests::schedule_failures_keep_code_and_conflict_without_structured_content ... ok
+test project_recency::tests::stream::a_failed_root_keeps_its_own_schedule_whatever_is_heard ... ok
+test schedule_chat::fresh_tests::fresh_chat_capability_preflight_defers_old_or_unproven_hosts_without_claim_or_starvation ... ok
+test schedule_chat::fresh_tests::fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_create ... ok
+test schedule_chat::fresh_tests::fresh_chat_failed_start_keeps_created_id_and_never_sends_or_retries ... ok
+test schedule_chat::fresh_tests::fresh_chat_interrupted_claim_preserves_id_and_old_serialized_schedules_load ... ok
+test schedule_chat::fresh_tests::fresh_chat_invalid_project_root_or_account_does_not_claim_or_create ... ok
+test schedule_chat::fresh_tests::fresh_chat_once_both_providers_pin_configuration_and_leave_orchestrator_alone ... ok
+test schedule_chat::fresh_tests::fresh_chat_racing_ticks_and_host_restart_create_once_per_occurrence ... ok
+test schedule_chat::fresh_tests::fresh_chat_saved_account_stays_pinned_and_missing_home_fails_before_creation ... ok
+test schedule_chat::fresh_tests::preassigned_chat_identity_refuses_duplicates_even_after_host_restart ... ok
+test schedule_chat::tests::a_chat_at_work_defers_without_sending_and_is_asked_again ... ok
+test schedule_chat::tests::a_chat_orchestrator_is_a_target_of_its_own_scope_only ... ok
+test schedule_chat::tests::a_host_that_cannot_be_reached_defers_and_the_schedule_goes_on ... ok
+test schedule_chat::tests::a_host_that_refuses_the_message_fails_the_schedule_after_the_claim_with_nothing_sent ... ok
+test schedule_chat::tests::a_recurring_schedule_delivers_each_occurrence_once_however_often_it_is_asked ... ok
+test schedule_chat::tests::a_stopped_chat_is_resumed_by_the_delivery_and_a_failed_one_is_not_written_to ... ok
+test schedule_chat::tests::a_target_that_is_not_the_pinned_chat_fails_instead_of_retargeting ... ok
+test schedule_chat::tests::an_acknowledged_message_the_log_never_shows_is_uncertain ... ok
+test schedule_chat::tests::an_exchange_that_breaks_after_the_claim_is_uncertain_and_never_retried ... ok
+test schedule_chat::tests::an_idle_orchestrator_chat_gets_the_prompt_once_and_its_log_shows_it ... ok
+test schedule_chat::tests::only_a_message_with_the_prompts_own_text_after_the_mark_is_the_proof ... ok
+test schedule_chat::tests::schedulers_that_race_for_one_occurrence_deliver_it_once ... ok
+test schedule_chat::tests::the_service_binds_a_chat_orchestrator_by_its_id_and_the_ledger_keeps_terminal_targets_as_they_were ... ok
+test schedule_panel::tests::custom_zero_minutes_cannot_become_a_one_time_schedule ... ok
+test schedule_panel::tests::editor_defaults_and_options_edit_keep_the_pinned_account_and_destination ... ok
+test schedule_panel::tests::quick_first_run_choices_select_future_instants_without_editing_other_fields ... ok
+test schedules::tests::a_failed_claim_write_is_still_an_error_and_never_a_recorded_deferral ... ok
+test schedules::tests::a_grok_session_is_refused_at_bind ... ok
+test schedules::tests::a_missed_window_keeps_the_last_deferral_reason ... ok
+test schedules::tests::a_real_fixture_leaves_no_tmux_server_behind ... ok
+test schedules::tests::a_real_subagent_start_and_stop_pair_in_an_unseen_turn_withdraws_the_completion ... ok
+test schedules::tests::a_stray_subagent_stop_after_a_reply_does_not_stop_a_schedule ... ok
+test schedules::tests::a_target_that_is_truly_gone_or_replaced_still_fails_and_pauses ... ok
+test schedules::tests::child_tick_worker ... ignored, launched only by isolated concurrency parent
+test schedules::tests::claude_clear_and_resume_rebind_so_the_old_completion_cannot_admit_a_prompt ... ok
+test schedules::tests::claude_identity_comes_from_the_hook_cursor_alone ... ok
+test schedules::tests::claude_shell_foreground_and_stale_completion_defer_until_a_real_stop ... ok
+test schedules::tests::codex_proof_distinguishes_a_different_thread_from_unreadable_evidence ... ok
+test schedules::tests::codex_proof_drains_large_descriptor_listings ... ok
+test schedules::tests::codex_proof_needs_the_foreground_process_to_hold_the_bound_rollout ... ok
+test schedules::tests::codex_that_left_a_shell_prompt_is_deferred_and_never_typed_into ... ok
+test schedules::tests::codex_without_a_binding_binds_only_a_proven_rollout ... ok
+test schedules::tests::concurrent_processes_send_once ... ok
+test schedules::tests::concurrent_threads_send_once ... ok
+test schedules::tests::copy_and_cut_have_nothing_to_write_without_a_selection ... ok
+test schedules::tests::deferred_is_bounded_and_grace_is_inclusive ... ok
+test schedules::tests::delete_waits_for_claimed_delivery_and_cannot_overwrite_its_outcome ... ok
+test schedules::tests::dispatch_errors_are_deferred_with_backoff_so_other_schedules_still_run ... ok
+test schedules::tests::due_boundary_one_time_and_restart_do_not_duplicate ... ok
+test schedules::tests::durable_inflight_claim_is_uncertain_after_owner_crash ... ok
+test schedules::tests::explicit_project_root_shells_dispatch_once_and_legacy_kind_semantics_stay_pinned ... ok
+test schedules::tests::failure_and_uncertainty_pause_until_reviewed_future_edit ... ok
+test schedules::tests::global_delivery_limit_bounds_simultaneous_due_schedules ... ok
+test schedules::tests::invalid_store_and_timing_fail_closed ... ok
+test schedules::tests::isolated_live_provider_acceptance ... ignored, requires explicitly provisioned disposable provider sessions
+test schedules::tests::only_codex_and_claude_can_be_scheduled ... ok
+test schedules::tests::pasted_line_breaks_become_one_space ... ok
+test schedules::tests::pause_resume_edit_delete_and_revision_conflicts ... ok
+test schedules::tests::rate_window_restarts_after_the_clock_steps_backward ... ok
+test schedules::tests::real_claude_worker_waits_for_completed_hook_before_dispatch ... ok
+test schedules::tests::real_dispatch_accepts_completed_history_and_refuses_current_interaction ... ok
+test schedules::tests::real_dispatch_rejects_wrong_scope_busy_provider_change_and_exit ... ok
+test schedules::tests::real_lsof_sees_a_rollout_held_by_a_launcher_child_of_the_pane_group ... ok
+test schedules::tests::real_tmux_dispatch_for_all_three_scopes_preserves_identity ... ok
+test schedules::tests::recurring_cadence_skips_backlog_and_clock_rewind ... ok
+test schedules::tests::shared_service_requires_future_edit_before_failed_or_uncertain_rearm ... ok
+test schedules::tests::titles_and_prompts_reject_control_characters ... ok
+test schedules::tests::tracked_scheduler_catches_up_large_rollout_without_startup_alerts_or_duplicate ... ok
+test schedules::tests::two_schedules_cannot_consume_the_same_idle_turn ... ok
+test schedules::tests::unreadable_evidence_defers_without_pausing_and_recovers ... ok
+
+test result: ok. 74 passed; 0 failed; 2 ignored; 0 measured; 1582 filtered out; finished in 48.67s
+

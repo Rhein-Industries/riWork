@@ -956,7 +956,7 @@ impl PanelKind {
             Self::Shells => "Shells",
             Self::Usage => "Usage",
             Self::Settings => "Settings",
-            Self::Schedules => "Schedules",
+            Self::Schedules => "Automations",
             Self::ProjectSettings => "Project settings",
         }
     }

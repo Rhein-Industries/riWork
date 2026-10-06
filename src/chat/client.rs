@@ -95,8 +95,54 @@ impl Client {
     }
 
     pub fn create(&mut self, chat: NewChat) -> Result<ChatInfo, String> {
-        let result = self.call(Request::Create { id: new_id(), chat })?;
+        let result = self.call(Request::Create {
+            id: new_id(),
+            chat,
+            chat_id: None,
+        })?;
         decode(result)
+    }
+
+    pub fn create_identified(
+        &mut self,
+        chat_id: &str,
+        chat: NewChat,
+    ) -> Result<ChatInfo, CallError> {
+        let result = self.exchange(Request::Create {
+            id: new_id(),
+            chat,
+            chat_id: Some(chat_id.into()),
+        })?;
+        decode(result).map_err(CallError::Broken)
+    }
+
+    /// Inspect this connection before any caller-owned creation. A refusal or
+    /// broken exchange is never permission to try Create on a legacy host.
+    pub fn supports_identified_create(&mut self, wait: Duration) -> Result<bool, CallError> {
+        let stream = self.stream.get_ref();
+        let read = stream
+            .read_timeout()
+            .map_err(|e| CallError::Broken(e.to_string()))?;
+        let write = stream
+            .write_timeout()
+            .map_err(|e| CallError::Broken(e.to_string()))?;
+        let timeout = Some(wait.max(Duration::from_millis(1)));
+        stream
+            .set_read_timeout(timeout)
+            .map_err(|e| CallError::Broken(e.to_string()))?;
+        stream
+            .set_write_timeout(timeout)
+            .map_err(|e| CallError::Broken(e.to_string()))?;
+        let result = self.exchange(Request::Capabilities { id: new_id() });
+        let stream = self.stream.get_ref();
+        stream
+            .set_read_timeout(read)
+            .map_err(|e| CallError::Broken(e.to_string()))?;
+        stream
+            .set_write_timeout(write)
+            .map_err(|e| CallError::Broken(e.to_string()))?;
+        let capabilities: super::wire::Capabilities = decode(result?).map_err(CallError::Broken)?;
+        Ok(capabilities.identified_create)
     }
 
     pub fn list(&mut self) -> Result<Vec<ChatInfo>, String> {
@@ -269,7 +315,8 @@ fn new_id() -> String {
 
 fn request_id(request: &Request) -> &str {
     match request {
-        Request::Create { id, .. }
+        Request::Capabilities { id }
+        | Request::Create { id, .. }
         | Request::List { id }
         | Request::Command { id, .. }
         | Request::Subscribe { id, .. }

@@ -1019,7 +1019,15 @@ fn answer<T: serde::Serialize>(id: String, result: Result<T, String>) -> Respons
 /// Everything but `Subscribe`, which takes over its connection.
 fn dispatch(shared: &Shared, request: Request) -> Response {
     match request {
-        Request::Create { id, chat } => answer(id, create(shared, chat)),
+        Request::Capabilities { id } => answer(
+            id,
+            Ok(super::wire::Capabilities {
+                identified_create: true,
+            }),
+        ),
+        Request::Create { id, chat, chat_id } => {
+            answer(id, create_identified(shared, chat, chat_id))
+        }
         Request::List { id } => answer(id, Ok(list(shared))),
         Request::Command {
             id,
@@ -1119,7 +1127,28 @@ fn client_left(stream: &mut UnixStream) -> bool {
 
 // ---- Chats: create, load, delete ------------------------------------------------------------
 
+#[cfg(test)]
 fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
+    create_identified(shared, new, None)
+}
+
+fn create_identified(
+    shared: &Shared,
+    new: NewChat,
+    requested_id: Option<String>,
+) -> Result<ChatInfo, String> {
+    // Serialize caller-owned IDs as well as orchestrators. Never overwrite an
+    // existing chat, including one saved by an interrupted host.
+    let creation = lock(&shared.orchestrator_creation);
+    let id = requested_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    if !Uuid::parse_str(&id).is_ok_and(|uuid| uuid.to_string() == id) {
+        return Err("invalid chat id".into());
+    }
+    if shared.find(&id).is_ok() || log::chat_dir(&shared.home, &id).is_some_and(|dir| dir.exists())
+    {
+        return Err("chat identity already exists; review it without retrying".into());
+    }
+
     if !new.cwd.is_absolute() || !new.cwd.is_dir() {
         return Err(format!(
             "the working directory {} is not an existing absolute directory",
@@ -1130,29 +1159,23 @@ fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
         return Err("the chat host is shutting down".into());
     }
     // Held until the chat is listed: see `Shared::orchestrator_creation`.
-    let creation = match &new.orchestrator {
-        Some(scope) => {
-            check_orchestrator_scope(&new, scope)?;
-            let creation = lock(&shared.orchestrator_creation);
-            if let Some(existing) = shared
-                .all()
-                .iter()
-                .map(|chat| chat.info())
-                .find(|info| info.orchestrator.as_ref() == Some(scope))
-            {
-                return Err(format!("{ORCHESTRATOR_EXISTS} {}", existing.id));
-            }
-            Some(creation)
+    if let Some(scope) = &new.orchestrator {
+        check_orchestrator_scope(&new, scope)?;
+        if let Some(existing) = shared
+            .all()
+            .iter()
+            .map(|chat| chat.info())
+            .find(|info| info.orchestrator.as_ref() == Some(scope))
+        {
+            return Err(format!("{ORCHESTRATOR_EXISTS} {}", existing.id));
         }
-        None => None,
-    };
+    }
     let account = (shared.providers.account)(
         &shared.home,
         new.provider,
         new.project_id.as_deref(),
         new.codex_account_id.as_deref(),
     )?;
-    let id = Uuid::new_v4().to_string();
     let title = new
         .title
         .as_deref()

@@ -1,0 +1,23 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling riwork v0.1.0 (/Users/dominik/orca/projects/riWork-feat-automations)
+    Finished `test` profile [unoptimized] target(s) in 11.62s
+     Running tests/cli_mcp_contract.rs (/tmp/riwork-automations-target/debug/deps/cli_mcp_contract-6ad9e2f8c2197670)
+
+running 12 tests
+test a_closed_stdout_pipe_ends_output_quietly ... ok
+test a_named_project_scopes_worktree_selectors_in_the_cli_and_mcp ... ok
+test grok_shell_usage_is_unknown_not_an_error ... ok
+test grok_shell_usage_reports_the_session_grok_lists_for_the_panes_process ... ok
+test mcp_rejects_an_undeclared_argument_before_touching_any_state ... ok
+test mcp_survives_invalid_utf8_and_answers_batches_and_scalars ... ok
+test renaming_a_project_leaves_its_folder_alone ... ok
+test shell_history_pages_the_scrollback_and_output_json_tells_how_long_it_is ... ok
+test shell_keys_rejects_bad_invocations_before_reaching_any_shell ... ok
+test shell_keys_types_into_a_pane_and_output_json_reports_the_screen ... ok
+test unknown_arguments_fail_with_usage_instead_of_opening_the_workspace ... ok
+test version_prints_the_crate_version_and_never_starts_the_gui ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.10s
+

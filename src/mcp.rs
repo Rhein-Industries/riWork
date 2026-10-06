@@ -243,6 +243,13 @@ struct ScheduleArguments {
     at: Option<String>,
     every_minutes: Option<u64>,
     once: Option<bool>,
+    destination: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    fast: Option<bool>,
+    permission: Option<String>,
+    codex_account_id: Option<String>,
 }
 
 impl ScheduleArguments {
@@ -310,14 +317,50 @@ fn execute_schedule_tool(name: &str, args: &Value) -> Result<Value, ScheduleErro
             if args.once == Some(true) {
                 return Err(schedule_argument("once is only valid for update"));
             }
-            Ok(json!({"schedule":service.create(CreateRequest {
-                scope: args.scope()?,
-                shell_id: required(args.shell_id, "shell_id")?,
-                title: required(args.title, "title")?,
-                prompt: required(args.prompt, "prompt")?,
-                at: required(args.at, "at")?,
-                every_minutes: args.every_minutes,
-            })?}))
+            let fresh = match args.destination.as_deref() {
+                Some("new_chat") => true,
+                None | Some("existing_shell") => false,
+                _ => {
+                    return Err(schedule_argument(
+                        "destination must be new_chat or existing_shell",
+                    ));
+                }
+            };
+            let scope = args.scope()?;
+            if fresh {
+                let (provider, permission) = crate::schedule_service::chat_options(
+                    args.provider.as_deref(),
+                    args.permission.as_deref(),
+                )?;
+                Ok(json!({"schedule":service.create_chat(CreateRequest {
+                    scope, shell_id: args.shell_id.unwrap_or_default(),
+                    title: required(args.title, "title")?, prompt: required(args.prompt, "prompt")?,
+                    at: required(args.at, "at")?, every_minutes: args.every_minutes,
+                }, provider, args.model, args.effort, args.fast.unwrap_or(false), permission, args.codex_account_id.as_deref())?}))
+            } else {
+                if args.provider.is_some()
+                    || args.model.is_some()
+                    || args.effort.is_some()
+                    || args.permission.is_some()
+                    || args.codex_account_id.is_some()
+                    || args.fast.is_some()
+                {
+                    return Err(schedule_argument(
+                        "Chat options require destination=new_chat",
+                    ));
+                }
+                let request = CreateRequest {
+                    scope,
+                    shell_id: required(args.shell_id, "shell_id")?,
+                    title: required(args.title, "title")?,
+                    prompt: required(args.prompt, "prompt")?,
+                    at: required(args.at, "at")?,
+                    every_minutes: args.every_minutes,
+                };
+                Ok(
+                    json!({"schedule":if args.destination.as_deref() == Some("existing_shell") { service.create_shell(request)? } else { service.create(request)? }}),
+                )
+            }
         }
         "riwork_schedule_update" => {
             if args.once == Some(true) && args.every_minutes.is_some() {
@@ -742,6 +785,11 @@ fn schedule_tool(
     read_only: bool,
 ) -> Value {
     let mut properties = json!({
+        "destination":{"type":"string","enum":["new_chat","existing_shell"],"description":"new_chat creates an ordinary project chat per run. existing_shell pins a live AI shell's kind, including ordinary project-root shells. Omitted preserves legacy orchestrator-only project behavior."},
+        "provider":{"type":"string","enum":["codex","claude"],"default":"codex"},
+        "model":{"type":"string"}, "effort":{"type":"string"}, "fast":{"type":"boolean"},
+        "permission":{"type":"string","enum":["supervised","auto_edit","full","plan"],"default":"supervised"},
+        "codex_account_id":{"type":"string","description":"Optional saved account; otherwise pin the selected project account."},
         "scope":{"type":"string","enum":["app","project","workspace"],"description":"Explicit scope. Project requires project_id; workspace requires project_id and worktree_id."},
         "project_id":{"type":"string","format":"uuid","description":"Full canonical project UUID for project/workspace scope."},
         "worktree_id":{"type":"string","format":"uuid","description":"Full canonical worktree UUID for workspace scope."},
@@ -758,6 +806,13 @@ fn schedule_tool(
         "riwork_schedule_list" => &["scope", "project_id", "worktree_id"],
         "riwork_schedule_show" => &["schedule_id"],
         "riwork_schedule_create" => &[
+            "destination",
+            "provider",
+            "model",
+            "effort",
+            "fast",
+            "permission",
+            "codex_account_id",
             "scope",
             "project_id",
             "worktree_id",
@@ -794,6 +849,14 @@ fn schedule_tool(
         .unwrap()
         .retain(|key, _| allowed.contains(&key.as_str()));
     let mut value = tool(name, title, description, properties, required, read_only);
+    if name == "riwork_schedule_create" {
+        value["inputSchema"]["required"] = json!(["scope", "title", "prompt", "at"]);
+        value["inputSchema"]["anyOf"] = json!([
+            {"properties":{"destination":{"const":"new_chat"},"scope":{"const":"project"}},"required":["destination","project_id"]},
+            {"properties":{"destination":{"const":"existing_shell"}},"required":["shell_id"]}
+        ]);
+    }
+
     if name != "riwork_schedule_show" {
         value["inputSchema"]["allOf"] = json!([
             {"if":{"properties":{"scope":{"const":"project"}},"required":["scope"]},"then":{"required":["project_id"]}},
@@ -814,13 +877,19 @@ fn schedule_tool(
         "created_at":{"type":"integer","minimum":0},"command":{"type":["string","null"]},
         "harness":{"type":"string","enum":["codex","claude"]},
         "codex_home":{"type":["string","null"]},"pane_identity":{"type":"string"},
+        "shell_kind":{"type":"string","enum":["project","orchestrator"]},
         "provider_session":{"type":"string"},
-        "chat":{"type":"object","properties":{"codex_account_id":{"type":["string","null"]}}}
+        "chat":{"type":"object","properties":{"codex_account_id":{"type":["string","null"]}}},
+        "new_chat":{"type":"object","properties":{
+            "root":{"type":"string"},"provider":{"type":"string","enum":["codex","claude"]},
+            "codex_account_id":{"type":["string","null"]},"model":{"type":["string","null"]},"effort":{"type":["string","null"]},
+            "fast":{"type":"boolean"},"approval_mode":{"type":"string","enum":["supervised","auto_edit","full","plan"]}
+        }}
     },"required":["scope","shell_id","created_at","command","harness","codex_home","pane_identity","provider_session"]});
     let run = json!({"type":["object","null"],"properties":{
         "due_at":{"type":"integer","minimum":0},"observed_at":{"type":"integer","minimum":0},
         "outcome":{"type":"string","enum":["dispatching","submitted","deferred","missed","failed","uncertain"]},
-        "message":{"type":"string"}
+        "message":{"type":"string"}, "created_chat_id":{"type":"string","format":"uuid"}
     }});
     let schedule = json!({"type":"object","properties":{
         "id":{"type":"string","format":"uuid"},"revision":{"type":"integer","minimum":1},
@@ -1014,7 +1083,7 @@ fn tools() -> Vec<Value> {
     items.extend([
         schedule_tool("riwork_schedule_list", "List schedules", "List schedules in the configured RIWORK_HOME ledger; omit scope for all, or filter by explicit app/project/workspace identity. No sessions are opened or dispatched.", &[], true),
         schedule_tool("riwork_schedule_show", "Show schedule", "Read one schedule by its full UUID, including current revision, pinned target and latest outcome.", &["schedule_id"], true),
-        schedule_tool("riwork_schedule_create", "Create schedule", "Bind an existing live Codex/Claude session in the explicit scope and schedule a future prompt. RiWork later types that prompt into the agent session, only while the desktop app is open.", &["scope","shell_id","title","prompt","at"], false),
+        schedule_tool("riwork_schedule_create", "Create schedule", "Schedule a future prompt. destination=new_chat creates a new ordinary project chat per occurrence with supervised permission by default and pins root/account; shell_id must be omitted. Otherwise bind an existing live Codex/Claude session. For new chats target.shell_id is the destination identity used by revision-checked mutations; last_run.created_chat_id opens the result. RiWork later types that prompt into the agent session, only while the desktop app is open.", &["scope","shell_id","title","prompt","at"], false),
         schedule_tool("riwork_schedule_update", "Update schedule", "Edit a pinned schedule with its full UUID, current revision, explicit scope and shell UUID. Provide a new exact future at; omit recurrence to retain it, use once=true to clear it. The new prompt is later typed into the pinned agent session.", &["schedule_id","revision","scope","shell_id","at"], false),
         schedule_tool("riwork_schedule_pause", "Pause schedule", "Pause a schedule using its full UUID, current revision, explicit scope and pinned shell UUID.", &["schedule_id","revision","scope","shell_id"], false),
         schedule_tool("riwork_schedule_resume", "Resume schedule", "Resume a schedule using its full UUID, current revision, explicit scope and pinned shell UUID. Its prompt will again be typed into the agent session when due. Failed/uncertain outcomes require a future edit first.", &["schedule_id","revision","scope","shell_id"], false),

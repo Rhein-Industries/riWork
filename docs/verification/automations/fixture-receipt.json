@@ -1,0 +1,124 @@
+{
+  "fixture": {
+    "fixture": "/private/tmp/rwa-ui-dudv4q4g",
+    "home": "/private/tmp/rwa-ui-dudv4q4g/home",
+    "root": "/private/tmp/rwa-ui-dudv4q4g/project",
+    "project_id": "871abf00-e245-4161-b990-fdd3af16a18d",
+    "bundle": "/Users/dominik/Applications/RiWork Automations Fixture 5e472dab.app",
+    "bundle_id": "dev.riwork.automations.fixture.5e472dab",
+    "seeded_chat_id": "ebd0815a-696d-4bc5-a907-9bac5e4da60a",
+    "seeded_schedule_id": "14294d37-5d2c-4063-a9a6-08b6ee12a103"
+  },
+  "gui_pid": 93223,
+  "window_id": 123673,
+  "source_scope": "disposable fixture only",
+  "no_provider_prompt": true,
+  "ledger": {
+    "window_started": 0,
+    "sends_in_window": 0,
+    "schedules": [
+      {
+        "id": "14294d37-5d2c-4063-a9a6-08b6ee12a103",
+        "revision": 3,
+        "title": "Seeded result fixture",
+        "prompt": "Fixture text only; never dispatch.",
+        "target": {
+          "scope": {
+            "scope": "project",
+            "project_id": "871abf00-e245-4161-b990-fdd3af16a18d"
+          },
+          "shell_id": "8dee616b-d0b5-45d6-b63d-9b085abdc8cd",
+          "created_at": 1791277231,
+          "command": null,
+          "harness": "claude",
+          "codex_home": null,
+          "pane_identity": "",
+          "provider_session": "",
+          "new_chat": {
+            "title": "Seeded result fixture",
+            "root": "/private/tmp/rwa-ui-dudv4q4g/project",
+            "provider": "claude",
+            "codex_account_id": null,
+            "model": null,
+            "effort": null,
+            "fast": false,
+            "approval_mode": "supervised"
+          }
+        },
+        "timing": {
+          "kind": "once",
+          "at": 1791363631
+        },
+        "review_required": false,
+        "paused": true,
+        "next_run": 1791363631,
+        "last_run": {
+          "due_at": 1791277231,
+          "observed_at": 1791277231,
+          "outcome": "submitted",
+          "message": "Seeded fixture outcome; no provider run.",
+          "created_chat_id": "ebd0815a-696d-4bc5-a907-9bac5e4da60a"
+        },
+        "check_after": 0
+      }
+    ],
+    "consumed": []
+  },
+  "layout": {
+    "schema_version": 1,
+    "projects": {
+      "871abf00-e245-4161-b990-fdd3af16a18d": {
+        "layout": {
+          "pane": 1
+        },
+        "panes": {
+          "1": {
+            "tabs": [
+              {
+                "kind": "panel",
+                "panel": "projects"
+              },
+              {
+                "kind": "panel",
+                "panel": "schedules"
+              },
+              {
+                "kind": "chat",
+                "chat_id": "ebd0815a-696d-4bc5-a907-9bac5e4da60a"
+              }
+            ],
+            "active_tab_key": "chat:ebd0815a-696d-4bc5-a907-9bac5e4da60a",
+            "tab_edge": "top",
+            "shell_ids": [],
+            "active_shell_id": null
+          }
+        },
+        "active_pane": 1,
+        "locked_panes": [],
+        "panels_initialized": true,
+        "detached_shell_ids": [],
+        "selected_worktree_id": "4a343f5d-6877-449c-8eb5-e4f78d176ef5",
+        "selected_task_id": null,
+        "sidebar_visible": false,
+        "window_size": {
+          "width": 1100.0,
+          "height": 1000.0
+        }
+      }
+    }
+  },
+  "chat_info": {
+    "id": "ebd0815a-696d-4bc5-a907-9bac5e4da60a",
+    "provider": "claude",
+    "project_id": "871abf00-e245-4161-b990-fdd3af16a18d",
+    "cwd": "/private/tmp/rwa-ui-dudv4q4g/project",
+    "title": "Inert automation result",
+    "created_at_unix": 1791277231,
+    "state": {
+      "state": "stopped"
+    },
+    "approval_mode": "supervised",
+    "fast": false
+  },
+  "chat_events": "{\"chat_id\": \"ebd0815a-696d-4bc5-a907-9bac5e4da60a\", \"seq\": 1, \"event\": {\"event\": \"info\", \"info\": {\"id\": \"ebd0815a-696d-4bc5-a907-9bac5e4da60a\", \"provider\": \"claude\", \"project_id\": \"871abf00-e245-4161-b990-fdd3af16a18d\", \"cwd\": \"/private/tmp/rwa-ui-dudv4q4g/project\", \"title\": \"Inert automation result\", \"created_at_unix\": 1791277231, \"state\": {\"state\": \"stopped\"}, \"approval_mode\": \"supervised\", \"fast\": false}}}\n"
+}

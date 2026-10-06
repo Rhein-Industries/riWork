@@ -1,6 +1,6 @@
 //! Compact scheduling tab, using RiWork's existing GPUI input and palette.
 use crate::{
-    chat::model::ChatInfo,
+    chat::model::{ApprovalMode, ChatInfo, Provider},
     controls,
     layouts::PanelKind,
     project_settings::{Input, impl_input_handler, input_content},
@@ -19,6 +19,11 @@ use std::{ops::Range, time::Duration};
 #[derive(Clone, PartialEq, Eq)]
 enum Control {
     Field(usize),
+    Destination(bool),
+    Provider(Provider),
+    Permission(ApprovalMode),
+    Fast,
+    OpenChat(String),
     Scope(usize),
     Target(String),
     Workspace(String),
@@ -40,12 +45,34 @@ struct Editor {
     repeat: u64,
     first_quick: Option<u64>,
     exact_time: bool,
-    fields: [Input; 4],
+    fields: [Input; 6],
+    fresh: bool,
+    provider: Provider,
+    permission: ApprovalMode,
+    fast: bool,
 }
 impl Editor {
+    fn pinned_target(&self) -> Result<Option<Target>, String> {
+        let mut target = self.pinned.clone();
+        if self.fresh
+            && let Some(target) = &mut target
+        {
+            target.set_new_chat_options(
+                optional_option(&self.fields[4].text),
+                optional_option(&self.fields[5].text),
+                self.fast,
+                self.permission,
+            )?;
+        }
+        Ok(target)
+    }
     fn new() -> Self {
         Self {
             previous: None,
+            fresh: true,
+            provider: Provider::Codex,
+            permission: ApprovalMode::Supervised,
+            fast: false,
             scope: 1,
             target_id: None,
             pinned: None,
@@ -57,6 +84,8 @@ impl Editor {
                 Input::default(),
                 Input::new(format_time(schedules::now() + 600)),
                 Input::new("60".into()),
+                Input::default(),
+                Input::default(),
             ],
         }
     }
@@ -66,6 +95,10 @@ impl Editor {
         self.first_quick = Some(seconds);
     }
 }
+pub enum SchedulePanelEvent {
+    OpenChat(String),
+}
+impl gpui::EventEmitter<SchedulePanelEvent> for SchedulePanel {}
 pub struct SchedulePanel {
     store: Store,
     sessions: SessionManager,
@@ -77,6 +110,7 @@ pub struct SchedulePanel {
     /// The orchestrators that run as chats: targets of the app and project scopes.
     chats: Vec<ChatInfo>,
     rows: Vec<Schedule>,
+    project_chats: Vec<ChatInfo>,
     editor: Option<Editor>,
     controls: Vec<Control>,
     active: usize,
@@ -120,6 +154,7 @@ impl SchedulePanel {
             targets: vec![],
             chats: vec![],
             rows: vec![],
+            project_chats: vec![],
             editor: None,
             controls: vec![],
             active: 0,
@@ -152,6 +187,7 @@ impl SchedulePanel {
                 sessions.sample(false)?.shells,
                 schedules.list()?,
                 schedules.chat_orchestrators(),
+                crate::chat::log::read_infos(sessions.state_home()),
             ))
         });
         cx.spawn(async move |this, cx| {
@@ -160,15 +196,24 @@ impl SchedulePanel {
                 panel.refreshing = false;
                 // Nearly every second finds everything as it was.
                 let changed = match result {
-                    Ok((state, targets, rows, chats)) => {
+                    Ok((state, targets, rows, chats, all_chats)) => {
                         let rows: Vec<_> = rows
                             .into_iter()
                             .filter(|s| s.target.scope.visible(&panel.project_id))
                             .collect();
-                        let changed = panel.state != state
+                        let project_chats: Vec<_> = all_chats
+                            .into_iter()
+                            .filter(|chat| {
+                                chat.project_id.as_ref() == Some(&panel.project_id)
+                                    && chat.orchestrator.is_none()
+                            })
+                            .collect();
+                        let changed = panel.project_chats != project_chats
+                            || panel.state != state
                             || panel.targets != targets
                             || panel.chats != chats
                             || panel.rows != rows;
+                        panel.project_chats = project_chats;
                         panel.state = state;
                         panel.targets = targets;
                         panel.chats = chats;
@@ -257,7 +302,12 @@ impl SchedulePanel {
                 self.active = 0;
                 self.delete_confirm = None;
             }
-            "s" if event.keystroke.modifiers.platform && self.editor.is_some() => self.save(cx),
+            "s" if event.keystroke.modifiers.platform
+                && !event.keystroke.modifiers.shift
+                && self.editor.is_some() =>
+            {
+                self.save(cx)
+            }
             "enter" | "space" if !self.accepts_input() => {
                 if let Some(action) = self.controls.get(self.active).cloned() {
                     self.perform(action, window, cx);
@@ -287,6 +337,31 @@ impl SchedulePanel {
         let deleting = matches!(control, Control::Delete(_));
         match control {
             Control::Field(_) => {}
+            Control::OpenChat(id) => cx.emit(SchedulePanelEvent::OpenChat(id)),
+            Control::Destination(fresh) => {
+                if let Some(e) = &mut self.editor {
+                    e.fresh = fresh;
+                    e.pinned = None;
+                    e.target_id = None;
+                    e.scope = 1;
+                }
+            }
+            Control::Provider(provider) => {
+                if let Some(e) = &mut self.editor {
+                    e.provider = provider;
+                    e.pinned = None;
+                }
+            }
+            Control::Permission(permission) => {
+                if let Some(e) = &mut self.editor {
+                    e.permission = permission;
+                }
+            }
+            Control::Fast => {
+                if let Some(e) = &mut self.editor {
+                    e.fast = !e.fast;
+                }
+            }
             Control::New => {
                 self.editor = Some(Editor::new());
                 self.delete_confirm = None;
@@ -348,7 +423,12 @@ impl SchedulePanel {
                         Timing::Once { .. } => 0,
                         Timing::Interval { seconds, .. } => seconds,
                     };
+                    let fresh = s.target.new_chat.as_ref();
                     self.editor = Some(Editor {
+                        fresh: fresh.is_some(),
+                        provider: fresh.map(|f| f.provider).unwrap_or(Provider::Codex),
+                        permission: fresh.map(|f| f.approval_mode).unwrap_or_default(),
+                        fast: fresh.is_some_and(|f| f.fast),
                         fields: [
                             Input::new(s.title.clone()),
                             Input::new(s.prompt.clone()),
@@ -358,6 +438,8 @@ impl SchedulePanel {
                                     .unwrap_or(schedules::now() + 600),
                             )),
                             Input::new((repeat.max(300) / 60).to_string()),
+                            Input::new(fresh.and_then(|f| f.model.clone()).unwrap_or_default()),
+                            Input::new(fresh.and_then(|f| f.effort.clone()).unwrap_or_default()),
                         ],
                         scope,
                         target_id: Some(s.target.shell_id.clone()),
@@ -421,21 +503,44 @@ impl SchedulePanel {
             let at = u64::try_from(parsed.timestamp()).map_err(|_| "Date must be after 1970")?;
             let timing = selected_timing(e.repeat, at, &e.fields[3].text)?;
             let scope = self.scope(e.scope)?;
-            let id = e
-                .target_id
-                .clone()
-                .ok_or("Choose an existing target session")?;
+            let id = if e.fresh {
+                String::new()
+            } else {
+                e.target_id
+                    .clone()
+                    .ok_or("Choose an existing target session")?
+            };
             Ok::<_, String>((
                 e.previous.as_ref().map(|s| (s.id.clone(), s.revision)),
                 e.fields[0].text.clone(),
                 e.fields[1].text.clone(),
                 scope,
                 id,
-                e.pinned.clone(),
+                e.pinned_target()?,
                 timing,
+                e.fresh,
+                e.provider,
+                e.permission,
+                e.fast,
+                (!e.fields[4].text.trim().is_empty()).then(|| e.fields[4].text.trim().to_owned()),
+                (!e.fields[5].text.trim().is_empty()).then(|| e.fields[5].text.trim().to_owned()),
             ))
         })();
-        let (previous, title, prompt, scope, id, pinned, timing) = match result {
+        let (
+            previous,
+            title,
+            prompt,
+            scope,
+            id,
+            pinned,
+            timing,
+            fresh,
+            provider,
+            permission,
+            fast,
+            model,
+            effort,
+        ) = match result {
             Ok(v) => v,
             Err(e) => {
                 self.error = Some(e);
@@ -447,13 +552,27 @@ impl SchedulePanel {
         let store = self.store.clone();
         let sessions = self.sessions.clone();
         let schedules = self.schedules.clone();
-        let chats = self.chats.clone();
+        let project_id = self.project_id.clone();
         let work = cx.background_executor().spawn(async move {
             let state = store.snapshot()?;
             let target = match pinned {
                 Some(target) => target,
-                None => Target::bind_any(scope, &state, &sessions, &chats, &id)?,
+                None if fresh => Target::bind_new_chat(
+                    sessions.state_home(),
+                    &state,
+                    &project_id,
+                    provider,
+                    model,
+                    effort,
+                    fast,
+                    permission,
+                    None,
+                )?,
+                None => Target::bind_shell(scope, &state, &sessions, &id)?,
             };
+            if target.new_chat.is_some() {
+                target.validate_new_chat(sessions.state_home(), &state)?;
+            }
             // Retain a pinned identity on edit; only an explicit target click rebinds it.
             schedules
                 .save(
@@ -619,16 +738,16 @@ impl Render for SchedulePanel {
                 PanelKind::Schedules.label(),
                 Some(
                     match count {
-                        0 => "No schedules".to_owned(),
-                        1 => "1 schedule".to_owned(),
-                        count => format!("{count} schedules"),
+                        0 => "No automations".to_owned(),
+                        1 => "1 automation".to_owned(),
+                        count => format!("{count} automations"),
                     }
                     .into(),
                 ),
                 [controls::toolbar_button(
                     "schedule-control-new",
                     "plus",
-                    "New schedule",
+                    "New automation",
                     true,
                     colors,
                 )
@@ -657,7 +776,7 @@ impl Render for SchedulePanel {
                     .child(
                         div()
                             .text_color(rgb(colors.cyan))
-                            .child(ui_text::cased("Schedules")),
+                            .child(ui_text::cased("Automations")),
                     )
                     .child(self.button(
                         ui_text::cased("+ Schedule").to_string(),
@@ -673,12 +792,18 @@ impl Render for SchedulePanel {
                 .text_color(rgb(colors.muted))
                 .text_size(ui_text::text(10.0))
                 .when(native, |note| {
-                    note.px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN))
+                    note.px(ui_text::space(
+                        controls::PANEL_INSET - controls::LIST_MARGIN,
+                    ))
                 })
-                .child("App → global orchestrator · Project → project orchestrator · Workspace → selected worktree worker"),
+                .child("Schedule a new project chat or a prompt for an existing AI shell."),
         );
         if let Some(editor) = &self.editor {
             let scope_index = editor.scope;
+            let fresh = editor.fresh;
+            let provider = editor.provider;
+            let permission = editor.permission;
+            let fast = editor.fast;
             let repeat = editor.repeat;
             let selected = editor.target_id.clone();
             let editing = editor.previous.is_some();
@@ -700,109 +825,211 @@ impl Render for SchedulePanel {
                 .border_color(rgb(colors.divider))
                 .bg(rgb(colors.panel))
                 .map(|form| controls::native(form, |form| controls::card(form, colors)));
-            let mut scopes = div().flex().flex_wrap().gap(ui_text::space(5.0));
-            for (i, label) in ["App", "Project", "Workspace"].iter().enumerate() {
-                scopes = scopes.child(self.button(
-                    ui_text::cased(*label).to_string(),
-                    Control::Scope(i),
-                    i == scope_index,
-                    window,
-                    cx,
-                ));
-            }
-            form = form.child(scopes);
-            if scope_index == 2 {
-                let workspaces: Vec<_> = self
-                    .state
-                    .worktrees_for(&self.project_id)
-                    .into_iter()
-                    .cloned()
-                    .collect();
+            form = form.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(ui_text::space(5.0))
+                    .child(self.button(
+                        "New project chat".to_string(),
+                        Control::Destination(true),
+                        fresh,
+                        window,
+                        cx,
+                    ))
+                    .child(self.button(
+                        "Existing AI shell".to_string(),
+                        Control::Destination(false),
+                        !fresh,
+                        window,
+                        cx,
+                    )),
+            );
+            form = form
+                .child(self.field(0, "Title", window, cx))
+                .child(self.field(1, "Prompt · Single line", window, cx));
+            if fresh {
                 let mut choices = div().flex().flex_wrap().gap(ui_text::space(5.0));
-                for workspace in workspaces {
+                for (value, label) in [(Provider::Codex, "Codex"), (Provider::Claude, "Claude")] {
                     choices = choices.child(self.button(
-                        format!("{} · {}", workspace.branch, workspace.id),
-                        Control::Workspace(workspace.id.clone()),
-                        self.workspace_id.as_ref() == Some(&workspace.id),
+                        label.to_string(),
+                        Control::Provider(value),
+                        value == provider,
                         window,
                         cx,
                     ));
                 }
                 form = form
-                    .child(
+                    .child(choices)
+                    .child(self.field(4, "Model · Optional", window, cx))
+                    .child(self.field(5, "Effort · Optional", window, cx));
+                let mut permissions = div().flex().flex_wrap().gap(ui_text::space(5.0));
+                for (value, label) in [
+                    (ApprovalMode::Supervised, "Supervised"),
+                    (ApprovalMode::AutoEdit, "Auto edit"),
+                    (ApprovalMode::Full, "Full access"),
+                    (ApprovalMode::Plan, "Plan"),
+                ] {
+                    permissions = permissions.child(self.button(
+                        label.to_string(),
+                        Control::Permission(value),
+                        value == permission,
+                        window,
+                        cx,
+                    ));
+                }
+                form = form.child(div().text_color(rgb(colors.muted)).child("Permission mode"))
+                    .child(permissions).child(self.button("Fast mode".to_string(), Control::Fast, fast, window, cx))
+                    .child(div().text_color(rgb(colors.muted)).child("Each run creates an ordinary chat at this project's root. The selected Codex account is pinned when saved."));
+                if let Some(project) = self.state.projects.iter().find(|p| p.id == self.project_id)
+                {
+                    form = form.child(
                         div()
+                            .text_size(ui_text::text(10.0))
                             .text_color(rgb(colors.muted))
-                            .text_size(ui_text::text(9.0))
-                            .child(ui_text::cased("Workspace / worktree")),
-                    )
-                    .child(choices);
+                            .child(format!(
+                                "Project: {} · {}",
+                                project.name,
+                                project.root.display()
+                            )),
+                    );
+                }
+                let account = self
+                    .editor
+                    .as_ref()
+                    .and_then(|e| e.pinned.as_ref())
+                    .and_then(|t| t.new_chat.as_ref())
+                    .map(|f| {
+                        f.codex_account_id
+                            .clone()
+                            .unwrap_or_else(|| "System default".into())
+                    })
+                    .unwrap_or_else(|| "Selected in Project Settings / Settings".into());
+                form = form.child(
+                    div()
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(colors.muted))
+                        .child(format!(
+                            "Account: {}",
+                            if provider == Provider::Claude {
+                                "Claude system login"
+                            } else {
+                                &account
+                            }
+                        )),
+                );
             }
-            form = form
-                .child(self.field(0, "Title", window, cx))
-                .child(self.field(1, "Prompt · Single line", window, cx));
-            let scope = self.scope(scope_index);
-            let targets: Vec<_> = self
-                .targets
-                .iter()
-                .filter(|s| {
-                    s.alive
-                        && s.harness.is_some_and(HarnessKind::schedulable)
-                        && scope
-                            .as_ref()
-                            .is_ok_and(|scope| scope.matches(&self.state, s))
-                })
-                .cloned()
-                .collect();
-            let chats: Vec<_> = self
-                .chats
-                .iter()
-                .filter(|chat| {
-                    scope
-                        .as_ref()
-                        .is_ok_and(|scope| scope.matches_chat(&self.state, chat))
-                })
-                .cloned()
-                .collect();
-            let mut choices = div().flex().flex_col().gap(ui_text::space(5.0)).child(
-                div()
-                    .text_color(rgb(colors.muted))
-                    .text_size(ui_text::text(9.0))
-                    .child(ui_text::cased(
-                        "Existing target · Click to explicitly bind this session",
-                    )),
-            );
-            if targets.is_empty() && chats.is_empty() {
-                choices = choices.child(div().text_color(rgb(colors.gold)).child(scope.as_ref().err().cloned().unwrap_or("No live Codex or Claude session in this scope. Open one separately, complete a turn, then return here.".into())));
+            if !fresh {
+                let mut scopes = div().flex().flex_wrap().gap(ui_text::space(5.0));
+                for (i, label) in ["App", "Project", "Workspace"].iter().enumerate() {
+                    scopes = scopes.child(self.button(
+                        ui_text::cased(*label).to_string(),
+                        Control::Scope(i),
+                        i == scope_index,
+                        window,
+                        cx,
+                    ));
+                }
+                form = form.child(scopes);
+                if scope_index == 2 {
+                    let workspaces: Vec<_> = self
+                        .state
+                        .worktrees_for(&self.project_id)
+                        .into_iter()
+                        .cloned()
+                        .collect();
+                    let mut choices = div().flex().flex_wrap().gap(ui_text::space(5.0));
+                    for workspace in workspaces {
+                        choices = choices.child(self.button(
+                            format!("{} · {}", workspace.branch, workspace.id),
+                            Control::Workspace(workspace.id.clone()),
+                            self.workspace_id.as_ref() == Some(&workspace.id),
+                            window,
+                            cx,
+                        ));
+                    }
+                    form = form
+                        .child(
+                            div()
+                                .text_color(rgb(colors.muted))
+                                .text_size(ui_text::text(9.0))
+                                .child(ui_text::cased("Workspace / worktree")),
+                        )
+                        .child(choices);
+                }
             }
-            for target in targets {
-                choices = choices.child(self.button(
-                    format!("{} · {}", target.harness.unwrap().program(), target.id),
-                    Control::Target(target.id.clone()),
-                    selected.as_ref() == Some(&target.id),
-                    window,
-                    cx,
-                ));
-            }
-            for chat in chats {
-                choices = choices.child(self.button(
-                    format!(
-                        "{} chat · {}",
-                        schedules::chat_harness(chat.provider).program(),
-                        chat.id
-                    ),
-                    Control::Target(chat.id.clone()),
-                    selected.as_ref() == Some(&chat.id),
-                    window,
-                    cx,
-                ));
-            }
-            if let Some(id) = selected {
-                choices = choices.child(
+            if !fresh {
+                let scope = self.scope(scope_index);
+                let targets: Vec<_> = self
+                    .targets
+                    .iter()
+                    .filter(|s| {
+                        s.alive
+                            && s.harness.is_some_and(HarnessKind::schedulable)
+                            && scope
+                                .as_ref()
+                                .is_ok_and(|scope| scope.matches_explicit_shell(&self.state, s))
+                    })
+                    .cloned()
+                    .collect();
+                let chats: Vec<_> = self
+                    .chats
+                    .iter()
+                    .filter(|chat| {
+                        editing
+                            && self
+                                .editor
+                                .as_ref()
+                                .and_then(|e| e.previous.as_ref())
+                                .is_some_and(|s| s.target.chat.is_some())
+                            && scope
+                                .as_ref()
+                                .is_ok_and(|scope| scope.matches_chat(&self.state, chat))
+                    })
+                    .cloned()
+                    .collect();
+                let mut choices = div().flex().flex_col().gap(ui_text::space(5.0)).child(
                     div()
                         .text_color(rgb(colors.muted))
                         .text_size(ui_text::text(9.0))
-                        .child(ui_text::quiet(format!("PINNED TARGET  /  {id}"))),
+                        .child(ui_text::cased(
+                            "Existing target · Click to explicitly bind this session",
+                        )),
                 );
+                if targets.is_empty() && chats.is_empty() {
+                    choices = choices.child(div().text_color(rgb(colors.gold)).child(scope.as_ref().err().cloned().unwrap_or("No live Codex or Claude session in this scope. Open one separately, complete a turn, then return here.".into())));
+                }
+                for target in targets {
+                    choices = choices.child(self.button(
+                        format!("{} · {}", target.harness.unwrap().program(), target.id),
+                        Control::Target(target.id.clone()),
+                        selected.as_ref() == Some(&target.id),
+                        window,
+                        cx,
+                    ));
+                }
+                for chat in chats {
+                    choices = choices.child(self.button(
+                        format!(
+                            "{} chat · {}",
+                            schedules::chat_harness(chat.provider).program(),
+                            chat.id
+                        ),
+                        Control::Target(chat.id.clone()),
+                        selected.as_ref() == Some(&chat.id),
+                        window,
+                        cx,
+                    ));
+                }
+                if let Some(id) = selected {
+                    choices = choices.child(
+                        div()
+                            .text_color(rgb(colors.muted))
+                            .text_size(ui_text::text(9.0))
+                            .child(ui_text::quiet(format!("PINNED TARGET  /  {id}"))),
+                    );
+                }
+                form = form.child(choices);
             }
             let mut first_choices = div().flex().flex_wrap().gap(ui_text::space(5.0));
             for (seconds, label) in [
@@ -827,7 +1054,6 @@ impl Render for SchedulePanel {
                 cx,
             ));
             form = form
-                .child(choices)
                 .child(
                     div()
                         .text_color(rgb(colors.muted))
@@ -869,21 +1095,21 @@ impl Render for SchedulePanel {
                 form = form.child(self.field(3, "Every N minutes · Minimum 5", window, cx));
             }
             form = form.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).child("Repeats use elapsed time from the first run (fixed UTC cadence, including DST)."))
-                .child(div().flex().gap(ui_text::space(6.0)).child(self.button(ui_text::cased(if editing {"Save changes"} else {"Create schedule"}).to_string(),Control::Save,true,window,cx)).child(self.button(ui_text::cased("Cancel").to_string(),Control::Cancel,false,window,cx)));
+                .child(div().flex().gap(ui_text::space(6.0)).child(self.button(ui_text::cased(if editing {"Save changes"} else {"Create automation"}).to_string(),Control::Save,true,window,cx)).child(self.button(ui_text::cased("Cancel").to_string(),Control::Cancel,false,window,cx)));
             body = body.child(form);
         }
         if self.rows.is_empty() && !(native && self.editor.is_some()) {
             body = body.child(if native {
                 controls::empty_state(
                     "calendar",
-                    "No schedules. Create a prompt when you are ready.",
+                    "No automations yet. Schedule a prompt to start a new project chat, or select an existing AI shell.",
                     colors,
                 )
             } else {
                 div()
                     .py(ui_text::space(12.0))
                     .text_color(rgb(colors.muted))
-                    .child("No schedules. Create a prompt when you are ready.")
+                    .child("No automations yet. Schedule a prompt to start a new project chat, or select an existing AI shell.")
             });
         }
         if native && !self.rows.is_empty() {
@@ -946,7 +1172,11 @@ impl Render for SchedulePanel {
                         .child(format!(
                             "{} · {} · {}",
                             row.target.harness.program(),
-                            row.target.shell_id,
+                            if row.target.new_chat.is_some() {
+                                "New project chat"
+                            } else {
+                                &row.target.shell_id
+                            },
                             timing
                         )),
                 )
@@ -979,7 +1209,33 @@ impl Render for SchedulePanel {
                         .child(run.message.clone()),
                 );
             }
-            let actions = div()
+            if let Some(fresh) = &row.target.new_chat {
+                item = item.child(
+                    div()
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(colors.muted))
+                        .child(format!(
+                            "Permission: {:?} · Account: {} · Model: {} · Effort: {}{}",
+                            fresh.approval_mode,
+                            fresh.codex_account_id.as_deref().unwrap_or(
+                                if fresh.provider == Provider::Claude {
+                                    "Claude login"
+                                } else {
+                                    "System default"
+                                }
+                            ),
+                            fresh.model.as_deref().unwrap_or("Default"),
+                            fresh.effort.as_deref().unwrap_or("Default"),
+                            if fresh.fast { " · Fast" } else { "" }
+                        )),
+                );
+            }
+            item = item.child(
+                div()
+                    .text_size(ui_text::text(10.0))
+                    .child(row.prompt.clone()),
+            );
+            let mut actions = div()
                 .flex()
                 .flex_wrap()
                 .gap(ui_text::space(5.0))
@@ -1011,7 +1267,36 @@ impl Render for SchedulePanel {
                         cx,
                     ),
                 );
+            if let Some(id) = row
+                .last_run
+                .as_ref()
+                .and_then(|run| run.created_chat_id.clone())
+            {
+                actions = actions.child(self.button(
+                    "Open created chat".to_string(),
+                    Control::OpenChat(id),
+                    false,
+                    window,
+                    cx,
+                ));
+            }
             body = body.child(item.child(actions));
+        }
+        if !self.project_chats.is_empty() {
+            body = body.child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .child("Project chats · Includes earlier automation results"),
+            );
+            for chat in self.project_chats.clone() {
+                body = body.child(self.button(
+                    format!("Open {} · {}", chat.title, chat.id),
+                    Control::OpenChat(chat.id),
+                    false,
+                    window,
+                    cx,
+                ));
+            }
         }
         if let Some(error) = &self.error {
             body = body.child(div().text_color(rgb(colors.gold)).child(error.clone()));
@@ -1085,10 +1370,66 @@ fn selected_timing(repeat: u64, at: u64, minutes: &str) -> Result<Timing, String
     timing.validate()?;
     Ok(timing)
 }
+fn optional_option(text: &str) -> Option<String> {
+    (!text.trim().is_empty()).then(|| text.trim().to_owned())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_defaults_and_options_edit_keep_the_pinned_account_and_destination() {
+        let mut editor = Editor::new();
+        assert!(editor.fresh && !editor.fast);
+        assert_eq!(editor.provider, Provider::Codex);
+        assert_eq!(editor.permission, ApprovalMode::Supervised);
+        assert!(optional_option(&editor.fields[4].text).is_none());
+        assert!(optional_option(&editor.fields[5].text).is_none());
+        let home = std::env::temp_dir().join(format!("riwork-editor-{}", uuid::Uuid::new_v4()));
+        let root = home.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Store::open(home.clone()).unwrap();
+        let project = store.add_project(&root, None).unwrap();
+        let mut pinned = Target::bind_new_chat(
+            &home,
+            &store.snapshot().unwrap(),
+            &project.id,
+            Provider::Claude,
+            None,
+            None,
+            false,
+            ApprovalMode::Supervised,
+            None,
+        )
+        .unwrap();
+        // No account service is involved in an options-only edit.
+        pinned.new_chat.as_mut().unwrap().codex_account_id = Some("pinned-account".into());
+        editor.pinned = Some(pinned.clone());
+        editor.fields[4] = Input::new(" fixture-model ".into());
+        editor.fields[5] = Input::new(" high ".into());
+        editor.fast = true;
+        editor.permission = ApprovalMode::Plan;
+        let edited = editor.pinned_target().unwrap().unwrap();
+        let fresh = edited.new_chat.as_ref().unwrap();
+        assert_eq!(fresh.model.as_deref(), Some("fixture-model"));
+        assert_eq!(fresh.effort.as_deref(), Some("high"));
+        assert!(fresh.fast);
+        assert_eq!(fresh.approval_mode, ApprovalMode::Plan);
+        assert_eq!(fresh.codex_account_id.as_deref(), Some("pinned-account"));
+        assert_eq!(edited.shell_id, pinned.shell_id);
+        assert_eq!(fresh.root, pinned.new_chat.as_ref().unwrap().root);
+        editor.fields[4] = Input::default();
+        editor.fields[5] = Input::default();
+        editor.fast = false;
+        let defaults = editor.pinned_target().unwrap().unwrap();
+        assert!(defaults.new_chat.as_ref().unwrap().model.is_none());
+        assert!(defaults.new_chat.as_ref().unwrap().effort.is_none());
+        assert!(!defaults.new_chat.as_ref().unwrap().fast);
+        editor.fields[4] = Input::new("bad\nmodel".into());
+        assert!(editor.pinned_target().is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn quick_first_run_choices_select_future_instants_without_editing_other_fields() {

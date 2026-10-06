@@ -238,7 +238,9 @@ fn serve(stream: UnixStream, shared: &Shared) {
                 shared.chats.lock().unwrap().remove(&chat_id);
                 reply(&mut writer, ok(id, None))
             }
-            Request::Create { id, .. } => reply(&mut writer, refused(id)),
+            Request::Create { id, .. } | Request::Capabilities { id } => {
+                reply(&mut writer, refused(id))
+            }
         };
         if !alive {
             return;

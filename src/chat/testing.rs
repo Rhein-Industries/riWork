@@ -302,8 +302,11 @@ pub fn short_home() -> PathBuf {
 /// script) at the moment a previous host on the home lets go of its lock, and
 /// the child keeps the lock until it execs: `AlreadyRunning` is asked again.
 pub fn start_host(home: &Path, options: Options) -> Host {
+    start_host_with(home, options, fake_providers())
+}
+fn start_host_with(home: &Path, options: Options, providers: Providers) -> Host {
     for _ in 0..100 {
-        match Host::start(home, fake_providers(), options) {
+        match Host::start(home, providers, options) {
             Err(StartError::AlreadyRunning) => std::thread::sleep(Duration::from_millis(20)),
             other => return other.unwrap(),
         }
@@ -315,6 +318,7 @@ pub fn start_host(home: &Path, options: Options) -> Host {
 pub struct TestHost {
     pub home: PathBuf,
     host: Option<Host>,
+    providers: Providers,
 }
 
 impl TestHost {
@@ -323,15 +327,27 @@ impl TestHost {
     }
 
     pub fn with(options: Options) -> Self {
+        Self::with_providers(options, fake_providers())
+    }
+    pub fn with_providers(options: Options, providers: Providers) -> Self {
         let home = short_home();
         std::fs::create_dir_all(home.join("work")).unwrap();
-        let mut test = Self { home, host: None };
+        let mut test = Self {
+            home,
+            host: None,
+            providers,
+        };
         test.start(options);
         test
     }
 
     fn start(&mut self, options: Options) {
-        self.host = Some(start_host(&self.home, options));
+        self.host = Some(start_host_with(&self.home, options, self.providers));
+    }
+
+    /// Stops only this isolated fake host, retaining its fixture files.
+    pub fn stop(&mut self) {
+        drop(self.host.take());
     }
 
     /// Ends the host as an exit would and starts another on the same home.
