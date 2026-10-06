@@ -313,6 +313,22 @@ pub fn action(id: impl Into<ElementId>, name: impl Into<SharedString>, colors: P
         .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .styles(|styles| styles.disabled(|style| style.opacity(0.45))))
 }
+
+/// Native inactive-tab chrome stays in Base traversal while visually quiet.
+pub fn tab_close_reveal(close: Button, group: impl Into<SharedString>) -> Button {
+    close
+        .opacity(0.)
+        .group_hover(group, |style| style.opacity(1.))
+        .focus(|style| style.opacity(1.))
+}
+
+/// Stop a close-target press from arming the parent tab's drag/selection engine.
+/// This non-focusable ancestor runs after Base's child default focus handler.
+pub fn tab_close_boundary(id: impl Into<ElementId>, close: Button) -> impl IntoElement {
+    div().id(id).flex_none()
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(close)
+}
 pub fn toolbar_button(
     id: impl Into<ElementId>, symbol: &'static str, name: impl Into<SharedString>,
     enabled: bool, colors: Palette,

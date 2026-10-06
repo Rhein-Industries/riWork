@@ -688,6 +688,12 @@ fn native_edit_menu_uses_base_actions_and_preserves_editor_priority(cx: &mut Tes
 
 struct ContentControls {
     calls: Vec<&'static str>, choice: usize, pressed: bool, checked: bool, disabled: bool,
+    drag_calls: usize,
+}
+#[derive(Clone)]
+struct ContentRowDrag;
+impl Render for ContentRowDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement { div().child("drag") }
 }
 impl Render for ContentControls {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -695,16 +701,27 @@ impl Render for ContentControls {
         let switch_owner = cx.entity().downgrade();
         div().size_full().flex().flex_col()
             .child(button_content("content-row", "Choose item", "Visible row")
+                .group("content-tab")
                 .w(px(180.)).h(px(30.)).hover(|style| style.bg(rgb(0x334455)))
                 .focus_visible(|style| style.border_1().border_color(rgb(0xffffff)))
                 .on_click(cx.listener(|owner, _, _, _| owner.calls.push("row")))
-                .child(button_content("content-close", "Close item", "×")
-                    .size(px(24.)).disabled(self.disabled)
-                    .hover(|style| style.bg(rgb(0x445566)))
+                .on_drag(ContentRowDrag, {
+                    let owner = cx.entity().downgrade();
+                    move |drag, _, _, cx| {
+                        let _ = owner.update(cx, |owner, _| owner.drag_calls += 1);
+                        cx.new(|_| drag.clone())
+                    }
+                })
+                .child(tab_close_boundary("content-close-boundary",
+                    action("content-close", "Close item", Palette::RIWORK)
+                    .child("×").size(px(16.)).flex_none().flex().items_center().justify_center()
+                    .rounded_full().text_color(rgb(Palette::RIWORK.muted)).disabled(self.disabled)
+                    .hover(|style| style.bg(rgb(Palette::RIWORK.divider)).text_color(rgb(Palette::RIWORK.text)))
+                    .map(|close| tab_close_reveal(close, "content-tab"))
                     // Same owner isolation as real nested tab/project controls.
                     .on_click(cx.listener(|owner, _, _, cx| {
                         cx.stop_propagation(); owner.calls.push("close");
-                    })))
+                    }))))
                 .child(radio_content("nested-disabled-radio", "Unavailable destination", "Unavailable", false)
                     .disabled(true).w(px(60.)).h(px(24.)).on_change(|_, _, _, _| panic!("disabled radio activated"))))
             .child(toggle_content("content-toggle", "Pin item", "Owner pin mark", self.pressed)
@@ -736,15 +753,49 @@ fn content_controls_keep_caller_hover_nested_isolation_and_radio_exclusivity(cx:
     let (handle, content) = cx.update(|cx| {
         let mut content = None;
         let handle = cx.open_window(WindowOptions::default(), |window, cx| {
-            let view = cx.new(|_| ContentControls { calls: Vec::new(), choice: 0, pressed: false, checked: false, disabled: false });
+            let view = cx.new(|_| ContentControls { calls: Vec::new(), choice: 0, pressed: false, checked: false, disabled: false, drag_calls: 0 });
             content = Some(view.clone()); cx.new(|cx| Root::new(view, window, cx))
         }).unwrap();
         (handle, content.unwrap())
     });
     turn(cx, handle, |window, _| window.activate_window());
+    // Establish real Base row focus without assuming a root-level key context
+    // exists before any control is focused. Observe the setup activation too.
+    turn(cx, handle, |window, cx| window.click("content-row", cx));
+    assert_eq!(content.read_with(cx, |owner, _| owner.calls.clone()), ["row"]);
+    content.update(cx, |owner, _| owner.calls.clear());
+    turn(cx, handle, |window, cx| {
+        window.dispatch_event(gpui::MouseMoveEvent { position: point(px(300.), px(200.)), pressed_button: None, modifiers: Default::default() }.to_platform_input(), cx);
+        window.render_frame(cx);
+        assert!(!window.find("content-close").visible(), "inactive close stays visually quiet away from its tab");
+        window.press("tab", cx);
+    });
+    turn(cx, handle, |window, _| {
+        assert_eq!(window.find("content-close").focused(), Some(true));
+        assert!(window.find("content-close").visible(), "Tab reaches and reveals the actual close control without pointer hover");
+    });
+    turn(cx, handle, |window, cx| window.press("shift-tab", cx));
+    turn(cx, handle, |window, _| assert!(!window.find("content-close").visible()));
+    turn(cx, handle, |window, cx| window.hover("content-row", cx));
+    turn(cx, handle, |window, _| assert!(window.find("content-close").visible(), "existing tab hover still reveals close"));
     turn(cx, handle, |window, cx| window.click("content-close", cx));
+    turn(cx, handle, |window, _| {
+        assert_eq!(window.find("content-close").focused(), Some(true), "the boundary runs after Base pointer focus");
+        assert!(window.find("content-close").visible());
+    });
     turn(cx, handle, |window, cx| window.press("enter", cx));
     assert_eq!(content.read_with(cx, |owner, _| owner.calls.clone()), ["close", "close"]);
+    turn(cx, handle, |window, cx| {
+        let bounds = window.find("content-close").bounds();
+        window.drag(bounds.center(), bounds.center() + point(px(100.), px(80.)), cx);
+    });
+    assert_eq!(content.read_with(cx, |owner, _| owner.drag_calls), 0, "close presses never arm a tab drag");
+    assert_eq!(content.read_with(cx, |owner, _| owner.calls.clone()), ["close", "close"]);
+    turn(cx, handle, |window, cx| {
+        let bounds = window.find("content-row").bounds();
+        window.drag(bounds.origin + point(px(3.), px(3.)), bounds.origin + point(px(103.), px(83.)), cx);
+    });
+    assert_eq!(content.read_with(cx, |owner, _| owner.drag_calls), 1, "ordinary tab-row dragging is retained");
     turn(cx, handle, |window, cx| window.click("nested-disabled-radio", cx));
     assert_eq!(content.read_with(cx, |owner, _| owner.calls.clone()), ["close", "close"]);
     for id in ["content-toggle", "content-switch"] {

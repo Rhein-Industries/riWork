@@ -8294,19 +8294,19 @@ impl Workspace {
                                         .rounded_full()
                                         .text_color(rgb(colors.muted))
                                         .when(!active, |close| {
-                                            close
-                                                .invisible()
-                                                .group_hover(TAB_GROUP, |style| style.visible())
+                                            behavior_controls::tab_close_reveal(close, TAB_GROUP)
                                         })
                                 })
                             })
                             .child(icons::text_icon(Icon::Close, 10.0, colors.muted))
                             .child(tooltip::anchor("Close tab · ⌘W", Look::Pane))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |workspace, _, window, cx| {
                                 cx.stop_propagation();
                                 workspace.close_tab_by_user(pane_id, tab_id, window, cx);
                             }))
+                            .map(|close| behavior_controls::tab_close_boundary(
+                                ("close-tab-boundary", tab_id), close,
+                            ))
                     }))
                     .on_click(cx.listener(move |workspace, _, window, cx| {
                         workspace.select_tab(pane_id, tab_id, window, cx)
