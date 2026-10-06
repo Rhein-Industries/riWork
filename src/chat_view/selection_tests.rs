@@ -234,6 +234,14 @@ fn focused_composer_model_and_request_answer_keep_copy_priority(cx: &mut TestApp
         window.press("cmd-a", cx);
         assert_eq!(copied(window, cx), "draft 🦀");
         window.press("right", cx);
+        assert!(
+            view.read(cx)
+                .composer
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+        assert!(view.read(cx).composer.read(cx).selected_range().is_empty());
         assert_eq!(
             copied(window, cx),
             "unchanged sentinel",
@@ -700,7 +708,11 @@ fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_dir
             assert_eq!(copied(window, cx), expected);
             cx.write_to_clipboard(ClipboardItem::new_string("menu sentinel".into()));
             window.dispatch_action(Box::new(Copy), cx);
-            assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), expected);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), expected);
+        cx.update_window(handle.into(), |_, window, cx| {
             view.update(cx, |v, cx| {
                 v.model.transcript.items[39].body = ItemBody::AgentMessage {
                     text: "unrelated tail replacement".into(),
@@ -774,12 +786,13 @@ fn source_projection_keeps_code_blank_lines_trailing_and_whitespace_only_bytes(
         assert_eq!(copied(window, cx), "   \n  start  \n\n \n    finish  ");
         cx.write_to_clipboard(ClipboardItem::new_string("menu sentinel".into()));
         window.dispatch_action(Box::new(Copy), cx);
-        assert_eq!(
-            cx.read_from_clipboard().unwrap().text().unwrap(),
-            "   \n  start  \n\n \n    finish  "
-        );
     })
     .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_from_clipboard().unwrap().text().unwrap(),
+        "   \n  start  \n\n \n    finish  "
+    );
     assert!(recording.try_recv().is_err());
 }
 
@@ -941,39 +954,216 @@ fn chat_base_question_toggle_keyboard_and_answered_guard_preserve_draft(cx: &mut
 fn chat_shared_widgets_actual_ax_nodes_keep_names_states_and_disabled_click_capability(
     cx: &mut TestAppContext,
 ) {
-    use gpui::{Element, RenderOnce};
-    let (handle, _, recording) = editor_tests::mount_selection(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        for native in [false, true] {
-            let look = widgets::Look {
-                native,
-                ..widgets::Look::of(cx)
-            };
-            for disabled in [false, true] {
-                // Read the SAME rendered primitive's native node, including
-                // foundation's disabled-state refinement. No duplicate AX
-                // proxy and no fabricated metadata or OS action delivery.
-                let button = widgets::copy_button("ax-copy", false, "copy", "Copy message", look)
-                    .disabled(disabled)
-                    .on_click(|_, _, _| {});
-                let element = button.render(window, cx).into_element();
-                let mut node = gpui::accesskit::Node::new(element.a11y_role().unwrap());
-                element.write_a11y_info(&mut node);
+    use gpui::{
+        App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId, RenderOnce,
+    };
+    use std::rc::Rc;
+    type Key = (&'static str, bool, bool);
+    type Facts = Rc<RefCell<HashMap<Key, (gpui::accesskit::Node, Bounds<Pixels>)>>>;
+
+    // Observe the real native node, including foundation's disabled refinement,
+    // only after its actual element prepaints. Forward all lifecycle/AX methods;
+    // add no hitbox, focus, metadata proxy or activation handler.
+    struct AxProbe<E: Element> {
+        inner: E,
+        key: Key,
+        facts: Facts,
+    }
+    impl<E: Element> IntoElement for AxProbe<E> {
+        type Element = Self;
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+    impl<E: Element> Element for AxProbe<E> {
+        type RequestLayoutState = E::RequestLayoutState;
+        type PrepaintState = E::PrepaintState;
+        fn id(&self) -> Option<ElementId> {
+            self.inner.id()
+        }
+        fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+            self.inner.source_location()
+        }
+        fn request_layout(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            inspector: Option<&InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, Self::RequestLayoutState) {
+            self.inner.request_layout(id, inspector, window, cx)
+        }
+        fn prepaint(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            inspector: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            layout: &mut Self::RequestLayoutState,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> Self::PrepaintState {
+            let state = self
+                .inner
+                .prepaint(id, inspector, bounds, layout, window, cx);
+            let mut node = gpui::accesskit::Node::new(
+                self.inner
+                    .a11y_role()
+                    .expect("mounted shared control must expose its real semantic role"),
+            );
+            self.inner.write_a11y_info(&mut node);
+            self.facts.borrow_mut().insert(self.key, (node, bounds));
+            state
+        }
+        fn paint(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            inspector: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            layout: &mut Self::RequestLayoutState,
+            state: &mut Self::PrepaintState,
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            self.inner
+                .paint(id, inspector, bounds, layout, state, window, cx);
+        }
+        fn a11y_role(&self) -> Option<gpui::Role> {
+            self.inner.a11y_role()
+        }
+        fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+            self.inner.write_a11y_info(node);
+        }
+        fn a11y_synthetic_children(
+            &mut self,
+            state: &mut Self::PrepaintState,
+            builder: &mut gpui::A11ySubtreeBuilder,
+        ) {
+            self.inner.a11y_synthetic_children(state, builder);
+        }
+    }
+    #[derive(gpui::IntoElement)]
+    struct MountedControl<R: RenderOnce> {
+        control: R,
+        key: Key,
+        facts: Facts,
+    }
+    impl<R: RenderOnce> RenderOnce for MountedControl<R> {
+        fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+            // GPUI invokes this component from request_layout under the mounted
+            // root. Never call Control.render from an update_window closure.
+            AxProbe {
+                inner: self.control.render(window, cx).into_element(),
+                key: self.key,
+                facts: self.facts,
+            }
+        }
+    }
+    struct AxControls {
+        facts: Facts,
+        _feed: Feed,
+    }
+    impl Render for AxControls {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let mut controls = Vec::new();
+            for native in [false, true] {
+                let look = widgets::Look {
+                    native,
+                    ..widgets::Look::of(cx)
+                };
+                for disabled in [false, true] {
+                    controls.push(
+                        MountedControl {
+                            control: widgets::copy_button(
+                                SharedString::from(format!("ax-copy-{native}-{disabled}")),
+                                false,
+                                "copy",
+                                "Copy message",
+                                look,
+                            )
+                            .disabled(disabled)
+                            .on_click(|_, _, _| {}),
+                            key: ("copy", native, disabled),
+                            facts: self.facts.clone(),
+                        }
+                        .into_any_element(),
+                    );
+                    controls.push(
+                        MountedControl {
+                            control: widgets::toggle_button(
+                                SharedString::from(format!("ax-toggle-{native}-{disabled}")),
+                                "Choice",
+                                None,
+                                true,
+                                look,
+                            )
+                            .disabled(disabled)
+                            .on_change(|_, _, _, _| {}),
+                            key: ("toggle", native, disabled),
+                            facts: self.facts.clone(),
+                        }
+                        .into_any_element(),
+                    );
+                }
+            }
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_start()
+                .children(controls)
+        }
+    }
+    // Minimal headless root: no Workspace, ChatView, HostConfig, speech or
+    // service constructors. The only Feed is an in-memory recording queue.
+    let facts: Facts = Rc::new(RefCell::new(HashMap::new()));
+    let (handle, recording) = cx.update(|cx| {
+        cx.set_global(crate::settings::Settings::default());
+        cx.set_global(crate::theme::Appearance {
+            selected: crate::theme::ThemeChoice::RiWork,
+            palette: crate::theme::Palette::RIWORK,
+            terminal: None,
+            ghostty: None,
+            error: None,
+        });
+        text_input::init(cx);
+        let (feed, recording) = Feed::recording();
+        let handle = cx
+            .open_window(gpui::WindowOptions::default(), |window, cx| {
+                let controls = cx.new(|_| AxControls {
+                    facts: facts.clone(),
+                    _feed: feed,
+                });
+                cx.new(|cx| gpui_kit::base::Root::new(controls, window, cx))
+            })
+            .unwrap();
+        (handle, recording)
+    });
+    cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.run_until_parked();
+    let facts = facts.borrow();
+    assert_eq!(
+        facts.len(),
+        8,
+        "every case must actually prepaint its native control"
+    );
+    for native in [false, true] {
+        for disabled in [false, true] {
+            for kind in ["copy", "toggle"] {
+                let (node, bounds) = &facts[&(kind, native, disabled)];
+                assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
                 assert_eq!(node.role(), gpui::Role::Button);
-                assert_eq!(node.label(), Some("Copy message"));
-                assert_eq!(node.is_disabled(), disabled);
                 assert_eq!(
-                    node.supports_action(gpui::accesskit::Action::Click),
-                    !disabled
+                    node.label(),
+                    Some(if kind == "copy" {
+                        "Copy message"
+                    } else {
+                        "Choice"
+                    })
                 );
-                let toggle = widgets::toggle_button("ax-toggle", "Choice", None, true, look)
-                    .disabled(disabled)
-                    .on_change(|_, _, _, _| {});
-                let element = toggle.render(window, cx).into_element();
-                let mut node = gpui::accesskit::Node::new(element.a11y_role().unwrap());
-                element.write_a11y_info(&mut node);
-                assert_eq!(node.label(), Some("Choice"));
-                assert_eq!(node.toggled(), Some(gpui::accesskit::Toggled::True));
+                if kind == "toggle" {
+                    assert_eq!(node.toggled(), Some(gpui::accesskit::Toggled::True));
+                }
                 assert_eq!(node.is_disabled(), disabled);
                 assert_eq!(
                     node.supports_action(gpui::accesskit::Action::Click),
@@ -981,7 +1171,6 @@ fn chat_shared_widgets_actual_ax_nodes_keep_names_states_and_disabled_click_capa
                 );
             }
         }
-    })
-    .unwrap();
+    }
     assert!(recording.try_recv().is_err());
 }
