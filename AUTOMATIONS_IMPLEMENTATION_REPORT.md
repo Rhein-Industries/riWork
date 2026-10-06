@@ -1,14 +1,15 @@
 # Automations implementation report
 
-Completed the desktop engine task `c2250f68-0cd7-4d5d-8cd0-6bb86ba2e025` and native UI/interfaces task `91dc5719-45da-461a-9650-1d6c6f96bdac` for project `39832c2e-23a5-476d-aa8f-5ff34a02d314` in worktree `807d1ec7-2baa-46d0-b9af-21bfd0c16558` at `/Users/dominik/orca/projects/riWork-feat-automations`.
+Desktop implementation candidate for engine task `c2250f68-0cd7-4d5d-8cd0-6bb86ba2e025` and native UI/interfaces task `91dc5719-45da-461a-9650-1d6c6f96bdac`, project `39832c2e-23a5-476d-aa8f-5ff34a02d314`, worktree `807d1ec7-2baa-46d0-b9af-21bfd0c16558` at `/Users/dominik/orca/projects/riWork-feat-automations`. Task statuses remain unchanged and owned pending parent acceptance; no task was marked done.
 
 ## Frozen candidate and commits
 
 - Branch: `feat/automations`; base: `edcaf5799038de8769d985700858323a47fe6b1e`.
 - Original implementation candidate: **`a38ea39ec5a0de607698e8cab88adad0c6b17680`** — `Implement desktop Automations with guarded fresh chats and explicit AI shells`; original report commit: `e46f03325fd4dfe983e02d891f0d6fc3055b3629`.
 - Interface correction: `8f4d966983d8fa0ae436d6b0b536282f0945b648` — `Reject create-only automation options outside create and explicit fresh-chat shells`; receipt/report commit: `b6465173078c4fdd5eee76448b4fb28e4f3dde3d`.
-- Current frozen implementation candidate: **`b1cd7051ead7aaf30b0487fce88571a51c7f69f0`** — `Gate explicit project shell dispatch on its live canonical directory`. This separate correction addresses the independent directory-drift reproduction against a38ea39 and includes the interface correction.
-- The next report-only commit records this exact directory correction and its receipt; the final handoff HEAD hash is returned to the parent. Only the existing shell dispatch directory gate, isolated scheduler fixtures/tests, documentation and test receipts changed in this correction. Host/UI/interface code and GUI artifacts are unchanged.
+- Directory correction: `b1cd7051ead7aaf30b0487fce88571a51c7f69f0` — `Gate explicit project shell dispatch on its live canonical directory`; receipt/report commit: `4f0525005b54d54fc26a9092faf6dcfeb36c988c`.
+- Current frozen implementation candidate: **`46b492fd006616d92a2e9c2b5af4e6845b36b3c3`** — `Preserve explicit legacy chat choices when rebinding automation edits`. This separate correction addresses independent R2 and includes the earlier directory and interface corrections.
+- The next report-only commit records this exact editor correction and its receipt; the final immutable handoff HEAD hash is returned to the parent. Only private native editor selection/binding code, isolated private regressions, documentation and test receipts changed in this correction. Scheduler, host, CLI/MCP, layout wire identifiers and GUI artifacts are unchanged.
 - No main merge, push, deployment, production host replacement, connector restart or OTA restart occurred. Independent acceptance review is pending.
 
 ## Result
@@ -93,6 +94,24 @@ The deterministic fixture now supports per-shell real `os.chdir` requests with a
 | `git diff edcaf579 b1cd7051ead7aaf30b0487fce88571a51c7f69f0 --check` | Passed, exit 0 | Tool receipt | `docs/verification/automations/directory-receipt.json` |
 
 The final report-only committed HEAD is also checked against the base. The unchanged passing CLI/MCP, fresh-chat, host, GUI and full native build checks were not repeated; the existing native build log remains available. No Cua ownership, production input/schedule, production host/connector/OTA restart, iOS, main, merge or push changes occurred. The desktop-only scope, old-host capability deferral and earlier honest GUI limits remain unchanged. The corrected candidate is ready for independent review; no active fixture ownership remains.
+
+## Independent R2 legacy editor correction
+
+Frozen code commit: **`46b492fd006616d92a2e9c2b5af4e6845b36b3c3`**, parent `4f0525005b54d54fc26a9092faf6dcfeb36c988c`. R2 in `/Users/dominik/orca/projects/riWork-review-manu-20261005/AUTOMATIONS_REVIEW_REPORT.md` traced a displayed legacy chat choice through pin clearing to an unconditional shell binder. The independent fake-host reproducer `independent_legacy_chat_reselection_binder_rejects_a_valid_chat` in `.review/automations-candidate-a38ea39/repro-source/src/schedule_chat/tests.rs` confirms a38ea39's binder rejects a valid chat UUID with unknown shell. Its prior-defect evidence is preserved in `test-logs/independent-legacy-chat-binder-reproducer.log`.
+
+The editor now carries a private typed `ExistingTarget::Shell` or `ExistingTarget::LegacyChat` from the displayed button through selection and asynchronous save. A displayed legacy chat choice resolves its exact ID from the current orchestrator-chat list and uses `Target::bind_chat` with the selected scope. A displayed ordinary shell choice still uses `Target::bind_shell`. Unknown IDs, mismatched kinds, wrong scopes and ordinary non-orchestrator chats are rejected without another binder fallback. Pin clearing on explicit selection/scope changes and pin retention on ordinary edits remain intact. Legacy CLI/MCP omitted-destination semantics were not relaxed, and no saved serialization/layout identifier changed.
+
+Three new private regressions invoke the same editor selection/scope methods and typed binder used by Save, then perform real revision-checked ledger saves. They verify same-chat reselection preserves the full chat target; app→project→app rebinding accepts the appropriate chat/account/provider and rejects the wrong scope; ordinary project shell selection retains the explicit ShellKind::Project marker and identity. Negative checks reject unknown IDs, cross-type IDs and ordinary chats as legacy targets, and prove the old terminal binder still refuses an ordinary root worker. Fixtures use isolated fake chat drivers and, for shell binding only, an inert cat pane with synthetic Claude identity. They submit no provider prompts or pane input. These are private code-level checks, not GUI event/click verification.
+
+| R2 check (same isolated target/Zig setup) | Result | Original log | Committed receipt |
+| --- | --- | --- | --- |
+| `scripts/check-schedules.sh --bin riwork schedule_panel::tests` | 6 passed, 0 failed | `/tmp/riwork-automations-legacy-editor-tests.log` | `docs/verification/automations/test-logs/legacy-editor-tests.log` |
+| `scripts/check-schedules.sh --bin riwork schedule_chat::tests` | 13 passed, 0 failed | `/tmp/riwork-automations-legacy-editor-chat.log` | `docs/verification/automations/test-logs/legacy-editor-chat.log` |
+| `cargo check --offline` | Desktop compile check passed | `/tmp/riwork-automations-legacy-editor-check.log` | `docs/verification/automations/test-logs/legacy-editor-check.log` |
+| `cargo fmt --all -- --check` | Passed | Tool receipt | `docs/verification/automations/legacy-editor-receipt.json` |
+| `git diff edcaf579 46b492fd006616d92a2e9c2b5af4e6845b36b3c3 --check` | Passed, exit 0 | Tool receipt | `docs/verification/automations/legacy-editor-receipt.json` |
+
+The report-only committed HEAD is also checked against the base. No broad scheduler/CLI/MCP/GUI/full native build rerun was needed for this private editor correction; passing previous receipts remain available. Original GUI limits remain unverified. All changes are confined to this project worktree and isolated test children; inherited RIWORK_HOME is preserved. Cua ownership was not acquired, fixture children are closed, task statuses are unchanged, and production native host PID78989, relay/OTA, connectors, main and iOS were not changed. No merge, push, installation or restart occurred. Returning idle for parent review.
 
 ## Cua verification and honest limits
 
