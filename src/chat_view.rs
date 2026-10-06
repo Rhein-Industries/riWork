@@ -488,7 +488,9 @@ impl ChatView {
             if tail {
                 self.list.scroll_to_end();
             } else if let Some(anchor) = anchor {
-                if let Some(at) = display::remap_anchor(&anchor, &self.visible) {
+                if let Some(at) =
+                    display::remap_anchor(&anchor, &self.visible, &self.model.completed)
+                {
                     self.list.scroll_to(gpui::ListOffset {
                         item_ix: at,
                         offset_in_item: if self.visible.get(at) == Some(&anchor) {

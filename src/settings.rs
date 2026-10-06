@@ -502,6 +502,30 @@ fn merged_document(
         if document.contains_key(&key) && before.get(&key) == Some(&value) {
             continue;
         }
+        if key == "chat_display_modes"
+            && let Some(after_modes) = value.as_object()
+            && let Some(before_modes) = before.get(&key).and_then(Value::as_object)
+        {
+            // Patch only entries the user changed. Other builds may have saved
+            // per-chat values this build cannot decode into DisplayMode.
+            let mut modes = document
+                .get(&key)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            for id in before_modes.keys() {
+                if !after_modes.contains_key(id) {
+                    modes.remove(id);
+                }
+            }
+            for (id, mode) in after_modes {
+                if before_modes.get(id) != Some(mode) {
+                    modes.insert(id.clone(), mode.clone());
+                }
+            }
+            document.insert(key, Value::Object(modes));
+            continue;
+        }
         document.insert(key, value);
     }
     Ok(document)
@@ -3186,6 +3210,86 @@ mod tests {
         assert_eq!(settings.chat_display_for(Some("a")), Normal);
         assert_eq!(settings.chat_display_for(Some("b")), Verbose);
         assert_eq!(settings.chat_display_for(Some("c")), Verbose);
+    }
+
+    #[test]
+    fn saving_chat_modes_preserves_unknown_entries_until_that_chat_changes() {
+        use crate::chat_view::DisplayMode::{Normal, Verbose};
+        let dir = env::temp_dir().join(format!("riwork-future-chat-modes-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let initial = serde_json::json!({
+            "schema_version": 1,
+            "chat_display": "verbose",
+            "chat_display_modes": {
+                "known": "normal", "unchanged": "verbose", "future": "summary",
+                "structured": {"mode": "future", "detail": 3}
+            },
+            "theme": "future-theme",
+            "future_setting": {"keep": true},
+            "open_preview_on_select": false
+        });
+        let path = dir.join("settings.json");
+        fs::write(&path, serde_json::to_vec(&initial).unwrap()).unwrap();
+        store
+            .update(|settings| settings.dictation_mic = true)
+            .unwrap();
+        let read = || serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(read()["chat_display_modes"], initial["chat_display_modes"]);
+
+        let reopened = SettingsStore::open(&dir).unwrap();
+        reopened
+            .update(|settings| {
+                settings.chat_display_modes.insert("known".into(), Verbose);
+                settings.chat_display_modes.insert("new".into(), Normal);
+            })
+            .unwrap();
+        let saved = read();
+        assert_eq!(saved["chat_display_modes"]["known"], "verbose");
+        assert_eq!(saved["chat_display_modes"]["new"], "normal");
+        for id in ["unchanged", "future", "structured"] {
+            assert_eq!(
+                saved["chat_display_modes"][id],
+                initial["chat_display_modes"][id]
+            );
+        }
+        for key in [
+            "theme",
+            "future_setting",
+            "open_preview_on_select",
+            "chat_display",
+        ] {
+            assert_eq!(saved[key], initial[key]);
+        }
+        assert_eq!(saved["dictation_mic"], true);
+        let loaded = SettingsStore::open(&dir).unwrap().load().unwrap();
+        assert_eq!(loaded.chat_display_for(Some("known")), Verbose);
+        assert_eq!(loaded.chat_display_for(Some("new")), Normal);
+        assert_eq!(loaded.chat_display_for(Some("future")), Verbose);
+
+        // Explicitly selecting a supported mode for the unknown chat replaces
+        // that entry alone; removing a known entry likewise leaves future data.
+        reopened
+            .update(|settings| {
+                settings.chat_display_modes.insert("future".into(), Normal);
+                settings.chat_display_modes.remove("known");
+            })
+            .unwrap();
+        let saved = read();
+        assert_eq!(saved["chat_display_modes"]["future"], "normal");
+        assert!(saved["chat_display_modes"].get("known").is_none());
+        assert_eq!(
+            saved["chat_display_modes"]["structured"],
+            initial["chat_display_modes"]["structured"]
+        );
+        assert_eq!(
+            SettingsStore::open(&dir)
+                .unwrap()
+                .load()
+                .unwrap()
+                .chat_display_for(Some("future")),
+            Normal
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

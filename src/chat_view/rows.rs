@@ -50,6 +50,7 @@ impl ChatView {
                                     image,
                                     &format!("{}:image:{n}", item.id),
                                     Some(item),
+                                    None,
                                     look,
                                     cx,
                                 )
@@ -65,6 +66,7 @@ impl ChatView {
                     .iter()
                     .map(|at| self.model.transcript.items[*at].presentation.images.len())
                     .sum();
+                let group_items = items.clone();
                 let range = super::media::artifact_range(
                     count,
                     self.media.artifact_pages.get(&key).copied().unwrap_or(0),
@@ -91,6 +93,17 @@ impl ChatView {
                             let offset = view.list.logical_scroll_top();
                             view.list.pause_following_tail();
                             view.toggle(&key, None, cx);
+                            if !view.open.contains(&key) {
+                                let image_keys: Vec<String> = group_items
+                                    .iter()
+                                    .flat_map(|at| {
+                                        let item = &view.model.transcript.items[*at];
+                                        (0..item.presentation.images.len())
+                                            .map(move |n| format!("{}:image:{n}", item.id))
+                                    })
+                                    .collect();
+                                view.fold_group_images(&image_keys, cx);
+                            }
                             view.list.remeasure();
                             view.list.scroll_to(offset);
                         })),
@@ -107,13 +120,15 @@ impl ChatView {
                                         .enumerate()
                                         .map(move |(n, image)| (item, n, image))
                                 })
+                                .enumerate()
                                 .skip(range.start)
                                 .take(range.len())
-                                .map(|(item, n, image)| {
+                                .map(|(ordinal, (item, n, image))| {
                                     self.image_card(
                                         image,
                                         &format!("{}:image:{n}", item.id),
                                         Some(item),
+                                        Some((ordinal, count)),
                                         look,
                                         cx,
                                     )

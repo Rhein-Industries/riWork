@@ -11,7 +11,7 @@ use crate::{
 use base64::Engine;
 use gpui::{AnyElement, Context, SharedString, div, img, prelude::*, rgb};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io::Read,
     sync::Arc,
     time::Duration,
@@ -19,6 +19,8 @@ use std::{
 
 const CONCURRENT: usize = 2;
 const LOADED: usize = 8;
+const OPEN: usize = 16;
+const OPEN_LIMIT: &str = "Fold an image before opening more.";
 const NETWORK_BYTES: u64 = 8 * 1024 * 1024;
 pub(super) const ARTIFACT_PAGE: usize = 32;
 
@@ -136,6 +138,17 @@ fn image_label(image: &ChatImage, context: Option<&Item>) -> String {
     };
     format.map_or(origin.clone(), |format| format!("{origin} · {format}"))
 }
+
+fn card_label(
+    image: &ChatImage,
+    context: Option<&Item>,
+    ordinal: Option<(usize, usize)>,
+) -> String {
+    let label = image_label(image, context);
+    ordinal.map_or(label.clone(), |(index, count)| {
+        format!("{} of {count} · {label}", index + 1)
+    })
+}
 #[derive(Default)]
 pub(super) struct MediaState {
     pub artifact_pages: HashMap<String, usize>,
@@ -146,10 +159,203 @@ pub(super) struct MediaState {
     pub viewer: Option<String>,
 }
 
+impl MediaState {
+    /// Explicitly collapsing a disclosure folds its images on every page.
+    /// Removing slots invalidates in-flight generations; active workers still
+    /// drain normally and release their results without reviving hidden cards.
+    fn fold_images(&mut self, keys: &[String], open: &mut HashSet<String>) -> Vec<Slot> {
+        let hidden: HashSet<&str> = keys.iter().map(String::as_str).collect();
+        self.queue.retain(|(key, _)| !hidden.contains(key.as_str()));
+        if self
+            .viewer
+            .as_deref()
+            .is_some_and(|key| hidden.contains(key))
+        {
+            self.viewer = None;
+        }
+        keys.iter()
+            .filter_map(|key| {
+                open.remove(key);
+                self.slots.remove(key)
+            })
+            .collect()
+    }
+
+    /// Return stale decoded content to the caller for resource release.
+    fn complete(
+        &mut self,
+        key: &str,
+        generation: u64,
+        source: &ImageSource,
+        content: Result<PreviewContent, String>,
+    ) -> Option<PreviewContent> {
+        if let Some(slot) = self
+            .slots
+            .get_mut(key)
+            .filter(|slot| slot.generation == generation && &slot.source == source)
+        {
+            slot.content = Some(content);
+            None
+        } else {
+            content.ok()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn collapsing_group_frees_hidden_expansions_and_rejects_late_results_after_reopening() {
+        let source = ImageSource::Local {
+            path: "shot.png".into(),
+        };
+        let image = ChatImage {
+            label: "Image".into(),
+            source: source.clone(),
+        };
+        let keys: Vec<String> = (0..15).map(|n| format!("tool-{n}:image:0")).collect();
+        let other = "user:image:0".to_owned();
+        let mut open: HashSet<String> = keys.iter().cloned().chain([other.clone()]).collect();
+        let mut media = MediaState {
+            active: 2,
+            generation: 10,
+            viewer: Some(keys[0].clone()),
+            ..Default::default()
+        };
+        media.slots.insert(
+            keys[0].clone(),
+            Slot {
+                generation: 8,
+                source: source.clone(),
+                content: Some(Ok(PreviewContent::Message("Loaded".into()))),
+            },
+        );
+        media.slots.insert(
+            keys[1].clone(),
+            Slot {
+                generation: 9,
+                source: source.clone(),
+                content: None,
+            },
+        );
+        media.slots.insert(
+            other.clone(),
+            Slot {
+                generation: 10,
+                source: source.clone(),
+                content: None,
+            },
+        );
+        media.queue.extend(
+            keys[2..]
+                .iter()
+                .cloned()
+                .chain([other.clone()])
+                .map(|key| (key, image.clone())),
+        );
+        assert_eq!(open.len(), 16);
+        let released = media.fold_images(&keys, &mut open);
+        assert_eq!(released.len(), 2);
+        assert!(released.iter().any(|slot| slot.content.is_some()));
+        assert_eq!(open, HashSet::from([other.clone()]));
+        assert_eq!(media.slots.len(), 1);
+        assert!(media.slots.contains_key(&other));
+        assert_eq!(media.queue.len(), 1);
+        assert_eq!(media.queue[0].0, other);
+        assert!(media.viewer.is_none());
+        assert_eq!(media.active, 2); // running workers keep the concurrency bound until they drain
+        assert!(
+            media
+                .complete(
+                    &keys[1],
+                    9,
+                    &source,
+                    Ok(PreviewContent::Message("Late".into()))
+                )
+                .is_some()
+        );
+        assert!(!media.slots.contains_key(&keys[1]));
+
+        open.insert(keys[1].clone());
+        media.generation += 1;
+        media.slots.insert(
+            keys[1].clone(),
+            Slot {
+                generation: media.generation,
+                source: source.clone(),
+                content: None,
+            },
+        );
+        assert!(
+            media
+                .complete(
+                    &keys[1],
+                    9,
+                    &source,
+                    Ok(PreviewContent::Message("Old generation".into()))
+                )
+                .is_some()
+        );
+        assert!(media.slots[&keys[1]].content.is_none());
+        assert!(
+            media
+                .complete(
+                    &keys[1],
+                    11,
+                    &source,
+                    Ok(PreviewContent::Message("Reopened".into()))
+                )
+                .is_none()
+        );
+        assert!(
+            matches!(&media.slots[&keys[1]].content, Some(Ok(PreviewContent::Message(text))) if text == "Reopened")
+        );
+        assert_eq!(open.len(), 2);
+    }
+
+    #[test]
+    fn grouped_ordinals_distinguish_generic_images_and_keep_source_identity_across_pages() {
+        let image = ChatImage {
+            label: "Image".into(),
+            source: ImageSource::Data {
+                mime: "image/png".into(),
+                base64: "SECRET_PAYLOAD".into(),
+            },
+        };
+        let tool = context(ItemBody::ToolCall {
+            server: None,
+            tool: "mcp__cua_driver__get_window_state".into(),
+            input: serde_json::json!({}),
+            output: None,
+        });
+        assert_eq!(
+            card_label(&image, Some(&tool), Some((2, 9))),
+            "3 of 9 · get window state image · PNG"
+        );
+        let page = artifact_range(65, 1);
+        assert_eq!(page.start, 32);
+        assert_eq!(
+            card_label(&image, Some(&tool), Some((page.start, 65))),
+            "33 of 65 · get window state image · PNG"
+        );
+        assert_eq!(
+            card_label(&image, Some(&tool), None),
+            image_label(&image, Some(&tool))
+        );
+        let local = ChatImage {
+            source: ImageSource::Local {
+                path: "/tmp/Grüße wide shot.png".into(),
+            },
+            ..image
+        };
+        assert_eq!(
+            card_label(&local, Some(&tool), Some((8, 9))),
+            "9 of 9 · Grüße wide shot.png"
+        );
+    }
 
     #[test]
     fn artifact_pages_bound_rendering_and_keep_all_images_reachable() {
@@ -366,6 +572,17 @@ fn release(slot: Slot, cx: &mut Context<ChatView>) {
     }
 }
 impl ChatView {
+    pub(super) fn fold_group_images(&mut self, keys: &[String], cx: &mut Context<Self>) {
+        for slot in self.media.fold_images(keys, &mut self.open) {
+            release(slot, cx);
+        }
+        if self.notice.as_deref() == Some(OPEN_LIMIT)
+            && self.open.iter().filter(|id| id.contains("image")).count() < OPEN
+        {
+            self.notice = None;
+        }
+    }
+
     pub(super) fn release_images(&mut self, cx: &mut gpui::App) {
         for (_, slot) in self.media.slots.drain() {
             if let Some(Ok(content)) = slot.content
@@ -382,11 +599,12 @@ impl ChatView {
         image: &ChatImage,
         key: &str,
         context: Option<&Item>,
+        ordinal: Option<(usize, usize)>,
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let open = self.open.contains(key);
-        let label = image_label(image, context);
+        let label = card_label(image, context, ordinal);
         let owned = image.clone();
         let toggle_key = key.to_owned();
         let content = self
@@ -489,8 +707,8 @@ impl ChatView {
         let offset = self.list.logical_scroll_top();
         self.list.pause_following_tail();
         if !self.open.remove(&key) {
-            if self.open.iter().filter(|id| id.contains("image")).count() >= 16 {
-                self.notice = Some("Fold an image before opening more.".into());
+            if self.open.iter().filter(|id| id.contains("image")).count() >= OPEN {
+                self.notice = Some(OPEN_LIMIT.into());
             } else {
                 self.open.insert(key.clone());
                 self.media.queue.push_back((key, image));
@@ -556,14 +774,9 @@ impl ChatView {
                 let content = work.await;
                 let _ = this.update(cx, |view, cx| {
                     view.media.active = view.media.active.saturating_sub(1);
-                    if let Some(slot) = view
-                        .media
-                        .slots
-                        .get_mut(&completion_key)
-                        .filter(|slot| slot.generation == generation && slot.source == source)
-                    {
-                        slot.content = Some(content);
-                    } else if let Ok(content) = content
+                    if let Some(content) =
+                        view.media
+                            .complete(&completion_key, generation, &source, content)
                         && let Some(image) = content.render_image()
                     {
                         let image = image.clone();

@@ -56,20 +56,39 @@ fn usable_answer(item: &crate::chat::model::Item) -> bool {
 }
 
 /// Keep a reader on the same item (or its collapsed turn disclosure) across modes.
-pub(super) fn remap_anchor(anchor: &Row, rows: &[Row]) -> Option<usize> {
+pub(super) fn remap_anchor(
+    anchor: &Row,
+    rows: &[Row],
+    completed: &[(String, TurnOutcome, usize)],
+) -> Option<usize> {
     if let Some(at) = rows.iter().position(|row| row == anchor) {
         return Some(at);
     }
     let index = match anchor {
         Row::Item(at) | Row::Details(at) => *at,
         Row::Artifacts { items, .. } => *items.first()?,
-        Row::Outcome(_, _) => return None,
+        // Verbose has no synthetic outcome row. Stay at the end of that turn,
+        // rather than retaining a row number that now belongs to another turn.
+        Row::Outcome(turn, _) => completed
+            .iter()
+            .find(|(id, _, _)| id == turn)?
+            .2
+            .saturating_sub(1),
     };
     if let Some(at) = rows.iter().position(|row| match row {
         Row::Item(at) | Row::Details(at) => *at == index,
         Row::Artifacts { items, .. } => items.contains(&index),
         _ => false,
     }) {
+        return Some(at);
+    }
+    // The turn's last hidden detail maps back to its outcome, not the next
+    // turn's user message, when switching from Verbose to Normal.
+    if let Some((turn, _, _)) = completed.iter().find(|(_, _, end)| *end > index)
+        && let Some(at) = rows
+            .iter()
+            .position(|row| matches!(row, Row::Outcome(id, _) if id == turn))
+    {
         return Some(at);
     }
     let positions = rows
@@ -508,11 +527,60 @@ mod tests {
             ]
         );
         let verbose = rows(&t, &completed, DisplayMode::Verbose);
-        assert_eq!(remap_anchor(&Row::Item(1), &verbose), Some(1));
-        assert_eq!(remap_anchor(&Row::Item(0), &normal), Some(1));
-        assert_eq!(remap_anchor(&normal[3], &verbose), Some(2));
-        assert_eq!(remap_anchor(&Row::Item(2), &normal), Some(3));
-        assert_eq!(remap_anchor(&Row::Item(3), &normal), Some(2));
+        assert_eq!(remap_anchor(&Row::Item(1), &verbose, &completed), Some(1));
+        assert_eq!(remap_anchor(&Row::Item(0), &normal, &completed), Some(1));
+        assert_eq!(remap_anchor(&normal[3], &verbose, &completed), Some(2));
+        assert_eq!(remap_anchor(&Row::Item(2), &normal, &completed), Some(3));
+        assert_eq!(remap_anchor(&Row::Item(3), &normal, &completed), Some(2));
+    }
+
+    #[test]
+    fn outcome_reader_anchor_stays_at_its_turn_across_modes() {
+        for outcome in [
+            TurnOutcome::Completed,
+            TurnOutcome::Interrupted,
+            TurnOutcome::Failed {
+                message: "Unresolved error".into(),
+            },
+        ] {
+            let mut t = Transcript::default();
+            t.items.push(item(
+                "user",
+                None,
+                ItemBody::UserMessage {
+                    text: "Request".into(),
+                },
+            ));
+            // Enough hidden details to make keeping the old visible row number
+            // jump near the start of the turn instead of its completion.
+            for n in 0..40 {
+                t.items
+                    .push(text(&format!("detail-{n}"), Some(MessagePhase::Commentary)));
+            }
+            let boundary = t.items.len();
+            let mut next_user = item(
+                "next-user",
+                None,
+                ItemBody::UserMessage {
+                    text: "Next request".into(),
+                },
+            );
+            next_user.turn_id = Some("next".into());
+            t.items.push(next_user);
+            let completed = vec![("turn".into(), outcome.clone(), boundary)];
+            let normal = rows(&t, &completed, DisplayMode::Normal);
+            let verbose = rows(&t, &completed, DisplayMode::Verbose);
+            let anchor = Row::Outcome("turn".into(), outcome);
+            let normal_at = normal.iter().position(|row| row == &anchor).unwrap();
+            assert_eq!(remap_anchor(&anchor, &normal, &completed), Some(normal_at));
+            let verbose_at = remap_anchor(&anchor, &verbose, &completed).unwrap();
+            assert_eq!(verbose[verbose_at], Row::Item(boundary - 1));
+            assert_eq!(
+                remap_anchor(&verbose[verbose_at], &normal, &completed),
+                Some(normal_at)
+            );
+            assert_eq!(t.items.len(), boundary + 1);
+        }
     }
 
     #[test]

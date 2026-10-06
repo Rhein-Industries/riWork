@@ -252,6 +252,7 @@ impl ChatView {
                             &crate::chat::media::reference(&span.text, target),
                             &format!("{key}/image/{:x}/{ordinal}", hash.finish()),
                             None,
+                            None,
                             look,
                             cx,
                         )
