@@ -2,12 +2,14 @@
 
 use std::{collections::BTreeMap, ops::Range};
 
+use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent,
     MouseButton, Pixels, Point, Render, StyledText, UTF16Selection, Window, canvas, div,
     prelude::*, rgb,
 };
+use gpui::{Focusable, Subscription};
 
 use crate::{
     icons::{self, ActionGlyph, Icon},
@@ -188,7 +190,7 @@ fn line_breaks_as_newlines(text: &str) -> String {
 
 /// These inputs are single-line. A line break between pasted lines becomes one
 /// space so words do not fuse; a copied line's trailing break is dropped.
-fn single_line(text: &str) -> String {
+pub(crate) fn single_line(text: &str) -> String {
     let is_break = |c: char| matches!(c, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}');
     let mut line = String::with_capacity(text.len());
     let mut pending_break = false;
@@ -387,7 +389,10 @@ pub struct ProjectSettingsPanel {
     store: Store,
     project: Project,
     name: Input,
+    name_state: Entity<InputState>,
+    _input_subscriptions: Vec<Subscription>,
     folder_name: Input,
+    folder_name_state: Entity<InputState>,
     folders: Vec<ProjectFolder>,
     folder_paths: BTreeMap<String, String>,
     folder_id: Option<String>,
@@ -400,7 +405,12 @@ pub struct ProjectSettingsPanel {
 impl EventEmitter<ProjectSettingsEvent> for ProjectSettingsPanel {}
 
 impl ProjectSettingsPanel {
-    pub fn new(store: Store, project: Project, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        store: Store,
+        project: Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
         cx.observe_global::<CodexAccountsState>(|_, cx| cx.notify())
@@ -415,7 +425,50 @@ impl ProjectSettingsPanel {
         let (folders, folder_paths) = snapshot
             .map(|state| folder_choices(&state))
             .unwrap_or_default();
+        let name_state = text_input::single_line(project.name.clone(), "Project name", window, cx);
+        let folder_name_state = text_input::single_line(
+            "",
+            if project.folder_id.is_some() {
+                "New subfolder"
+            } else {
+                "New virtual folder"
+            },
+            window,
+            cx,
+        );
+        let mut subscriptions = Vec::new();
+        for (field, state) in [
+            (Field::Name, &name_state),
+            (Field::FolderName, &folder_name_state),
+        ] {
+            subscriptions.push(cx.subscribe_in(
+                state,
+                window,
+                move |form, state, event, window, cx| match event {
+                    InputEvent::Change => {
+                        let value = state.read(cx).value().to_string();
+                        match field {
+                            Field::Name => form.name.text = value,
+                            _ => form.folder_name.text = value,
+                        }
+                        form.edited(cx);
+                    }
+                    InputEvent::Focus => {
+                        form.active = field;
+                        cx.notify();
+                    }
+                    _ if text_input::is_submit(event, EnterBehavior::Submit) => match field {
+                        Field::Name => form.save(cx),
+                        _ => form.create_folder(window, cx),
+                    },
+                    _ => {}
+                },
+            ));
+        }
         Self {
+            name_state,
+            folder_name_state,
+            _input_subscriptions: subscriptions,
             name: Input::new(project.name.clone()),
             folder_id: project.folder_id.clone(),
             project,
@@ -431,7 +484,15 @@ impl ProjectSettingsPanel {
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus.focus(window, cx);
+        match self.active {
+            Field::Name => self.name_state.read(cx).focus_handle(cx).focus(window, cx),
+            Field::FolderName => self
+                .folder_name_state
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx),
+            _ => self.focus.focus(window, cx),
+        }
     }
 
     /// Refresh choices without replacing the user's partially edited project name.
@@ -451,10 +512,16 @@ impl ProjectSettingsPanel {
                     .into_iter()
                     .find(|project| project.id == self.project.id)
                 {
-                    if self.name.text.trim() == self.project.name
+                    if self.name_state.read(cx).value().trim() == self.project.name
                         && project.name != self.project.name
                     {
                         self.name = Input::new(project.name.clone());
+                        crate::form_input::refresh_value(
+                            &self.name_state,
+                            self.project.name.clone(),
+                            project.name.clone(),
+                            cx,
+                        );
                     }
                     if self.folder_id == self.project.folder_id {
                         self.folder_id = project.folder_id.clone();
@@ -488,21 +555,16 @@ impl ProjectSettingsPanel {
         cx.notify();
     }
 
-    fn input(&self) -> &Input {
-        match self.active {
-            Field::FolderName => &self.folder_name,
-            _ => &self.name,
-        }
-    }
-
-    fn input_mut(&mut self) -> &mut Input {
-        match self.active {
-            Field::FolderName => &mut self.folder_name,
-            _ => &mut self.name,
-        }
-    }
-
     fn edited(&mut self, cx: &mut Context<Self>) {
+        crate::form_input::placeholder(
+            &self.folder_name_state,
+            if self.folder_id.is_some() {
+                "New subfolder"
+            } else {
+                "New virtual folder"
+            },
+            cx,
+        );
         self.status.edited();
         self.error = None;
         cx.notify();
@@ -512,10 +574,10 @@ impl ProjectSettingsPanel {
         matches!(self.active, Field::Name | Field::FolderName)
     }
 
-    fn activate(&mut self, cx: &mut Context<Self>) {
+    fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active {
             Field::Name | Field::Save => self.save(cx),
-            Field::FolderName | Field::AddFolder => self.create_folder(cx),
+            Field::FolderName | Field::AddFolder => self.create_folder(window, cx),
             Field::Folder(index) => {
                 self.folder_id = index
                     .checked_sub(1)
@@ -597,6 +659,7 @@ impl ProjectSettingsPanel {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
+        self.name.text = self.name_state.read(cx).value().to_string();
         match self.store.update_project_metadata(
             &self.project.id,
             self.name.text.trim(),
@@ -604,6 +667,7 @@ impl ProjectSettingsPanel {
         ) {
             Ok(project) => {
                 self.name = Input::new(project.name.clone());
+                crate::form_input::set_value(&self.name_state, project.name.clone(), cx);
                 self.project = project.clone();
                 self.error = None;
                 self.status.details_saved();
@@ -614,7 +678,8 @@ impl ProjectSettingsPanel {
         cx.notify();
     }
 
-    fn create_folder(&mut self, cx: &mut Context<Self>) {
+    fn create_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.folder_name.text = self.folder_name_state.read(cx).value().to_string();
         match self
             .store
             .create_project_folder_in(self.folder_name.text.trim(), self.folder_id.as_deref())
@@ -622,11 +687,13 @@ impl ProjectSettingsPanel {
             Ok(folder) => {
                 self.folder_id = Some(folder.id.clone());
                 self.folder_name = Input::default();
+                crate::form_input::set_value(&self.folder_name_state, String::new(), cx);
                 self.folders.push(folder);
                 self.active = Field::Name;
                 self.error = None;
                 self.status.edited();
                 self.refresh_folders(cx);
+                self.focus(window, cx);
                 cx.emit(ProjectSettingsEvent::FolderChanged);
             }
             Err(error) => self.error = Some(error),
@@ -635,13 +702,23 @@ impl ProjectSettingsPanel {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let input = match self.active {
+            Field::Name => Some(&self.name_state),
+            Field::FolderName => Some(&self.folder_name_state),
+            _ => None,
+        };
+        if matches!(event.keystroke.key.as_str(), "escape" | "tab")
+            && input.is_some_and(|state| crate::form_input::is_composing(state, window, cx))
+        {
+            return;
+        }
         let handled = match event.keystroke.key.as_str() {
-            "enter" | "return" => {
-                self.activate(cx);
+            "enter" | "return" if !self.accepts_input() => {
+                self.activate(window, cx);
                 true
             }
             "space" if !self.accepts_input() => {
-                self.activate(cx);
+                self.activate(window, cx);
                 true
             }
             "left" | "up" if matches!(self.active, Field::Folder(_)) => {
@@ -701,16 +778,10 @@ impl ProjectSettingsPanel {
                         Field::Save => Field::Name,
                     }
                 };
-                self.focus.focus(window, cx);
+                self.focus(window, cx);
                 true
             }
-            _ => {
-                let handled = self.accepts_input() && self.input_mut().key(event, cx);
-                if handled {
-                    self.edited(cx);
-                }
-                handled
-            }
+            _ => false,
         };
         if handled {
             cx.stop_propagation();
@@ -719,46 +790,20 @@ impl ProjectSettingsPanel {
     }
 
     fn field(&self, field: Field, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme::palette(cx);
-        let (input, placeholder, id) = match field {
-            Field::Name => (&self.name, "Project name", "project-settings-name"),
-            Field::FolderName => (
-                &self.folder_name,
-                if self.folder_id.is_some() {
-                    "New subfolder"
-                } else {
-                    "New virtual folder"
-                },
-                "project-settings-new-folder",
-            ),
+        let (state, id) = match field {
+            Field::Name => (&self.name_state, "project-settings-name"),
+            Field::FolderName => (&self.folder_name_state, "project-settings-new-folder"),
             _ => unreachable!("Only text fields render an input"),
         };
-        div()
-            .id(id)
-            .flex_1()
-            .min_w_0()
-            .child(input_content(
-                input,
-                self.active == field && self.focus.is_focused(window),
-                placeholder,
-                &self.focus,
-                cx.entity(),
-                colors,
-            ))
-            .on_click(cx.listener(move |form, _, window, cx| {
-                form.active = field;
-                form.focus.focus(window, cx);
-                cx.notify();
-            }))
-            .into_any_element()
+        crate::form_input::frame(id, state, false, window, cx).into_any_element()
     }
 }
 
 impl Render for ProjectSettingsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
-        let dirty =
-            self.name.text.trim() != self.project.name || self.folder_id != self.project.folder_id;
+        let dirty = self.name_state.read(cx).value().trim() != self.project.name
+            || self.folder_id != self.project.folder_id;
         let focused = self.focus.is_focused(window);
         let mut folders = div().flex().flex_wrap().gap(ui_text::space(6.0)).child(
             div()
@@ -1045,7 +1090,7 @@ impl Render for ProjectSettingsPanel {
                         button.on_click(cx.listener(|form, _, window, cx| {
                             form.active = Field::AddFolder;
                             form.focus.focus(window, cx);
-                            form.create_folder(cx);
+                            form.create_folder(window, cx);
                         }))
                     }),
             );
@@ -1178,7 +1223,7 @@ impl Render for ProjectSettingsPanel {
                 .id("project-settings-panel")
                 .track_focus(&self.focus)
                 .key_context("ProjectSettings")
-                .on_key_down(cx.listener(Self::key_down))
+                .capture_key_down(cx.listener(Self::key_down))
                 .child(crate::controls::panel_header(
                     crate::layouts::PanelKind::ProjectSettings.label(),
                     Some(if dirty {
@@ -1220,7 +1265,7 @@ impl Render for ProjectSettingsPanel {
             .min_w_0()
             .track_focus(&self.focus)
             .key_context("ProjectSettings")
-            .on_key_down(cx.listener(Self::key_down))
+            .capture_key_down(cx.listener(Self::key_down))
             .overflow_y_scroll()
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
@@ -1336,6 +1381,8 @@ pub struct FolderEditor {
     parent_id: Option<String>,
     parent_path: Option<String>,
     name: Input,
+    name_state: Entity<InputState>,
+    _input_subscriptions: Vec<Subscription>,
     focus: FocusHandle,
     active: usize,
     error: Option<String>,
@@ -1344,14 +1391,20 @@ pub struct FolderEditor {
 impl EventEmitter<FolderEditorEvent> for FolderEditor {}
 
 impl FolderEditor {
-    pub fn new(store: Store, folder: Option<ProjectFolder>, cx: &mut Context<Self>) -> Self {
-        Self::new_in(store, folder, None, cx)
+    pub fn new(
+        store: Store,
+        folder: Option<ProjectFolder>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_in(store, folder, None, window, cx)
     }
 
     pub fn new_in(
         store: Store,
         folder: Option<ProjectFolder>,
         parent_id: Option<String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
@@ -1368,7 +1421,32 @@ impl FolderEditor {
                 .map(|state| state.project_folder_path(id))
                 .unwrap_or_else(|_| id.clone())
         });
+        let name_state = text_input::single_line(
+            folder.as_ref().map(|f| f.name.clone()).unwrap_or_default(),
+            "Folder name",
+            window,
+            cx,
+        );
+        let subscription =
+            cx.subscribe_in(
+                &name_state,
+                window,
+                |form, state, event, _, cx| match event {
+                    InputEvent::Change => {
+                        form.name.text = state.read(cx).value().to_string();
+                        form.edited(cx);
+                    }
+                    InputEvent::Focus => {
+                        form.active = 0;
+                        cx.notify();
+                    }
+                    _ if text_input::is_submit(event, EnterBehavior::Submit) => form.submit(cx),
+                    _ => {}
+                },
+            );
         Self {
+            name_state,
+            _input_subscriptions: vec![subscription],
             name: Input::new(
                 folder
                     .as_ref()
@@ -1386,15 +1464,13 @@ impl FolderEditor {
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus.focus(window, cx);
+        if self.active == 0 {
+            self.name_state.read(cx).focus_handle(cx).focus(window, cx);
+        } else {
+            self.focus.focus(window, cx);
+        }
     }
 
-    fn input(&self) -> &Input {
-        &self.name
-    }
-    fn input_mut(&mut self) -> &mut Input {
-        &mut self.name
-    }
     fn accepts_input(&self) -> bool {
         self.active == 0
     }
@@ -1404,6 +1480,7 @@ impl FolderEditor {
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
+        self.name.text = self.name_state.read(cx).value().to_string();
         let result = match &self.folder {
             Some(folder) => self
                 .store
@@ -1419,13 +1496,19 @@ impl FolderEditor {
         cx.notify();
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active == 0
+            && matches!(event.keystroke.key.as_str(), "escape" | "tab")
+            && crate::form_input::is_composing(&self.name_state, window, cx)
+        {
+            return;
+        }
         let handled = match event.keystroke.key.as_str() {
             "escape" => {
                 cx.emit(FolderEditorEvent::Cancelled);
                 true
             }
-            "enter" | "return" => {
+            "enter" | "return" if !self.accepts_input() => {
                 if self.active == 1 {
                     cx.emit(FolderEditorEvent::Cancelled);
                 } else {
@@ -1449,15 +1532,10 @@ impl FolderEditor {
                         1
                     })
                     % 3;
+                self.focus(window, cx);
                 true
             }
-            _ => {
-                let handled = self.accepts_input() && self.name.key(event, cx);
-                if handled {
-                    self.edited(cx);
-                }
-                handled
-            }
+            _ => false,
         };
         if handled {
             cx.stop_propagation();
@@ -1474,7 +1552,7 @@ impl Render for FolderEditor {
             .occlude()
             .track_focus(&self.focus)
             .key_context("FolderEditor")
-            .on_key_down(cx.listener(Self::key_down))
+            .capture_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation())
             .w(ui_text::space(440.0))
@@ -1515,17 +1593,16 @@ impl Render for FolderEditor {
             .child(
                 div()
                     .id("virtual-folder-name")
-                    .child(input_content(
-                        &self.name,
-                        self.active == 0 && self.focus.is_focused(window),
-                        "Folder name",
-                        &self.focus,
-                        cx.entity(),
-                        colors,
+                    .child(crate::form_input::frame(
+                        "virtual-folder-input",
+                        &self.name_state,
+                        false,
+                        window,
+                        cx,
                     ))
                     .on_click(cx.listener(|form, _, window, cx| {
                         form.active = 0;
-                        form.focus.focus(window, cx);
+                        form.focus(window, cx);
                         cx.notify();
                     })),
             )
@@ -1681,9 +1758,6 @@ macro_rules! impl_input_handler {
         }
     };
 }
-
-impl_input_handler!(ProjectSettingsPanel);
-impl_input_handler!(FolderEditor);
 
 pub(crate) use impl_input_handler;
 

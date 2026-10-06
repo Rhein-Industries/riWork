@@ -13,6 +13,7 @@ mod dictation;
 mod dock_menu;
 mod file_explorer;
 mod file_preview;
+mod form_input;
 mod handoff;
 mod handoff_dialog;
 mod icons;
@@ -43,7 +44,6 @@ mod schedules;
 mod session_input;
 mod session_keys;
 mod session_reload;
-mod text_input;
 mod session_viewport;
 mod sessions;
 mod settings;
@@ -54,6 +54,7 @@ mod symbols;
 mod terminal_drop;
 mod terminal_lifecycle;
 mod terminal_links;
+mod text_input;
 mod theme;
 mod tooltip;
 mod ui_text;
@@ -72,16 +73,19 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::text_input::{EnterBehavior, InputEvent, InputState};
 use activity::{ActivityTracker, AgentActivity, AgentState, ChatActivity};
 use chat::model::{ApprovalMode, ChatInfo, NewChat, OrchestratorScope, Provider};
 use chat_view::{ChatView, ChatViewEvent, HostConfig, ToggleDictation};
-use file_explorer::{ExplorerRoot, FileExplorer, FileExplorerEvent, FilePreview};
+use file_explorer::{
+    ExplorerRoot, FileExplorer, FileExplorerEvent, FileExplorerSurface, FilePreview,
+};
+use gpui::Focusable;
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity,
-    EntityInputHandler, FocusHandle, Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem,
-    MouseButton, Pixels, Point, Render, Stateful, StatefulInteractiveElement, TitlebarOptions,
-    UTF16Selection, Window, WindowBounds, WindowHandle, WindowOptions, actions, canvas, div, img,
-    point, prelude::*, px, rgb, size,
+    AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity, FocusHandle,
+    Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, Pixels, Point,
+    Render, Stateful, StatefulInteractiveElement, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, actions, canvas, div, img, point, prelude::*, px, rgb, size,
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
@@ -1321,6 +1325,7 @@ struct Workspace {
     schedule_panel: Option<Entity<schedule_panel::SchedulePanel>>,
     pending_automation_chat: Option<String>,
     file_explorer: Option<Entity<FileExplorer>>,
+    file_surfaces: BTreeMap<TabId, Entity<FileExplorerSurface>>,
     /// The Preview panel's view of `file_explorer`. Created and dropped with it.
     file_preview: Option<Entity<FilePreview>>,
     locked_panes: Option<HashSet<PaneId>>,
@@ -1414,7 +1419,8 @@ struct Workspace {
     attach_retry: Option<gpui::Task<()>>,
     search_focused: bool,
     search: String,
-    search_marked: Option<Range<usize>>,
+    search_inputs: BTreeMap<TabId, (Entity<InputState>, gpui::Subscription)>,
+    focused_search: Option<TabId>,
     cwd: PathBuf,
     shell_name: String,
     notice: Option<String>,
@@ -1894,6 +1900,44 @@ impl Workspace {
         );
         // A window restored on, or launched with, a project on another Mac opens that one.
         let remote_start = remote_start_project(restore.as_ref(), remote_start.as_deref());
+        let panel = cx.new(|cx| FileExplorer::new(window, cx));
+        cx.subscribe(&panel, |workspace, _, event, cx| match event {
+            FileExplorerEvent::Edit {
+                root,
+                path,
+                identity,
+            } => {
+                let view = cx.weak_entity();
+                let entity_id = cx.entity_id();
+                let (root, path, identity) = (root.clone(), path.clone(), *identity);
+                cx.defer(move |app| {
+                    app.with_window(entity_id, |window, app| {
+                        let _ = view.update(app, |workspace, cx| {
+                            workspace.open_file_editor(root, path, identity, None, window, cx);
+                        });
+                    });
+                });
+            }
+            FileExplorerEvent::Open(path) => cx.open_with_system(path),
+            FileExplorerEvent::Reveal(path) => cx.reveal_path(path),
+            FileExplorerEvent::CopyRelativePath(path) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    path.to_string_lossy().into_owned(),
+                ));
+                workspace.notice = Some(format!("Copied {}", path.display()));
+                cx.notify();
+            }
+            FileExplorerEvent::Selected => workspace.reveal_preview(false, cx),
+            FileExplorerEvent::Revealed => workspace.reveal_preview(true, cx),
+            FileExplorerEvent::NotListed(path) => workspace.open_unlisted(path.clone(), cx),
+            FileExplorerEvent::RevealFailed(message) => {
+                workspace.notice = Some(message.clone());
+                cx.notify();
+            }
+        })
+        .detach();
+        let file_preview = cx.new(|cx| FilePreview::new(panel.clone(), cx));
+        let file_explorer = panel;
         let mut workspace = Self {
             project_creator: None,
             folder_editor: None,
@@ -1906,8 +1950,9 @@ impl Workspace {
             project_settings_panel: None,
             schedule_panel: None,
             pending_automation_chat: None,
-            file_explorer: None,
-            file_preview: None,
+            file_explorer: Some(file_explorer),
+            file_surfaces: BTreeMap::new(),
+            file_preview: Some(file_preview),
             locked_panes: None,
             main_pane: None,
             carry_layout: None,
@@ -1976,7 +2021,8 @@ impl Workspace {
             attach_retry: None,
             search_focused: false,
             search: String::new(),
-            search_marked: None,
+            search_inputs: BTreeMap::new(),
+            focused_search: None,
             cwd: project.root,
             shell_name,
             notice: None,
@@ -2326,7 +2372,7 @@ impl Workspace {
     ) -> Result<(), String> {
         // The new terminal takes focus on spawn.
         self.search_focused = false;
-        self.search_marked = None;
+
         let pane = self
             .panes
             .get_mut(&pane_id)
@@ -2559,14 +2605,20 @@ impl Workspace {
         }
     }
 
-    fn attach_panel(&mut self, pane_id: PaneId, panel: PanelKind, cx: &mut Context<Self>) {
-        self.attach_panel_as(pane_id, panel, true, cx);
+    fn attach_panel(
+        &mut self,
+        pane_id: PaneId,
+        panel: PanelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.attach_panel_as(pane_id, panel, true, window, cx);
     }
 
     /// Make what a tab for `panel` shows: the window's schedules, project settings or file
     /// explorer, for the panels that have one. Opening the tab needs it; the tab itself is made
     /// by `attach_panel_as` or, for the default layout, by `default_layout_panes`.
-    fn prepare_panel(&mut self, panel: PanelKind, cx: &mut Context<Self>) {
+    fn prepare_panel(&mut self, panel: PanelKind, window: &mut Window, cx: &mut Context<Self>) {
         if panel == PanelKind::Schedules && self.schedule_panel.is_none() && !self.is_remote() {
             let store = self.store.clone();
             let sessions = self.sessions.clone();
@@ -2587,7 +2639,7 @@ impl Workspace {
             self.schedule_panel = Some(panel);
         }
         if panel == PanelKind::ProjectSettings {
-            self.ensure_project_settings(cx);
+            self.ensure_project_settings(window, cx);
         }
         if matches!(panel, PanelKind::Files | PanelKind::Preview) {
             self.ensure_file_explorer(cx);
@@ -2601,9 +2653,10 @@ impl Workspace {
         pane_id: PaneId,
         panel: PanelKind,
         select: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.prepare_panel(panel, cx);
+        self.prepare_panel(panel, window, cx);
         if let Some(pane) = self.panes.get_mut(&pane_id) {
             if select {
                 for tab in &pane.tabs {
@@ -2614,9 +2667,10 @@ impl Workspace {
             self.next_tab_id += 1;
             push_panel_tab(pane, id, Self::panel_title(panel), panel, select);
         }
+        self.ensure_search_inputs(window, cx);
     }
 
-    fn add_navigation_pane(&mut self, cx: &mut Context<Self>) {
+    fn add_navigation_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
         self.panes.insert(
@@ -2627,7 +2681,7 @@ impl Workspace {
             },
         );
         for panel in NAVIGATION_PANELS {
-            self.attach_panel(pane_id, panel, cx);
+            self.attach_panel(pane_id, panel, window, cx);
         }
         self.panes.get_mut(&pane_id).unwrap().active = 0;
         self.layout = Layout::navigation_beside(pane_id, self.layout.clone());
@@ -2653,7 +2707,7 @@ impl Workspace {
         if let Some((pane_id, tab_id)) = existing {
             self.select_tab(pane_id, tab_id, window, cx);
         } else {
-            self.attach_panel(pane_id, panel, cx);
+            self.attach_panel(pane_id, panel, window, cx);
             self.active_pane = pane_id;
             self.focus_active(window, cx);
             self.save_layout();
@@ -2817,11 +2871,7 @@ impl Workspace {
             PanelAction::Worktree(id) => self.select_worktree(&id, window, cx),
             PanelAction::Task(id) => self.select_task(&id, window, cx),
             PanelAction::Shell(id) => self.show_shell(&id, window, cx),
-            PanelAction::Search => {
-                self.search_focused = true;
-                self.focus.focus(window, cx);
-                cx.notify();
-            }
+            PanelAction::Search => self.focus_search_input(window, cx),
             PanelAction::Remote(action) => self.remote_action(action, window, cx),
         }
     }
@@ -2839,7 +2889,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn ensure_project_settings(&mut self, cx: &mut Context<Self>) {
+    fn ensure_project_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.project_settings_panel.is_some() {
             return;
         }
@@ -2847,7 +2897,7 @@ impl Workspace {
             return;
         };
         let store = self.store.clone();
-        let panel = cx.new(|cx| ProjectSettingsPanel::new(store, project, cx));
+        let panel = cx.new(|cx| ProjectSettingsPanel::new(store, project, window, cx));
         cx.subscribe(&panel, |workspace, _, event, cx| {
             if let ProjectSettingsEvent::Saved(project) = event {
                 workspace.notice = Some(format!("Saved {}", project.name));
@@ -2862,46 +2912,6 @@ impl Workspace {
         // Another Mac's files are not browsable from here, and this Mac's would be the wrong ones.
         if self.is_remote() {
             return;
-        }
-        if self.file_explorer.is_none() {
-            let panel = cx.new(FileExplorer::new);
-            cx.subscribe(&panel, |workspace, _, event, cx| match event {
-                FileExplorerEvent::Edit {
-                    root,
-                    path,
-                    identity,
-                } => {
-                    let view = cx.weak_entity();
-                    let entity_id = cx.entity_id();
-                    let (root, path, identity) = (root.clone(), path.clone(), *identity);
-                    cx.defer(move |app| {
-                        app.with_window(entity_id, |window, app| {
-                            let _ = view.update(app, |workspace, cx| {
-                                workspace.open_file_editor(root, path, identity, None, window, cx);
-                            });
-                        });
-                    });
-                }
-                FileExplorerEvent::Open(path) => cx.open_with_system(path),
-                FileExplorerEvent::Reveal(path) => cx.reveal_path(path),
-                FileExplorerEvent::CopyRelativePath(path) => {
-                    cx.write_to_clipboard(ClipboardItem::new_string(
-                        path.to_string_lossy().into_owned(),
-                    ));
-                    workspace.notice = Some(format!("Copied {}", path.display()));
-                    cx.notify();
-                }
-                FileExplorerEvent::Selected => workspace.reveal_preview(false, cx),
-                FileExplorerEvent::Revealed => workspace.reveal_preview(true, cx),
-                FileExplorerEvent::NotListed(path) => workspace.open_unlisted(path.clone(), cx),
-                FileExplorerEvent::RevealFailed(message) => {
-                    workspace.notice = Some(message.clone());
-                    cx.notify();
-                }
-            })
-            .detach();
-            self.file_preview = Some(cx.new(|cx| FilePreview::new(panel.clone(), cx)));
-            self.file_explorer = Some(panel);
         }
         self.sync_file_explorer(cx);
     }
@@ -3144,8 +3154,8 @@ impl Workspace {
         let store = self.store.clone();
         let parent_id = parent_id.map(str::to_owned);
         let editor = cx.new(|cx| match parent_id {
-            Some(parent_id) => FolderEditor::new_in(store, folder, Some(parent_id), cx),
-            None => FolderEditor::new(store, folder, cx),
+            Some(parent_id) => FolderEditor::new_in(store, folder, Some(parent_id), window, cx),
+            None => FolderEditor::new(store, folder, window, cx),
         });
         editor.update(cx, |editor, cx| editor.focus(window, cx));
         cx.subscribe_in(&editor, window, |workspace, _, event, window, cx| {
@@ -3217,7 +3227,7 @@ impl Workspace {
         }
         self.active_pane = target;
         self.search_focused = false;
-        self.search_marked = None;
+
         self.drop_target = None;
         self.focus_active(window, cx);
         self.save_layout();
@@ -3852,7 +3862,9 @@ impl Workspace {
                                     self.restore_shell_tab(*pane_id, shell.clone());
                                 }
                             }
-                            SavedTab::Panel { panel } => self.attach_panel(*pane_id, *panel, cx),
+                            SavedTab::Panel { panel } => {
+                                self.attach_panel(*pane_id, *panel, window, cx)
+                            }
                             SavedTab::RemoteShell {
                                 desktop_id,
                                 shell_id,
@@ -3917,9 +3929,10 @@ impl Workspace {
             .map(|saved| !saved.panels_initialized && saved.sidebar_visible)
             .unwrap_or(true)
         {
-            self.add_navigation_pane(cx);
+            self.add_navigation_pane(window, cx);
             self.active_pane = active_pane;
         }
+        self.ensure_search_inputs(window, cx);
         self.shells = self.sessions.list().unwrap_or(shells);
         self.focus_active(window, cx);
         if let Some(error) = restore_error {
@@ -4099,8 +4112,8 @@ impl Workspace {
         self.project_settings_panel = None;
         self.schedule_panel = None;
         self.pending_automation_chat = None;
-        self.file_explorer = None;
-        self.file_preview = None;
+        // Retain the Files editor; sync_file_explorer explicitly resets changed roots.
+
         self.set_window_title(&project.name, window);
         self.cwd = project.root;
         self.selected_worktree_id = self
@@ -4111,8 +4124,8 @@ impl Workspace {
             .map(|worktree| worktree.id.clone());
         self.selected_task_id = None;
         self.search_focused = false;
-        self.search.clear();
-        self.search_marked = None;
+        self.set_search(String::new(), None, window, cx);
+
         self.load_project(window, cx);
         self.announce_to_dock(window, cx);
     }
@@ -4136,13 +4149,13 @@ impl Workspace {
         self.project_settings_panel = None;
         self.schedule_panel = None;
         self.pending_automation_chat = None;
-        self.file_explorer = None;
-        self.file_preview = None;
+        // Retain the Files editor; sync_file_explorer explicitly resets changed roots.
+
         self.selected_worktree_id = None;
         self.selected_task_id = None;
         self.search_focused = false;
-        self.search.clear();
-        self.search_marked = None;
+        self.set_search(String::new(), None, window, cx);
+
         remote_service::select(Some(key.to_owned()), cx);
         self.refresh_window_title(window, cx);
         self.load_project(window, cx);
@@ -4884,7 +4897,7 @@ impl Workspace {
         self.notice = None;
         self.begin_tab_drag(cx);
         let backend = cx.global_mut::<RemoteState>().backend();
-        let prompt = cx.new(|cx| RemotePrompt::new(kind, backend, cx));
+        let prompt = cx.new(|cx| RemotePrompt::new(kind, backend, window, cx));
         prompt.update(cx, |prompt, cx| prompt.focus(window, cx));
         cx.subscribe_in(&prompt, window, |workspace, prompt, event, window, cx| {
             if let Some(defaults) = prompt.read(cx).pair_defaults() {
@@ -4942,8 +4955,9 @@ impl Workspace {
         self.begin_tab_drag(cx);
         let home = self.sessions.state_home().to_path_buf();
         let config = self.chat_config();
-        let dialog =
-            cx.new(|cx| HandoffDialog::new(source, home, Arc::new(move || config.ensure()), cx));
+        let dialog = cx.new(|cx| {
+            HandoffDialog::new(source, home, Arc::new(move || config.ensure()), window, cx)
+        });
         dialog.update(cx, |dialog, cx| dialog.focus(window, cx));
         cx.subscribe_in(&dialog, window, |workspace, dialog, event, window, cx| {
             match event {
@@ -5672,7 +5686,7 @@ impl Workspace {
             });
         if project_settings_active {
             self.search_focused = false;
-            self.ensure_project_settings(cx);
+            self.ensure_project_settings(window, cx);
             if let Some(panel) = &self.project_settings_panel {
                 panel.update(cx, |panel, cx| panel.focus(window, cx));
             }
@@ -5708,7 +5722,7 @@ impl Workspace {
             .and_then(|tab| tab.chat().cloned());
         if let Some(view) = chat_active {
             self.search_focused = false;
-            self.search_marked = None;
+
             view.update(cx, |view, cx| view.focus(window, cx));
             return;
         }
@@ -5731,7 +5745,7 @@ impl Workspace {
             // The terminal takes the keys, so a search left open must not also
             // act on them: the adapter does not stop them bubbling to us.
             self.search_focused = false;
-            self.search_marked = None;
+
             terminal.update(cx, |terminal, cx| terminal.focus(window, cx));
         } else {
             self.focus.focus(window, cx);
@@ -5774,7 +5788,7 @@ impl Workspace {
         }
         self.active_pane = pane_id;
         self.search_focused = false;
-        self.search_marked = None;
+
         self.focus_active(window, cx);
         self.save_layout();
         cx.notify();
@@ -5833,6 +5847,7 @@ impl Workspace {
             self.focus_active(window, cx);
         }
         self.save_layout();
+        self.ensure_search_inputs(window, cx);
         cx.notify();
     }
 
@@ -5859,6 +5874,7 @@ impl Workspace {
             }
             self.focus_active(window, cx);
             self.save_layout();
+            self.ensure_search_inputs(window, cx);
             cx.notify();
             return;
         }
@@ -5898,6 +5914,7 @@ impl Workspace {
                 self.focus_active(window, cx);
             }
             self.save_layout();
+            self.ensure_search_inputs(window, cx);
             cx.notify();
         }
     }
@@ -6131,8 +6148,9 @@ impl Workspace {
             cx.notify();
             return;
         };
+        self.ensure_search_inputs(window, cx);
         for panel in &applied.opened {
-            self.prepare_panel(*panel, cx);
+            self.prepare_panel(*panel, window, cx);
         }
         // The lock is chosen, not inferred: the navigation pane stays the locked one wherever it
         // goes, and the main pane is not.
@@ -6973,6 +6991,16 @@ impl Workspace {
         if let PreviewReveal::Move { from, .. } = reveal {
             self.show_pane_tabs(from, cx);
         }
+        let owner = cx.entity_id();
+        let view = cx.weak_entity();
+        cx.defer(move |app| {
+            app.with_window(owner, |window, app| {
+                let _ = view.update(app, |workspace, cx| {
+                    workspace.ensure_search_inputs(window, cx);
+                    cx.notify();
+                });
+            });
+        });
         self.save_layout();
         cx.notify();
         Some(pane_id)
@@ -7019,9 +7047,7 @@ impl Workspace {
             .is_some_and(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)));
         if files_active {
             self.ensure_file_explorer(cx);
-            if let Some(panel) = &self.file_explorer {
-                panel.update(cx, |panel, cx| panel.focus_search(window, cx));
-            }
+            self.focus_file_search(window, cx);
             return;
         }
         let preview_active = self
@@ -7035,9 +7061,7 @@ impl Workspace {
             if let Some((pane_id, _, true)) = self.panel_tab(PanelKind::Files) {
                 self.active_pane = pane_id;
                 self.ensure_file_explorer(cx);
-                if let Some(panel) = &self.file_explorer {
-                    panel.update(cx, |panel, cx| panel.focus_search(window, cx));
-                }
+                self.focus_file_search(window, cx);
                 cx.notify();
             }
             return;
@@ -7050,9 +7074,7 @@ impl Workspace {
         if !active_panel {
             self.open_panel(PanelKind::Projects, self.active_pane, window, cx);
         }
-        self.search_focused = true;
-        self.focus.focus(window, cx);
-        cx.notify();
+        self.focus_search_input(window, cx);
     }
 
     fn create_project_action(
@@ -7333,20 +7355,150 @@ impl Workspace {
         self.set_focus_mode(!self.focus_mode, window, cx);
     }
 
-    fn replace_search_text(
+    /// One retained editor for each navigation tab, including duplicate visible panels.
+    fn ensure_search_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let files: Vec<TabId> = self
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .filter(|tab| matches!(tab.content, TabContent::Panel(PanelKind::Files)))
+            .map(|tab| tab.id)
+            .collect();
+        self.file_surfaces.retain(|id, _| files.contains(id));
+        if let Some(explorer) = &self.file_explorer {
+            explorer.update(cx, |explorer, _| explorer.retain_surfaces(&files));
+            for id in files {
+                if !self.file_surfaces.contains_key(&id) {
+                    let surface =
+                        explorer.update(cx, |explorer, cx| explorer.surface(id, window, cx));
+                    self.file_surfaces.insert(id, surface);
+                }
+            }
+        }
+        let tabs: Vec<TabId> = self
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .filter(|tab| {
+                matches!(
+                    tab.content,
+                    TabContent::Panel(
+                        PanelKind::Projects
+                            | PanelKind::Worktrees
+                            | PanelKind::Tasks
+                            | PanelKind::Shells
+                    )
+                )
+            })
+            .map(|tab| tab.id)
+            .collect();
+        self.search_inputs.retain(|id, _| tabs.contains(id));
+        for id in tabs {
+            if self.search_inputs.contains_key(&id) {
+                continue;
+            }
+            let input = text_input::single_line(self.search.clone(), "Search  ⌘F", window, cx);
+            let subscription = cx.subscribe_in(
+                &input,
+                window,
+                move |workspace, input, event, window, cx| match event {
+                    InputEvent::Change => workspace.set_search(
+                        input.read(cx).value().to_string(),
+                        Some(id),
+                        window,
+                        cx,
+                    ),
+                    InputEvent::Focus => {
+                        workspace.focused_search = Some(id);
+                        workspace.search_focused = true;
+                        if let Some(pane) = workspace.panes.iter().find_map(|(pane, state)| {
+                            state.tabs.iter().any(|tab| tab.id == id).then_some(*pane)
+                        }) {
+                            workspace.active_pane = pane;
+                        }
+                        cx.notify();
+                    }
+                    InputEvent::Blur => {
+                        if workspace.focused_search == Some(id) {
+                            workspace.focused_search = None;
+                            workspace.search_focused = false;
+                        }
+                        cx.notify();
+                    }
+                    _ if text_input::is_submit(event, EnterBehavior::Submit) => {
+                        workspace.submit_search(window, cx)
+                    }
+                    _ => {}
+                },
+            );
+            self.search_inputs.insert(id, (input, subscription));
+        }
+    }
+
+    fn set_search(
         &mut self,
-        range_utf16: Option<Range<usize>>,
-        text: &str,
-    ) -> Range<usize> {
-        let marked = self.search_marked.take();
-        let range = if let Some(range) = range_utf16 {
-            utf16_to_byte(&self.search, range.start)..utf16_to_byte(&self.search, range.end)
-        } else {
-            marked.unwrap_or(self.search.len()..self.search.len())
-        };
-        let text = text.replace('\n', " ").replace('\r', " ");
-        self.search.replace_range(range.clone(), &text);
-        range.start..range.start + text.len()
+        value: String,
+        source: Option<TabId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search = value;
+        for (id, (input, _)) in &self.search_inputs {
+            if Some(*id) != source && input.read(cx).value().as_ref() != self.search.as_str() {
+                input.update(cx, |input, cx| {
+                    input.set_value(self.search.clone(), window, cx)
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    fn focus_file_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_search_inputs(window, cx);
+        if let Some(surface) = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .and_then(|tab| self.file_surfaces.get(&tab.id))
+        {
+            surface.update(cx, |surface, cx| surface.focus_search(window, cx));
+        }
+    }
+
+    fn focus_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_search_inputs(window, cx);
+        let id = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .map(|tab| tab.id);
+        if let Some((input, _)) = id.and_then(|id| self.search_inputs.get(&id)) {
+            self.search_focused = true;
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn search_has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.search_inputs
+            .values()
+            .any(|(input, _)| input.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    fn submit_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() || !self.search_has_focus(window, cx) {
+            return;
+        }
+        if let Some(hit) = self.state.search(&self.search).into_iter().next() {
+            match hit {
+                SearchHit::Project(project) => self.activate_project(&project.id, true, window, cx),
+                SearchHit::Worktree(worktree) => self.select_worktree(&worktree.id, window, cx),
+                SearchHit::Task(task) => self.select_task(&task.id, window, cx),
+            }
+        }
+        self.search_focused = false;
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     fn search_key_down(
@@ -7394,40 +7546,14 @@ impl Workspace {
         // Keys reach this handler from every focused descendant, including
         // terminals, so the search only owns them while the workspace itself
         // holds focus.
-        if !self.search_focused || !self.focus.is_focused(window) {
+        if !self.search_has_focus(window, cx) {
             return;
         }
         let handled = match event.keystroke.key.as_str() {
             "escape" => {
                 self.search_focused = false;
-                self.search_marked = None;
+
                 self.focus_active(window, cx);
-                true
-            }
-            "backspace" => {
-                self.search.pop();
-                self.search_marked = None;
-                true
-            }
-            "enter" | "return" => {
-                if let Some(hit) = self.state.search(&self.search).into_iter().next() {
-                    match hit {
-                        SearchHit::Project(project) => {
-                            self.activate_project(&project.id, true, window, cx)
-                        }
-                        SearchHit::Worktree(worktree) => {
-                            self.select_worktree(&worktree.id, window, cx)
-                        }
-                        SearchHit::Task(task) => self.select_task(&task.id, window, cx),
-                    }
-                }
-                self.search_focused = false;
-                self.search_marked = None;
-                true
-            }
-            "a" if event.keystroke.modifiers.platform => {
-                self.search.clear();
-                self.search_marked = None;
                 true
             }
             _ => false,
@@ -7495,11 +7621,12 @@ impl Workspace {
         width: f32,
         x: f32,
         at_window_top: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
         match layout {
-            Layout::Pane(id) => self.render_pane(*id, width, x, at_window_top, cx),
+            Layout::Pane(id) => self.render_pane(*id, width, x, at_window_top, window, cx),
             Layout::Split {
                 axis,
                 ratio,
@@ -7596,6 +7723,7 @@ impl Workspace {
                                 },
                                 x,
                                 at_window_top,
+                                window,
                                 cx,
                             )),
                     )
@@ -7622,6 +7750,7 @@ impl Workspace {
                                     x
                                 },
                                 at_window_top && horizontal,
+                                window,
                                 cx,
                             )),
                     )
@@ -7636,6 +7765,7 @@ impl Workspace {
         pane_width: f32,
         x: f32,
         at_window_top: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
@@ -8300,9 +8430,8 @@ impl Workspace {
             Some(TabContent::Panel(PanelKind::Settings)) => {
                 self.settings_panel.clone().into_any_element()
             }
-            Some(TabContent::Panel(PanelKind::Files)) => self
-                .file_explorer
-                .as_ref()
+            Some(TabContent::Panel(PanelKind::Files)) => active_tab
+                .and_then(|tab| self.file_surfaces.get(&tab.id))
                 .map(|panel| panel.clone().into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
             Some(TabContent::Panel(PanelKind::Preview)) => self
@@ -8330,8 +8459,14 @@ impl Workspace {
                     activity: &self.agent_activity,
                     chats: &chats,
                     query: &self.search,
-                    search_focused: self.search_focused && selected,
-                    focus: self.focus.clone(),
+                    search_focused: active_tab
+                        .and_then(|tab| self.search_inputs.get(&tab.id))
+                        .is_some_and(|(input, _)| {
+                            input.read(cx).focus_handle(cx).is_focused(window)
+                        }),
+                    search_input: active_tab
+                        .and_then(|tab| self.search_inputs.get(&tab.id))
+                        .map(|(input, _)| input),
                     control_inset: 0.0,
                     collapsed_folders: &self.collapsed_project_folders,
                     state_home: self.sessions.state_home(),
@@ -8340,6 +8475,7 @@ impl Workspace {
                     project_sort_menu_open: self.project_sort_menu_open,
                 },
                 Self::panel_action,
+                window,
                 cx,
             ),
             None => div()
@@ -8363,7 +8499,12 @@ impl Workspace {
                 MouseButton::Left,
                 cx.listener(move |workspace, _, window, cx| {
                     if workspace.active_pane != pane_id {
-                        workspace.select_pane(pane_id, window, cx);
+                        if workspace.search_has_focus(window, cx) {
+                            workspace.active_pane = pane_id;
+                            cx.notify();
+                        } else {
+                            workspace.select_pane(pane_id, window, cx);
+                        }
                     }
                 }),
             )
@@ -9638,6 +9779,7 @@ impl Workspace {
                             content_width - 2.0,
                             0.0,
                             false,
+                            window,
                             cx,
                         )),
                 )
@@ -9647,7 +9789,7 @@ impl Workspace {
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(self.render_pane(self.active_pane, width, 0.0, false, cx))
+                .child(self.render_pane(self.active_pane, width, 0.0, false, window, cx))
                 .into_any_element()
         };
         div()
@@ -9873,102 +10015,6 @@ impl Workspace {
     }
 }
 
-impl EntityInputHandler for Workspace {
-    fn text_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        actual_range: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
-        let start = utf16_to_byte(&self.search, range_utf16.start);
-        let end = utf16_to_byte(&self.search, range_utf16.end);
-        let range = start.min(end)..start.max(end);
-        *actual_range = Some(
-            self.search[..range.start].encode_utf16().count()
-                ..self.search[..range.end].encode_utf16().count(),
-        );
-        Some(self.search[range].to_owned())
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        let end = self.search.encode_utf16().count();
-        Some(UTF16Selection {
-            range: end..end,
-            reversed: false,
-        })
-    }
-
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        self.search_marked.as_ref().map(|range| {
-            self.search[..range.start].encode_utf16().count()
-                ..self.search[..range.end].encode_utf16().count()
-        })
-    }
-
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.search_marked = None;
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.replace_search_text(range_utf16, text);
-        cx.notify();
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        text: &str,
-        _: Option<Range<usize>>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let inserted = self.replace_search_text(range_utf16, text);
-        if !text.is_empty() {
-            self.search_marked = Some(inserted);
-        }
-        cx.notify();
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        _: Range<usize>,
-        bounds: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        Some(bounds)
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        _: Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
-        Some(self.search.encode_utf16().count())
-    }
-
-    fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
-        Some(self.search.encode_utf16().count())
-    }
-
-    fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
-        self.search_focused
-    }
-}
-
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(chat_id) = self.pending_automation_chat.take() {
@@ -9987,12 +10033,6 @@ impl Render for Workspace {
 
         let colors = theme::palette(cx);
         let show_window_controls = window_controls_visible(window);
-        if self.search_focused && !self.focus.is_focused(window) {
-            // Focus moved elsewhere (a click on a terminal, say) without going
-            // through the workspace.
-            self.search_focused = false;
-            self.search_marked = None;
-        }
         // The menu belongs to a status bar item; without the item it has nothing to hang from.
         // It also needs the terminals frozen: a shortcut that unfroze them (a new tab, a gather,
         // a modal closing) ends it, rather than leave it under the native terminals.
@@ -10049,6 +10089,18 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_focus_mode_action))
             .on_action(cx.listener(Self::open_orchestrator_action))
             .on_action(cx.listener(Self::open_project_orchestrator_action))
+            .capture_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    if let Some((input, _)) = workspace
+                        .focused_search
+                        .and_then(|id| workspace.search_inputs.get(&id))
+                        && crate::form_input::is_composing(input, window, cx)
+                    {
+                        return;
+                    }
+                    workspace.search_key_down(event, window, cx);
+                }
+            }))
             .on_key_down(cx.listener(Self::search_key_down))
             .on_modifiers_changed(cx.listener(
                 |workspace, event: &gpui::ModifiersChangedEvent, window, cx| {
@@ -10106,6 +10158,7 @@ impl Render for Workspace {
                             window.viewport_size().width.as_f32(),
                             0.0,
                             show_window_controls,
+                            window,
                             cx,
                         )
                     }),

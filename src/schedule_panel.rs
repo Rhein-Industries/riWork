@@ -1,20 +1,22 @@
 //! Compact scheduling tab, using RiWork's existing GPUI input and palette.
+use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use crate::{
     chat::model::{ApprovalMode, ChatInfo, Provider},
     controls,
     layouts::PanelKind,
-    project_settings::{Input, impl_input_handler, input_content},
+    project_settings::Input,
     schedules::{self, Schedule, ScheduleStore, Scope, Target, Timing},
     sessions::{HarnessKind, SessionManager, ShellSession},
     store::{State, Store},
-    theme, ui_text, utf16_to_byte,
+    theme, ui_text,
 };
 use chrono::{DateTime, Local};
 use gpui::{
-    AnyElement, Bounds, Context, EntityInputHandler, FocusHandle, IntoElement, KeyDownEvent,
-    Pixels, Point, Render, UTF16Selection, Window, div, prelude::*, rgb,
+    AnyElement, Context, FocusHandle, IntoElement, KeyDownEvent, Render, Window, div, prelude::*,
+    rgb,
 };
-use std::{ops::Range, time::Duration};
+use gpui::{Entity, Focusable, Subscription};
+use std::time::Duration;
 
 #[derive(Clone, PartialEq, Eq)]
 enum Control {
@@ -158,7 +160,8 @@ pub struct SchedulePanel {
     pending: bool,
     refreshing: bool,
     delete_confirm: Option<String>,
-    dummy: Input,
+    input_states: Vec<Entity<InputState>>,
+    input_subscriptions: Vec<Subscription>,
 }
 impl SchedulePanel {
     pub fn new(
@@ -202,13 +205,14 @@ impl SchedulePanel {
             pending: false,
             refreshing: false,
             delete_confirm: None,
-            dummy: Input::default(),
+            input_states: Vec::new(),
+            input_subscriptions: Vec::new(),
         };
         panel.refresh(cx);
         panel
     }
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus.focus(window, cx);
+        self.focus_control(window, cx);
     }
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.refreshing || self.pending {
@@ -287,22 +291,63 @@ impl SchedulePanel {
             },
         })
     }
-    fn input(&self) -> &Input {
-        if let Some(Control::Field(i)) = self.controls.get(self.active)
-            && let Some(e) = &self.editor
-        {
-            &e.fields[*i]
-        } else {
-            &self.dummy
+    fn open_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.input_subscriptions.clear();
+        self.input_states = self
+            .editor
+            .as_ref()
+            .unwrap()
+            .fields
+            .iter()
+            .map(|draft| text_input::single_line(draft.text.clone(), "", window, cx))
+            .collect();
+        for (index, state) in self.input_states.iter().enumerate() {
+            self.input_subscriptions.push(cx.subscribe_in(
+                state,
+                window,
+                move |panel, state, event, _, cx| {
+                    if panel.pending {
+                        return;
+                    }
+                    match event {
+                        InputEvent::Change => {
+                            if let Some(editor) = &mut panel.editor {
+                                editor.fields[index].text = state.read(cx).value().to_string();
+                                if index == 2 {
+                                    editor.first_quick = None;
+                                }
+                            }
+                            panel.error = None;
+                            cx.notify();
+                        }
+                        InputEvent::Focus => {
+                            if let Some(at) = panel
+                                .controls
+                                .iter()
+                                .position(|control| *control == Control::Field(index))
+                            {
+                                panel.active = at;
+                            }
+                            cx.notify();
+                        }
+                        _ if text_input::is_submit(event, EnterBehavior::Submit)
+                            && panel.editor.is_some() =>
+                        {
+                            panel.save(cx)
+                        }
+                        _ => {}
+                    }
+                },
+            ));
         }
     }
-    fn input_mut(&mut self) -> &mut Input {
-        if let Some(Control::Field(i)) = self.controls.get(self.active)
-            && let Some(e) = &mut self.editor
+    fn focus_control(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Control::Field(index)) = self.controls.get(self.active)
+            && let Some(input) = self.input_states.get(*index)
         {
-            &mut e.fields[*i]
+            input.read(cx).focus_handle(cx).focus(window, cx);
         } else {
-            &mut self.dummy
+            self.focus.focus(window, cx);
         }
     }
     fn accepts_input(&self) -> bool {
@@ -310,16 +355,14 @@ impl SchedulePanel {
             && self.editor.is_some()
             && matches!(self.controls.get(self.active), Some(Control::Field(_)))
     }
-    fn edited(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.controls.get(self.active), Some(Control::Field(2)))
-            && let Some(editor) = &mut self.editor
-        {
-            editor.first_quick = None;
-        }
-        self.error = None;
-        cx.notify();
-    }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(event.keystroke.key.as_str(), "escape" | "tab")
+            && let Some(Control::Field(index)) = self.controls.get(self.active)
+            && let Some(state) = self.input_states.get(*index)
+            && crate::form_input::is_composing(state, window, cx)
+        {
+            return;
+        }
         if self.pending {
             return;
         }
@@ -338,6 +381,8 @@ impl SchedulePanel {
             }
             "escape" => {
                 self.editor = None;
+                self.input_states.clear();
+                self.input_subscriptions.clear();
                 self.active = 0;
                 self.delete_confirm = None;
             }
@@ -352,18 +397,9 @@ impl SchedulePanel {
                     self.perform(action, window, cx);
                 }
             }
-            "enter" if self.editor.is_some() => self.save(cx),
-            _ if self.accepts_input() => {
-                let before = self.input().text.clone();
-                if !self.input_mut().key(event, cx) {
-                    return;
-                }
-                if self.input().text != before {
-                    self.edited(cx);
-                }
-            }
             _ => return,
         }
+        self.focus_control(window, cx);
         cx.stop_propagation();
         cx.notify();
     }
@@ -371,7 +407,8 @@ impl SchedulePanel {
         if self.pending {
             return;
         }
-        self.focus.focus(window, cx);
+        let opening = matches!(&control, Control::New | Control::Edit(_));
+        let preset = matches!(&control, Control::FirstIn(_));
         self.error = None;
         let deleting = matches!(control, Control::Delete(_));
         match control {
@@ -407,6 +444,8 @@ impl SchedulePanel {
             }
             Control::Cancel => {
                 self.editor = None;
+                self.input_states.clear();
+                self.input_subscriptions.clear();
                 self.active = 0;
                 self.delete_confirm = None;
             }
@@ -518,6 +557,25 @@ impl SchedulePanel {
                 }
             }
         }
+        if opening && self.editor.is_some() {
+            self.open_inputs(window, cx);
+        }
+        if self.editor.is_none() {
+            self.input_states.clear();
+            self.input_subscriptions.clear();
+        }
+        if preset
+            && let Some(editor) = &self.editor
+            && let Some(state) = self.input_states.get(2)
+        {
+            let value = editor.fields[2].text.clone();
+            state.update(cx, |state, cx| state.set_value(value, window, cx));
+        }
+        if opening && let Some(input) = self.input_states.first() {
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        } else {
+            self.focus_control(window, cx);
+        }
         cx.notify();
     }
     fn finish(&mut self, work: gpui::Task<Result<(), String>>, cx: &mut Context<Self>) {
@@ -536,6 +594,14 @@ impl SchedulePanel {
         .detach();
     }
     fn save(&mut self, cx: &mut Context<Self>) {
+        if self.pending {
+            return;
+        }
+        if let Some(editor) = &mut self.editor {
+            for (draft, state) in editor.fields.iter_mut().zip(&self.input_states) {
+                draft.text = state.read(cx).value().to_string();
+            }
+        }
         let result = (|| {
             let e = self.editor.as_ref().ok_or("No schedule editor")?;
             let parsed = DateTime::parse_from_rfc3339(e.fields[2].text.trim())
@@ -635,7 +701,21 @@ impl SchedulePanel {
                 panel.pending = false;
                 match result {
                     Ok(()) => {
+                        let inputs = panel.input_states.clone();
+                        let focus = panel.focus.clone();
+                        let owner = cx.entity_id();
+                        cx.defer(move |app| {
+                            app.with_window(owner, |window, app| {
+                                if inputs.iter().any(|input| {
+                                    input.read(app).focus_handle(app).is_focused(window)
+                                }) {
+                                    focus.focus(window, app);
+                                }
+                            });
+                        });
                         panel.editor = None;
+                        panel.input_states.clear();
+                        panel.input_subscriptions.clear();
                         panel.error = None;
                     }
                     Err(e) => panel.error = Some(e),
@@ -721,7 +801,7 @@ impl SchedulePanel {
         let colors = theme::palette(cx);
         let control = self.controls.len();
         self.controls.push(Control::Field(index));
-        let input = &self.editor.as_ref().unwrap().fields[index];
+        let input = &self.input_states[index];
         div()
             .flex()
             .flex_col()
@@ -742,17 +822,16 @@ impl SchedulePanel {
                     .border_color(rgb(colors.divider))
                     // Native's field draws its own rounded edge.
                     .when(ui_text::is_native(), |field| field.border_0())
-                    .child(input_content(
+                    .child(crate::form_input::frame(
+                        ("schedule-input", index),
                         input,
-                        self.active == control && self.focus.is_focused(window),
-                        "",
-                        &self.focus,
-                        cx.entity(),
-                        colors,
+                        self.pending,
+                        window,
+                        cx,
                     ))
                     .on_click(cx.listener(move |panel, _, window, cx| {
                         panel.active = control;
-                        panel.focus.focus(window, cx);
+                        panel.focus_control(window, cx);
                         cx.notify();
                     })),
             )
@@ -762,7 +841,12 @@ impl SchedulePanel {
 impl Render for SchedulePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
-        let focused_control = self.controls.get(self.active).cloned();
+        let focused_control = self
+            .input_states
+            .iter()
+            .position(|input| input.read(cx).focus_handle(cx).is_focused(window))
+            .map(Control::Field)
+            .or_else(|| self.controls.get(self.active).cloned());
         self.controls.clear();
         let mut body = div()
             .w_full()
@@ -1366,7 +1450,7 @@ impl Render for SchedulePanel {
                 .id("schedule-panel")
                 .track_focus(&self.focus)
                 .key_context("Schedules")
-                .on_key_down(cx.listener(Self::key_down))
+                .capture_key_down(cx.listener(Self::key_down))
                 .child(header)
                 .child(
                     div()
@@ -1386,7 +1470,7 @@ impl Render for SchedulePanel {
             .min_w_0()
             .track_focus(&self.focus)
             .key_context("Schedules")
-            .on_key_down(cx.listener(Self::key_down))
+            .capture_key_down(cx.listener(Self::key_down))
             .overflow_y_scroll()
             .p(ui_text::space(14.0))
             .bg(rgb(colors.bg))
@@ -1397,7 +1481,7 @@ impl Render for SchedulePanel {
             .into_any_element()
     }
 }
-impl_input_handler!(SchedulePanel);
+
 fn selected_timing(repeat: u64, at: u64, minutes: &str) -> Result<Timing, String> {
     let timing = if repeat == 0 {
         Timing::Once { at }

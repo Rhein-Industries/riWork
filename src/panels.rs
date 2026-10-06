@@ -10,9 +10,8 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, Bounds, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle,
-    FontWeight, IntoElement, MouseButton, Pixels, Render, Stateful, Window, canvas, div,
-    prelude::*, px, rgb,
+    AnyElement, Bounds, Context, Div, Entity, FontWeight, IntoElement, MouseButton, Pixels, Render,
+    Stateful, Window, canvas, div, prelude::*, px, rgb,
 };
 
 use crate::{
@@ -173,7 +172,7 @@ pub struct PanelData<'a> {
     pub chats: &'a [ChatActivity],
     pub query: &'a str,
     pub search_focused: bool,
-    pub focus: FocusHandle,
+    pub search_input: Option<&'a Entity<crate::text_input::InputState>>,
     pub control_inset: f32,
     pub collapsed_folders: &'a HashSet<String>,
     pub state_home: &'a Path,
@@ -516,10 +515,11 @@ impl ProjectDropContext {
     }
 }
 
-pub fn render_panel<V: Render + EntityInputHandler + 'static>(
+pub fn render_panel<V: Render + 'static>(
     kind: PanelKind,
     data: PanelData<'_>,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    window: &Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
@@ -1021,33 +1021,12 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                 sort_selector_bounds: Rc::new(Cell::new(Bounds::<Pixels>::default())),
             },
             on_action,
+            window,
             cx,
         );
         return panel;
     }
 
-    let search_label = if data.query.is_empty() {
-        "⌕ SEARCH  [CMD+F]".to_owned()
-    } else {
-        format!(
-            "⌕ {}{}",
-            data.query,
-            if data.search_focused { "▌" } else { "" }
-        )
-    };
-    let search_input = data.search_focused.then(|| {
-        let focus = data.focus.clone();
-        let view = cx.entity();
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, cx| {
-                window.handle_input(&focus, ElementInputHandler::new(bounds, view.clone()), cx);
-            },
-        )
-        .absolute()
-        .inset_0()
-        .into_any_element()
-    });
     let search_action = on_action.clone();
     let as_icons = icons::labels_as_icons(cx);
     let sort_selector_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
@@ -1094,41 +1073,14 @@ pub fn render_panel<V: Render + EntityInputHandler + 'static>(
                             }))
                             .overflow_hidden()
                             .text_ellipsis()
-                            .map(|search| {
-                                if !ui_text::is_native() {
-                                    return search.child(search_label);
-                                }
-                                // Native: a capsule search field, as in a Finder or Mail sidebar.
-                                search
-                                    .my(ui_text::space(4.0))
-                                    .mx(ui_text::space(6.0))
-                                    .h(ui_text::space(22.0))
-                                    .rounded_full()
-                                    .bg(rgb(colors.panel_active))
-                                    .gap(ui_text::space(5.0))
-                                    .child(icons::mark("⌕", 10.0, colors.muted))
-                                    .child(div().flex_1().min_w_0().text_ellipsis().child(
-                                        if data.query.is_empty() {
-                                            "Search".to_owned()
-                                        } else {
-                                            format!(
-                                                "{}{}",
-                                                data.query,
-                                                if data.search_focused { "▌" } else { "" }
-                                            )
-                                        },
-                                    ))
-                                    .when(data.query.is_empty(), |search| {
-                                        search.child(
-                                            div()
-                                                .flex_none()
-                                                .text_size(ui_text::text(9.0))
-                                                .text_color(rgb(colors.muted))
-                                                .child("⌘F"),
-                                        )
-                                    })
-                            })
-                            .children(search_input)
+                            .children(data.search_input.map(|input| {
+                                crate::form_input::search_frame(
+                                    format!("{name}-search-input"),
+                                    input,
+                                    window,
+                                    cx,
+                                )
+                            }))
                             .on_click(cx.listener(move |view, _, window, cx| {
                                 search_action(view, PanelAction::Search, window, cx);
                             })),
@@ -1272,11 +1224,12 @@ struct NativeChrome {
 
 /// A list panel under Native: the shared header (its name, a count and, for Projects, the
 /// sort and create buttons), the search field, and the inset rows.
-fn native_panel<V: Render + EntityInputHandler + 'static>(
+fn native_panel<V: Render + 'static>(
     kind: PanelKind,
     data: &PanelData<'_>,
     chrome: NativeChrome,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    window: &Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
@@ -1346,19 +1299,6 @@ fn native_panel<V: Render + EntityInputHandler + 'static>(
         }
     }
     let name = kind.name();
-    let search_input = data.search_focused.then(|| {
-        let focus = data.focus.clone();
-        let view = cx.entity();
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, cx| {
-                window.handle_input(&focus, ElementInputHandler::new(bounds, view.clone()), cx);
-            },
-        )
-        .absolute()
-        .inset_0()
-        .into_any_element()
-    });
     let search_action = on_action.clone();
     let search = controls::search_field(
         div().id(format!("{name}-search")).relative(),
@@ -1367,33 +1307,9 @@ fn native_panel<V: Render + EntityInputHandler + 'static>(
     )
     .cursor_text()
     .child(icons::mark("⌕", 10.0, colors.muted))
-    .child(
-        div()
-            .flex_1()
-            .min_w_0()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
-            .child(if data.query.is_empty() {
-                "Search".to_owned()
-            } else {
-                format!(
-                    "{}{}",
-                    data.query,
-                    if data.search_focused { "▌" } else { "" }
-                )
-            }),
-    )
-    .when(data.query.is_empty(), |search| {
-        search.child(
-            div()
-                .flex_none()
-                .text_size(ui_text::text(9.0))
-                .text_color(rgb(colors.muted))
-                .child("⌘F"),
-        )
-    })
-    .children(search_input)
+    .children(data.search_input.map(|input| {
+        crate::form_input::search_frame(format!("{name}-search-input"), input, window, cx)
+    }))
     .on_click(cx.listener(move |view, _, window, cx| {
         search_action(view, PanelAction::Search, window, cx);
     }));
