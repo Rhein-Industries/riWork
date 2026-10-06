@@ -53,6 +53,8 @@ pub enum PanelAction {
     Task(String),
     Shell(String),
     Search,
+    /// Empty the search field, from its clear button.
+    ClearSearch,
     ToggleProjectSortMenu,
     CloseProjectSortMenu,
     SetProjectOrder(ProjectOrder),
@@ -1028,6 +1030,7 @@ pub fn render_panel<V: Render + 'static>(
     }
 
     let search_action = on_action.clone();
+    let clear_action = on_action.clone();
     let as_icons = icons::labels_as_icons(cx);
     let sort_selector_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
     let panel =
@@ -1073,6 +1076,7 @@ pub fn render_panel<V: Render + 'static>(
                             }))
                             .overflow_hidden()
                             .text_ellipsis()
+                            .gap(ui_text::space(5.0))
                             .children(data.search_input.map(|input| {
                                 crate::form_input::search_frame(
                                     format!("{name}-search-input"),
@@ -1080,6 +1084,14 @@ pub fn render_panel<V: Render + 'static>(
                                     window,
                                     cx,
                                 )
+                            }))
+                            .children((!data.query.is_empty()).then(|| {
+                                search_clear_button(name, colors).on_click(cx.listener(
+                                    move |view, _, window, cx| {
+                                        cx.stop_propagation();
+                                        clear_action(view, PanelAction::ClearSearch, window, cx);
+                                    },
+                                ))
                             }))
                             .on_click(cx.listener(move |view, _, window, cx| {
                                 search_action(view, PanelAction::Search, window, cx);
@@ -1222,6 +1234,29 @@ struct NativeChrome {
     sort_selector_bounds: Rc<Cell<Bounds<Pixels>>>,
 }
 
+/// The clear button inside a search field: a muted filled cross, brought to the text color
+/// under the pointer. The caller adds the click.
+fn search_clear_button(name: &str, colors: theme::Palette) -> gpui::Stateful<Div> {
+    div()
+        .id(format!("{name}-search-clear"))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(rgb(colors.muted))
+        .hover(move |style| style.text_color(rgb(colors.text)))
+        .child(if ui_text::is_native() {
+            icons::symbol("xmark.circle.fill", 10.0, None)
+        } else {
+            div().child("×").into_any_element()
+        })
+        .child(crate::tooltip::anchor(
+            "Clear the search",
+            crate::tooltip::Look::Control,
+        ))
+}
+
 /// A list panel under Native: the shared header (its name, a count and, for Projects, the
 /// sort and create buttons), the search field, and the inset rows.
 fn native_panel<V: Render + 'static>(
@@ -1300,6 +1335,9 @@ fn native_panel<V: Render + 'static>(
     }
     let name = kind.name();
     let search_action = on_action.clone();
+    let clear_action = on_action.clone();
+    // One field: the magnifier, the text and, once something is typed, its clear button, all
+    // on the field's own fill. The text box inside draws no box of its own.
     let search = controls::search_field(
         div().id(format!("{name}-search")).relative(),
         data.search_focused,
@@ -1309,6 +1347,12 @@ fn native_panel<V: Render + 'static>(
     .child(icons::mark("⌕", 10.0, colors.muted))
     .children(data.search_input.map(|input| {
         crate::form_input::search_frame(format!("{name}-search-input"), input, window, cx)
+    }))
+    .children((!data.query.is_empty()).then(|| {
+        search_clear_button(name, colors).on_click(cx.listener(move |view, _, window, cx| {
+            cx.stop_propagation();
+            clear_action(view, PanelAction::ClearSearch, window, cx);
+        }))
     }))
     .on_click(cx.listener(move |view, _, window, cx| {
         search_action(view, PanelAction::Search, window, cx);

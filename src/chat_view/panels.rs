@@ -26,6 +26,13 @@ use super::{
     widgets::{self, Look, button, capsule, dimmed},
 };
 
+/// The chat header's inset from the tab's sides and the gap between its controls. The
+/// message box under the list keeps the same, so its edges line up with the header's.
+const BAR_INSET: f32 = 10.0;
+const BAR_GAP: f32 = 6.0;
+/// The space between the message box's edge and its text, clear of its round corners.
+const FIELD_INSET: f32 = 12.0;
+
 fn id(parts: impl Into<String>) -> ElementId {
     ElementId::Name(SharedString::from(parts.into()))
 }
@@ -336,8 +343,8 @@ impl ChatView {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(ui_text::space(6.0))
-            .px(ui_text::space(10.0))
+            .gap(ui_text::space(BAR_GAP))
+            .px(ui_text::space(BAR_INSET))
             .py(ui_text::space(5.0))
             .border_b_1()
             .border_color(rgb(colors.divider))
@@ -1238,27 +1245,71 @@ impl ChatView {
         let colors = look.colors;
         let running = self.running();
         let dictation = self.dictation.phase();
-        // The mic, its key and its hints only while Settings shows it in chats.
+        // The mic, its key and its status only while Settings shows it in chats.
         let mic = dictate::mic_shown(cx);
-        let hint = composer::hint(dictation, running, mic);
+        // No helper text at rest: only a dictation at work says what it does.
+        let status = composer::status(dictation, mic);
+        let queued = !self.attachments.is_empty() || !self.submissions.is_empty();
+        // Native: a bare paperclip that shows its fill only under the pointer; the colorful
+        // themes write a plus. Its name, kinds and paste/drop are in the tooltip.
+        let attach = if look.native {
+            widgets::symbol_button(
+                "chat-attach",
+                "paperclip",
+                "Attach files · UTF-8 text, PNG or JPEG · or paste or drop them",
+                look,
+            )
+            .size(ui_text::space(widgets::ROUND_BUTTON))
+        } else {
+            button("chat-attach", "+", None, look).child(tooltip::anchor(
+                "Attach files · UTF-8 text, PNG or JPEG · or paste or drop them",
+                TipLook::Control,
+            ))
+        }
+        .on_click(cx.listener(|view, _, window, cx| view.attach_picker(window, cx)));
         div()
+            .id("chat-composer-bar")
             .w_full()
             .flex()
             .flex_col()
-            .gap(ui_text::space(4.0))
-            .px(ui_text::space(12.0))
-            .py(ui_text::space(8.0))
+            .gap(ui_text::space(BAR_GAP))
+            // The header's inset on the sides, so the field and the buttons line up with its
+            // controls; the same distance above and below the field.
+            .px(ui_text::space(BAR_INSET))
+            .py(ui_text::space(BAR_INSET))
             .border_t_1()
             .border_color(rgb(colors.divider))
             .bg(rgb(colors.panel))
+            // A drop target only while files are dragged over it.
+            .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| {
+                style.bg(rgb(look.tint(colors.focus, 0.12)))
+            })
+            .on_drop(
+                cx.listener(|view, paths: &gpui::ExternalPaths, window, cx| {
+                    view.dropped_attachments(paths, window, cx)
+                }),
+            )
+            .children(queued.then(|| {
+                div()
+                    .id("chat-attachment-queue")
+                    .max_h(ui_text::space(280.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(ui_text::space(4.))
+                    .child(self.attachment_chips(look, cx))
+                    .child(self.submission_cards(look, cx))
+            }))
             .child(
                 // The buttons keep to the bottom, each centered on the box's last line (see
-                // `widgets::beside_field`), so they share one center line with the box.
+                // `widgets::beside_field`): on the box's center while it has one line, beside
+                // its last line once it grows, as a message field keeps them.
                 div()
                     .w_full()
                     .flex()
                     .items_end()
-                    .gap(ui_text::space(8.0))
+                    .gap(ui_text::space(BAR_GAP))
+                    .child(widgets::beside_field(attach))
                     .child(
                         div()
                             .flex_1()
@@ -1267,8 +1318,8 @@ impl ChatView {
                     )
                     .children(mic.then(|| widgets::beside_field(self.mic_button(look, cx))))
                     // Native's are round symbol buttons beside the field, as a message field
-                    // has them; their keys are in the tooltips and the hint below. Send waits
-                    // in grey until there is something to send.
+                    // has them; their keys are in the tooltips. Send waits in grey until
+                    // there is something to send.
                     .children(running.then(|| {
                         widgets::beside_field(
                             if look.native {
@@ -1296,7 +1347,11 @@ impl ChatView {
                             widgets::round_button(
                                 "chat-send",
                                 "arrow.up",
-                                "Send · ⏎",
+                                if running {
+                                    "Send · ⏎ steers the turn · ⇧⏎ new line"
+                                } else {
+                                    "Send · ⏎ · ⇧⏎ new line"
+                                },
                                 if empty {
                                     Button::Disabled
                                 } else {
@@ -1305,50 +1360,25 @@ impl ChatView {
                                 look,
                             )
                         } else {
-                            button("chat-send", "Send  ⏎", Some(colors.cyan), look)
+                            button("chat-send", "Send", Some(colors.cyan), look)
+                                .child(tooltip::anchor("⏎ sends · ⇧⏎ new line", TipLook::Control))
                         }
                         .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx))),
                     )),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(ui_text::space(6.))
-                    .child(button("chat-attach", "Attach…", None, look).on_click(
-                        cx.listener(|view, _, window, cx| view.attach_picker(window, cx)),
-                    ))
-                    .child(
-                        div()
-                            .text_size(ui_text::text(9.))
-                            .text_color(rgb(colors.muted))
-                            .child("UTF-8 text · PNG · JPEG · paste or drop files"),
-                    ),
-            )
-            .child(
-                div()
-                    .id("chat-attachment-queue")
-                    .max_h(ui_text::space(280.))
-                    .overflow_y_scroll()
-                    .child(self.attachment_chips(look, cx))
-                    .child(self.submission_cards(look, cx)),
-            )
-            .child(
+            .children(status.map(|status| {
                 div()
                     .text_size(ui_text::text(9.0))
-                    .text_color(rgb(if dictation.is_active() {
-                        colors.text
-                    } else {
-                        colors.muted
-                    }))
-                    .child(hint),
-            )
+                    .text_color(rgb(colors.text))
+                    .child(status)
+            }))
             .into_any_element()
     }
 
     /// The mic beside Send: click to dictate, click again to stop; ⌃⌥D does the same. Native
-    /// draws it as the round buttons beside it: a mic, filled in the working color while it
-    /// listens and pulsing while it gets ready or settles. The colorful themes write it out.
+    /// draws it as a bare round symbol button, as the paperclip: a mic, filled in the working
+    /// color while it listens and pulsing while it gets ready or settles. The colorful themes
+    /// write it out.
     fn mic_button(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let phase = self.dictation.phase();
@@ -1370,7 +1400,9 @@ impl ChatView {
                 Phase::Failed(_) => "mic.slash",
                 Phase::Idle => "mic",
             };
-            widgets::round_button("chat-dictate", symbol, tooltip, Button::Secondary, look)
+            // Quiet at rest, as the paperclip: a bare symbol with a fill under the pointer.
+            widgets::symbol_button("chat-dictate", symbol, tooltip, look)
+                .size(ui_text::space(widgets::ROUND_BUTTON))
                 .when(phase.is_active(), |mic| mic.text_color(rgb(colors.working)))
         } else {
             let label = match phase {
@@ -1463,9 +1495,10 @@ impl ChatView {
                     .bg(transparent_black())
             })
         })
-        .px(ui_text::space(8.))
+        .px(ui_text::space(FIELD_INSET))
         .py(ui_text::space(widgets::FIELD_PAD_Y))
         .text_size(ui_text::text(widgets::FIELD_TEXT))
+        .line_height(widgets::field_line())
         .font_family(ui_text::ui_family())
         .capture_action(cx.listener(Self::capture_enter));
         div()
@@ -1477,11 +1510,6 @@ impl ChatView {
             .border_color(transparent_black())
             .child(surface)
             .child(editor)
-            .on_drop(
-                cx.listener(|view, paths: &gpui::ExternalPaths, window, cx| {
-                    view.dropped_attachments(paths, window, cx)
-                }),
-            )
     }
 }
 

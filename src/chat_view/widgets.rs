@@ -212,8 +212,13 @@ pub(super) const FIELD_PAD_Y: f32 = 6.0;
 /// The height of an input box of one line: its text's line box (GPUI's default line height,
 /// φ times the text size, rounded as GPUI rounds it), its padding and its 1 px border.
 pub(super) fn field_line_height() -> Pixels {
-    let line = (f32::from(ui_text::text(FIELD_TEXT)) * 1.618_034).round();
-    px(line + 2.0 * ui_text::space_f32(FIELD_PAD_Y) + 2.0)
+    field_line() + px(2.0 * ui_text::space_f32(FIELD_PAD_Y) + 2.0)
+}
+
+/// The line box of an input box's text, which the box sets explicitly so that
+/// `field_line_height` is its real height.
+pub(super) fn field_line() -> Pixels {
+    px((f32::from(ui_text::text(FIELD_TEXT)) * 1.618_034).round())
 }
 
 /// A button beside the message box, centered on the box's line: on the box's own center while

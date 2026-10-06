@@ -2876,6 +2876,10 @@ impl Workspace {
             PanelAction::Task(id) => self.select_task(&id, window, cx),
             PanelAction::Shell(id) => self.show_shell(&id, window, cx),
             PanelAction::Search => self.focus_search_input(window, cx),
+            PanelAction::ClearSearch => {
+                self.set_search(String::new(), None, window, cx);
+                self.focus_search_input(window, cx);
+            }
             PanelAction::Remote(action) => self.remote_action(action, window, cx),
         }
     }

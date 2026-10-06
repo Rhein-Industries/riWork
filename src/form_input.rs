@@ -122,11 +122,22 @@ pub fn search_frame(
     window: &Window,
     cx: &mut App,
 ) -> InputBase {
-    let colors = crate::theme::palette(cx);
+    // The search field around it is the one box: its fill, edge and focus ring. The text box
+    // only holds the text, with no edge, fill or padding of its own.
     let frame = plain_frame(id, state, false, window, cx)
-        .when(crate::ui_text::is_native(), |frame| {
-            frame.rounded_full().bg(gpui::rgb(colors.panel_active))
-        });
+        .flex_1()
+        .border_0()
+        .rounded(gpui::px(0.))
+        .bg(gpui::transparent_black())
+        .styles(|styles| {
+            styles.focused(|style| {
+                style
+                    .border_color(gpui::transparent_black())
+                    .bg(gpui::transparent_black())
+            })
+        })
+        .px(gpui::px(0.))
+        .py(gpui::px(0.));
     paste_policy(frame, state, PastePolicy::Spaces)
 }
 
