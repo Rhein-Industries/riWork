@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
-    controls, icons,
+    behavior_controls as behavior, controls, icons,
     theme::{self, Palette},
     tooltip::{self, Look},
     ui_text,
@@ -307,74 +307,84 @@ pub fn render_settings<V: 'static>(
                 .flex()
                 .gap(ui_text::space(8.0))
                 .child(
-                    div()
-                        .id("status-bar-visible")
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(ui_text::space(8.0))
-                        .px(ui_text::space(8.0))
-                        .py(ui_text::space(7.0))
-                        .bg(rgb(colors.panel_active))
-                        .text_size(ui_text::text(11.0))
-                        .text_color(rgb(colors.text))
-                        .hover(move |style| {
-                            controls::hovered(style, controls::row_hover(false, colors), |style| {
-                                style.bg(rgb(colors.divider))
-                            })
+                    behavior::switch_content(
+                        "status-bar-visible",
+                        "Show status bar",
+                        if ui_text::is_native() {
+                            div().child("Show status bar").into_any_element()
+                        } else {
+                            check_box(master_enabled, colors)
+                        },
+                        master_enabled,
+                    )
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(8.0))
+                    .px(ui_text::space(8.0))
+                    .py(ui_text::space(7.0))
+                    .bg(rgb(colors.panel_active))
+                    .text_size(ui_text::text(11.0))
+                    .text_color(rgb(colors.text))
+                    .hover(move |style| {
+                        controls::hovered(style, controls::row_hover(false, colors), |style| {
+                            style.bg(rgb(colors.divider))
                         })
-                        .map(|row| {
-                            // Native: a row with a switch at its end, like the toggles above.
-                            controls::native(row, |row| {
-                                controls::row(row, false, colors).justify_between()
-                            })
+                    })
+                    .map(|row| {
+                        // Native: a row with a switch at its end, like the toggles above.
+                        controls::native(row, |row| {
+                            controls::row(row, false, colors).justify_between()
                         })
-                        .when(!ui_text::is_native(), |row| {
-                            row.child(check_box(master_enabled, colors))
-                        })
-                        .child("Show status bar")
-                        .when(ui_text::is_native(), |row| {
-                            row.child(controls::switch(master_enabled, colors))
-                        })
-                        .on_click(cx.listener(move |view, _, window, cx| {
+                    })
+                    .when(!ui_text::is_native(), |row| row.child("Show status bar"))
+                    .when(ui_text::is_native(), |row| {
+                        row.child(controls::switch(master_enabled, colors))
+                    })
+                    .on_change({
+                        let listener = cx.listener(move |view, checked: &bool, window, cx| {
                             let mut next = master_settings.clone();
-                            next.enabled = !master_enabled;
+                            next.enabled = *checked;
                             master_change(view, next, window, cx);
-                        })),
+                        });
+                        move |checked, _, window, cx| listener(&checked, window, cx)
+                    }),
                 )
                 .child(
-                    div()
-                        .id("status-bar-reset")
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .px(ui_text::space(8.0))
-                        .border_1()
-                        .border_color(rgb(colors.divider))
-                        .text_size(ui_text::text(9.0))
-                        .text_color(rgb(colors.cyan))
-                        .hover(move |style| {
-                            controls::hovered(
-                                style,
-                                controls::Button::Secondary.hover(colors),
-                                |style| {
-                                    style
-                                        .bg(rgb(colors.panel_active))
-                                        .border_color(rgb(colors.cyan))
-                                },
-                            )
+                    behavior::button_content(
+                        "status-bar-reset",
+                        "Reset defaults",
+                        ui_text::cased("Reset defaults"),
+                    )
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .px(ui_text::space(8.0))
+                    .border_1()
+                    .border_color(rgb(colors.divider))
+                    .text_size(ui_text::text(9.0))
+                    .text_color(rgb(colors.cyan))
+                    .hover(move |style| {
+                        controls::hovered(
+                            style,
+                            controls::Button::Secondary.hover(colors),
+                            |style| {
+                                style
+                                    .bg(rgb(colors.panel_active))
+                                    .border_color(rgb(colors.cyan))
+                            },
+                        )
+                    })
+                    .map(|button| {
+                        controls::native(button, |button| {
+                            controls::button(button, controls::Button::Secondary, colors)
+                                .text_size(ui_text::text(10.0))
                         })
-                        .map(|button| {
-                            controls::native(button, |button| {
-                                controls::button(button, controls::Button::Secondary, colors)
-                                    .text_size(ui_text::text(10.0))
-                            })
-                        })
-                        .child(ui_text::cased("Reset defaults"))
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            reset(view, StatusBarSettings::default(), window, cx)
-                        })),
+                    })
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        reset(view, StatusBarSettings::default(), window, cx)
+                    })),
                 ),
         );
     for side in [StatusSide::Left, StatusSide::Right] {
@@ -447,75 +457,87 @@ fn render_item<V: 'static>(
         .border_color(rgb(colors.divider))
         .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
         .child(
-            div()
-                .id(format!("status-item-{}-visible", item.kind.key()))
-                .flex()
-                .flex_1()
-                .min_w_0()
-                .items_center()
-                .gap(ui_text::space(8.0))
-                .hover(|style| style.text_color(rgb(colors.cyan)))
-                .child(check_box(item.enabled, colors))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(ui_text::text(11.0))
-                        .text_color(rgb(if item.enabled {
-                            colors.text
-                        } else {
-                            colors.muted
-                        }))
-                        .text_ellipsis()
-                        .child(item.kind.label()),
-                )
-                .child(tooltip::anchor(item.kind.description(), Look::Status))
-                .on_click(cx.listener(move |view, _, window, cx| {
+            behavior::switch_content(
+                format!("status-item-{}-visible", item.kind.key()),
+                item.kind.label(),
+                check_box(item.enabled, colors),
+                item.enabled,
+            )
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(ui_text::space(8.0))
+            .hover(|style| style.text_color(rgb(colors.cyan)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(ui_text::text(11.0))
+                    .text_color(rgb(if item.enabled {
+                        colors.text
+                    } else {
+                        colors.muted
+                    }))
+                    .text_ellipsis()
+                    .child(item.kind.label()),
+            )
+            .child(tooltip::anchor(item.kind.description(), Look::Status))
+            .on_change({
+                let listener = cx.listener(move |view, checked: &bool, window, cx| {
                     let mut next = toggle_settings.clone();
-                    next.set_visible(item.kind, !item.enabled);
+                    next.set_visible(item.kind, *checked);
                     toggle(view, next, window, cx);
-                })),
+                });
+                move |checked, _, window, cx| listener(&checked, window, cx)
+            }),
         )
         .child(
-            div()
-                .id(format!("status-item-{}-side", item.kind.key()))
-                .flex_none()
-                .px(ui_text::space(5.0))
-                .py(ui_text::space(4.0))
-                .border_1()
-                .border_color(rgb(colors.divider))
-                .text_size(ui_text::text(9.0))
-                .text_color(rgb(if item.side == StatusSide::Left {
-                    colors.cyan
+            behavior::button_content(
+                format!("status-item-{}-side", item.kind.key()),
+                format!(
+                    "Move {} to the {} side",
+                    item.kind.label(),
+                    item.side.opposite().label()
+                ),
+                ui_text::cased(item.side.label()),
+            )
+            .flex_none()
+            .px(ui_text::space(5.0))
+            .py(ui_text::space(4.0))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .text_size(ui_text::text(9.0))
+            .text_color(rgb(if item.side == StatusSide::Left {
+                colors.cyan
+            } else {
+                colors.magenta
+            }))
+            .hover(move |style| {
+                controls::hovered(style, controls::Button::Secondary.hover(colors), |style| {
+                    style.border_color(rgb(colors.cyan))
+                })
+            })
+            .map(|button| {
+                controls::native(button, |button| {
+                    controls::button(button, controls::Button::Secondary, colors)
+                        .px(ui_text::space(9.0))
+                        .py(ui_text::space(2.0))
+                })
+            })
+            .child(tooltip::anchor(
+                if item.side == StatusSide::Left {
+                    "Move to the right side"
                 } else {
-                    colors.magenta
-                }))
-                .hover(move |style| {
-                    controls::hovered(style, controls::Button::Secondary.hover(colors), |style| {
-                        style.border_color(rgb(colors.cyan))
-                    })
-                })
-                .map(|button| {
-                    controls::native(button, |button| {
-                        controls::button(button, controls::Button::Secondary, colors)
-                            .px(ui_text::space(9.0))
-                            .py(ui_text::space(2.0))
-                    })
-                })
-                .child(ui_text::cased(item.side.label()))
-                .child(tooltip::anchor(
-                    if item.side == StatusSide::Left {
-                        "Move to the right side"
-                    } else {
-                        "Move to the left side"
-                    },
-                    Look::Status,
-                ))
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    let mut next = route_settings.clone();
-                    next.set_side(item.kind, item.side.opposite());
-                    route(view, next, window, cx);
-                })),
+                    "Move to the left side"
+                },
+                Look::Status,
+            ))
+            .on_click(cx.listener(move |view, _, window, cx| {
+                let mut next = route_settings.clone();
+                next.set_side(item.kind, item.side.opposite());
+                route(view, next, window, cx);
+            })),
         )
         .child(move_button(
             item.kind,
@@ -546,46 +568,53 @@ fn move_button<V: 'static>(
 ) -> AnyElement {
     let colors = theme::palette(cx);
     let settings = settings.clone();
-    div()
-        .id(format!(
+    behavior::button_content(
+        format!(
             "status-item-{}-{}",
             kind.key(),
             if up { "up" } else { "down" }
-        ))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(ui_text::space(22.0))
-        .h(ui_text::space(22.0))
-        .text_size(ui_text::text(11.0))
-        .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
-        .when(enabled, |button| {
-            button.hover(|style| style.bg(rgb(colors.divider)))
-        })
-        .map(|button| controls::native(button, |button| button.rounded_full()))
-        .child(icons::mark(
+        ),
+        format!(
+            "Move {} {}",
+            kind.label(),
+            if up { "earlier" } else { "later" }
+        ),
+        icons::mark(
             if up { "↑" } else { "↓" },
             10.0,
             if enabled { colors.cyan } else { colors.muted },
-        ))
-        .child(tooltip::anchor(
-            if up {
-                "Move earlier on this side"
-            } else {
-                "Move later on this side"
-            },
-            Look::Status,
-        ))
-        .on_click(cx.listener(move |view, _, window, cx| {
-            if enabled {
-                let mut next = settings.clone();
-                if next.move_item(kind, up) {
-                    on_change(view, next, window, cx);
-                }
+        ),
+    )
+    .disabled(!enabled)
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .w(ui_text::space(22.0))
+    .h(ui_text::space(22.0))
+    .text_size(ui_text::text(11.0))
+    .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
+    .when(enabled, |button| {
+        button.hover(|style| style.bg(rgb(colors.divider)))
+    })
+    .map(|button| controls::native(button, |button| button.rounded_full()))
+    .child(tooltip::anchor(
+        if up {
+            "Move earlier on this side"
+        } else {
+            "Move later on this side"
+        },
+        Look::Status,
+    ))
+    .on_click(cx.listener(move |view, _, window, cx| {
+        if enabled {
+            let mut next = settings.clone();
+            if next.move_item(kind, up) {
+                on_change(view, next, window, cx);
             }
-        }))
-        .into_any_element()
+        }
+    }))
+    .into_any_element()
 }
 
 fn check_box(enabled: bool, colors: Palette) -> AnyElement {
@@ -885,5 +914,125 @@ mod tests {
                 .find(|item| item.kind == StatusItemKind::Layout)
                 .is_some_and(|item| !item.enabled)
         );
+    }
+}
+
+#[cfg(test)]
+mod kit_control_tests {
+    use super::*;
+    use crate::form_input::{test_turn, test_window};
+    use gpui::{Render, TestAppContext};
+    use gpui_kit::test::TestWindowExt;
+
+    struct Fixture {
+        settings: StatusBarSettings,
+        changes: Vec<StatusBarSettings>,
+    }
+    impl Render for Fixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            render_settings(
+                &self.settings,
+                |owner: &mut Self, next, _, cx| {
+                    owner.changes.push(next.clone());
+                    owner.settings = next;
+                    cx.notify();
+                },
+                cx,
+            )
+        }
+    }
+    fn mount(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, gpui::Entity<Fixture>) {
+        test_window(cx, |_, _| Fixture {
+            settings: StatusBarSettings::default(),
+            changes: Vec::new(),
+        })
+    }
+
+    #[gpui::test]
+    fn status_switch_keyboard_ax_and_exact_item_routing(cx: &mut TestAppContext) {
+        let (window, owner) = mount(cx);
+        test_turn(cx, window, |window, app| {
+            window.click("status-bar-visible", app)
+        });
+        test_turn(cx, window, |window, app| window.press("space", app));
+        test_turn(cx, window, |window, app| window.press("enter", app));
+        test_turn(cx, window, |window, app| {
+            let control = window.find("status-bar-visible");
+            assert_eq!(control.role(), Some(gpui::Role::Switch));
+            assert_eq!(control.label(), Some("Show status bar"));
+            assert_eq!(control.checked(), Some(false));
+            assert_eq!(control.focused(), Some(true));
+            assert_eq!(owner.read(app).changes.len(), 3);
+            window.click("status-item-project-visible", app);
+        });
+        test_turn(cx, window, |window, app| {
+            let state = &owner.read(app).settings;
+            assert!(
+                !state
+                    .items
+                    .iter()
+                    .find(|i| i.kind == StatusItemKind::Project)
+                    .unwrap()
+                    .enabled
+            );
+            assert!(
+                state
+                    .items
+                    .iter()
+                    .find(|i| i.kind == StatusItemKind::LiveSessions)
+                    .unwrap()
+                    .enabled
+            );
+            window.click("status-item-project-side", app);
+        });
+        test_turn(cx, window, |window, app| {
+            let state = &owner.read(app).settings;
+            let project = state
+                .items
+                .iter()
+                .find(|i| i.kind == StatusItemKind::Project)
+                .unwrap();
+            assert_eq!(project.side, StatusSide::Right);
+            assert!(!project.enabled);
+            assert_eq!(owner.read(app).changes.len(), 5);
+            assert_eq!(
+                window.find("status-item-project-side").label(),
+                Some("Move Current project to the Left side")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn status_disabled_reorder_and_keyboard_reset_keep_domain_defaults(cx: &mut TestAppContext) {
+        let (window, owner) = mount(cx);
+        test_turn(cx, window, |window, app| {
+            window.click("status-item-project-up", app)
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(owner.read(app).changes.is_empty());
+            window.click("status-item-live-sessions-down", app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert_eq!(owner.read(app).changes.len(), 1);
+            assert_ne!(
+                owner.read(app).settings.items,
+                StatusBarSettings::default().items
+            );
+            // Pointer activation and a subsequent Base Enter each produce one reset.
+            window.click("status-bar-reset", app);
+        });
+        test_turn(cx, window, |window, app| window.press("enter", app));
+        test_turn(cx, window, |window, app| {
+            assert_eq!(owner.read(app).changes.len(), 3);
+            assert_eq!(owner.read(app).settings, StatusBarSettings::default());
+            assert_eq!(
+                window.find("status-bar-reset").role(),
+                Some(gpui::Role::Button)
+            );
+            assert_eq!(
+                window.find("status-bar-reset").label(),
+                Some("Reset defaults")
+            );
+        });
     }
 }

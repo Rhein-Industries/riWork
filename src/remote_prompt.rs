@@ -17,6 +17,7 @@ use gpui::{
 use gpui::{Entity, Focusable, Subscription};
 
 use crate::{
+    behavior_controls as behavior,
     project_settings::Input,
     remote_hosts::{PairRequest, PairingLink},
     remote_service::Backend,
@@ -82,6 +83,9 @@ pub struct RemotePrompt {
     link: Option<PairingLink>,
     copied: bool,
     focus: FocusHandle,
+    dialog: gpui_kit::base::DialogHandle,
+    return_focus: Option<FocusHandle>,
+    button_focus: [FocusHandle; 2],
     #[cfg(test)]
     parent_enter_actions: usize,
     #[cfg(test)]
@@ -125,6 +129,7 @@ impl RemotePrompt {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let return_focus = window.focused(cx);
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
         let fields = match &kind {
@@ -215,6 +220,9 @@ impl RemotePrompt {
             link: None,
             copied: false,
             focus: cx.focus_handle(),
+            dialog: gpui_kit::base::DialogHandle::new(true),
+            return_focus,
+            button_focus: [cx.focus_handle(), cx.focus_handle()],
             #[cfg(test)]
             parent_enter_actions: 0,
             #[cfg(test)]
@@ -228,6 +236,8 @@ impl RemotePrompt {
                 .read(cx)
                 .focus_handle(cx)
                 .focus(window, cx);
+        } else if let Some(button) = self.button_at(self.active).filter(|button| *button < 2) {
+            self.button_focus[button].focus(window, cx);
         } else {
             self.focus.focus(window, cx);
         }
@@ -392,6 +402,14 @@ impl RemotePrompt {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(button) = self
+            .button_focus
+            .iter()
+            .position(|focus| focus.is_focused(window))
+        {
+            self.active = self.field_slots() + button;
+        }
+
         #[cfg(test)]
         if matches!(event.keystroke.key.as_str(), "enter" | "return") {
             self.parent_enter_keys += 1;
@@ -408,33 +426,20 @@ impl RemotePrompt {
         }
         let handled = match event.keystroke.key.as_str() {
             "escape" => {
+                crate::project_settings::close_modal(
+                    &self.dialog,
+                    &self.focus,
+                    &self.return_focus,
+                    window,
+                    cx,
+                );
                 if self.busy.is_none() {
                     cx.emit(RemotePromptEvent::Closed);
                 }
                 true
             }
-            "enter" | "return" if !self.accepts_input() => {
-                match self.button_at(self.active) {
-                    Some(button) => self.press(button, cx),
-                    None => self.submit(cx),
-                }
-                true
-            }
-            "space" if !self.accepts_input() => {
-                if let Some(button) = self.button_at(self.active) {
-                    self.press(button, cx);
-                }
-                true
-            }
             "tab" => {
-                let slots = self.slot_count();
-                let step = if event.keystroke.modifiers.shift {
-                    slots - 1
-                } else {
-                    1
-                };
-                self.active = (self.active + step) % slots;
-                self.focus(window, cx);
+                crate::project_settings::modal_tab(event.keystroke.modifiers.shift, window, cx);
                 true
             }
             _ => false,
@@ -491,8 +496,10 @@ impl RemotePrompt {
     ) -> AnyElement {
         let colors = theme::palette(cx);
         let disabled = self.busy.is_some();
-        div()
-            .id(id)
+        behavior::button_content(id, label, ui_text::cased(label))
+            .disabled(disabled)
+            .track_focus(&self.button_focus[press])
+            .focus_visible(move |style| style.border_color(rgb(colors.focus)))
             .px(ui_text::space(12.0))
             .py(ui_text::space(8.0))
             .border_1()
@@ -515,8 +522,21 @@ impl RemotePrompt {
             } else {
                 colors.muted
             }))
-            .child(ui_text::cased(label))
-            .on_click(cx.listener(move |prompt, _, _, cx| prompt.press(press, cx)))
+            .on_click(cx.listener(move |prompt, _, window, cx| {
+                let closing = prompt.busy.is_none()
+                    && ((prompt.link.is_none() && press == 0)
+                        || (prompt.link.is_some() && press == 1));
+                if closing {
+                    crate::project_settings::close_modal(
+                        &prompt.dialog,
+                        &prompt.focus,
+                        &prompt.return_focus,
+                        window,
+                        cx,
+                    );
+                }
+                prompt.press(press, cx);
+            }))
             .into_any_element()
     }
 }
@@ -524,7 +544,16 @@ impl RemotePrompt {
 impl Render for RemotePrompt {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
-        let focused = self.focus.is_focused(window);
+        // The result intentionally replaces the editor. Only transfer focus if that removed editor still owned it.
+        if self.link.is_some()
+            && self
+                .input_states
+                .iter()
+                .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        {
+            self.button_focus[0].focus(window, cx);
+        }
+        let focused = self.focus.contains_focused(window, cx);
         let fields = self
             .fields
             .iter()
@@ -579,7 +608,6 @@ impl Render for RemotePrompt {
         let panel = div()
             .id("remote-prompt")
             .occlude()
-            .track_focus(&self.focus)
             .key_context("RemotePrompt")
             .capture_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -644,7 +672,14 @@ impl Render for RemotePrompt {
                 prompt.parent_enter_actions += 1;
             },
         ));
-        panel
+        gpui_kit::base::Dialog::new(cx)
+            .handle(self.dialog.clone())
+            .focus_handle(self.focus.clone())
+            .close_on_escape(false)
+            .close_on_backdrop_press(false)
+            .on_ok(|_, _, _| false)
+            .on_cancel(|_, _, _| false)
+            .popup(panel)
     }
 }
 
@@ -883,5 +918,156 @@ mod kit_form_tests {
             );
         })
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod kit_control_tests {
+    use super::*;
+    use crate::form_input::{test_turn, test_window};
+    use gpui::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
+
+    #[gpui::test]
+    fn remote_dialog_base_cancel_enter_and_space_emit_once(cx: &mut TestAppContext) {
+        let (window, owner) = test_window(cx, |_, cx| ReturnFixture {
+            invoker: cx.focus_handle(),
+            prompt: None,
+            subscription: None,
+            closes: 0,
+        });
+        for (index, key) in ["enter", "space"].into_iter().enumerate() {
+            test_turn(cx, window, |window, app| {
+                window.click("open-inert-modal", app)
+            });
+            test_turn(cx, window, |window, app| {
+                let prompt = owner.read(app).prompt.clone().unwrap();
+                prompt.read(app).button_focus[0].focus(window, app);
+            });
+            test_turn(cx, window, |window, _| {
+                let cancel = window.find("remote-prompt-first");
+                assert_eq!(cancel.role(), Some(gpui::Role::Button));
+                assert_eq!(cancel.label(), Some("Cancel"));
+                assert_eq!(cancel.focused(), Some(true));
+            });
+            test_turn(cx, window, |window, app| window.press(key, app));
+            assert_eq!(
+                owner.read_with(cx, |owner, _| owner.closes),
+                index + 1,
+                "one domain close per Base {key} activation"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn remote_dialog_tab_traps_focus_and_busy_buttons_preserve_draft(cx: &mut TestAppContext) {
+        let (window, prompt) = test_window(cx, |window, cx| {
+            RemotePrompt::new(
+                PromptKind::NewProject {
+                    host_id: "inert-host".into(),
+                    host_label: "Fixture".into(),
+                },
+                Err("inert backend".into()),
+                window,
+                cx,
+            )
+        });
+        test_turn(cx, window, |window, app| {
+            prompt.read(app).button_focus[1].focus(window, app);
+            window.press("tab", app);
+        });
+        test_turn(cx, window, |window, app| {
+            let input = &prompt.read(app).input_states[0];
+            assert!(input.read(app).focus_handle(app).is_focused(window));
+            window.input("Synthetic draft", app);
+        });
+        test_turn(cx, window, |_, app| {
+            prompt.update(app, |prompt, cx| {
+                prompt.busy = Some("Synthetic pending");
+                cx.notify();
+            })
+        });
+        test_turn(cx, window, |window, app| {
+            window.click("remote-prompt-second", app)
+        });
+        test_turn(cx, window, |window, app| {
+            window.click("remote-prompt-first", app)
+        });
+        test_turn(cx, window, |_, app| {
+            let prompt = prompt.read(app);
+            assert_eq!(prompt.input_states[0].read(app).value(), "Synthetic draft");
+            assert_eq!(prompt.busy, Some("Synthetic pending"));
+            assert!(prompt.error.is_none());
+            assert_eq!(prompt.parent_enter_actions, 0);
+        });
+    }
+
+    struct ReturnFixture {
+        invoker: gpui::FocusHandle,
+        prompt: Option<Entity<RemotePrompt>>,
+        subscription: Option<gpui::Subscription>,
+        closes: usize,
+    }
+    impl Render for ReturnFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(
+                    behavior::button_content(
+                        "open-inert-modal",
+                        "Open synthetic form",
+                        "Open synthetic form",
+                    )
+                    .track_focus(&self.invoker)
+                    .on_click(cx.listener(|owner, _, window, cx| {
+                        let prompt = cx.new(|cx| {
+                            RemotePrompt::new(
+                                PromptKind::NewProject {
+                                    host_id: "inert-host".into(),
+                                    host_label: "Fixture".into(),
+                                },
+                                Err("inert backend".into()),
+                                window,
+                                cx,
+                            )
+                        });
+                        owner.subscription =
+                            Some(cx.subscribe_in(&prompt, window, |owner, _, event, _, cx| {
+                                if matches!(event, RemotePromptEvent::Closed) {
+                                    owner.closes += 1;
+                                    owner.prompt = None;
+                                    cx.notify();
+                                }
+                            }));
+                        prompt.update(cx, |prompt, cx| prompt.focus(window, cx));
+                        owner.prompt = Some(prompt);
+                        cx.notify();
+                    })),
+                )
+                .children(self.prompt.clone())
+        }
+    }
+    #[gpui::test]
+    fn remote_dialog_cancel_restores_invoker_after_subscribed_close(cx: &mut TestAppContext) {
+        let (window, owner) = test_window(cx, |_, cx| ReturnFixture {
+            invoker: cx.focus_handle(),
+            prompt: None,
+            subscription: None,
+            closes: 0,
+        });
+        test_turn(cx, window, |window, app| {
+            window.click("open-inert-modal", app)
+        });
+        test_turn(cx, window, |window, app| {
+            let prompt = owner.read(app).prompt.clone().unwrap();
+            prompt.read(app).button_focus[0].focus(window, app);
+            window.press("space", app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert_eq!(owner.read(app).closes, 1);
+            assert!(owner.read(app).prompt.is_none());
+            assert!(owner.read(app).invoker.is_focused(window));
+            assert_eq!(window.find("open-inert-modal").focused(), Some(true));
+        });
     }
 }

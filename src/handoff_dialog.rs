@@ -4,7 +4,7 @@
 //! note. The work is `crate::handoff`; this runs it off the UI thread, says what it is doing
 //! ("Writing summary…"), and tells the window when the new tab is there to open.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use gpui::{
@@ -14,7 +14,7 @@ use gpui::{
 use gpui::{Entity, Focusable, Subscription};
 
 use crate::{
-    codex_accounts,
+    behavior_controls as behavior, codex_accounts,
     controls::{self, Button},
     handoff::{self, Context as Passing, Kind, Outcome, Request},
     project_settings::Input,
@@ -182,6 +182,10 @@ pub struct HandoffDialog {
     detached: bool,
     error: Option<String>,
     focus: FocusHandle,
+    dialog: gpui_kit::base::DialogHandle,
+    return_focus: Option<FocusHandle>,
+    chip_focus: BTreeMap<(&'static str, usize), FocusHandle>,
+    button_focus: [FocusHandle; 2],
 }
 
 impl EventEmitter<HandoffEvent> for HandoffDialog {}
@@ -194,6 +198,7 @@ impl HandoffDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let return_focus = window.focused(cx);
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
         let choices = Choices {
@@ -253,6 +258,10 @@ impl HandoffDialog {
             detached: false,
             error: None,
             focus: cx.focus_handle(),
+            dialog: gpui_kit::base::DialogHandle::new(true),
+            return_focus,
+            chip_focus: BTreeMap::new(),
+            button_focus: [cx.focus_handle(), cx.focus_handle()],
         }
     }
 
@@ -264,7 +273,32 @@ impl HandoffDialog {
             Row::Note if self.busy.is_none() => {
                 self.note_state.read(cx).focus_handle(cx).focus(window, cx)
             }
-            _ => self.focus.focus(window, cx),
+            Row::Cancel => self.button_focus[0].focus(window, cx),
+            Row::Start => self.button_focus[1].focus(window, cx),
+            _ => {
+                let key = match self.active {
+                    Row::Target => (
+                        "handoff-target",
+                        usize::from(self.choices.kind == Kind::Chat),
+                    ),
+                    Row::Agent => (
+                        "handoff-agent",
+                        [HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok]
+                            .iter()
+                            .position(|provider| *provider == self.choices.provider)
+                            .unwrap_or(0),
+                    ),
+                    Row::Account => ("handoff-account", self.account),
+                    Row::Context => (
+                        "handoff-context",
+                        usize::from(self.choices.context == Passing::Summary),
+                    ),
+                    _ => return,
+                };
+                if let Some(focus) = self.chip_focus.get(&key) {
+                    focus.focus(window, cx);
+                }
+            }
         }
     }
 
@@ -460,6 +494,24 @@ impl HandoffDialog {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(((family, _), _)) = self
+            .chip_focus
+            .iter()
+            .find(|(_, focus)| focus.is_focused(window))
+        {
+            self.active = match *family {
+                "handoff-target" => Row::Target,
+                "handoff-agent" => Row::Agent,
+                "handoff-account" => Row::Account,
+                "handoff-context" => Row::Context,
+                _ => Row::Model,
+            };
+        } else if self.button_focus[0].is_focused(window) {
+            self.active = Row::Cancel;
+        } else if self.button_focus[1].is_focused(window) {
+            self.active = Row::Start;
+        }
+
         let state = match self.active {
             Row::Model => Some(&self.model_state),
             Row::Note => Some(&self.note_state),
@@ -472,6 +524,13 @@ impl HandoffDialog {
         }
         let handled = match event.keystroke.key.as_str() {
             "escape" => {
+                crate::project_settings::close_modal(
+                    &self.dialog,
+                    &self.focus,
+                    &self.return_focus,
+                    window,
+                    cx,
+                );
                 if self.busy.is_none() {
                     cx.emit(HandoffEvent::Closed);
                 } else {
@@ -480,17 +539,8 @@ impl HandoffDialog {
                 true
             }
             _ if self.busy.is_some() => true,
-            "enter" | "return" if !self.accepts_input() => {
-                self.press(self.active, cx);
-                true
-            }
             "tab" => {
-                self.move_active(if event.keystroke.modifiers.shift {
-                    -1
-                } else {
-                    1
-                });
-                self.focus(window, cx);
+                crate::project_settings::modal_tab(event.keystroke.modifiers.shift, window, cx);
                 true
             }
             "up" | "down" if !self.accepts_input() => {
@@ -502,13 +552,7 @@ impl HandoffDialog {
                 if !self.accepts_input() && !matches!(self.active, Row::Cancel | Row::Start) =>
             {
                 self.step_choice(if event.keystroke.key == "left" { -1 } else { 1 });
-                true
-            }
-            "space" if !self.accepts_input() => {
-                match self.active {
-                    Row::Cancel | Row::Start => self.press(self.active, cx),
-                    _ => self.step_choice(1),
-                }
+                self.focus(window, cx);
                 true
             }
             _ => false,
@@ -531,8 +575,11 @@ impl HandoffDialog {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> AnyElement {
         let colors = theme::palette(cx);
-        div()
-            .id(id)
+        behavior::radio_content(id, label.clone(), label, selected)
+            .disabled(!enabled || self.busy.is_some())
+            .track_focus(&self.chip_focus[&id])
+            .tab_stop(selected || id.0 == "handoff-model")
+            .focus_visible(move |style| style.border_color(rgb(colors.focus)))
             .px(ui_text::space(10.0))
             .py(ui_text::space(5.0))
             .border_1()
@@ -565,12 +612,11 @@ impl HandoffDialog {
                         })
                 })
             })
-            .when(enabled, |chip| {
-                chip.cursor_pointer().on_click(
-                    cx.listener(move |dialog, _, window, cx| on_click(dialog, window, cx)),
-                )
+            .on_change({
+                let listener =
+                    cx.listener(move |dialog, _, window, cx| on_click(dialog, window, cx));
+                move |_, event, window, cx| listener(event, window, cx)
             })
-            .child(label)
             .into_any_element()
     }
 
@@ -601,32 +647,47 @@ impl HandoffDialog {
                     .child(ui_text::cased(name)),
             )
             .child(content)
-            .on_click(cx.listener(move |dialog, _, window, cx| {
-                if dialog.busy.is_none() {
-                    dialog.active = row;
-                    dialog.focus(window, cx);
-                    cx.notify();
-                }
-            }))
             .into_any_element()
     }
 
     /// One line's choices: Native sets them in a segmented control's track, which wraps
     /// like the colorful themes' row when there are more than fit (Codex accounts).
-    fn chips(&self, chips: Vec<AnyElement>, cx: &mut Context<Self>) -> AnyElement {
+    fn chips(
+        &self,
+        id: &'static str,
+        chips: Vec<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme::palette(cx);
+        let name = match id {
+            "handoff-target" => "Handoff destination",
+            "handoff-agent" => "Agent",
+            "handoff-model" => "Model suggestions",
+            "handoff-account" => "Codex account",
+            "handoff-context" => "Passing",
+            _ => id,
+        };
         if ui_text::is_native() {
             return div()
                 .flex()
                 .child(
-                    controls::segments(colors)
+                    gpui_kit::base::RadioGroup::new(format!("{id}-choices"))
+                        .axis(gpui::Axis::Horizontal)
+                        .aria_label(name)
+                        .flex()
+                        .gap(ui_text::space(2.0))
+                        .p(ui_text::space(2.0))
+                        .bg(rgb(colors.panel_active))
+                        .rounded_full()
                         .flex_shrink_1()
                         .flex_wrap()
                         .children(chips),
                 )
                 .into_any_element();
         }
-        div()
+        gpui_kit::base::RadioGroup::new(format!("{id}-choices"))
+            .axis(gpui::Axis::Horizontal)
+            .aria_label(name)
             .flex()
             .flex_wrap()
             .gap(ui_text::space(6.0))
@@ -654,47 +715,78 @@ impl HandoffDialog {
                 (false, false) => Button::Secondary,
             };
             return controls::button(
-                div()
-                    .id(id)
-                    .py(ui_text::space(5.0))
-                    .child(label.trim_end_matches(['↵', ' '])),
+                behavior::button_content(
+                    id,
+                    label.trim_end_matches(['↵', ' ']),
+                    label.trim_end_matches(['↵', ' ']),
+                )
+                .disabled(disabled),
                 kind,
                 colors,
             )
+            .py(ui_text::space(5.0))
+            .track_focus(&self.button_focus[usize::from(row == Row::Start)])
             .when(focused, |button| button.border_color(rgb(colors.focus)))
             .when(!disabled, |button| {
                 button
                     .cursor_pointer()
                     .hover(move |style| style.bg(rgb(kind.hover(colors))))
             })
-            .on_click(cx.listener(move |dialog, _, _, cx| dialog.press(row, cx)))
+            .on_click(cx.listener(move |dialog, _, window, cx| {
+                if row == Row::Cancel {
+                    crate::project_settings::close_modal(
+                        &dialog.dialog,
+                        &dialog.focus,
+                        &dialog.return_focus,
+                        window,
+                        cx,
+                    );
+                }
+                dialog.press(row, cx);
+            }))
             .into_any_element();
         }
-        div()
-            .id(id)
-            .px(ui_text::space(12.0))
-            .py(ui_text::space(8.0))
-            .border_1()
-            .border_color(rgb(if focused {
-                colors.focus
-            } else if primary {
-                colors.cyan
-            } else {
-                colors.panel
-            }))
-            .bg(rgb(if primary {
-                colors.panel_active
-            } else {
-                colors.panel
-            }))
-            .text_color(rgb(if disabled || !primary {
-                colors.muted
-            } else {
-                colors.cyan
-            }))
-            .child(ui_text::cased(label))
-            .on_click(cx.listener(move |dialog, _, _, cx| dialog.press(row, cx)))
-            .into_any_element()
+        behavior::button_content(
+            id,
+            label.trim_end_matches(['↵', ' ']),
+            ui_text::cased(label),
+        )
+        .disabled(disabled)
+        .track_focus(&self.button_focus[usize::from(row == Row::Start)])
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+        .px(ui_text::space(12.0))
+        .py(ui_text::space(8.0))
+        .border_1()
+        .border_color(rgb(if focused {
+            colors.focus
+        } else if primary {
+            colors.cyan
+        } else {
+            colors.panel
+        }))
+        .bg(rgb(if primary {
+            colors.panel_active
+        } else {
+            colors.panel
+        }))
+        .text_color(rgb(if disabled || !primary {
+            colors.muted
+        } else {
+            colors.cyan
+        }))
+        .on_click(cx.listener(move |dialog, _, window, cx| {
+            if row == Row::Cancel {
+                crate::project_settings::close_modal(
+                    &dialog.dialog,
+                    &dialog.focus,
+                    &dialog.return_focus,
+                    window,
+                    cx,
+                );
+            }
+            dialog.press(row, cx);
+        }))
+        .into_any_element()
     }
 }
 
@@ -723,7 +815,22 @@ fn placeholder_source() -> handoff::Source {
 impl Render for HandoffDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
-        let focused = self.focus.is_focused(window);
+        let mut keys = vec![("handoff-target", 0), ("handoff-target", 1)];
+        keys.extend((0..3).map(|index| ("handoff-agent", index)));
+        keys.extend((0..self.choices.suggestions().len()).map(|index| ("handoff-model", index)));
+        if self.choices.provider == HarnessKind::Codex {
+            keys.extend((0..self.accounts.len()).map(|index| ("handoff-account", index)));
+        }
+        if self.choices.askable {
+            keys.extend((0..2).map(|index| ("handoff-context", index)));
+        }
+        self.chip_focus.retain(|key, _| keys.contains(key));
+        for key in keys {
+            self.chip_focus
+                .entry(key)
+                .or_insert_with(|| cx.focus_handle());
+        }
+        let focused = self.focus.contains_focused(window, cx);
         let busy = self.busy.is_some();
 
         let target = {
@@ -743,7 +850,12 @@ impl Render for HandoffDialog {
                     )
                 })
                 .collect();
-            self.line(Row::Target, "Open it as a", self.chips(chips, cx), cx)
+            self.line(
+                Row::Target,
+                "Open it as a",
+                self.chips("handoff-target", chips, cx),
+                cx,
+            )
         };
         let agent = {
             let chips = [HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok]
@@ -763,7 +875,12 @@ impl Render for HandoffDialog {
                     )
                 })
                 .collect();
-            self.line(Row::Agent, "Agent", self.chips(chips, cx), cx)
+            self.line(
+                Row::Agent,
+                "Agent",
+                self.chips("handoff-agent", chips, cx),
+                cx,
+            )
         };
         let model = {
             let suggestions: Vec<AnyElement> = self
@@ -815,7 +932,9 @@ impl Render for HandoffDialog {
                     )
                     .into_any_element(),
                 )
-                .children((!suggestions.is_empty()).then(|| self.chips(suggestions, cx)))
+                .children(
+                    (!suggestions.is_empty()).then(|| self.chips("handoff-model", suggestions, cx)),
+                )
                 .into_any_element();
             self.line(Row::Model, "Model", content, cx)
         };
@@ -837,7 +956,12 @@ impl Render for HandoffDialog {
                     )
                 })
                 .collect();
-            self.line(Row::Account, "Codex account", self.chips(chips, cx), cx)
+            self.line(
+                Row::Account,
+                "Codex account",
+                self.chips("handoff-account", chips, cx),
+                cx,
+            )
         });
         let context = self.choices.askable.then(|| {
             let chips = [Passing::Transcript, Passing::Summary]
@@ -856,7 +980,12 @@ impl Render for HandoffDialog {
                     )
                 })
                 .collect();
-            self.line(Row::Context, "What it reads", self.chips(chips, cx), cx)
+            self.line(
+                Row::Context,
+                "What it reads",
+                self.chips("handoff-context", chips, cx),
+                cx,
+            )
         });
         let note = {
             self.line(
@@ -875,10 +1004,9 @@ impl Render for HandoffDialog {
                 "The new agent reads this conversation, written down, and carries on. The original stays as it is."
             }
         };
-        div()
+        let panel = div()
             .id("handoff-dialog")
             .occlude()
-            .track_focus(&self.focus)
             .key_context("HandoffDialog")
             .capture_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -971,7 +1099,15 @@ impl Render for HandoffDialog {
                         focused && self.active == Row::Start,
                         cx,
                     )),
-            )
+            );
+        gpui_kit::base::Dialog::new(cx)
+            .handle(self.dialog.clone())
+            .focus_handle(self.focus.clone())
+            .close_on_escape(false)
+            .close_on_backdrop_press(false)
+            .on_ok(|_, _, _| false)
+            .on_cancel(|_, _, _| false)
+            .popup(panel)
     }
 }
 

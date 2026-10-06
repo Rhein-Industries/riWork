@@ -12,6 +12,7 @@ use gpui::{
 use gpui::{Focusable, Subscription};
 
 use crate::{
+    behavior_controls as behavior,
     icons::{self, ActionGlyph, Icon},
     settings::{CodexAccountsState, Settings, refresh_codex_accounts},
     store::{Project, ProjectCodexAccount, ProjectFolder, State, Store},
@@ -28,6 +29,62 @@ pub enum ProjectSettingsEvent {
 pub enum FolderEditorEvent {
     Saved(ProjectFolder),
     Cancelled,
+}
+
+/// Dispatch through Base Root so its active Dialog focus trap owns traversal.
+/// Explicit dispatch also works when the focused Input unbinds the Root key binding.
+pub(crate) fn modal_tab(shift: bool, window: &mut Window, cx: &mut App) {
+    let action = cx
+        .build_action(if shift { "root::TabPrev" } else { "root::Tab" }, None)
+        .expect("Base Root actions are initialized with text_input");
+    window.dispatch_action(action, cx);
+}
+
+pub(crate) fn close_modal(
+    dialog: &gpui_kit::base::DialogHandle,
+    scope: &FocusHandle,
+    previous: &Option<FocusHandle>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let restore = scope.contains_focused(window, cx);
+    dialog.close(window, cx);
+    if restore && let Some(previous) = previous {
+        previous.focus(window, cx);
+    }
+}
+
+/// Existing Native toolbar presentation over the foundation's unstyled Base button.
+/// This helper supplies only RiWork visuals; Base owns focus and activation.
+pub(crate) fn kit_toolbar_button(
+    id: impl Into<gpui::ElementId>,
+    symbol: &'static str,
+    name: impl Into<gpui::SharedString>,
+    enabled: bool,
+    colors: Palette,
+) -> behavior::Button {
+    let name = name.into();
+    let rest = if enabled {
+        colors.muted
+    } else {
+        theme::mix(colors.muted, colors.panel, 0.45)
+    };
+    behavior::button_content(id, name.clone(), icons::symbol(symbol, 11.0, None))
+        .disabled(!enabled)
+        .flex_none()
+        .size(ui_text::space(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .text_color(rgb(rest))
+        .when(enabled, |button| {
+            button.hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
+        })
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+        .child(tooltip::anchor(name, Look::Control))
 }
 
 #[derive(Default)]
@@ -399,6 +456,7 @@ pub struct ProjectSettingsPanel {
     folder_id: Option<String>,
     active: Field,
     focus: FocusHandle,
+    control_focus: BTreeMap<String, FocusHandle>,
     error: Option<String>,
     status: SaveStatus,
 }
@@ -483,9 +541,36 @@ impl ProjectSettingsPanel {
             folder_name: Input::default(),
             active: Field::Name,
             focus: cx.focus_handle(),
+            control_focus: BTreeMap::new(),
             error,
             status: SaveStatus::default(),
         }
+    }
+
+    fn visible_controls(&self, cx: &App) -> Vec<(String, Field)> {
+        let mut controls = vec![("project-folder-unfiled".into(), Field::Folder(0))];
+        controls.extend(self.folders.iter().enumerate().map(|(index, folder)| {
+            (
+                format!("project-folder-{}", folder.id),
+                Field::Folder(index + 1),
+            )
+        }));
+        controls.extend(self.account_choices(cx).into_iter().enumerate().map(
+            |(index, (choice, _, _))| {
+                let id = match choice {
+                    ProjectCodexAccount::Inherit => "project-codex-inherit".into(),
+                    ProjectCodexAccount::SystemDefault => "project-codex-system".into(),
+                    ProjectCodexAccount::Saved(id) => format!("project-codex-saved-{id}"),
+                };
+                (id, Field::Account(index))
+            },
+        ));
+        controls.extend([
+            ("project-settings-create-folder".into(), Field::AddFolder),
+            ("project-codex-refresh".into(), Field::AccountRefresh),
+            ("project-settings-save".into(), Field::Save),
+        ]);
+        controls
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -496,7 +581,18 @@ impl ProjectSettingsPanel {
                 .read(cx)
                 .focus_handle(cx)
                 .focus(window, cx),
-            _ => self.focus.focus(window, cx),
+            _ => {
+                if let Some((id, _)) = self
+                    .visible_controls(cx)
+                    .into_iter()
+                    .find(|(_, field)| *field == self.active)
+                    && let Some(focus) = self.control_focus.get(&id)
+                {
+                    focus.focus(window, cx);
+                } else {
+                    self.focus.focus(window, cx);
+                }
+            }
         }
     }
 
@@ -709,6 +805,13 @@ impl ProjectSettingsPanel {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((_, field)) = self.visible_controls(cx).into_iter().find(|(id, _)| {
+            self.control_focus
+                .get(id)
+                .is_some_and(|focus| focus.is_focused(window))
+        }) {
+            self.active = field;
+        }
         let input = match self.active {
             Field::Name => Some(&self.name_state),
             Field::FolderName => Some(&self.folder_name_state),
@@ -720,14 +823,6 @@ impl ProjectSettingsPanel {
             return;
         }
         let handled = match event.keystroke.key.as_str() {
-            "enter" | "return" if !self.accepts_input() => {
-                self.activate(window, cx);
-                true
-            }
-            "space" if !self.accepts_input() => {
-                self.activate(window, cx);
-                true
-            }
             "left" | "up" if matches!(self.active, Field::Folder(_)) => {
                 if let Field::Folder(index) = self.active {
                     self.active = Field::Folder(index.checked_sub(1).unwrap_or(self.folders.len()));
@@ -740,16 +835,27 @@ impl ProjectSettingsPanel {
                 }
                 true
             }
-            "left" | "up" if matches!(self.active, Field::Account(_)) => {
+            "left" | "up" | "right" | "down" if matches!(self.active, Field::Account(_)) => {
                 if let Field::Account(index) = self.active {
-                    let len = self.account_choices(cx).len();
-                    self.active = Field::Account(index.checked_sub(1).unwrap_or(len - 1));
-                }
-                true
-            }
-            "right" | "down" if matches!(self.active, Field::Account(_)) => {
-                if let Field::Account(index) = self.active {
-                    self.active = Field::Account((index + 1) % self.account_choices(cx).len());
+                    let choices = self.account_choices(cx);
+                    let available = choices
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, _, available))| *available)
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>();
+                    if !available.is_empty() {
+                        let at = available
+                            .iter()
+                            .position(|candidate| *candidate == index)
+                            .unwrap_or(0);
+                        let next = if matches!(event.keystroke.key.as_str(), "left" | "up") {
+                            (at + available.len() - 1) % available.len()
+                        } else {
+                            (at + 1) % available.len()
+                        };
+                        self.active = Field::Account(available[next]);
+                    }
                 }
                 true
             }
@@ -758,39 +864,42 @@ impl ProjectSettingsPanel {
                 true
             }
             "tab" => {
-                let last_folder = self.folders.len();
-                let last_account = self.account_choices(cx).len() - 1;
-                self.active = if event.keystroke.modifiers.shift {
-                    match self.active {
-                        Field::Name => Field::Save,
-                        Field::Folder(0) => Field::Name,
-                        Field::Folder(index) => Field::Folder(index - 1),
-                        Field::FolderName => Field::Folder(last_folder),
-                        Field::AddFolder => Field::FolderName,
-                        Field::Account(0) => Field::AddFolder,
-                        Field::Account(index) => Field::Account(index - 1),
-                        Field::AccountRefresh => Field::Account(last_account),
-                        Field::Save => Field::AccountRefresh,
-                    }
+                let mut order = vec![Field::Name];
+                order.extend((0..=self.folders.len()).map(Field::Folder));
+                order.extend([Field::FolderName, Field::AddFolder]);
+                order.extend(
+                    self.account_choices(cx)
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, _, available))| *available)
+                        .map(|(index, _)| Field::Account(index)),
+                );
+                if !cx.global::<CodexAccountsState>().pending {
+                    order.push(Field::AccountRefresh);
+                }
+                order.push(Field::Save);
+                let index = order
+                    .iter()
+                    .position(|field| *field == self.active)
+                    .unwrap_or(0);
+                let next = if event.keystroke.modifiers.shift {
+                    (index + order.len() - 1) % order.len()
                 } else {
-                    match self.active {
-                        Field::Name => Field::Folder(0),
-                        Field::Folder(index) if index < last_folder => Field::Folder(index + 1),
-                        Field::Folder(_) => Field::FolderName,
-                        Field::FolderName => Field::AddFolder,
-                        Field::AddFolder => Field::Account(0),
-                        Field::Account(index) if index < last_account => Field::Account(index + 1),
-                        Field::Account(_) => Field::AccountRefresh,
-                        Field::AccountRefresh => Field::Save,
-                        Field::Save => Field::Name,
-                    }
+                    (index + 1) % order.len()
                 };
+                self.active = order[next];
                 self.focus(window, cx);
                 true
             }
             _ => false,
         };
         if handled {
+            if matches!(
+                event.keystroke.key.as_str(),
+                "left" | "right" | "up" | "down"
+            ) {
+                self.focus(window, cx);
+            }
             cx.stop_propagation();
             cx.notify();
         }
@@ -809,12 +918,31 @@ impl ProjectSettingsPanel {
 impl Render for ProjectSettingsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
+        let membership = self.visible_controls(cx);
+        self.control_focus
+            .retain(|id, _| membership.iter().any(|(visible, _)| visible == id));
+        for (id, _) in membership {
+            self.control_focus
+                .entry(id)
+                .or_insert_with(|| cx.focus_handle());
+        }
         let dirty = self.name_state.read(cx).value().trim() != self.project.name
             || self.folder_id != self.project.folder_id;
-        let focused = self.focus.is_focused(window);
-        let mut folders = div().flex().flex_wrap().gap(ui_text::space(6.0)).child(
-            div()
-                .id("project-folder-unfiled")
+        let focused = self.focus.contains_focused(window, cx);
+        let mut folders = gpui_kit::base::RadioGroup::new("project-folder-choices")
+            .axis(gpui::Axis::Horizontal)
+            .aria_label("Project folder")
+            .flex()
+            .flex_wrap()
+            .gap(ui_text::space(6.0))
+            .child(
+                behavior::radio_content(
+                    "project-folder-unfiled",
+                    "Unfiled",
+                    ui_text::cased("Unfiled"),
+                    self.folder_id.is_none(),
+                )
+                .track_focus(&self.control_focus["project-folder-unfiled"])
                 .px(ui_text::space(10.0))
                 .py(ui_text::space(7.0))
                 .border_1()
@@ -843,60 +971,72 @@ impl Render for ProjectSettingsPanel {
                         colors,
                     )
                 })
-                .child(ui_text::cased("Unfiled"))
-                .on_click(cx.listener(|form, _, window, cx| {
-                    form.active = Field::Folder(0);
-                    form.focus.focus(window, cx);
-                    form.folder_id = None;
-                    form.edited(window, cx);
-                })),
-        );
+                .on_change({
+                    let listener = cx.listener(|form, _, window, cx| {
+                        form.active = Field::Folder(0);
+                        form.folder_id = None;
+                        form.edited(window, cx);
+                    });
+                    move |_, event, window, cx| listener(event, window, cx)
+                }),
+            );
         for (index, folder) in self.folders.iter().enumerate() {
             let id = folder.id.clone();
             let selected = self.folder_id.as_deref() == Some(folder.id.as_str());
             folders = folders.child(
-                div()
-                    .id(format!("project-folder-{}", folder.id))
-                    .px(ui_text::space(10.0))
-                    .py(ui_text::space(7.0))
-                    .border_1()
-                    .border_color(rgb(if focused && self.active == Field::Folder(index + 1) {
-                        colors.focus
-                    } else if selected {
-                        colors.magenta
-                    } else {
-                        colors.divider
-                    }))
-                    .bg(rgb(if selected {
-                        colors.panel_active
-                    } else {
-                        colors.bg
-                    }))
-                    .text_color(rgb(if selected {
-                        colors.magenta
-                    } else {
-                        colors.text
-                    }))
-                    .map(|chip| {
-                        native_choice(
-                            chip,
-                            selected,
-                            focused && self.active == Field::Folder(index + 1),
-                            colors,
-                        )
-                    })
-                    .child(
-                        self.folder_paths
-                            .get(&folder.id)
-                            .cloned()
-                            .unwrap_or_else(|| folder.name.clone()),
+                behavior::radio_content(
+                    format!("project-folder-{}", folder.id),
+                    self.folder_paths
+                        .get(&folder.id)
+                        .cloned()
+                        .unwrap_or_else(|| folder.name.clone()),
+                    self.folder_paths
+                        .get(&folder.id)
+                        .cloned()
+                        .unwrap_or_else(|| folder.name.clone()),
+                    selected,
+                )
+                .track_focus(&self.control_focus[&format!("project-folder-{}", folder.id)])
+                .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                .px(ui_text::space(10.0))
+                .py(ui_text::space(7.0))
+                .border_1()
+                .border_color(rgb(if focused && self.active == Field::Folder(index + 1) {
+                    colors.focus
+                } else if selected {
+                    colors.magenta
+                } else {
+                    colors.divider
+                }))
+                .bg(rgb(if selected {
+                    colors.panel_active
+                } else {
+                    colors.bg
+                }))
+                .text_color(rgb(if selected {
+                    colors.magenta
+                } else {
+                    colors.text
+                }))
+                .map(|chip| {
+                    native_choice(
+                        chip,
+                        selected,
+                        focused && self.active == Field::Folder(index + 1),
+                        colors,
                     )
-                    .on_click(cx.listener(move |form, _, window, cx| {
+                })
+                .on_change({
+                    let listener = cx.listener(move |form, _, window, cx| {
+                        if !form.folders.iter().any(|folder| folder.id == id) {
+                            return;
+                        }
                         form.active = Field::Folder(index + 1);
-                        form.focus.focus(window, cx);
                         form.folder_id = Some(id.clone());
                         form.edited(window, cx);
-                    })),
+                    });
+                    move |_, event, window, cx| listener(event, window, cx)
+                }),
             );
         }
         let mut repositories = div().flex().flex_col().gap(ui_text::space(6.0));
@@ -921,7 +1061,12 @@ impl Render for ProjectSettingsPanel {
             }
         }
         let account_state = cx.global::<CodexAccountsState>().clone();
-        let mut account_rows = div().flex().flex_wrap().gap(ui_text::space(6.0));
+        let mut account_rows = gpui_kit::base::RadioGroup::new("project-account-choices")
+            .axis(gpui::Axis::Horizontal)
+            .aria_label("Codex account")
+            .flex()
+            .flex_wrap()
+            .gap(ui_text::space(6.0));
         for (index, (choice, label, available)) in self.account_choices(cx).into_iter().enumerate()
         {
             let selected = choice == self.project.codex_account;
@@ -931,63 +1076,75 @@ impl Render for ProjectSettingsPanel {
                 ProjectCodexAccount::Saved(id) => format!("project-codex-saved-{id}"),
             };
             account_rows = account_rows.child(
-                div()
-                    .id(id)
-                    .max_w(ui_text::space(300.0))
-                    .min_w_0()
-                    .px(ui_text::space(10.0))
-                    .py(ui_text::space(7.0))
-                    .flex()
-                    .items_center()
-                    .gap(ui_text::space(7.0))
-                    .border_1()
-                    .border_color(rgb(if focused && self.active == Field::Account(index) {
-                        colors.focus
-                    } else if selected {
-                        colors.cyan
-                    } else {
-                        colors.divider
-                    }))
-                    .bg(rgb(if selected {
-                        colors.panel_active
-                    } else {
-                        colors.bg
-                    }))
-                    .text_color(rgb(if !available {
-                        colors.muted
-                    } else if selected {
-                        colors.cyan
-                    } else {
-                        colors.text
-                    }))
-                    .map(|chip| {
-                        native_choice(
-                            chip,
-                            selected,
-                            focused && self.active == Field::Account(index),
-                            colors,
-                        )
-                        .when(ui_text::is_native() && !available, |chip| {
-                            chip.text_color(rgb(colors.muted))
-                        })
-                    })
-                    .when(!ui_text::is_native(), |chip| {
-                        chip.child(if selected { "◉" } else { "○" })
-                    })
-                    .child(
-                        div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(label),
+                behavior::radio_content(
+                    id.clone(),
+                    label.clone(),
+                    div()
+                        .when(ui_text::is_native(), |mark| mark.hidden())
+                        .child(if selected { "◉" } else { "○" }),
+                    selected,
+                )
+                .track_focus(&self.control_focus[&id])
+                .disabled(!available)
+                .max_w(ui_text::space(300.0))
+                .min_w_0()
+                .px(ui_text::space(10.0))
+                .py(ui_text::space(7.0))
+                .flex()
+                .items_center()
+                .gap(ui_text::space(7.0))
+                .border_1()
+                .border_color(rgb(if focused && self.active == Field::Account(index) {
+                    colors.focus
+                } else if selected {
+                    colors.cyan
+                } else {
+                    colors.divider
+                }))
+                .bg(rgb(if selected {
+                    colors.panel_active
+                } else {
+                    colors.bg
+                }))
+                .text_color(rgb(if !available {
+                    colors.muted
+                } else if selected {
+                    colors.cyan
+                } else {
+                    colors.text
+                }))
+                .map(|chip| {
+                    native_choice(
+                        chip,
+                        selected,
+                        focused && self.active == Field::Account(index),
+                        colors,
                     )
-                    .on_click(cx.listener(move |form, _, window, cx| {
+                    .when(ui_text::is_native() && !available, |chip| {
+                        chip.text_color(rgb(colors.muted))
+                    })
+                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(label),
+                )
+                .on_change({
+                    let listener = cx.listener(move |form, _, window, cx| {
                         form.active = Field::Account(index);
-                        form.focus.focus(window, cx);
-                        if available {
+                        if available
+                            && form
+                                .account_choices(cx)
+                                .iter()
+                                .any(|(current, _, available)| *current == choice && *available)
+                        {
                             form.select_account(choice.clone(), cx);
                         }
-                    })),
+                    });
+                    move |_, event, window, cx| listener(event, window, cx)
+                }),
             );
         }
         let native = ui_text::is_native();
@@ -1050,35 +1207,50 @@ impl Render for ProjectSettingsPanel {
                     .child({
                         let subfolder = self.folder_id.is_some();
                         let ring = focused && self.active == Field::AddFolder;
-                        let button = div()
-                            .id("project-settings-create-folder")
-                            .h(ui_text::space(34.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .border_1()
-                            .border_color(rgb(if ring { colors.focus } else { colors.magenta }))
-                            .text_color(rgb(colors.magenta));
+                        let button = behavior::button_content(
+                            "project-settings-create-folder",
+                            if subfolder {
+                                "Add subfolder"
+                            } else {
+                                "Add folder"
+                            },
+                            if native {
+                                div()
+                                    .child(if subfolder {
+                                        "Add subfolder"
+                                    } else {
+                                        "Add folder"
+                                    })
+                                    .into_any_element()
+                            } else if icons::labels_as_icons(cx) {
+                                icons::icon(Icon::Action(ActionGlyph::NewFolder), colors.magenta)
+                            } else {
+                                div()
+                                    .child(if subfolder { "+ SUBFOLDER" } else { "+ FOLDER" })
+                                    .into_any_element()
+                            },
+                        )
+                        .h(ui_text::space(34.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .border_1()
+                        .border_color(rgb(if ring { colors.focus } else { colors.magenta }))
+                        .text_color(rgb(colors.magenta));
                         // Icons keep the button's size, colour and focus ring; the tooltip names it.
+                        let button = button
+                            .track_focus(&self.control_focus["project-settings-create-folder"])
+                            .focus_visible(move |style| style.border_color(rgb(colors.focus)));
                         let button = if native {
                             let kind = crate::controls::Button::Secondary;
                             crate::controls::button(button, kind, colors)
                                 .h(ui_text::space(28.0))
                                 .hover(move |style| style.bg(rgb(kind.hover(colors))))
                                 .when(ring, |button| button.border_color(rgb(colors.focus)))
-                                .child(if subfolder {
-                                    "Add subfolder"
-                                } else {
-                                    "Add folder"
-                                })
                         } else if icons::labels_as_icons(cx) {
                             button
                                 .w(ui_text::space(34.0))
                                 .justify_center()
-                                .child(icons::icon(
-                                    Icon::Action(ActionGlyph::NewFolder),
-                                    colors.magenta,
-                                ))
                                 .child(tooltip::anchor(
                                     if subfolder {
                                         "New subfolder"
@@ -1088,15 +1260,10 @@ impl Render for ProjectSettingsPanel {
                                     Look::Control,
                                 ))
                         } else {
-                            button.px(ui_text::space(12.0)).child(if subfolder {
-                                "+ SUBFOLDER"
-                            } else {
-                                "+ FOLDER"
-                            })
+                            button.px(ui_text::space(12.0))
                         };
                         button.on_click(cx.listener(|form, _, window, cx| {
                             form.active = Field::AddFolder;
-                            form.focus.focus(window, cx);
                             form.create_folder(window, cx);
                         }))
                     }),
@@ -1106,7 +1273,7 @@ impl Render for ProjectSettingsPanel {
             .child(div().text_size(ui_text::text(10.0)).text_color(rgb(colors.muted))
                 .child("New Codex sessions use this choice. Running sessions keep their account. Selection saves immediately."))
             .child(account_rows)
-            .child(div().id("project-codex-refresh")
+            .child(behavior::button_content("project-codex-refresh", "Refresh accounts", ui_text::cased(if account_state.pending { "Checking accounts…" } else { "Refresh accounts" })).disabled(account_state.pending).track_focus(&self.control_focus["project-codex-refresh"]).focus_visible(move |style| style.border_color(rgb(colors.focus)))
                 .text_size(ui_text::text(10.0))
                 .text_color(rgb(if focused && self.active == Field::AccountRefresh { colors.focus } else { colors.cyan }))
                 .map(|button| crate::controls::native(button, |button| {
@@ -1117,10 +1284,8 @@ impl Render for ProjectSettingsPanel {
                         .hover(move |style| style.bg(rgb(kind.hover(colors))))
                         .when(focused && self.active == Field::AccountRefresh, |button| button.border_color(rgb(colors.focus)))
                 }))
-                .child(ui_text::cased(if account_state.pending { "Checking accounts…" } else { "Refresh accounts" }))
                 .on_click(cx.listener(|form, _, window, cx| {
                     form.active = Field::AccountRefresh;
-                    form.focus.focus(window, cx);
                     refresh_codex_accounts(cx);
                 })))
             .children(account_state.snapshot.as_ref().and_then(|snapshot| snapshot.error.as_ref()).map(|error|
@@ -1159,34 +1324,37 @@ impl Render for ProjectSettingsPanel {
                     ),
             )
             .child(
-                div()
-                    .id("project-settings-save")
-                    .flex_none()
-                    .px(ui_text::space(14.0))
-                    .py(ui_text::space(10.0))
-                    .bg(rgb(colors.panel_active))
-                    .border_1()
-                    .border_color(rgb(if save_ring { colors.focus } else { colors.cyan }))
-                    .text_color(rgb(colors.cyan))
-                    .map(|button| {
-                        crate::controls::native(button, |button| {
-                            let kind = if dirty {
-                                crate::controls::Button::Primary
-                            } else {
-                                crate::controls::Button::Secondary
-                            };
-                            crate::controls::button(button, kind, colors)
-                                .py(ui_text::space(4.0))
-                                .hover(move |style| style.bg(rgb(kind.hover(colors))))
-                                .when(save_ring, |button| button.border_color(rgb(colors.focus)))
-                        })
+                behavior::button_content(
+                    "project-settings-save",
+                    "Save project",
+                    ui_text::cased("Save project"),
+                )
+                .track_focus(&self.control_focus["project-settings-save"])
+                .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                .flex_none()
+                .px(ui_text::space(14.0))
+                .py(ui_text::space(10.0))
+                .bg(rgb(colors.panel_active))
+                .border_1()
+                .border_color(rgb(if save_ring { colors.focus } else { colors.cyan }))
+                .text_color(rgb(colors.cyan))
+                .map(|button| {
+                    crate::controls::native(button, |button| {
+                        let kind = if dirty {
+                            crate::controls::Button::Primary
+                        } else {
+                            crate::controls::Button::Secondary
+                        };
+                        crate::controls::button(button, kind, colors)
+                            .py(ui_text::space(4.0))
+                            .hover(move |style| style.bg(rgb(kind.hover(colors))))
+                            .when(save_ring, |button| button.border_color(rgb(colors.focus)))
                     })
-                    .child(ui_text::cased("Save project"))
-                    .on_click(cx.listener(|form, _, window, cx| {
-                        form.active = Field::Save;
-                        form.focus.focus(window, cx);
-                        form.save(window, cx);
-                    })),
+                })
+                .on_click(cx.listener(|form, _, window, cx| {
+                    form.active = Field::Save;
+                    form.save(window, cx);
+                })),
             );
         let locations = section_box(12.0)
             .child(section("04  LOCATIONS", colors))
@@ -1352,12 +1520,12 @@ impl Render for ProjectSettingsPanel {
 
 /// Native's choice among a few options (a folder, an account): a capsule, filled with the
 /// primary color when chosen. The colorful themes keep their outlined boxes.
-fn native_choice(
-    chip: gpui::Stateful<gpui::Div>,
+fn native_choice<E: gpui::Styled + gpui::InteractiveElement>(
+    chip: E,
     selected: bool,
     ring: bool,
     colors: Palette,
-) -> gpui::Stateful<gpui::Div> {
+) -> E {
     crate::controls::native(chip, |chip| {
         let kind = if selected {
             crate::controls::Button::Primary
@@ -1391,6 +1559,9 @@ pub struct FolderEditor {
     name_state: Entity<InputState>,
     _input_subscriptions: Vec<Subscription>,
     focus: FocusHandle,
+    dialog: gpui_kit::base::DialogHandle,
+    return_focus: Option<FocusHandle>,
+    button_focus: [FocusHandle; 2],
     active: usize,
     error: Option<String>,
 }
@@ -1414,6 +1585,7 @@ impl FolderEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let return_focus = window.focused(cx);
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
         let parent_id = match &folder {
@@ -1465,6 +1637,9 @@ impl FolderEditor {
             parent_id,
             parent_path,
             focus: cx.focus_handle(),
+            dialog: gpui_kit::base::DialogHandle::new(true),
+            return_focus,
+            button_focus: [cx.focus_handle(), cx.focus_handle()],
             active: 0,
             error,
         }
@@ -1474,7 +1649,7 @@ impl FolderEditor {
         if self.active == 0 {
             self.name_state.read(cx).focus_handle(cx).focus(window, cx);
         } else {
-            self.focus.focus(window, cx);
+            self.button_focus[self.active - 1].focus(window, cx);
         }
     }
 
@@ -1504,6 +1679,14 @@ impl FolderEditor {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(button) = self
+            .button_focus
+            .iter()
+            .position(|focus| focus.is_focused(window))
+        {
+            self.active = button + 1;
+        }
+
         if self.active == 0
             && matches!(event.keystroke.key.as_str(), "escape" | "tab")
             && crate::form_input::is_composing(&self.name_state, window, cx)
@@ -1512,34 +1695,18 @@ impl FolderEditor {
         }
         let handled = match event.keystroke.key.as_str() {
             "escape" => {
+                crate::project_settings::close_modal(
+                    &self.dialog,
+                    &self.focus,
+                    &self.return_focus,
+                    window,
+                    cx,
+                );
                 cx.emit(FolderEditorEvent::Cancelled);
                 true
             }
-            "enter" | "return" if !self.accepts_input() => {
-                if self.active == 1 {
-                    cx.emit(FolderEditorEvent::Cancelled);
-                } else {
-                    self.submit(cx);
-                }
-                true
-            }
-            "space" if !self.accepts_input() => {
-                if self.active == 1 {
-                    cx.emit(FolderEditorEvent::Cancelled);
-                } else {
-                    self.submit(cx);
-                }
-                true
-            }
             "tab" => {
-                self.active = (self.active
-                    + if event.keystroke.modifiers.shift {
-                        2
-                    } else {
-                        1
-                    })
-                    % 3;
-                self.focus(window, cx);
+                crate::project_settings::modal_tab(event.keystroke.modifiers.shift, window, cx);
                 true
             }
             _ => false,
@@ -1554,10 +1721,9 @@ impl FolderEditor {
 impl Render for FolderEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
-        div()
+        let panel = div()
             .id("virtual-folder-editor")
             .occlude()
-            .track_focus(&self.focus)
             .key_context("FolderEditor")
             .capture_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1624,43 +1790,60 @@ impl Render for FolderEditor {
                     .justify_end()
                     .gap(ui_text::space(10.0))
                     .child(
-                        div()
-                            .id("cancel-virtual-folder")
-                            .px(ui_text::space(12.0))
-                            .py(ui_text::space(8.0))
-                            .border_1()
-                            .border_color(rgb(
-                                if self.active == 1 && self.focus.is_focused(window) {
-                                    colors.focus
-                                } else {
-                                    colors.panel
-                                },
-                            ))
-                            .text_color(rgb(colors.muted))
-                            .child(ui_text::cased("Cancel"))
-                            .on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(FolderEditorEvent::Cancelled)),
-                            ),
+                        behavior::button_content(
+                            "cancel-virtual-folder",
+                            "Cancel",
+                            ui_text::cased("Cancel"),
+                        )
+                        .track_focus(&self.button_focus[0])
+                        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                        .px(ui_text::space(12.0))
+                        .py(ui_text::space(8.0))
+                        .border_1()
+                        .border_color(rgb(
+                            if self.active == 1 && self.focus.contains_focused(window, cx) {
+                                colors.focus
+                            } else {
+                                colors.panel
+                            },
+                        ))
+                        .text_color(rgb(colors.muted))
+                        .on_click(cx.listener(|form, _, window, cx| {
+                            close_modal(&form.dialog, &form.focus, &form.return_focus, window, cx);
+                            cx.emit(FolderEditorEvent::Cancelled);
+                        })),
                     )
                     .child(
-                        div()
-                            .id("save-virtual-folder")
-                            .px(ui_text::space(12.0))
-                            .py(ui_text::space(8.0))
-                            .bg(rgb(colors.panel_active))
-                            .border_1()
-                            .border_color(rgb(
-                                if self.active == 2 && self.focus.is_focused(window) {
-                                    colors.focus
-                                } else {
-                                    colors.cyan
-                                },
-                            ))
-                            .text_color(rgb(colors.cyan))
-                            .child("SAVE FOLDER  ↵")
-                            .on_click(cx.listener(|form, _, _, cx| form.submit(cx))),
+                        behavior::button_content(
+                            "save-virtual-folder",
+                            "Save folder",
+                            "SAVE FOLDER  ↵",
+                        )
+                        .track_focus(&self.button_focus[1])
+                        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                        .px(ui_text::space(12.0))
+                        .py(ui_text::space(8.0))
+                        .bg(rgb(colors.panel_active))
+                        .border_1()
+                        .border_color(rgb(
+                            if self.active == 2 && self.focus.contains_focused(window, cx) {
+                                colors.focus
+                            } else {
+                                colors.cyan
+                            },
+                        ))
+                        .text_color(rgb(colors.cyan))
+                        .on_click(cx.listener(|form, _, _, cx| form.submit(cx))),
                     ),
-            )
+            );
+        gpui_kit::base::Dialog::new(cx)
+            .handle(self.dialog.clone())
+            .focus_handle(self.focus.clone())
+            .close_on_escape(false)
+            .close_on_backdrop_press(false)
+            .on_ok(|_, _, _| false)
+            .on_cancel(|_, _, _| false)
+            .popup(panel)
     }
 }
 

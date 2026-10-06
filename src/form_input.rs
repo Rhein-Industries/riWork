@@ -134,7 +134,7 @@ pub fn search_frame(
 pub(crate) fn test_window<V: gpui::Render + 'static>(
     cx: &mut gpui::TestAppContext,
     build: impl FnOnce(&mut Window, &mut gpui::Context<V>) -> V + 'static,
-) -> (gpui::WindowHandle<V>, Entity<V>) {
+) -> (gpui::AnyWindowHandle, Entity<V>) {
     let (handle, view) = cx.update(|app| {
         app.set_global(crate::settings::Settings::default());
         app.set_global(crate::theme::Appearance {
@@ -145,18 +145,39 @@ pub(crate) fn test_window<V: gpui::Render + 'static>(
             error: None,
         });
         text_input::init(app);
+        crate::behavior_controls::init(app);
+        let view = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let created_view = view.clone();
         let handle = app
-            .open_window(gpui::WindowOptions::default(), |window, app| {
-                app.new(|cx| build(window, cx))
+            .open_window(gpui::WindowOptions::default(), move |window, app| {
+                let content = app.new(|cx| build(window, cx));
+                *created_view.borrow_mut() = Some(content.clone());
+                // A single fresh headless window root, matching the application factory.
+                app.new(|cx| gpui_kit::base::Root::new(content, window, cx))
             })
             .unwrap();
-        let view = handle.update(app, |_, _, cx| cx.entity()).unwrap();
-        (handle, view)
+        let content = view.borrow_mut().take().unwrap();
+        (handle.into(), content)
     });
     cx.update_window(handle.into(), |_, window, _| window.activate_window())
         .unwrap();
     cx.run_until_parked();
     (handle, view)
+}
+
+/// Dispatch and complete effects outside the borrowed Window before another assertion turn.
+#[cfg(test)]
+pub(crate) fn test_turn(
+    cx: &mut gpui::TestAppContext,
+    handle: gpui::AnyWindowHandle,
+    action: impl FnOnce(&mut Window, &mut App),
+) {
+    cx.update_window(handle, |_, window, app| {
+        window.render_frame(app);
+        action(window, app);
+    })
+    .unwrap();
+    cx.run_until_parked();
 }
 
 #[cfg(test)]

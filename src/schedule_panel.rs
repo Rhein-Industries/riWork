@@ -1,6 +1,7 @@
 //! Compact scheduling tab, using RiWork's existing GPUI input and palette.
 use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use crate::{
+    behavior_controls as behavior,
     chat::model::{ApprovalMode, ChatInfo, Provider},
     controls,
     layouts::PanelKind,
@@ -18,7 +19,7 @@ use gpui::{
 use gpui::{Entity, Focusable, Subscription};
 use std::time::Duration;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Control {
     Field(usize),
     Destination(bool),
@@ -39,8 +40,109 @@ enum Control {
     Pause(String),
     Delete(String),
 }
+fn control_id(control: &Control) -> String {
+    format!("schedule-control-{control:?}")
+}
+
+fn paint_action<E: gpui::Styled + gpui::InteractiveElement>(
+    element: E,
+    selected: bool,
+    focused: bool,
+    colors: crate::theme::Palette,
+) -> E {
+    let element = element
+        .min_w_0()
+        .overflow_hidden()
+        .text_ellipsis()
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)));
+    if ui_text::is_native() {
+        let kind = if selected {
+            controls::Button::Primary
+        } else {
+            controls::Button::Secondary
+        };
+        return controls::button(element, kind, colors)
+            .py(ui_text::space(3.0))
+            .whitespace_nowrap()
+            .hover(move |style| style.bg(rgb(kind.hover(colors))))
+            .when(focused, |button| button.border_color(rgb(colors.focus)));
+    }
+    element
+        .px(ui_text::space(8.0))
+        .py(ui_text::space(5.0))
+        .border_1()
+        .border_color(rgb(if focused {
+            colors.focus
+        } else if selected {
+            colors.cyan
+        } else {
+            colors.divider
+        }))
+        .bg(rgb(if selected {
+            colors.panel_active
+        } else {
+            colors.bg
+        }))
+        .text_color(rgb(if selected { colors.cyan } else { colors.text }))
+}
+
+/// Presentation/interaction factory shared by the panel and inert event fixtures.
+/// Rebinding commands intentionally remain buttons: reselecting a target is meaningful.
+#[allow(clippy::too_many_arguments)]
+fn action_control(
+    label: String,
+    action: &Control,
+    selected: bool,
+    pressed: bool,
+    disabled: bool,
+    focus: &FocusHandle,
+    focused: bool,
+    colors: crate::theme::Palette,
+    activate: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let id = control_id(action);
+    if matches!(action, Control::Permission(_) | Control::Repeat(_)) {
+        return paint_action(
+            behavior::radio_content(id, label.clone(), label, selected)
+                .disabled(disabled)
+                .track_focus(focus),
+            selected,
+            focused,
+            colors,
+        )
+        .on_change(move |_, event, window, cx| activate(event, window, cx))
+        .into_any_element();
+    }
+    if matches!(
+        action,
+        Control::Fast | Control::ExactTime | Control::Pause(_)
+    ) {
+        return paint_action(
+            behavior::toggle_content(id, label.clone(), label, pressed)
+                .disabled(disabled)
+                .track_focus(focus),
+            selected,
+            focused,
+            colors,
+        )
+        .on_change(move |_, event, window, cx| activate(event, window, cx))
+        .into_any_element();
+    }
+    paint_action(
+        behavior::button_content(id, label.clone(), label)
+            .disabled(disabled)
+            .track_focus(focus)
+            .aria_selected(selected),
+        selected,
+        focused,
+        colors,
+    )
+    .on_click(activate)
+    .into_any_element()
+}
+
 /// Retains the displayed destination type through the asynchronous save.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ExistingTarget {
     Shell(String),
     LegacyChat(String),
@@ -154,6 +256,7 @@ pub struct SchedulePanel {
     project_chats: Vec<ChatInfo>,
     editor: Option<Editor>,
     controls: Vec<Control>,
+    control_focus: std::collections::BTreeMap<String, FocusHandle>,
     active: usize,
     focus: FocusHandle,
     error: Option<String>,
@@ -199,6 +302,7 @@ impl SchedulePanel {
             project_chats: vec![],
             editor: None,
             controls: vec![],
+            control_focus: std::collections::BTreeMap::new(),
             active: 0,
             focus: cx.focus_handle(),
             error: None,
@@ -346,6 +450,12 @@ impl SchedulePanel {
             && let Some(input) = self.input_states.get(*index)
         {
             input.read(cx).focus_handle(cx).focus(window, cx);
+        } else if let Some(focus) = self
+            .controls
+            .get(self.active)
+            .and_then(|control| self.control_focus.get(&control_id(control)))
+        {
+            focus.focus(window, cx);
         } else {
             self.focus.focus(window, cx);
         }
@@ -356,6 +466,14 @@ impl SchedulePanel {
             && matches!(self.controls.get(self.active), Some(Control::Field(_)))
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.controls.iter().position(|control| {
+            self.control_focus
+                .get(&control_id(control))
+                .is_some_and(|focus| focus.is_focused(window))
+        }) {
+            self.active = index;
+        }
+
         if matches!(event.keystroke.key.as_str(), "escape" | "tab")
             && let Some(Control::Field(index)) = self.controls.get(self.active)
             && let Some(state) = self.input_states.get(*index)
@@ -391,11 +509,6 @@ impl SchedulePanel {
                 && self.editor.is_some() =>
             {
                 self.save(cx)
-            }
-            "enter" | "space" if !self.accepts_input() => {
-                if let Some(action) = self.controls.get(self.active).cloned() {
-                    self.perform(action, window, cx);
-                }
             }
             _ => return,
         }
@@ -737,59 +850,41 @@ impl SchedulePanel {
         let label = label.into();
         let colors = theme::palette(cx);
         let index = self.controls.len();
+        let id = control_id(&action);
+        let focus = self
+            .control_focus
+            .entry(id.clone())
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
         self.controls.push(action.clone());
-        let focused = self.active == index && self.focus.is_focused(window);
-        if ui_text::is_native() {
-            // Native: capsules; the chosen one, or the action a form leads with, is filled.
-            let kind = if selected {
-                controls::Button::Primary
-            } else {
-                controls::Button::Secondary
-            };
-            return controls::button(div().id(format!("schedule-control-{index}")), kind, colors)
-                .py(ui_text::space(3.0))
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .hover(move |style| style.bg(rgb(kind.hover(colors))))
-                .when(focused, |button| button.border_color(rgb(colors.focus)))
-                .child(label)
-                .on_click(cx.listener(move |panel, _, window, cx| {
-                    panel.active = index;
-                    panel.perform(action.clone(), window, cx);
-                }))
-                .into_any_element();
-        }
-        div()
-            .id(format!("schedule-control-{index}"))
-            .px(ui_text::space(8.0))
-            .py(ui_text::space(5.0))
-            .border_1()
-            .border_color(rgb(
-                if self.active == index && self.focus.is_focused(window) {
-                    colors.focus
-                } else if selected {
-                    colors.cyan
-                } else {
-                    colors.divider
-                },
-            ))
-            .bg(rgb(if selected {
-                colors.panel_active
-            } else {
-                colors.bg
-            }))
-            .text_color(rgb(if selected { colors.cyan } else { colors.text }))
-            .min_w_0()
-            .overflow_hidden()
-            .text_ellipsis()
-            .child(label)
-            .on_click(cx.listener(move |panel, _, window, cx| {
-                panel.active = index;
-                panel.perform(action.clone(), window, cx);
-            }))
-            .into_any_element()
+        let focused = focus.is_focused(window);
+        let pressed = match &action {
+            Control::Pause(id) => self
+                .rows
+                .iter()
+                .find(|row| &row.id == id)
+                .is_some_and(|row| row.paused),
+            _ => selected,
+        };
+        let rendered_action = action.clone();
+        let activate = cx.listener(move |panel, _, window, cx| {
+            if panel.controls.get(index) != Some(&action) {
+                return;
+            }
+            panel.active = index;
+            panel.perform(action.clone(), window, cx);
+        });
+        action_control(
+            label,
+            &rendered_action,
+            selected,
+            pressed,
+            self.pending,
+            &focus,
+            focused,
+            colors,
+            activate,
+        )
     }
     fn field(
         &mut self,
@@ -846,6 +941,16 @@ impl Render for SchedulePanel {
             .iter()
             .position(|input| input.read(cx).focus_handle(cx).is_focused(window))
             .map(Control::Field)
+            .or_else(|| {
+                self.controls
+                    .iter()
+                    .find(|control| {
+                        self.control_focus
+                            .get(&control_id(control))
+                            .is_some_and(|focus| focus.is_focused(window))
+                    })
+                    .cloned()
+            })
             .or_else(|| self.controls.get(self.active).cloned());
         self.controls.clear();
         let mut body = div()
@@ -860,7 +965,12 @@ impl Render for SchedulePanel {
         let header = native.then(|| {
             let index = self.controls.len();
             self.controls.push(Control::New);
-            let focused = self.active == index && self.focus.is_focused(window);
+            let focus = self
+                .control_focus
+                .entry(control_id(&Control::New))
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
+            let focused = focus.is_focused(window);
             let count = self.rows.len();
             controls::panel_header(
                 PanelKind::Schedules.label(),
@@ -872,13 +982,15 @@ impl Render for SchedulePanel {
                     }
                     .into(),
                 ),
-                [controls::toolbar_button(
+                [crate::project_settings::kit_toolbar_button(
                     "schedule-control-new",
                     "plus",
                     "New automation",
                     true,
                     colors,
                 )
+                .track_focus(&focus)
+                .disabled(self.pending)
                 .border_1()
                 .border_color(if focused {
                     rgb(colors.focus).into()
@@ -886,6 +998,9 @@ impl Render for SchedulePanel {
                     gpui::transparent_black()
                 })
                 .on_click(cx.listener(move |panel, _, window, cx| {
+                    if panel.controls.get(index) != Some(&Control::New) {
+                        return;
+                    }
                     panel.active = index;
                     panel.perform(Control::New, window, cx);
                 }))
@@ -994,7 +1109,12 @@ impl Render for SchedulePanel {
                     .child(choices)
                     .child(self.field(4, "Model · Optional", window, cx))
                     .child(self.field(5, "Effort · Optional", window, cx));
-                let mut permissions = div().flex().flex_wrap().gap(ui_text::space(5.0));
+                let mut permissions = gpui_kit::base::RadioGroup::new("automation-permission")
+                    .aria_label("Permission mode")
+                    .axis(gpui::Axis::Horizontal)
+                    .flex()
+                    .flex_wrap()
+                    .gap(ui_text::space(5.0));
                 for (value, label) in [
                     (ApprovalMode::Supervised, "Supervised"),
                     (ApprovalMode::AutoEdit, "Auto edit"),
@@ -1205,7 +1325,12 @@ impl Render for SchedulePanel {
                     cx,
                 ));
             }
-            let mut presets = div().flex().flex_wrap().gap(ui_text::space(5.0));
+            let mut presets = gpui_kit::base::RadioGroup::new("automation-repeat")
+                .aria_label("Repeat cadence")
+                .axis(gpui::Axis::Horizontal)
+                .flex()
+                .flex_wrap()
+                .gap(ui_text::space(5.0));
             for (seconds, label) in [
                 (0, "Once"),
                 (3600, "Hourly"),
@@ -1430,6 +1555,11 @@ impl Render for SchedulePanel {
             }
         }
         if let Some(error) = &self.error {
+            self.control_focus.retain(|id, _| {
+                self.controls
+                    .iter()
+                    .any(|control| control_id(control) == *id)
+            });
             body = body.child(div().text_color(rgb(colors.gold)).child(error.clone()));
         }
         if let Some(error) = &cx.global::<schedules::RuntimeStatus>().0 {
@@ -1885,4 +2015,120 @@ fn format_display(unix: u64) -> String {
                 .to_string()
         })
         .unwrap_or_else(|| unix.to_string())
+}
+
+#[cfg(test)]
+mod kit_control_tests {
+    use super::*;
+    use crate::form_input::{test_turn, test_window};
+    use gpui::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
+
+    // No SchedulePanel/Store/SessionManager: exercise its actual control factory only.
+    struct Fixture {
+        handles: Vec<FocusHandle>,
+        calls: Vec<Control>,
+        fast: bool,
+        disabled: bool,
+        permission: ApprovalMode,
+    }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let actions = [
+                Control::Target(ExistingTarget::Shell("same-id".into())),
+                Control::Target(ExistingTarget::LegacyChat("same-id".into())),
+                Control::Permission(ApprovalMode::Full),
+                Control::Fast,
+            ];
+            div()
+                .flex()
+                .flex_col()
+                .children(actions.into_iter().enumerate().map(|(index, action)| {
+                    let selected = match action {
+                        Control::Permission(value) => value == self.permission,
+                        Control::Fast => self.fast,
+                        _ => false,
+                    };
+                    let rendered_action = action.clone();
+                    let listener = cx.listener(move |owner, _, _, cx| {
+                        match action {
+                            Control::Permission(value) => owner.permission = value,
+                            Control::Fast => owner.fast = !owner.fast,
+                            _ => {}
+                        }
+                        owner.calls.push(action.clone());
+                        cx.notify();
+                    });
+                    action_control(
+                        "Same display label".into(),
+                        &rendered_action,
+                        selected,
+                        selected,
+                        self.disabled,
+                        &self.handles[index],
+                        self.handles[index].is_focused(window),
+                        theme::Palette::RIWORK,
+                        listener,
+                    )
+                }))
+        }
+    }
+    #[gpui::test]
+    fn automation_controls_keep_typed_target_keyboard_radio_and_pending_boundaries(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, owner) = test_window(cx, |_, cx| Fixture {
+            handles: (0..4).map(|_| cx.focus_handle()).collect(),
+            calls: Vec::new(),
+            fast: false,
+            disabled: false,
+            permission: ApprovalMode::Supervised,
+        });
+        let shell = Control::Target(ExistingTarget::Shell("same-id".into()));
+        let chat = Control::Target(ExistingTarget::LegacyChat("same-id".into()));
+        assert_ne!(control_id(&shell), control_id(&chat));
+        test_turn(cx, window, |window, app| {
+            window.click(control_id(&shell), app)
+        });
+        test_turn(cx, window, |window, app| window.press("enter", app));
+        test_turn(cx, window, |window, app| {
+            window.click(control_id(&chat), app)
+        });
+        test_turn(cx, window, |window, app| {
+            window.click(control_id(&Control::Permission(ApprovalMode::Full)), app)
+        });
+        // Already selected Radio has no second domain callback.
+        test_turn(cx, window, |window, app| window.press("space", app));
+        test_turn(cx, window, |window, app| {
+            assert_eq!(
+                owner.read(app).calls,
+                vec![
+                    shell.clone(),
+                    shell,
+                    chat,
+                    Control::Permission(ApprovalMode::Full)
+                ]
+            );
+            let radio = window.find(control_id(&Control::Permission(ApprovalMode::Full)));
+            assert_eq!(radio.role(), Some(gpui::Role::RadioButton));
+            assert_eq!(radio.label(), Some("Same display label"));
+            assert_eq!(radio.checked(), Some(true));
+            window.click(control_id(&Control::Fast), app);
+        });
+        test_turn(cx, window, |window, app| window.press("space", app));
+        test_turn(cx, window, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.disabled = true;
+                cx.notify();
+            })
+        });
+        test_turn(cx, window, |window, app| {
+            window.click(control_id(&Control::Fast), app)
+        });
+        test_turn(cx, window, |window, app| window.press("enter", app));
+        test_turn(cx, window, |_, app| {
+            assert!(!owner.read(app).fast);
+            assert_eq!(owner.read(app).calls.len(), 6);
+        });
+    }
 }
