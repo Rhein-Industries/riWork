@@ -43,6 +43,7 @@ mod schedules;
 mod session_input;
 mod session_keys;
 mod session_reload;
+mod text_input;
 mod session_viewport;
 mod sessions;
 mod settings;
@@ -11141,6 +11142,7 @@ fn main() {
         ));
         cx.set_global(settings);
         ui_text::init(cx);
+        text_input::init(cx);
         // After both globals exist: publishes now and again on every change.
         appearance_sync::start(state_home, cx);
         settings::refresh_codex_accounts(cx);
@@ -11539,6 +11541,8 @@ fn open_workspace_window(
         },
         |window, cx| {
             metal_layer::limit_drawables(window);
+            #[cfg(target_os = "macos")]
+            gpui_kit::base::install_window_hit_test_forwarder(window);
             cx.new(|cx| Workspace::new(startup, restore, window, cx))
         },
     )
