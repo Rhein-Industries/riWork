@@ -15,9 +15,12 @@ use gpui_kit::{
 fn message(id: &str, text: &str) -> Item {
     Item {
         id: id.into(),
-        turn_id: None,
+        turn_id: Some(format!("fixture-turn:{id}")),
         status: ItemStatus::Completed,
-        presentation: Presentation::default(),
+        presentation: Presentation {
+            phase: Some(crate::chat::model::MessagePhase::Final),
+            ..Presentation::default()
+        },
         body: ItemBody::AgentMessage { text: text.into() },
     }
 }
