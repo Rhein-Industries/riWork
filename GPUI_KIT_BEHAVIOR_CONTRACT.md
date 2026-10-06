@@ -6,8 +6,35 @@ Verified foundation worktree is on `feat/gpui-kit-behavior-controls`, starting
 at deployed baseline `2f96821561105e3737cb019585841bc047cb38d4`, tracked clean.
 Existing branches and untracked audits are preserved. Source-only; reviewer owns
 all compilation/testing and parent owns all Cua.ai Driver MCP desktop work.
+This follow-up starts at immutable `87e30022f03b2b4d0f22a4370c85c58f2db7d8b4`.
+Reviewer PRE-01–06 and the forms main.rs handoff were inspected. Parent owns
+integration with chat `84d6775` and Dock compatibility `a20465c`.
 
 ## Stable shared imports and constructor surface
+
+**2026-10-06 follow-up, parent-approved consumer API (source only):**
+`button_content(id, accessible_name, content) -> Button`,
+`toggle_content(id, name, content, pressed) -> Toggle`,
+`switch_content(id, name, content, checked) -> Switch`, and
+`radio_content(id, name, content, checked) -> Radio = Control<base::Radio>`.
+These constructors install no hover, padding, background, corners, focus-visible
+style or extra visible label/mark. Caller content and styling remain intact;
+Base's intrinsic neutral control geometry remains. `.disabled(bool)` and the
+existing builders/AX disabled refinement apply to all four. Radio emits `true`
+only for an unchecked choice; activating the checked choice cannot deselect it.
+
+Content/chat capture should use `behavior::activate_content_scope(scope, window,
+cx)` instead of calling Base activation directly. Workspace calls
+`sync_modal_scope(Some(modal_scope)/None, window, cx)`; ordinary rerenders write
+no scope. The window registry remembers the last content scope for modal-close
+restoration and ignores background scope activation while modal. This is a
+single-line chat-owner handoff, not a chat source edit by foundation. Current
+direct Base chat activation survives ordinary rerenders but cannot be remembered
+for restoration because pinned Base exposes no active-scope getter.
+Call `retire_content_scope(scope, window, cx)` before removing/replacing the
+registered content scope, so modal close cannot restore a retired scope. Registry
+entries are removed on window close. A new window starts with Base's default
+scope, without writing it on every content render.
 
 New module: `crate::behavior_controls`. Its public control types wrap the exact
 unstyled Base 0.7.1 primitives, forwarding their behavior and style builders.
@@ -19,6 +46,7 @@ use crate::{behavior_controls as behavior, controls, theme::Palette};
 // behavior::Button = behavior::Control<gpui_kit::base::Button>
 // behavior::Toggle = behavior::Control<gpui_kit::base::Toggle>
 // behavior::Switch = behavior::Control<gpui_kit::base::Switch>
+// behavior::Radio = behavior::Control<gpui_kit::base::Radio>
 // behavior::Link = behavior::Control<gpui_kit::base::Link>
 // behavior::Segments = gpui_kit::base::ToggleGroup
 // behavior::Popup = gpui_kit::base::Popup
@@ -45,6 +73,14 @@ behavior::link(id, label, colors) // -> Link
     .open_with(|href, event, window, cx| { /* explicit owner navigation */ });
 behavior::popup(id, trigger) // -> Popup; content only when owner open state is true
     .content(existing_menu_content);
+behavior::button_content(id, name, existing_content) // -> Button; no preset styles
+    .hover(owner_hover).focus_visible(owner_focus).on_click(owner_action);
+behavior::toggle_content(id, name, existing_content, pressed) // -> Toggle
+    .on_change(owner_change);
+behavior::switch_content(id, name, existing_content, checked) // -> Switch
+    .on_change(owner_change);
+behavior::radio_content(id, name, existing_content, checked) // -> Radio
+    .set_position(position, choice_count).on_change(owner_change);
 ```
 
 IDs must be stable and unique in their scope. Labels are meaningful accessible
@@ -104,16 +140,44 @@ native terminal input/selection remains terminal-owned. `behavior::init` runs
 after `text_input::init` and targets only `root::Tab`/`root::TabPrev` with GPUI
 `Unbind` in `Root && (Terminal || Input)`. Thus adding Root does not move focus
 before an editor owner's marked-Tab check; input indentation/navigation bindings
-and owner raw navigation remain. `input::Copy` is unbound only in
+and owner raw navigation remain. Pinned Input registers IndentInline/OutdentInline
+handlers only for multiline mode (`input/base/state.rs:4480–4484`); a single-line
+Tab can therefore reach its existing owner navigation after the Root traversal
+unbind. The fixture checks marked Tab and ShiftTab preserve composition/focus,
+then ordinary Tab and ShiftTab navigate once after unmarking. `input::Copy` is unbound only in
 `Root && Terminal && !Input`, so Root cannot consume the terminal's native copy
 gesture. A focused editor nested under a terminal context still owns input Copy.
 
-Workspace retains one selection scope and four modal container focus handles.
+The native Edit menu installs `Cut`, `Copy`, `Paste`, `Select All` using exactly
+`base::input::{Cut, Copy, Paste, SelectAll}` and their standard `OsAction`s. No
+new global shortcut is installed. Pinned Ghostty's raw key callback forwards
+keys but does not stop propagation; GPUI macOS can subsequently offer unhandled
+Command keys to menu equivalents (`window.rs:2637–2762`). Workspace's bubble
+handler calls `protect_terminal_edit_menu_fallback` only for unmodified Command
+X/C/V/A in `Terminal && !Input`, **after** Ghostty has received the unbound key.
+The existing bound `PasteInTerminal` file/picture action runs first; its propagated
+plain-text key still reaches Ghostty. Modified application shortcuts, Tab and
+nested editor actions are excluded. This is not a global action swallow or a
+second terminal copy engine. The headless terminal proxy proves this routing
+boundary; actual AppKit key-equivalent/Ghostty clipboard acceptance remains pending.
+
+Workspace retains one modal selection scope and four modal container focus handles.
 Each existing overlay is wrapped with `behavior::modal_scope(existing_div, scope,
 stable_id, &focus_handle)`, delegating both selection scoping and non-editor Tab
 containment to Base's `text_selection_scope`/`focus_trap`. No new geometry, key
 handler or focus engine is added. Owner modal opening, dismissal and input Tab
 navigation stay with their current owners. Focus/restore reuse the same window.
+`sync_modal_scope` writes scope only on opening/closing a modal, preserving
+non-default chat selection through ordinary parent paints. A tracked content
+scope is restored on close; Base clears the modal selection on the transition.
+The four modal entrypoints already reject another open modal. `FocusReturn`
+captures the invoker before opening, restores it on cancel/close, and forgets it
+on successful domain transitions; missing invoker falls back to active content.
+It does not implement Tab traversal. Main uses `restore_within(&workspace.focus,
+window, cx)` to reject an invoker absent from the rendered owner tree (for example
+a menu row removed when opening a modal); rejected restoration falls back to active
+content. Switching between pane/layout menus preserves the original invoker.
+Native lifecycle coverage remains pending.
 Chat owner owns replacing transcript selection/copy behavior and participant
 registration; no chat source is edited here. Forms owner inventories its
 controls and hands main.rs needs to the parent/foundation without overlapping
@@ -127,26 +191,54 @@ is already reached once through `text_input::init`; it must not be duplicated.
 Base Root installs the same macOS hit-test forwarder already called by RiWork's
 window factory. Partial/occluded production captures showing only window/chrome
 do not prove descendants absent. Source audit and meaningful headless role/name/
-state/action tests are planned; parent native AX/pointer/keyboard proof remains
+state/action tests are written and unexecuted; parent native AX/pointer/keyboard proof remains
 pending. No provider/service/process/GUI or Cargo execution is authorized here.
 
 ## Source inventory and mandatory consumer handoffs
 
-`src/behavior_controls.rs` supplies real Base Button, Toggle, Switch, Link,
+`src/behavior_controls.rs` supplies real Base Button, Toggle, Switch, Radio, Link,
 ToggleGroup and Popup behavior, RiWork/Native palette styles, keyboard focus rings,
 stable accessible names and disabled handling. Base 0.7.1 omits the disabled AX flag
 (its own `button.rs` disabled accessibility test explicitly asserts the omission).
 Our transparent Element forwards identity/layout/prepaint/paint/AX actions and
 refines the existing node with `Node::set_disabled`, without a second node/handler.
+Pinned Radio also omits disabled pointer suppression; the wrapper suppresses
+only a disabled Radio's left mouse-down so a nested parent control cannot activate.
+Enabled/checked behavior remains Base-owned. Checked Radio exposes selected/
+toggled state and no Click action, since clicking it cannot deselect it.
+Pinned `FocusTrapContainer` omits its inner AX metadata: `focus_scope` preserves
+the original role/name/state on that same trapped element and advertises its
+tracked Focus capability. There is no extra accessibility node or event engine.
 
-Nine `main.rs` controls migrate here: `status-current-project`,
+The original nine `main.rs` controls are retained: `status-current-project`,
 `status-current-worktree`, `status-agent-activity`, `copy-active-shell-id`,
 `top-orchestrator`, `project-orchestrator`, `status-layout`, `focus-layout-toggle`,
 `restore-workspace`. The layout button exposes expanded state; missing session ID
 disables its copy control. Existing labels/icons, callbacks and palette overrides
 are retained. Custom tab dragging, resizing, terminal chrome and overlays retain
-their current specialized paths. Other consumer controls belong to chat/forms
-workers; this commit does not edit their source.
+their current specialized paths. This follow-up also migrates every remaining
+standard main.rs `on_click` family in the forms inventory: remote reconnect,
+tab selection and nested tab close, orchestrator skill load, layout-menu rows,
+account/usage chips, both refresh-usage variants, pane symbols, main-pane marker,
+and pane-menu rows. Base owns focus and keyboard/AX activation; the existing
+domain callbacks and visual tokens remain. Tabs expose Tab/TabList and selected
+state; pane Main/Lock menu rows expose MenuItemCheckBox state. The disabled layout
+row and pending refresh now have real disabled behavior. Focus/restore use the
+unstyled content API, each with exactly one caller hover and a caller focus ring.
+Other consumer controls belong to chat/forms workers; no consumer source is edited.
+Pinned Base `Tab` explicitly lacks keyboard focus/navigation (`tabs.rs:14–20`),
+so these draggable tabs use actual Base Button activation with Tab semantics,
+not the incomplete Tab primitive or a new key engine. Existing Next/Previous Tab
+domain shortcuts remain; no new arrow-key/roving tab-list policy is claimed.
+
+Pane/layout menu rows use actual Base Button behavior and a Base focus-trapped
+Menu container, with one remembered invoker and outside/Escape restore. Existing
+absolute anchoring and terminal-snapshot open/close ownership remain intentional:
+substituting Popup's deferred positioning here would change native terminal overlay
+timing/placement. Thus these two menus use Base focus/activation without claiming
+Base Popup owns their geometry. Menu domain actions retain their existing focus
+destination. Ghostty, native window/tab drag, split resize and native overlays
+retain their specialized engines.
 
 The only production Workspace `cx.open_window` factory is `open_workspace_window`.
 Ordinary/folder/new-project launch, startup fallback, restored runtime windows,
@@ -154,37 +246,29 @@ notifications and focus/restore reach it. Quit layout saving, runtime snapshots,
 startup notice and notifications unwrap the retained Workspace via `with_workspace`;
 the window ID and Workspace entity are not replaced when toggling focus mode.
 
-Two **mandatory handoffs before integrated acceptance** were found outside this
-worker's explicit source ownership:
-
-1. `src/dock_menu.rs:206`: Dock New Window still downcasts directly to Workspace.
-   The consumer must iterate front windows and call `crate::with_workspace(handle,
-   cx, |workspace, _, cx| { let id = workspace.project_id.clone();
-   workspace.open_project_window(&id, cx); })`. Activate and stop on `Ok(Some(()))`;
-   skip popup/unrelated windows on `Ok(None)`. Direct Workspace downcast fails after
-   the shared Root change. Parent/forms owner must land this narrow compatibility fix.
-2. `src/tooltip.rs:505`: the separate non-key `Hint` popup factory still constructs
-   a bare Hint. If every native window must mount Root, construct Hint exactly as
-   today (including its activation observer), then return
-   `cx.new(|cx| gpui_kit::base::Root::new(hint, window, cx))`. Its `is_popup` helper
-   at line 366 must also identify the Root's Hint content so cascade counts and
-   runtime/Dock inventory still exclude it. Preserve `focus: false`, popup kind,
-   existing hide/activation policy and transparent native surface. Parent/forms
-   owner must handle this route; no second layer belongs inside Hint's render.
+Parent has already committed Dock Root lookup compatibility as `a20465c` in
+integration. This worktree does not edit Dock; combined acceptance must include
+that commit. The separate `src/tooltip.rs` Hint factory is an explicit approved
+**bare-root exception**: display-only, non-key, no chat/editor content. Its popup
+classification, activation observer, transparent surface and focus=false remain.
+Do not broaden native Hint behavior by adding Root or another selection layer.
 
 The `src/form_input.rs`, `src/text_input/tests.rs` and
 `src/chat_view/editor_tests.rs` window factories are headless test fixtures,
 not additional production Workspace routes; consumer selection fixtures needing
 the layer should wrap their own content once with Base Root.
 
-Chat copying diagnosis is bounded: this baseline did not mount Base Root, which
+Chat copying diagnosis is bounded: the original baseline did not mount Base Root, which
 is a prerequisite for Base selection participant registration and Root Copy.
 Mounting Root does not make plain transcript strings selectable automatically;
 chat must register participants/use Base selectable content and remove competing
 selection handling. Base Root's default Copy trims leading/trailing whitespace
 and propagates empty selection. Exact whole-message/code copy must remain an
-explicit owner action when byte-preserving copy is required. No native clipboard
-failure reproduction or successful chat copy is claimed in this source-only phase.
+explicit owner action when byte-preserving copy is required. Parent chat commit
+`84d6775` handles Copy at the bubble and preserves outer whitespace. The fixture
+tests this same action priority, but does not prove actual chat virtualized source
+projection or stream-cache correctness (PRE-03/05 remain chat-owned). No native
+clipboard reproduction or successful chat copy is claimed in this source-only phase.
 
 ## Source evidence and proposed reviewer verification
 
@@ -193,7 +277,7 @@ Ghostty `=0.3.1`. Cached pinned source was inspected:
 
 - Base `root.rs`: initialization, `Root::new` hit-test forwarder, retained `view`,
   Copy/Tab/focus-trap handling and first-child `TextSelectionLayer` placement.
-- Base `button.rs`, `toggle.rs`, `switch.rs`, `link.rs`: focus tracking, disabled
+- Base `button.rs`, `toggle.rs`, `switch.rs`, `radio.rs`, `link.rs`: focus tracking, disabled
   callback suppression, native keyboard/AX Click dispatch and role/name/state.
 - Base `focus_trap.rs`, `text_selection.rs`, `toggle_group.rs`, `popup.rs`:
   container containment, active scope/registration, toolbar/pressed semantics,
@@ -206,7 +290,8 @@ Ghostty `=0.3.1`. Cached pinned source was inspected:
 - GPUI `element.rs`/`elements/div.rs` and `keymap.rs`: existing-node metadata/action
   dispatch and targeted `Unbind` resolution, rather than swallowing all keys.
 
-Seven new tests are written in `src/behavior_controls/tests.rs`, **unexecuted**:
+Fourteen tests are written in `src/behavior_controls/tests.rs`, **all unexecuted
+by this worker**. Seven original cases remain, with fixtures updated coherently:
 
 1. `base_button_pointer_keyboard_activate_once_and_disabled_does_not_bubble`
 2. `root_tab_traversal_uses_base_focus_and_skips_disabled_controls`
@@ -215,6 +300,28 @@ Seven new tests are written in `src/behavior_controls/tests.rs`, **unexecuted**:
 5. `accessible_nodes_keep_names_states_and_only_enabled_click_actions`
 6. `root_preserves_content_identity_and_selection_is_window_local`
 7. `root_modal_scope_and_input_terminal_keys_do_not_cross_owner_boundaries`
+
+Seven follow-up cases:
+
+8. `parent_rerender_preserves_nondefault_transcript_scope_after_pointer_selection`
+9. `two_visible_transcript_scopes_switch_on_first_pointer_gesture`
+10. `modal_transition_restores_content_scope_and_retired_scope_stays_inactive`
+11. `single_line_owner_tab_and_shift_tab_preserve_ime_and_navigate_once`
+12. `native_edit_menu_uses_base_actions_and_preserves_editor_priority`
+13. `content_controls_keep_caller_hover_nested_isolation_and_radio_exclusivity`
+14. `content_adapter_ax_names_disabled_radio_and_focus_scope_metadata`
+
+The scope regression selects by pointer under a distinct chat scope, then forces
+the actual parent render path before Copy/assertions. It covers both current
+direct Base capture and the registered helper. The two-pane fixture switches on
+the first gesture; modal close is tested with child activation disabled, and
+retiring the content scope prevents stale restoration. The native Edit fixture
+uses the menu's actual action boxes, tests whitespace, editor SelectAll/Copy/Cut/
+Paste priority and raw terminal delivery before the narrow menu-fallback guard.
+Content fixtures allow exactly one caller hover, exercise nested Close and disabled
+Radio suppression, controlled Toggle/Switch, and Radio's no-deselect rule. Modal
+Tab/cancel verifies containment, invoker restoration and rejection of a disabled
+invoker no longer present in the focus tree, not real form dismissal.
 
 Fixtures use actual Base controls/Root/Input states, fixed selection registrations,
 synthetic clipboard/events and a Terminal key-context proxy, never Workspace,
@@ -230,15 +337,18 @@ private child `RIWORK_HOME`, `RIWORK_RUNTIME_DIR` and its existing private targe
 cache (never overwrite inherited home):
 
 ```sh
-cargo check --locked --bin riwork
-cargo build --locked --bin riwork
-cargo test --locked --bin riwork --no-run
-cargo test --locked --bin riwork behavior_controls::tests:: -- --test-threads=1
-cargo test --locked --bin riwork text_input::tests:: -- --test-threads=1
+# Reviewer supplies already isolated child directories in these task-specific vars.
+env RIWORK_HOME="$review_child_home" RIWORK_RUNTIME_DIR="$review_child_runtime" CARGO_TARGET_DIR="$review_target" cargo check --locked --bin riwork
+env RIWORK_HOME="$review_child_home" RIWORK_RUNTIME_DIR="$review_child_runtime" CARGO_TARGET_DIR="$review_target" cargo build --locked --bin riwork
+env RIWORK_HOME="$review_child_home" RIWORK_RUNTIME_DIR="$review_child_runtime" CARGO_TARGET_DIR="$review_target" cargo test --locked --bin riwork --no-run
+env RIWORK_HOME="$review_child_home" RIWORK_RUNTIME_DIR="$review_child_runtime" CARGO_TARGET_DIR="$review_target" cargo test --locked --bin riwork behavior_controls::tests:: -- --test-threads=1
+env RIWORK_HOME="$review_child_home" RIWORK_RUNTIME_DIR="$review_child_runtime" CARGO_TARGET_DIR="$review_target" cargo test --locked --bin riwork text_input::tests:: -- --test-threads=1
 ```
 
 These are proposals, not receipts. This worker ran zero Cargo/build/test/native
 commands; only source reads/edits and Git inspection/commit. `git diff --check`
-passed for the source patch. Integrated compile, all seven new cases, root-affected
-input regression and mandatory Dock/tooltip handoffs remain pending. Production
-activation is not authorized or claimed; no forced host refresh or live shell action.
+passed with exit 0 for this source patch. Integrated compile, all fourteen
+cases and root-affected input regressions remain reviewer-owned. Chat helper/
+retirement integration and the parent Dock commit are acceptance dependencies;
+Hint requires no migration. Production activation is not authorized or claimed;
+no forced host refresh or live shell action.
