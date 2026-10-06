@@ -1862,7 +1862,8 @@ fn project_control<V: 'static>(
         })
     })
     .child(tooltip::anchor(tooltip, Look::Control))
-    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    // Let Base/GPUI transfer pointer focus before isolating activation. A
+    // mouse-down stop skips that earlier listener in reverse bubble dispatch.
     .on_click(cx.listener(move |view, _, window, cx| {
         cx.stop_propagation();
         on_action(view, action.clone(), window, cx);
@@ -1924,7 +1925,7 @@ fn project_notification_control<V: 'static>(
         },
         Look::Control,
     ))
-    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    // Keep Base's pointer focus transfer; the domain activation stays isolated.
     .on_change({
         let listener = cx.listener(move |view, _, window, cx| {
             cx.stop_propagation();
@@ -3703,6 +3704,30 @@ mod kit_control_tests {
         test_turn(cx, window, |window, app| {
             window.click("settings-project-synthetic-project-id", app)
         });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                matches!(owner.read(app).actions.as_slice(), [PanelAction::ProjectSettings(id)] if id == "synthetic-project-id")
+            );
+            assert_eq!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .focused(),
+                Some(true)
+            );
+            assert!(owner.read(app).row_focus.contains_focused(window, app));
+            assert!(!owner.read(app).row_focus.is_focused(window));
+            // Rebuild the real parent and child controls before keyboard
+            // activation; their semantic IDs must retain the nested focus.
+            owner.update(app, |_, cx| cx.notify());
+        });
+        test_turn(cx, window, |window, _| {
+            assert_eq!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .focused(),
+                Some(true)
+            );
+        });
         test_turn(cx, window, |window, app| window.press("space", app));
         test_turn(cx, window, |window, app| {
             let actions = &owner.read(app).actions;
@@ -3714,7 +3739,17 @@ mod kit_control_tests {
             assert_eq!(row.role(), gpui::Role::Button);
             assert_eq!(row.label(), Some("Same title"));
             assert_eq!(row.is_selected(), Some(true));
+        });
+        test_turn(cx, window, |window, app| {
             window.click("project-synthetic-project-id", app);
+        });
+        test_turn(cx, window, |window, app| {
+            let owner = owner.read(app);
+            assert_eq!(owner.actions.len(), 3);
+            assert!(
+                matches!(&owner.actions[2], PanelAction::Project(id) if id == "synthetic-project-id")
+            );
+            assert!(owner.row_focus.is_focused(window));
         });
         test_turn(cx, window, |window, app| window.press("enter", app));
         test_turn(cx, window, |_, app| {
@@ -3724,6 +3759,11 @@ mod kit_control_tests {
                 actions[2..]
                     .iter()
                     .all(|a| matches!(a, PanelAction::Project(id) if id == "synthetic-project-id"))
+            );
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, PanelAction::OpenProject(_)))
             );
         });
     }
