@@ -10,13 +10,13 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, Bounds, Context, Div, Entity, FontWeight, IntoElement, MouseButton, Pixels, Render,
-    Stateful, Window, canvas, div, prelude::*, px, rgb,
+    AnyElement, Bounds, Context, Div, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
+    MouseButton, Pixels, Render, Stateful, Window, canvas, div, prelude::*, px, rgb,
 };
 
 use crate::{
     activity::{ActivityCounts, AgentActivity, AgentState, ChatActivity},
-    controls,
+    behavior_controls as behavior, controls,
     icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
@@ -54,6 +54,8 @@ pub enum PanelAction {
     Shell(String),
     Search,
     ToggleProjectSortMenu,
+    /// Controlled request from the visible popup owner; never invert a shared boolean.
+    SetProjectSortMenuOpen(bool),
     CloseProjectSortMenu,
     SetProjectOrder(ProjectOrder),
     Remote(RemoteAction),
@@ -179,11 +181,31 @@ pub struct PanelData<'a> {
     pub project_order: ProjectOrder,
     pub project_last_edits: &'a BTreeMap<String, u64>,
     pub project_sort_menu_open: bool,
+    /// Workspace retains one owner per visible Projects surface and removes stale owners.
+    pub project_sort_ui: Option<&'a ProjectSortUi>,
     /// The hosts' folders, already filtered by the search. Only the Projects panel draws them.
     pub remote_folders: &'a [FolderView],
     /// The selected project when it is on another Mac. The Worktrees, Tasks and Shells panels
     /// then draw its lists instead of the local project's.
     pub selected_remote: Option<&'a SelectedView>,
+}
+
+/// Persistent Base popover state for one visible Projects surface. Creation belongs
+/// to Workspace's surface lifecycle, not render. Closing a peer never steals focus.
+pub struct ProjectSortUi {
+    pub state: Entity<gpui_kit::base::PopoverState>,
+    pub trigger_focus: FocusHandle,
+}
+impl ProjectSortUi {
+    pub fn new(cx: &mut gpui::App) -> Self {
+        Self {
+            state: cx.new(|cx| gpui_kit::base::PopoverState::new(false, cx)),
+            trigger_focus: cx.focus_handle(),
+        }
+    }
+    pub fn dismiss(&self, window: &mut Window, cx: &mut gpui::App) {
+        self.state.update(cx, |state, cx| state.dismiss(window, cx));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -519,9 +541,14 @@ pub fn render_panel<V: Render + 'static>(
     kind: PanelKind,
     data: PanelData<'_>,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
-    window: &Window,
+    window: &mut Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
+    if !data.project_sort_menu_open
+        && let Some(ui) = data.project_sort_ui
+    {
+        ui.dismiss(window, cx);
+    }
     let colors = theme::palette(cx);
     let query = data.query.trim().to_lowercase();
     let matches = |values: &[&str]| {
@@ -617,41 +644,52 @@ pub fn render_panel<V: Render + 'static>(
                             ActivityCounts::for_project(&project.id, data.shells, data.activity)
                                 .with_chats_in_project(&project.id, data.chats);
                         let selected = data.project_id == project.id;
-                        let controls = div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(ui_text::space(4.0))
-                            // Native shows a row's buttons only while it is pointed at or chosen.
-                            .when(ui_text::is_native() && !selected, |controls| {
-                                controls
-                                    .invisible()
-                                    .group_hover(PROJECT_ROW_GROUP, |style| style.visible())
-                            })
-                            .child(project_notification_control(
-                                &project.id,
-                                project.notify_on_agent_done,
-                                on_action.clone(),
+                        // Keyed by the visible surface and immutable project identity.
+                        // Base receives the same persistent handle; refreshing/reordering never focuses it.
+                        let scope = data
+                            .project_sort_ui
+                            .expect("Projects surface requires persistent sort UI")
+                            .state
+                            .entity_id();
+                        let row_focus = window
+                            .use_keyed_state(
+                                format!("project-row-focus-{scope}-{}", project.id),
                                 cx,
-                            ))
-                            .child(project_control(
-                                &project.id,
-                                "settings",
-                                "⚙",
-                                "Project settings",
-                                PanelAction::ProjectSettings(project.id.clone()),
-                                on_action.clone(),
-                                cx,
-                            ))
-                            .child(project_control(
-                                &project.id,
-                                "open",
-                                "↗",
-                                "Open project in another window",
-                                PanelAction::OpenProject(project.id.clone()),
-                                on_action.clone(),
-                                cx,
-                            ));
+                                |_, cx| cx.focus_handle(),
+                            )
+                            .read(cx)
+                            .clone();
+                        let controls = project_action_strip(
+                            ui_text::is_native(),
+                            selected,
+                            &row_focus,
+                            window,
+                            cx,
+                        )
+                        .child(project_notification_control(
+                            &project.id,
+                            project.notify_on_agent_done,
+                            on_action.clone(),
+                            cx,
+                        ))
+                        .child(project_control(
+                            &project.id,
+                            "settings",
+                            "⚙",
+                            "Project settings",
+                            PanelAction::ProjectSettings(project.id.clone()),
+                            on_action.clone(),
+                            cx,
+                        ))
+                        .child(project_control(
+                            &project.id,
+                            "open",
+                            "↗",
+                            "Open project in another window",
+                            PanelAction::OpenProject(project.id.clone()),
+                            on_action.clone(),
+                            cx,
+                        ));
                         let title = div()
                             .flex()
                             .items_center()
@@ -664,6 +702,7 @@ pub fn render_panel<V: Render + 'static>(
                             .child(controls);
                         rows.push(project_row(
                             &project.id,
+                            &project.name,
                             Some(DraggedProjectItem {
                                 kind: ProjectDragKind::Project(project.id.clone()),
                                 label: project.name.clone(),
@@ -673,6 +712,7 @@ pub fn render_panel<V: Render + 'static>(
                                 selected,
                                 depth,
                                 dimmed: false,
+                                focus: Some(row_focus),
                             },
                             vec![
                                 title.into_any_element(),
@@ -778,6 +818,7 @@ pub fn render_panel<V: Render + 'static>(
                     );
                     rows.push(row(
                         format!("worktree-{}", worktree.id),
+                        worktree.branch.clone(),
                         selected,
                         colors.magenta,
                         lines,
@@ -789,6 +830,7 @@ pub fn render_panel<V: Render + 'static>(
                 }
                 rows.push(row(
                     format!("worktree-{}", worktree.id),
+                    worktree.branch.clone(),
                     selected,
                     colors.magenta,
                     vec![
@@ -849,6 +891,7 @@ pub fn render_panel<V: Render + 'static>(
                 let (mark, color) = task_mark(task.status, colors);
                 rows.push(row(
                     format!("task-{}", task.id),
+                    task.title.clone(),
                     data.selected_task_id == Some(task.id.as_str()),
                     color,
                     vec![
@@ -918,6 +961,7 @@ pub fn render_panel<V: Render + 'static>(
                     );
                     rows.push(row(
                         format!("shell-{}", shell.id),
+                        format!("{} · {}", label, short_id(&shell.id)),
                         false,
                         colors.cyan,
                         lines,
@@ -929,6 +973,7 @@ pub fn render_panel<V: Render + 'static>(
                 }
                 rows.push(row(
                     format!("shell-{}", shell.id),
+                    format!("{} · {}", label, short_id(&shell.id)),
                     false,
                     colors.cyan,
                     vec![
@@ -1138,7 +1183,8 @@ pub fn render_panel<V: Render + 'static>(
                     .children((kind == PanelKind::Projects).then(|| {
                         project_sort_controls(
                             data.project_order,
-                            data.project_sort_menu_open,
+                            data.project_sort_ui
+                                .expect("Projects surface requires persistent sort UI"),
                             sort_selector_bounds.clone(),
                             on_action.clone(),
                             cx,
@@ -1164,8 +1210,8 @@ fn finish_panel<V: 'static>(
     mut panel: Div,
     kind: PanelKind,
     data: &PanelData<'_>,
-    sort_selector_bounds: Rc<Cell<Bounds<Pixels>>>,
-    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    _sort_selector_bounds: Rc<Cell<Bounds<Pixels>>>,
+    _on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
@@ -1200,18 +1246,7 @@ fn finish_panel<V: 'static>(
             ));
         }
     }
-    panel
-        .children(
-            (kind == PanelKind::Projects && data.project_sort_menu_open).then(|| {
-                project_sort_menu(
-                    data.project_order,
-                    sort_selector_bounds,
-                    on_action.clone(),
-                    cx,
-                )
-            }),
-        )
-        .into_any_element()
+    panel.into_any_element()
 }
 
 /// The numbers a Native panel's header and list are drawn from.
@@ -1260,7 +1295,8 @@ fn native_panel<V: Render + 'static>(
     if kind == PanelKind::Projects {
         actions.push(project_sort_button(
             data.project_order,
-            data.project_sort_menu_open,
+            data.project_sort_ui
+                .expect("Projects surface requires persistent sort UI"),
             sort_selector_bounds.clone(),
             on_action.clone(),
             cx,
@@ -1342,13 +1378,17 @@ fn native_panel<V: Render + 'static>(
 /// its direction, as Finder's View menu does.
 fn project_sort_button<V: 'static>(
     order: ProjectOrder,
-    open: bool,
+    ui: &ProjectSortUi,
     selector_bounds: Rc<Cell<Bounds<Pixels>>>,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    let button = controls::toolbar_button(
+    let popup_bounds = selector_bounds.clone();
+    let popup_action = on_action.clone();
+    let state = ui.state.clone();
+    let open = state.read(cx).is_open();
+    let button = crate::project_settings::kit_toolbar_button(
         "project-sort-selector",
         "arrow.up.arrow.down",
         format!(
@@ -1359,11 +1399,15 @@ fn project_sort_button<V: 'static>(
         true,
         colors,
     );
-    if open {
-        controls::toolbar_button_on(button, colors)
+    let trigger = if open {
+        button
+            .bg(rgb(colors.panel_active))
+            .text_color(rgb(colors.text))
     } else {
         button
     }
+    .track_focus(&ui.trigger_focus)
+    .aria_expanded(open)
     .relative()
     .child(
         canvas(
@@ -1374,9 +1418,11 @@ fn project_sort_button<V: 'static>(
         .inset_0(),
     )
     .on_click(cx.listener(move |view, _, window, cx| {
-        on_action(view, PanelAction::ToggleProjectSortMenu, window, cx);
+        state.update(cx, |state, cx| state.sync_open(!open, window, cx));
+        on_action(view, PanelAction::SetProjectSortMenuOpen(!open), window, cx);
     }))
-    .into_any_element()
+    .into_any_element();
+    anchored_sort_menu(trigger, order, ui, popup_bounds, popup_action, cx)
 }
 
 /// A create button in the Projects header.
@@ -1411,55 +1457,72 @@ fn project_header_button<V: 'static>(
     // Native draws both as bare symbols with their names in tooltips, like the pane's own
     // buttons on the bar above: muted, in a round hover, turning primary under the pointer.
     if ui_text::is_native() {
-        return controls::toolbar_button(id, Icon::Action(glyph).symbol(), tooltip, true, colors)
-            .on_click(cx.listener(move |view, _, window, cx| {
-                on_action(view, action.clone(), window, cx);
-            }))
-            .into_any_element();
-    }
-    div()
-        .id(id)
-        .flex_none()
-        .h_full()
-        .flex()
-        .items_center()
-        .text_color(rgb(color))
-        .hover(|style| style.bg(rgb(colors.panel_active)))
-        .map(|button| {
-            if as_icon {
-                button
-                    .w(ui_text::space(28.0))
-                    .justify_center()
-                    .child(icons::icon(Icon::Action(glyph), color))
-                    .child(tooltip::anchor(tooltip, Look::Control))
-            } else {
-                button.px(ui_text::space(pad)).child(ui_text::cased(label))
-            }
-        })
+        return crate::project_settings::kit_toolbar_button(
+            id,
+            Icon::Action(glyph).symbol(),
+            tooltip,
+            true,
+            colors,
+        )
         .on_click(cx.listener(move |view, _, window, cx| {
             on_action(view, action.clone(), window, cx);
         }))
-        .into_any_element()
+        .into_any_element();
+    }
+    behavior::button_content(
+        id,
+        tooltip,
+        if as_icon {
+            icons::icon(Icon::Action(glyph), color)
+        } else {
+            div().child(ui_text::cased(label)).into_any_element()
+        },
+    )
+    .flex_none()
+    .h_full()
+    .flex()
+    .items_center()
+    .text_color(rgb(color))
+    .hover(|style| style.bg(rgb(colors.panel_active)))
+    .map(|button| {
+        if as_icon {
+            button
+                .w(ui_text::space(28.0))
+                .justify_center()
+                .child(tooltip::anchor(tooltip, Look::Control))
+        } else {
+            button.px(ui_text::space(pad))
+        }
+    })
+    .on_click(cx.listener(move |view, _, window, cx| {
+        on_action(view, action.clone(), window, cx);
+    }))
+    .into_any_element()
 }
 
 fn project_sort_controls<V: 'static>(
     order: ProjectOrder,
-    open: bool,
+    ui: &ProjectSortUi,
     selector_bounds: Rc<Cell<Bounds<Pixels>>>,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
+    let popup_bounds = selector_bounds.clone();
+    let popup_action = on_action.clone();
+    let state = ui.state.clone();
+    let open = state.read(cx).is_open();
     let choose = on_action.clone();
-    div()
+    let trigger = div()
         .flex()
         .flex_none()
         .items_center()
         .gap(ui_text::space(2.0))
         .text_size(ui_text::text(9.0))
         .child(
-            div()
-                .id("project-sort-selector")
+            behavior::button_content("project-sort-selector", "Sort projects", order.by.label())
+                .track_focus(&ui.trigger_focus)
+                .aria_expanded(open)
                 .relative()
                 .flex()
                 .items_center()
@@ -1482,7 +1545,6 @@ fn project_sort_controls<V: 'static>(
                         control.rounded_full().px(ui_text::space(7.0))
                     })
                 })
-                .child(order.by.label())
                 .child(icons::text_mark(if open { "▴" } else { "▾" }, 8.0))
                 .child(
                     canvas(
@@ -1499,67 +1561,103 @@ fn project_sort_controls<V: 'static>(
                     ))
                 })
                 .on_click(cx.listener(move |view, _, window, cx| {
-                    choose(view, PanelAction::ToggleProjectSortMenu, window, cx);
+                    state.update(cx, |state, cx| state.sync_open(!open, window, cx));
+                    choose(view, PanelAction::SetProjectSortMenuOpen(!open), window, cx);
                 })),
         )
         .child(
-            div()
-                .id("project-sort-direction")
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(ui_text::space(22.0))
-                .h(ui_text::space(20.0))
-                .text_color(rgb(colors.cyan))
-                .hover(move |style| {
-                    let style = style.bg(rgb(colors.panel_active));
-                    if ui_text::is_native() {
-                        style.text_color(rgb(colors.text))
-                    } else {
-                        style
-                    }
+            behavior::toggle_content(
+                "project-sort-direction",
+                order.direction_label(),
+                icons::text_mark(if order.descending { "↓" } else { "↑" }, 9.0),
+                order.descending,
+            )
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(ui_text::space(22.0))
+            .h(ui_text::space(20.0))
+            .text_color(rgb(colors.cyan))
+            .hover(move |style| {
+                let style = style.bg(rgb(colors.panel_active));
+                if ui_text::is_native() {
+                    style.text_color(rgb(colors.text))
+                } else {
+                    style
+                }
+            })
+            // Native's arrow is muted like the order beside it, primary under the pointer.
+            .map(|control| {
+                controls::native(control, |control| {
+                    control.rounded_full().text_color(rgb(colors.muted))
                 })
-                // Native's arrow is muted like the order beside it, primary under the pointer.
-                .map(|control| {
-                    controls::native(control, |control| {
-                        control.rounded_full().text_color(rgb(colors.muted))
-                    })
-                })
-                .child(icons::text_mark(
-                    if order.descending { "↓" } else { "↑" },
-                    9.0,
-                ))
-                .when(!open, |control| {
-                    control.child(tooltip::anchor(order.direction_label(), Look::Control))
-                })
-                .on_click(cx.listener(move |view, _, window, cx| {
+            })
+            .when(!open, |control| {
+                control.child(tooltip::anchor(order.direction_label(), Look::Control))
+            })
+            .on_change({
+                let listener = cx.listener(move |view, _, window, cx| {
                     on_action(
                         view,
                         PanelAction::SetProjectOrder(order.toggled()),
                         window,
                         cx,
                     );
-                })),
+                });
+                move |_, event, window, cx| listener(event, window, cx)
+            }),
         )
+        .into_any_element();
+    anchored_sort_menu(trigger, order, ui, popup_bounds, popup_action, cx)
+}
+
+/// Base Popup owns measurement/deferred layering, Base PopoverState owns focus.
+/// The button owns activation exactly once; no enclosing Confirm handler competes.
+fn anchored_sort_menu<V: 'static>(
+    trigger: AnyElement,
+    order: ProjectOrder,
+    ui: &ProjectSortUi,
+    bounds: Rc<Cell<Bounds<Pixels>>>,
+    action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let state = ui.state.clone();
+    let open = state.read(cx).is_open();
+    gpui_kit::base::Popup::new("project-sort-popup", trigger)
+        .anchor(gpui::Anchor::TopRight)
+        .offset(ui_text::space(4.0))
+        .when(open, |popup| {
+            let close_state = state.clone();
+            popup.content(project_sort_menu(
+                order,
+                bounds,
+                state,
+                move |view, event, window, cx| {
+                    close_state.update(cx, |state, cx| state.dismiss(window, cx));
+                    action(view, event, window, cx);
+                },
+                cx,
+            ))
+        })
         .into_any_element()
 }
 
 fn project_sort_menu<V: 'static>(
     order: ProjectOrder,
     selector_bounds: Rc<Cell<Bounds<Pixels>>>,
+    state: Entity<gpui_kit::base::PopoverState>,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
     let dismiss = on_action.clone();
-    div()
+    let escape = on_action.clone();
+    let escape_state = state.clone();
+    let focus = state.read(cx).focus_handle(cx);
+    let menu = div()
         .id("project-sort-menu")
-        .absolute()
-        .top(ui_text::space(56.0))
-        .right(px(8.0))
         .w(ui_text::space(220.0))
         .max_w(gpui::relative(0.9))
-        .bottom(px(8.0))
         .max_h(ui_text::space(128.0))
         .overflow_y_scroll()
         .bg(rgb(colors.panel_active))
@@ -1569,19 +1667,38 @@ fn project_sort_menu<V: 'static>(
         .map(|menu| {
             controls::native(menu, |menu| {
                 controls::menu(menu, colors)
-                    .top(ui_text::space(controls::HEADER_HEIGHT - 6.0))
-                    .right(ui_text::space(controls::LIST_MARGIN))
                     .w(ui_text::space(200.0))
                     .bottom_auto()
                     .max_h(ui_text::space(220.0))
             })
         })
         .occlude()
+        .on_key_down(
+            cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "escape" => {
+                        escape_state.update(cx, |state, cx| state.dismiss(window, cx));
+                        escape(view, PanelAction::CloseProjectSortMenu, window, cx);
+                    }
+                    "tab" | "up" | "down" => {
+                        crate::project_settings::modal_tab(
+                            event.keystroke.key == "up" || event.keystroke.modifiers.shift,
+                            window,
+                            cx,
+                        );
+                    }
+                    _ => return,
+                }
+                window.prevent_default();
+                cx.stop_propagation();
+            }),
+        )
         .on_mouse_down_out(
             cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
                 if selector_bounds.get().contains(&event.position) {
                     return;
                 }
+                state.update(cx, |state, cx| state.dismiss(window, cx));
                 dismiss(view, PanelAction::CloseProjectSortMenu, window, cx);
             }),
         )
@@ -1627,8 +1744,8 @@ fn project_sort_menu<V: 'static>(
                         cx,
                     )
                 }))
-        })
-        .into_any_element()
+        });
+    behavior::focus_scope(menu, "project-sort-focus-trap", &focus).into_any_element()
 }
 
 /// One choice in the Projects sort menu, ticked when it is the current one.
@@ -1641,38 +1758,67 @@ fn sort_menu_row<V: 'static>(
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .gap(ui_text::space(7.0))
-        .px(ui_text::space(8.0))
-        .py(ui_text::space(7.0))
-        .text_size(ui_text::text(10.0))
-        .text_color(rgb(if selected { colors.cyan } else { colors.text }))
-        .hover(move |style| {
-            controls::hovered(style, controls::menu_row_hover(colors), |style| {
-                style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
-            })
+    behavior::button_content(
+        id,
+        label,
+        div()
+            .flex_none()
+            .w(ui_text::space(12.0))
+            .when(selected, |check| {
+                check.child(if ui_text::is_native() {
+                    icons::text_mark("✓", 10.0)
+                } else {
+                    "✓".into_any_element()
+                })
+            }),
+    )
+    .aria_selected(selected)
+    .flex()
+    .items_center()
+    .gap(ui_text::space(7.0))
+    .focus_visible(move |style| {
+        style
+            .bg(rgb(controls::menu_row_hover(colors)))
+            .text_color(rgb(colors.cyan))
+    })
+    .px(ui_text::space(8.0))
+    .py(ui_text::space(7.0))
+    .text_size(ui_text::text(10.0))
+    .text_color(rgb(if selected { colors.cyan } else { colors.text }))
+    .hover(move |style| {
+        controls::hovered(style, controls::menu_row_hover(colors), |style| {
+            style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
         })
-        .map(|row| controls::native(row, |row| controls::menu_row(row, colors)))
-        .child(
-            div()
-                .flex_none()
-                .w(ui_text::space(12.0))
-                .when(selected, |check| {
-                    check.child(if ui_text::is_native() {
-                        icons::text_mark("✓", 10.0)
-                    } else {
-                        "✓".into_any_element()
-                    })
-                }),
-        )
-        .child(div().flex_1().min_w_0().text_ellipsis().child(label))
-        .on_click(cx.listener(move |view, _, window, cx| {
-            action(view, PanelAction::SetProjectOrder(next), window, cx);
-        }))
-        .into_any_element()
+    })
+    .map(|row| controls::native(row, |row| controls::menu_row(row, colors)))
+    .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+    .on_click(cx.listener(move |view, _, window, cx| {
+        action(view, PanelAction::SetProjectOrder(next), window, cx);
+    }))
+    .into_any_element()
+}
+
+/// Preserve Native's pointer hover policy and reveal the action strip whenever
+/// keyboard focus is on the row or one of its nested Base controls.
+fn project_action_strip(
+    native: bool,
+    selected: bool,
+    row_focus: &FocusHandle,
+    window: &Window,
+    cx: &gpui::App,
+) -> Div {
+    let keyboard_within =
+        window.last_input_was_keyboard() && row_focus.contains_focused(window, cx);
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(ui_text::space(4.0))
+        .when(native && !selected && !keyboard_within, |strip| {
+            strip
+                .invisible()
+                .group_hover(PROJECT_ROW_GROUP, |style| style.visible())
+        })
 }
 
 fn project_control<V: 'static>(
@@ -1685,40 +1831,47 @@ fn project_control<V: 'static>(
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    div()
-        .id(format!("{name}-project-{project_id}"))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(ui_text::space(20.0))
-        .h(ui_text::space(18.0))
-        .text_color(rgb(colors.cyan))
-        .hover(move |style| {
-            let style = style.bg(rgb(colors.divider));
-            if ui_text::is_native() {
-                style.text_color(rgb(colors.text))
-            } else {
-                style.text_color(rgb(colors.magenta))
-            }
+    behavior::button_content(
+        format!("{name}-project-{project_id}"),
+        tooltip,
+        icons::text_mark(mark, 10.0),
+    )
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .w(ui_text::space(20.0))
+    .h(ui_text::space(18.0))
+    .text_color(rgb(colors.cyan))
+    .focus_visible(move |style| style.bg(rgb(colors.divider)))
+    .hover(move |style| {
+        let style = style.bg(rgb(colors.divider));
+        if ui_text::is_native() {
+            style.text_color(rgb(colors.text))
+        } else {
+            style.text_color(rgb(colors.magenta))
+        }
+    })
+    // Native's row controls are muted symbols in a round hover, like the bar's buttons.
+    .map(|control| {
+        controls::native(control, |control| {
+            control
+                .size(ui_text::space(20.0))
+                .rounded_full()
+                .text_color(rgb(colors.muted))
         })
-        // Native's row controls are muted symbols in a round hover, like the bar's buttons.
-        .map(|control| {
-            controls::native(control, |control| {
-                control
-                    .size(ui_text::space(20.0))
-                    .rounded_full()
-                    .text_color(rgb(colors.muted))
-            })
-        })
-        .child(icons::text_mark(mark, 10.0))
-        .child(tooltip::anchor(tooltip, Look::Control))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(cx.listener(move |view, _, window, cx| {
-            cx.stop_propagation();
-            on_action(view, action.clone(), window, cx);
-        }))
-        .into_any_element()
+    })
+    .child(tooltip::anchor(tooltip, Look::Control))
+    // Let Base/GPUI transfer pointer focus before isolating activation. A
+    // mouse-down stop skips that earlier listener in reverse bubble dispatch.
+    .on_click(cx.listener(move |view, _, window, cx| {
+        cx.stop_propagation();
+        on_action(view, action.clone(), window, cx);
+    }))
+    .map(|control| {
+        crate::form_input::control_element(format!("{name}-project-{project_id}"), control)
+    })
+    .into_any_element()
 }
 
 fn project_notification_control<V: 'static>(
@@ -1729,47 +1882,52 @@ fn project_notification_control<V: 'static>(
 ) -> AnyElement {
     let colors = theme::palette(cx);
     let project_id = project_id.to_owned();
-    div()
-        .id(format!("notifications-project-{project_id}"))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(ui_text::space(20.0))
-        .h(ui_text::space(18.0))
-        .hover(move |style| {
-            let style = style.bg(rgb(colors.divider));
-            if ui_text::is_native() {
-                style.text_color(rgb(colors.text))
-            } else {
-                style
-            }
-        })
-        // Native draws the bell as its row's other controls: the size of their symbols, in
-        // a round hover, primary while notifications are on.
-        .map(|control| {
-            controls::native(control, |control| {
-                control
-                    .size(ui_text::space(20.0))
-                    .rounded_full()
-                    .text_color(rgb(if enabled { colors.text } else { colors.muted }))
-            })
-        })
-        .child(icons::text_icon(
+    behavior::toggle_content(
+        format!("notifications-project-{project_id}"),
+        "Agent completion notifications",
+        icons::text_icon(
             if enabled { Icon::Bell } else { Icon::BellOff },
             9.6,
             if enabled { colors.cyan } else { colors.muted },
-        ))
-        .child(tooltip::anchor(
-            if enabled {
-                "Agent completion notifications on · click to disable"
-            } else {
-                "Agent completion notifications off · click to enable"
-            },
-            Look::Control,
-        ))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(cx.listener(move |view, _, window, cx| {
+        ),
+        enabled,
+    )
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .w(ui_text::space(20.0))
+    .h(ui_text::space(18.0))
+    .focus_visible(move |style| style.bg(rgb(colors.divider)))
+    .hover(move |style| {
+        let style = style.bg(rgb(colors.divider));
+        if ui_text::is_native() {
+            style.text_color(rgb(colors.text))
+        } else {
+            style
+        }
+    })
+    // Native draws the bell as its row's other controls: the size of their symbols, in
+    // a round hover, primary while notifications are on.
+    .map(|control| {
+        controls::native(control, |control| {
+            control
+                .size(ui_text::space(20.0))
+                .rounded_full()
+                .text_color(rgb(if enabled { colors.text } else { colors.muted }))
+        })
+    })
+    .child(tooltip::anchor(
+        if enabled {
+            "Agent completion notifications on · click to disable"
+        } else {
+            "Agent completion notifications off · click to enable"
+        },
+        Look::Control,
+    ))
+    // Keep Base's pointer focus transfer; the domain activation stays isolated.
+    .on_change({
+        let listener = cx.listener(move |view, _, window, cx| {
             cx.stop_propagation();
             on_action(
                 view,
@@ -1777,8 +1935,10 @@ fn project_notification_control<V: 'static>(
                 window,
                 cx,
             );
-        }))
-        .into_any_element()
+        });
+        move |_, event, window, cx| listener(event, window, cx)
+    })
+    .into_any_element()
 }
 
 /// The detail of the selected task under the Tasks list.
@@ -1859,55 +2019,61 @@ fn push_remote_folder<V: 'static>(
     let offline = folder.link == Some(Link::Offline);
     let hint = folder.link.map_or("Connecting…", Link::text);
     rows.push(
-        folder_bar(format!("remote-folder-{}", folder.host), 0, colors)
-            .child(if folder.collapsed { "▸" } else { "▾" })
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .text_color(rgb(link_color(folder.link, colors)))
-                    .child(if offline { "○" } else { "●" })
-                    .child(tooltip::anchor(hint, Look::Control)),
+        folder_bar(
+            format!("remote-folder-{}", folder.host),
+            &folder.label,
+            if folder.collapsed { "▸" } else { "▾" },
+            0,
+            colors,
+        )
+        .aria_expanded(!folder.collapsed)
+        .child(
+            div()
+                .relative()
+                .flex_none()
+                .text_color(rgb(link_color(folder.link, colors)))
+                .child(if offline { "○" } else { "●" })
+                .child(tooltip::anchor(hint, Look::Control)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_ellipsis()
+                .overflow_hidden()
+                .child(folder.label.clone()),
+        )
+        .children(folder.creating.then(|| {
+            div()
+                .text_size(ui_text::text(9.0))
+                .text_color(rgb(colors.muted))
+                .child("creating…")
+        }))
+        .child(
+            div()
+                .text_size(ui_text::text(9.0))
+                .text_color(rgb(colors.muted))
+                .child(format!("{:02}", folder.count)),
+        )
+        .children(online.then(|| {
+            project_control(
+                &folder.host,
+                "remote-new-project",
+                "+",
+                "New project on this Mac",
+                PanelAction::Remote(RemoteAction::NewProject(folder.host.clone())),
+                on_action.clone(),
+                cx,
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_ellipsis()
-                    .overflow_hidden()
-                    .child(folder.label.clone()),
-            )
-            .children(folder.creating.then(|| {
-                div()
-                    .text_size(ui_text::text(9.0))
-                    .text_color(rgb(colors.muted))
-                    .child("creating…")
-            }))
-            .child(
-                div()
-                    .text_size(ui_text::text(9.0))
-                    .text_color(rgb(colors.muted))
-                    .child(format!("{:02}", folder.count)),
-            )
-            .children(online.then(|| {
-                project_control(
-                    &folder.host,
-                    "remote-new-project",
-                    "+",
-                    "New project on this Mac",
-                    PanelAction::Remote(RemoteAction::NewProject(folder.host.clone())),
-                    on_action.clone(),
-                    cx,
-                )
-            }))
-            .child(tooltip::anchor(
-                "A paired Mac. Its projects open here like local ones.",
-                Look::Control,
-            ))
-            .on_click(cx.listener(move |view, _, window, cx| {
-                toggle_action(view, toggle.clone(), window, cx);
-            }))
-            .into_any_element(),
+        }))
+        .child(tooltip::anchor(
+            "A paired Mac. Its projects open here like local ones.",
+            Look::Control,
+        ))
+        .on_click(cx.listener(move |view, _, window, cx| {
+            toggle_action(view, toggle.clone(), window, cx);
+        }))
+        .into_any_element(),
     );
     if let Some(message) = &folder.failure {
         rows.push(failure_row(
@@ -1949,11 +2115,13 @@ fn remote_project_row<V: 'static>(
     let colors = theme::palette(cx);
     project_row(
         &project.key,
+        &project.name,
         None,
         ProjectRowLook {
             selected: project.selected,
             depth: 1,
             dimmed: project.dimmed,
+            focus: None,
         },
         vec![
             div()
@@ -1996,13 +2164,11 @@ fn failure_row<V: 'static>(
         .text_color(rgb(colors.gold))
         .child(div().flex_1().min_w_0().child(message.to_owned()))
         .child(
-            div()
-                .id(format!("{id}-dismiss"))
+            behavior::button_content(format!("{id}-dismiss"), "Dismiss failure", "×")
                 .flex_none()
                 .px(ui_text::space(4.0))
                 .text_color(rgb(colors.muted))
                 .hover(|style| style.text_color(rgb(colors.text)))
-                .child("×")
                 .child(tooltip::anchor("Dismiss", Look::Control))
                 .on_click(cx.listener(move |view, _, window, cx| {
                     on_action(view, dismiss.clone(), window, cx);
@@ -2152,6 +2318,7 @@ fn push_remote_panel<V: 'static>(
                 rows.push(dimmed_if(
                     row(
                         format!("remote-worktree-{}", worktree.id),
+                        worktree.branch.clone(),
                         selected,
                         colors.magenta,
                         lines,
@@ -2181,6 +2348,7 @@ fn push_remote_panel<V: 'static>(
                 rows.push(dimmed_if(
                     row(
                         format!("remote-task-{}", task.id),
+                        task.title.clone(),
                         data.selected_task_id == Some(task.id.as_str()),
                         color,
                         vec![
@@ -2293,6 +2461,7 @@ fn push_remote_panel<V: 'static>(
                 rows.push(dimmed_if(
                     row(
                         format!("remote-shell-{}", shell.id),
+                        format!("{} · {}", label, short_id(&shell.id)),
                         false,
                         colors.cyan,
                         lines,
@@ -2384,9 +2553,15 @@ fn project_indent(depth: usize) -> f32 {
 
 /// The bar of a folder heading, shared by the local folders and the ones that stand for
 /// another Mac so the two read as one list.
-fn folder_bar(id: String, depth: usize, colors: Palette) -> Stateful<Div> {
-    div()
-        .id(id)
+fn folder_bar(
+    id: String,
+    name: &str,
+    content: impl IntoElement,
+    depth: usize,
+    colors: Palette,
+) -> behavior::Button {
+    behavior::button_content(id, name.to_owned(), content)
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex()
         .items_center()
         .gap(ui_text::space(5.0))
@@ -2413,6 +2588,9 @@ fn folder_bar(id: String, depth: usize, colors: Palette) -> Stateful<Div> {
                     .text_color(rgb(colors.muted))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_size(ui_text::text(10.0))
+                    .focus_visible(move |style| {
+                        style.bg(rgb(colors.divider)).text_color(rgb(colors.text))
+                    })
             })
         })
 }
@@ -2444,6 +2622,8 @@ fn folder_header<V: 'static>(
     let editable = id.is_some();
     folder_bar(
         format!("project-folder-{}", id.unwrap_or("unfiled")),
+        name,
+        icons::mark(if collapsed { "▸" } else { "▾" }, 9.0, colors.muted),
         depth,
         colors,
     )
@@ -2457,11 +2637,7 @@ fn folder_header<V: 'static>(
             style
         }
     })
-    .child(icons::mark(
-        if collapsed { "▸" } else { "▾" },
-        9.0,
-        colors.muted,
-    ))
+    .aria_expanded(!collapsed)
     .child(
         div()
             .flex_1()
@@ -2565,18 +2741,20 @@ fn folder_header<V: 'static>(
 }
 
 /// How a project row is drawn.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ProjectRowLook {
     selected: bool,
     depth: usize,
     /// What the row says may be out of date, as when its host cannot be reached.
     dimmed: bool,
+    focus: Option<FocusHandle>,
 }
 
 /// A project of a folder. A local project can be dragged to another folder; one that belongs
 /// to another Mac (`drag` is `None`) stays where its host puts it.
 fn project_row<V: 'static>(
     id: &str,
+    accessible_name: &str,
     drag: Option<DraggedProjectItem>,
     look: ProjectRowLook,
     children: Vec<AnyElement>,
@@ -2589,11 +2767,17 @@ fn project_row<V: 'static>(
         selected,
         depth,
         dimmed,
+        focus,
     } = look;
     let drag_view = cx.entity();
     let drag_action = on_action.clone();
-    div()
-        .id(format!("project-{id}"))
+    let mut children = children.into_iter();
+    let first = children.next().unwrap_or_else(|| div().into_any_element());
+    behavior::button_content(format!("project-{id}"), accessible_name.to_owned(), first)
+        .when_some(focus, |row, focus| row.track_focus(&focus))
+        .aria_selected(selected)
+        .items_stretch()
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex()
         .flex_col()
         .gap(ui_text::space(3.0))
@@ -2632,6 +2816,7 @@ fn project_row<V: 'static>(
                 cx.new(|_| drag.clone())
             })
         })
+        .map(|control| crate::form_input::control_element(format!("project-{id}"), control))
         .into_any_element()
 }
 
@@ -2640,11 +2825,18 @@ const PROJECT_ROW_GROUP: &str = "project-row";
 
 /// Native's sidebar row: inset from the panel's edges and rounded, filled when chosen,
 /// with no bar along its side.
-fn sidebar_row(row: Stateful<Div>, selected: bool, colors: Palette) -> Stateful<Div> {
+fn sidebar_row<E: gpui::Styled + gpui::InteractiveElement>(
+    row: E,
+    selected: bool,
+    colors: Palette,
+) -> E {
     controls::list_row(row, selected, colors)
         .mx(ui_text::space(controls::LIST_MARGIN))
         .border_l_0()
         .border_0()
+        // The shared ring uses a border; Native deliberately removes it.
+        // A keyboard-only fill shows focus without changing layout or hover.
+        .focus_visible(move |style| style.bg(rgb(colors.divider)))
 }
 
 /// How far Native indents a project row's text at `depth`: a level's step is a disclosure
@@ -2660,6 +2852,7 @@ const NATIVE_LEVEL: f32 = 16.0;
 
 fn row<V: 'static>(
     id: String,
+    accessible_name: String,
     selected: bool,
     accent: u32,
     children: Vec<AnyElement>,
@@ -2668,8 +2861,12 @@ fn row<V: 'static>(
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    div()
-        .id(id)
+    let mut children = children.into_iter();
+    let first = children.next().unwrap_or_else(|| div().into_any_element());
+    behavior::button_content(id, accessible_name, first)
+        .aria_selected(selected)
+        .items_stretch()
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex()
         .flex_col()
         .gap(ui_text::space(3.0))
@@ -3402,5 +3599,357 @@ mod tests {
         assert!(folder_missing(&file));
         assert!(folder_missing(&directory.join("gone")));
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod kit_control_tests {
+    use super::*;
+    use crate::form_input::{test_turn, test_window};
+    use gpui::InputEvent as _;
+    use gpui::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
+
+    struct Fixture {
+        sort: ProjectSortUi,
+        order: ProjectOrder,
+        actions: Vec<PanelAction>,
+        row_focus: FocusHandle,
+        native_reveal: bool,
+    }
+    impl Fixture {
+        fn action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
+            match &action {
+                PanelAction::CloseProjectSortMenu => self.sort.dismiss(window, cx),
+                PanelAction::SetProjectOrder(order) => {
+                    self.order = *order;
+                    self.sort.dismiss(window, cx);
+                }
+                _ => {}
+            }
+            self.actions.push(action);
+            cx.notify();
+        }
+    }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(project_sort_controls(
+                    self.order,
+                    &self.sort,
+                    Rc::new(Cell::new(Bounds::default())),
+                    Self::action,
+                    cx,
+                ))
+                .child(project_row(
+                    "synthetic-project-id",
+                    "Same title",
+                    None,
+                    ProjectRowLook {
+                        selected: !self.native_reveal,
+                        depth: 0,
+                        dimmed: false,
+                        focus: Some(self.row_focus.clone()),
+                    },
+                    vec![
+                        div()
+                            .flex()
+                            .items_center()
+                            .w_full()
+                            .child(div().flex_1().child("Same title"))
+                            .child(
+                                project_action_strip(
+                                    self.native_reveal,
+                                    !self.native_reveal,
+                                    &self.row_focus,
+                                    window,
+                                    cx,
+                                )
+                                .child(project_control(
+                                    "synthetic-project-id",
+                                    "settings",
+                                    "⚙",
+                                    "Project settings",
+                                    PanelAction::ProjectSettings("synthetic-project-id".into()),
+                                    Self::action,
+                                    cx,
+                                )),
+                            )
+                            .into_any_element(),
+                    ],
+                    PanelAction::Project("synthetic-project-id".into()),
+                    Self::action,
+                    cx,
+                ))
+        }
+    }
+    fn mount(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<Fixture>) {
+        test_window(cx, |_, cx| Fixture {
+            sort: ProjectSortUi::new(cx),
+            order: ProjectOrder::default(),
+            actions: Vec::new(),
+            row_focus: cx.focus_handle(),
+            native_reveal: false,
+        })
+    }
+
+    #[gpui::test]
+    fn panel_rows_keyboard_ax_and_nested_actions_keep_exact_project_identity(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, owner) = mount(cx);
+        test_turn(cx, window, |window, app| {
+            window.click("settings-project-synthetic-project-id", app)
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                matches!(owner.read(app).actions.as_slice(), [PanelAction::ProjectSettings(id)] if id == "synthetic-project-id")
+            );
+            assert_eq!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .focused(),
+                Some(true)
+            );
+            assert!(owner.read(app).row_focus.contains_focused(window, app));
+            assert!(!owner.read(app).row_focus.is_focused(window));
+            // Rebuild the real parent and child controls before keyboard
+            // activation; their semantic IDs must retain the nested focus.
+            owner.update(app, |_, cx| cx.notify());
+        });
+        test_turn(cx, window, |window, _| {
+            assert_eq!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .focused(),
+                Some(true)
+            );
+        });
+        test_turn(cx, window, |window, app| window.press("space", app));
+        test_turn(cx, window, |window, app| {
+            let actions = &owner.read(app).actions;
+            assert_eq!(actions.len(), 2);
+            assert!(actions.iter().all(
+                |a| matches!(a, PanelAction::ProjectSettings(id) if id == "synthetic-project-id")
+            ));
+            let row = crate::form_input::test_ax_node(window, app, "project-synthetic-project-id");
+            assert_eq!(row.role(), gpui::Role::Button);
+            assert_eq!(row.label(), Some("Same title"));
+            assert_eq!(row.is_selected(), Some(true));
+        });
+        test_turn(cx, window, |window, app| {
+            window.click("project-synthetic-project-id", app);
+        });
+        test_turn(cx, window, |window, app| {
+            let owner = owner.read(app);
+            assert_eq!(owner.actions.len(), 3);
+            assert!(
+                matches!(&owner.actions[2], PanelAction::Project(id) if id == "synthetic-project-id")
+            );
+            assert!(owner.row_focus.is_focused(window));
+        });
+        test_turn(cx, window, |window, app| window.press("enter", app));
+        test_turn(cx, window, |_, app| {
+            let actions = &owner.read(app).actions;
+            assert_eq!(actions.len(), 4);
+            assert!(
+                actions[2..]
+                    .iter()
+                    .all(|a| matches!(a, PanelAction::Project(id) if id == "synthetic-project-id"))
+            );
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, PanelAction::OpenProject(_)))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn native_project_actions_reveal_for_keyboard_scope_and_keep_pointer_hover(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, owner) = mount(cx);
+        // Exercise Native's actual visibility policy without loading a native
+        // theme, Ghostty settings, StateStore, Workspace or any service.
+        test_turn(cx, window, |window, app| {
+            owner.update(app, |owner, cx| {
+                owner.native_reveal = true;
+                cx.notify();
+            });
+            window.dispatch_event(
+                gpui::MouseMoveEvent {
+                    position: gpui::point(
+                        window.viewport_size().width - px(2.),
+                        window.viewport_size().height - px(2.),
+                    ),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                app,
+            );
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                !window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            let position = window
+                .find("project-synthetic-project-id")
+                .bounds()
+                .center();
+            window.dispatch_event(
+                gpui::MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                app,
+            );
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            assert!(owner.read(app).actions.is_empty());
+            window.dispatch_event(
+                gpui::MouseMoveEvent {
+                    position: gpui::point(
+                        window.viewport_size().width - px(2.),
+                        window.viewport_size().height - px(2.),
+                    ),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                app,
+            );
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                !window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            let focus = owner.read(app).row_focus.clone();
+            focus.focus(window, app);
+            // Programmatic focus preserves pointer modality. A non-activating
+            // key establishes keyboard focus and lets the row reveal its child
+            // before Root's next Tab enumerates the actually painted tab stops.
+            window.press("right", app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(owner.read(app).row_focus.is_focused(window));
+            assert!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            assert!(owner.read(app).actions.is_empty());
+            window.press("tab", app);
+        });
+        test_turn(cx, window, |window, app| {
+            let nested = window.find("settings-project-synthetic-project-id");
+            assert_eq!(nested.focused(), Some(true));
+            assert!(
+                nested.visible(),
+                "keyboard focus within the row reveals Native actions"
+            );
+            let node = crate::form_input::test_ax_node(
+                window,
+                app,
+                "settings-project-synthetic-project-id",
+            );
+            assert_eq!(node.role(), gpui::Role::Button);
+            assert_eq!(node.label(), Some("Project settings"));
+            assert!(!node.is_disabled());
+            assert!(node.supports_action(gpui::accesskit::Action::Click));
+            window.press("space", app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                matches!(owner.read(app).actions.as_slice(), [PanelAction::ProjectSettings(id)] if id == "synthetic-project-id")
+            );
+            let focus = owner.read(app).sort.trigger_focus.clone();
+            focus.focus(window, app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                !window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
+    fn sort_popover_keyboard_reselect_dismissal_and_refresh_preserve_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, owner) = mount(cx);
+        let identity = owner.read_with(cx, |owner, _| owner.sort.state.entity_id());
+        test_turn(cx, window, |window, app| {
+            window.click("project-sort-selector", app)
+        });
+        test_turn(cx, window, |window, app| {
+            let owner = owner.read(app);
+            assert!(owner.sort.state.read(app).is_open());
+            assert!(
+                owner
+                    .sort
+                    .state
+                    .read(app)
+                    .focus_handle(app)
+                    .contains_focused(window, app)
+            );
+            assert!(matches!(
+                owner.actions.as_slice(),
+                [PanelAction::SetProjectSortMenuOpen(true)]
+            ));
+            window.press("tab", app);
+        });
+        test_turn(cx, window, |window, app| window.press("enter", app));
+        test_turn(cx, window, |window, app| {
+            let owner = owner.read(app);
+            assert!(!owner.sort.state.read(app).is_open());
+            assert_eq!(
+                owner
+                    .actions
+                    .iter()
+                    .filter(|a| matches!(a, PanelAction::SetProjectOrder(_)))
+                    .count(),
+                1
+            );
+            assert!(owner.sort.trigger_focus.is_focused(window));
+            window.press("space", app);
+        });
+        test_turn(cx, window, |window, app| window.press("escape", app));
+        test_turn(cx, window, |window, app| {
+            assert!(!owner.read(app).sort.state.read(app).is_open());
+            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
+            owner.update(app, |_, cx| cx.notify());
+        });
+        test_turn(cx, window, |window, app| {
+            assert_eq!(owner.read(app).sort.state.entity_id(), identity);
+            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
+            assert_eq!(
+                owner
+                    .read(app)
+                    .actions
+                    .iter()
+                    .filter(|a| matches!(a, PanelAction::CloseProjectSortMenu))
+                    .count(),
+                1
+            );
+        });
     }
 }

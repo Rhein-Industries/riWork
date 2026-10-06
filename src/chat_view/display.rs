@@ -32,6 +32,14 @@ pub(super) enum Row {
     Outcome(String, TurnOutcome),
 }
 
+pub(super) fn outcome_text(outcome: &TurnOutcome) -> String {
+    match outcome {
+        TurnOutcome::Completed => "Turn completed".into(),
+        TurnOutcome::Interrupted => "Turn interrupted".into(),
+        TurnOutcome::Failed { message } => format!("Turn failed: {message}"),
+    }
+}
+
 fn technical(item: &crate::chat::model::Item) -> bool {
     matches!(
         item.body,

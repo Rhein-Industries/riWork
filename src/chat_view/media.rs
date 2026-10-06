@@ -623,25 +623,30 @@ impl ChatView {
                         .flex_col()
                         .gap(ui_text::space(4.0))
                         .child(
-                            div()
-                                .id(SharedString::from(format!("view:{key}")))
-                                .w_full()
-                                .h(ui_text::space(240.0))
-                                .flex_none()
-                                .relative()
-                                .overflow_hidden()
-                                .child(
-                                    img(image.clone())
-                                        .absolute()
-                                        .inset_0()
-                                        .size_full()
-                                        .aspect_square(),
-                                )
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |view, _, _, cx| {
+                            crate::behavior_controls::button_content(
+                                SharedString::from(format!("view:{key}")),
+                                format!("View {description}"),
+                                img(image.clone())
+                                    .absolute()
+                                    .inset_0()
+                                    .size_full()
+                                    .aspect_square(),
+                            )
+                            .w_full()
+                            .h(ui_text::space(240.0))
+                            .flex_none()
+                            .relative()
+                            .overflow_hidden()
+                            .cursor_pointer()
+                            .focus_visible(move |style| {
+                                style.border_1().border_color(rgb(look.colors.focus))
+                            })
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
                                     view.media.viewer = Some(viewer_key.clone());
                                     cx.notify();
-                                })),
+                                },
+                            )),
                         )
                         .child(
                             div()
@@ -683,6 +688,7 @@ impl ChatView {
                     None,
                     look,
                 )
+                .aria_expanded(open)
                 .on_click(cx.listener(move |view, _, _, cx| {
                     view.toggle_image(toggle_key.clone(), owned.clone(), cx)
                 })),

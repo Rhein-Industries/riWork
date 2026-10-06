@@ -17,6 +17,7 @@ use gpui::{Entity, Focusable, Subscription};
 use std::ops::Range;
 
 use crate::{
+    behavior_controls as behavior,
     store::{Project, ProjectInspection, Store},
     theme, ui_text,
 };
@@ -127,6 +128,8 @@ pub struct ProjectCreator {
     path_follows_name: bool,
     active: Field,
     focus: FocusHandle,
+    dialog: gpui_kit::base::DialogHandle,
+    return_focus: Option<FocusHandle>,
     store: Store,
     inspection: Option<ProjectInspection>,
     generation: u64,
@@ -145,6 +148,7 @@ impl ProjectCreator {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let return_focus = window.focused(cx);
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
         let focus = cx.focus_handle();
@@ -198,6 +202,8 @@ impl ProjectCreator {
             path_follows_name: true,
             active: Field::Name,
             focus,
+            dialog: gpui_kit::base::DialogHandle::new(true),
+            return_focus,
             store,
             inspection: None,
             generation: 0,
@@ -385,17 +391,19 @@ impl ProjectCreator {
         let platform = event.keystroke.modifiers.platform;
         let handled = match event.keystroke.key.as_str() {
             "escape" => {
+                crate::project_settings::close_modal(
+                    &self.dialog,
+                    &self.focus,
+                    &self.return_focus,
+                    window,
+                    cx,
+                );
                 cx.emit(ProjectCreationEvent::Cancelled);
                 true
             }
 
             "tab" => {
-                self.active = if self.active == Field::Path {
-                    Field::Name
-                } else {
-                    Field::Path
-                };
-                self.focus_input(window, cx);
+                crate::project_settings::modal_tab(event.keystroke.modifiers.shift, window, cx);
                 true
             }
             "g" if init_git_shortcut(&event.keystroke.modifiers) => {
@@ -508,10 +516,12 @@ impl Render for ProjectCreator {
         } else {
             "Enter a folder path, or browse to an existing folder.".to_owned()
         };
-        div()
+        let panel = div()
             .id("project-creator")
+            // Pinned Base Dialog's focus-trap host omits its AX role.
+            .role(gpui::Role::Dialog)
+            .aria_label("New project")
             .occlude()
-            .track_focus(&self.focus)
             .key_context("ProjectCreator")
             .capture_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -541,12 +551,19 @@ impl Render for ProjectCreator {
                             .child(ui_text::cased("New project")),
                     )
                     .child(
-                        div()
-                            .id("cancel-project-x")
+                        behavior::button_content("cancel-project-x", "Close new project", "×")
+                            .disabled(self.creating)
+                            .focus_visible(move |style| style.text_color(rgb(colors.focus)))
                             .text_color(rgb(colors.muted))
-                            .child("×")
-                            .on_click(cx.listener(|form, _, _, cx| {
+                            .on_click(cx.listener(|form, _, window, cx| {
                                 if !form.creating {
+                                    crate::project_settings::close_modal(
+                                        &form.dialog,
+                                        &form.focus,
+                                        &form.return_focus,
+                                        window,
+                                        cx,
+                                    );
                                     cx.emit(ProjectCreationEvent::Cancelled);
                                 }
                             })),
@@ -565,17 +582,21 @@ impl Render for ProjectCreator {
                         cx,
                     )))
                     .child(
-                        div()
-                            .id("browse-project-folder")
-                            .h(ui_text::space(32.0))
-                            .px(ui_text::space(10.0))
-                            .flex()
-                            .items_center()
-                            .border_1()
-                            .border_color(rgb(colors.divider))
-                            .text_color(rgb(colors.cyan))
-                            .child(ui_text::cased("Browse…"))
-                            .on_click(cx.listener(|form, _, window, cx| form.browse(window, cx))),
+                        behavior::button_content(
+                            "browse-project-folder",
+                            "Browse project folder",
+                            ui_text::cased("Browse…"),
+                        )
+                        .disabled(self.creating)
+                        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                        .h(ui_text::space(32.0))
+                        .px(ui_text::space(10.0))
+                        .flex()
+                        .items_center()
+                        .border_1()
+                        .border_color(rgb(colors.divider))
+                        .text_color(rgb(colors.cyan))
+                        .on_click(cx.listener(|form, _, window, cx| form.browse(window, cx))),
                     ),
             )
             .child(self.render_field(
@@ -623,20 +644,27 @@ impl Render for ProjectCreator {
                     .map(|warning| div().text_color(rgb(colors.gold)).child(warning.clone())),
             )
             .children(can_init.then(|| {
-                div()
-                    .id("init-project-git")
-                    .flex()
-                    .gap(ui_text::space(8.0))
-                    .items_center()
-                    .text_color(rgb(colors.cyan))
-                    .child(if self.init_git { "[✓]" } else { "[ ]" })
-                    .child("Initialize Git  [CMD+G]")
-                    .on_click(cx.listener(|form, _, _, cx| {
+                behavior::switch_content(
+                    "init-project-git",
+                    "Initialize Git",
+                    if self.init_git { "[✓]" } else { "[ ]" },
+                    self.init_git,
+                )
+                .disabled(self.creating)
+                .flex()
+                .gap(ui_text::space(8.0))
+                .items_center()
+                .text_color(rgb(colors.cyan))
+                .child("Initialize Git  [CMD+G]")
+                .on_change({
+                    let listener = cx.listener(|form, checked: &bool, _, cx| {
                         if !form.creating {
-                            form.init_git = !form.init_git;
+                            form.init_git = *checked;
                             cx.notify();
                         }
-                    }))
+                    });
+                    move |checked, _, window, cx| listener(&checked, window, cx)
+                })
             }))
             .children(
                 self.inspection
@@ -660,35 +688,66 @@ impl Render for ProjectCreator {
                     .justify_end()
                     .gap(ui_text::space(10.0))
                     .child(
-                        div()
-                            .id("cancel-project")
-                            .px(ui_text::space(12.0))
-                            .py(ui_text::space(8.0))
-                            .text_color(rgb(colors.muted))
-                            .child(ui_text::cased("Cancel"))
-                            .on_click(cx.listener(|form, _, _, cx| {
-                                if !form.creating {
-                                    cx.emit(ProjectCreationEvent::Cancelled);
-                                }
-                            })),
+                        behavior::button_content(
+                            "cancel-project",
+                            "Cancel",
+                            ui_text::cased("Cancel"),
+                        )
+                        .disabled(self.creating)
+                        .focus_visible(move |style| {
+                            style
+                                .text_color(rgb(colors.focus))
+                                .border_color(rgb(colors.focus))
+                        })
+                        .px(ui_text::space(12.0))
+                        .py(ui_text::space(8.0))
+                        .text_color(rgb(colors.muted))
+                        .on_click(cx.listener(|form, _, window, cx| {
+                            if !form.creating {
+                                crate::project_settings::close_modal(
+                                    &form.dialog,
+                                    &form.focus,
+                                    &form.return_focus,
+                                    window,
+                                    cx,
+                                );
+                                cx.emit(ProjectCreationEvent::Cancelled);
+                            }
+                        })),
                     )
                     .child(
-                        div()
-                            .id("create-project")
-                            .px(ui_text::space(12.0))
-                            .py(ui_text::space(8.0))
-                            .bg(rgb(colors.panel_active))
-                            .border_1()
-                            .border_color(rgb(if ready { colors.cyan } else { colors.divider }))
-                            .text_color(rgb(if ready { colors.cyan } else { colors.muted }))
-                            .child(ui_text::cased(if self.creating {
+                        behavior::button_content(
+                            "create-project",
+                            "Create project",
+                            ui_text::cased(if self.creating {
                                 "Creating…"
                             } else {
                                 "Create project  ↵"
-                            }))
-                            .on_click(cx.listener(|form, _, _, cx| form.submit(cx))),
+                            }),
+                        )
+                        .disabled(self.creating)
+                        .focus_visible(move |style| {
+                            style
+                                .text_color(rgb(colors.focus))
+                                .border_color(rgb(colors.focus))
+                        })
+                        .px(ui_text::space(12.0))
+                        .py(ui_text::space(8.0))
+                        .bg(rgb(colors.panel_active))
+                        .border_1()
+                        .border_color(rgb(if ready { colors.cyan } else { colors.divider }))
+                        .text_color(rgb(if ready { colors.cyan } else { colors.muted }))
+                        .on_click(cx.listener(|form, _, _, cx| form.submit(cx))),
                     ),
-            )
+            );
+        gpui_kit::base::Dialog::new(cx)
+            .handle(self.dialog.clone())
+            .focus_handle(self.focus.clone())
+            .close_on_escape(false)
+            .close_on_backdrop_press(false)
+            .on_ok(|_, _, _| false)
+            .on_cancel(|_, _, _| false)
+            .popup(panel)
     }
 }
 

@@ -12,10 +12,50 @@ use gpui::{
 use gpui_kit::test::TestWindowExt;
 use std::sync::mpsc::Receiver;
 
-fn mount(
+pub(super) fn mount(
     cx: &mut TestAppContext,
 ) -> (
-    WindowHandle<ChatView>,
+    WindowHandle<gpui_kit::base::Root>,
+    Entity<ChatView>,
+    Receiver<feed::Delivery>,
+) {
+    mount_config(
+        cx,
+        HostConfig {
+            ensure: Arc::new(|| Err("fixture staging is disabled".into())),
+        },
+    )
+}
+
+pub(super) fn mount_selection(
+    cx: &mut TestAppContext,
+) -> (
+    WindowHandle<gpui_kit::base::Root>,
+    Entity<ChatView>,
+    Receiver<feed::Delivery>,
+) {
+    let mounted = mount_config(
+        cx,
+        HostConfig {
+            ensure: Arc::new(|| panic!("recording-only selection fixture reached host staging")),
+        },
+    );
+    // Selection-only cases start in transcript focus. Cases exercising an
+    // editor-to-transcript transfer click the actual editor and yield between
+    // native pointer input and Copy, allowing Base's deferred focus effect.
+    cx.update_window(mounted.0.into(), |_, window, cx| {
+        mounted.1.read(cx).focus.clone().focus(window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    mounted
+}
+
+fn mount_config(
+    cx: &mut TestAppContext,
+    config: HostConfig,
+) -> (
+    WindowHandle<gpui_kit::base::Root>,
     Entity<ChatView>,
     Receiver<feed::Delivery>,
 ) {
@@ -30,6 +70,7 @@ fn mount(
         });
         text_input::init(cx);
         let (recording_feed, recording) = Feed::recording();
+        let mut chat = None;
         let handle = cx
             .open_window(
                 WindowOptions {
@@ -40,22 +81,18 @@ fn mount(
                     ..Default::default()
                 },
                 |window, cx| {
-                    cx.new(|cx| {
-                        let mut view = ChatView::blank(
-                            HostConfig {
-                                ensure: Arc::new(|| Err("fixture staging is disabled".into())),
-                            },
-                            window,
-                            cx,
-                        );
+                    let view = cx.new(|cx| {
+                        let mut view = ChatView::blank(config, window, cx);
                         view.chat_id = Some("fixture-chat".into());
                         view.feed = Some(recording_feed);
                         view
-                    })
+                    });
+                    chat = Some(view.clone());
+                    cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))
                 },
             )
             .unwrap();
-        let view = handle.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let view = chat.unwrap();
         (handle, view, recording)
     });
     cx.update_window(handle.into(), |_, window, _| window.activate_window())

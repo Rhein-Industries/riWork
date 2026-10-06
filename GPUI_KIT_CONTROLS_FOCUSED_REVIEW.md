@@ -1,0 +1,62 @@
+# Focused owned controls source review — 2026-10-06
+
+Project `39832c2e-23a5-476d-aa8f-5ff34a02d314`, task `a1b2ecc7-9f3f-486c-992b-9c78a20e992f`, WT `e9e6f8d4-320d-4c63-99a7-dfbdb4d13969`.
+Verified own cwd `/Users/dominik/orca/projects/riWork-feat-gpui-kit-form-inputs`, branch `feat/gpui-kit-app-controls`, base HEAD `a57e4db3ca3816030e5d6b0b337c0c3dd4fbd2c3`. This is a focused source correction receipt, not compile/test/native acceptance. Foundation remains responsible for main.rs ProjectSortUi/Dialog ownership integration; no main/foundation/chat file changed.
+
+## Real mounted AX observations
+
+Compared the full lifecycle probes in foundation `src/behavior_controls/tests.rs:17` and chat `src/chat_view/selection_tests.rs:953`. Existing owned tests used Base TestSupport's inner-node observations and did not call Control.render directly in update_window. However those observations missed foundation's outer disabled refinement.
+
+`src/form_input.rs:185` now erases controls exactly as before in production. Test builds use a transparent Mounted RenderOnce observation: GPUI mounts the control and calls its render during request_layout; Observed forwards element ID, source location, request_layout, prepaint, paint, role, write_a11y_info and synthetic children (`245`). It records the actual refined element's role/properties after real prepaint and measured bounds, keyed by window and semantic ID. `test_ax_node` (`205`) requires nonempty real layout bounds. No metadata mirror, substitute hitbox/style/focus/activation or direct update_window render is installed. Window actions still drain effects outside the borrowed Window before the next assertion turn.
+
+Owned AX assertions now read these actual refined nodes in status, panels, remote, Automations and files/preview fixtures. Disabled reorder, busy Dialog buttons, pending Radio/Toggle and Files-without-root actions check disabled plus absence of Click capability. TestSupport find remains for synthetic event dispatch, actual focus and actual painted visibility; its role/state metadata no longer supplies those AX assertions.
+
+## Native rich-row visibility and shared style defaults
+
+Only the local project action strip used invisible/group_hover in the bounded owned sources. `src/panels.rs:1803` keeps the exact existing flex/spacing and unselected Native pointer hover rule, while revealing the strip if keyboard modality is active and the row handle contains focus (including nested actions). The row receives a persistent keyed handle scoped by the visible ProjectSortUi entity and immutable project ID (`646`); unchanged/reordered consecutive frames retain it, and no refresh focuses it. Remote project rows retain Base's existing implicit handles. Removed row geometry retires its keyed state through GPUI's element lifecycle.
+
+Native sidebar rows remove the border that shared controls::list_row uses for its focus ring. sidebar_row now supplies a keyboard-only existing-divider fill after removing that border; Native folder headings use the same fill and existing text color. Neither changes pointer hover or dimensions. Settings/open/notification nested controls use the existing divider fill for focus_visible (`1824`, `1876`); pointer hover callbacks, colors and geometry remain unchanged. The new inert test `panels::kit_control_tests::native_project_actions_reveal_for_keyboard_scope_and_keep_pointer_hover` drives the actual action strip: pointer-away hides, hover reveals without an action, keyboard row then nested focus reveals, Space emits only the exact nested project action, and focus outside the row hides again. A separate completed frame after a non-activating Right key establishes keyboard modality before Tab enumerates the painted child tab stops. The fixture uses RiWork appearance plus the actual Native visibility-policy argument; it loads no Ghostty/native settings.
+
+Removed redundant justify_start from project/folder/generic rich rows; the reviewed foundation Control::render supplies inherited line height and leading alignment when the caller leaves them unspecified (`foundation/src/behavior_controls.rs:216`). Existing explicit icon-center and items_stretch choices remain. No per-file line-height override was added. The existing Settings theme-title line height is deliberate original presentation, not a wrapper workaround.
+
+## Pinned Base Dialog limitation: host semantic node, not all descendants
+
+Exact cached sources read under `/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`:
+
+* `gpui-base-0.7.1/src/dialog.rs:525`: actual Dialog builds a deferred anchored host; role and focus are on its Div, immediately wrapped by FocusTrapContainer (`560–575`); popup/children are added inside that wrapper (`638–639`).
+* `gpui-base-0.7.1/src/focus_trap.rs:161`: its Element implementation forwards request_layout, prepaint (`192`) and paint (`202`) to the base, but forwards none of a11y_role, write_a11y_info or a11y_synthetic_children.
+* `gpui-pre-0.3.8/src/element.rs:114`: default role is None; AX property/synthetic-child defaults are no-ops. Drawable only pushes a host AX node for an exposed role (`370`), but calls element.prepaint regardless (`407`).
+
+Consequently the wrapped host loses its Dialog role/properties/host-owned synthetic children. Ordinary popup input/button descendant Drawables still prepaint and can contribute their own AX nodes, attached to the nearest surviving AX ancestor. This distinction is source-derived; no native tree was executed or inspected. Remote busy-button mounted probes now explicitly require real laid-out refined descendant Button nodes through the actual Dialog rendering. They do not prove native host role, grouping or OS tree acceptance.
+
+No owned replacement trap, child Root, extra layer, role-only replacement behavior or library edit was added. Repairing host AX forwarding belongs in the shared/upstream wrapper, with foundation/reviewer ownership. Native AX acceptance remains a parent/reviewer gate.
+
+## Bounded identity/pending checks
+
+No backend/session/service or domain model path changed. Source checks confirmed these retained boundaries:
+
+* File filter events reject nonmember InputState (`file_explorer.rs:1210`); surface retention drops removed subscriptions and selects a live active input (`1315`). Directory results retain generation/request checks (`1487`), rooted file/entry checks and refusal-before-work paths.
+* ProjectCreator inspection checks generation before and after asynchronous work (`269`). Project Settings folder/account callbacks revalidate live IDs/availability (`1031`, account callback in `1070` onward), keep dirty/metadata draft policies, and skip pending account refresh in traversal (`877`).
+* Remote/Handoff input callbacks and actions retain busy guards (`remote_prompt.rs:191,393,423`; `handoff_dialog.rs:220,358,399`). Masked secret state was untouched; no real secret was read or used.
+* Automations button callback rejects changed indexed Control identity (`schedule_panel.rs:875`), perform/save reject pending (`524`, `714`), and cancel clears old subscriptions (`562`). Shell/LegacyChat typed IDs, selection invalidation and pinned options (`193–215`), revision used on save/delete/pause (`739`, `666–669`), cadence/validation and six prior domain fixtures are unchanged. This turn did not execute those fixtures or audit unrelated services.
+* Project rich-row DnD and action payloads retain exact immutable IDs and state-home checks; nested propagation guards are unchanged. Workspace membership integration remains foundation's assigned main.rs work.
+
+## Reviewer handoff / held verification
+
+The updated `GPUI_KIT_CONTROLS_PROPOSED_TESTS.json` contains 11 exact owned fixture names (previous 10 plus the Native keyboard/hover fixture), full inert helper chains and the refined-node/native-host distinction. The new and changed tests are source-only and require reviewer source gate plus isolated build/test release. Proposed invocation remains the reviewer-approved private executable and exactly one qualified JSON name with `--exact --test-threads=1`; this report authorizes neither compilation nor execution/listing. No broad filters or six schedule domain fixtures are proposed.
+
+Source formatting only: approved Rust 1.95.0 rustfmt, edition 2024, skip_children=true on six owned sources; git diff --check. No Cargo/check/build/test/listing, fixture/app/runtime, GUI/provider/service/tmux/live-shell action, process cleanup, merge/push/install/reload or delegation. Child runtime was not created; inherited parent environment was not altered. Existing native audit, old receipts/logs/fixtures and untracked files are preserved. Reviewer owns builds, parent owns actual Cua.ai Driver MCP desktop work. Await their review/release; this receipt does not declare the task done.
+
+## Narrow correction after private assembled 5e73c1c review
+
+Own base verified `5d0b60977fce4e52c046db3f592f8cb2ca35350c` on `feat/gpui-kit-app-controls`. Read the exact private source and log at `/private/tmp/rw2-2jhb4co_/logs/test-panels-kit_control_tests-panel_rows_keyboard_ax_and_nested_actions_keep_exact_project_identity.log` and its result JSON: one exact invocation failed at panels.rs:3709 with action count 1 instead of 2 (exit 101; 0 passed/1 failed). Existing log SHA-256 recorded there is `2c647f2f22cd69d07e4cb5270d89822fdd9c188bd757395e2a5ae57524ab6632`. No private artifact/source/log was changed and no test was rerun here.
+
+Source diagnosis: GPUI `window.rs:5820` dispatches mouse bubble listeners in reverse registration order. Div `paint_mouse_listeners` registers automatic tracked-focus transfer first (`elements/div.rs:2774`), the caller's mouse-down listeners second (`2789`), and pending click capture later (`2960` onward). The nested project Button/notification Toggle's legacy mouse-down stop therefore allows click recording but skips the earlier Base/GPUI child focus transfer. The remaining click can emit one domain action while the subsequent Space has no focused child click target. This is an owned production interaction seam, not an observed asynchronous-effect ordering failure or evidence of changing semantic IDs. Dynamic confirmation still belongs to reviewer; the prior log has no intermediate focus/action trace.
+
+Removed only those two legacy nested mouse-down stops. Existing on_click/on_change propagation stops still isolate exact domain activation, and Base/GPUI's normal focus transfer prevents a focusable parent taking child pointer focus. No manual activation, focus proxy, new key handler, Root/trap or shared adapter edit was added. Foundation's independently assigned shared nested-click investigation remains separate.
+
+The existing qualified case now has distinct completed turns for pointer activation, one exact-ID settings-action assertion plus automatic child focus (and parent contains-focus but is not focused), parent rerender, retained-child-focus assertion, actual Space, strict two exact-ID settings actions, actual row pointer activation, exactly one row action plus row focus, actual row Enter, and strict total four with two exact-ID row actions and no OpenProject. No count was weakened and no direct synthetic domain callback or manual focus assignment masks the pointer route. The helper still drains outside the borrowed Window. The same qualified name and inert fixture boundary remain; no new tests/features/audits were added.
+
+Manually included only approved owned-source hunks from parent `09cf9c8e91f763a1878deb34de1b7ba23b4a933c` (FluentBuilder bounds in paint_file_action/native_choice/paint_action) and `02a997f74ac6d4a86aae5f2cbf92c135202f40c7` + `5e73c1cabf223efcd91bebfc6e0ec2f3fa2fcee5` (explicit test_window tuple type and cfg(test) gpui_kit::test::TestWindowExt import). No cherry-pick or other-owner hunk. Parent's four existing-panel Dialog role/name compensation in `59e22ac3fd9740aecbd60367b73f0b699273dff6` remains untouched in integration; no optional metadata hunks were needed for this correction.
+
+Source-only rustfmt and git diff --check passed. No Cargo/test/runtime/GUI/provider/service/process-control/tmux/host/live-shell action, merge/push/install/reload or delegation; no main/foundation/chat/text_input writes. Prior untracked native audit and receipts retained. Reviewer must rerun the exact failing case in the approved private executable boundary; this source receipt claims no new test pass. Return idle after commit.
