@@ -42,28 +42,47 @@ new occurrence of the same kind gets a new id.
 ## Kinds
 
 A kind is `name` or `name:qualifier`. Clients must treat unknown kinds as opaque
-dedupe keys (show the text, dedupe by the exact string).
+dedupe keys (show the text, dedupe by the exact string). **New values are only ever
+appended to the second table**; existing values are never renamed or repurposed.
+
+### Agreed set (decoded by the phone)
 
 | kind | provider | level | transient | emitted when | resolved when |
 |---|---|---|---|---|---|
-| `rate_limit:<window>` | Claude | warning (close to) / error (reached) | yes | `rate_limit_event` whose status changes for that window (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`, `overage`, or the provider's name for a new one) | a later event says the window is `allowed` again, or `resets_at` has passed |
-| `rate_limit:codex` | Codex | error | yes | an `error` whose `codexErrorInfo` is `usageLimitExceeded` | the next turn completes |
+| `rate_limit:five_hour` | Claude | warning (close to) / error (reached) | yes | `rate_limit_event` whose status changed for that window | a later event says the window is `allowed` again, or `resets_at` has passed |
+| `rate_limit:seven_day` | Claude | as above | yes | as above | as above |
+| `rate_limit:seven_day_opus` | Claude | as above | yes | as above | as above |
+| `rate_limit:seven_day_sonnet` | Claude | as above | yes | as above | as above |
+| `rate_limit:overage` | Claude | as above | yes | as above | as above |
 | `api_retry` | Claude | warning | yes | `system/api_retry` (one notice per turn, updated per attempt) | the next assistant output or the turn's result |
 | `reconnecting` | Codex | warning | yes | `error` with `willRetry: true` ("Reconnecting… n/5"), updated in place | the next item or the turn completes |
-| `silence` | Claude | warning | yes | no output for the inactivity window during a turn | output arrives again |
-| `turn_failed` | both | error | no | a turn failed with a message not already shown | — |
-| `auth_required` | both | error | no | the provider says the account is signed out / the key or token is invalid (Claude `error: authentication_failed`, Codex `codexErrorInfo: unauthorized`, `account/updated` without an auth mode, `account/login/completed` with `success: false`) | a later successful turn |
-| `model_fallback` | Codex | warning | no | `model/rerouted`: the server answered with another model | — |
 | `effort_refused` | Codex | warning | no | the model does not take the chosen reasoning effort | — |
+| `model_fallback` | Codex | warning | no | `model/rerouted`: the server answered with another model | — |
 | `oversized_line` | both | warning | no | a provider line over the frame limit was skipped | — |
-| `fast_mode` | Claude | warning / info | yes | Fast mode is off although chosen (warning); on again (info, `resolved`) | Fast mode is on again |
+| `silence` | Claude | warning | yes | no output for the inactivity window during a turn | output arrives again |
+| `turn_failed` | both | error | no | a turn failed (Claude failed `result`, Codex `turn/completed` failed) with a message not already shown | — |
+| `auth_required` | both | error | no | signed out / key or token invalid: Claude `error: authentication_failed`; Codex `codexErrorInfo: unauthorized`, `account/updated` with neither auth mode nor plan, `account/login/completed` with `success: false`, a token-refresh request | the next successful turn |
+| `config_warning` | Codex | warning | no | `configWarning` notification | — |
+| `provider_error` | Codex | error | no | `error` notification that will not be retried and is not a sign-in or usage problem | — |
+| `provider_warning` | Codex | warning | no | `warning` notification | — |
+
+A `rate_limit:<window>` for a window name not listed (the provider adds one) is still
+a usage limit: clients match the `rate_limit:` prefix.
+
+### Appended values
+
+| kind | provider | level | transient | emitted when | resolved when |
+|---|---|---|---|---|---|
+| `rate_limit:codex` | Codex | error | yes | `error` whose `codexErrorInfo` is `usageLimitExceeded` | the next turn completes |
+| `fast_mode` | Claude | warning | yes | Fast mode is off although chosen | Fast mode is on again (re-emitted as info, `resolved`) |
 | `setting_refused` | both | warning / error | no | the provider refused a settings change, a compact, or did not start a turn | — |
 | `resumed_fresh` | both | info | no | the saved conversation/thread could not be resumed, a new one started | — |
 | `undelivered` | Claude | warning | no | messages queued during a restart were lost | — |
-| `provider_warning` | Codex | warning | no | `warning` notification | — |
-| `config_warning` | Codex | warning | no | `configWarning` notification | — |
 | `deprecation` | Codex | info | no | `deprecationNotice` | — |
 | `mcp_elicitation` | Codex | warning | no | an MCP server asked for input chats cannot take | — |
+
+A resolved notice is re-emitted with the same id, `resolved: true`, level `info` and a
+short text saying it recovered ("The API answered again.", "Reconnected.").
 
 Notices without `kind` are one-offs: each is its own banner.
 

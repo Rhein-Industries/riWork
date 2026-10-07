@@ -848,7 +848,7 @@ fn a_failed_turn_says_why_once() {
         vec![ItemBody::notice(
             NoticeLevel::Error,
             "usage limit reached\ntry later",
-            Some(notice_kind::TURN_FAILED.into())
+            Some(notice_kind::PROVIDER_ERROR.into())
         )]
     );
     run.end();

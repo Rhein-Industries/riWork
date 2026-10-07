@@ -333,6 +333,7 @@ pub mod notice_kind {
     pub const SETTING_REFUSED: &str = "setting_refused";
     pub const RESUMED_FRESH: &str = "resumed_fresh";
     pub const UNDELIVERED: &str = "undelivered";
+    pub const PROVIDER_ERROR: &str = "provider_error";
     pub const PROVIDER_WARNING: &str = "provider_warning";
     pub const CONFIG_WARNING: &str = "config_warning";
     pub const MCP_ELICITATION: &str = "mcp_elicitation";

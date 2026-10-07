@@ -1743,10 +1743,10 @@ impl Session {
                 } else if has("usageLimitExceeded") {
                     "rate_limit:codex"
                 } else {
-                    notice_kind::TURN_FAILED
+                    notice_kind::PROVIDER_ERROR
                 };
                 if params["willRetry"].as_bool().unwrap_or(false)
-                    && kind == notice_kind::TURN_FAILED
+                    && kind == notice_kind::PROVIDER_ERROR
                 {
                     // "Reconnecting... 3/5" repeats: one notice, updated.
                     // A missing turn id must not collapse unrelated retries into "retry-".
