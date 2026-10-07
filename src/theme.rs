@@ -17,16 +17,18 @@ pub enum ThemeChoice {
     Catppuccin,
     TokyoNight,
     GruvboxLight,
+    Hermes,
 }
 
 impl ThemeChoice {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Ghostty,
         Self::Native,
         Self::RiWork,
         Self::Catppuccin,
         Self::TokyoNight,
         Self::GruvboxLight,
+        Self::Hermes,
     ];
 
     pub fn label(self) -> &'static str {
@@ -37,6 +39,7 @@ impl ThemeChoice {
             Self::Catppuccin => "Catppuccin Mocha",
             Self::TokyoNight => "Tokyo Night",
             Self::GruvboxLight => "Gruvbox Light",
+            Self::Hermes => "Hermes",
         }
     }
 
@@ -52,6 +55,7 @@ impl ThemeChoice {
             Self::Catppuccin => "A soft dark palette with pastel accents.",
             Self::TokyoNight => "A cool dark palette inspired by Tokyo at night.",
             Self::GruvboxLight => "A warm light palette with earthy accents.",
+            Self::Hermes => "Deep cobalt, navy panels, warm cream prose and gold accents.",
         }
     }
 }
@@ -84,6 +88,24 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Hermes keeps the canvas distinct from its navy controls and user messages.
+    /// Primary actions use warm gold; metadata stays subdued and readable.
+    pub const HERMES: Self = Self {
+        bg: 0x102661,
+        panel: 0x162449,
+        panel_active: 0x203361,
+        divider: 0x2b4070,
+        cyan: 0xf5dbb8,
+        magenta: 0xb7bfd7,
+        gold: 0xf5dbb8,
+        text: 0xead8c2,
+        muted: 0xa1a7bb,
+        focus: 0xf5dbb8,
+        working: 0xf5dbb8,
+        plain_tabs: false,
+        controls_island: false,
+    };
+
     pub const RIWORK: Self = Self {
         bg: 0x090d14,
         panel: 0x101720,
@@ -222,10 +244,10 @@ impl Appearance {
         let theme = preset(choice);
         Self {
             selected: choice,
-            palette: if choice == ThemeChoice::RiWork {
-                Palette::RIWORK
-            } else {
-                Palette::from_terminal(&theme)
+            palette: match choice {
+                ThemeChoice::RiWork => Palette::RIWORK,
+                ThemeChoice::Hermes => Palette::HERMES,
+                _ => Palette::from_terminal(&theme),
             },
             terminal: Some(theme),
             ghostty: None,
@@ -445,6 +467,14 @@ fn preset(choice: ThemeChoice) -> TerminalTheme {
     match choice {
         ThemeChoice::Ghostty | ThemeChoice::RiWork => riwork_terminal_theme(),
         ThemeChoice::Native => native_terminal_theme(false),
+        ThemeChoice::Hermes => terminal_theme(
+            Palette::HERMES.bg,
+            Palette::HERMES.text,
+            [
+                0x162449, 0xf29b9f, 0x9bc9ad, 0xf5dbb8, 0x9ebcf5, 0xc4b4df, 0xa8c8da, 0xead8c2,
+                0xa1a7bb, 0xffb7b8, 0xb4dfc1, 0xffe6c9, 0xb7ceff, 0xdfcaf2, 0xc2dfed, 0xfff1df,
+            ],
+        ),
         ThemeChoice::Catppuccin => terminal_theme(
             0x1e1e2e,
             0xcdd6f4,
