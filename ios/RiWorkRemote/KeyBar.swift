@@ -3,6 +3,9 @@ import RiWorkCore
 
 /// A row of keys that scrolls sideways. A finger that lands on a key and then drags scrolls the row instead of pressing the key.
 private final class KeyScrollView: UIScrollView {
+    /// Called whenever the row scrolls (or is scrolled in code), to fade the end that keys went past.
+    var onScroll: (() -> Void)?
+    override var contentOffset: CGPoint { didSet { if contentOffset != oldValue { onScroll?() } } }
     override func touchesShouldCancel(in view: UIView) -> Bool { true }
 }
 
@@ -30,6 +33,8 @@ private final class KeyScrollView: UIScrollView {
     var barHeight: CGFloat { CGFloat(KeyBarGeometry.height(scale: style.scale)) }
     /// A length of the bar at the current interface size, on whole points.
     private func unit(_ points: CGFloat) -> CGFloat { CGFloat(InterfaceScale.scaled(Double(points), by: style.scale)) }
+    /// A key's least width (and the bar's height): larger with a larger interface, never below 44 points (`BottomBarGeometry.target`).
+    private var target: CGFloat { CGFloat(BottomBarGeometry.target(scale: style.scale)) }
     /// Symbols that are awkward to reach on the iOS keyboard, sent as text.
     static let symbols: [String] = ["|", "/", "\\", "~", "-", "_", "`", "*", "&", "$", ">", "<", "{", "}", "[", "]", ";", ":", "'", "\""]
     static let symbolNames: [String: String] = [
@@ -57,11 +62,21 @@ private final class KeyScrollView: UIScrollView {
     private(set) var padding = KeyBarPadding.zero
     /// The scrolling row, for tests.
     var scrollView: UIScrollView { scroll }
+    /// The shape the row is clipped to, and the opacity at the leading and trailing ends of its scrolling part, for tests.
+    var rowClipPath: CGPath? { rowShape.path }
+    var rowFadeEnds: (leading: CGFloat, trailing: CGFloat) {
+        let colors = (rowFade.colors as? [CGColor]) ?? []
+        guard colors.count == 5 else { return (1, 1) }
+        return (colors[0].alpha, colors[3].alpha)
+    }
 
     private let rule = UIView()
     /// Native on iOS 26: the row sits on a capsule of Liquid Glass instead of the panel color.
     private var glassView: UIVisualEffectView?
     private let row = UIView()
+    /// The row's mask: the capsule on glass (else the bar), cut by a fade at an end of the scrolling part that keys went past.
+    private let rowShape = CAShapeLayer()
+    private let rowFade = CAGradientLayer()
     private let scroll = KeyScrollView()
     private let stack = UIStackView()
     private let hideDivider = UIView()
@@ -70,7 +85,7 @@ private final class KeyScrollView: UIScrollView {
     private var stackLeading: NSLayoutConstraint!, hideTrailing: NSLayoutConstraint!
     private var hideWidth: NSLayoutConstraint!, hideMinWidth: NSLayoutConstraint?, dividerInsets: [NSLayoutConstraint] = [], stackTrailing: NSLayoutConstraint!
     private var latches: [Action: ModifierLatch] = [.control: .off, .alt: .off, .shift: .off]
-    private var dictation = Dictation.idle, dictateWidth: NSLayoutConstraint?
+    private var dictation = Dictation.idle, dictateWidth: NSLayoutConstraint?, dictateMinWidth: NSLayoutConstraint?
     private var scrollBeforeMic: NSLayoutConstraint?, scrollBeforeHide: NSLayoutConstraint?
     private var repeatTask: Task<Void, Never>?
     private var didRepeat = false
@@ -113,7 +128,8 @@ private final class KeyScrollView: UIScrollView {
             rule.topAnchor.constraint(equalTo: topAnchor), rule.leadingAnchor.constraint(equalTo: leadingAnchor),
             rule.trailingAnchor.constraint(equalTo: trailingAnchor), rule.heightAnchor.constraint(equalToConstant: 1),
             row.leadingAnchor.constraint(equalTo: leadingAnchor), trailingAnchor.constraint(equalTo: row.trailingAnchor),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 1), bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            // The row spans the bar's full height (the rule is drawn over its top point), so every key is a full 44-point target.
+            row.topAnchor.constraint(equalTo: topAnchor), bottomAnchor.constraint(equalTo: row.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: row.leadingAnchor), scroll.topAnchor.constraint(equalTo: row.topAnchor), scroll.bottomAnchor.constraint(equalTo: row.bottomAnchor),
             hideDividerTop, hideDividerBottom,
             hideDivider.widthAnchor.constraint(equalToConstant: 1),
@@ -125,12 +141,18 @@ private final class KeyScrollView: UIScrollView {
         hide.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(hide)
         hideTrailing = row.trailingAnchor.constraint(equalTo: hide.trailingAnchor)
-        hideWidth = hide.widthAnchor.constraint(equalToConstant: 44)
+        hideWidth = hide.widthAnchor.constraint(equalToConstant: target)
         NSLayoutConstraint.activate([
             hideTrailing, hide.leadingAnchor.constraint(equalTo: hideDivider.trailingAnchor), hide.topAnchor.constraint(equalTo: row.topAnchor),
             hide.bottomAnchor.constraint(equalTo: row.bottomAnchor), hideWidth
         ])
         addDictateButton()
+        bringSubviewToFront(rule)
+        rowFade.startPoint = CGPoint(x: 0, y: 0.5)
+        rowFade.endPoint = CGPoint(x: 1, y: 0.5)
+        rowShape.mask = rowFade
+        row.layer.mask = rowShape
+        scroll.onScroll = { [weak self] in self?.updateRowMask() }
         rebuild()
         restyle()
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: KeyBarView, _) in view.restyle() }
@@ -140,14 +162,16 @@ private final class KeyScrollView: UIScrollView {
 
     /// A new interface size: the bar's height, every key's font, insets and width, and the fixed pieces around them.
     private func applyScale() {
-        hideWidth.constant = unit(44)
+        hideWidth.constant = target
         for constraint in dividerInsets { constraint.constant = constraint === dividerInsets.first ? unit(10) : -unit(10) }
         stackTrailing.constant = -unit(4)
         if let hide = buttons[.hide] {
             hide.configuration?.image = UIImage(systemName: "keyboard.chevron.compact.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14 * CGFloat(style.scale), weight: .regular))
-            hideMinWidth?.constant = unit(40)
+            hideMinWidth?.constant = target
         }
-        dictateWidth?.constant = unit(44)
+        // Hide and the mic have a fixed width and a least one, both the target, so the two never disagree at any size.
+        dictateWidth?.constant = target
+        dictateMinWidth?.constant = target
         setDictation(dictation)
         rebuild()
         invalidateIntrinsicContentSize()
@@ -236,9 +260,11 @@ private final class KeyScrollView: UIScrollView {
         button.accessibilityIdentifier = "keybar.\(label)"
         button.setContentHuggingPriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let minimumWidth = button.widthAnchor.constraint(greaterThanOrEqualToConstant: unit(wide ? 40 : 30))
+        // Every key is at least a 44-point target, however narrow its glyph; the bar is 44 points tall.
+        let minimumWidth = button.widthAnchor.constraint(greaterThanOrEqualToConstant: target)
         minimumWidth.isActive = true
         if action == .hide { hideMinWidth = minimumWidth }
+        if action == .dictate { dictateMinWidth = minimumWidth }
         button.addAction(UIAction { [weak self] _ in self?.tapped(action) }, for: .touchUpInside)
         if case .key(let key) = action, Self.repeating.contains(key) {
             button.addAction(UIAction { [weak self] _ in self?.beginRepeat(action) }, for: .touchDown)
@@ -304,7 +330,7 @@ private final class KeyScrollView: UIScrollView {
         let mic = makeButton(.dictate, title: nil, symbol: "mic", label: "Dictate", role: .plain)
         mic.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(mic)
-        dictateWidth = mic.widthAnchor.constraint(equalToConstant: 44)
+        dictateWidth = mic.widthAnchor.constraint(equalToConstant: target)
         scrollBeforeMic = scroll.trailingAnchor.constraint(equalTo: mic.leadingAnchor)
         scrollBeforeHide = scroll.trailingAnchor.constraint(equalTo: hideDivider.leadingAnchor)
         NSLayoutConstraint.activate([
@@ -348,9 +374,9 @@ private final class KeyScrollView: UIScrollView {
         for line in dividers { line.backgroundColor = style.dividerUI }
         // The row spans the bar, in focus mode too, and its ends are padded clear of the display corners.
         // On glass the end keys also keep clear of the capsule's rounded ends.
-        let capsuleInset: CGFloat = glassView == nil ? 0 : 12
-        stackLeading.constant = CGFloat(padding.left) + capsuleInset
-        hideTrailing.constant = CGFloat(padding.right) + capsuleInset
+        let keysInset = CGFloat(BottomBarGeometry.keysInset(glass: glassView != nil))
+        stackLeading.constant = CGFloat(padding.left) + keysInset
+        hideTrailing.constant = CGFloat(padding.right) + keysInset
         for (action, button) in buttons {
             switch roles[action] ?? .plain {
             case .plain: button.configuration?.baseForegroundColor = style.textUI
@@ -361,6 +387,7 @@ private final class KeyScrollView: UIScrollView {
         setLatches(control: latch(.control), alt: latch(.alt), shift: latch(.shift))
         setDictation(dictation)
         applyMic()
+        updateRowMask()
     }
     /// Native on iOS 26 puts the row on glass, inset from the edges like the system's own bars; anything else takes it away.
     private func applyGlass() {
@@ -374,15 +401,37 @@ private final class KeyScrollView: UIScrollView {
         glass.isUserInteractionEnabled = false
         glass.cornerConfiguration = .capsule()
         insertSubview(glass, at: 0)
+        let side = CGFloat(BottomBarGeometry.capsuleSideInset), end = CGFloat(BottomBarGeometry.capsuleEndInset)
         NSLayoutConstraint.activate([
-            glass.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6), trailingAnchor.constraint(equalTo: glass.trailingAnchor, constant: 6),
-            glass.topAnchor.constraint(equalTo: topAnchor, constant: 2), bottomAnchor.constraint(equalTo: glass.bottomAnchor, constant: 2)
+            glass.leadingAnchor.constraint(equalTo: leadingAnchor, constant: side), trailingAnchor.constraint(equalTo: glass.trailingAnchor, constant: side),
+            glass.topAnchor.constraint(equalTo: topAnchor, constant: end), bottomAnchor.constraint(equalTo: glass.bottomAnchor, constant: end)
         ])
         glassView = glass
     }
     override func layoutSubviews() {
         super.layoutSubviews()
         refreshPlacement()
+        updateRowMask()
+    }
+    /// Clips the row to the bar's shape (`BottomBarGeometry.rowClip`): on glass a key scrolled past an end is cut by the capsule's
+    /// rounded end instead of drawing over it. The end of the scrolling part that keys went past fades out; Hide and the mic, which
+    /// do not scroll, are never faded.
+    private func updateRowMask() {
+        let bounds = row.bounds
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let clip = BottomBarGeometry.rowClip(barWidth: Double(bounds.width), barHeight: Double(bounds.height), glass: glassView != nil)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        rowShape.frame = bounds
+        rowShape.path = UIBezierPath(roundedRect: CGRect(x: clip.x, y: clip.y, width: clip.width, height: clip.height), cornerRadius: CGFloat(clip.cornerRadius)).cgPath
+        rowFade.frame = bounds
+        let fade = BottomBarGeometry.fade(offset: Double(scroll.contentOffset.x), contentWidth: Double(scroll.contentSize.width), visibleWidth: Double(scroll.bounds.width))
+        let width = Double(bounds.width), length = BottomBarGeometry.fadeLength
+        let start = max(Double(scroll.frame.minX), clip.x), end = Double(scroll.frame.maxX)
+        func at(_ x: Double) -> NSNumber { NSNumber(value: min(1, max(0, x / width))) }
+        func alpha(_ value: Double) -> CGColor { UIColor(white: 0, alpha: CGFloat(value)).cgColor }
+        rowFade.locations = [at(start), at(start + length), at(end - length), at(end), at(end + 0.5)]
+        rowFade.colors = [alpha(1 - fade.leading), alpha(1), alpha(1), alpha(1 - fade.trailing), alpha(1)]
+        CATransaction.commit()
     }
 
     // MARK: Placement

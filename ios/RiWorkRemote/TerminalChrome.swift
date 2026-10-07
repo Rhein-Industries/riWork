@@ -20,10 +20,13 @@ struct KeyPreviewChip: View {
                 .lineLimit(1).truncationMode(.head).frame(maxWidth: .infinity, alignment: .leading)
             Text(preview.label).font(style.face(10, relativeTo: .caption2)).foregroundStyle(tint)
                 .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
-            Button { discard() } label: { Image(systemName: "xmark.circle.fill").font(.system(size: style.pt(13))).frame(width: style.pt(30), height: style.pt(28)).contentShape(Rectangle()) }
+            // The chip is a full target tall (`FloatingStatus.chipHeight`), so its discard button is a whole 44-point square inside it.
+            Button { discard() } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: style.pt(13))).frame(width: style.target, height: style.target).contentShape(Rectangle())
+            }
                 .buttonStyle(.plain).foregroundStyle(style.muted).accessibilityLabel("Discard pending input")
         }
-        .padding(.leading, 8).frame(minHeight: style.pt(28)).background(style.panel)
+        .padding(.leading, 8).frame(minHeight: FloatingStatus.chipHeight(style)).background(style.panel)
         .overlay(alignment: .top) { DesktopRule() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Pending input: \(preview.text). \(preview.label)")
@@ -37,7 +40,7 @@ extension RemoteModel {
     /// taking room from the pane, so that they coming and going never changes the terminal's size (and never resizes the desktop).
     func floatingInset(style: DesktopStyle) -> Double {
         guard directTyping else { return 0 }
-        return (keyPreview != nil ? Double(style.pt(FloatingStatus.chipHeight)) : 0) + (floatingNotice != nil ? Double(style.pt(FloatingStatus.noticeHeight)) : 0)
+        return (keyPreview != nil ? Double(FloatingStatus.chipHeight(style)) : 0) + (floatingNotice != nil ? Double(style.pt(FloatingStatus.noticeHeight)) : 0)
     }
 }
 
@@ -46,7 +49,9 @@ extension RemoteModel {
 /// A view of its own: it reads the key buffers, which change with every key typed, and nothing else on the screen should be rebuilt
 /// for that.
 struct FloatingStatus: View {
-    static let chipHeight: CGFloat = 28, noticeHeight: CGFloat = 24
+    static let noticeHeight: CGFloat = 24
+    /// The pending-input chip's height: a full tap target, for its discard button.
+    static func chipHeight(_ style: DesktopStyle) -> CGFloat { style.target }
     @Environment(\.desktopStyle) private var style
     let model: RemoteModel
     var body: some View {
@@ -58,7 +63,7 @@ struct FloatingStatus: View {
                         .background(style.panel).overlay(alignment: .top) { DesktopRule() }
                 }
                 if let preview = model.keyPreview {
-                    KeyPreviewChip(preview: preview, discard: model.discardPendingKeys).frame(height: Double(style.pt(Self.chipHeight)))
+                    KeyPreviewChip(preview: preview, discard: model.discardPendingKeys).frame(height: Double(Self.chipHeight(style)))
                 }
             }
         }

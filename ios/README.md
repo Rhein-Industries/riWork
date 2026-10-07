@@ -106,8 +106,12 @@ desktop sessions running; revoke the device on the desktop to deny access.
 
 ## Project and terminal tabs
 
-Select a project, then choose a worker, shell or orchestrator tab (an orchestrator the Mac runs as a chat opens as a chat; see Chats). Tabs show actual
-short session IDs and worktree branches. **Session info** exposes the full UUID,
+Select a project, then choose a worker, shell or orchestrator tab (an orchestrator the Mac runs as a chat opens as a chat; see Chats).
+Every kind of tab has the same one-row header (`TabScreenChrome`): Back, the tab strip with one-line tabs, ＋ and a ⋯ menu, all
+44 pt targets, so switching between a terminal and a chat never moves, adds or resizes a bar. The menu holds the project's name,
+Session info, refreshing the tabs, the global orchestrator and the connection, and, on a terminal, its own actions (focus mode,
+jump to latest, Display, text size, the line composer, copy screen, refresh output, close). A tab's short session ID and worktree
+branch are in its long-press menu and its accessibility label. **Session info** exposes the full UUID,
 kind and working directory. The compact status row keeps snapshot freshness,
 connection state and measured terminal dimensions visible.
 
@@ -371,8 +375,11 @@ sent as `Escape` followed by the next key or text, readline style), arrows, Shif
 Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held), Paste and a paperclip (see "Photos and files"), then a ⌘ button that opens the hotkey menu, a ? button that opens the hotkey help and the hotkeys (those that
 want a button), then the
 symbols that are awkward on the iOS keyboard (`` | / \ ~ - _ ` * & $ > < { } [ ] ; : ' " ``), then a "+" that opens the
-hotkey editor. Hide keyboard stays at the right end. The ends of the row are padded so the first and last key clear
-the display's rounded corners (about 20-28 pt derived from the safe area, not from a device model). Focus mode uses
+hotkey editor. Hide keyboard stays at the right end. Every key is at least 44 pt wide and as tall as the bar. The ends of the row are padded so the first and last key clear
+the display's rounded corners (about 20-28 pt derived from the safe area, not from a device model). The row is clipped to the
+bar's shape (on glass its capsule, so a scrolled key never draws over the rounded ends), and an end that keys were scrolled past
+fades out (`BottomBarGeometry`). A chat's composer lines up with the same numbers: its paperclip and Send sit where the first key
+and Hide do, as close above the keyboard as the bar's capsule. Focus mode uses
 the same strip. The iPhone is portrait only.
 
 **Hotkeys** send a fixed sequence of text and special keys, validated against the `shell.keys` contract (text without
@@ -620,7 +627,7 @@ last change, then three lines about the link: `link` (round trip, rate, tier), `
 compression ratio) and `hist` (what the download is fetching, lines loaded of lines on the desktop, ⚑ when the path is restricted). Long polls have no round trip of their own: a read that did not wait counts, and so does an `unchanged` answer
 that ran out its wait (its time past the wait).
 
-**Focus mode** (header button, or double-tap the header) hides the header, tabs, status rows and badges and gives the shell
+**Focus mode** (the header's ⋯ menu on a terminal; the header is the tab strip's row, so a double tap there is left to the tabs) hides the header, tabs, status rows and badges and gives the shell
 the whole screen inside the safe area, keeping the display awake. Only the
 terminal, the keyboard with its key bar and the pending chip remain, plus a translucent
 corner control (text size, leave) that fades after a few seconds and returns on tap.

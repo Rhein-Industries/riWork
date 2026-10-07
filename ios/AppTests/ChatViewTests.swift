@@ -654,6 +654,39 @@ import RiWorkCore
         await finish(rig)
     }
 
+    /// A shell and a chat share one navigation row: switching between them neither moves nor resizes it, in any look.
+    func testShellAndChatShareTheSameNavigationRow() async throws {
+        let screen = UIScreen.main.bounds.size
+        for look in Look.allCases {
+            let rig = try await makeRig(width: screen.width, height: screen.height, look: look)
+            await rig.transport.append(chatID, [.info(chat())])
+            await eventually("the shell's row has completed layout") { rig.layout.frames["navigation"] != nil }
+            rig.window.layoutIfNeeded()
+            let shell = try XCTUnwrap(rig.layout.frames["navigation"])
+            XCTAssertEqual(shell.minY, rig.host.view.safeAreaInsets.top, accuracy: 1, "the row sits right under the status bar")
+            XCTAssertGreaterThanOrEqual(shell.height, 44)
+            XCTAssertLessThanOrEqual(shell.height, 48, "one compact row over a shell too")
+            _ = try await openChat(rig)
+            rig.window.layoutIfNeeded()
+            let chat = try XCTUnwrap(rig.layout.frames["navigation"])
+            XCTAssertEqual(chat.minY, shell.minY, accuracy: 0.5, "\(look): the row does not move")
+            XCTAssertEqual(chat.height, shell.height, accuracy: 0.5, "\(look): the row keeps its height")
+            XCTAssertEqual(chat.width, shell.width, accuracy: 0.5)
+            rig.model.deselectChat()
+            await eventually("the shell is back") { rig.model.selectedChat == nil }
+            rig.window.layoutIfNeeded()
+            let again = try XCTUnwrap(rig.layout.frames["navigation"])
+            XCTAssertEqual(again, shell, "\(look): back on the shell, the row is where it was")
+            // The smallest interface size makes the row's glyphs smaller, never its 44-point targets.
+            rig.model.setInterfaceScale(0.8)
+            try await Task.sleep(for: .milliseconds(200))
+            rig.window.layoutIfNeeded()
+            let small = try XCTUnwrap(rig.layout.frames["navigation"])
+            XCTAssertGreaterThanOrEqual(small.height, 44, "\(look): the row stays a 44-point target at 80 %")
+            await finish(rig)
+        }
+    }
+
     func testCompactSelectedTabPaintStaysInsideNavigationAndOutOfTopSafeArea() async throws {
         let screen = UIScreen.main.bounds.size
         for look in [Look.nativeLight, .terminal] {

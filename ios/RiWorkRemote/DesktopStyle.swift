@@ -40,6 +40,9 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
 
     /// A size in points at the current interface scale, on whole points.
     func pt(_ points: CGFloat) -> CGFloat { CGFloat(InterfaceScale.scaled(Double(points), by: scale)) }
+    /// A tap target's least width and height at the scale: larger with a larger interface, never below 44 points
+    /// (`BottomBarGeometry.target`). What is drawn inside it still follows `pt`.
+    var target: CGFloat { CGFloat(BottomBarGeometry.target(scale: scale)) }
     /// Menlo, the app's text face, at the scale. `relativeTo` keeps it following Dynamic Type as before.
     func mono(_ size: CGFloat, bold: Bool = false, relativeTo textStyle: Font.TextStyle = .body) -> Font {
         .custom(bold ? "Menlo-Bold" : "Menlo", size: size * CGFloat(scale), relativeTo: textStyle)
@@ -150,7 +153,7 @@ extension View {
 struct DesktopButtonStyle: ButtonStyle {
     @Environment(\.desktopStyle) private var style
     var prominent = false
-    /// Terminal chrome: 40-point targets instead of 44 so the shell gets the room.
+    /// Terminal and chat chrome: less padding beside the label. The target is still at least 44 points either way.
     var compact = false
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
@@ -161,7 +164,7 @@ struct DesktopButtonStyle: ButtonStyle {
         let label = configuration.label
             .font(style.face(12, bold: prominent, relativeTo: .subheadline))
             .foregroundStyle(prominent ? style.background : style.text)
-            .padding(.horizontal, style.pt(compact ? 6 : (prominent ? 16 : 10))).frame(minWidth: style.pt(compact ? 40 : 44), minHeight: style.pt(compact ? 40 : 44))
+            .padding(.horizontal, style.pt(compact ? 6 : (prominent ? 16 : 10))).frame(minWidth: style.target, minHeight: style.target)
         Group {
             if !prominent {
                 label
@@ -177,10 +180,27 @@ struct DesktopButtonStyle: ButtonStyle {
         configuration.label
             .font(style.mono(12, relativeTo: .subheadline))
             .foregroundStyle(prominent ? style.accent : style.text)
-            .padding(.horizontal, style.pt(compact ? 6 : 10)).frame(minWidth: style.pt(compact ? 40 : 44), minHeight: style.pt(compact ? 40 : 44))
+            .padding(.horizontal, style.pt(compact ? 6 : 10)).frame(minWidth: style.target, minHeight: style.target)
             .background(configuration.isPressed ? style.active : (prominent ? style.active : .clear))
             .overlay(alignment: .bottom) { if prominent { Rectangle().fill(style.accent).frame(height: 1) } }
             .contentShape(Rectangle()).opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
+/// A plain button whose whole 44-point square (larger at a larger interface size, never smaller) is the target, not only its glyph: a frame put around a plain
+/// button from outside makes it bigger without making more of it tappable.
+struct TargetButtonStyle: ButtonStyle {
+    @Environment(\.desktopStyle) private var style
+    @Environment(\.isEnabled) private var isEnabled
+    /// In the tint color, as a borderless system button is; otherwise in the surrounding text color, as a plain one is.
+    var tinted = false
+    /// Dims while disabled; off for a button whose label already draws its disabled look.
+    var dims = true
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(tinted ? AnyShapeStyle(.tint) : AnyShapeStyle(.foreground))
+            .frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
+            .opacity((isEnabled || !dims ? 1 : 0.45) * (configuration.isPressed ? 0.6 : 1))
     }
 }
 
@@ -193,9 +213,8 @@ struct WorkspaceBar<Actions: View>: View {
     @Environment(\.desktopStyle) private var style
     let title: String
     var back: (() -> Void)?
-    /// The terminal screen's header: shorter, with 40-point controls.
+    /// Tighter spacing around the controls.
     var compact = false
-    var onDoubleTap: (() -> Void)?
     @ViewBuilder var actions: () -> Actions
     var body: some View {
         let _ = Perf.count("body.WorkspaceBar")
@@ -213,8 +232,6 @@ struct WorkspaceBar<Actions: View>: View {
                 NativeGlassGroup(style: style) { actions().buttonStyle(DesktopButtonStyle(compact: compact)).nativeGlass(style, in: Capsule()) }
             }.padding(.horizontal, compact ? 6 : 10).padding(.vertical, style.glass ? 4 : 0).frame(minHeight: style.pt(compact ? 40 : 44))
                 .background(style.glass ? style.surface : style.panel)
-                .contentShape(Rectangle())
-                .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap?() }, including: onDoubleTap == nil ? .none : .all)
             if !style.glass { DesktopRule() }
         }
     }
@@ -226,8 +243,6 @@ struct WorkspaceBar<Actions: View>: View {
                 Spacer(minLength: 4)
                 actions().buttonStyle(DesktopButtonStyle(compact: compact))
             }.padding(.horizontal, compact ? 4 : 8).frame(minHeight: style.pt(compact ? 40 : 44)).background(style.panel)
-                .contentShape(Rectangle())
-                .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap?() }, including: onDoubleTap == nil ? .none : .all)
             DesktopRule()
         }
     }

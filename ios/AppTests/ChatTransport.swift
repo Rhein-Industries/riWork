@@ -46,6 +46,8 @@ actor ChatTransport: RemoteTransport {
     var onCommand: (@Sendable (String, ChatCommand) -> [ChatEvent])?
     /// What `appearance.get` gives; nil is "not published", and the built-in look.
     var appearance: JSONValue?
+    /// What `shell.output` gives for the fixture shell.
+    var shellOutput = "screen"
     private var created = 0
 
     init(chats: [ChatInfo] = [], appearance: JSONValue? = nil) { self.chats = chats; self.appearance = appearance }
@@ -54,6 +56,7 @@ actor ChatTransport: RemoteTransport {
 
     func setFeature(_ on: Bool) { chatFeature = on }
     func setAppearance(_ value: JSONValue?) { appearance = value }
+    func setShellOutput(_ text: String) { shellOutput = text }
     func setOrchestratorFeature(_ on: Bool) { orchestratorFeature = on }
     func setOrchestratorMode(_ mode: OrchestratorMode) { orchestratorMode = mode }
     func setNewOrchestratorsAreChats(_ on: Bool) { newOrchestratorsAreChats = on }
@@ -112,7 +115,7 @@ actor ChatTransport: RemoteTransport {
         case "shells.list":
             let entry = "[{\"id\":\"\(Self.shell)\",\"project_id\":\"\(Self.project)\",\"kind\":\"project\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":5}]"
             return .object(["shells": try JSONDecoder().decode(JSONValue.self, from: Data(entry.utf8))])
-        case "shell.output": return .object(["shell_id": params["shell_id"]!, "output": .string("screen")])
+        case "shell.output": return .object(["shell_id": params["shell_id"]!, "output": .string(shellOutput)])
         case "shell.resize": return .object(["shell_id": params["shell_id"]!, "columns": params["columns"]!, "rows": params["rows"]!])
         case "shell.resize.clear": return .object(["shell_id": params["shell_id"]!, "status": .string("cleared")])
         case "appearance.get":
