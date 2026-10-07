@@ -1072,7 +1072,6 @@ pub fn render_panel<V: Render + 'static>(
         return panel;
     }
 
-    let search_action = on_action.clone();
     let as_icons = icons::labels_as_icons(cx);
     let sort_selector_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
     let panel =
@@ -1087,9 +1086,10 @@ pub fn render_panel<V: Render + 'static>(
             .text_size(ui_text::text(11.0))
             .child(
                 div()
-                    .h(ui_text::space(30.0))
+                    .min_h(ui_text::space(30.0))
                     .flex_none()
                     .flex()
+                    .flex_wrap()
                     .border_b_1()
                     .border_color(rgb(if data.search_focused {
                         colors.cyan
@@ -1100,36 +1100,7 @@ pub fn render_panel<V: Render + 'static>(
                     .when(ui_text::is_native(), |strip| strip.border_b_0())
                     .overflow_hidden()
                     .child(div().flex_none().w(px((data.control_inset - 8.0).max(0.0))))
-                    .child(
-                        div()
-                            .id(format!("{name}-search"))
-                            .relative()
-                            .cursor_text()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .px(ui_text::space(8.0))
-                            .flex()
-                            .items_center()
-                            .text_color(rgb(if data.search_focused {
-                                colors.text
-                            } else {
-                                colors.muted
-                            }))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .children(data.search_input.map(|input| {
-                                crate::form_input::search_frame(
-                                    format!("{name}-search-input"),
-                                    input,
-                                    window,
-                                    cx,
-                                )
-                            }))
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                search_action(view, PanelAction::Search, window, cx);
-                            })),
-                    )
+                    .child(panel_search(kind, data.search_input, false, window, cx))
                     .children((kind == PanelKind::Projects).then(|| {
                         project_header_button(
                             "new-project-folder",
@@ -1249,6 +1220,67 @@ fn finish_panel<V: 'static>(
     panel.into_any_element()
 }
 
+/// The chrome owns layout, while the retained Base child owns all editing.
+/// Pointer focus targets this surface's state instead of the active-pane search.
+fn panel_search<V: 'static>(
+    kind: PanelKind,
+    input: Option<&Entity<crate::text_input::InputState>>,
+    native: bool,
+    window: &Window,
+    cx: &mut Context<V>,
+) -> Div {
+    let colors = theme::palette(cx);
+    let name = kind.name();
+    let focused = input.is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window));
+    let search = div()
+        .id(format!("{name}-search"))
+        .test_support()
+        .relative()
+        .cursor_text()
+        .flex()
+        .items_center()
+        .min_w_0();
+    let search = if native {
+        controls::search_field(search, focused, colors)
+    } else {
+        search
+            .flex_1()
+            .min_w(ui_text::space(128.0))
+            .h(ui_text::space(30.0))
+            .px(ui_text::space(8.0))
+            .gap(ui_text::space(5.0))
+            .text_color(rgb(if focused { colors.text } else { colors.muted }))
+    };
+    search
+        .child(
+            div()
+                .id(format!("{name}-search-icon"))
+                .test_support()
+                .flex_none()
+                .w(ui_text::space(12.0))
+                .h(ui_text::space(12.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icons::mark("⌕", 10.0, colors.muted)),
+        )
+        .children(input.map(|input| {
+            crate::form_input::search_frame(format!("{name}-search-input"), input, window, cx)
+                .accessibility_label(format!("Search {name}"))
+        }))
+        .when_some(input.cloned(), |search, input| {
+            search.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                let state = input.read(cx);
+                if !state.presentation().is_disabled() {
+                    state.focus_handle(cx).focus(window, cx);
+                    // The text child already hit-tests the caret. Only forward
+                    // icon/chrome focus and protect it from ancestor defaults.
+                    window.prevent_default();
+                }
+            })
+        })
+}
+
 /// The numbers a Native panel's header and list are drawn from.
 struct NativeChrome {
     count: usize,
@@ -1335,20 +1367,7 @@ fn native_panel<V: Render + 'static>(
         }
     }
     let name = kind.name();
-    let search_action = on_action.clone();
-    let search = controls::search_field(
-        div().id(format!("{name}-search")).relative(),
-        data.search_focused,
-        colors,
-    )
-    .cursor_text()
-    .child(icons::mark("⌕", 10.0, colors.muted))
-    .children(data.search_input.map(|input| {
-        crate::form_input::search_frame(format!("{name}-search-input"), input, window, cx)
-    }))
-    .on_click(cx.listener(move |view, _, window, cx| {
-        search_action(view, PanelAction::Search, window, cx);
-    }));
+    let search = panel_search(kind, data.search_input, true, window, cx);
     let panel = controls::panel(colors)
         .relative()
         .child(controls::panel_header(
@@ -1479,7 +1498,7 @@ fn project_header_button<V: 'static>(
         },
     )
     .flex_none()
-    .h_full()
+    .h(ui_text::space(30.0))
     .flex()
     .items_center()
     .text_color(rgb(color))
@@ -3951,5 +3970,366 @@ mod kit_control_tests {
                 1
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod search_regression_tests {
+    use super::*;
+    use crate::{
+        form_input::test_turn,
+        text_input::{self, InputEvent, InputState},
+    };
+    use gpui::{Subscription, TestAppContext};
+    use gpui_kit::test::TestWindowExt;
+
+    // Real Projects panels and retained Base states; no Workspace, Store,
+    // SessionManager, filesystem fixture, terminal or backend is constructed.
+    struct Fixture {
+        state: State,
+        inputs: Vec<(u64, Entity<InputState>)>,
+        queries: BTreeMap<u64, String>,
+        sorts: Vec<ProjectSortUi>,
+        changes: Vec<(u64, String)>,
+        focused: Option<u64>,
+        actions: Vec<PanelAction>,
+        width: f32,
+        two_panels: bool,
+        _subscriptions: Vec<Subscription>,
+    }
+    impl Fixture {
+        fn action(&mut self, action: PanelAction, _: &mut Window, cx: &mut Context<Self>) {
+            self.actions.push(action);
+            cx.notify();
+        }
+    }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().flex().items_start().gap(px(8.)).children(
+                self.inputs
+                    .iter()
+                    .take(if self.two_panels { 2 } else { 1 })
+                    .enumerate()
+                    .map(|(index, (id, input))| {
+                        div()
+                            .id(("search-fixture-panel", *id))
+                            .test_support()
+                            .flex_none()
+                            .w(px(self.width))
+                            .h(px(360.))
+                            .child(render_panel(
+                                PanelKind::Projects,
+                                PanelData {
+                                    state: &self.state,
+                                    project_id: "alpha-id",
+                                    selected_worktree_id: None,
+                                    selected_task_id: None,
+                                    shells: &[],
+                                    shell_cwds: &BTreeMap::new(),
+                                    metrics: &BTreeMap::new(),
+                                    activity: &BTreeMap::new(),
+                                    chats: &[],
+                                    query: &self.queries[id],
+                                    search_focused: input
+                                        .read(cx)
+                                        .focus_handle(cx)
+                                        .is_focused(window),
+                                    search_input: Some(input),
+                                    control_inset: 0.,
+                                    collapsed_folders: &HashSet::new(),
+                                    state_home: Path::new("/synthetic-only/no-state"),
+                                    project_order: ProjectOrder::default(),
+                                    project_last_edits: &BTreeMap::new(),
+                                    project_sort_menu_open: false,
+                                    project_sort_ui: Some(&self.sorts[index]),
+                                    remote_folders: &[],
+                                    selected_remote: None,
+                                },
+                                Self::action,
+                                window,
+                                cx,
+                            ))
+                    }),
+            )
+        }
+    }
+    fn mount(cx: &mut TestAppContext, native: bool) -> (gpui::AnyWindowHandle, Entity<Fixture>) {
+        let (handle, owner): (gpui::AnyWindowHandle, Entity<Fixture>) = cx.update(|app| {
+            let mut settings = crate::settings::Settings::default();
+            settings.ui_text_matches_terminal = false;
+            settings.theme = if native {
+                theme::ThemeChoice::Native
+            } else {
+                theme::ThemeChoice::RiWork
+            };
+            let choice = settings.theme;
+            app.set_global(settings);
+            app.set_global(theme::Appearance {
+                selected: choice,
+                palette: if native {
+                    Palette::NATIVE_LIGHT
+                } else {
+                    Palette::RIWORK
+                },
+                terminal: None,
+                ghostty: None,
+                error: None,
+            });
+            text_input::init(app);
+            crate::behavior_controls::init(app);
+            // Actual native/colorful face and scaling, with terminal matching
+            // explicitly off: init returns before all Ghostty config reads.
+            ui_text::init(app);
+            let created = Rc::new(std::cell::RefCell::new(None));
+            let retained = created.clone();
+            let handle = app
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(
+                            gpui::point(px(0.), px(0.)),
+                            gpui::size(px(1000.), px(600.)),
+                        ))),
+                        ..Default::default()
+                    },
+                    move |window, app| {
+                        let owner = app.new(|cx| {
+                            let inputs: Vec<_> = [101, 202]
+                                .into_iter()
+                                .map(|id| {
+                                    (id, text_input::single_line("", "Search  ⌘F", window, cx))
+                                })
+                                .collect();
+                            let subscriptions = inputs
+                                .iter()
+                                .map(|(id, input)| {
+                                    let id = *id;
+                                    cx.subscribe_in(
+                                        input,
+                                        window,
+                                        move |owner: &mut Fixture, input, event, _, cx| {
+                                            if !owner.inputs.iter().any(|(live_id, live)| {
+                                                *live_id == id
+                                                    && live.entity_id() == input.entity_id()
+                                            }) {
+                                                return;
+                                            }
+                                            match event {
+                                                InputEvent::Change => {
+                                                    let value = input.read(cx).value().to_string();
+                                                    owner.queries.insert(id, value.clone());
+                                                    owner.changes.push((id, value));
+                                                }
+                                                InputEvent::Focus => owner.focused = Some(id),
+                                                _ => {}
+                                            }
+                                            cx.notify();
+                                        },
+                                    )
+                                })
+                                .collect();
+                            let projects = [("alpha-id", "Alpha"), ("beta-id", "Beta")]
+                                .into_iter()
+                                .map(|(id, name)| crate::store::Project {
+                                    id: id.into(),
+                                    name: name.into(),
+                                    root: PathBuf::from("/synthetic-only/no-project"),
+                                    repository_roots: Vec::new(),
+                                    folder_id: None,
+                                    notify_on_agent_done: false,
+                                    codex_account: Default::default(),
+                                    created_at: 0,
+                                })
+                                .collect();
+                            Fixture {
+                                state: State {
+                                    projects,
+                                    ..Default::default()
+                                },
+                                inputs,
+                                queries: BTreeMap::from([
+                                    (101, String::new()),
+                                    (202, String::new()),
+                                ]),
+                                sorts: vec![ProjectSortUi::new(cx), ProjectSortUi::new(cx)],
+                                changes: Vec::new(),
+                                focused: None,
+                                actions: Vec::new(),
+                                width: 160.,
+                                two_panels: false,
+                                _subscriptions: subscriptions,
+                            }
+                        });
+                        *retained.borrow_mut() = Some(owner.clone());
+                        app.new(|cx| gpui_kit::base::Root::new(owner, window, cx))
+                    },
+                )
+                .unwrap();
+            let owner = created.borrow_mut().take().unwrap();
+            (handle.into(), owner)
+        });
+        test_turn(cx, handle, |window, _| window.activate_window());
+        (handle, owner)
+    }
+    fn geometry(cx: &mut TestAppContext, native: bool) {
+        let (handle, owner) = mount(cx, native);
+        let entity = owner.read_with(cx, |owner, _| owner.inputs[0].1.entity_id());
+        for width in [160., 240., 480.] {
+            test_turn(cx, handle, |_, app| {
+                owner.update(app, |owner, cx| {
+                    owner.width = width;
+                    cx.notify();
+                })
+            });
+            test_turn(cx, handle, |window, app| {
+                assert_eq!(ui_text::is_native(), native);
+                let mut panel = window.within(("search-fixture-panel", 101u64));
+                let search = panel.find("projects-search");
+                let icon = panel.find("projects-search-icon");
+                let editor = panel.find("projects-search-input");
+                assert!(search.visible() && icon.visible() && editor.visible());
+                assert_eq!(editor.role(), Some(gpui::Role::TextInput));
+                assert_eq!(editor.label(), Some("Search projects"));
+                assert!(
+                    editor.bounds().size.width >= px(80.),
+                    "readable editor at pane width {width}: {:?}",
+                    editor.bounds()
+                );
+                assert!(editor.bounds().size.height >= ui_text::space(18.));
+                assert!(editor.bounds().left() >= icon.bounds().right());
+                assert!(editor.bounds().right() <= search.bounds().right());
+                assert!(editor.bounds().top() >= search.bounds().top());
+                assert!(editor.bounds().bottom() <= search.bounds().bottom());
+                let input = owner.read(app).inputs[0].1.clone();
+                assert_eq!(input.entity_id(), entity);
+                assert_eq!(input.read(app).placeholder().as_ref(), "Search  ⌘F");
+                let caret = input
+                    .read(app)
+                    .range_to_bounds(&(0..0))
+                    .expect("the empty placeholder has real editor layout");
+                assert!(caret.size.height > px(0.));
+                assert!(
+                    caret.left() >= editor.bounds().left()
+                        && caret.right() <= editor.bounds().right()
+                );
+                // An icon press must focus this real field, including the
+                // padding/background path outside Base's glyph hit target.
+                panel.click("projects-search-icon", app);
+            });
+            test_turn(cx, handle, |window, app| {
+                assert!(
+                    owner.read(app).inputs[0]
+                        .1
+                        .read(app)
+                        .focus_handle(app)
+                        .is_focused(window)
+                );
+                assert_eq!(owner.read(app).focused, Some(101));
+                assert!(owner.read(app).actions.is_empty());
+            });
+        }
+    }
+    #[gpui::test]
+    fn projects_search_has_readable_bounds_and_placeholder_in_narrow_colorful_panels(
+        cx: &mut TestAppContext,
+    ) {
+        geometry(cx, false);
+    }
+    #[gpui::test]
+    fn projects_search_has_readable_bounds_and_placeholder_in_narrow_native_panels(
+        cx: &mut TestAppContext,
+    ) {
+        geometry(cx, true);
+    }
+    fn editing_and_binding(cx: &mut TestAppContext, native: bool) {
+        let (handle, owner) = mount(cx, native);
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.two_panels = true;
+                owner.width = 240.;
+                cx.notify();
+            })
+        });
+        test_turn(cx, handle, |window, app| {
+            window
+                .within(("search-fixture-panel", 101u64))
+                .click("projects-search-icon", app)
+        });
+        test_turn(cx, handle, |window, app| window.input("Alpha", app));
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).queries[&101], "Alpha");
+            assert_eq!(owner.read(app).queries[&202], "");
+            let panel = window.within(("search-fixture-panel", 101u64));
+            assert!(panel.try_find("project-alpha-id").is_some());
+            assert!(panel.try_find("project-beta-id").is_none());
+            window.press("cmd-a", app);
+        });
+        test_turn(cx, handle, |window, app| window.press("cmd-c", app));
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(
+                app.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some("Alpha")
+            );
+            let input = owner.read(app).inputs[0].1.clone();
+            assert_eq!(input.read(app).selected_range(), 0..5);
+            let caret = input.read(app).range_to_bounds(&(2..2)).unwrap().center();
+            let bounds = window
+                .within(("search-fixture-panel", 101u64))
+                .find("projects-search-input")
+                .bounds();
+            window.within(("search-fixture-panel", 101u64)).click_at(
+                "projects-search-input",
+                caret - bounds.origin,
+                app,
+            );
+        });
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).inputs[0].1.read(app).cursor(), 2);
+            window
+                .within(("search-fixture-panel", 202u64))
+                .click("projects-search-icon", app);
+        });
+        test_turn(cx, handle, |window, app| window.input("Beta", app));
+        test_turn(cx, handle, |window, app| {
+            let fixture = owner.read(app);
+            assert_eq!(fixture.focused, Some(202));
+            assert_eq!(
+                fixture.changes,
+                [
+                    (101u64, String::from("Alpha")),
+                    (202u64, String::from("Beta"))
+                ]
+            );
+            assert_eq!(fixture.inputs[0].1.read(app).value(), "Alpha");
+            assert_eq!(fixture.inputs[0].1.read(app).cursor(), 2);
+            assert_eq!(fixture.inputs[1].1.read(app).value(), "Beta");
+            assert!(
+                fixture.inputs[1]
+                    .1
+                    .read(app)
+                    .focus_handle(app)
+                    .is_focused(window)
+            );
+            assert!(
+                fixture.actions.is_empty(),
+                "search clicks must not dispatch through the active-pane fallback"
+            );
+            let panel = window.within(("search-fixture-panel", 202u64));
+            assert!(panel.try_find("project-beta-id").is_some());
+            assert!(panel.try_find("project-alpha-id").is_none());
+        });
+    }
+    #[gpui::test]
+    fn projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_colorful(
+        cx: &mut TestAppContext,
+    ) {
+        editing_and_binding(cx, false);
+    }
+    #[gpui::test]
+    fn projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_native(
+        cx: &mut TestAppContext,
+    ) {
+        editing_and_binding(cx, true);
     }
 }

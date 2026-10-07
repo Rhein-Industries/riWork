@@ -122,11 +122,21 @@ pub fn search_frame(
     window: &Window,
     cx: &mut App,
 ) -> InputBase {
-    let colors = crate::theme::palette(cx);
+    // A search lives inside its caller's compact chrome, beside the icon.
+    // Reserve the remaining flex width and fill that chrome's height; a full-
+    // width form box with its own padding/border competes with the icon and
+    // exceeds Native's 24-point capsule. Base still owns the real text child.
     let frame = plain_frame(id, state, false, window, cx)
-        .when(crate::ui_text::is_native(), |frame| {
-            frame.rounded_full().bg(gpui::rgb(colors.panel_active))
-        });
+        .flex()
+        .flex_1()
+        .w(gpui::px(0.))
+        .min_w_0()
+        .h_full()
+        .border_0()
+        .rounded_none()
+        .bg(gpui::transparent_black())
+        .px(gpui::px(0.))
+        .py(gpui::px(0.));
     paste_policy(frame, state, PastePolicy::Spaces)
 }
 
