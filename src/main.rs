@@ -6848,6 +6848,15 @@ impl Workspace {
                 }
             }
             ChatViewEvent::HandOff => self.begin_handoff_from_chat(view, window, cx),
+            ChatViewEvent::NewProviderChat { provider } => {
+                if place.is_some()
+                    && view.read(cx).info().is_some_and(|info| {
+                        info.project_id.as_deref() == Some(self.project_id.as_str())
+                    })
+                {
+                    self.begin_new_chat(Some(*provider), false, window, cx);
+                }
+            }
             ChatViewEvent::OpenFile { target } => {
                 self.open_chat_file(view.clone(), target.clone(), window, cx)
             }
