@@ -35,11 +35,9 @@ impl HostConfig {
         }
     }
 
-    /// History navigation subscribes to this address without starting a host or provider.
-    pub fn for_running_home(home: PathBuf) -> Self {
-        Self {
-            ensure: Arc::new(move || Ok(socket_path(&home))),
-        }
+    /// History following resolves only an address; explicit delivery keeps normal ensure.
+    pub(super) fn follow_existing(home: PathBuf) -> Ensure {
+        Arc::new(move || Ok(socket_path(&home)))
     }
 
     /// Makes sure the host runs and says where it listens.
@@ -54,10 +52,10 @@ mod tests {
     use crate::chat_view::testing::FakeHost;
 
     #[test]
-    fn history_configuration_only_resolves_an_address_without_ensuring_a_host() {
+    fn history_follow_only_resolves_an_address_without_ensuring_a_host() {
         let home = PathBuf::from("/synthetic-only/never-create-or-connect");
-        let config = HostConfig::for_running_home(home.clone());
-        assert_eq!(config.ensure().unwrap(), home.join("run/chat.sock"));
+        let follow = HostConfig::follow_existing(home.clone());
+        assert_eq!(follow().unwrap(), home.join("run/chat.sock"));
     }
 
     #[test]

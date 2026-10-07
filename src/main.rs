@@ -7471,8 +7471,8 @@ impl Workspace {
 
     /// Navigation opens history by UUID and only subscribes to a running host.
     fn show_existing_chat(&mut self, chat: ChatInfo, window: &mut Window, cx: &mut Context<Self>) {
-        let config = HostConfig::for_running_home(self.sessions.state_home().to_path_buf());
-        self.show_chat_with_config(chat, config, window, cx);
+        let home = self.sessions.state_home().to_path_buf();
+        self.show_chat_with_config(chat, self.chat_config(), Some(home), window, cx);
     }
 
     /// Show an orchestrator through the same existing-tab routing used by Sessions.
@@ -7482,13 +7482,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.show_chat_with_config(chat, self.chat_config(), window, cx);
+        self.show_chat_with_config(chat, self.chat_config(), None, window, cx);
     }
 
     fn show_chat_with_config(
         &mut self,
         chat: ChatInfo,
         config: HostConfig,
+        existing_home: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -7506,7 +7507,10 @@ impl Workspace {
             }
             ChatOrchestratorTab::Open { pane } => {
                 let chat_id = chat.id.clone();
-                let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, window, cx));
+                let view = cx.new(|cx| match existing_home {
+                    Some(home) => ChatView::open_existing(chat_id.clone(), config, home, window, cx),
+                    None => ChatView::open(chat_id.clone(), config, window, cx),
+                });
                 let mut tab = self.chat_tab(chat_id, view, window, cx);
                 tab.title = format!(
                     "{} · {}",

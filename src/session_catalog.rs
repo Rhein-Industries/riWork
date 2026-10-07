@@ -310,20 +310,23 @@ fn saved_chats(home: &Path, project: &str) -> Snapshot {
     }
 }
 
+fn unavailable_note(error: &str, saved_note: Option<&str>) -> String {
+    let error: String = error.chars().take(180).collect();
+    let detail = saved_note
+        .map(|note| format!(" {note}"))
+        .unwrap_or_default();
+    format!(
+        "Live chat catalog unavailable ({error}); showing saved sessions; transcript loads when the backend is available. Selecting a session does not start it.{detail}"
+    )
+}
+
 /// Background task entry point. A legacy host supports List without negotiation.
 pub fn read(home: &Path, project: &str) -> Snapshot {
     match running_chats(home) {
         Ok(chats) => Snapshot { chats, note: None },
         Err(error) => {
             let mut saved = saved_chats(home, project);
-            let error: String = error.chars().take(180).collect();
-            saved.note = Some(format!(
-                "Live chat catalog unavailable ({error}); showing saved history. Selecting a chat does not start it.{}",
-                saved
-                    .note
-                    .map(|note| format!(" {note}"))
-                    .unwrap_or_default()
-            ));
+            saved.note = Some(unavailable_note(&error, saved.note.as_deref()));
             saved
         }
     }
@@ -352,6 +355,21 @@ mod tests {
             state,
             orchestrator: None,
         }
+    }
+
+    #[test]
+    fn unavailable_catalog_notice_describes_metadata_and_deferred_transcript_truthfully() {
+        let expected = "Live chat catalog unavailable (offline); showing saved sessions; transcript loads when the backend is available. Selecting a session does not start it.";
+        assert_eq!(unavailable_note("offline", None), expected);
+        let detail = "Some saved chat metadata could not be read within the catalog limits.";
+        assert_eq!(
+            unavailable_note("offline", Some(detail)),
+            format!("{expected} {detail}")
+        );
+        assert_eq!(
+            unavailable_note(&"x".repeat(200), None),
+            expected.replace("offline", &"x".repeat(180))
+        );
     }
 
     #[test]

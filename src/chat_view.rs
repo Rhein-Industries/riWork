@@ -232,6 +232,22 @@ impl ChatView {
         view
     }
 
+    /// Browse an existing chat without starting its host on follow/reconnect. The normal
+    /// configuration remains available for explicit sends and attachment staging.
+    pub fn open_existing(
+        chat_id: String,
+        config: HostConfig,
+        home: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::blank(config, window, cx);
+        view.chat_id = Some(chat_id.clone());
+        view.follow_display_setting(cx);
+        view.start_feed_with_follow(chat_id, 0, HostConfig::follow_existing(home), window, cx);
+        view
+    }
+
     /// The tab of a chat that is yet to be made: the host makes it, and the tab follows it.
     pub fn create(
         chat: NewChat,
@@ -431,9 +447,21 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.start_feed_with_follow(chat_id, since, self.config.ensure.clone(), window, cx);
+    }
+
+    fn start_feed_with_follow(
+        &mut self,
+        chat_id: String,
+        since: u64,
+        follow: feed::Ensure,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (sender, receiver) = async_channel::unbounded();
-        self.feed = Some(Feed::start(
+        self.feed = Some(Feed::start_with_follow(
             self.config.ensure.clone(),
+            follow,
             chat_id,
             since,
             sender,

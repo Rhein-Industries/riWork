@@ -2,8 +2,9 @@
 //! delivers the user's commands in order.
 //!
 //! The subscription asks for events after the last one it handed over. When the connection
-//! ends, because the host restarted or went away, it asks the host to be there (`ensure`) and
-//! subscribes again from that point, so the transcript never misses or repeats an event. A
+//! ends, it resolves its follow address and subscribes again from that point, so the
+//! transcript never misses or repeats an event. Ordinary feeds ensure the host on follow;
+//! history browsing connects only to an existing host. Explicit delivery still ensures it. A
 //! chat the host no longer lists was deleted, and the subscription ends. Both threads end
 //! when the `Feed` is dropped; a subscription blocked on a quiet chat is closed from outside.
 
@@ -52,6 +53,44 @@ pub enum FeedMsg {
 
 /// Makes sure the chat host is running and says where it listens.
 pub type Ensure = Arc<dyn Fn() -> Result<PathBuf, String> + Send + Sync>;
+
+/// One immutable chat identity with separate follower and explicit-delivery policies.
+/// Both transport paths resolve through this seam; browsing cannot select normal ensure.
+#[derive(Clone)]
+struct Connections {
+    chat_id: String,
+    follow: Ensure,
+    delivery: Ensure,
+}
+
+struct Target<'a> {
+    socket: PathBuf,
+    chat_id: &'a str,
+}
+
+impl Connections {
+    fn new(delivery: Ensure, follow: Ensure, chat_id: String) -> Self {
+        Self {
+            chat_id,
+            follow,
+            delivery,
+        }
+    }
+
+    fn resolve_follow(&self) -> Result<Target<'_>, String> {
+        (self.follow)().map(|socket| Target {
+            socket,
+            chat_id: &self.chat_id,
+        })
+    }
+
+    fn resolve_delivery(&self) -> Result<Target<'_>, String> {
+        (self.delivery)().map(|socket| Target {
+            socket,
+            chat_id: &self.chat_id,
+        })
+    }
+}
 
 /// How long to wait before the next attempt to reach the host.
 #[derive(Clone, Copy, Debug)]
@@ -116,17 +155,28 @@ impl Feed {
         messages: async_channel::Sender<FeedMsg>,
         backoff: Backoff,
     ) -> Self {
+        Self::start_with_follow(ensure.clone(), ensure, chat_id, since, messages, backoff)
+    }
+
+    /// Follow with an independent resolver while retaining normal explicit-send recovery.
+    pub fn start_with_follow(
+        ensure: Ensure,
+        follow_address: Ensure,
+        chat_id: String,
+        since: u64,
+        messages: async_channel::Sender<FeedMsg>,
+        backoff: Backoff,
+    ) -> Self {
+        let connections = Connections::new(ensure, follow_address, chat_id);
         let stop = Arc::new(AtomicBool::new(false));
         let closer = Arc::new(Mutex::new(None));
         let (commands, queue) = mpsc::channel();
         let follower = {
-            let (ensure, chat_id, messages) = (ensure.clone(), chat_id.clone(), messages.clone());
+            let (connections, messages) = (connections.clone(), messages.clone());
             let (stop, closer) = (stop.clone(), closer.clone());
-            thread::spawn(move || {
-                follow(&ensure, &chat_id, since, &messages, &stop, &closer, backoff)
-            })
+            thread::spawn(move || follow(&connections, since, &messages, &stop, &closer, backoff))
         };
-        let deliverer = thread::spawn(move || deliver(&ensure, &chat_id, queue, &messages));
+        let deliverer = thread::spawn(move || deliver(&connections, queue, &messages));
         let _ = (&follower, &deliverer);
         Self {
             stop,
@@ -206,8 +256,7 @@ enum Ended {
 }
 
 fn follow(
-    ensure: &Ensure,
-    chat_id: &str,
+    connections: &Connections,
     mut since: u64,
     messages: &async_channel::Sender<FeedMsg>,
     stop: &AtomicBool,
@@ -220,7 +269,7 @@ fn follow(
     let mut misses = 0u32;
     while !stop.load(Ordering::SeqCst) {
         let (progress, missing) =
-            match connect_once(ensure, chat_id, &mut since, messages, stop, closer) {
+            match connect_once(connections, &mut since, messages, stop, closer) {
                 Ended::Stopped => return,
                 Ended::Missing => (false, true),
                 Ended::Dropped { progress } => (progress, false),
@@ -242,16 +291,16 @@ fn follow(
 }
 
 fn connect_once(
-    ensure: &Ensure,
-    chat_id: &str,
+    connections: &Connections,
     since: &mut u64,
     messages: &async_channel::Sender<FeedMsg>,
     stop: &AtomicBool,
     closer: &Mutex<Option<SubscriptionCloser>>,
 ) -> Ended {
-    let Ok(socket) = ensure() else {
+    let Ok(target) = connections.resolve_follow() else {
         return Ended::Dropped { progress: false };
     };
+    let Target { socket, chat_id } = target;
     let mut subscription = match Subscription::open(&socket, chat_id, *since) {
         Ok(subscription) => subscription,
         Err(_) => {
@@ -331,8 +380,7 @@ fn pause(delay: Duration, stop: &AtomicBool) {
 }
 
 fn deliver(
-    ensure: &Ensure,
-    chat_id: &str,
+    connections: &Connections,
     queue: mpsc::Receiver<Delivery>,
     messages: &async_channel::Sender<FeedMsg>,
 ) {
@@ -342,11 +390,15 @@ fn deliver(
     for delivery in queue {
         let command = match delivery {
             Delivery::Submission { id, command } => {
-                let result = ensure()
+                let result = connections
+                    .resolve_delivery()
                     .map_err(CallError::Broken)
-                    .and_then(|socket| Client::connect(&socket).map_err(CallError::Broken))
-                    .and_then(|mut connection| {
-                        connection.command_checked(chat_id, command.clone())
+                    .and_then(|target| {
+                        Client::connect(&target.socket)
+                            .map_err(CallError::Broken)
+                            .and_then(|mut connection| {
+                                connection.command_checked(target.chat_id, command.clone())
+                            })
                     });
                 client = None;
                 if messages
@@ -366,10 +418,16 @@ fn deliver(
         if matches!(command, ChatCommand::SendAttachments { .. }) {
             // Connect anew and exchange exactly once. A lost reply can follow a successful
             // submission, so neither Broken nor refusal permits an automatic resend.
-            let result = ensure()
+            let result = connections
+                .resolve_delivery()
                 .map_err(CallError::Broken)
-                .and_then(|socket| Client::connect(&socket).map_err(CallError::Broken))
-                .and_then(|mut connection| connection.command_checked(chat_id, command.clone()));
+                .and_then(|target| {
+                    Client::connect(&target.socket)
+                        .map_err(CallError::Broken)
+                        .and_then(|mut connection| {
+                            connection.command_checked(target.chat_id, command.clone())
+                        })
+                });
             client = None;
             if messages
                 .send_blocking(FeedMsg::AttachmentSubmission { command, result })
@@ -384,12 +442,15 @@ fn deliver(
         let mut result = Err("no connection".to_owned());
         for _ in 0..2 {
             if client.is_none() {
-                client = ensure().and_then(|socket| Client::connect(&socket)).ok();
+                client = connections
+                    .resolve_delivery()
+                    .and_then(|target| Client::connect(&target.socket))
+                    .ok();
             }
             let Some(connected) = client.as_mut() else {
                 continue;
             };
-            result = connected.command(chat_id, command.clone());
+            result = connected.command(&connections.chat_id, command.clone());
             match &result {
                 Ok(()) => break,
                 // Only a connection found broken is tried again. The host's own answer, or no
@@ -413,6 +474,85 @@ fn connection_broke(error: &str) -> bool {
     ["Broken pipe", "closed the connection", "Connection reset"]
         .iter()
         .any(|sign| error.contains(sign))
+}
+
+#[cfg(test)]
+mod connection_policy_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn history_follow_and_explicit_delivery_use_separate_callbacks_with_the_same_uuid() {
+        let ensured = Arc::new(AtomicUsize::new(0));
+        let followed = Arc::new(AtomicUsize::new(0));
+        let count = ensured.clone();
+        let ensure: Ensure = Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok("/synthetic-only/recovered.sock".into())
+        });
+        let count = followed.clone();
+        let follow: Ensure = Arc::new(move || {
+            let attempt = count.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                Err("existing backend unavailable".into())
+            } else {
+                Ok("/synthetic-only/existing.sock".into())
+            }
+        });
+        let id = "ed6d4e6e-8670-48c5-a1ea-9315379f8201";
+        let policy = Connections::new(ensure, follow, id.into());
+        // Constructing/browsing the policy itself does not resolve either callback.
+        assert_eq!(ensured.load(Ordering::SeqCst), 0);
+        assert_eq!(followed.load(Ordering::SeqCst), 0);
+        assert!(policy.resolve_follow().is_err());
+        let target = policy.resolve_follow().unwrap();
+        assert_eq!(target.chat_id, id);
+        assert_eq!(
+            target.socket,
+            PathBuf::from("/synthetic-only/existing.sock")
+        );
+        assert_eq!(
+            ensured.load(Ordering::SeqCst),
+            0,
+            "even a failed follow never falls through to normal ensure"
+        );
+        assert_eq!(followed.load(Ordering::SeqCst), 2);
+        // This is the same resolver the actual correlated/attachment delivery uses.
+        let target = policy.resolve_delivery().unwrap();
+        assert_eq!(target.chat_id, id);
+        assert_eq!(
+            target.socket,
+            PathBuf::from("/synthetic-only/recovered.sock")
+        );
+        assert_eq!(ensured.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            followed.load(Ordering::SeqCst),
+            2,
+            "delivery does not invoke the history resolver"
+        );
+        assert_eq!(policy.resolve_follow().unwrap().chat_id, id);
+        assert_eq!(
+            ensured.load(Ordering::SeqCst),
+            1,
+            "following remains read-only after explicit send recovery"
+        );
+    }
+
+    #[test]
+    fn ordinary_follow_and_delivery_keep_the_shared_ensure_policy() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let ensure: Ensure = Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok("/synthetic-only/normal.sock".into())
+        });
+        let id = "c97ab6ed-a6e8-49fa-87dd-53ed45b7990e";
+        let policy = Connections::new(ensure.clone(), ensure, id.into());
+        assert_eq!(policy.resolve_follow().unwrap().chat_id, id);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(policy.resolve_delivery().unwrap().chat_id, id);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 }
 
 #[cfg(test)]
@@ -769,7 +909,8 @@ mod tests {
         };
         commands.send(Delivery::Command(command.clone())).unwrap();
         drop(commands);
-        deliver(&ensure, "chat", queue, &messages);
+        let connections = Connections::new(ensure.clone(), ensure, "chat".into());
+        deliver(&connections, queue, &messages);
         let FeedMsg::AttachmentSubmission {
             command: returned,
             result,
