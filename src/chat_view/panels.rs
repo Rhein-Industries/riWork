@@ -2619,7 +2619,9 @@ mod tests {
         .unwrap();
         draw_hermes(cx, handle);
         view.read_with(cx, |view, cx| {
-            assert_eq!(view.model_input.read(cx).placeholder(), "Search models")
+            let presentation = view.model_input.read(cx).presentation();
+            let placeholder: &str = presentation.placeholder().as_ref();
+            assert_eq!(placeholder, "Search models")
         });
         cx.update_window(handle.into(), |_, window, cx| {
             window.click("chat-model-search", cx);
@@ -2652,10 +2654,9 @@ mod tests {
         .unwrap();
         draw_hermes(cx, handle);
         view.read_with(cx, |view, cx| {
-            assert_eq!(
-                view.model_input.read(cx).placeholder(),
-                "model name, then ⏎"
-            );
+            let presentation = view.model_input.read(cx).presentation();
+            let placeholder: &str = presentation.placeholder().as_ref();
+            assert_eq!(placeholder, "model name, then ⏎");
             assert_eq!(view.model_input.read(cx).value(), "fixture");
         });
         cx.update_window(handle.into(), |_, _, cx| {
@@ -2667,7 +2668,9 @@ mod tests {
         .unwrap();
         draw_hermes(cx, handle);
         view.read_with(cx, |view, cx| {
-            assert_eq!(view.model_input.read(cx).placeholder(), "Search models");
+            let presentation = view.model_input.read(cx).presentation();
+            let placeholder: &str = presentation.placeholder().as_ref();
+            assert_eq!(placeholder, "Search models");
             assert_eq!(view.model_input.read(cx).value(), "fixture");
         });
         cx.update_window(handle.into(), |_, _, cx| {

@@ -153,11 +153,13 @@ impl ChatView {
         } else {
             "Search models"
         };
-        self.model_input.update(cx, |state, cx| {
-            if state.placeholder().as_ref() != placeholder {
+        let presentation = self.model_input.read(cx).presentation();
+        let current_placeholder: &str = presentation.placeholder().as_ref();
+        if current_placeholder != placeholder {
+            self.model_input.update(cx, |state, cx| {
                 state.set_placeholder(placeholder, window, cx);
-            }
-        });
+            });
+        }
     }
 
     pub(super) fn model_event(
@@ -537,14 +539,20 @@ impl ChatView {
             "Message"
         };
         self.sync_model_placeholder(window, cx);
-        self.composer.update(cx, |state, cx| {
-            if state.placeholder().as_ref() != placeholder {
-                state.set_placeholder(placeholder, window, cx);
-            }
-            if state.presentation().is_disabled() != disabled {
-                state.set_disabled(disabled, cx);
-            }
-        });
+        let presentation = self.composer.read(cx).presentation();
+        let current_placeholder: &str = presentation.placeholder().as_ref();
+        let placeholder_changed = current_placeholder != placeholder;
+        let disabled_changed = presentation.is_disabled() != disabled;
+        if placeholder_changed || disabled_changed {
+            self.composer.update(cx, |state, cx| {
+                if placeholder_changed {
+                    state.set_placeholder(placeholder, window, cx);
+                }
+                if disabled_changed {
+                    state.set_disabled(disabled, cx);
+                }
+            });
+        }
     }
     pub(super) fn typed_answers(&self, question: &Question, cx: &gpui::App) -> Vec<String> {
         (0..question.questions.len())
