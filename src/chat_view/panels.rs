@@ -869,37 +869,110 @@ impl ChatView {
             ],
         };
         if menu == Menu::Model {
-            content.push(
+            let heading = |text: String, rule: bool| {
                 div()
-                    .mt(ui_text::space(4.0))
+                    .when(rule, |heading| {
+                        heading
+                            .mt(ui_text::space(4.0))
+                            .border_t_1()
+                            .border_color(rgb(colors.divider))
+                    })
                     .px(ui_text::space(10.0))
                     .py(ui_text::space(6.0))
-                    .border_t_1()
-                    .border_color(rgb(colors.divider))
                     .text_size(ui_text::text(10.0))
                     .text_color(rgb(colors.muted))
-                    .child("New chat")
+                    .child(text)
+                    .into_any_element()
+            };
+            // One chat, every provider's models: the chat's own provider first, under the
+            // field, then the other one, whose models move the chat to it.
+            if let Some(provider) = self.provider() {
+                content.insert(1, heading(provider_name(provider).to_owned(), false));
+                let other = super::other_provider(provider);
+                let busy = self.running();
+                let detail = if busy {
+                    "Finish or interrupt the turn first".to_owned()
+                } else {
+                    format!("Continues this conversation with {}", provider_name(other))
+                };
+                content.push(heading(provider_name(other).to_owned(), true));
+                // Typing in the field names the chat's own provider's model; the field
+                // searches both lists only when it is a search.
+                let query = if self.model.transcript.models.is_empty() {
+                    String::new()
+                } else {
+                    self.model_input.read(cx).value().trim().to_lowercase()
+                };
+                let mut rows: Vec<(String, String, Option<String>)> = vec![(
+                    String::new(),
+                    format!("{} default", provider_name(other)),
+                    None,
+                )];
+                if let Some(catalog) = self.other_models() {
+                    rows.extend(catalog.supported.iter().map(|model| {
+                        (
+                            model.id.clone(),
+                            model.name.clone(),
+                            Some(model.description.clone()).filter(|text| !text.is_empty()),
+                        )
+                    }));
+                    rows.extend(catalog.configured.iter().map(|id| {
+                        (
+                            id.clone(),
+                            id.clone(),
+                            Some("Previously configured".to_owned()),
+                        )
+                    }));
+                }
+                content.extend(
+                    rows.into_iter()
+                        .filter(|(id, label, more)| {
+                            query.is_empty()
+                                || id.is_empty()
+                                || format!("{id} {label} {}", more.as_deref().unwrap_or(""))
+                                    .to_lowercase()
+                                    .contains(&query)
+                        })
+                        .map(|(id, label, more)| {
+                            let name = format!(
+                                "switch-{}-{}",
+                                provider_name(other).to_lowercase(),
+                                if id.is_empty() {
+                                    "default"
+                                } else {
+                                    id.as_str()
+                                }
+                            );
+                            let hint = match &more {
+                                Some(more) => format!("{more} · {detail}"),
+                                None => detail.clone(),
+                            };
+                            let item = row(name, label, Some(&hint), false);
+                            if busy {
+                                item.opacity(0.5).into_any_element()
+                            } else {
+                                let model = (!id.is_empty()).then_some(id);
+                                item.on_click(cx.listener(move |view, _, _, cx| {
+                                    view.switch_provider(other, model.clone(), cx);
+                                }))
+                                .into_any_element()
+                            }
+                        }),
+                );
+            }
+            content.push(
+                button("chat-new", "New chat…", None, look)
+                    .w_full()
+                    .mt(ui_text::space(4.0))
+                    .border_0()
+                    .role(gpui::Role::MenuItem)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.close_menu(cx);
+                        // The new-chat chooser owns focus after this request.
+                        view.focus_composer = false;
+                        cx.emit(ChatViewEvent::NewChat);
+                    }))
                     .into_any_element(),
-            );
-            content.extend(
-                [
-                    (Provider::Codex, "chat-new-codex", "New Codex chat…"),
-                    (Provider::Claude, "chat-new-claude", "New Claude chat…"),
-                ]
-                .into_iter()
-                .map(|(provider, name, label)| {
-                    button(name, label, None, look)
-                        .w_full()
-                        .border_0()
-                        .role(gpui::Role::MenuItem)
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.close_menu(cx);
-                            // The new-chat chooser owns focus after this request.
-                            view.focus_composer = false;
-                            cx.emit(ChatViewEvent::NewProviderChat { provider });
-                        }))
-                        .into_any_element()
-                }),
             );
         }
         // Composer menus are positioned above their triggers by Base Popup. Header menus
@@ -2334,7 +2407,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn explicit_provider_buttons_emit_once_and_preserve_conversation_draft_and_attachment_uuid(
+    fn the_new_chat_button_emits_once_and_preserves_conversation_draft_and_attachment_uuid(
         cx: &mut gpui::TestAppContext,
     ) {
         use crate::chat::{
@@ -2344,10 +2417,8 @@ mod tests {
         use std::{cell::RefCell, rc::Rc};
         let previous = ui_text::set_for_tests(1.0, ui_text::Face::Hermes);
         for catalog in [true, false] {
-            for (provider, button_id, label) in [
-                (Provider::Codex, "chat-new-codex", "New Codex chat…"),
-                (Provider::Claude, "chat-new-claude", "New Claude chat…"),
-            ] {
+            {
+                let (button_id, label) = ("chat-new", "New chat…");
                 let (handle, view) = hermes_fixture(cx, 720.0);
                 let (feed, recording) = super::super::feed::Feed::recording();
                 let chat_id = uuid::Uuid::from_u128(1).to_string();
@@ -2405,11 +2476,11 @@ mod tests {
                 let captured = events.clone();
                 let _subscription = cx.update(|cx| {
                     cx.subscribe(&view, move |emitter, event, cx| match event {
-                        ChatViewEvent::NewProviderChat { provider } => {
+                        ChatViewEvent::NewChat => {
                             assert!(!emitter.read(cx).focus_composer);
-                            captured.borrow_mut().push(*provider)
+                            captured.borrow_mut().push(())
                         }
-                        _ => panic!("provider button emitted an unrelated event"),
+                        _ => panic!("the new-chat button emitted an unrelated event"),
                     })
                 });
                 cx.update_window(handle.into(), |_, window, cx| {
@@ -2433,7 +2504,7 @@ mod tests {
                 })
                 .unwrap();
                 draw_hermes(cx, handle);
-                assert_eq!(events.borrow().as_slice(), &[provider]);
+                assert_eq!(events.borrow().as_slice(), &[()]);
                 assert!(matches!(
                     recording.try_recv(),
                     Err(std::sync::mpsc::TryRecvError::Empty)
@@ -2463,6 +2534,102 @@ mod tests {
                             .ui_text_matches_terminal
                     );
                 });
+            }
+        }
+        ui_text::set_for_tests(previous.0, previous.1);
+    }
+
+    #[gpui::test]
+    fn the_model_menu_offers_the_other_providers_models_and_moves_the_chat_to_one(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::chat::{
+            catalog::Catalog,
+            model::{ChatCommand, ChatInfo, ModelOption},
+        };
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::Hermes);
+        for state in [ChatState::Running, ChatState::Idle] {
+            let (handle, view) = hermes_fixture(cx, 720.0);
+            let (feed, recording) = super::super::feed::Feed::recording();
+            let info = ChatInfo {
+                id: uuid::Uuid::from_u128(1).to_string(),
+                provider: Provider::Codex,
+                project_id: Some("fixture-project".into()),
+                worktree_id: None,
+                cwd: "/inert-fixture".into(),
+                title: "Existing conversation".into(),
+                created_at_unix: 1,
+                provider_thread_id: Some("existing-provider-thread".into()),
+                model: Some("fixture-model".into()),
+                effort: None,
+                fast: false,
+                approval_mode: ApprovalMode::Supervised,
+                codex_account_id: None,
+                state: state.clone(),
+                orchestrator: None,
+                carried_over: None,
+            };
+            cx.update_window(handle.into(), |_, _, cx| {
+                view.update(cx, |view, cx| {
+                    view.feed = Some(feed);
+                    view.chat_id = Some(info.id.clone());
+                    view.model.transcript.info = Some(info.clone());
+                    view.model.transcript.state = state.clone();
+                    // As the saved chats would tell it; the fixture reads no files.
+                    view.others = Some((
+                        Provider::Claude,
+                        Catalog {
+                            supported: vec![ModelOption {
+                                id: "opus".into(),
+                                name: "Opus".into(),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                    ));
+                    cx.notify();
+                })
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.menu = Some(super::super::Menu::Model);
+                    cx.notify();
+                });
+                let _ = window;
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            cx.update_window(handle.into(), |_, window, cx| {
+                for (id, label) in [
+                    ("switch-claude-default", "Claude default"),
+                    ("switch-claude-opus", "Opus"),
+                ] {
+                    assert_eq!(window.find(id).label(), Some(label), "{id}");
+                }
+                window.click("switch-claude-opus", cx);
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            match state {
+                // Nothing moves while a turn runs; the row says why.
+                ChatState::Running => assert!(matches!(
+                    recording.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                )),
+                _ => match recording.try_recv().unwrap() {
+                    super::super::feed::Delivery::Command(command) => assert_eq!(
+                        command,
+                        ChatCommand::Switch {
+                            provider: Provider::Claude,
+                            model: Some("opus".into()),
+                            effort: None,
+                            fast: None,
+                        }
+                    ),
+                    _ => panic!("a switch is an ordinary command"),
+                },
             }
         }
         ui_text::set_for_tests(previous.0, previous.1);
