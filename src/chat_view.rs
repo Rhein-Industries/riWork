@@ -509,6 +509,7 @@ impl ChatView {
             }
         }
         let applied = self.model.apply(&events);
+        self.notices.observe(self.model.transcript.items.len());
         self.sync_list(&applied, cx);
         self.forget_settled();
         self.ready_inputs(window, cx);
@@ -639,6 +640,7 @@ impl ChatView {
             })
         }) {
             Ok(settings) => {
+                self.notices.clear(notices::LocalKey::Settings);
                 cx.set_global(settings);
                 self.follow_display_setting(cx);
             }

@@ -268,6 +268,8 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A picker that failed before has worked now.
+        self.notices.clear(super::notices::LocalKey::Attachment);
         if !self.accepts_input() {
             return;
         }

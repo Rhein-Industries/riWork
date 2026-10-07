@@ -106,6 +106,18 @@ pub(super) fn remap_anchor(
             _ => None,
         })
         .collect::<Vec<_>>();
+    // A hidden item of a turn that shows no outcome (a notice after the answer) stays on
+    // the last row of its own turn before it, not the next turn's user message.
+    if let Some(at) = completed.iter().position(|(_, _, end)| *end > index) {
+        let start = at.checked_sub(1).map_or(0, |before| completed[before].2);
+        if let Some((row, _)) = positions
+            .iter()
+            .rev()
+            .find(|(_, item)| (start..=index).contains(item))
+        {
+            return Some(*row);
+        }
+    }
     positions
         .iter()
         .find(|(_, at)| *at >= index)
@@ -493,6 +505,34 @@ mod tests {
                 DisplayMode::Normal
             )
             .contains(&Row::Item(0))
+        );
+    }
+
+    #[test]
+    fn a_notice_after_the_answer_keeps_its_turn_when_it_is_hidden() {
+        let mut t = Transcript::default();
+        t.items = vec![
+            text("ask", None),
+            text("Answer", Some(MessagePhase::Final)),
+            item(
+                "warning",
+                None,
+                ItemBody::notice(NoticeLevel::Warning, "close to a limit", None),
+            ),
+            text("next", None),
+        ];
+        t.items[0].body = ItemBody::UserMessage { text: "ask".into() };
+        t.items[3].body = ItemBody::UserMessage {
+            text: "next".into(),
+        };
+        t.items[3].turn_id = Some("turn-2".into());
+        let completed = vec![("turn".into(), TurnOutcome::Completed, 3)];
+        let normal = rows(&t, &completed, DisplayMode::Normal);
+        assert_eq!(normal, vec![Row::Item(0), Row::Item(1), Row::Item(3)]);
+        assert_eq!(
+            remap_anchor(&Row::Item(2), &normal, &completed),
+            Some(1),
+            "the answer above it, not the next message"
         );
     }
 

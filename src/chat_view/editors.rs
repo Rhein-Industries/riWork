@@ -315,7 +315,9 @@ impl ChatView {
         self.submissions.push(submission);
         self.pending_submission = Some(id);
         self.sent_at = Some(Instant::now());
+        // What went wrong with the last draft is over once a new one goes out.
         self.notices.clear(notices::LocalKey::Send);
+        self.notices.clear(notices::LocalKey::Attachment);
         self.list.set_follow_mode(gpui::FollowMode::Tail);
         let result = self
             .feed
@@ -604,6 +606,7 @@ impl ChatView {
             .and_then(|feed| feed.submit(id, command.clone()));
         match result {
             Ok(()) => {
+                self.notices.clear(notices::LocalKey::Answer);
                 self.answered.insert(request.clone());
                 self.answer_submissions.insert(id, snapshot);
                 self.answer_failures.remove(&request);

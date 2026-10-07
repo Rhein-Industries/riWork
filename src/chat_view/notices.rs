@@ -57,7 +57,7 @@ impl Banner {
     pub fn usage_limit(&self) -> bool {
         self.kind
             .as_deref()
-            .is_some_and(|kind| kind.starts_with(notice_kind::RATE_LIMIT))
+            .is_some_and(|kind| kind.starts_with(&format!("{}:", notice_kind::RATE_LIMIT)))
     }
 }
 
@@ -72,8 +72,11 @@ fn sticky(kind: Option<&str>) -> bool {
 
 #[derive(Default)]
 pub(super) struct Notices {
-    /// The tab's own errors, newest last.
-    local: Vec<(LocalKey, NoticeLevel, String)>,
+    /// The tab's own errors, newest last, each with how many transcript items there were
+    /// when it came: it is newer than those, older than the ones after.
+    local: Vec<(LocalKey, NoticeLevel, String, usize)>,
+    /// How many transcript items the tab has applied (`observe`).
+    items: usize,
     /// Provider notices the user closed, by item id.
     dismissed: HashSet<String>,
     /// "n more" was pressed: every banner shows.
@@ -83,51 +86,69 @@ pub(super) struct Notices {
 }
 
 impl Notices {
+    /// The transcript has `items` items now: a tab error from here on is newer than them.
+    pub fn observe(&mut self, items: usize) {
+        self.items = items;
+    }
+
     /// Show `text` under `key`, replacing what was there.
     pub fn set(&mut self, key: LocalKey, level: NoticeLevel, text: impl Into<String>) {
-        self.local.retain(|(at, _, _)| *at != key);
-        self.local.push((key, level, text.into()));
+        self.local.retain(|(at, ..)| *at != key);
+        self.local.push((key, level, text.into(), self.items));
     }
 
     /// Its cause is gone. Whether there was one.
     pub fn clear(&mut self, key: LocalKey) -> bool {
         let before = self.local.len();
-        self.local.retain(|(at, _, _)| *at != key);
+        self.local.retain(|(at, ..)| *at != key);
         self.local.len() != before
     }
 
     pub fn local(&self, key: LocalKey) -> Option<&str> {
         self.local
             .iter()
-            .find(|(at, _, _)| *at == key)
-            .map(|(_, _, text)| text.as_str())
+            .find(|(at, ..)| *at == key)
+            .map(|(_, _, text, _)| text.as_str())
     }
 
     pub fn dismiss(&mut self, id: &str) {
         if let Some(name) = id.strip_prefix("local:") {
-            self.local.retain(|(key, _, _)| key.name() != name);
+            self.local.retain(|(key, ..)| key.name() != name);
         } else {
             self.dismissed.insert(id.to_owned());
         }
     }
 
-    /// What shows, newest first: the tab's errors, then the provider's notices.
+    /// What shows, newest first, the tab's errors among the provider's notices by when
+    /// they came.
     pub fn banners(&self, transcript: &Transcript, now: u64) -> Vec<Banner> {
-        let mut out: Vec<Banner> = self
+        // A notice at position p ranks 2p + 1; a tab error that came after n items, 2n:
+        // newer than the items before it, older than the ones after.
+        let mut ranked: Vec<((usize, usize), Banner)> = self
             .local
             .iter()
-            .rev()
-            .map(|(key, level, text)| Banner {
-                id: format!("local:{}", key.name()),
-                level: *level,
-                text: text.clone(),
-                kind: None,
-                resets_at: None,
-                resolved: false,
+            .enumerate()
+            .map(|(order, (key, level, text, after))| {
+                (
+                    (2 * after, order + 1),
+                    Banner {
+                        id: format!("local:{}", key.name()),
+                        level: *level,
+                        text: text.clone(),
+                        kind: None,
+                        resets_at: None,
+                        resolved: false,
+                    },
+                )
             })
             .collect();
-        out.extend(provider_banners(transcript, &self.dismissed, now));
-        out
+        ranked.extend(
+            ranked_provider_banners(transcript, &self.dismissed, now)
+                .into_iter()
+                .map(|(at, banner)| ((2 * at + 1, 0), banner)),
+        );
+        ranked.sort_by(|a, b| b.0.cmp(&a.0));
+        ranked.into_iter().map(|(_, banner)| banner).collect()
     }
 }
 
@@ -158,6 +179,18 @@ pub(super) fn provider_banners(
     dismissed: &HashSet<String>,
     now: u64,
 ) -> Vec<Banner> {
+    ranked_provider_banners(transcript, dismissed, now)
+        .into_iter()
+        .map(|(_, banner)| banner)
+        .collect()
+}
+
+/// `provider_banners` with each one's position in the transcript.
+fn ranked_provider_banners(
+    transcript: &Transcript,
+    dismissed: &HashSet<String>,
+    now: u64,
+) -> Vec<(usize, Banner)> {
     let exchange = transcript
         .items
         .iter()
@@ -186,7 +219,9 @@ pub(super) fn provider_banners(
     shown.sort_unstable_by(|a, b| b.cmp(a));
     shown
         .into_iter()
-        .filter_map(|at| banner(&transcript.items[at].id, &transcript.items[at].body))
+        .filter_map(|at| {
+            banner(&transcript.items[at].id, &transcript.items[at].body).map(|b| (at, b))
+        })
         .collect()
 }
 
@@ -399,6 +434,36 @@ mod tests {
         assert!(!notices.clear(LocalKey::Link));
         notices.dismiss("local:delete");
         assert!(notices.banners(&t, 0).is_empty());
+    }
+
+    #[test]
+    fn tab_errors_and_provider_notices_stack_by_when_they_came() {
+        let mut notices = Notices::default();
+        let mut t = transcript(vec![
+            user("u"),
+            notice("old", NoticeLevel::Warning, "old notice", None),
+        ]);
+        notices.observe(t.items.len());
+        notices.set(LocalKey::Link, NoticeLevel::Error, "link");
+        notices.set(LocalKey::Delete, NoticeLevel::Error, "delete");
+        t.apply(&ChatEvent::ItemCompleted {
+            item: notice("new", NoticeLevel::Error, "sign in", Some("auth_required")),
+        });
+        assert_eq!(
+            texts(&notices.banners(&t, 0)),
+            ["sign in", "delete", "link", "old notice"]
+        );
+        // A kind that only starts like a usage limit is not one.
+        let banner = |kind: &str| Banner {
+            id: "x".into(),
+            level: NoticeLevel::Info,
+            text: String::new(),
+            kind: Some(kind.into()),
+            resets_at: None,
+            resolved: false,
+        };
+        assert!(banner("rate_limit:codex").usage_limit());
+        assert!(!banner("rate_limit_configuration").usage_limit());
     }
 
     #[test]

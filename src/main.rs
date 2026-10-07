@@ -10482,17 +10482,22 @@ impl Render for Workspace {
                             true,
                             colors,
                         )
-                        .on_click(cx.listener(|workspace, _, _, cx| {
+                        // The keys go back to the active tab, not to the gone ×.
+                        .on_click(cx.listener(|workspace, _, window, cx| {
                             workspace.notice = None;
+                            workspace.focus_active(window, cx);
                             cx.notify();
                         }))
-                        .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, _, cx| {
-                            if event.keystroke.key == "escape" {
-                                cx.stop_propagation();
-                                workspace.notice = None;
-                                cx.notify();
-                            }
-                        })),
+                        .on_key_down(cx.listener(
+                            |workspace, event: &KeyDownEvent, window, cx| {
+                                if event.keystroke.key == "escape" {
+                                    cx.stop_propagation();
+                                    workspace.notice = None;
+                                    workspace.focus_active(window, cx);
+                                    cx.notify();
+                                }
+                            },
+                        )),
                     )
             }))
             .children(

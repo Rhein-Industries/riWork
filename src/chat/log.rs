@@ -775,6 +775,7 @@ mod tests {
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+    use crate::chat::model::{ItemBody, NoticeLevel};
     use serde_json::json;
     struct Fixture {
         home: PathBuf,
@@ -820,6 +821,50 @@ mod snapshot_tests {
             let _ = fs::remove_dir_all(&self.home);
         }
     }
+    #[test]
+    fn notice_kinds_survive_the_log_the_transcript_and_the_snapshot() {
+        let mut f = Fixture::new();
+        // As a driver writes it, and as a log from before `kind` has it.
+        f.event(
+            json!({"event":"item_completed","item":{"id":"n1","status":"completed","body":{
+            "type":"notice","level":"warning","text":"close","kind":"rate_limit:seven_day",
+            "resolved":true,"resets_at":1767225600}}}),
+        );
+        f.event(
+            json!({"event":"item_completed","item":{"id":"n0","status":"completed","body":{
+            "type":"notice","level":"error","text":"old"}}}),
+        );
+        let transcript = read_transcript(&f.home, &f.id).unwrap();
+        assert_eq!(
+            transcript.items[0].body,
+            ItemBody::Notice {
+                level: NoticeLevel::Warning,
+                text: "close".into(),
+                kind: Some("rate_limit:seven_day".into()),
+                resolved: true,
+                resets_at: Some(1767225600),
+            }
+        );
+        assert_eq!(
+            transcript.items[1].body,
+            ItemBody::notice(NoticeLevel::Error, "old", None)
+        );
+        // The phone gets what `riwork chat snapshot` prints; the relay passes it on as is.
+        let snapshot = serde_json::to_value(f.read(None, u64::MAX, 10)).unwrap();
+        let bodies: Vec<_> = snapshot["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["item"]["body"].clone())
+            .collect();
+        assert!(
+            bodies.contains(&json!({"type":"notice","level":"warning","text":"close",
+            "kind":"rate_limit:seven_day","resolved":true,"resets_at":1767225600}))
+        );
+        // Nothing new is written for a notice without them.
+        assert!(bodies.contains(&json!({"type":"notice","level":"error","text":"old"})));
+    }
+
     #[test]
     fn recent_full_items_controls_and_fixed_history_survive_live_writes() {
         let mut f = Fixture::new();
