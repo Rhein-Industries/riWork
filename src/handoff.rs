@@ -436,6 +436,54 @@ pub fn run(env: &Env<'_>, request: Request, progress: &dyn Fn(&str)) -> Result<O
     })
 }
 
+// ---- A chat that goes on with another provider -------------------------------------------
+
+/// The conversation of `chat` as a handoff document, for a chat that goes on with another
+/// provider (`ChatCommand::Switch`): what `run` writes for a chat, read from its log, with no
+/// note. `chat` is the chat as it was before the switch, so the document names the agent
+/// that had the conversation.
+pub fn chat_document(home: &Path, chat: &ChatInfo) -> Result<String, String> {
+    let source = Source::Chat(chat.clone());
+    let read = sources::read_chat(home, &chat.id)?;
+    let origin = source.origin(None);
+    let (project, worktree) = names(home, &origin);
+    let header = Header {
+        from: format!("{}, from {}", source.label(), read.origin),
+        model: read.model.clone(),
+        project,
+        worktree,
+        directory: origin.cwd,
+        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        note: None,
+        caveat: read.caveat,
+    };
+    Ok(document::render(&header, &read.body, BUDGET))
+}
+
+/// What the agent of a chat that switched provider is told beside its own instructions: the
+/// conversation it takes over, whole when the document is short, else where to read it.
+/// `None` when the document is gone.
+pub fn carried_over_instructions(from: &str, document: &Path) -> Option<String> {
+    let text = fs::read_to_string(document).ok()?;
+    let lead = format!(
+        "This chat was started with another agent, {from}, and you are taking it over from it. \
+         Treat its conversation as your own history: continue from where it left off and do \
+         not redo work it already did unless asked."
+    );
+    Some(if text.len() < INLINE_LIMIT {
+        format!(
+            "{lead} The conversation so far:\n\n<handoff>\n{}\n</handoff>",
+            text.trim_end()
+        )
+    } else {
+        format!(
+            "{lead} The conversation so far is in the handoff at {}; read it before you answer \
+             anything that depends on it.",
+            document.display()
+        )
+    })
+}
+
 fn read_source(
     home: &Path,
     source: &Source,

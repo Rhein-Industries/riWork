@@ -400,6 +400,7 @@ mod tests {
             state: ChatState::Idle,
             orchestrator: None,
             fast: false,
+            carried_over: None,
         };
         let served = info.clone();
         let host = thread::spawn(move || {

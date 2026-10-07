@@ -159,6 +159,7 @@ fn info(id: &str) -> ChatInfo {
         state: ChatState::Idle,
         orchestrator: None,
         fast: false,
+        carried_over: None,
     }
 }
 

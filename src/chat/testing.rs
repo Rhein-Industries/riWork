@@ -118,8 +118,10 @@ impl Driver for FakeDriver {
             _ => return Ok(()),
         };
         self.turn += 1;
-        let turn = format!("turn-{}", self.turn);
-        let agent = format!("agent-{}", self.turn);
+        // Unique across runs, as a real provider's ids are: a resumed or switched chat
+        // folds the items of every run into one transcript.
+        let turn = format!("turn-{}-{}", self.number, self.turn);
+        let agent = format!("agent-{}-{}", self.number, self.turn);
         let fake = &self.fake;
         fake.emit(ChatEvent::State {
             state: ChatState::Running,
@@ -130,7 +132,7 @@ impl Driver for FakeDriver {
         fake.emit(ChatEvent::ItemStarted {
             item: Item {
                 presentation: Default::default(),
-                id: format!("user-{}", self.turn),
+                id: format!("user-{}-{}", self.number, self.turn),
                 turn_id: Some(turn.clone()),
                 status: ItemStatus::Completed,
                 body: ItemBody::UserMessage { text: text.clone() },
@@ -241,6 +243,7 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         codex_account_id: None,
         state: ChatState::Idle,
         orchestrator: None,
+        carried_over: None,
     }
 }
 
@@ -259,6 +262,7 @@ fn fake_config(
         fast: info.fast,
         resume,
         extra_args: Vec::new(),
+        instructions: super::launch::instructions(info),
         env: Vec::new(),
         env_remove: Vec::new(),
     })

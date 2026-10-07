@@ -213,6 +213,7 @@ fn start_with(
     events: Sender<ChatEvent>,
     tuning: Tuning,
 ) -> Result<Box<dyn Driver>, String> {
+    let config = with_instructions(config);
     let resuming = config.resume.is_some();
     let session_id = config
         .resume
@@ -790,6 +791,8 @@ impl Core {
             ChatCommand::SendAttachments { .. } => {
                 Err("attachment submission requires a writer receipt".into())
             }
+            // Another provider is another process: the host does that.
+            ChatCommand::Switch { .. } => Err("the chat host switches providers".into()),
             ChatCommand::Compact => {
                 if self.restarting {
                     self.queued.push(("/compact".into(), false));
@@ -1790,6 +1793,37 @@ impl Core {
 }
 
 // Starting, restarting and stopping processes.
+
+/// `config` with its `instructions` appended to the system prompt. The launch already passes
+/// an `--append-system-prompt` for the Cua driver and the CLI keeps only the last value of an
+/// option given twice, so the instructions join that one; without it they get their own.
+/// The system prompt is not saved with the session, so this goes with every start, resumes
+/// included.
+fn with_instructions(mut config: DriverConfig) -> DriverConfig {
+    let Some(instructions) = config
+        .instructions
+        .take()
+        .filter(|text| !text.trim().is_empty())
+    else {
+        return config;
+    };
+    let given = config
+        .extra_args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt")
+        .filter(|at| at + 1 < config.extra_args.len());
+    match given {
+        Some(at) => {
+            let prompt = &mut config.extra_args[at + 1];
+            prompt.push_str("\n\n");
+            prompt.push_str(&instructions);
+        }
+        None => config
+            .extra_args
+            .extend(["--append-system-prompt".to_owned(), instructions]),
+    }
+    config
+}
 
 /// The arguments for the next process of `core`'s session.
 fn launch_args(core: &Core) -> Vec<String> {

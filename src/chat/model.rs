@@ -113,6 +113,19 @@ pub struct ChatInfo {
     /// written before orchestrators could be chats do not have it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<OrchestratorScope>,
+    /// The conversation the chat had before it moved to its current provider (`Switch`),
+    /// which the agent is given at every start. A chat that never switched has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_over: Option<CarriedOver>,
+}
+
+/// What a chat that switched provider passes on to its new agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarriedOver {
+    /// The conversation up to the switch, as a Markdown document in the chat's folder.
+    pub document: PathBuf,
+    /// Who had it, as the document names it: `Codex chat "Fix it" (1234abcd)`.
+    pub from: String,
 }
 
 /// What a new chat starts with.
@@ -534,6 +547,19 @@ pub enum ChatCommand {
     Compact,
     /// Stop the provider process; the chat resumes with the next message.
     Stop,
+    /// Go on with another provider: the chat keeps its id, its log and its tab, and the
+    /// new agent starts on a thread of its own with the conversation so far as context.
+    /// Refused while a turn runs or waits. A host from before it refuses the command as
+    /// unreadable, so it is never taken for a `Configure`.
+    Switch {
+        provider: Provider,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fast: Option<bool>,
+    },
 }
 
 /// A chat's transcript as events build it: what a tab draws, and what the
@@ -558,6 +584,16 @@ impl Transcript {
     pub fn apply(&mut self, event: &ChatEvent) {
         match event {
             ChatEvent::Info { info } => {
+                // A chat that moved to another provider starts over with what belongs to
+                // one: the new agent lists its own models and counts its own usage.
+                if self
+                    .info
+                    .as_ref()
+                    .is_some_and(|before| before.provider != info.provider)
+                {
+                    self.models.clear();
+                    self.usage = None;
+                }
                 self.state = info.state.clone();
                 self.info = Some(info.clone());
             }
@@ -907,6 +943,88 @@ mod tests {
         let line = serde_json::to_string(&info).unwrap();
         assert!(line.contains(r#""fast":true"#), "{line}");
         assert_eq!(serde_json::from_str::<ChatInfo>(&line).unwrap(), info);
+    }
+
+    #[test]
+    fn a_switch_command_and_carried_over_info_have_their_own_shape() {
+        let switch = ChatCommand::Switch {
+            provider: Provider::Claude,
+            model: Some("opus".into()),
+            effort: None,
+            fast: None,
+        };
+        let line = serde_json::to_string(&switch).unwrap();
+        assert_eq!(
+            line,
+            r#"{"command":"switch","provider":"claude","model":"opus"}"#
+        );
+        assert_eq!(serde_json::from_str::<ChatCommand>(&line).unwrap(), switch);
+        // A switch needs a provider; it is never a configure without one.
+        assert!(
+            serde_json::from_str::<ChatCommand>(r#"{"command":"switch","model":"o"}"#).is_err()
+        );
+
+        let text = r#"{"id":"i","provider":"claude","cwd":"/w","title":"t","created_at_unix":1,
+            "carried_over":{"document":"/home/chats/i/context.md","from":"Codex chat \"t\" (i)"}}"#;
+        let info: ChatInfo = serde_json::from_str(text).unwrap();
+        assert_eq!(
+            info.carried_over,
+            Some(CarriedOver {
+                document: "/home/chats/i/context.md".into(),
+                from: "Codex chat \"t\" (i)".into(),
+            })
+        );
+        let mut plain = info.clone();
+        plain.carried_over = None;
+        assert!(
+            !serde_json::to_string(&plain)
+                .unwrap()
+                .contains("carried_over")
+        );
+    }
+
+    #[test]
+    fn info_with_another_provider_drops_the_models_and_usage_of_the_last() {
+        let info = |provider| ChatInfo {
+            id: "i".into(),
+            provider,
+            project_id: None,
+            worktree_id: None,
+            cwd: "/w".into(),
+            title: "t".into(),
+            created_at_unix: 1,
+            provider_thread_id: None,
+            model: None,
+            effort: None,
+            fast: false,
+            approval_mode: ApprovalMode::Supervised,
+            codex_account_id: None,
+            state: ChatState::Idle,
+            orchestrator: None,
+            carried_over: None,
+        };
+        let mut t = Transcript::default();
+        t.apply(&ChatEvent::Info {
+            info: info(Provider::Codex),
+        });
+        t.apply(&ChatEvent::Models {
+            models: vec![model_option()],
+        });
+        t.apply(&ChatEvent::Usage {
+            usage: Usage::default(),
+        });
+        // The same provider again (a model change, a thread learned) keeps them.
+        t.apply(&ChatEvent::Info {
+            info: info(Provider::Codex),
+        });
+        assert_eq!(t.models, [model_option()]);
+        assert!(t.usage.is_some());
+        t.apply(&ChatEvent::Info {
+            info: info(Provider::Claude),
+        });
+        assert!(t.models.is_empty());
+        assert_eq!(t.usage, None);
+        assert_eq!(t.info.unwrap().provider, Provider::Claude);
     }
 
     #[test]

@@ -2378,6 +2378,7 @@ mod tests {
                     codex_account_id: None,
                     state: ChatState::Running,
                     orchestrator: None,
+                    carried_over: None,
                 };
                 cx.update_window(handle.into(), |_, window, cx| {
                     view.update(cx, |view, cx| {

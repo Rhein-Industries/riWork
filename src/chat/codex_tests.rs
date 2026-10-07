@@ -1323,6 +1323,7 @@ fn live_codex_answers_a_trivial_prompt() {
         extra_args: Vec::new(),
         env: Vec::new(),
         env_remove: Vec::new(),
+        instructions: None,
     };
     let (sender, events) = mpsc::channel();
     let mut driver = start(config, sender).expect("codex starts");

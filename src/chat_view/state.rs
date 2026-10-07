@@ -232,6 +232,7 @@ mod tests {
             state,
             orchestrator: None,
             fast: false,
+            carried_over: None,
         }
     }
 

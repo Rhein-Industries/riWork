@@ -865,6 +865,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         state: ChatState::Waiting,
         orchestrator: None,
         fast: false,
+        carried_over: None,
     };
     let dir = log::chat_dir(&home, &id).unwrap();
     let chat_log = ChatLog::create(&dir, &info).unwrap();
@@ -1413,4 +1414,246 @@ fn ensure_starts_another_host_when_the_one_it_found_was_shutting_down() {
     assert!(fs::read_to_string(&record).unwrap().lines().count() >= 2);
     drop(helper.join().unwrap());
     let _ = fs::remove_dir_all(&home);
+}
+
+// ---- Switching provider -------------------------------------------------------------------------
+
+fn switch(provider: Provider, model: Option<&str>) -> ChatCommand {
+    ChatCommand::Switch {
+        provider,
+        model: model.map(str::to_owned),
+        effort: None,
+        fast: None,
+    }
+}
+
+fn notices(log: &[Envelope]) -> Vec<String> {
+    log.iter()
+        .filter_map(|e| match &e.event {
+            ChatEvent::ItemCompleted {
+                item:
+                    Item {
+                        body: ItemBody::Notice { text, .. },
+                        ..
+                    },
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_switch_goes_on_with_the_other_provider_in_the_same_chat_and_carries_the_conversation() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    let mut client = host.client();
+    send(&mut client, &chat.id, "remember the blue door");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+    });
+    host.fake().emit(ChatEvent::Models {
+        models: vec![ModelOption {
+            id: "gpt-5.5".into(),
+            name: "GPT-5.5".into(),
+            ..ModelOption::default()
+        }],
+    });
+    host.fake().emit(ChatEvent::Usage {
+        usage: crate::chat::model::Usage {
+            input_tokens: 10,
+            ..Default::default()
+        },
+    });
+    host.wait_for_log(&chat.id, |log| {
+        log.iter()
+            .any(|e| matches!(e.event, ChatEvent::Usage { .. }))
+    });
+
+    client
+        .command(&chat.id, switch(Provider::Claude, Some("opus")))
+        .unwrap();
+    let info = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    // The same chat, now Claude's, on a thread of its own.
+    assert_eq!(info.id, chat.id);
+    assert_eq!(info.provider, Provider::Claude);
+    assert_eq!(info.model.as_deref(), Some("opus"));
+    assert_eq!(info.provider_thread_id.as_deref(), Some("thread-2"));
+    assert_eq!(info.codex_account_id, None, "Claude has no Codex account");
+    assert_eq!(info.title, "Claude chat", "a default title follows");
+    assert_eq!(info.approval_mode, chat.approval_mode);
+    let carried = info
+        .carried_over
+        .clone()
+        .expect("the conversation is carried");
+    assert!(
+        carried.from.starts_with("Codex chat \"Codex chat\""),
+        "{}",
+        carried.from
+    );
+    assert_eq!(
+        carried.document,
+        host.home.join("chats").join(&chat.id).join("context.md")
+    );
+    assert_eq!(mode(&carried.document), 0o600);
+    let document = fs::read_to_string(&carried.document).unwrap();
+    assert!(document.contains("remember the blue door"), "{document}");
+    assert!(
+        document.contains("echo: remember the blue door"),
+        "{document}"
+    );
+
+    // The old agent was stopped and the new one started fresh, told the conversation.
+    assert_eq!(host.fake().shutdowns.load(Ordering::SeqCst), 1);
+    let starts = host.fake().starts.lock().unwrap().clone();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[1].provider, Provider::Claude);
+    assert_eq!(starts[1].resume, None);
+    assert_eq!(starts[1].model.as_deref(), Some("opus"));
+    let told = starts[1].instructions.clone().unwrap();
+    assert!(told.contains("Codex chat"), "{told}");
+    assert!(told.contains("<handoff>"), "{told}");
+    assert!(told.contains("echo: remember the blue door"), "{told}");
+    assert!(
+        starts[0].instructions.is_none(),
+        "a chat that never switched tells nothing"
+    );
+
+    // The log says so: an Info with the new provider, then a notice for every client.
+    let log = host.log(&chat.id);
+    assert_gapless(&log, 1);
+    assert_eq!(
+        notices(&log),
+        ["Continued with Claude (opus), which has the conversation so far."]
+    );
+    let mut transcript = Transcript::default();
+    for envelope in &log {
+        transcript.apply(&envelope.event);
+    }
+    assert_eq!(
+        transcript.info.as_ref().map(|info| info.provider),
+        Some(Provider::Claude)
+    );
+    assert!(transcript.models.is_empty(), "Codex's models are gone");
+    assert_eq!(transcript.usage, None, "and so is its usage");
+    assert!(transcript.items.iter().any(|item| matches!(
+        &item.body,
+        ItemBody::UserMessage { text } if text == "remember the blue door"
+    )));
+
+    // Messages go to the new agent.
+    send(&mut client, &chat.id, "which door?");
+    host.wait_for_log(&chat.id, |log| turns_completed(log) == 2);
+    assert_eq!(host.fake().start_count(), 2);
+}
+
+#[test]
+fn a_switch_is_refused_while_a_turn_runs_and_changes_nothing() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    let mut client = host.client();
+    send(&mut client, &chat.id, "hang");
+    // The turn's last event: the agent's message that never ends.
+    host.wait_for_log(&chat.id, |log| {
+        log.iter().any(|e| {
+            matches!(
+                &e.event,
+                ChatEvent::ItemStarted { item } if matches!(item.body, ItemBody::AgentMessage { .. })
+            )
+        })
+    });
+    let before = host.log(&chat.id);
+    let error = client
+        .command(&chat.id, switch(Provider::Claude, None))
+        .unwrap_err();
+    assert!(error.contains("Wait for the turn to finish"), "{error}");
+    let info = host.info(&chat.id);
+    assert_eq!(info.provider, Provider::Codex);
+    assert_eq!(info.carried_over, None);
+    assert_eq!(host.fake().start_count(), 1);
+    assert_eq!(host.fake().shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(host.log(&chat.id), before);
+    assert!(
+        !host
+            .home
+            .join("chats")
+            .join(&chat.id)
+            .join("context.md")
+            .exists()
+    );
+}
+
+#[test]
+fn a_switch_to_the_chats_own_provider_is_an_ordinary_change() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Claude);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    let mut client = host.client();
+    client
+        .command(&chat.id, switch(Provider::Claude, Some("sonnet")))
+        .unwrap();
+    let info = host.wait_for_info(&chat.id, |info| info.model.as_deref() == Some("sonnet"));
+    assert_eq!(info.provider, Provider::Claude);
+    assert_eq!(info.carried_over, None);
+    assert_eq!(host.fake().start_count(), 1, "the agent keeps running");
+    assert!(notices(&host.log(&chat.id)).is_empty());
+}
+
+#[test]
+fn a_switched_chat_resumes_on_its_new_provider_and_is_told_the_conversation_again() {
+    let mut host = TestHost::new();
+    let chat = host.create(Provider::Claude);
+    let mut client = host.client();
+    send(&mut client, &chat.id, "one");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+    });
+    client
+        .command(&chat.id, switch(Provider::Codex, None))
+        .unwrap();
+    let switched = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    assert_eq!(switched.provider, Provider::Codex);
+    assert_eq!(switched.model, None, "the provider's own default");
+    assert_eq!(
+        switched.codex_account_id.as_deref(),
+        Some("account-a"),
+        "the project's or the app's Codex account"
+    );
+    assert_eq!(
+        notices(&host.log(&chat.id)),
+        ["Continued with Codex, which has the conversation so far."]
+    );
+    send(&mut client, &chat.id, "two");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
+    });
+    drop(client);
+
+    host.restart(quick_options());
+    let info = host.info(&chat.id);
+    assert_eq!(info.state, ChatState::Stopped);
+    assert_eq!(info.provider, Provider::Codex);
+    let thread = info.provider_thread_id.clone().unwrap();
+    let mut client = host.client();
+    send(&mut client, &chat.id, "three");
+    let starts = host.fake().starts.lock().unwrap().clone();
+    let last = starts.last().unwrap();
+    assert_eq!(last.provider, Provider::Codex);
+    assert_eq!(last.resume.as_deref(), Some(thread.as_str()));
+    let told = last.instructions.clone().unwrap();
+    assert!(told.contains("Claude chat"), "{told}");
+    assert!(told.contains("echo: one"), "{told}");
+
+    // And back: the second switch carries everything, both agents' parts.
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 3 && last_state(log) == Some(ChatState::Idle)
+    });
+    client
+        .command(&chat.id, switch(Provider::Claude, None))
+        .unwrap();
+    let back = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    assert_eq!(back.provider, Provider::Claude);
+    let document = fs::read_to_string(back.carried_over.unwrap().document).unwrap();
+    for said in ["echo: one", "echo: two", "echo: three"] {
+        assert!(document.contains(said), "{said}: {document}");
+    }
 }

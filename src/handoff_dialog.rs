@@ -809,6 +809,7 @@ fn placeholder_source() -> handoff::Source {
         orchestrator: None,
         fast: false,
         state: Default::default(),
+        carried_over: None,
     })
 }
 
