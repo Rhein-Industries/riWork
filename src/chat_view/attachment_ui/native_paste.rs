@@ -256,8 +256,15 @@ mod tests {
                 b"https://fixture.invalid/animated",
             );
             put(board, "com.compuserve.gif", b"GIF89a");
-            assert!(read_board(board).unwrap_err().contains("unsupported"));
+            let error = read_board(board).unwrap_err();
+            let types: *mut AnyObject = msg_send![board, types];
+            let description: *mut AnyObject = msg_send![types, description];
             let _: () = msg_send![board, releaseGlobally];
+            assert!(
+                error.contains("unsupported"),
+                "actual refusal: {error}; advertised types: {:?}",
+                rust_string(description)
+            );
         });
     }
 }
