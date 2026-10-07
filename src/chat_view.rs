@@ -87,6 +87,10 @@ pub enum ChatViewEvent {
     Close,
     /// **Hand off…** was chosen: the window asks where the conversation goes.
     HandOff,
+    /// Open the shared new-chat chooser; the current conversation stays intact.
+    NewProviderChat {
+        provider: Provider,
+    },
     OpenFile {
         target: String,
     },
