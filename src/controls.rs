@@ -184,11 +184,12 @@ pub fn segment<E: Styled + InteractiveElement>(element: E, selected: bool, color
         .border_0()
         .bg(rgb(fill))
         .text_color(rgb(if selected { colors.text } else { colors.muted }));
-    if selected {
+    let segment = if selected {
         segment.shadow_sm()
     } else {
         segment
-    }
+    };
+    focus_ring(segment, colors)
 }
 
 /// A leading mark (a radio, a check box) beside a block of text: centered on the text's
@@ -245,8 +246,8 @@ pub const HEADER_HEIGHT: f32 = 46.0;
 pub const TITLE_TEXT: f32 = 13.0;
 pub const META_TEXT: f32 = 10.0;
 /// A header button's round hit target, and its symbol's design size.
-const TOOLBAR_BUTTON: f32 = 24.0;
-const TOOLBAR_SYMBOL: f32 = 11.0;
+pub(crate) const TOOLBAR_BUTTON: f32 = 24.0;
+pub(crate) const TOOLBAR_SYMBOL: f32 = 11.0;
 
 /// A navigation panel's page: the sidebar grey, body text in the interface face.
 pub fn panel(colors: Palette) -> Div {
@@ -354,7 +355,7 @@ pub fn toolbar_button(
 
 /// A toolbar button that is on, such as a filter in use: drawn in the text color on a
 /// quiet fill, as a toggled toolbar item is.
-pub fn toolbar_button_on(button: gpui::Stateful<Div>, colors: Palette) -> gpui::Stateful<Div> {
+pub fn toolbar_button_on<E: Styled>(button: E, colors: Palette) -> E {
     button
         .bg(rgb(colors.panel_active))
         .text_color(rgb(colors.text))

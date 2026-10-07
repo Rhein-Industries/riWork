@@ -13,14 +13,14 @@ use std::{
 use fs2::FileExt;
 use gpui::{
     AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, FontWeight, Global,
-    IntoElement, KeyDownEvent, MouseButton, Pixels, Render, Window, canvas, div, prelude::*, px,
-    rgb,
+    IntoElement, KeyDownEvent, Pixels, Render, Window, canvas, div, prelude::*, px, rgb,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::{
+    behavior_controls as behavior,
     chat::model::Provider,
     codex_accounts::{self, AccountsSnapshot},
     controls,
@@ -575,6 +575,20 @@ impl Toggle {
             Self::WindowSize => &mut settings.remember_window_size,
         };
         *value = !*value;
+    }
+    fn set(self, settings: &mut Settings, checked: bool) {
+        let value = match self {
+            Self::TerminalColors if settings.theme == ThemeChoice::Native => {
+                &mut settings.native_terminal_colors
+            }
+            Self::TerminalColors => &mut settings.use_riwork_colors,
+            Self::PanelTabIcons => &mut settings.panel_tab_icons,
+            Self::PreviewOnSelect => &mut settings.open_preview_on_select,
+            Self::AgentInline => &mut settings.agent_inline_mode,
+            Self::DictationMic => &mut settings.dictation_mic,
+            Self::WindowSize => &mut settings.remember_window_size,
+        };
+        *value = checked;
     }
 }
 
@@ -1261,7 +1275,6 @@ impl SettingsPanel {
                     .iter()
                     .map(|account| {
                         let id = account.id.clone();
-                        let focus_id = id.clone();
                         let choose_id = id.clone();
                         let active = if account.is_system_default {
                             selected.is_none()
@@ -1270,102 +1283,97 @@ impl SettingsPanel {
                         };
                         let available = account.available;
                         let focus = self.account_focus.get(&id).cloned();
-                        div()
-                            .id(format!("codex-account-{id}"))
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(ui_text::space(10.0))
-                            .px(ui_text::space(ROW_PAD_X))
-                            .py(ui_text::space(ROW_PAD_Y))
-                            .border_1()
-                            .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-                            .bg(rgb(if active {
-                                colors.panel_active
-                            } else {
-                                colors.panel
-                            }))
-                            .when_some(focus, |row, focus| row.track_focus(&focus))
-                            .focus_visible(|style| style.border_color(rgb(colors.cyan)))
-                            .map(|row| {
-                                controls::native(row, |row| controls::row(row, active, colors))
-                            })
-                            .when(available, |row| {
-                                row.hover(move |style| {
-                                    controls::hovered(
-                                        style,
-                                        controls::row_hover(active, colors),
-                                        |style| style.bg(rgb(colors.panel_active)),
-                                    )
-                                })
-                            })
-                            .child(
-                                row_text()
-                                    .gap(ui_text::space(3.0))
-                                    .child(
-                                        div()
-                                            .text_size(ui_text::text(12.0))
-                                            .text_color(rgb(colors.text))
-                                            .text_ellipsis()
-                                            .child(account.label.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(ui_text::text(10.0))
-                                            .text_color(rgb(colors.muted))
-                                            .child(
-                                                account.unavailable_reason.clone().unwrap_or_else(
-                                                    || {
-                                                        if account.is_system_default {
-                                                            format!(
-                                                                "Current Codex profile · {}",
-                                                                codex_accounts::display_home(
-                                                                    &account.home,
-                                                                ),
-                                                            )
-                                                        } else if snapshot.source_active_id.as_ref()
-                                                            == Some(&account.id)
-                                                        {
-                                                            "Current Orca account".to_owned()
-                                                        } else {
-                                                            "Saved in Orca".to_owned()
-                                                        }
-                                                    },
-                                                ),
+                        behavior::radio_content(
+                            format!("codex-account-{id}"),
+                            account.label.clone(),
+                            row_text()
+                                .gap(ui_text::space(3.0))
+                                .child(
+                                    div()
+                                        .text_size(ui_text::text(12.0))
+                                        .text_color(rgb(colors.text))
+                                        .text_ellipsis()
+                                        .child(account.label.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(ui_text::text(10.0))
+                                        .text_color(rgb(colors.muted))
+                                        .child(
+                                            account.unavailable_reason.clone().unwrap_or_else(
+                                                || {
+                                                    if account.is_system_default {
+                                                        format!(
+                                                            "Current Codex profile · {}",
+                                                            codex_accounts::display_home(
+                                                                &account.home,
+                                                            ),
+                                                        )
+                                                    } else if snapshot.source_active_id.as_ref()
+                                                        == Some(&account.id)
+                                                    {
+                                                        "Current Orca account".to_owned()
+                                                    } else {
+                                                        "Saved in Orca".to_owned()
+                                                    }
+                                                },
                                             ),
-                                    ),
-                            )
-                            .child(status_chip(
-                                if !available {
-                                    "Unavailable"
-                                } else if active {
-                                    "Selected"
-                                } else {
-                                    "Use account"
-                                },
-                                if !available {
-                                    colors.gold
-                                } else if active {
-                                    colors.cyan
-                                } else {
-                                    colors.muted
-                                },
-                                colors,
-                            ))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |view, _, window, cx| {
-                                    if let Some(focus) = view.account_focus.get(&focus_id) {
-                                        focus.focus(window, cx);
-                                    }
-                                }),
-                            )
-                            .on_click(cx.listener(move |view, _, _, cx| {
+                                        ),
+                                ),
+                            active,
+                        )
+                        .disabled(!available)
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(ui_text::space(10.0))
+                        .px(ui_text::space(ROW_PAD_X))
+                        .py(ui_text::space(ROW_PAD_Y))
+                        .border_1()
+                        .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                        .bg(rgb(if active {
+                            colors.panel_active
+                        } else {
+                            colors.panel
+                        }))
+                        .when_some(focus, |row, focus| row.track_focus(&focus))
+                        .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+                        .map(|row| controls::native(row, |row| controls::row(row, active, colors)))
+                        .when(available, |row| {
+                            row.hover(move |style| {
+                                controls::hovered(
+                                    style,
+                                    controls::row_hover(active, colors),
+                                    |style| style.bg(rgb(colors.panel_active)),
+                                )
+                            })
+                        })
+                        .child(status_chip(
+                            if !available {
+                                "Unavailable"
+                            } else if active {
+                                "Selected"
+                            } else {
+                                "Use account"
+                            },
+                            if !available {
+                                colors.gold
+                            } else if active {
+                                colors.cyan
+                            } else {
+                                colors.muted
+                            },
+                            colors,
+                        ))
+                        .on_change({
+                            let listener = cx.listener(move |view, _, _, cx| {
                                 if available {
                                     view.select_codex_account(&choose_id, cx);
                                 }
-                            }))
-                            .into_any_element()
+                            });
+                            move |_, event, window, cx| listener(event, window, cx)
+                        })
+                        .into_any_element()
                     })
                     .collect::<Vec<_>>()
             })
@@ -1387,19 +1395,17 @@ impl SettingsPanel {
                             .child("Choose the account for new Codex sessions. Running sessions keep their account. A project can override this in Project Settings."),
                     )
                     .child(
-                        div().id("refresh-codex-accounts").track_focus(&self.account_refresh_focus)
+                        behavior::button_content("refresh-codex-accounts", "Refresh accounts", ui_text::cased(if state.pending { "Checking accounts…" } else { "Refresh accounts" })).disabled(state.pending).track_focus(&self.account_refresh_focus)
                             .flex_none().px(ui_text::space(10.0)).py(ui_text::space(6.0)).self_start()
                             .border_1().border_color(rgb(colors.divider))
                             .text_size(ui_text::text(10.0)).text_color(rgb(colors.cyan))
                             .hover(move |style| controls::hovered(style, controls::Button::Secondary.hover(colors), |style| style.bg(rgb(colors.panel_active))))
                             .focus_visible(|style| style.bg(rgb(colors.panel_active)).border_color(rgb(colors.cyan)))
                             .map(|button| controls::native(button, |button| controls::button(button, controls::Button::Secondary, colors)))
-                            .child(ui_text::cased(if state.pending { "Checking accounts…" } else { "Refresh accounts" }))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|view, _, window, cx| view.account_refresh_focus.focus(window, cx)))
                             .on_click(cx.listener(|_, _, _, cx| refresh_codex_accounts(cx))),
                     ),
             )
-            .children(rows)
+            .child(gpui_kit::base::RadioGroup::new("settings-codex-accounts").aria_label("Default Codex account").axis(gpui::Axis::Vertical).flex().flex_col().gap(ui_text::space(ROW_GAP)).children(rows))
             .children(selected_missing.then(|| div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold))
                 .child("Your selected account is unavailable. Refresh accounts or choose another before starting Codex.")))
             .children(state.snapshot.as_ref().and_then(|snapshot| snapshot.error.as_ref()).map(|error| {
@@ -1420,30 +1426,19 @@ impl SettingsPanel {
             .theme_focus
             .iter()
             .position(|focus| focus.is_focused(window));
-        let account_id = self
-            .account_focus
-            .iter()
-            .find(|(_, focus)| focus.is_focused(window))
-            .map(|(id, _)| id.clone());
         match event.keystroke.key.as_str() {
             "tab" => {
-                let handles = self.focus_order(&settings);
-                let current = handles.iter().position(|focus| focus.is_focused(window));
-                let next = match current {
-                    Some(index) if event.keystroke.modifiers.shift => {
-                        (index + handles.len() - 1) % handles.len()
-                    }
-                    Some(index) => (index + 1) % handles.len(),
-                    None if event.keystroke.modifiers.shift => handles.len() - 1,
-                    None => 0,
-                };
-                handles[next].focus(window, cx);
+                if event.keystroke.modifiers.shift {
+                    window.focus_prev(cx);
+                } else {
+                    window.focus_next(cx);
+                }
             }
-            "m" if self.text_size_focus.is_focused(window) => {
+            "m" if self.text_size_focus.contains_focused(window, cx) => {
                 self.change(toggle_text_match, cx);
             }
             "up" | "left" | "down" | "right" | "-" | "=" | "+" | "0"
-                if self.text_size_focus.is_focused(window) =>
+                if self.text_size_focus.contains_focused(window, cx) =>
             {
                 let change = match event.keystroke.key.as_str() {
                     "up" | "right" | "=" | "+" => SizeChange::Bigger,
@@ -1462,77 +1457,6 @@ impl SettingsPanel {
                     (index + 1) % self.theme_focus.len()
                 };
                 self.theme_focus[next].focus(window, cx);
-            }
-            "space" | "enter" | "return" => {
-                if self.cua_focus.is_focused(window) {
-                    run_cua_action(Self::primary_cua_action(cx), cx);
-                } else if self.cua_check_focus.is_focused(window) {
-                    refresh_cua_status(cx);
-                } else if self.account_refresh_focus.is_focused(window) {
-                    refresh_codex_accounts(cx);
-                } else if let Some(account_id) = account_id {
-                    self.select_codex_account(&account_id, cx);
-                } else if let Some(index) = theme_index {
-                    let theme = ThemeChoice::ALL[index];
-                    self.change(|settings| settings.theme = theme, cx);
-                } else if matches!(settings.theme, ThemeChoice::Ghostty | ThemeChoice::Native)
-                    && self.terminal_focus.is_focused(window)
-                {
-                    self.change(|settings| Toggle::TerminalColors.flip(settings), cx);
-                } else if settings.theme == ThemeChoice::Native
-                    && self.font_focus.is_focused(window)
-                {
-                    self.change(
-                        |settings| settings.interface_font = settings.interface_font.other(),
-                        cx,
-                    );
-                } else if self.tab_icons_focus.is_focused(window) {
-                    self.change(|settings| Toggle::PanelTabIcons.flip(settings), cx);
-                } else if self.text_size_focus.is_focused(window) {
-                    self.change(toggle_text_match, cx);
-                } else if self.preview_focus.is_focused(window) {
-                    self.change(|settings| Toggle::PreviewOnSelect.flip(settings), cx);
-                } else if self.inline_focus.is_focused(window) {
-                    self.change(|settings| Toggle::AgentInline.flip(settings), cx);
-                } else if self.mic_focus.is_focused(window) {
-                    self.change(|settings| Toggle::DictationMic.flip(settings), cx);
-                } else if self.orchestrator_mode_focus.is_focused(window) {
-                    self.change(
-                        |settings| settings.orchestrator_mode = settings.orchestrator_mode.other(),
-                        cx,
-                    );
-                } else if settings.orchestrator_mode == OrchestratorMode::Chat
-                    && self.orchestrator_provider_focus.is_focused(window)
-                {
-                    self.change(
-                        |settings| {
-                            settings.orchestrator_chat_provider =
-                                other_provider(settings.orchestrator_chat_provider)
-                        },
-                        cx,
-                    );
-                } else if self.size_focus.is_focused(window) {
-                    self.change(|settings| Toggle::WindowSize.flip(settings), cx);
-                } else if self.remote_add_focus.is_focused(window) {
-                    self.remote_confirm = None;
-                    cx.emit(SettingsEvent::AddHost);
-                } else if self.remote_pair_focus.is_focused(window) {
-                    self.remote_confirm = None;
-                    cx.emit(SettingsEvent::PairMac);
-                } else if let Some(host) = self
-                    .remote_focus
-                    .iter()
-                    .find(|(_, focus)| focus.is_focused(window))
-                    .map(|(id, _)| id.clone())
-                {
-                    self.remove_host(&host, cx);
-                } else if self.orca_preview_focus.is_focused(window) {
-                    self.preview_orca(cx);
-                } else if self.orca_import_focus.is_focused(window) {
-                    self.import_orca(cx);
-                } else {
-                    return;
-                }
             }
             _ => return,
         }
@@ -1625,78 +1549,68 @@ impl SettingsPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
-        div()
-            .id(if import {
+        behavior::button_content(
+            if import {
                 "orca-import-confirm"
             } else {
                 "orca-import-preview"
-            })
-            .track_focus(if import {
-                &self.orca_import_focus
-            } else {
-                &self.orca_preview_focus
-            })
-            .px(ui_text::space(10.0))
-            .py(ui_text::space(6.0))
-            .border_1()
-            .border_color(rgb(if disabled {
-                colors.divider
-            } else if import {
-                colors.cyan
-            } else {
-                colors.divider
-            }))
-            .bg(rgb(if import {
-                colors.panel_active
-            } else {
-                colors.panel
-            }))
-            .text_size(ui_text::text(10.0))
-            .text_color(rgb(if disabled {
-                colors.muted
-            } else if import {
-                colors.cyan
-            } else {
-                colors.text
-            }))
-            .hover(move |style| {
-                controls::hovered(
-                    style,
-                    button_kind(import, disabled).hover(colors),
-                    |style| style.bg(rgb(colors.panel_active)),
-                )
-            })
-            .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .map(|button| {
-                controls::native(button, |button| {
-                    controls::button(button, button_kind(import, disabled), colors)
-                })
-            })
-            .child(ui_text::cased(label))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
-                    if !disabled {
-                        if import {
-                            &view.orca_import_focus
-                        } else {
-                            &view.orca_preview_focus
-                        }
-                        .focus(window, cx);
-                    }
-                }),
+            },
+            label,
+            ui_text::cased(label),
+        )
+        .disabled(disabled)
+        .track_focus(if import {
+            &self.orca_import_focus
+        } else {
+            &self.orca_preview_focus
+        })
+        .px(ui_text::space(10.0))
+        .py(ui_text::space(6.0))
+        .border_1()
+        .border_color(rgb(if disabled {
+            colors.divider
+        } else if import {
+            colors.cyan
+        } else {
+            colors.divider
+        }))
+        .bg(rgb(if import {
+            colors.panel_active
+        } else {
+            colors.panel
+        }))
+        .text_size(ui_text::text(10.0))
+        .text_color(rgb(if disabled {
+            colors.muted
+        } else if import {
+            colors.cyan
+        } else {
+            colors.text
+        }))
+        .hover(move |style| {
+            controls::hovered(
+                style,
+                button_kind(import, disabled).hover(colors),
+                |style| style.bg(rgb(colors.panel_active)),
             )
-            .on_click(cx.listener(move |view, _, _, cx| {
-                if disabled {
-                    return;
-                }
-                if import {
-                    view.import_orca(cx);
-                } else {
-                    view.preview_orca(cx);
-                }
-            }))
-            .into_any_element()
+        })
+        .focus_visible(|style| style.border_color(rgb(colors.magenta)))
+        .map(|button| {
+            controls::native(button, |button| {
+                controls::button(button, button_kind(import, disabled), colors)
+            })
+        })
+        .on_click(cx.listener(move |view, _, _, cx| {
+            if disabled {
+                return;
+            }
+            if import {
+                view.import_orca(cx);
+            } else {
+                view.preview_orca(cx);
+            }
+        }))
+        .into_any_element()
     }
 
     fn orca_section(&self, layout: SettingsLayout, cx: &mut Context<Self>) -> AnyElement {
@@ -1911,9 +1825,7 @@ impl SettingsPanel {
     ) -> AnyElement {
         let colors = palette(cx);
         let on_press = Rc::new(on_press);
-        let focus_on_press = focus.clone();
-        div()
-            .id(id)
+        behavior::button_content(id, label, ui_text::cased(label))
             .track_focus(focus)
             .px(ui_text::space(10.0))
             .py(ui_text::space(6.0))
@@ -1939,11 +1851,6 @@ impl SettingsPanel {
                     }
                 })
             })
-            .child(ui_text::cased(label))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |_, _, window, cx| focus_on_press.focus(window, cx)),
-            )
             .on_click(cx.listener(move |view, _, _, cx| on_press(view, cx)))
             .into_any_element()
     }
@@ -2120,76 +2027,68 @@ impl SettingsPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
-        div()
-            .id(if primary {
+        behavior::button_content(
+            if primary {
                 "cua-setup-primary"
             } else {
                 "cua-check"
-            })
-            .track_focus(if primary {
-                &self.cua_focus
-            } else {
-                &self.cua_check_focus
-            })
-            .px(ui_text::space(10.0))
-            .py(ui_text::space(6.0))
-            .border_1()
-            .border_color(rgb(if disabled {
-                colors.divider
-            } else if primary {
-                colors.cyan
-            } else {
-                colors.divider
-            }))
-            .bg(rgb(if primary {
-                colors.panel_active
-            } else {
-                colors.panel
-            }))
-            .text_size(ui_text::text(10.0))
-            .text_color(rgb(if disabled {
-                colors.muted
-            } else if primary {
-                colors.cyan
-            } else {
-                colors.text
-            }))
-            .hover(move |style| {
-                controls::hovered(
-                    style,
-                    button_kind(primary, disabled).hover(colors),
-                    |style| style.bg(rgb(colors.panel_active)),
-                )
-            })
-            .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .map(|button| {
-                controls::native(button, |button| {
-                    controls::button(button, button_kind(primary, disabled), colors)
-                })
-            })
-            .child(ui_text::cased(label))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
-                    if primary {
-                        &view.cua_focus
-                    } else {
-                        &view.cua_check_focus
-                    }
-                    .focus(window, cx);
-                }),
+            },
+            label,
+            ui_text::cased(label),
+        )
+        .disabled(disabled)
+        .track_focus(if primary {
+            &self.cua_focus
+        } else {
+            &self.cua_check_focus
+        })
+        .px(ui_text::space(10.0))
+        .py(ui_text::space(6.0))
+        .border_1()
+        .border_color(rgb(if disabled {
+            colors.divider
+        } else if primary {
+            colors.cyan
+        } else {
+            colors.divider
+        }))
+        .bg(rgb(if primary {
+            colors.panel_active
+        } else {
+            colors.panel
+        }))
+        .text_size(ui_text::text(10.0))
+        .text_color(rgb(if disabled {
+            colors.muted
+        } else if primary {
+            colors.cyan
+        } else {
+            colors.text
+        }))
+        .hover(move |style| {
+            controls::hovered(
+                style,
+                button_kind(primary, disabled).hover(colors),
+                |style| style.bg(rgb(colors.panel_active)),
             )
-            .on_click(cx.listener(move |_, _, _, cx| {
-                if !disabled {
-                    let action = if primary {
-                        Self::primary_cua_action(cx)
-                    } else {
-                        CuaAction::Check
-                    };
-                    run_cua_action(action, cx);
-                }
-            }))
-            .into_any_element()
+        })
+        .focus_visible(|style| style.border_color(rgb(colors.magenta)))
+        .map(|button| {
+            controls::native(button, |button| {
+                controls::button(button, button_kind(primary, disabled), colors)
+            })
+        })
+        .on_click(cx.listener(move |_, _, _, cx| {
+            if !disabled {
+                let action = if primary {
+                    Self::primary_cua_action(cx)
+                } else {
+                    CuaAction::Check
+                };
+                run_cua_action(action, cx);
+            }
+        }))
+        .into_any_element()
     }
 
     fn cua_section(&self, layout: SettingsLayout, cx: &mut Context<Self>) -> AnyElement {
@@ -2290,35 +2189,10 @@ impl SettingsPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
-        div()
-            .id(("theme-choice", index))
-            .track_focus(&self.theme_focus[index])
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .items_start()
-            .gap(ui_text::space(12.0))
-            .px(ui_text::space(ROW_PAD_X))
-            .py(ui_text::space(ROW_PAD_Y))
-            .bg(rgb(if selected {
-                colors.panel_active
-            } else {
-                colors.panel
-            }))
-            .border_1()
-            .border_color(rgb(if selected {
-                colors.cyan
-            } else {
-                colors.divider
-            }))
-            .hover(move |style| {
-                controls::hovered(style, controls::row_hover(selected, colors), |style| {
-                    style.bg(rgb(colors.panel_active))
-                })
-            })
-            .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-            .map(|row| controls::native(row, |row| controls::row(row, selected, colors)))
-            .child({
+        behavior::radio_content(
+            ("theme-choice", index),
+            theme.label(),
+            {
                 let mark = div()
                     .flex_none()
                     .mt(ui_text::space(4.0))
@@ -2333,58 +2207,88 @@ impl SettingsPanel {
                 } else {
                     mark.into_any_element()
                 }
+            },
+            selected,
+        )
+        .track_focus(&self.theme_focus[index])
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .items_start()
+        .gap(ui_text::space(12.0))
+        .px(ui_text::space(ROW_PAD_X))
+        .py(ui_text::space(ROW_PAD_Y))
+        .bg(rgb(if selected {
+            colors.panel_active
+        } else {
+            colors.panel
+        }))
+        .border_1()
+        .border_color(rgb(if selected {
+            colors.cyan
+        } else {
+            colors.divider
+        }))
+        .hover(move |style| {
+            controls::hovered(style, controls::row_hover(selected, colors), |style| {
+                style.bg(rgb(colors.panel_active))
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(ui_text::space(3.0))
-                    .child(
-                        // The chip shares the title's line so a grid cell keeps its width for the text.
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(ui_text::space(8.0))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(ui_text::text(12.0))
-                                    .when(ui_text::is_native(), |title| {
-                                        title.line_height(ui_text::space(THEME_TITLE_LINE))
-                                    })
-                                    .text_color(rgb(colors.text))
-                                    .child(theme.label()),
-                            )
-                            // Native's filled row and radio already say which is active.
-                            .children(
-                                (selected && !ui_text::is_native())
-                                    .then(|| status_chip("Active", colors.cyan, colors)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(ui_text::text(10.0))
-                            .text_color(rgb(colors.muted))
-                            .child(theme.description()),
-                    ),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
-                    view.theme_focus[index].focus(window, cx);
-                }),
-            )
-            .on_click(cx.listener(move |view, _, _, cx| {
+        })
+        .focus_visible(|style| style.border_color(rgb(colors.magenta)))
+        .map(|row| controls::native(row, |row| controls::row(row, selected, colors)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(ui_text::space(3.0))
+                .child(
+                    // The chip shares the title's line so a grid cell keeps its width for the text.
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(8.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(ui_text::text(12.0))
+                                .when(ui_text::is_native(), |title| {
+                                    title.line_height(ui_text::space(THEME_TITLE_LINE))
+                                })
+                                .text_color(rgb(colors.text))
+                                .child(theme.label()),
+                        )
+                        // Native's filled row and radio already say which is active.
+                        .children(
+                            (selected && !ui_text::is_native())
+                                .then(|| status_chip("Active", colors.cyan, colors)),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(colors.muted))
+                        .child(theme.description()),
+                ),
+        )
+        .on_change({
+            let listener = cx.listener(move |view, _, _, cx| {
                 view.change(|settings| settings.theme = theme, cx);
-            }))
-            .into_any_element()
+            });
+            move |_, event, window, cx| listener(event, window, cx)
+        })
+        .into_any_element()
     }
 
     /// The theme choices in rows of `columns` equal cells; a short last row keeps its cell widths.
-    fn theme_grid(&self, columns: usize, selected: ThemeChoice, cx: &mut Context<Self>) -> Div {
+    fn theme_grid(
+        &self,
+        columns: usize,
+        selected: ThemeChoice,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut cells = ThemeChoice::ALL
             .iter()
             .copied()
@@ -2405,7 +2309,11 @@ impl SettingsPanel {
             }
             grid = grid.child(row);
         }
-        grid
+        gpui_kit::base::RadioGroup::new("settings-theme-choices")
+            .aria_label("Theme")
+            .axis(gpui::Axis::Vertical)
+            .child(grid)
+            .into_any_element()
     }
 
     fn toggle_row(
@@ -2425,75 +2333,65 @@ impl SettingsPanel {
             Toggle::DictationMic => &self.mic_focus,
             Toggle::WindowSize => &self.size_focus,
         };
-        div()
-            .id(toggle.id())
-            .track_focus(focus)
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(ui_text::space(12.0))
-            .px(ui_text::space(ROW_PAD_X))
-            .py(ui_text::space(ROW_PAD_Y))
-            .bg(rgb(colors.panel))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .hover(move |style| {
-                controls::hovered(style, controls::row_hover(false, colors), |style| {
-                    style.bg(rgb(colors.panel_active))
-                })
+        behavior::switch_content(
+            toggle.id(),
+            title,
+            row_text()
+                .child(
+                    div()
+                        .text_size(ui_text::text(12.0))
+                        .text_color(rgb(colors.text))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(colors.muted))
+                        .child(description),
+                ),
+            enabled,
+        )
+        .track_focus(focus)
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(ui_text::space(12.0))
+        .px(ui_text::space(ROW_PAD_X))
+        .py(ui_text::space(ROW_PAD_Y))
+        .bg(rgb(colors.panel))
+        .border_1()
+        .border_color(rgb(colors.divider))
+        .hover(move |style| {
+            controls::hovered(style, controls::row_hover(false, colors), |style| {
+                style.bg(rgb(colors.panel_active))
             })
-            .focus_visible(|style| style.border_color(rgb(colors.cyan)))
-            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
-            .child(
-                row_text()
-                    .child(
-                        div()
-                            .text_size(ui_text::text(12.0))
-                            .text_color(rgb(colors.text))
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
-                            .text_size(ui_text::text(10.0))
-                            .text_color(rgb(colors.muted))
-                            .child(description),
-                    ),
-            )
-            .child(if ui_text::is_native() {
-                controls::switch(enabled, colors)
-            } else {
-                div()
-                    .flex_none()
-                    .w(ui_text::space(42.0))
-                    .py(ui_text::space(4.0))
-                    .border_1()
-                    .border_color(rgb(if enabled { colors.cyan } else { colors.divider }))
-                    .bg(rgb(colors.panel_active))
-                    .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
-                    .text_size(ui_text::text(10.0))
-                    .text_center()
-                    .child(if enabled { "ON" } else { "OFF" })
-                    .into_any_element()
-            })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
-                    match toggle {
-                        Toggle::TerminalColors => &view.terminal_focus,
-                        Toggle::PanelTabIcons => &view.tab_icons_focus,
-                        Toggle::PreviewOnSelect => &view.preview_focus,
-                        Toggle::AgentInline => &view.inline_focus,
-                        Toggle::DictationMic => &view.mic_focus,
-                        Toggle::WindowSize => &view.size_focus,
-                    }
-                    .focus(window, cx);
-                }),
-            )
-            .on_click(cx.listener(move |view, _, _, cx| {
-                view.change(|settings| toggle.flip(settings), cx);
-            }))
-            .into_any_element()
+        })
+        .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+        .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
+        .child(if ui_text::is_native() {
+            controls::switch(enabled, colors)
+        } else {
+            div()
+                .flex_none()
+                .w(ui_text::space(42.0))
+                .py(ui_text::space(4.0))
+                .border_1()
+                .border_color(rgb(if enabled { colors.cyan } else { colors.divider }))
+                .bg(rgb(colors.panel_active))
+                .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
+                .text_size(ui_text::text(10.0))
+                .text_center()
+                .child(if enabled { "ON" } else { "OFF" })
+                .into_any_element()
+        })
+        .on_change({
+            let listener = cx.listener(move |view, checked: &bool, _, cx| {
+                view.change(|settings| toggle.set(settings, *checked), cx);
+            });
+            move |checked, _, window, cx| listener(&checked, window, cx)
+        })
+        .into_any_element()
     }
 
     fn agents_section(&self, settings: &Settings, cx: &mut Context<Self>) -> AnyElement {
@@ -2565,8 +2463,8 @@ impl SettingsPanel {
             .into_any_element()
     }
 
-    /// A row with one choice per value, as Native's Interface font: the row takes
-    /// focus like a toggle, and Enter or Space switches to the other value.
+    /// Base radios select a value; the owner keeps the selected tab stop stable.
+    /// Arrow navigation changes selection without replacing the focus handle.
     #[allow(clippy::too_many_arguments)]
     fn choice_row<T: Copy + PartialEq + 'static>(
         &self,
@@ -2583,9 +2481,10 @@ impl SettingsPanel {
         let choice = |(value, label, choice_id): (T, &'static str, &'static str),
                       cx: &mut Context<Self>| {
             let active = value == selected;
-            let row_focus = focus.clone();
-            div()
-                .id(choice_id)
+            let selected_focus = focus.clone();
+            behavior::radio_content(choice_id, label, label, active)
+                .tab_stop(active)
+                .when(active, |radio| radio.track_focus(focus))
                 .flex_none()
                 .px(ui_text::space(8.0))
                 .py(ui_text::space(4.0))
@@ -2602,19 +2501,17 @@ impl SettingsPanel {
                 .map(|choice| {
                     controls::native(choice, |choice| controls::segment(choice, active, colors))
                 })
-                .child(label)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |_, _, window, cx| row_focus.focus(window, cx)),
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    cx.stop_propagation();
-                    view.change(|settings| apply(settings, value), cx);
-                }))
+                .on_change({
+                    let listener = cx.listener(move |view, _, window, cx| {
+                        cx.stop_propagation();
+                        view.change(|settings| apply(settings, value), cx);
+                        selected_focus.focus(window, cx);
+                    });
+                    move |_, event, window, cx| listener(event, window, cx)
+                })
         };
         div()
             .id(id)
-            .track_focus(focus)
             .flex()
             .flex_wrap()
             .items_center()
@@ -2643,12 +2540,37 @@ impl SettingsPanel {
                     ),
             )
             .child(
-                if ui_text::is_native() {
-                    controls::segments(colors)
-                } else {
-                    div().flex().flex_wrap().gap(ui_text::space(6.0))
-                }
-                .children(choices.map(|choice_value| choice(choice_value, cx))),
+                gpui_kit::base::RadioGroup::new(format!("{id}-choices"))
+                    .axis(gpui::Axis::Horizontal)
+                    .aria_label(title)
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .when(!ui_text::is_native(), |group| group.flex_wrap())
+                    .gap(ui_text::space(if ui_text::is_native() { 2.0 } else { 6.0 }))
+                    .when(ui_text::is_native(), |group| {
+                        group
+                            .p(ui_text::space(2.0))
+                            .rounded_full()
+                            .bg(rgb(colors.panel_active))
+                    })
+                    .children(choices.map(|choice_value| choice(choice_value, cx)))
+                    .on_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                        if matches!(
+                            event.keystroke.key.as_str(),
+                            "left" | "right" | "up" | "down"
+                        ) && !event.keystroke.modifiers.modified()
+                        {
+                            let next = choices
+                                .iter()
+                                .find(|(value, _, _)| *value != selected)
+                                .unwrap()
+                                .0;
+                            view.change(|settings| apply(settings, next), cx);
+                            cx.stop_propagation();
+                            window.prevent_default();
+                        }
+                    })),
             )
             .into_any_element()
     }
@@ -2696,46 +2618,50 @@ impl SettingsPanel {
             .into_any_element()
     }
 
-    /// Native's Interface font: one choice per face. The row takes focus like a
-    /// toggle, and Enter or Space switches to the other face.
+    /// Native's Interface font: Base radios with a persistent selected tab stop.
     fn font_row(&self, selected: InterfaceFont, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let choice = |font: InterfaceFont, cx: &mut Context<Self>| {
             let active = font == selected;
-            div()
-                .id(match font {
+            let selected_focus = self.font_focus.clone();
+            behavior::radio_content(
+                match font {
                     InterfaceFont::System => "interface-font-system",
                     InterfaceFont::SystemMono => "interface-font-system-mono",
+                },
+                font.label(),
+                font.label(),
+                active,
+            )
+            .tab_stop(active)
+            .when(active, |radio| radio.track_focus(&self.font_focus))
+            .flex_none()
+            .px(ui_text::space(8.0))
+            .py(ui_text::space(4.0))
+            .border_1()
+            .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+            .bg(rgb(colors.panel_active))
+            .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+            .text_size(ui_text::text(10.0))
+            .hover(move |style| {
+                controls::hovered(style, controls::segment_hover(active, colors), |style| {
+                    style.border_color(rgb(colors.cyan))
                 })
-                .flex_none()
-                .px(ui_text::space(8.0))
-                .py(ui_text::space(4.0))
-                .border_1()
-                .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-                .bg(rgb(colors.panel_active))
-                .text_color(rgb(if active { colors.cyan } else { colors.muted }))
-                .text_size(ui_text::text(10.0))
-                .hover(move |style| {
-                    controls::hovered(style, controls::segment_hover(active, colors), |style| {
-                        style.border_color(rgb(colors.cyan))
-                    })
-                })
-                .map(|choice| {
-                    controls::native(choice, |choice| controls::segment(choice, active, colors))
-                })
-                .child(font.label())
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|view, _, window, cx| view.font_focus.focus(window, cx)),
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
+            })
+            .map(|choice| {
+                controls::native(choice, |choice| controls::segment(choice, active, colors))
+            })
+            .on_change({
+                let listener = cx.listener(move |view, _, window, cx| {
                     cx.stop_propagation();
                     view.change(|settings| settings.interface_font = font, cx);
-                }))
+                    selected_focus.focus(window, cx);
+                });
+                move |_, event, window, cx| listener(event, window, cx)
+            })
         };
         div()
             .id("interface-font")
-            .track_focus(&self.font_focus)
             .flex()
             .flex_wrap()
             .items_center()
@@ -2764,12 +2690,17 @@ impl SettingsPanel {
                     ),
             )
             .child(
-                if ui_text::is_native() {
-                    controls::segments(colors)
-                } else {
-                    div().flex().flex_wrap().gap(ui_text::space(6.0))
-                }
-                .children(InterfaceFont::ALL.map(|font| choice(font, cx))),
+                gpui_kit::base::RadioGroup::new("interface-font-choices")
+                    .axis(gpui::Axis::Horizontal).aria_label("Interface font")
+                    .flex().flex_wrap().gap(ui_text::space(if ui_text::is_native() { 2.0 } else { 6.0 }))
+                    .when(ui_text::is_native(), |group| group.p(ui_text::space(2.0)).rounded_full().bg(rgb(colors.panel_active)))
+                    .children(InterfaceFont::ALL.map(|font| choice(font, cx)))
+                    .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "left" | "right" | "up" | "down") && !event.keystroke.modifiers.modified() {
+                            view.change(|settings| settings.interface_font = selected.other(), cx);
+                            cx.stop_propagation();
+                        }
+                    })),
             )
             .into_any_element()
     }
@@ -2787,7 +2718,7 @@ impl SettingsPanel {
 
     /// RiWork's text size: − / the size / + / reset, and MATCH TERMINAL to follow
     /// Ghostty's `font-size`. The row takes focus like a toggle: arrows or − and =
-    /// step, 0 resets, and M, Enter or Space switch matching. While matching, the
+    /// step, 0 resets, and M switches matching; the switch owns Enter and Space. While matching, the
     /// size is Ghostty's and dimmed, and stepping it stops matching.
     fn text_size_row(&self, settings: &Settings, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
@@ -2804,8 +2735,8 @@ impl SettingsPanel {
                 SizeChange::Reset => shown == ui_text::DEFAULT_POINTS && !matching,
             };
             let active = !matching && !limit;
-            div()
-                .id(id)
+            behavior::button_content(id, label, ui_text::cased(label))
+                .disabled(!active)
                 .flex_none()
                 .min_w(ui_text::space(26.0))
                 .px(ui_text::space(6.0))
@@ -2827,11 +2758,6 @@ impl SettingsPanel {
                             .px(ui_text::space(8.0))
                     })
                 })
-                .child(ui_text::cased(label))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
-                )
                 .on_click(cx.listener(move |view, _, _, cx| {
                     cx.stop_propagation();
                     view.change_text_size(change, cx);
@@ -2874,61 +2800,67 @@ impl SettingsPanel {
                     .whitespace_nowrap()
                     .child("outside a terminal"),
             );
-        let match_button = div()
-            .id("ui-text-match")
-            .flex_none()
-            .px(ui_text::space(6.0))
-            .py(ui_text::space(4.0))
-            .border_1()
-            .border_color(rgb(if matching {
-                colors.cyan
+        let match_button = behavior::switch_content(
+            "ui-text-match",
+            "Match terminal text size",
+            if ui_text::is_native() {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(6.0))
+                    .child("Match terminal")
+                    .child(controls::switch(matching, colors))
+                    .into_any_element()
             } else {
-                colors.divider
-            }))
-            .bg(rgb(colors.panel_active))
-            .text_color(rgb(if matching { colors.cyan } else { colors.muted }))
-            .text_size(ui_text::text(10.0))
-            .text_center()
-            .hover(move |style| {
-                if ui_text::is_native() {
-                    style.text_color(rgb(colors.text))
-                } else {
-                    style.border_color(rgb(colors.cyan))
-                }
-            })
-            .map(|button| {
-                // Native: a labelled switch, the same control as the toggle rows.
-                controls::native(button, |button| {
-                    button
-                        .flex()
-                        .items_center()
-                        .gap(ui_text::space(6.0))
-                        .border_0()
-                        .bg(gpui::transparent_black())
-                        .text_color(rgb(colors.muted))
-                })
-            })
-            .map(|button| {
-                if ui_text::is_native() {
-                    button
-                        .child("Match terminal")
-                        .child(controls::switch(matching, colors))
-                } else {
-                    button.child(if matching {
+                div()
+                    .child(if matching {
                         "MATCH TERMINAL · ON"
                     } else {
                         "MATCH TERMINAL · OFF"
                     })
-                }
+                    .into_any_element()
+            },
+            matching,
+        )
+        .flex_none()
+        .px(ui_text::space(6.0))
+        .py(ui_text::space(4.0))
+        .border_1()
+        .border_color(rgb(if matching {
+            colors.cyan
+        } else {
+            colors.divider
+        }))
+        .bg(rgb(colors.panel_active))
+        .text_color(rgb(if matching { colors.cyan } else { colors.muted }))
+        .text_size(ui_text::text(10.0))
+        .text_center()
+        .hover(move |style| {
+            if ui_text::is_native() {
+                style.text_color(rgb(colors.text))
+            } else {
+                style.border_color(rgb(colors.cyan))
+            }
+        })
+        .map(|button| {
+            // Native: a labelled switch, the same control as the toggle rows.
+            controls::native(button, |button| {
+                button
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(6.0))
+                    .border_0()
+                    .bg(gpui::transparent_black())
+                    .text_color(rgb(colors.muted))
             })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
-            )
-            .on_click(cx.listener(|view, _, _, cx| {
+        })
+        .on_change({
+            let listener = cx.listener(|view, checked: &bool, _, cx| {
                 cx.stop_propagation();
-                view.change(toggle_text_match, cx);
-            }));
+                view.change(|settings| settings.ui_text_matches_terminal = *checked, cx);
+            });
+            move |checked, _, window, cx| listener(&checked, window, cx)
+        });
         div()
             .id("ui-text-size")
             .track_focus(&self.text_size_focus)
@@ -2984,10 +2916,6 @@ impl SettingsPanel {
                         controls.child(button("ui-text-reset", "Reset", SizeChange::Reset, cx))
                     })
                     .child(match_button),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|view, _, window, cx| view.text_size_focus.focus(window, cx)),
             )
             .into_any_element()
     }

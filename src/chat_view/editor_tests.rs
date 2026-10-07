@@ -12,10 +12,50 @@ use gpui::{
 use gpui_kit::test::TestWindowExt;
 use std::sync::mpsc::Receiver;
 
-fn mount(
+pub(super) fn mount(
     cx: &mut TestAppContext,
 ) -> (
-    WindowHandle<ChatView>,
+    WindowHandle<gpui_kit::base::Root>,
+    Entity<ChatView>,
+    Receiver<feed::Delivery>,
+) {
+    mount_config(
+        cx,
+        HostConfig {
+            ensure: Arc::new(|| Err("fixture staging is disabled".into())),
+        },
+    )
+}
+
+pub(super) fn mount_selection(
+    cx: &mut TestAppContext,
+) -> (
+    WindowHandle<gpui_kit::base::Root>,
+    Entity<ChatView>,
+    Receiver<feed::Delivery>,
+) {
+    let mounted = mount_config(
+        cx,
+        HostConfig {
+            ensure: Arc::new(|| panic!("recording-only selection fixture reached host staging")),
+        },
+    );
+    // Selection-only cases start in transcript focus. Cases exercising an
+    // editor-to-transcript transfer click the actual editor and yield between
+    // native pointer input and Copy, allowing Base's deferred focus effect.
+    cx.update_window(mounted.0.into(), |_, window, cx| {
+        mounted.1.read(cx).focus.clone().focus(window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    mounted
+}
+
+pub(super) fn mount_config(
+    cx: &mut TestAppContext,
+    config: HostConfig,
+) -> (
+    WindowHandle<gpui_kit::base::Root>,
     Entity<ChatView>,
     Receiver<feed::Delivery>,
 ) {
@@ -30,6 +70,7 @@ fn mount(
         });
         text_input::init(cx);
         let (recording_feed, recording) = Feed::recording();
+        let mut chat = None;
         let handle = cx
             .open_window(
                 WindowOptions {
@@ -40,22 +81,18 @@ fn mount(
                     ..Default::default()
                 },
                 |window, cx| {
-                    cx.new(|cx| {
-                        let mut view = ChatView::blank(
-                            HostConfig {
-                                ensure: Arc::new(|| Err("fixture staging is disabled".into())),
-                            },
-                            window,
-                            cx,
-                        );
+                    let view = cx.new(|cx| {
+                        let mut view = ChatView::blank(config, window, cx);
                         view.chat_id = Some("fixture-chat".into());
                         view.feed = Some(recording_feed);
                         view
-                    })
+                    });
+                    chat = Some(view.clone());
+                    cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))
                 },
             )
             .unwrap();
-        let view = handle.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let view = chat.unwrap();
         (handle, view, recording)
     });
     cx.update_window(handle.into(), |_, window, _| window.activate_window())
@@ -604,4 +641,35 @@ fn the_drawn_composer_keeps_its_box_and_buttons_in_any_pane(cx: &mut TestAppCont
             "native {native}: {modes:?}"
         );
     }
+}
+
+#[gpui::test]
+fn the_display_pill_is_kit_toggles_as_tall_as_the_header_buttons(cx: &mut TestAppContext) {
+    // Not clicked here: choosing a mode remembers it for the chat in the settings file.
+    let (handle, view, recording) = mount(cx);
+    view.update(cx, |view, cx| {
+        view.model.link = super::state::Link::Live;
+        cx.notify();
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let normal = window.find("chat-display-normal");
+        let verbose = window.find("chat-display-verbose");
+        let picker = window.find("chat-mode");
+        for (segment, name, pressed) in [(&normal, "Normal", true), (&verbose, "Verbose", false)] {
+            assert!(segment.visible());
+            assert_eq!(segment.role(), Some(gpui::Role::Button));
+            assert_eq!(segment.label(), Some(name));
+            assert_eq!(segment.checked(), Some(pressed), "{name} pressed");
+            assert_eq!(
+                segment.bounds().size.height,
+                picker.bounds().size.height,
+                "{name} is as tall as the picker beside it"
+            );
+        }
+        // One continuous track: the segments touch.
+        assert_eq!(normal.bounds().right(), verbose.bounds().left());
+    })
+    .unwrap();
+    assert!(recording.try_recv().is_err());
 }

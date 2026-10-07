@@ -12,7 +12,7 @@ use crate::{
     text_input::{self, EnterBehavior, InputEvent, InputState, TextareaState},
 };
 use gpui::{Context, Entity, EntityInputHandler, Focusable, Subscription, Window};
-use gpui_kit::base::input::{Copy, Enter, Escape};
+use gpui_kit::base::input::{Enter, Escape};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -117,7 +117,7 @@ impl ChatView {
                 cx.notify();
             }
             InputEvent::Focus => {
-                self.selection = None;
+                gpui_kit::base::TextSelection::clear(window, cx);
                 cx.notify();
             }
             _ if text_input::is_submit(event, EnterBehavior::Submit) => {
@@ -150,9 +150,12 @@ impl ChatView {
         &mut self,
         state: &Entity<InputState>,
         event: &InputEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(event, InputEvent::Focus) {
+            gpui_kit::base::TextSelection::clear(window, cx);
+        }
         if text_input::is_submit(event, EnterBehavior::Submit)
             && self.menu == Some(super::Menu::Model)
             && self.model.transcript.models.is_empty()
@@ -168,25 +171,6 @@ impl ChatView {
     pub(super) fn capture_enter(&mut self, _: &Enter, _: &mut Window, _: &mut Context<Self>) {
         self.enter_repeated = self.enter_down;
         self.enter_down = true;
-    }
-    pub(super) fn copy_action(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
-        let composer = self.composer.read(cx);
-        let focused_editor = self
-            .model_input
-            .read(cx)
-            .focus_handle(cx)
-            .is_focused(window)
-            || self
-                .answers
-                .values()
-                .any(|e| e.state.read(cx).focus_handle(cx).is_focused(window));
-        if !focused_editor
-            && (!composer.focus_handle(cx).is_focused(window)
-                || composer.selected_range().is_empty())
-            && self.copy_selection(cx)
-        {
-            cx.stop_propagation();
-        }
     }
     pub(super) fn escape_action(
         &mut self,
@@ -365,6 +349,7 @@ impl ChatView {
         self.composer.update(cx, |state, cx| {
             state.set_value(saved.snapshot.text, window, cx)
         });
+        self.release_attachment_previews(cx);
         self.attachments = saved
             .snapshot
             .attachments
@@ -477,8 +462,10 @@ impl ChatView {
                     let state = text_input::single_line("", "or type an answer", window, cx);
                     let request_key = key.clone();
                     let subscription =
-                        cx.subscribe_in(&state, window, move |view, _, event, _, cx| {
-                            if text_input::is_submit(event, EnterBehavior::Submit)
+                        cx.subscribe_in(&state, window, move |view, _, event, window, cx| {
+                            if matches!(event, InputEvent::Focus) {
+                                gpui_kit::base::TextSelection::clear(window, cx);
+                            } else if text_input::is_submit(event, EnterBehavior::Submit)
                                 && view
                                     .pending_question()
                                     .is_some_and(|q| request_key.still_in(q))

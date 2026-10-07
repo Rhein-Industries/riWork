@@ -28,7 +28,7 @@ use gpui::{
 use gpui::{Focusable, Subscription};
 
 use crate::{
-    controls,
+    behavior_controls as behavior, controls,
     file_preview::{self, FileIdentity, PreviewContent},
     icons::{self, ActionGlyph, Icon},
     settings::Settings,
@@ -683,6 +683,63 @@ fn icon_tooltip(name: &str, detail: Option<&str>) -> String {
     }
 }
 
+fn paint_file_action<
+    E: gpui::Styled + gpui::InteractiveElement + gpui::ParentElement + gpui::prelude::FluentBuilder,
+>(
+    element: E,
+    native: bool,
+    glyph: bool,
+    enabled: bool,
+    active: bool,
+    selected: bool,
+    color: u32,
+    colors: crate::theme::Palette,
+    hint: Option<String>,
+) -> E {
+    let element = element
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .border_1()
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)));
+    let element = if native {
+        element
+            .size(ui_text::space(24.0))
+            .rounded_full()
+            .text_color(rgb(if enabled {
+                colors.muted
+            } else {
+                theme::mix(colors.muted, colors.panel, 0.45)
+            }))
+            .when(enabled, |button| {
+                button
+                    .hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
+            })
+            .when(selected, |button| {
+                button
+                    .bg(rgb(colors.panel_active))
+                    .text_color(rgb(colors.text))
+            })
+            .border_color(if active {
+                rgb(colors.focus).into()
+            } else {
+                gpui::transparent_black()
+            })
+    } else {
+        element
+            .border_color(rgb(if active { colors.focus } else { colors.divider }))
+            .text_color(rgb(color))
+            .when(glyph, |button| button.size(ui_text::space(24.0)))
+            .when(!glyph, |button| {
+                button.px(ui_text::space(7.0)).py(ui_text::space(5.0))
+            })
+    };
+    element.when_some(hint, |button, hint| {
+        button.child(tooltip::anchor(hint, Look::Control))
+    })
+}
+
 /// What Tab visits in the Files pane, in order. The preview has its own pane and its own
 /// focus, so Tab stays within the pane it was pressed in.
 const TREE_FOCUS_ORDER: [Mode; 5] = [
@@ -1055,6 +1112,7 @@ pub struct FileExplorer {
     /// Keys for the Preview pane. `focus` belongs to the Files pane, and `mode` says which
     /// control of the focused one is current.
     preview_focus: FocusHandle,
+    control_focus: Vec<(Mode, FocusHandle)>,
     generation: u64,
     next_request: u64,
     /// A link in a terminal that the tree has not finished showing.
@@ -1136,6 +1194,13 @@ impl FileExplorer {
             notice: None,
             copy_task: None,
             preview_focus: cx.focus_handle(),
+            control_focus: TREE_FOCUS_ORDER
+                .iter()
+                .chain(PREVIEW_FOCUS_ORDER.iter())
+                .copied()
+                .filter(|mode| !matches!(mode, Mode::Search | Mode::Tree | Mode::Preview))
+                .map(|mode| (mode, cx.focus_handle()))
+                .collect(),
             generation: 0,
             next_request: 0,
             pending_reveal: None,
@@ -1358,6 +1423,13 @@ impl FileExplorer {
 
     /// The focus handle of the pane that holds the control `mode` stands for.
     fn focus_of(&self, mode: Mode) -> &FocusHandle {
+        if let Some((_, focus)) = self
+            .control_focus
+            .iter()
+            .find(|(control, _)| *control == mode)
+        {
+            return focus;
+        }
         if mode.in_preview_pane() {
             &self.preview_focus
         } else {
@@ -1995,6 +2067,13 @@ impl FileExplorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some((mode, _)) = self
+            .control_focus
+            .iter()
+            .find(|(_, focus)| focus.is_focused(window))
+        {
+            self.mode = *mode;
+        }
         if self.mode == Mode::Search
             && matches!(event.keystroke.key.as_str(), "escape" | "tab" | "down")
             && crate::form_input::is_composing(&self.filter_state, window, cx)
@@ -2067,22 +2146,6 @@ impl FileExplorer {
                     self.scroll
                         .scroll_to_item(navigable[index].0, ScrollStrategy::Nearest);
                 }
-                "enter" | "space" => {
-                    if let Some((_, row)) = navigable.get(index) {
-                        // Enter renders a PDF that was only selected; once it is
-                        // showing, Enter edits it like any other file.
-                        let unopened_pdf = file_preview::is_pdf(&row.path)
-                            && self.explicit_pdf.as_ref() != Some(&row.path);
-                        if key == "enter"
-                            && row.kind == RowKind::Entry(EntryKind::File)
-                            && !unopened_pdf
-                        {
-                            self.action(Mode::Edit, cx);
-                        } else {
-                            self.activate(row, cx);
-                        }
-                    }
-                }
                 "right" => {
                     if let Some((_, row)) = navigable.get(index) {
                         if row.kind == RowKind::Entry(EntryKind::Directory) {
@@ -2130,8 +2193,6 @@ impl FileExplorer {
                     cx,
                 );
             }
-        } else if key == "enter" || key == "space" {
-            self.action(self.mode, cx);
         } else {
             return;
         }
@@ -2189,6 +2250,8 @@ impl FileExplorer {
             Mode::Copy | Mode::Reveal | Mode::Open => self.selected.is_some(),
             _ => self.root.is_some(),
         };
+        // A refusal still has an explanation action; it never copies unavailable content.
+        let enabled = available || mode == Mode::CopyContents;
         let color = if active {
             colors.focus
         } else if available {
@@ -2196,102 +2259,80 @@ impl FileExplorer {
         } else {
             colors.muted
         };
-        // Copy Contents has limits the label cannot show, so it always explains.
         let explanation = (mode == Mode::CopyContents)
             .then(|| self.copy_contents_refusal().unwrap_or(COPY_CONTENTS_HINT));
-        let click = move |view: &mut Self,
-                          _: &gpui::ClickEvent,
-                          window: &mut Window,
-                          cx: &mut Context<Self>| {
-            // The preview panel also takes clicks to focus itself; this button
-            // owns its own focus state.
+        let native = ui_text::is_native();
+        let glyph = matches!(face, Face::Glyph(..));
+        let (name, content, hint): (String, AnyElement, Option<String>) = if native {
+            let (symbol, name) = native_face(mode, &face, self.show_hidden);
+            let detail = explanation.or_else(|| tooltip_hint(mode).filter(|_| available));
+            (
+                name.into(),
+                icons::symbol(symbol, 11.0, None),
+                Some(icon_tooltip(name, detail)),
+            )
+        } else {
+            match face {
+                Face::Text(label) => (
+                    label.into(),
+                    div()
+                        .child(ui_text::cased(label.to_owned()))
+                        .into_any_element(),
+                    explanation.map(str::to_owned),
+                ),
+                Face::Glyph(symbol, name) => (
+                    name.into(),
+                    icons::icon(Icon::Action(symbol), color),
+                    Some(icon_tooltip(
+                        name,
+                        explanation.or_else(|| tooltip_hint(mode).filter(|_| available)),
+                    )),
+                ),
+            }
+        };
+        let click = cx.listener(move |view, _, window, cx| {
             cx.stop_propagation();
             view.mode = mode;
-            let focus = view.focus_of(mode).clone();
-            focus.focus(window, cx);
-            // A disabled Copy Contents says why on click, as it does on
-            // Enter, since a tooltip needs a hover.
-            if available || mode == Mode::CopyContents {
+            view.focus_of(mode).focus(window, cx);
+            if enabled {
                 view.action(mode, cx);
             }
             cx.notify();
-        };
-        // Native: every button is a bare symbol in the header, named by its tooltip; the
-        // one the keyboard is on keeps a ring, and Hidden is filled while it is on.
-        if ui_text::is_native() {
-            let (symbol, name) = native_face(mode, &face, self.show_hidden);
-            let detail = explanation.or_else(|| tooltip_hint(mode).filter(|_| available));
-            let button = controls::toolbar_button(
-                id,
-                symbol,
-                icon_tooltip(name, detail),
-                available || mode == Mode::CopyContents,
-                colors,
-            );
-            let button = if mode == Mode::Hidden && self.show_hidden {
-                controls::toolbar_button_on(button, colors)
-            } else {
-                button
-            };
-            return button
-                .border_1()
-                .border_color(if active {
-                    rgb(colors.focus).into()
-                } else {
-                    gpui::transparent_black()
-                })
-                .on_click(cx.listener(click))
-                .into_any_element();
-        }
-        let button = div()
-            .id(id)
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .border_1()
-            .border_color(rgb(if active { colors.focus } else { colors.divider }))
-            .text_color(rgb(color));
-        // Native: capsule buttons in the system face; the one in use keeps its ring.
-        let native = ui_text::is_native();
-        let button = controls::native(button, |button| {
-            let kind = if available {
-                controls::Button::Secondary
-            } else {
-                controls::Button::Disabled
-            };
-            let button = controls::button(button, kind, colors)
-                .font_family(ui_text::ui_family())
-                .hover(move |style| style.bg(rgb(kind.hover(colors))));
-            if active {
-                button.border_color(rgb(colors.focus))
-            } else {
-                button
-            }
         });
-        let button = match face {
-            Face::Text(label) => {
-                let button = button
-                    .px(ui_text::space(if native { 10.0 } else { 7.0 }))
-                    .py(ui_text::space(if native { 4.0 } else { 5.0 }))
-                    .child(ui_text::cased(label.to_owned()));
-                match explanation {
-                    Some(text) => button.child(tooltip::anchor(text, Look::Control)),
-                    None => button,
-                }
-            }
-            // Square, so the hit target stays at least 22 px; the glyph takes the text colour.
-            Face::Glyph(glyph, name) => {
-                let detail = explanation.or_else(|| tooltip_hint(mode).filter(|_| available));
-                let tooltip: SharedString = icon_tooltip(name, detail).into();
-                button
-                    .size(ui_text::space(24.0))
-                    .when(native, |button| button.px_0().w(ui_text::space(28.0)))
-                    .child(icons::icon(Icon::Action(glyph), color))
-                    .child(tooltip::anchor(tooltip, Look::Control))
-            }
-        };
-        button.on_click(cx.listener(click)).into_any_element()
+        if mode == Mode::Hidden {
+            return paint_file_action(
+                behavior::toggle_content(id, name, content, self.show_hidden)
+                    .disabled(!enabled)
+                    .track_focus(self.focus_of(mode)),
+                native,
+                glyph,
+                enabled,
+                active,
+                self.show_hidden,
+                color,
+                colors,
+                hint,
+            )
+            .on_change(move |_, event, window, cx| click(event, window, cx))
+            .map(|control| crate::form_input::control_element(id, control))
+            .into_any_element();
+        }
+        paint_file_action(
+            behavior::button_content(id, name, content)
+                .disabled(!enabled)
+                .track_focus(self.focus_of(mode)),
+            native,
+            glyph,
+            enabled,
+            active,
+            false,
+            color,
+            colors,
+            hint,
+        )
+        .on_click(click)
+        .map(|control| crate::form_input::control_element(id, control))
+        .into_any_element()
     }
 
     /// The file actions, right of the file name. They drop to their own line only
@@ -2329,7 +2370,7 @@ impl FileExplorer {
     fn row(
         &self,
         row: &TreeRow,
-        index: usize,
+        _index: usize,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2356,98 +2397,125 @@ impl FileExplorer {
             RowKind::Entry(EntryKind::Symlink) => colors.magenta,
             _ => colors.text,
         };
-        let row = div()
-            .id(("file-explorer-row", index))
-            .h(ui_text::space(27.0))
-            .w_full()
-            .pl(px(8.0 + row.depth as f32 * 14.0))
-            .pr(ui_text::space(8.0))
-            .flex()
-            .items_center()
-            .gap(ui_text::space(6.0))
-            .bg(rgb(if selected {
-                colors.panel_active
+        let row = behavior::button_content(
+            format!("file-explorer-row-{:?}", row.path.as_os_str()),
+            row.label.clone(),
+            div()
+                .w(ui_text::space(10.0))
+                .flex_none()
+                .flex()
+                .justify_center()
+                .text_color(rgb(color))
+                .child(icons::mark(icon, 8.0, colors.muted)),
+        )
+        .disabled(!matches!(row.kind, RowKind::Entry(_)))
+        .aria_selected(selected)
+        .when(selected, |row| row.track_focus(&self.focus))
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+        .h(ui_text::space(27.0))
+        .w_full()
+        .pl(px(8.0 + row.depth as f32 * 14.0))
+        .pr(ui_text::space(8.0))
+        .flex()
+        .items_center()
+        .gap(ui_text::space(6.0))
+        .bg(rgb(if selected {
+            colors.panel_active
+        } else {
+            colors.panel
+        }))
+        .border_l_1()
+        .border_color(rgb(if selected {
+            if self.mode == Mode::Tree && self.focus.is_focused(window) {
+                colors.focus
             } else {
-                colors.panel
-            }))
-            .border_l_1()
-            .border_color(rgb(if selected {
-                if self.mode == Mode::Tree && self.focus.is_focused(window) {
-                    colors.focus
-                } else {
-                    colors.cyan
-                }
-            } else {
-                colors.panel
-            }))
-            .hover(move |style| {
-                controls::hovered(style, controls::row_hover(selected, colors), |style| {
-                    style.bg(rgb(colors.panel_active))
-                })
+                colors.cyan
+            }
+        } else {
+            colors.panel
+        }))
+        .hover(move |style| {
+            controls::hovered(style, controls::row_hover(selected, colors), |style| {
+                style.bg(rgb(colors.panel_active))
             })
-            .map(|row| {
-                // Native: an inset rounded row, and the focus shown by a ring.
-                controls::native(row, |row| {
-                    controls::list_row(row, selected, colors)
-                        .h(ui_text::space(24.0))
-                        .pl(px(ui_text::space_f32(
-                            controls::PANEL_INSET - controls::LIST_MARGIN,
-                        ) + depth as f32 * 14.0))
-                        // The focused list's selection is a deeper fill, not a ring.
-                        .when(
-                            selected && self.mode == Mode::Tree && self.focus.is_focused(window),
-                            |row| {
-                                row.border_color(gpui::transparent_black())
-                                    .bg(rgb(colors.divider))
-                            },
-                        )
-                })
+        })
+        .map(|row| {
+            // Native: an inset rounded row, and the focus shown by a ring.
+            controls::native(row, |row| {
+                controls::list_row(row, selected, colors)
+                    .h(ui_text::space(24.0))
+                    .pl(px(ui_text::space_f32(
+                        controls::PANEL_INSET - controls::LIST_MARGIN,
+                    ) + depth as f32 * 14.0))
+                    // The focused list's selection is a deeper fill, not a ring.
+                    .when(
+                        selected && self.mode == Mode::Tree && self.focus.is_focused(window),
+                        |row| {
+                            row.border_color(gpui::transparent_black())
+                                .bg(rgb(colors.divider))
+                        },
+                    )
             })
-            .child(
-                div()
-                    .w(ui_text::space(10.0))
-                    .flex_none()
-                    .flex()
-                    .justify_center()
-                    .text_color(rgb(color))
-                    .child(icons::mark(icon, 8.0, colors.muted)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(rgb(color))
-                    .child(label),
-            )
-            .children((row.kind == RowKind::Entry(EntryKind::Symlink)).then(|| {
-                div()
-                    .text_size(ui_text::text(8.0))
-                    .text_color(rgb(colors.muted))
-                    .child(ui_text::cased("Link"))
-            }))
-            .on_click(cx.listener(move |view, event, window, cx| {
-                view.mode = Mode::Tree;
-                view.focus.focus(window, cx);
-                if matches!(clicked_row.kind, RowKind::Entry(_)) {
-                    view.select_row(Some(&clicked_row), Intent::Explicit, cx);
-                }
-                // Choosing a file is all `activate` would do for one, a second time.
-                if !matches!(
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .text_color(rgb(color))
+                .child(label),
+        )
+        .children((row.kind == RowKind::Entry(EntryKind::Symlink)).then(|| {
+            div()
+                .text_size(ui_text::text(8.0))
+                .text_color(rgb(colors.muted))
+                .child(ui_text::cased("Link"))
+        }))
+        .on_click(cx.listener(move |view, event, window, cx| {
+            if !view
+                .rows()
+                .iter()
+                .any(|row| row.path == clicked_row.path && row.kind == clicked_row.kind)
+            {
+                return;
+            }
+            cx.stop_propagation();
+            view.mode = Mode::Tree;
+            view.focus.focus(window, cx);
+            if matches!(clicked_row.kind, RowKind::Entry(_)) {
+                view.select_row(Some(&clicked_row), Intent::Explicit, cx);
+            }
+            // Choosing a file is all `activate` would do for one, a second time.
+            if !matches!(
+                clicked_row.kind,
+                RowKind::Entry(EntryKind::File | EntryKind::Symlink | EntryKind::Other)
+            ) {
+                view.activate(&clicked_row, cx);
+            }
+            if let gpui::ClickEvent::Keyboard(key) = event {
+                let unopened_pdf = file_preview::is_pdf(&clicked_row.path)
+                    && view.explicit_pdf.as_ref() != Some(&clicked_row.path);
+                if key.button == gpui::KeyboardButton::Enter
+                    && clicked_row.kind == RowKind::Entry(EntryKind::File)
+                    && !unopened_pdf
+                {
+                    view.action(Mode::Edit, cx);
+                } else if matches!(
                     clicked_row.kind,
                     RowKind::Entry(EntryKind::File | EntryKind::Symlink | EntryKind::Other)
                 ) {
                     view.activate(&clicked_row, cx);
                 }
-                if matches!(event, gpui::ClickEvent::Mouse(mouse) if mouse.up.click_count == 2)
-                    && clicked_row.kind == RowKind::Entry(EntryKind::File)
-                {
-                    view.action(Mode::Edit, cx);
-                }
-                cx.notify();
-            }))
-            .into_any_element();
+            }
+            if matches!(event, gpui::ClickEvent::Mouse(mouse) if mouse.up.click_count == 2)
+                && clicked_row.kind == RowKind::Entry(EntryKind::File)
+            {
+                view.action(Mode::Edit, cx);
+            }
+            cx.notify();
+        }))
+        .into_any_element();
         // Native insets the rounded row from the list's edges; a margin on a full-width
         // row would push it past the right edge, so a padded box holds it.
         if ui_text::is_native() {
@@ -2487,17 +2555,15 @@ impl FileExplorer {
                 ))
                 // While a newer selection loads, this placeholder is stale.
                 .children((self.preview_path == self.selected).then(|| {
-                    div()
-                        .id("file-preview-open-pdf")
+                    behavior::button_content("file-preview-open-pdf", "Preview PDF", "PREVIEW PDF")
                         .px(ui_text::space(7.0))
                         .py(ui_text::space(5.0))
                         .border_1()
                         .border_color(rgb(colors.divider))
                         .text_color(rgb(colors.cyan))
-                        .child("PREVIEW PDF")
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.mode = Mode::Preview;
-                            view.preview_focus.focus(window, cx);
+                            cx.stop_propagation();
                             view.open_pdf_preview(cx);
                         }))
                 }))
@@ -2649,21 +2715,26 @@ impl FileExplorer {
                             .gap(ui_text::space(10.0))
                             .text_size(ui_text::text(10.0))
                             .child(
-                                div()
-                                    .id("file-preview-previous-page")
-                                    .text_color(rgb(if can_previous {
-                                        colors.cyan
-                                    } else {
-                                        colors.muted
-                                    }))
-                                    .child(ui_text::quiet("‹ PREV"))
-                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                behavior::button_content(
+                                    "file-preview-previous-page",
+                                    "Previous page",
+                                    ui_text::quiet("‹ PREV"),
+                                )
+                                .disabled(!can_previous)
+                                .text_color(rgb(if can_previous {
+                                    colors.cyan
+                                } else {
+                                    colors.muted
+                                }))
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
                                         view.mode = Mode::Preview;
-                                        view.preview_focus.focus(window, cx);
+                                        cx.stop_propagation();
                                         if can_previous {
                                             view.pdf_page(previous, cx);
                                         }
-                                    })),
+                                    },
+                                )),
                             )
                             .child(
                                 div()
@@ -2671,21 +2742,22 @@ impl FileExplorer {
                                     .child(ui_text::quiet(format!("PAGE {page} OF {pages}"))),
                             )
                             .child(
-                                div()
-                                    .id("file-preview-next-page")
-                                    .text_color(rgb(if can_next {
-                                        colors.cyan
-                                    } else {
-                                        colors.muted
-                                    }))
-                                    .child(ui_text::quiet("NEXT ›"))
-                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                behavior::button_content(
+                                    "file-preview-next-page",
+                                    "Next page",
+                                    ui_text::quiet("NEXT ›"),
+                                )
+                                .disabled(!can_next)
+                                .text_color(rgb(if can_next { colors.cyan } else { colors.muted }))
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
                                         view.mode = Mode::Preview;
-                                        view.preview_focus.focus(window, cx);
+                                        cx.stop_propagation();
                                         if can_next {
                                             view.pdf_page(next, cx);
                                         }
-                                    })),
+                                    },
+                                )),
                             ),
                     )
                     .child(
@@ -2868,16 +2940,15 @@ impl FileExplorer {
             // While a newer selection loads, this placeholder is stale.
             .children((self.preview_path == self.selected).then(|| {
                 controls::button(
-                    div().id("file-preview-open-pdf"),
+                    behavior::button_content("file-preview-open-pdf", "Preview PDF", "Preview PDF"),
                     controls::Button::Secondary,
                     colors,
                 )
                 .py(ui_text::space(3.0))
                 .hover(move |style| style.bg(rgb(controls::Button::Secondary.hover(colors))))
-                .child("Preview PDF")
                 .on_click(cx.listener(|view, _, window, cx| {
                     view.mode = Mode::Preview;
-                    view.preview_focus.focus(window, cx);
+                    cx.stop_propagation();
                     view.open_pdf_preview(cx);
                 }))
             }))
@@ -3019,7 +3090,7 @@ impl FileExplorer {
                             .text_size(ui_text::text(controls::META_TEXT))
                             .text_color(rgb(colors.muted))
                             .child(
-                                controls::toolbar_button(
+                                crate::project_settings::kit_toolbar_button(
                                     "file-preview-previous-page",
                                     "chevron.left",
                                     "Previous page",
@@ -3030,7 +3101,7 @@ impl FileExplorer {
                                     move |view, _, window, cx| {
                                         cx.stop_propagation();
                                         view.mode = Mode::Preview;
-                                        view.preview_focus.focus(window, cx);
+                                        cx.stop_propagation();
                                         if can_previous {
                                             view.pdf_page(previous, cx);
                                         }
@@ -3039,7 +3110,7 @@ impl FileExplorer {
                             )
                             .child(format!("Page {page} of {pages}"))
                             .child(
-                                controls::toolbar_button(
+                                crate::project_settings::kit_toolbar_button(
                                     "file-preview-next-page",
                                     "chevron.right",
                                     "Next page",
@@ -3050,7 +3121,7 @@ impl FileExplorer {
                                     move |view, _, window, cx| {
                                         cx.stop_propagation();
                                         view.mode = Mode::Preview;
-                                        view.preview_focus.focus(window, cx);
+                                        cx.stop_propagation();
                                         if can_next {
                                             view.pdf_page(next, cx);
                                         }
@@ -4579,5 +4650,94 @@ mod kit_filter_tests {
             assert!(!state.read(app).focus_handle(app).is_focused(window));
         })
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod kit_control_tests {
+    use super::*;
+    use crate::form_input::{test_turn, test_window};
+    use gpui::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
+
+    #[gpui::test]
+    fn files_without_root_disable_refresh_hidden_and_reveal_keyboard_actions(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, explorer) = test_window(cx, FileExplorer::new);
+        for id in [
+            "file-explorer-refresh",
+            "file-explorer-hidden",
+            "file-explorer-reveal-root",
+        ] {
+            test_turn(cx, window, |window, app| window.click(id, app));
+            test_turn(cx, window, |window, app| window.press("enter", app));
+            test_turn(cx, window, |window, app| window.press("space", app));
+        }
+        test_turn(cx, window, |window, app| {
+            let owner = explorer.read(app);
+            assert!(owner.root.is_none() && owner.selected.is_none());
+            assert!(!owner.show_hidden);
+            assert_eq!(owner.generation, 0);
+            assert!(owner.tree.directories.is_empty());
+            assert!(owner.preview_task.is_none() && owner.copy_task.is_none());
+            assert_eq!(
+                crate::form_input::test_ax_node(window, app, "file-explorer-refresh").role(),
+                gpui::Role::Button
+            );
+            assert_eq!(
+                crate::form_input::test_ax_node(window, app, "file-explorer-hidden").toggled(),
+                Some(gpui::accesskit::Toggled::False)
+            );
+            for id in [
+                "file-explorer-refresh",
+                "file-explorer-hidden",
+                "file-explorer-reveal-root",
+            ] {
+                let node = crate::form_input::test_ax_node(window, app, id);
+                assert!(node.is_disabled());
+                assert!(!node.supports_action(gpui::accesskit::Action::Click));
+            }
+        });
+    }
+
+    struct PreviewFixture {
+        explorer: Entity<FileExplorer>,
+        preview: Entity<FilePreview>,
+    }
+    impl Render for PreviewFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.preview.clone()
+        }
+    }
+    #[gpui::test]
+    fn preview_copy_refusal_is_keyboard_accessible_without_copy_or_file_work(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, owner) = test_window(cx, |window, cx| {
+            let explorer = cx.new(|cx| FileExplorer::new(window, cx));
+            let preview = cx.new(|cx| FilePreview::new(explorer.clone(), cx));
+            PreviewFixture { explorer, preview }
+        });
+        test_turn(cx, window, |window, app| {
+            window.click("file-explorer-copy-contents", app)
+        });
+        test_turn(cx, window, |window, app| window.press("space", app));
+        test_turn(cx, window, |window, app| {
+            let explorer = owner.read(app).explorer.read(app);
+            assert!(explorer.root.is_none() && explorer.selected.is_none());
+            assert!(explorer.copy_task.is_none() && explorer.preview_task.is_none());
+            assert!(
+                explorer
+                    .notice
+                    .as_ref()
+                    .is_some_and(|notice| !notice.confirmation)
+            );
+            assert!(explorer.focus_of(Mode::CopyContents).is_focused(window));
+            assert_eq!(
+                crate::form_input::test_ax_node(window, app, "file-explorer-copy-contents").role(),
+                gpui::Role::Button
+            );
+        });
     }
 }

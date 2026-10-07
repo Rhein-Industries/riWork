@@ -4,10 +4,11 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Div, ElementId, Pixels, Point, ScrollHandle,
-    SharedString, Stateful, div, prelude::*, pulsating_between, px, rgb,
+    SharedString, div, prelude::*, pulsating_between, px, rgb,
 };
 
 use crate::{
+    behavior_controls as behavior,
     controls::{self, Button},
     icons,
     theme::{self, DiffColors, Palette},
@@ -77,7 +78,8 @@ pub(super) fn button(
     label: impl Into<SharedString>,
     accent: Option<u32>,
     look: Look,
-) -> Stateful<Div> {
+) -> behavior::Button {
+    let label = label.into();
     let colors = look.colors;
     if look.native {
         let kind = if accent == Some(colors.cyan) {
@@ -90,8 +92,9 @@ pub(super) fn button(
             .hover(move |style| style.bg(rgb(kind.hover(colors))));
     }
     let ink = accent.unwrap_or(colors.text);
-    div()
-        .id(id)
+    behavior::button_content(id, label.clone(), label)
+        .line_height(gpui::relative(1.618_034))
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex_none()
         .px(ui_text::space(8.0))
         .py(ui_text::space(CAPSULE_PAD_Y))
@@ -103,7 +106,6 @@ pub(super) fn button(
         .text_color(rgb(ink))
         .cursor_pointer()
         .hover(|style| style.bg(rgb(colors.panel_active)))
-        .child(label.into())
 }
 
 /// A button that cannot be pressed now.
@@ -111,13 +113,15 @@ pub(super) fn dimmed(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     look: Look,
-) -> Stateful<Div> {
+) -> behavior::Button {
+    let label = label.into();
     let colors = look.colors;
     if look.native {
         return capsule(id, label, Button::Disabled, look);
     }
-    div()
-        .id(id)
+    behavior::button_content(id, label.clone(), label)
+        .line_height(gpui::relative(1.618_034))
+        .disabled(true)
         .flex_none()
         .px(ui_text::space(8.0))
         .py(ui_text::space(CAPSULE_PAD_Y))
@@ -126,7 +130,6 @@ pub(super) fn dimmed(
         .rounded(px(3.0))
         .text_size(ui_text::text(10.0))
         .text_color(rgb(colors.muted))
-        .child(label.into())
 }
 
 /// The vertical padding of a `capsule` (and of the colorful themes' `button`) inside its
@@ -141,17 +144,18 @@ pub(super) fn capsule(
     label: impl Into<SharedString>,
     kind: Button,
     look: Look,
-) -> Stateful<Div> {
+) -> behavior::Button {
+    let label = label.into();
     controls::button(
-        div()
-            .id(id)
+        behavior::button_content(id, label.clone(), label)
+            .line_height(gpui::relative(1.618_034))
+            .disabled(kind == Button::Disabled)
             .flex_none()
             .flex()
             .items_center()
             .gap(ui_text::space(4.0))
             .py(ui_text::space(CAPSULE_PAD_Y))
-            .text_size(ui_text::text(10.0))
-            .child(label.into()),
+            .text_size(ui_text::text(10.0)),
         kind,
         look.colors,
     )
@@ -159,9 +163,15 @@ pub(super) fn capsule(
 
 /// A segmented control's track: one continuous pill in the toolbar's grey control fill,
 /// without an edge, that holds its `segment`s side by side with no gap. It adds nothing
-/// around them, so it is exactly as tall as a `capsule` beside it.
-pub(super) fn segments(look: Look) -> Div {
-    div()
+/// around them, so it is exactly as tall as a `capsule` beside it. It is the Kit's toggle
+/// group, which names the set for VoiceOver as `name`.
+pub(super) fn segments(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    look: Look,
+) -> behavior::Segments {
+    behavior::Segments::new(id)
+        .aria_label(name.into())
         .flex_none()
         .flex()
         .items_center()
@@ -204,65 +214,71 @@ impl SegmentColors {
 /// padded. The selected one's pill is filled in the primary color a `button` gives the
 /// primary choice; the others are bare labels in the secondary color whose pill fills
 /// under the pointer, their label then in the text color as an ordinary button's is. The
-/// whole segment, margin included, takes the click, which the caller adds.
+/// whole segment, margin included, is the Kit's toggle, pressed while `selected`: it takes
+/// the click and the keyboard, which the caller handles with `on_change`, and its margin's
+/// outer point is the focus ring, as a capsule's edge is.
 pub(super) fn segment(
     id: &'static str,
     label: impl Into<SharedString>,
     selected: bool,
     look: Look,
-) -> Stateful<Div> {
+) -> behavior::Toggle {
     let SegmentColors {
         fill,
         ink,
         hover,
         hover_ink,
     } = SegmentColors::of(selected, look.colors);
+    let colors = look.colors;
     let label: SharedString = label.into();
     let margin = px(2.0);
-    div()
-        .id(id)
+    let pill = div()
+        .relative()
+        .flex()
+        .items_center()
+        .px(ui_text::space(10.0))
+        .py(ui_text::space(CAPSULE_PAD_Y) + px(1.0) - margin)
+        .rounded_full()
+        .when_some(fill, |pill, fill| pill.bg(rgb(fill)))
+        .group_hover(id, move |style| style.bg(rgb(hover)))
+        // A text's color is fixed when it is laid out, before the pointer is known,
+        // so a label whose color changes under the pointer is drawn twice, in both
+        // colors, and the pointer only chooses which one shows.
+        .map(|pill| {
+            if hover_ink == ink {
+                return pill.child(label.clone());
+            }
+            pill.child(
+                div()
+                    .group_hover(id, |style| style.opacity(0.0))
+                    .child(label.clone()),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(rgb(hover_ink))
+                    .opacity(0.0)
+                    .group_hover(id, |style| style.opacity(1.0))
+                    .child(label.clone()),
+            )
+        });
+    behavior::toggle_content(id, label.clone(), pill, selected)
         .group(id)
+        .line_height(gpui::relative(1.618_034))
         .flex_none()
-        .p(margin)
+        .rounded_full()
+        // The margin: a hairline that shows only as the keyboard focus ring, and the rest.
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+        .p(margin - px(1.0))
         .cursor_pointer()
         .text_size(ui_text::text(10.0))
         .text_color(rgb(ink))
-        .child(
-            div()
-                .relative()
-                .flex()
-                .items_center()
-                .px(ui_text::space(10.0))
-                .py(ui_text::space(CAPSULE_PAD_Y) + px(1.0) - margin)
-                .rounded_full()
-                .when_some(fill, |pill, fill| pill.bg(rgb(fill)))
-                .group_hover(id, move |style| style.bg(rgb(hover)))
-                // A text's color is fixed when it is laid out, before the pointer is known,
-                // so a label whose color changes under the pointer is drawn twice, in both
-                // colors, and the pointer only chooses which one shows.
-                .map(|pill| {
-                    if hover_ink == ink {
-                        return pill.child(label);
-                    }
-                    pill.child(
-                        div()
-                            .group_hover(id, |style| style.opacity(0.0))
-                            .child(label.clone()),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_color(rgb(hover_ink))
-                            .opacity(0.0)
-                            .group_hover(id, |style| style.opacity(1.0))
-                            .child(label),
-                    )
-                }),
-        )
 }
 
 /// A bare SF Symbol button with its name in a tooltip, as Native's panel headers have one,
@@ -272,8 +288,62 @@ pub(super) fn symbol_button(
     symbol: &'static str,
     tooltip: impl Into<SharedString>,
     look: Look,
-) -> Stateful<Div> {
-    controls::toolbar_button(id, symbol, tooltip, true, look.colors).cursor_pointer()
+) -> behavior::Button {
+    let name = tooltip.into();
+    bare_symbol(
+        behavior::button_content(
+            id,
+            name.clone(),
+            icons::symbol(symbol, controls::TOOLBAR_SYMBOL, None),
+        ),
+        name,
+        look,
+    )
+}
+
+/// A `symbol_button` that stays pressed while `pressed`, such as the message box's mic.
+/// The caller adds `on_change`.
+pub(super) fn symbol_toggle(
+    id: impl Into<ElementId>,
+    symbol: &'static str,
+    tooltip: impl Into<SharedString>,
+    pressed: bool,
+    look: Look,
+) -> behavior::Toggle {
+    let name = tooltip.into();
+    bare_symbol(
+        behavior::toggle_content(
+            id,
+            name.clone(),
+            icons::symbol(symbol, controls::TOOLBAR_SYMBOL, None),
+            pressed,
+        ),
+        name,
+        look,
+    )
+}
+
+/// A `symbol_button`'s look: a bare symbol in a round hit area that fills under the pointer
+/// and with keyboard focus, its name in a tooltip.
+fn bare_symbol<E: Styled + InteractiveElement + ParentElement>(
+    control: E,
+    name: SharedString,
+    look: Look,
+) -> E {
+    let colors = look.colors;
+    control
+        .line_height(gpui::relative(1.618_034))
+        .flex_none()
+        .size(ui_text::space(controls::TOOLBAR_BUTTON))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .text_color(rgb(colors.muted))
+        .cursor_pointer()
+        .hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
+        .focus_visible(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.focus)))
+        .child(crate::tooltip::anchor(name, crate::tooltip::Look::Control))
 }
 
 /// Native's round button with an SF Symbol and its name in a tooltip, as a message field's
@@ -285,21 +355,19 @@ pub(super) fn round_button(
     tooltip: impl Into<SharedString>,
     kind: Button,
     look: Look,
-) -> Stateful<Div> {
+) -> behavior::Button {
     let colors = look.colors;
+    let name = tooltip.into();
     controls::button(
-        div()
-            .id(id)
+        behavior::button_content(id, name.clone(), icons::symbol(symbol, 11.0, None))
+            .line_height(gpui::relative(1.618_034))
+            .disabled(kind == Button::Disabled)
             .flex_none()
             .size(ui_text::space(ROUND_BUTTON))
             .flex()
             .items_center()
             .justify_center()
-            .child(icons::symbol(symbol, 11.0, None))
-            .child(crate::tooltip::anchor(
-                tooltip.into(),
-                crate::tooltip::Look::Control,
-            )),
+            .child(crate::tooltip::anchor(name, crate::tooltip::Look::Control)),
         kind,
         colors,
     )
@@ -355,7 +423,7 @@ pub(super) fn copy_button(
     word: &'static str,
     tooltip: &'static str,
     look: Look,
-) -> Stateful<Div> {
+) -> behavior::Button {
     if look.native {
         let (symbol, tooltip) = if copied {
             ("checkmark", "Copied")
@@ -364,7 +432,115 @@ pub(super) fn copy_button(
         };
         return symbol_button(id, symbol, tooltip, look);
     }
-    button(id, if copied { "copied" } else { word }, None, look)
+    button(id, if copied { "copied" } else { word }, None, look).accessibility_label(if copied {
+        "Copied"
+    } else {
+        tooltip
+    })
+}
+
+/// Controlled Base toggle with the chat's existing button treatment.
+pub(super) fn toggle_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    accent: Option<u32>,
+    pressed: bool,
+    look: Look,
+) -> behavior::Toggle {
+    toggle_button_with_disabled(id, label, accent, pressed, false, look)
+}
+
+pub(super) fn toggle_button_with_disabled(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    accent: Option<u32>,
+    pressed: bool,
+    disabled: bool,
+    look: Look,
+) -> behavior::Toggle {
+    let label = label.into();
+    let colors = look.colors;
+    let toggle = behavior::toggle_content(id, label.clone(), label, pressed)
+        .disabled(disabled)
+        .line_height(gpui::relative(1.618_034))
+        .flex_none()
+        .text_size(ui_text::text(10.));
+    if look.native {
+        let kind = if accent == Some(colors.cyan) {
+            Button::Primary
+        } else {
+            Button::Secondary
+        };
+        controls::button(
+            toggle
+                .flex()
+                .items_center()
+                .gap(ui_text::space(4.))
+                .py(ui_text::space(CAPSULE_PAD_Y)),
+            kind,
+            colors,
+        )
+        .when(!disabled, |toggle| {
+            toggle
+                .cursor_pointer()
+                .hover(move |style| style.bg(rgb(kind.hover(colors))))
+        })
+    } else {
+        toggle
+            .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+            .px(ui_text::space(8.))
+            .py(ui_text::space(CAPSULE_PAD_Y))
+            .border_1()
+            .border_color(rgb(accent.unwrap_or(colors.divider)))
+            .rounded(px(3.))
+            .bg(rgb(colors.panel))
+            .text_color(rgb(accent.unwrap_or(colors.text)))
+            .when(!disabled, |toggle| {
+                toggle
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(colors.panel_active)))
+            })
+    }
+}
+
+pub(super) fn toggle_capsule(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    pressed: bool,
+    look: Look,
+) -> behavior::Toggle {
+    let label = label.into();
+    let colors = look.colors;
+    controls::button(
+        behavior::toggle_content(id, label.clone(), label, pressed)
+            .line_height(gpui::relative(1.618_034))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(ui_text::space(4.))
+            .py(ui_text::space(CAPSULE_PAD_Y))
+            .text_size(ui_text::text(10.)),
+        Button::Secondary,
+        colors,
+    )
+}
+
+/// Composite content retains its exact layout; the shared Base primitive is
+/// the sole activation/focus/AX owner and adds no visible label or glyph.
+pub(super) fn content_button(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    content: impl IntoElement,
+    look: Look,
+) -> behavior::Button {
+    let colors = look.colors;
+    behavior::button_content(id, name, content)
+        .w_full()
+        .gap_0()
+        .p_0()
+        .items_stretch()
+        .line_height(gpui::relative(1.618_034))
+        .focus_visible(move |style| style.bg(rgb(colors.divider)))
 }
 
 /// A status badge; one that stands for something still going on pulses. Native draws it as

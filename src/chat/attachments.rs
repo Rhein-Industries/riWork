@@ -117,27 +117,49 @@ fn decoded(bytes: &[u8]) -> Result<image::DynamicImage, String> {
         .decode()
         .map_err(|e| format!("invalid or oversized image: {e}"))
 }
+fn static_image_mime(bytes: &[u8]) -> Result<&'static str, String> {
+    if bytes.len() as u64 > FILE_BYTES {
+        return Err("image exceeds 4 MiB".into());
+    }
+    let format = image::guess_format(bytes).map_err(|e| format!("invalid image: {e}"))?;
+    let mime = match format {
+        ImageFormat::Png => "image/png",
+        ImageFormat::Jpeg => "image/jpeg",
+        _ => return Err("unsupported image format; use static PNG or JPEG".into()),
+    };
+    // APNG animation would otherwise silently lose frames.
+    if format == ImageFormat::Png
+        && image::codecs::png::PngDecoder::new(Cursor::new(bytes))
+            .map_err(|e| e.to_string())?
+            .is_apng()
+            .map_err(|e| e.to_string())?
+    {
+        return Err("animated PNG is unsupported; use a static image".into());
+    }
+    Ok(mime)
+}
+
+/// Pure bounded PNG thumbnail for clipboard previews and owned host previews.
+/// Call off the UI thread. Uses the same static-format, APNG, size, dimension,
+/// pixel and allocation admission as staged images; grants no staging authority.
+pub fn image_thumbnail(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    static_image_mime(bytes)?;
+    let mut thumbnail = Vec::new();
+    decoded(bytes)?
+        .thumbnail(256, 256)
+        .write_to(&mut Cursor::new(&mut thumbnail), ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(thumbnail)
+}
+
 fn classify(name: &str, bytes: &[u8]) -> Result<AttachmentKind, String> {
     let ext = Path::new(name)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if let Ok(format) = image::guess_format(bytes) {
-        let mime = match format {
-            ImageFormat::Png => "image/png",
-            ImageFormat::Jpeg => "image/jpeg",
-            _ => return Err("unsupported image format; use static PNG or JPEG".into()),
-        };
-        // APNG animation would otherwise silently lose frames.
-        if format == ImageFormat::Png
-            && image::codecs::png::PngDecoder::new(Cursor::new(bytes))
-                .map_err(|e| e.to_string())?
-                .is_apng()
-                .map_err(|e| e.to_string())?
-        {
-            return Err("animated PNG is unsupported; use a static image".into());
-        }
+    if image::guess_format(bytes).is_ok() {
+        let mime = static_image_mime(bytes)?;
         decoded(bytes)?;
         return Ok(AttachmentKind::Image { mime: mime.into() });
     }
@@ -241,10 +263,7 @@ pub fn stage(chat_dir: &Path, source: &Path) -> Result<Attachment, String> {
                 excerpt: text(&bytes)?.chars().take(TEXT_PREVIEW_CHARS).collect(),
             },
             AttachmentKind::Image { .. } => {
-                decoded(&bytes)?
-                    .thumbnail(256, 256)
-                    .write_to(&mut Cursor::new(&mut thumbnail), ImageFormat::Png)
-                    .map_err(|e| e.to_string())?;
+                thumbnail = image_thumbnail(&bytes)?;
                 Preview::Image {
                     path: dir.join("preview.png"),
                 }

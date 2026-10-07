@@ -10,13 +10,14 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, Bounds, Context, Div, Entity, FontWeight, IntoElement, MouseButton, Pixels, Render,
-    Stateful, Window, canvas, div, prelude::*, px, rgb,
+    AnyElement, Bounds, Context, Div, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
+    MouseButton, Pixels, Render, Stateful, Window, canvas, div, prelude::*, px, rgb,
 };
+use gpui_kit::TestSupportExt;
 
 use crate::{
     activity::{ActivityCounts, AgentActivity, AgentState, ChatActivity},
-    controls,
+    behavior_controls as behavior, controls,
     icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
@@ -56,6 +57,8 @@ pub enum PanelAction {
     /// Empty the search field, from its clear button.
     ClearSearch,
     ToggleProjectSortMenu,
+    /// Controlled request from the visible popup owner; never invert a shared boolean.
+    SetProjectSortMenuOpen(bool),
     CloseProjectSortMenu,
     SetProjectOrder(ProjectOrder),
     Remote(RemoteAction),
@@ -181,11 +184,31 @@ pub struct PanelData<'a> {
     pub project_order: ProjectOrder,
     pub project_last_edits: &'a BTreeMap<String, u64>,
     pub project_sort_menu_open: bool,
+    /// Workspace retains one owner per visible Projects surface and removes stale owners.
+    pub project_sort_ui: Option<&'a ProjectSortUi>,
     /// The hosts' folders, already filtered by the search. Only the Projects panel draws them.
     pub remote_folders: &'a [FolderView],
     /// The selected project when it is on another Mac. The Worktrees, Tasks and Shells panels
     /// then draw its lists instead of the local project's.
     pub selected_remote: Option<&'a SelectedView>,
+}
+
+/// Persistent Base popover state for one visible Projects surface. Creation belongs
+/// to Workspace's surface lifecycle, not render. Closing a peer never steals focus.
+pub struct ProjectSortUi {
+    pub state: Entity<gpui_kit::base::PopoverState>,
+    pub trigger_focus: FocusHandle,
+}
+impl ProjectSortUi {
+    pub fn new(cx: &mut gpui::App) -> Self {
+        Self {
+            state: cx.new(|cx| gpui_kit::base::PopoverState::new(false, cx)),
+            trigger_focus: cx.focus_handle(),
+        }
+    }
+    pub fn dismiss(&self, window: &mut Window, cx: &mut gpui::App) {
+        self.state.update(cx, |state, cx| state.dismiss(window, cx));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -521,9 +544,14 @@ pub fn render_panel<V: Render + 'static>(
     kind: PanelKind,
     data: PanelData<'_>,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
-    window: &Window,
+    window: &mut Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
+    if !data.project_sort_menu_open
+        && let Some(ui) = data.project_sort_ui
+    {
+        ui.dismiss(window, cx);
+    }
     let colors = theme::palette(cx);
     let query = data.query.trim().to_lowercase();
     let matches = |values: &[&str]| {
@@ -619,41 +647,52 @@ pub fn render_panel<V: Render + 'static>(
                             ActivityCounts::for_project(&project.id, data.shells, data.activity)
                                 .with_chats_in_project(&project.id, data.chats);
                         let selected = data.project_id == project.id;
-                        let controls = div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(ui_text::space(4.0))
-                            // Native shows a row's buttons only while it is pointed at or chosen.
-                            .when(ui_text::is_native() && !selected, |controls| {
-                                controls
-                                    .invisible()
-                                    .group_hover(PROJECT_ROW_GROUP, |style| style.visible())
-                            })
-                            .child(project_notification_control(
-                                &project.id,
-                                project.notify_on_agent_done,
-                                on_action.clone(),
+                        // Keyed by the visible surface and immutable project identity.
+                        // Base receives the same persistent handle; refreshing/reordering never focuses it.
+                        let scope = data
+                            .project_sort_ui
+                            .expect("Projects surface requires persistent sort UI")
+                            .state
+                            .entity_id();
+                        let row_focus = window
+                            .use_keyed_state(
+                                format!("project-row-focus-{scope}-{}", project.id),
                                 cx,
-                            ))
-                            .child(project_control(
-                                &project.id,
-                                "settings",
-                                "⚙",
-                                "Project settings",
-                                PanelAction::ProjectSettings(project.id.clone()),
-                                on_action.clone(),
-                                cx,
-                            ))
-                            .child(project_control(
-                                &project.id,
-                                "open",
-                                "↗",
-                                "Open project in another window",
-                                PanelAction::OpenProject(project.id.clone()),
-                                on_action.clone(),
-                                cx,
-                            ));
+                                |_, cx| cx.focus_handle(),
+                            )
+                            .read(cx)
+                            .clone();
+                        let controls = project_action_strip(
+                            ui_text::is_native(),
+                            selected,
+                            &row_focus,
+                            window,
+                            cx,
+                        )
+                        .child(project_notification_control(
+                            &project.id,
+                            project.notify_on_agent_done,
+                            on_action.clone(),
+                            cx,
+                        ))
+                        .child(project_control(
+                            &project.id,
+                            "settings",
+                            "⚙",
+                            "Project settings",
+                            PanelAction::ProjectSettings(project.id.clone()),
+                            on_action.clone(),
+                            cx,
+                        ))
+                        .child(project_control(
+                            &project.id,
+                            "open",
+                            "↗",
+                            "Open project in another window",
+                            PanelAction::OpenProject(project.id.clone()),
+                            on_action.clone(),
+                            cx,
+                        ));
                         let title = div()
                             .flex()
                             .items_center()
@@ -666,6 +705,7 @@ pub fn render_panel<V: Render + 'static>(
                             .child(controls);
                         rows.push(project_row(
                             &project.id,
+                            &project.name,
                             Some(DraggedProjectItem {
                                 kind: ProjectDragKind::Project(project.id.clone()),
                                 label: project.name.clone(),
@@ -675,6 +715,7 @@ pub fn render_panel<V: Render + 'static>(
                                 selected,
                                 depth,
                                 dimmed: false,
+                                focus: Some(row_focus),
                             },
                             vec![
                                 title.into_any_element(),
@@ -780,6 +821,7 @@ pub fn render_panel<V: Render + 'static>(
                     );
                     rows.push(row(
                         format!("worktree-{}", worktree.id),
+                        worktree.branch.clone(),
                         selected,
                         colors.magenta,
                         lines,
@@ -791,6 +833,7 @@ pub fn render_panel<V: Render + 'static>(
                 }
                 rows.push(row(
                     format!("worktree-{}", worktree.id),
+                    worktree.branch.clone(),
                     selected,
                     colors.magenta,
                     vec![
@@ -851,6 +894,7 @@ pub fn render_panel<V: Render + 'static>(
                 let (mark, color) = task_mark(task.status, colors);
                 rows.push(row(
                     format!("task-{}", task.id),
+                    task.title.clone(),
                     data.selected_task_id == Some(task.id.as_str()),
                     color,
                     vec![
@@ -920,6 +964,7 @@ pub fn render_panel<V: Render + 'static>(
                     );
                     rows.push(row(
                         format!("shell-{}", shell.id),
+                        format!("{} · {}", label, short_id(&shell.id)),
                         false,
                         colors.cyan,
                         lines,
@@ -931,6 +976,7 @@ pub fn render_panel<V: Render + 'static>(
                 }
                 rows.push(row(
                     format!("shell-{}", shell.id),
+                    format!("{} · {}", label, short_id(&shell.id)),
                     false,
                     colors.cyan,
                     vec![
@@ -1029,8 +1075,6 @@ pub fn render_panel<V: Render + 'static>(
         return panel;
     }
 
-    let search_action = on_action.clone();
-    let clear_action = on_action.clone();
     let as_icons = icons::labels_as_icons(cx);
     let sort_selector_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
     let panel =
@@ -1045,9 +1089,10 @@ pub fn render_panel<V: Render + 'static>(
             .text_size(ui_text::text(11.0))
             .child(
                 div()
-                    .h(ui_text::space(30.0))
+                    .min_h(ui_text::space(30.0))
                     .flex_none()
                     .flex()
+                    .flex_wrap()
                     .border_b_1()
                     .border_color(rgb(if data.search_focused {
                         colors.cyan
@@ -1058,45 +1103,15 @@ pub fn render_panel<V: Render + 'static>(
                     .when(ui_text::is_native(), |strip| strip.border_b_0())
                     .overflow_hidden()
                     .child(div().flex_none().w(px((data.control_inset - 8.0).max(0.0))))
-                    .child(
-                        div()
-                            .id(format!("{name}-search"))
-                            .relative()
-                            .cursor_text()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .px(ui_text::space(8.0))
-                            .flex()
-                            .items_center()
-                            .text_color(rgb(if data.search_focused {
-                                colors.text
-                            } else {
-                                colors.muted
-                            }))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .gap(ui_text::space(5.0))
-                            .children(data.search_input.map(|input| {
-                                crate::form_input::search_frame(
-                                    format!("{name}-search-input"),
-                                    input,
-                                    window,
-                                    cx,
-                                )
-                            }))
-                            .children((!data.query.is_empty()).then(|| {
-                                search_clear_button(name, colors).on_click(cx.listener(
-                                    move |view, _, window, cx| {
-                                        cx.stop_propagation();
-                                        clear_action(view, PanelAction::ClearSearch, window, cx);
-                                    },
-                                ))
-                            }))
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                search_action(view, PanelAction::Search, window, cx);
-                            })),
-                    )
+                    .child(panel_search(
+                        kind,
+                        data.search_input,
+                        data.query,
+                        false,
+                        on_action.clone(),
+                        window,
+                        cx,
+                    ))
                     .children((kind == PanelKind::Projects).then(|| {
                         project_header_button(
                             "new-project-folder",
@@ -1150,7 +1165,8 @@ pub fn render_panel<V: Render + 'static>(
                     .children((kind == PanelKind::Projects).then(|| {
                         project_sort_controls(
                             data.project_order,
-                            data.project_sort_menu_open,
+                            data.project_sort_ui
+                                .expect("Projects surface requires persistent sort UI"),
                             sort_selector_bounds.clone(),
                             on_action.clone(),
                             cx,
@@ -1176,8 +1192,8 @@ fn finish_panel<V: 'static>(
     mut panel: Div,
     kind: PanelKind,
     data: &PanelData<'_>,
-    sort_selector_bounds: Rc<Cell<Bounds<Pixels>>>,
-    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    _sort_selector_bounds: Rc<Cell<Bounds<Pixels>>>,
+    _on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
@@ -1212,17 +1228,83 @@ fn finish_panel<V: 'static>(
             ));
         }
     }
-    panel
-        .children(
-            (kind == PanelKind::Projects && data.project_sort_menu_open).then(|| {
-                project_sort_menu(
-                    data.project_order,
-                    sort_selector_bounds,
-                    on_action.clone(),
-                    cx,
-                )
-            }),
+    panel.into_any_element()
+}
+
+/// The chrome owns layout, while the retained Base child owns all editing.
+/// Pointer focus targets this surface's state instead of the active-pane search.
+/// Once something is typed, the field ends in its clear button, which empties every
+/// search and keeps this field's editor focused.
+#[allow(clippy::too_many_arguments)]
+fn panel_search<V: 'static>(
+    kind: PanelKind,
+    input: Option<&Entity<crate::text_input::InputState>>,
+    query: &str,
+    native: bool,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + 'static,
+    window: &Window,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    let name = kind.name();
+    let focused = input.is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window));
+    let search = div()
+        .id(format!("{name}-search"))
+        .relative()
+        .cursor_text()
+        .flex()
+        .items_center()
+        .min_w_0();
+    let search = if native {
+        controls::search_field(search, focused, colors)
+    } else {
+        search
+            .flex_1()
+            .min_w(ui_text::space(128.0))
+            .h(ui_text::space(30.0))
+            .px(ui_text::space(8.0))
+            .gap(ui_text::space(5.0))
+            .text_color(rgb(if focused { colors.text } else { colors.muted }))
+    };
+    search
+        .child(
+            div()
+                .id(format!("{name}-search-icon"))
+                .flex_none()
+                .w(ui_text::space(12.0))
+                .h(ui_text::space(12.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icons::mark("⌕", 10.0, colors.muted))
+                .test_support(),
         )
+        .children(input.map(|input| {
+            crate::form_input::search_frame(format!("{name}-search-input"), input, window, cx)
+                .accessibility_label(format!("Search {name}"))
+        }))
+        .children((!query.is_empty()).then(|| {
+            let input = input.cloned();
+            search_clear_button(name, colors).on_click(cx.listener(move |view, _, window, cx| {
+                cx.stop_propagation();
+                on_action(view, PanelAction::ClearSearch, window, cx);
+                if let Some(input) = &input {
+                    input.read(cx).focus_handle(cx).focus(window, cx);
+                }
+            }))
+        }))
+        .when_some(input.cloned(), |search, input| {
+            search.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                let state = input.read(cx);
+                if !state.presentation().is_disabled() {
+                    state.focus_handle(cx).focus(window, cx);
+                    // The text child already hit-tests the caret. Only forward
+                    // icon/chrome focus and protect it from ancestor defaults.
+                    window.prevent_default();
+                }
+            })
+        })
+        .test_support()
         .into_any_element()
 }
 
@@ -1235,26 +1317,29 @@ struct NativeChrome {
 }
 
 /// The clear button inside a search field: a muted filled cross, brought to the text color
-/// under the pointer. The caller adds the click.
-fn search_clear_button(name: &str, colors: theme::Palette) -> gpui::Stateful<Div> {
-    div()
-        .id(format!("{name}-search-clear"))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .text_color(rgb(colors.muted))
-        .hover(move |style| style.text_color(rgb(colors.text)))
-        .child(if ui_text::is_native() {
+/// under the pointer or with keyboard focus. The caller adds the click.
+fn search_clear_button(name: &str, colors: theme::Palette) -> crate::behavior_controls::Button {
+    crate::behavior_controls::button_content(
+        format!("{name}-search-clear"),
+        "Clear the search",
+        if ui_text::is_native() {
             icons::symbol("xmark.circle.fill", 10.0, None)
         } else {
             div().child("×").into_any_element()
-        })
-        .child(crate::tooltip::anchor(
-            "Clear the search",
-            crate::tooltip::Look::Control,
-        ))
+        },
+    )
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .cursor_pointer()
+    .text_color(rgb(colors.muted))
+    .hover(move |style| style.text_color(rgb(colors.text)))
+    .focus_visible(move |style| style.text_color(rgb(colors.focus)))
+    .child(crate::tooltip::anchor(
+        "Clear the search",
+        crate::tooltip::Look::Control,
+    ))
 }
 
 /// A list panel under Native: the shared header (its name, a count and, for Projects, the
@@ -1295,7 +1380,8 @@ fn native_panel<V: Render + 'static>(
     if kind == PanelKind::Projects {
         actions.push(project_sort_button(
             data.project_order,
-            data.project_sort_menu_open,
+            data.project_sort_ui
+                .expect("Projects surface requires persistent sort UI"),
             sort_selector_bounds.clone(),
             on_action.clone(),
             cx,
@@ -1334,29 +1420,17 @@ fn native_panel<V: Render + 'static>(
         }
     }
     let name = kind.name();
-    let search_action = on_action.clone();
-    let clear_action = on_action.clone();
     // One field: the magnifier, the text and, once something is typed, its clear button, all
     // on the field's own fill. The text box inside draws no box of its own.
-    let search = controls::search_field(
-        div().id(format!("{name}-search")).relative(),
-        data.search_focused,
-        colors,
-    )
-    .cursor_text()
-    .child(icons::mark("⌕", 10.0, colors.muted))
-    .children(data.search_input.map(|input| {
-        crate::form_input::search_frame(format!("{name}-search-input"), input, window, cx)
-    }))
-    .children((!data.query.is_empty()).then(|| {
-        search_clear_button(name, colors).on_click(cx.listener(move |view, _, window, cx| {
-            cx.stop_propagation();
-            clear_action(view, PanelAction::ClearSearch, window, cx);
-        }))
-    }))
-    .on_click(cx.listener(move |view, _, window, cx| {
-        search_action(view, PanelAction::Search, window, cx);
-    }));
+    let search = panel_search(
+        kind,
+        data.search_input,
+        data.query,
+        true,
+        on_action.clone(),
+        window,
+        cx,
+    );
     let panel = controls::panel(colors)
         .relative()
         .child(controls::panel_header(
@@ -1386,13 +1460,17 @@ fn native_panel<V: Render + 'static>(
 /// its direction, as Finder's View menu does.
 fn project_sort_button<V: 'static>(
     order: ProjectOrder,
-    open: bool,
+    ui: &ProjectSortUi,
     selector_bounds: Rc<Cell<Bounds<Pixels>>>,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    let button = controls::toolbar_button(
+    let popup_bounds = selector_bounds.clone();
+    let popup_action = on_action.clone();
+    let state = ui.state.clone();
+    let open = state.read(cx).is_open();
+    let button = crate::project_settings::kit_toolbar_button(
         "project-sort-selector",
         "arrow.up.arrow.down",
         format!(
@@ -1403,11 +1481,15 @@ fn project_sort_button<V: 'static>(
         true,
         colors,
     );
-    if open {
-        controls::toolbar_button_on(button, colors)
+    let trigger = if open {
+        button
+            .bg(rgb(colors.panel_active))
+            .text_color(rgb(colors.text))
     } else {
         button
     }
+    .track_focus(&ui.trigger_focus)
+    .aria_expanded(open)
     .relative()
     .child(
         canvas(
@@ -1418,9 +1500,11 @@ fn project_sort_button<V: 'static>(
         .inset_0(),
     )
     .on_click(cx.listener(move |view, _, window, cx| {
-        on_action(view, PanelAction::ToggleProjectSortMenu, window, cx);
+        state.update(cx, |state, cx| state.sync_open(!open, window, cx));
+        on_action(view, PanelAction::SetProjectSortMenuOpen(!open), window, cx);
     }))
-    .into_any_element()
+    .into_any_element();
+    anchored_sort_menu(trigger, order, ui, popup_bounds, popup_action, cx)
 }
 
 /// A create button in the Projects header.
@@ -1455,55 +1539,72 @@ fn project_header_button<V: 'static>(
     // Native draws both as bare symbols with their names in tooltips, like the pane's own
     // buttons on the bar above: muted, in a round hover, turning primary under the pointer.
     if ui_text::is_native() {
-        return controls::toolbar_button(id, Icon::Action(glyph).symbol(), tooltip, true, colors)
-            .on_click(cx.listener(move |view, _, window, cx| {
-                on_action(view, action.clone(), window, cx);
-            }))
-            .into_any_element();
-    }
-    div()
-        .id(id)
-        .flex_none()
-        .h_full()
-        .flex()
-        .items_center()
-        .text_color(rgb(color))
-        .hover(|style| style.bg(rgb(colors.panel_active)))
-        .map(|button| {
-            if as_icon {
-                button
-                    .w(ui_text::space(28.0))
-                    .justify_center()
-                    .child(icons::icon(Icon::Action(glyph), color))
-                    .child(tooltip::anchor(tooltip, Look::Control))
-            } else {
-                button.px(ui_text::space(pad)).child(ui_text::cased(label))
-            }
-        })
+        return crate::project_settings::kit_toolbar_button(
+            id,
+            Icon::Action(glyph).symbol(),
+            tooltip,
+            true,
+            colors,
+        )
         .on_click(cx.listener(move |view, _, window, cx| {
             on_action(view, action.clone(), window, cx);
         }))
-        .into_any_element()
+        .into_any_element();
+    }
+    behavior::button_content(
+        id,
+        tooltip,
+        if as_icon {
+            icons::icon(Icon::Action(glyph), color)
+        } else {
+            div().child(ui_text::cased(label)).into_any_element()
+        },
+    )
+    .flex_none()
+    .h(ui_text::space(30.0))
+    .flex()
+    .items_center()
+    .text_color(rgb(color))
+    .hover(|style| style.bg(rgb(colors.panel_active)))
+    .map(|button| {
+        if as_icon {
+            button
+                .w(ui_text::space(28.0))
+                .justify_center()
+                .child(tooltip::anchor(tooltip, Look::Control))
+        } else {
+            button.px(ui_text::space(pad))
+        }
+    })
+    .on_click(cx.listener(move |view, _, window, cx| {
+        on_action(view, action.clone(), window, cx);
+    }))
+    .into_any_element()
 }
 
 fn project_sort_controls<V: 'static>(
     order: ProjectOrder,
-    open: bool,
+    ui: &ProjectSortUi,
     selector_bounds: Rc<Cell<Bounds<Pixels>>>,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
+    let popup_bounds = selector_bounds.clone();
+    let popup_action = on_action.clone();
+    let state = ui.state.clone();
+    let open = state.read(cx).is_open();
     let choose = on_action.clone();
-    div()
+    let trigger = div()
         .flex()
         .flex_none()
         .items_center()
         .gap(ui_text::space(2.0))
         .text_size(ui_text::text(9.0))
         .child(
-            div()
-                .id("project-sort-selector")
+            behavior::button_content("project-sort-selector", "Sort projects", order.by.label())
+                .track_focus(&ui.trigger_focus)
+                .aria_expanded(open)
                 .relative()
                 .flex()
                 .items_center()
@@ -1526,7 +1627,6 @@ fn project_sort_controls<V: 'static>(
                         control.rounded_full().px(ui_text::space(7.0))
                     })
                 })
-                .child(order.by.label())
                 .child(icons::text_mark(if open { "▴" } else { "▾" }, 8.0))
                 .child(
                     canvas(
@@ -1543,67 +1643,103 @@ fn project_sort_controls<V: 'static>(
                     ))
                 })
                 .on_click(cx.listener(move |view, _, window, cx| {
-                    choose(view, PanelAction::ToggleProjectSortMenu, window, cx);
+                    state.update(cx, |state, cx| state.sync_open(!open, window, cx));
+                    choose(view, PanelAction::SetProjectSortMenuOpen(!open), window, cx);
                 })),
         )
         .child(
-            div()
-                .id("project-sort-direction")
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(ui_text::space(22.0))
-                .h(ui_text::space(20.0))
-                .text_color(rgb(colors.cyan))
-                .hover(move |style| {
-                    let style = style.bg(rgb(colors.panel_active));
-                    if ui_text::is_native() {
-                        style.text_color(rgb(colors.text))
-                    } else {
-                        style
-                    }
+            behavior::toggle_content(
+                "project-sort-direction",
+                order.direction_label(),
+                icons::text_mark(if order.descending { "↓" } else { "↑" }, 9.0),
+                order.descending,
+            )
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(ui_text::space(22.0))
+            .h(ui_text::space(20.0))
+            .text_color(rgb(colors.cyan))
+            .hover(move |style| {
+                let style = style.bg(rgb(colors.panel_active));
+                if ui_text::is_native() {
+                    style.text_color(rgb(colors.text))
+                } else {
+                    style
+                }
+            })
+            // Native's arrow is muted like the order beside it, primary under the pointer.
+            .map(|control| {
+                controls::native(control, |control| {
+                    control.rounded_full().text_color(rgb(colors.muted))
                 })
-                // Native's arrow is muted like the order beside it, primary under the pointer.
-                .map(|control| {
-                    controls::native(control, |control| {
-                        control.rounded_full().text_color(rgb(colors.muted))
-                    })
-                })
-                .child(icons::text_mark(
-                    if order.descending { "↓" } else { "↑" },
-                    9.0,
-                ))
-                .when(!open, |control| {
-                    control.child(tooltip::anchor(order.direction_label(), Look::Control))
-                })
-                .on_click(cx.listener(move |view, _, window, cx| {
+            })
+            .when(!open, |control| {
+                control.child(tooltip::anchor(order.direction_label(), Look::Control))
+            })
+            .on_change({
+                let listener = cx.listener(move |view, _, window, cx| {
                     on_action(
                         view,
                         PanelAction::SetProjectOrder(order.toggled()),
                         window,
                         cx,
                     );
-                })),
+                });
+                move |_, event, window, cx| listener(event, window, cx)
+            }),
         )
+        .into_any_element();
+    anchored_sort_menu(trigger, order, ui, popup_bounds, popup_action, cx)
+}
+
+/// Base Popup owns measurement/deferred layering, Base PopoverState owns focus.
+/// The button owns activation exactly once; no enclosing Confirm handler competes.
+fn anchored_sort_menu<V: 'static>(
+    trigger: AnyElement,
+    order: ProjectOrder,
+    ui: &ProjectSortUi,
+    bounds: Rc<Cell<Bounds<Pixels>>>,
+    action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let state = ui.state.clone();
+    let open = state.read(cx).is_open();
+    gpui_kit::base::Popup::new("project-sort-popup", trigger)
+        .anchor(gpui::Anchor::TopRight)
+        .offset(ui_text::space(4.0))
+        .when(open, |popup| {
+            let close_state = state.clone();
+            popup.content(project_sort_menu(
+                order,
+                bounds,
+                state,
+                move |view, event, window, cx| {
+                    close_state.update(cx, |state, cx| state.dismiss(window, cx));
+                    action(view, event, window, cx);
+                },
+                cx,
+            ))
+        })
         .into_any_element()
 }
 
 fn project_sort_menu<V: 'static>(
     order: ProjectOrder,
     selector_bounds: Rc<Cell<Bounds<Pixels>>>,
+    state: Entity<gpui_kit::base::PopoverState>,
     on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
     let dismiss = on_action.clone();
-    div()
+    let escape = on_action.clone();
+    let escape_state = state.clone();
+    let focus = state.read(cx).focus_handle(cx);
+    let menu = div()
         .id("project-sort-menu")
-        .absolute()
-        .top(ui_text::space(56.0))
-        .right(px(8.0))
         .w(ui_text::space(220.0))
         .max_w(gpui::relative(0.9))
-        .bottom(px(8.0))
         .max_h(ui_text::space(128.0))
         .overflow_y_scroll()
         .bg(rgb(colors.panel_active))
@@ -1613,19 +1749,38 @@ fn project_sort_menu<V: 'static>(
         .map(|menu| {
             controls::native(menu, |menu| {
                 controls::menu(menu, colors)
-                    .top(ui_text::space(controls::HEADER_HEIGHT - 6.0))
-                    .right(ui_text::space(controls::LIST_MARGIN))
                     .w(ui_text::space(200.0))
                     .bottom_auto()
                     .max_h(ui_text::space(220.0))
             })
         })
         .occlude()
+        .on_key_down(
+            cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "escape" => {
+                        escape_state.update(cx, |state, cx| state.dismiss(window, cx));
+                        escape(view, PanelAction::CloseProjectSortMenu, window, cx);
+                    }
+                    "tab" | "up" | "down" => {
+                        crate::project_settings::modal_tab(
+                            event.keystroke.key == "up" || event.keystroke.modifiers.shift,
+                            window,
+                            cx,
+                        );
+                    }
+                    _ => return,
+                }
+                window.prevent_default();
+                cx.stop_propagation();
+            }),
+        )
         .on_mouse_down_out(
             cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
                 if selector_bounds.get().contains(&event.position) {
                     return;
                 }
+                state.update(cx, |state, cx| state.dismiss(window, cx));
                 dismiss(view, PanelAction::CloseProjectSortMenu, window, cx);
             }),
         )
@@ -1671,8 +1826,8 @@ fn project_sort_menu<V: 'static>(
                         cx,
                     )
                 }))
-        })
-        .into_any_element()
+        });
+    behavior::focus_scope(menu, "project-sort-focus-trap", &focus).into_any_element()
 }
 
 /// One choice in the Projects sort menu, ticked when it is the current one.
@@ -1685,38 +1840,67 @@ fn sort_menu_row<V: 'static>(
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .gap(ui_text::space(7.0))
-        .px(ui_text::space(8.0))
-        .py(ui_text::space(7.0))
-        .text_size(ui_text::text(10.0))
-        .text_color(rgb(if selected { colors.cyan } else { colors.text }))
-        .hover(move |style| {
-            controls::hovered(style, controls::menu_row_hover(colors), |style| {
-                style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
-            })
+    behavior::button_content(
+        id,
+        label,
+        div()
+            .flex_none()
+            .w(ui_text::space(12.0))
+            .when(selected, |check| {
+                check.child(if ui_text::is_native() {
+                    icons::text_mark("✓", 10.0)
+                } else {
+                    "✓".into_any_element()
+                })
+            }),
+    )
+    .aria_selected(selected)
+    .flex()
+    .items_center()
+    .gap(ui_text::space(7.0))
+    .focus_visible(move |style| {
+        style
+            .bg(rgb(controls::menu_row_hover(colors)))
+            .text_color(rgb(colors.cyan))
+    })
+    .px(ui_text::space(8.0))
+    .py(ui_text::space(7.0))
+    .text_size(ui_text::text(10.0))
+    .text_color(rgb(if selected { colors.cyan } else { colors.text }))
+    .hover(move |style| {
+        controls::hovered(style, controls::menu_row_hover(colors), |style| {
+            style.bg(rgb(colors.divider)).text_color(rgb(colors.cyan))
         })
-        .map(|row| controls::native(row, |row| controls::menu_row(row, colors)))
-        .child(
-            div()
-                .flex_none()
-                .w(ui_text::space(12.0))
-                .when(selected, |check| {
-                    check.child(if ui_text::is_native() {
-                        icons::text_mark("✓", 10.0)
-                    } else {
-                        "✓".into_any_element()
-                    })
-                }),
-        )
-        .child(div().flex_1().min_w_0().text_ellipsis().child(label))
-        .on_click(cx.listener(move |view, _, window, cx| {
-            action(view, PanelAction::SetProjectOrder(next), window, cx);
-        }))
-        .into_any_element()
+    })
+    .map(|row| controls::native(row, |row| controls::menu_row(row, colors)))
+    .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+    .on_click(cx.listener(move |view, _, window, cx| {
+        action(view, PanelAction::SetProjectOrder(next), window, cx);
+    }))
+    .into_any_element()
+}
+
+/// Preserve Native's pointer hover policy and reveal the action strip whenever
+/// keyboard focus is on the row or one of its nested Base controls.
+fn project_action_strip(
+    native: bool,
+    selected: bool,
+    row_focus: &FocusHandle,
+    window: &Window,
+    cx: &gpui::App,
+) -> Div {
+    let keyboard_within =
+        window.last_input_was_keyboard() && row_focus.contains_focused(window, cx);
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(ui_text::space(4.0))
+        .when(native && !selected && !keyboard_within, |strip| {
+            strip
+                .invisible()
+                .group_hover(PROJECT_ROW_GROUP, |style| style.visible())
+        })
 }
 
 fn project_control<V: 'static>(
@@ -1729,40 +1913,47 @@ fn project_control<V: 'static>(
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    div()
-        .id(format!("{name}-project-{project_id}"))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(ui_text::space(20.0))
-        .h(ui_text::space(18.0))
-        .text_color(rgb(colors.cyan))
-        .hover(move |style| {
-            let style = style.bg(rgb(colors.divider));
-            if ui_text::is_native() {
-                style.text_color(rgb(colors.text))
-            } else {
-                style.text_color(rgb(colors.magenta))
-            }
+    behavior::button_content(
+        format!("{name}-project-{project_id}"),
+        tooltip,
+        icons::text_mark(mark, 10.0),
+    )
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .w(ui_text::space(20.0))
+    .h(ui_text::space(18.0))
+    .text_color(rgb(colors.cyan))
+    .focus_visible(move |style| style.bg(rgb(colors.divider)))
+    .hover(move |style| {
+        let style = style.bg(rgb(colors.divider));
+        if ui_text::is_native() {
+            style.text_color(rgb(colors.text))
+        } else {
+            style.text_color(rgb(colors.magenta))
+        }
+    })
+    // Native's row controls are muted symbols in a round hover, like the bar's buttons.
+    .map(|control| {
+        controls::native(control, |control| {
+            control
+                .size(ui_text::space(20.0))
+                .rounded_full()
+                .text_color(rgb(colors.muted))
         })
-        // Native's row controls are muted symbols in a round hover, like the bar's buttons.
-        .map(|control| {
-            controls::native(control, |control| {
-                control
-                    .size(ui_text::space(20.0))
-                    .rounded_full()
-                    .text_color(rgb(colors.muted))
-            })
-        })
-        .child(icons::text_mark(mark, 10.0))
-        .child(tooltip::anchor(tooltip, Look::Control))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(cx.listener(move |view, _, window, cx| {
-            cx.stop_propagation();
-            on_action(view, action.clone(), window, cx);
-        }))
-        .into_any_element()
+    })
+    .child(tooltip::anchor(tooltip, Look::Control))
+    // Let Base/GPUI transfer pointer focus before isolating activation. A
+    // mouse-down stop skips that earlier listener in reverse bubble dispatch.
+    .on_click(cx.listener(move |view, _, window, cx| {
+        cx.stop_propagation();
+        on_action(view, action.clone(), window, cx);
+    }))
+    .map(|control| {
+        crate::form_input::control_element(format!("{name}-project-{project_id}"), control)
+    })
+    .into_any_element()
 }
 
 fn project_notification_control<V: 'static>(
@@ -1773,47 +1964,52 @@ fn project_notification_control<V: 'static>(
 ) -> AnyElement {
     let colors = theme::palette(cx);
     let project_id = project_id.to_owned();
-    div()
-        .id(format!("notifications-project-{project_id}"))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(ui_text::space(20.0))
-        .h(ui_text::space(18.0))
-        .hover(move |style| {
-            let style = style.bg(rgb(colors.divider));
-            if ui_text::is_native() {
-                style.text_color(rgb(colors.text))
-            } else {
-                style
-            }
-        })
-        // Native draws the bell as its row's other controls: the size of their symbols, in
-        // a round hover, primary while notifications are on.
-        .map(|control| {
-            controls::native(control, |control| {
-                control
-                    .size(ui_text::space(20.0))
-                    .rounded_full()
-                    .text_color(rgb(if enabled { colors.text } else { colors.muted }))
-            })
-        })
-        .child(icons::text_icon(
+    behavior::toggle_content(
+        format!("notifications-project-{project_id}"),
+        "Agent completion notifications",
+        icons::text_icon(
             if enabled { Icon::Bell } else { Icon::BellOff },
             9.6,
             if enabled { colors.cyan } else { colors.muted },
-        ))
-        .child(tooltip::anchor(
-            if enabled {
-                "Agent completion notifications on · click to disable"
-            } else {
-                "Agent completion notifications off · click to enable"
-            },
-            Look::Control,
-        ))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(cx.listener(move |view, _, window, cx| {
+        ),
+        enabled,
+    )
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .w(ui_text::space(20.0))
+    .h(ui_text::space(18.0))
+    .focus_visible(move |style| style.bg(rgb(colors.divider)))
+    .hover(move |style| {
+        let style = style.bg(rgb(colors.divider));
+        if ui_text::is_native() {
+            style.text_color(rgb(colors.text))
+        } else {
+            style
+        }
+    })
+    // Native draws the bell as its row's other controls: the size of their symbols, in
+    // a round hover, primary while notifications are on.
+    .map(|control| {
+        controls::native(control, |control| {
+            control
+                .size(ui_text::space(20.0))
+                .rounded_full()
+                .text_color(rgb(if enabled { colors.text } else { colors.muted }))
+        })
+    })
+    .child(tooltip::anchor(
+        if enabled {
+            "Agent completion notifications on · click to disable"
+        } else {
+            "Agent completion notifications off · click to enable"
+        },
+        Look::Control,
+    ))
+    // Keep Base's pointer focus transfer; the domain activation stays isolated.
+    .on_change({
+        let listener = cx.listener(move |view, _, window, cx| {
             cx.stop_propagation();
             on_action(
                 view,
@@ -1821,8 +2017,10 @@ fn project_notification_control<V: 'static>(
                 window,
                 cx,
             );
-        }))
-        .into_any_element()
+        });
+        move |_, event, window, cx| listener(event, window, cx)
+    })
+    .into_any_element()
 }
 
 /// The detail of the selected task under the Tasks list.
@@ -1903,55 +2101,61 @@ fn push_remote_folder<V: 'static>(
     let offline = folder.link == Some(Link::Offline);
     let hint = folder.link.map_or("Connecting…", Link::text);
     rows.push(
-        folder_bar(format!("remote-folder-{}", folder.host), 0, colors)
-            .child(if folder.collapsed { "▸" } else { "▾" })
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .text_color(rgb(link_color(folder.link, colors)))
-                    .child(if offline { "○" } else { "●" })
-                    .child(tooltip::anchor(hint, Look::Control)),
+        folder_bar(
+            format!("remote-folder-{}", folder.host),
+            &folder.label,
+            if folder.collapsed { "▸" } else { "▾" },
+            0,
+            colors,
+        )
+        .aria_expanded(!folder.collapsed)
+        .child(
+            div()
+                .relative()
+                .flex_none()
+                .text_color(rgb(link_color(folder.link, colors)))
+                .child(if offline { "○" } else { "●" })
+                .child(tooltip::anchor(hint, Look::Control)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_ellipsis()
+                .overflow_hidden()
+                .child(folder.label.clone()),
+        )
+        .children(folder.creating.then(|| {
+            div()
+                .text_size(ui_text::text(9.0))
+                .text_color(rgb(colors.muted))
+                .child("creating…")
+        }))
+        .child(
+            div()
+                .text_size(ui_text::text(9.0))
+                .text_color(rgb(colors.muted))
+                .child(format!("{:02}", folder.count)),
+        )
+        .children(online.then(|| {
+            project_control(
+                &folder.host,
+                "remote-new-project",
+                "+",
+                "New project on this Mac",
+                PanelAction::Remote(RemoteAction::NewProject(folder.host.clone())),
+                on_action.clone(),
+                cx,
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_ellipsis()
-                    .overflow_hidden()
-                    .child(folder.label.clone()),
-            )
-            .children(folder.creating.then(|| {
-                div()
-                    .text_size(ui_text::text(9.0))
-                    .text_color(rgb(colors.muted))
-                    .child("creating…")
-            }))
-            .child(
-                div()
-                    .text_size(ui_text::text(9.0))
-                    .text_color(rgb(colors.muted))
-                    .child(format!("{:02}", folder.count)),
-            )
-            .children(online.then(|| {
-                project_control(
-                    &folder.host,
-                    "remote-new-project",
-                    "+",
-                    "New project on this Mac",
-                    PanelAction::Remote(RemoteAction::NewProject(folder.host.clone())),
-                    on_action.clone(),
-                    cx,
-                )
-            }))
-            .child(tooltip::anchor(
-                "A paired Mac. Its projects open here like local ones.",
-                Look::Control,
-            ))
-            .on_click(cx.listener(move |view, _, window, cx| {
-                toggle_action(view, toggle.clone(), window, cx);
-            }))
-            .into_any_element(),
+        }))
+        .child(tooltip::anchor(
+            "A paired Mac. Its projects open here like local ones.",
+            Look::Control,
+        ))
+        .on_click(cx.listener(move |view, _, window, cx| {
+            toggle_action(view, toggle.clone(), window, cx);
+        }))
+        .into_any_element(),
     );
     if let Some(message) = &folder.failure {
         rows.push(failure_row(
@@ -1993,11 +2197,13 @@ fn remote_project_row<V: 'static>(
     let colors = theme::palette(cx);
     project_row(
         &project.key,
+        &project.name,
         None,
         ProjectRowLook {
             selected: project.selected,
             depth: 1,
             dimmed: project.dimmed,
+            focus: None,
         },
         vec![
             div()
@@ -2040,13 +2246,11 @@ fn failure_row<V: 'static>(
         .text_color(rgb(colors.gold))
         .child(div().flex_1().min_w_0().child(message.to_owned()))
         .child(
-            div()
-                .id(format!("{id}-dismiss"))
+            behavior::button_content(format!("{id}-dismiss"), "Dismiss failure", "×")
                 .flex_none()
                 .px(ui_text::space(4.0))
                 .text_color(rgb(colors.muted))
                 .hover(|style| style.text_color(rgb(colors.text)))
-                .child("×")
                 .child(tooltip::anchor("Dismiss", Look::Control))
                 .on_click(cx.listener(move |view, _, window, cx| {
                     on_action(view, dismiss.clone(), window, cx);
@@ -2196,6 +2400,7 @@ fn push_remote_panel<V: 'static>(
                 rows.push(dimmed_if(
                     row(
                         format!("remote-worktree-{}", worktree.id),
+                        worktree.branch.clone(),
                         selected,
                         colors.magenta,
                         lines,
@@ -2225,6 +2430,7 @@ fn push_remote_panel<V: 'static>(
                 rows.push(dimmed_if(
                     row(
                         format!("remote-task-{}", task.id),
+                        task.title.clone(),
                         data.selected_task_id == Some(task.id.as_str()),
                         color,
                         vec![
@@ -2337,6 +2543,7 @@ fn push_remote_panel<V: 'static>(
                 rows.push(dimmed_if(
                     row(
                         format!("remote-shell-{}", shell.id),
+                        format!("{} · {}", label, short_id(&shell.id)),
                         false,
                         colors.cyan,
                         lines,
@@ -2428,9 +2635,15 @@ fn project_indent(depth: usize) -> f32 {
 
 /// The bar of a folder heading, shared by the local folders and the ones that stand for
 /// another Mac so the two read as one list.
-fn folder_bar(id: String, depth: usize, colors: Palette) -> Stateful<Div> {
-    div()
-        .id(id)
+fn folder_bar(
+    id: String,
+    name: &str,
+    content: impl IntoElement,
+    depth: usize,
+    colors: Palette,
+) -> behavior::Button {
+    behavior::button_content(id, name.to_owned(), content)
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex()
         .items_center()
         .gap(ui_text::space(5.0))
@@ -2457,6 +2670,9 @@ fn folder_bar(id: String, depth: usize, colors: Palette) -> Stateful<Div> {
                     .text_color(rgb(colors.muted))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_size(ui_text::text(10.0))
+                    .focus_visible(move |style| {
+                        style.bg(rgb(colors.divider)).text_color(rgb(colors.text))
+                    })
             })
         })
 }
@@ -2488,6 +2704,8 @@ fn folder_header<V: 'static>(
     let editable = id.is_some();
     folder_bar(
         format!("project-folder-{}", id.unwrap_or("unfiled")),
+        name,
+        icons::mark(if collapsed { "▸" } else { "▾" }, 9.0, colors.muted),
         depth,
         colors,
     )
@@ -2501,11 +2719,7 @@ fn folder_header<V: 'static>(
             style
         }
     })
-    .child(icons::mark(
-        if collapsed { "▸" } else { "▾" },
-        9.0,
-        colors.muted,
-    ))
+    .aria_expanded(!collapsed)
     .child(
         div()
             .flex_1()
@@ -2609,18 +2823,20 @@ fn folder_header<V: 'static>(
 }
 
 /// How a project row is drawn.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ProjectRowLook {
     selected: bool,
     depth: usize,
     /// What the row says may be out of date, as when its host cannot be reached.
     dimmed: bool,
+    focus: Option<FocusHandle>,
 }
 
 /// A project of a folder. A local project can be dragged to another folder; one that belongs
 /// to another Mac (`drag` is `None`) stays where its host puts it.
 fn project_row<V: 'static>(
     id: &str,
+    accessible_name: &str,
     drag: Option<DraggedProjectItem>,
     look: ProjectRowLook,
     children: Vec<AnyElement>,
@@ -2633,11 +2849,17 @@ fn project_row<V: 'static>(
         selected,
         depth,
         dimmed,
+        focus,
     } = look;
     let drag_view = cx.entity();
     let drag_action = on_action.clone();
-    div()
-        .id(format!("project-{id}"))
+    let mut children = children.into_iter();
+    let first = children.next().unwrap_or_else(|| div().into_any_element());
+    behavior::button_content(format!("project-{id}"), accessible_name.to_owned(), first)
+        .when_some(focus, |row, focus| row.track_focus(&focus))
+        .aria_selected(selected)
+        .items_stretch()
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex()
         .flex_col()
         .gap(ui_text::space(3.0))
@@ -2676,6 +2898,7 @@ fn project_row<V: 'static>(
                 cx.new(|_| drag.clone())
             })
         })
+        .map(|control| crate::form_input::control_element(format!("project-{id}"), control))
         .into_any_element()
 }
 
@@ -2684,11 +2907,18 @@ const PROJECT_ROW_GROUP: &str = "project-row";
 
 /// Native's sidebar row: inset from the panel's edges and rounded, filled when chosen,
 /// with no bar along its side.
-fn sidebar_row(row: Stateful<Div>, selected: bool, colors: Palette) -> Stateful<Div> {
+fn sidebar_row<E: gpui::Styled + gpui::InteractiveElement>(
+    row: E,
+    selected: bool,
+    colors: Palette,
+) -> E {
     controls::list_row(row, selected, colors)
         .mx(ui_text::space(controls::LIST_MARGIN))
         .border_l_0()
         .border_0()
+        // The shared ring uses a border; Native deliberately removes it.
+        // A keyboard-only fill shows focus without changing layout or hover.
+        .focus_visible(move |style| style.bg(rgb(colors.divider)))
 }
 
 /// How far Native indents a project row's text at `depth`: a level's step is a disclosure
@@ -2704,6 +2934,7 @@ const NATIVE_LEVEL: f32 = 16.0;
 
 fn row<V: 'static>(
     id: String,
+    accessible_name: String,
     selected: bool,
     accent: u32,
     children: Vec<AnyElement>,
@@ -2712,8 +2943,12 @@ fn row<V: 'static>(
     cx: &mut Context<V>,
 ) -> AnyElement {
     let colors = theme::palette(cx);
-    div()
-        .id(id)
+    let mut children = children.into_iter();
+    let first = children.next().unwrap_or_else(|| div().into_any_element());
+    behavior::button_content(id, accessible_name, first)
+        .aria_selected(selected)
+        .items_stretch()
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex()
         .flex_col()
         .gap(ui_text::space(3.0))
@@ -3446,5 +3681,793 @@ mod tests {
         assert!(folder_missing(&file));
         assert!(folder_missing(&directory.join("gone")));
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod kit_control_tests {
+    use super::*;
+    use crate::form_input::{test_turn, test_window};
+    use gpui::InputEvent as _;
+    use gpui::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
+
+    struct Fixture {
+        sort: ProjectSortUi,
+        order: ProjectOrder,
+        actions: Vec<PanelAction>,
+        row_focus: FocusHandle,
+        native_reveal: bool,
+    }
+    impl Fixture {
+        fn action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
+            match &action {
+                PanelAction::CloseProjectSortMenu => self.sort.dismiss(window, cx),
+                PanelAction::SetProjectOrder(order) => {
+                    self.order = *order;
+                    self.sort.dismiss(window, cx);
+                }
+                _ => {}
+            }
+            self.actions.push(action);
+            cx.notify();
+        }
+    }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(project_sort_controls(
+                    self.order,
+                    &self.sort,
+                    Rc::new(Cell::new(Bounds::default())),
+                    Self::action,
+                    cx,
+                ))
+                .child(project_row(
+                    "synthetic-project-id",
+                    "Same title",
+                    None,
+                    ProjectRowLook {
+                        selected: !self.native_reveal,
+                        depth: 0,
+                        dimmed: false,
+                        focus: Some(self.row_focus.clone()),
+                    },
+                    vec![
+                        div()
+                            .flex()
+                            .items_center()
+                            .w_full()
+                            .child(div().flex_1().child("Same title"))
+                            .child(
+                                project_action_strip(
+                                    self.native_reveal,
+                                    !self.native_reveal,
+                                    &self.row_focus,
+                                    window,
+                                    cx,
+                                )
+                                .child(project_control(
+                                    "synthetic-project-id",
+                                    "settings",
+                                    "⚙",
+                                    "Project settings",
+                                    PanelAction::ProjectSettings("synthetic-project-id".into()),
+                                    Self::action,
+                                    cx,
+                                )),
+                            )
+                            .into_any_element(),
+                    ],
+                    PanelAction::Project("synthetic-project-id".into()),
+                    Self::action,
+                    cx,
+                ))
+        }
+    }
+    fn mount(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<Fixture>) {
+        test_window(cx, |_, cx| Fixture {
+            sort: ProjectSortUi::new(cx),
+            order: ProjectOrder::default(),
+            actions: Vec::new(),
+            row_focus: cx.focus_handle(),
+            native_reveal: false,
+        })
+    }
+
+    #[gpui::test]
+    fn panel_rows_keyboard_ax_and_nested_actions_keep_exact_project_identity(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, owner) = mount(cx);
+        test_turn(cx, window, |window, app| {
+            window.click("settings-project-synthetic-project-id", app)
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                matches!(owner.read(app).actions.as_slice(), [PanelAction::ProjectSettings(id)] if id == "synthetic-project-id")
+            );
+            assert_eq!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .focused(),
+                Some(true)
+            );
+            assert!(owner.read(app).row_focus.contains_focused(window, app));
+            assert!(!owner.read(app).row_focus.is_focused(window));
+            // Rebuild the real parent and child controls before keyboard
+            // activation; their semantic IDs must retain the nested focus.
+            owner.update(app, |_, cx| cx.notify());
+        });
+        test_turn(cx, window, |window, _| {
+            assert_eq!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .focused(),
+                Some(true)
+            );
+        });
+        test_turn(cx, window, |window, app| window.press("space", app));
+        test_turn(cx, window, |window, app| {
+            let actions = &owner.read(app).actions;
+            assert_eq!(actions.len(), 2);
+            assert!(actions.iter().all(
+                |a| matches!(a, PanelAction::ProjectSettings(id) if id == "synthetic-project-id")
+            ));
+            let row = crate::form_input::test_ax_node(window, app, "project-synthetic-project-id");
+            assert_eq!(row.role(), gpui::Role::Button);
+            assert_eq!(row.label(), Some("Same title"));
+            assert_eq!(row.is_selected(), Some(true));
+        });
+        test_turn(cx, window, |window, app| {
+            window.click("project-synthetic-project-id", app);
+        });
+        test_turn(cx, window, |window, app| {
+            let owner = owner.read(app);
+            assert_eq!(owner.actions.len(), 3);
+            assert!(
+                matches!(&owner.actions[2], PanelAction::Project(id) if id == "synthetic-project-id")
+            );
+            assert!(owner.row_focus.is_focused(window));
+        });
+        test_turn(cx, window, |window, app| window.press("enter", app));
+        test_turn(cx, window, |_, app| {
+            let actions = &owner.read(app).actions;
+            assert_eq!(actions.len(), 4);
+            assert!(
+                actions[2..]
+                    .iter()
+                    .all(|a| matches!(a, PanelAction::Project(id) if id == "synthetic-project-id"))
+            );
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, PanelAction::OpenProject(_)))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn native_project_actions_reveal_for_keyboard_scope_and_keep_pointer_hover(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, owner) = mount(cx);
+        // Exercise Native's actual visibility policy without loading a native
+        // theme, Ghostty settings, StateStore, Workspace or any service.
+        test_turn(cx, window, |window, app| {
+            owner.update(app, |owner, cx| {
+                owner.native_reveal = true;
+                cx.notify();
+            });
+            window.dispatch_event(
+                gpui::MouseMoveEvent {
+                    position: gpui::point(
+                        window.viewport_size().width - px(2.),
+                        window.viewport_size().height - px(2.),
+                    ),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                app,
+            );
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                !window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            let position = window
+                .find("project-synthetic-project-id")
+                .bounds()
+                .center();
+            window.dispatch_event(
+                gpui::MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                app,
+            );
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            assert!(owner.read(app).actions.is_empty());
+            window.dispatch_event(
+                gpui::MouseMoveEvent {
+                    position: gpui::point(
+                        window.viewport_size().width - px(2.),
+                        window.viewport_size().height - px(2.),
+                    ),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                app,
+            );
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                !window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            let focus = owner.read(app).row_focus.clone();
+            focus.focus(window, app);
+            // Programmatic focus preserves pointer modality. A non-activating
+            // key establishes keyboard focus and lets the row reveal its child
+            // before Root's next Tab enumerates the actually painted tab stops.
+            window.press("right", app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(owner.read(app).row_focus.is_focused(window));
+            assert!(
+                window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            assert!(owner.read(app).actions.is_empty());
+            window.press("tab", app);
+        });
+        test_turn(cx, window, |window, app| {
+            let nested = window.find("settings-project-synthetic-project-id");
+            assert_eq!(nested.focused(), Some(true));
+            assert!(
+                nested.visible(),
+                "keyboard focus within the row reveals Native actions"
+            );
+            let node = crate::form_input::test_ax_node(
+                window,
+                app,
+                "settings-project-synthetic-project-id",
+            );
+            assert_eq!(node.role(), gpui::Role::Button);
+            assert_eq!(node.label(), Some("Project settings"));
+            assert!(!node.is_disabled());
+            assert!(node.supports_action(gpui::accesskit::Action::Click));
+            window.press("space", app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                matches!(owner.read(app).actions.as_slice(), [PanelAction::ProjectSettings(id)] if id == "synthetic-project-id")
+            );
+            let focus = owner.read(app).sort.trigger_focus.clone();
+            focus.focus(window, app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert!(
+                !window
+                    .find("settings-project-synthetic-project-id")
+                    .visible()
+            );
+            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
+    fn sort_popover_keyboard_reselect_dismissal_and_refresh_preserve_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, owner) = mount(cx);
+        let identity = owner.read_with(cx, |owner, _| owner.sort.state.entity_id());
+        test_turn(cx, window, |window, app| {
+            window.click("project-sort-selector", app)
+        });
+        test_turn(cx, window, |window, app| {
+            let owner = owner.read(app);
+            assert!(owner.sort.state.read(app).is_open());
+            assert!(
+                owner
+                    .sort
+                    .state
+                    .read(app)
+                    .focus_handle(app)
+                    .contains_focused(window, app)
+            );
+            assert!(matches!(
+                owner.actions.as_slice(),
+                [PanelAction::SetProjectSortMenuOpen(true)]
+            ));
+            window.press("tab", app);
+        });
+        test_turn(cx, window, |window, app| window.press("enter", app));
+        test_turn(cx, window, |window, app| {
+            let owner = owner.read(app);
+            assert!(!owner.sort.state.read(app).is_open());
+            assert_eq!(
+                owner
+                    .actions
+                    .iter()
+                    .filter(|a| matches!(a, PanelAction::SetProjectOrder(_)))
+                    .count(),
+                1
+            );
+            assert!(owner.sort.trigger_focus.is_focused(window));
+            window.press("space", app);
+        });
+        test_turn(cx, window, |window, app| window.press("escape", app));
+        test_turn(cx, window, |window, app| {
+            assert!(!owner.read(app).sort.state.read(app).is_open());
+            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
+            owner.update(app, |_, cx| cx.notify());
+        });
+        test_turn(cx, window, |window, app| {
+            assert_eq!(owner.read(app).sort.state.entity_id(), identity);
+            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
+            assert_eq!(
+                owner
+                    .read(app)
+                    .actions
+                    .iter()
+                    .filter(|a| matches!(a, PanelAction::CloseProjectSortMenu))
+                    .count(),
+                1
+            );
+        });
+    }
+}
+
+#[cfg(test)]
+mod search_regression_tests {
+    use super::*;
+    use crate::{
+        form_input::test_turn,
+        text_input::{self, InputEvent, InputState},
+    };
+    use gpui::{Subscription, TestAppContext};
+    use gpui_kit::test::TestWindowExt;
+
+    // Real Projects panels and retained Base states; no Workspace, Store,
+    // SessionManager, filesystem fixture, terminal or backend is constructed.
+    struct Fixture {
+        state: State,
+        inputs: Vec<(u64, Entity<InputState>)>,
+        queries: BTreeMap<u64, String>,
+        sorts: Vec<ProjectSortUi>,
+        changes: Vec<(u64, String)>,
+        focused: Option<u64>,
+        actions: Vec<PanelAction>,
+        width: f32,
+        two_panels: bool,
+        _subscriptions: Vec<Subscription>,
+    }
+    impl Fixture {
+        fn action(&mut self, action: PanelAction, _: &mut Window, cx: &mut Context<Self>) {
+            self.actions.push(action);
+            cx.notify();
+        }
+    }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().flex().items_start().gap(px(8.)).children(
+                self.inputs
+                    .iter()
+                    .take(if self.two_panels { 2 } else { 1 })
+                    .enumerate()
+                    .map(|(index, (id, input))| {
+                        div()
+                            .id(("search-fixture-panel", *id))
+                            .test_support()
+                            .flex_none()
+                            .w(px(self.width))
+                            .h(px(360.))
+                            .child(render_panel(
+                                PanelKind::Projects,
+                                PanelData {
+                                    state: &self.state,
+                                    project_id: "alpha-id",
+                                    selected_worktree_id: None,
+                                    selected_task_id: None,
+                                    shells: &[],
+                                    shell_cwds: &BTreeMap::new(),
+                                    metrics: &BTreeMap::new(),
+                                    activity: &BTreeMap::new(),
+                                    chats: &[],
+                                    query: &self.queries[id],
+                                    search_focused: input
+                                        .read(cx)
+                                        .focus_handle(cx)
+                                        .is_focused(window),
+                                    search_input: Some(input),
+                                    control_inset: 0.,
+                                    collapsed_folders: &HashSet::new(),
+                                    state_home: Path::new("/synthetic-only/no-state"),
+                                    project_order: ProjectOrder::default(),
+                                    project_last_edits: &BTreeMap::new(),
+                                    project_sort_menu_open: false,
+                                    project_sort_ui: Some(&self.sorts[index]),
+                                    remote_folders: &[],
+                                    selected_remote: None,
+                                },
+                                Self::action,
+                                window,
+                                cx,
+                            ))
+                    }),
+            )
+        }
+    }
+    fn mount(cx: &mut TestAppContext, native: bool) -> (gpui::AnyWindowHandle, Entity<Fixture>) {
+        let (handle, owner): (gpui::AnyWindowHandle, Entity<Fixture>) = cx.update(|app| {
+            let mut settings = crate::settings::Settings::default();
+            settings.ui_text_matches_terminal = false;
+            settings.theme = if native {
+                theme::ThemeChoice::Native
+            } else {
+                theme::ThemeChoice::RiWork
+            };
+            let choice = settings.theme;
+            app.set_global(settings);
+            app.set_global(theme::Appearance {
+                selected: choice,
+                palette: if native {
+                    Palette::NATIVE_LIGHT
+                } else {
+                    Palette::RIWORK
+                },
+                terminal: None,
+                ghostty: None,
+                error: None,
+            });
+            text_input::init(app);
+            crate::behavior_controls::init(app);
+            // Actual native/colorful face and scaling, with terminal matching
+            // explicitly off: init returns before all Ghostty config reads.
+            ui_text::init(app);
+            let created = Rc::new(std::cell::RefCell::new(None));
+            let retained = created.clone();
+            let handle = app
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(
+                            gpui::point(px(0.), px(0.)),
+                            gpui::size(px(1000.), px(600.)),
+                        ))),
+                        ..Default::default()
+                    },
+                    move |window, app| {
+                        let owner = app.new(|cx| {
+                            let inputs: Vec<_> = [101, 202]
+                                .into_iter()
+                                .map(|id| {
+                                    (id, text_input::single_line("", "Search  ⌘F", window, cx))
+                                })
+                                .collect();
+                            let subscriptions = inputs
+                                .iter()
+                                .map(|(id, input)| {
+                                    let id = *id;
+                                    cx.subscribe_in(
+                                        input,
+                                        window,
+                                        move |owner: &mut Fixture, input, event, _, cx| {
+                                            if !owner.inputs.iter().any(|(live_id, live)| {
+                                                *live_id == id
+                                                    && live.entity_id() == input.entity_id()
+                                            }) {
+                                                return;
+                                            }
+                                            match event {
+                                                InputEvent::Change => {
+                                                    let value = input.read(cx).value().to_string();
+                                                    owner.queries.insert(id, value.clone());
+                                                    owner.changes.push((id, value));
+                                                }
+                                                InputEvent::Focus => owner.focused = Some(id),
+                                                _ => {}
+                                            }
+                                            cx.notify();
+                                        },
+                                    )
+                                })
+                                .collect();
+                            let projects = [("alpha-id", "Alpha"), ("beta-id", "Beta")]
+                                .into_iter()
+                                .map(|(id, name)| crate::store::Project {
+                                    id: id.into(),
+                                    name: name.into(),
+                                    root: PathBuf::from("/synthetic-only/no-project"),
+                                    repository_roots: Vec::new(),
+                                    folder_id: None,
+                                    notify_on_agent_done: false,
+                                    codex_account: Default::default(),
+                                    created_at: 0,
+                                })
+                                .collect();
+                            Fixture {
+                                state: State {
+                                    projects,
+                                    ..Default::default()
+                                },
+                                inputs,
+                                queries: BTreeMap::from([
+                                    (101, String::new()),
+                                    (202, String::new()),
+                                ]),
+                                sorts: vec![ProjectSortUi::new(cx), ProjectSortUi::new(cx)],
+                                changes: Vec::new(),
+                                focused: None,
+                                actions: Vec::new(),
+                                width: 160.,
+                                two_panels: false,
+                                _subscriptions: subscriptions,
+                            }
+                        });
+                        *retained.borrow_mut() = Some(owner.clone());
+                        app.new(|cx| gpui_kit::base::Root::new(owner, window, cx))
+                    },
+                )
+                .unwrap();
+            let owner = created.borrow_mut().take().unwrap();
+            (handle.into(), owner)
+        });
+        test_turn(cx, handle, |window, _| window.activate_window());
+        (handle, owner)
+    }
+    fn geometry(cx: &mut TestAppContext, native: bool) {
+        let (handle, owner) = mount(cx, native);
+        let entity = owner.read_with(cx, |owner, _| owner.inputs[0].1.entity_id());
+        for width in [160., 240., 480.] {
+            test_turn(cx, handle, |_, app| {
+                owner.update(app, |owner, cx| {
+                    owner.width = width;
+                    cx.notify();
+                })
+            });
+            test_turn(cx, handle, |window, app| {
+                assert_eq!(ui_text::is_native(), native);
+                let mut panel = window.within(("search-fixture-panel", 101u64));
+                let search = panel.find("projects-search");
+                let icon = panel.find("projects-search-icon");
+                let editor = panel.find("projects-search-input");
+                assert!(search.visible() && icon.visible() && editor.visible());
+                assert_eq!(editor.role(), Some(gpui::Role::TextInput));
+                assert_eq!(editor.label(), Some("Search projects"));
+                assert!(
+                    editor.bounds().size.width >= px(80.),
+                    "readable editor at pane width {width}: {:?}",
+                    editor.bounds()
+                );
+                assert!(editor.bounds().size.height >= ui_text::space(18.));
+                assert!(editor.bounds().left() >= icon.bounds().right());
+                assert!(editor.bounds().right() <= search.bounds().right());
+                assert!(editor.bounds().top() >= search.bounds().top());
+                assert!(editor.bounds().bottom() <= search.bounds().bottom());
+                let input = owner.read(app).inputs[0].1.clone();
+                assert_eq!(input.entity_id(), entity);
+                assert_eq!(
+                    input.read(app).presentation().placeholder().as_ref(),
+                    "Search  ⌘F"
+                );
+                let caret = input
+                    .read(app)
+                    .range_to_bounds(&(0..0))
+                    .expect("the empty placeholder has real editor layout");
+                assert!(caret.size.height > px(0.));
+                assert!(
+                    caret.left() >= editor.bounds().left()
+                        && caret.right() <= editor.bounds().right()
+                );
+                // An icon press must focus this real field, including the
+                // padding/background path outside Base's glyph hit target.
+                panel.click("projects-search-icon", app);
+            });
+            test_turn(cx, handle, |window, app| {
+                assert!(
+                    owner.read(app).inputs[0]
+                        .1
+                        .read(app)
+                        .focus_handle(app)
+                        .is_focused(window)
+                );
+                assert_eq!(owner.read(app).focused, Some(101));
+                assert!(owner.read(app).actions.is_empty());
+            });
+        }
+    }
+    #[gpui::test]
+    fn projects_search_has_readable_bounds_and_placeholder_in_narrow_colorful_panels(
+        cx: &mut TestAppContext,
+    ) {
+        geometry(cx, false);
+    }
+    #[gpui::test]
+    fn projects_search_has_readable_bounds_and_placeholder_in_narrow_native_panels(
+        cx: &mut TestAppContext,
+    ) {
+        geometry(cx, true);
+    }
+    fn editing_and_binding(cx: &mut TestAppContext, native: bool) {
+        let (handle, owner) = mount(cx, native);
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.two_panels = true;
+                owner.width = 240.;
+                cx.notify();
+            })
+        });
+        test_turn(cx, handle, |window, app| {
+            window
+                .within(("search-fixture-panel", 101u64))
+                .click("projects-search-icon", app)
+        });
+        // Input dispatches per-character keystrokes; drain each Change effect
+        // before the next character so its callback reads that edit's value.
+        for character in "Alpha".chars() {
+            let character = character.to_string();
+            test_turn(cx, handle, |window, app| window.input(&character, app));
+        }
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).queries[&101], "Alpha");
+            assert_eq!(owner.read(app).queries[&202], "");
+            let panel = window.within(("search-fixture-panel", 101u64));
+            assert!(panel.try_find("project-alpha-id").is_some());
+            assert!(panel.try_find("project-beta-id").is_none());
+            window.press("cmd-a", app);
+        });
+        test_turn(cx, handle, |window, app| window.press("cmd-c", app));
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(
+                app.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some("Alpha")
+            );
+            let input = owner.read(app).inputs[0].1.clone();
+            assert_eq!(input.read(app).selected_range(), 0..5);
+            let caret = input.read(app).range_to_bounds(&(2..2)).unwrap().center();
+            let bounds = window
+                .within(("search-fixture-panel", 101u64))
+                .find("projects-search-input")
+                .bounds();
+            window.within(("search-fixture-panel", 101u64)).click_at(
+                "projects-search-input",
+                caret - bounds.origin,
+                app,
+            );
+        });
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).inputs[0].1.read(app).cursor(), 2);
+            window
+                .within(("search-fixture-panel", 202u64))
+                .click("projects-search-icon", app);
+        });
+        for character in "Beta".chars() {
+            let character = character.to_string();
+            test_turn(cx, handle, |window, app| window.input(&character, app));
+        }
+        test_turn(cx, handle, |window, app| {
+            let fixture = owner.read(app);
+            assert_eq!(fixture.focused, Some(202));
+            assert_eq!(
+                fixture.changes,
+                [
+                    (101u64, String::from("A")),
+                    (101u64, String::from("Al")),
+                    (101u64, String::from("Alp")),
+                    (101u64, String::from("Alph")),
+                    (101u64, String::from("Alpha")),
+                    (202u64, String::from("B")),
+                    (202u64, String::from("Be")),
+                    (202u64, String::from("Bet")),
+                    (202u64, String::from("Beta"))
+                ]
+            );
+            assert_eq!(fixture.inputs[0].1.read(app).value(), "Alpha");
+            assert_eq!(fixture.inputs[0].1.read(app).cursor(), 2);
+            assert_eq!(fixture.inputs[1].1.read(app).value(), "Beta");
+            assert!(
+                fixture.inputs[1]
+                    .1
+                    .read(app)
+                    .focus_handle(app)
+                    .is_focused(window)
+            );
+            assert!(
+                fixture.actions.is_empty(),
+                "search clicks must not dispatch through the active-pane fallback"
+            );
+            let panel = window.within(("search-fixture-panel", 202u64));
+            assert!(panel.try_find("project-beta-id").is_some());
+            assert!(panel.try_find("project-alpha-id").is_none());
+        });
+    }
+    #[gpui::test]
+    fn projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_colorful(
+        cx: &mut TestAppContext,
+    ) {
+        editing_and_binding(cx, false);
+    }
+    #[gpui::test]
+    fn projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_native(
+        cx: &mut TestAppContext,
+    ) {
+        editing_and_binding(cx, true);
+    }
+    fn clearing(cx: &mut TestAppContext, native: bool) {
+        let (handle, owner) = mount(cx, native);
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.width = 240.;
+                cx.notify();
+            })
+        });
+        test_turn(cx, handle, |window, app| {
+            let mut panel = window.within(("search-fixture-panel", 101u64));
+            assert!(panel.try_find("projects-search-clear").is_none());
+            panel.click("projects-search-icon", app)
+        });
+        for character in "Al".chars() {
+            let character = character.to_string();
+            test_turn(cx, handle, |window, app| window.input(&character, app));
+        }
+        test_turn(cx, handle, |window, app| {
+            let mut panel = window.within(("search-fixture-panel", 101u64));
+            let search = panel.find("projects-search");
+            let editor = panel.find("projects-search-input");
+            let clear = panel.find("projects-search-clear");
+            // Inside the one field, after the text.
+            assert!(clear.visible());
+            assert_eq!(clear.label(), Some("Clear the search"));
+            assert!(clear.bounds().left() >= editor.bounds().right());
+            assert!(clear.bounds().right() <= search.bounds().right());
+            panel.click("projects-search-clear", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            let fixture = owner.read(app);
+            assert!(matches!(
+                fixture.actions.as_slice(),
+                [PanelAction::ClearSearch]
+            ));
+            // The pressed field keeps its own editor focused, not the active pane's.
+            assert!(
+                fixture.inputs[0]
+                    .1
+                    .read(app)
+                    .focus_handle(app)
+                    .is_focused(window)
+            );
+        });
+    }
+    #[gpui::test]
+    fn projects_search_clear_button_sits_in_the_field_and_keeps_its_editor_focused_colorful(
+        cx: &mut TestAppContext,
+    ) {
+        clearing(cx, false);
+    }
+    #[gpui::test]
+    fn projects_search_clear_button_sits_in_the_field_and_keeps_its_editor_focused_native(
+        cx: &mut TestAppContext,
+    ) {
+        clearing(cx, true);
     }
 }

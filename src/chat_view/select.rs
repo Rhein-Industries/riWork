@@ -1,120 +1,343 @@
-//! Selecting the text of a message with the mouse and copying it with ⌘C.
-//!
-//! GPUI has no selectable text, so each run of text that can be selected (a paragraph, a
-//! heading, a table cell, a code block, one of your own messages) is a `StyledText` whose
-//! layout answers which character is under the pointer. A press starts a selection in that
-//! run, dragging within it extends the selection, a double click takes a word and a triple
-//! click the whole run. One selection exists at a time, and it stays within its run.
-
-use std::ops::Range;
-
+//! One persistent Base participant for the virtual transcript document.
+//! Base owns all gestures/endpoints/multi-click/Shift/autoscroll. The renderer
+//! reports glyph runs; stable content keys and copy_with export current source,
+//! including leaves whose elements have genuinely left the virtual list.
+use super::{ChatView, selection_document::SourceLeaf, widgets::Look};
 use gpui::{
-    AnyElement, Context, ElementId, HighlightStyle, InteractiveText, MouseButton, MouseDownEvent,
-    MouseMoveEvent, SharedString, StyledText, TextLayout, div, prelude::*, rgb,
+    AnyElement, AnyWindowHandle, App, Bounds, Context, Element, ElementId, Focusable,
+    GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, InspectorElementId, InteractiveText,
+    IntoElement, LayoutId, ListState, Pixels, Point, SharedString, StyledText, Subscription,
+    TextLayout, Window, div, prelude::*, rgb,
+};
+use gpui_kit::base::{
+    TestSupportExt as _, TextSelection, TextSelectionContentKey, TextSelectionEvent,
+    TextSelectionHandle, TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId,
+    TextSelectionSnapshot,
+};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    ops::Range,
+    rc::Rc,
 };
 
-use crate::terminal_links::is_openable_url;
-
-use super::{ChatView, widgets::Look};
-
-/// The selected part of one run of text.
-pub(super) struct Selection {
-    /// Which run: the same string every time that run is drawn.
-    pub key: String,
-    pub anchor: usize,
-    pub head: usize,
-    /// What is selected, kept so that ⌘C needs nothing but this.
-    pub text: String,
+#[derive(Clone)]
+struct PaintedLeaf {
+    key: String,
+    text: SharedString,
+    layout: TextLayout,
+    bounds: Bounds<Pixels>,
+    clip: Bounds<Pixels>,
+    order: u64,
+}
+#[derive(Default)]
+struct Document {
+    source: Vec<SourceLeaf>,
+    ids: HashMap<String, u32>,
+    next_id: u32,
+    frame: Vec<PaintedLeaf>,
+    origin: Point<Pixels>,
+    scroll: Point<Pixels>,
+    native: Option<bool>,
+    participant: Option<gpui::EntityId>,
 }
 
-impl Selection {
-    fn range(&self) -> Range<usize> {
-        self.anchor.min(self.head)..self.anchor.max(self.head)
+impl Document {
+    fn endpoint(&self, key: TextSelectionContentKey) -> Option<(usize, usize)> {
+        let id = (key.value() >> 32) as u32;
+        let byte = key.value() as u32 as usize;
+        let at = self
+            .source
+            .iter()
+            .position(|leaf| self.ids.get(&leaf.key) == Some(&id))?;
+        let text = &self.source[at].text;
+        (byte <= text.len() && text.is_char_boundary(byte)).then_some((at, byte))
+    }
+    fn endpoints(
+        &self,
+        snapshot: TextSelectionSnapshot,
+    ) -> Option<((usize, usize), (usize, usize))> {
+        if snapshot.anchor().entity_id() != self.participant
+            || snapshot.cursor().entity_id() != self.participant
+        {
+            return None;
+        }
+        let a = self.endpoint(snapshot.anchor().content_key()?)?;
+        let b = self.endpoint(snapshot.cursor().content_key()?)?;
+        Some((a.min(b), a.max(b)))
+    }
+    fn export(&self, snapshot: Option<TextSelectionSnapshot>) -> String {
+        let Some((a, b)) = snapshot.and_then(|s| self.endpoints(s)) else {
+            return String::new();
+        };
+        if a == b {
+            return String::new();
+        }
+        // One newline between displayed leaves/cells/messages; code's embedded
+        // newlines and all indentation/trailing/blank-only bytes stay exact.
+        (a.0..=b.0)
+            .map(|at| {
+                let text = &self.source[at].text;
+                let start = if at == a.0 { a.1 } else { 0 };
+                let end = if at == b.0 { b.1 } else { text.len() };
+                &text[start..end]
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    fn rows(&self, snapshot: Option<TextSelectionSnapshot>) -> Vec<usize> {
+        let Some((a, b)) = snapshot.and_then(|s| self.endpoints(s)) else {
+            return Vec::new();
+        };
+        self.source[a.0..=b.0].iter().map(|leaf| leaf.row).collect()
+    }
+    fn content_key(&self, point: Point<Pixels>) -> Option<TextSelectionContentKey> {
+        let window_point = point + self.origin + self.scroll;
+        // Renderer mapping only: native TextLayout supplies Unicode/wrap-safe
+        // glyph hit testing. No mouse history, word or gesture algorithm here.
+        let leaf = self
+            .frame
+            .iter()
+            .filter(|leaf| leaf.bounds.intersect(&leaf.clip).contains(&window_point))
+            .min_by_key(|leaf| leaf.order)
+            .or_else(|| {
+                self.frame
+                    .iter()
+                    .filter(|leaf| leaf.bounds.top() <= window_point.y)
+                    .max_by_key(|leaf| leaf.order)
+            })
+            .or_else(|| self.frame.iter().min_by_key(|leaf| leaf.order))?;
+        let byte = leaf
+            .layout
+            .index_for_position(window_point)
+            .unwrap_or_else(|byte| byte)
+            .min(leaf.text.len());
+        if !leaf.text.is_char_boundary(byte) {
+            return None;
+        }
+        let id = *self.ids.get(&leaf.key)?;
+        Some(TextSelectionContentKey::new(
+            (u64::from(id) << 32) | u64::from(u32::try_from(byte).ok()?),
+        ))
     }
 }
 
-/// `at` moved back to the start of the character it is in, and no further than the text.
-fn char_start(text: &str, at: usize) -> usize {
-    let mut at = at.min(text.len());
-    while !text.is_char_boundary(at) {
-        at -= 1;
-    }
-    at
+pub(super) struct TranscriptSelection {
+    pub scope: TextSelectionScopeId,
+    handle: TextSelectionHandle,
+    data: Rc<RefCell<Document>>,
+    dirty: Cell<bool>,
+    _refresh: Subscription,
 }
-
-/// The word around `at`: letters, digits and underscores, or if `at` is on something else the
-/// run of that kind of character.
-pub(super) fn word_at(text: &str, at: usize) -> Range<usize> {
-    let at = char_start(text, at);
-    let Some(here) = text[at..].chars().next() else {
-        return at..at;
-    };
-    let kind = |c: char| {
-        if c.is_alphanumeric() || c == '_' {
-            0
-        } else if c.is_whitespace() {
-            1
-        } else {
-            2
-        }
-    };
-    let wanted = kind(here);
-    let start = text[..at]
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| kind(*c) == wanted)
-        .last()
-        .map_or(at, |(offset, _)| offset);
-    let end = text[at..]
-        .char_indices()
-        .find(|(_, c)| kind(*c) != wanted)
-        .map_or(text.len(), |(offset, _)| at + offset);
-    start..end
-}
-
-/// `highlights` (sorted, not overlapping) with `selected` laid over them: where the two meet
-/// the text keeps its own style and takes the selection's background.
-pub(super) fn with_selection(
-    highlights: Vec<(Range<usize>, HighlightStyle)>,
-    selected: Range<usize>,
-    selection: HighlightStyle,
-) -> Vec<(Range<usize>, HighlightStyle)> {
-    let mut out = Vec::with_capacity(highlights.len() + 2);
-    // Where the selection is not yet accounted for.
-    let mut covered = selected.start;
-    for (range, style) in highlights {
-        if range.end <= selected.start || range.start >= selected.end {
-            out.push((range, style));
-            continue;
-        }
-        if range.start < selected.start {
-            out.push((range.start..selected.start, style));
-        }
-        let inside = range.start.max(selected.start)..range.end.min(selected.end);
-        if covered < inside.start {
-            out.push((covered..inside.start, selection));
-        }
-        covered = inside.end;
-        out.push((
-            inside,
-            HighlightStyle {
-                background_color: selection.background_color,
-                ..style
+impl TranscriptSelection {
+    pub fn new(window: AnyWindowHandle, owner: gpui::WeakEntity<ChatView>, cx: &mut App) -> Self {
+        let handle = TextSelectionHandle::new("", cx);
+        let participant = handle.entity_id();
+        let data = Rc::new(RefCell::new(Document::default()));
+        data.borrow_mut().participant = Some(handle.entity_id());
+        // This participant covers the viewport, including child controls. Base
+        // defers its focus callback for any point inside that viewport, even
+        // outside glyphs; focusing ChatView there would steal a button's focus.
+        // ChatView's native track_focus already transfers text clicks while
+        // respecting the child's native prevent_default when it takes focus.
+        let source = data.clone();
+        let weak = Rc::downgrade(&source);
+        handle.resolve_content_key_with(
+            move |point, _| weak.upgrade()?.borrow().content_key(point),
+            cx,
+        );
+        handle.copy_with(
+            move |cx| {
+                let Some(owner) = owner.upgrade() else {
+                    return String::new();
+                };
+                let selection = &owner.read(cx).transcript_selection;
+                if selection.handle.entity_id() != participant {
+                    return String::new();
+                }
+                selection
+                    .data
+                    .borrow()
+                    .export(selection.handle.snapshot(cx))
             },
-        ));
-        if range.end > selected.end {
-            out.push((selected.end..range.end, style));
+            cx,
+        );
+        let refresh = handle.subscribe(
+            move |event, cx| {
+                if matches!(event, TextSelectionEvent::SelectionChanged(_)) {
+                    let _ = window.update(cx, |_, window, _| window.refresh());
+                }
+            },
+            cx,
+        );
+        Self {
+            scope: TextSelectionScopeId::new(),
+            handle,
+            data,
+            dirty: Cell::new(true),
+            _refresh: refresh,
         }
     }
-    if covered < selected.end {
-        out.push((covered..selected.end, selection));
+    pub fn changed(&self) {
+        self.dirty.set(true);
     }
-    out.sort_by_key(|(range, _)| range.start);
-    out
+    pub fn selected_rows(&self, cx: &App) -> Vec<usize> {
+        self.data.borrow().rows(self.handle.snapshot(cx))
+    }
+    pub fn clear(&self, window: AnyWindowHandle, cx: &mut App) {
+        if self.handle.snapshot(cx).is_some() || self.handle.has_local_selection(cx) {
+            TextSelection::clear_for_window(window.window_id(), cx);
+        }
+    }
+    pub fn retire(&mut self, window: AnyWindowHandle, cx: &mut App) {
+        self.clear(window, cx);
+        let scope = self.scope;
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                crate::behavior_controls::retire_content_scope(scope, window, cx)
+            });
+        });
+        self.data.borrow_mut().source.clear();
+        self.data.borrow_mut().frame.clear();
+        self.handle.update_runs(&[], cx);
+        self.scope = TextSelectionScopeId::new();
+        self.changed();
+    }
+    pub fn viewport(&self, body: impl IntoElement, list: ListState, look: Look) -> AnyElement {
+        DocumentViewport {
+            body: body.into_any_element(),
+            data: self.data.clone(),
+            handle: self.handle.clone(),
+            scope: self.scope,
+            list,
+            color: rgb(look.tint(look.colors.cyan, 0.4)).into(),
+        }
+        .into_any_element()
+    }
+    #[cfg(test)]
+    pub(super) fn glyph_point(&self, key: &str, byte: usize) -> Option<Point<Pixels>> {
+        let data = self.data.borrow();
+        let leaf = data.frame.iter().find(|leaf| leaf.key == key)?;
+        let point = leaf.layout.position_for_index(byte)?;
+        Some(point + gpui::point(gpui::px(0.), leaf.layout.line_height() / 2.))
+    }
+    #[cfg(test)]
+    pub(super) fn glyph_span_points(&self, key: &str) -> (Point<Pixels>, Point<Pixels>) {
+        let data = self.data.borrow();
+        let leaf = data
+            .frame
+            .iter()
+            .find(|leaf| leaf.key == key)
+            .unwrap_or_else(|| panic!("missing painted glyph layout: {key}"));
+        let caret = |byte| {
+            leaf.layout
+                .position_for_index(byte)
+                .unwrap_or_else(|| panic!("missing native caret: {key} byte {byte}"))
+        };
+        // A Div's right edge minus one is inside the last glyph. Native hit
+        // testing returns that glyph's starting byte, not its ending caret.
+        // Dispatch at the real first glyph and just past the final caret.
+        let offset = gpui::point(gpui::px(1.), leaf.layout.line_height() / 2.);
+        let first = caret(0) + offset;
+        let last = caret(leaf.text.len()) + offset;
+        let source_at = data
+            .source
+            .iter()
+            .position(|source| source.key == key)
+            .unwrap();
+        for (point, byte) in [(first, 0), (last, leaf.text.len())] {
+            assert!(
+                leaf.clip.contains(&point),
+                "clipped glyph endpoint: {key} byte {byte}"
+            );
+            assert_eq!(
+                leaf.layout
+                    .index_for_position(point)
+                    .unwrap_or_else(|byte| byte),
+                byte,
+                "native glyph endpoint: {key} at {point:?} layout {:?} clip {:?}",
+                leaf.bounds,
+                leaf.clip,
+            );
+            let resolved = data
+                .content_key(point - data.origin - data.scroll)
+                .and_then(|key| data.endpoint(key));
+            assert_eq!(
+                resolved,
+                Some((source_at, byte)),
+                "source endpoint: {key} at {point:?}"
+            );
+        }
+        (first, last)
+    }
 }
 
 impl ChatView {
-    /// A run of text the mouse can select in. `links` are parts of it that open an address.
+    pub(super) fn refresh_selection_document(&mut self, look: Look, cx: &mut Context<Self>) {
+        if !self.transcript_selection.dirty.replace(false)
+            && self.transcript_selection.data.borrow().native == Some(look.native)
+        {
+            return;
+        }
+        let source = super::selection_document::leaves(self, look);
+        let changed_selected = {
+            let old = self.transcript_selection.data.borrow();
+            old.rows(self.transcript_selection.handle.snapshot(cx))
+                .into_iter()
+                .any(|row| {
+                    old.source
+                        .iter()
+                        .filter(|leaf| leaf.row == row)
+                        .ne(source.iter().filter(|leaf| leaf.row == row))
+                })
+        };
+        if changed_selected {
+            self.transcript_selection.clear(self.window_handle, cx);
+        }
+        let mut data = self.transcript_selection.data.borrow_mut();
+        for leaf in &source {
+            if !data.ids.contains_key(&leaf.key) {
+                data.next_id = data
+                    .next_id
+                    .checked_add(1)
+                    .expect("transcript leaf identity exhausted");
+                let id = data.next_id;
+                data.ids.insert(leaf.key.clone(), id);
+            }
+        }
+        data.source = source;
+        data.native = Some(look.native);
+    }
+    pub(super) fn copy_transcript(
+        &mut self,
+        _: &gpui_kit::base::input::Copy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.composer.read(cx).focus_handle(cx).is_focused(window)
+            || self
+                .model_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .answers
+                .values()
+                .any(|answer| answer.state.read(cx).focus_handle(cx).is_focused(window))
+        {
+            TextSelection::clear(window, cx);
+            return;
+        }
+        // Query our source projection directly: Base's multi-participant
+        // compositor filters whitespace-only contributions before Root Copy.
+        let snapshot = self.transcript_selection.handle.snapshot(cx);
+        let text = self.transcript_selection.data.borrow().export(snapshot);
+        if text.is_empty() {
+            cx.propagate();
+        } else {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        }
+    }
     pub(super) fn selectable(
         &self,
         key: &str,
@@ -127,7 +350,7 @@ impl ChatView {
         for (range, target) in super::links::detect(&text, key.starts_with("code:")) {
             if links
                 .iter()
-                .all(|(existing, _)| existing.end <= range.start || existing.start >= range.end)
+                .all(|(other, _)| other.end <= range.start || other.start >= range.end)
             {
                 if highlights.is_empty() {
                     highlights.push((
@@ -142,205 +365,326 @@ impl ChatView {
             }
         }
         links.sort_by_key(|(range, _)| range.start);
-        let selected = self
-            .selection
-            .as_ref()
-            .filter(|selection| selection.key == key)
-            .map(Selection::range)
-            .filter(|range| {
-                !range.is_empty()
-                    && range.end <= text.len()
-                    && text.is_char_boundary(range.start)
-                    && text.is_char_boundary(range.end)
-            });
-        let highlights = match selected {
-            Some(range) => with_selection(
-                highlights,
-                range,
-                HighlightStyle {
-                    background_color: Some(rgb(look.tint(look.colors.cyan, 0.4)).into()),
-                    ..Default::default()
-                },
-            ),
-            None => highlights,
-        };
+        let text: SharedString = text.into();
         let styled = StyledText::new(text.clone()).with_highlights(highlights);
         let layout = styled.layout().clone();
-        let link_ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
         let body = if links.is_empty() {
             styled.into_any_element()
         } else {
-            let urls: Vec<String> = links.into_iter().map(|(_, url)| url).collect();
+            let ranges = links.iter().map(|(range, _)| range.clone()).collect();
+            let targets = links
+                .into_iter()
+                .map(|(_, target)| target)
+                .collect::<Vec<_>>();
             let view = cx.weak_entity();
-            InteractiveText::new(
-                ElementId::Name(SharedString::from(format!("text:{key}"))),
-                styled,
-            )
-            .on_click(link_ranges.clone(), move |at, _, cx| {
-                if let Some(url) = urls.get(at) {
-                    if is_openable_url(url) {
-                        cx.open_url(url);
-                    } else {
-                        let _ = view.update(cx, |_, cx| {
-                            cx.emit(super::ChatViewEvent::OpenFile {
-                                target: url.clone(),
-                            })
-                        });
-                    }
-                }
-            })
-            .into_any_element()
-        };
-        let (down_key, down_text, down_layout) = (key.to_owned(), text.clone(), layout.clone());
-        let (move_key, move_text) = (key.to_owned(), text);
-        div()
-            .min_w_0()
-            .cursor_text()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                    view.focus.focus(window, cx);
-                    let at = char_start(&down_text, index_at(&down_layout, event.position));
-                    // A press on a link is the link's.
-                    if link_ranges.iter().any(|range| range.contains(&at)) {
-                        view.selection = None;
-                        cx.notify();
+            let handle = self.transcript_selection.handle.clone();
+            let data = self.transcript_selection.data.clone();
+            InteractiveText::new(ElementId::Name(format!("links:{key}").into()), styled)
+                .on_click(ranges, move |at, window, cx| {
+                    let snapshot = handle.snapshot(cx);
+                    if !data.borrow().export(snapshot).is_empty()
+                        || snapshot
+                            .and_then(|s| s.window_points())
+                            .is_some_and(|p| p.anchor() != p.cursor())
+                    {
                         return;
                     }
-                    let range = match event.click_count {
-                        0 | 1 => at..at,
-                        2 => word_at(&down_text, at),
-                        _ => 0..down_text.len(),
-                    };
-                    view.selection = Some(Selection {
-                        key: down_key.clone(),
-                        anchor: range.start,
-                        head: range.end,
-                        text: down_text[range].to_owned(),
-                    });
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
-            .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, cx| {
-                if !event.dragging() {
-                    return;
-                }
-                let Some(selection) = view.selection.as_mut().filter(|s| s.key == move_key) else {
-                    return;
-                };
-                // The run may have changed since the press, while it was streaming.
-                let at = char_start(&move_text, index_at(&layout, event.position));
-                let anchor = char_start(&move_text, selection.anchor);
-                if selection.head != at || selection.anchor != anchor {
-                    selection.anchor = anchor;
-                    selection.head = at;
-                    selection.text = move_text[anchor.min(at)..anchor.max(at)].to_owned();
-                    cx.notify();
-                }
-            }))
-            .child(body)
+                    if let Some(target) = targets.get(at) {
+                        if crate::terminal_links::is_openable_url(target) {
+                            cx.open_url(target);
+                        } else {
+                            let _ = view.update(cx, |_, cx| {
+                                cx.emit(super::ChatViewEvent::OpenFile {
+                                    target: target.clone(),
+                                })
+                            });
+                        }
+                    }
+                })
+                .into_any_element()
+        };
+        div()
+            .id(ElementId::Name(format!("transcript:{key}").into()))
+            .min_w_0()
+            .cursor_text()
+            .role(gpui::Role::Label)
+            .aria_label(text.clone())
+            .child(LeafRenderer {
+                body,
+                key: key.into(),
+                text,
+                layout,
+                data: self.transcript_selection.data.clone(),
+            })
+            .test_support()
             .into_any_element()
     }
+}
 
-    /// Copy the selected text. Whether there was any.
-    pub(super) fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
-        match self.selection.as_ref().filter(|s| !s.text.is_empty()) {
-            Some(selection) => {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(selection.text.clone()));
-                true
-            }
-            None => false,
+struct LeafRenderer {
+    body: AnyElement,
+    key: String,
+    text: SharedString,
+    layout: TextLayout,
+    data: Rc<RefCell<Document>>,
+}
+impl IntoElement for LeafRenderer {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for LeafRenderer {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        Some(ElementId::Name(format!("leaf:{}", self.key).into()))
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.body.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.body.prepaint(window, cx);
+        let mut data = self.data.borrow_mut();
+        if let Some(order) = data.source.iter().position(|leaf| leaf.key == self.key) {
+            debug_assert_eq!(
+                data.source[order].text.as_str(),
+                self.text.as_ref(),
+                "renderer/source export drift"
+            );
+            data.frame.push(PaintedLeaf {
+                key: self.key.clone(),
+                text: self.text.clone(),
+                layout: self.layout.clone(),
+                bounds: self.layout.bounds(),
+                clip: window.content_mask().bounds,
+                order: order as u64,
+            });
         }
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.body.paint(window, cx);
     }
 }
 
-/// The character under `position`, or the nearest one.
-fn index_at(layout: &TextLayout, position: gpui::Point<gpui::Pixels>) -> usize {
-    match layout.index_for_position(position) {
-        Ok(at) | Err(at) => at,
+struct DocumentViewport {
+    body: AnyElement,
+    data: Rc<RefCell<Document>>,
+    handle: TextSelectionHandle,
+    scope: TextSelectionScopeId,
+    list: ListState,
+    color: Hsla,
+}
+impl IntoElement for DocumentViewport {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn style(color: u32) -> HighlightStyle {
-        HighlightStyle {
-            color: Some(rgb(color).into()),
-            ..Default::default()
-        }
+impl Element for DocumentViewport {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        Some("transcript-document".into())
     }
-
-    fn marked() -> HighlightStyle {
-        HighlightStyle {
-            background_color: Some(rgb(0x123456).into()),
-            ..Default::default()
-        }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
     }
-
-    #[test]
-    fn a_double_click_takes_the_word_a_symbol_run_or_a_space_run() {
-        let text = "let x_1 = foo::bar(42);";
-        assert_eq!(&text[word_at(text, 5)], "x_1");
-        assert_eq!(&text[word_at(text, 4)], "x_1");
-        assert_eq!(&text[word_at(text, 7)], " ", "the one space");
-        assert_eq!(&text[word_at(text, 13)], "::");
-        assert_eq!(&text[word_at(text, 8)], "=");
-        assert_eq!(&text[word_at(text, 0)], "let");
-        // At the end of the text, on a character in the middle of a multi-byte one, and in nothing.
-        assert_eq!(word_at(text, text.len()), text.len()..text.len());
-        assert_eq!(&"héllo wörld"[word_at("héllo wörld", 2)], "héllo");
-        assert_eq!(word_at("", 0), 0..0);
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.body.request_layout(window, cx), ())
     }
-
-    #[test]
-    fn a_selection_over_plain_text_is_one_highlight() {
-        assert_eq!(
-            with_selection(vec![], 3..8, marked()),
-            vec![(3..8, marked())]
-        );
-    }
-
-    #[test]
-    fn a_selection_keeps_the_style_of_the_text_it_covers_and_takes_the_background() {
-        let bold = style(1);
-        let code = style(2);
-        // |0..4 bold| 4..6 plain |6..10 code| 12..14 bold, selected 2..11.
-        let out = with_selection(
-            vec![(0..4, bold), (6..10, code), (12..14, bold)],
-            2..11,
-            marked(),
-        );
-        let marked_over = |style: HighlightStyle| HighlightStyle {
-            background_color: marked().background_color,
-            ..style
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.data.borrow_mut().frame.clear();
+        self.body.prepaint(window, cx);
+        let bounds = self.list.viewport_bounds();
+        let scroll = self.list.scroll_px_offset_for_scrollbar();
+        let text_bounds = {
+            let mut data = self.data.borrow_mut();
+            data.origin = bounds.origin;
+            data.scroll = scroll;
+            data.frame
+                .iter()
+                .map(|leaf| leaf.bounds.intersect(&leaf.clip))
+                .collect()
         };
-        assert_eq!(
-            out,
-            vec![
-                (0..2, bold),
-                (2..4, marked_over(bold)),
-                (4..6, marked()),
-                (6..10, marked_over(code)),
-                (10..11, marked()),
-                (12..14, bold),
-            ]
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        self.handle.register(
+            TextSelectionRegistration::new(hitbox, bounds)
+                .with_scope(self.scope)
+                .with_scroll_offset(scroll)
+                .with_document_order(0)
+                .with_text_bounds(text_bounds)
+                .with_rendered_element(&self.handle, window, cx),
+            window,
+            cx,
         );
-        // The pieces are in order and do not overlap, as `StyledText` needs.
-        for pair in out.windows(2) {
-            assert!(pair[0].0.end <= pair[1].0.start, "{out:?}");
-        }
+        let runs = self
+            .data
+            .borrow()
+            .frame
+            .iter()
+            .map(|leaf| {
+                TextSelectionRun::new(
+                    leaf.text.clone(),
+                    leaf.layout.clone(),
+                    leaf.bounds.intersect(&leaf.clip),
+                )
+                .with_document_order(leaf.order)
+            })
+            .collect::<Vec<_>>();
+        self.handle.update_runs(&runs, cx);
     }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.body.paint(window, cx);
+        let data = self.data.borrow();
+        let runs = data
+            .frame
+            .iter()
+            .map(|leaf| {
+                TextSelectionRun::new(
+                    leaf.text.clone(),
+                    leaf.layout.clone(),
+                    leaf.bounds.intersect(&leaf.clip),
+                )
+                .with_document_order(leaf.order)
+            })
+            .collect::<Vec<_>>();
+        let projection = self.handle.update_runs(&runs, cx);
+        let endpoints = self
+            .handle
+            .snapshot(cx)
+            .and_then(|snapshot| data.endpoints(snapshot));
+        window.with_content_mask(
+            Some(gpui::ContentMask {
+                bounds: self.list.viewport_bounds(),
+            }),
+            |window| {
+                for (leaf, range) in data.frame.iter().zip(projection.ranges()) {
+                    // Source endpoints keep the decoration anchored when earlier
+                    // variable-height virtual rows are measured, or nested code
+                    // scrolling moves their glyphs. This is the same source copy
+                    // projection; Base still owns endpoint creation/extension.
+                    let source_range = endpoints.and_then(|(a, b)| {
+                        let order = leaf.order as usize;
+                        (a.0 <= order && order <= b.0).then(|| {
+                            (if order == a.0 { a.1 } else { 0 })..(if order == b.0 {
+                                b.1
+                            } else {
+                                leaf.text.len()
+                            })
+                        })
+                    });
+                    let range = if endpoints.is_some() {
+                        source_range
+                    } else {
+                        range.clone()
+                    };
+                    if let Some(range) = range {
+                        if !range.is_empty() {
+                            window.with_content_mask(
+                                Some(gpui::ContentMask { bounds: leaf.clip }),
+                                |window| {
+                                    paint_projection(&leaf.layout, range, self.color, window, cx)
+                                },
+                            );
+                        }
+                    }
+                }
+            },
+        );
+    }
+}
 
-    #[test]
-    fn a_style_that_runs_past_both_ends_of_the_selection_is_split_in_three() {
-        let bold = style(1);
-        let out = with_selection(vec![(0..10, bold)], 3..6, marked());
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0], (0..3, bold));
-        assert_eq!(out[1].0, 3..6);
-        assert_eq!(out[2], (6..10, bold));
+fn paint_projection(
+    layout: &TextLayout,
+    range: Range<usize>,
+    color: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (Some(start), Some(end)) = (
+        layout.position_for_index(range.start),
+        layout.position_for_index(range.end),
+    ) else {
+        return;
+    };
+    let bounds = layout.bounds();
+    let height = layout.line_height();
+    let mut quads = Vec::new();
+    if start.y == end.y {
+        quads.push(Bounds::from_corners(
+            start,
+            Point::new(end.x, end.y + height),
+        ));
+    } else {
+        quads.push(Bounds::from_corners(
+            start,
+            Point::new(bounds.right(), start.y + height),
+        ));
+        if end.y > start.y + height {
+            quads.push(Bounds::from_corners(
+                Point::new(bounds.left(), start.y + height),
+                Point::new(bounds.right(), end.y),
+            ));
+        }
+        quads.push(Bounds::from_corners(
+            Point::new(bounds.left(), end.y),
+            Point::new(end.x, end.y + height),
+        ));
+    }
+    for quad in quads {
+        window.paint_quad(gpui::fill(quad, color));
+        window.with_content_mask(Some(gpui::ContentMask { bounds: quad }), |window| {
+            let _ = layout.paint_foreground(window, cx);
+        });
     }
 }

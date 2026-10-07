@@ -4,8 +4,6 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::{Action, App, Global, MenuItem, WindowId};
 
-use crate::Workspace;
-
 const UNTITLED: &str = "Untitled project";
 
 /// Raises one window. The id is GPUI's `WindowId` as a `u64`; a window closed since
@@ -201,18 +199,15 @@ fn activate_window(id: u64, cx: &mut App) {
 fn new_window(cx: &mut App) {
     cx.defer(|cx| {
         let front = cx.window_stack().unwrap_or_else(|| cx.windows());
-        let Some(handle) = front
-            .into_iter()
-            .find_map(|handle| handle.downcast::<Workspace>())
-        else {
-            return;
-        };
-        let opened = handle.update(cx, |workspace, _, cx| {
-            let project_id = workspace.project_id.clone();
-            workspace.open_project_window(&project_id, cx);
-        });
-        if opened.is_ok() {
-            cx.activate(true);
+        for handle in front {
+            let opened = crate::with_workspace(handle, cx, |workspace, _, cx| {
+                let project_id = workspace.project_id.clone();
+                workspace.open_project_window(&project_id, cx);
+            });
+            if matches!(opened, Ok(Some(()))) {
+                cx.activate(true);
+                break;
+            }
         }
     });
 }

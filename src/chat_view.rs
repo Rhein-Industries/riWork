@@ -56,6 +56,9 @@ mod panels;
 mod prose;
 mod rows;
 mod select;
+mod selection_document;
+#[cfg(test)]
+mod selection_tests;
 mod state;
 #[cfg(test)]
 mod testing;
@@ -120,12 +123,10 @@ struct Draft {
 struct Caches {
     /// Parsed messages by item id, with a hash of the text they were parsed from.
     markdown: HashMap<String, (u64, Arc<Vec<markdown::Block>>)>,
-    /// Lines added and removed per file of a file change, by item id and the size of the
-    /// diffs it was counted at.
-    changes: HashMap<String, (usize, cards::FileStats)>,
-    /// The lines of a file's diff that are drawn, by item id and file, with the size of the
-    /// diff they were read at.
-    diffs: HashMap<String, (usize, Arc<DrawnDiff>)>,
+    /// Counts invalidated by exact changes, including same-length replacements.
+    changes: HashMap<String, (Vec<crate::chat::model::FileChange>, cards::FileStats)>,
+    /// Rich diff text and its kind, including same-length streaming replacements.
+    diffs: HashMap<String, (String, crate::chat::model::ChangeKind, Arc<DrawnDiff>)>,
     /// The boxes that scroll in the transcript, by name.
     scrollers: HashMap<String, widgets::Scroller>,
 }
@@ -197,8 +198,8 @@ pub struct ChatView {
     /// The message box row's width as last laid out, which decides where its buttons go
     /// (see `composer::fit`); zero until it is first drawn.
     composer_width: std::rc::Rc<std::cell::Cell<f32>>,
-    /// What the mouse has selected in the transcript.
-    selection: Option<select::Selection>,
+    /// Base participants for the visible, styled transcript; Base owns selection.
+    transcript_selection: select::TranscriptSelection,
     /// What the window was last told, so it hears of changes only.
     announced: Option<Summary>,
     /// Dictation into the message box.
@@ -254,7 +255,12 @@ impl ChatView {
             view.follow_display_setting(cx);
         })
         .detach();
-        cx.on_release(|view, cx| view.release_images(cx)).detach();
+        cx.on_release(|view, cx| {
+            view.transcript_selection.retire(view.window_handle, cx);
+            view.release_images(cx);
+            view.release_attachment_previews(cx);
+        })
+        .detach();
         let composer =
             text_input::multiline("", "Message", 1, 8, EnterBehavior::Submit, window, cx);
         let model_input = text_input::single_line("", "model name, then ⏎", window, cx);
@@ -262,6 +268,9 @@ impl ChatView {
             cx.subscribe_in(&composer, window, Self::composer_event),
             cx.subscribe_in(&model_input, window, Self::model_event),
         ];
+        let focus = cx.focus_handle();
+        let transcript_selection =
+            select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
         Self {
             config,
             window_handle: window.window_handle(),
@@ -282,7 +291,7 @@ impl ChatView {
             media: Default::default(),
             preview_root: None,
             scale: ui_text::scale(),
-            focus: cx.focus_handle(),
+            focus,
             composer,
             model_input,
             subscriptions,
@@ -312,7 +321,7 @@ impl ChatView {
             copied: None,
             forget_copy: None,
             caches: RefCell::new(Caches::default()),
-            selection: None,
+            transcript_selection,
             announced: None,
             dictation: dictate::Dictation::default(),
             speech_names: Vec::new(),
@@ -340,6 +349,7 @@ impl ChatView {
 
     /// Give the keys to the message box.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        gpui_kit::base::TextSelection::clear(window, cx);
         self.composer.read(cx).focus_handle(cx).focus(window, cx);
     }
 
@@ -457,6 +467,7 @@ impl ChatView {
                 FeedMsg::Link(link) => {
                     self.model.link = link;
                     if link == Link::Deleted {
+                        self.transcript_selection.retire(self.window_handle, cx);
                         self.feed = None;
                     }
                 }
@@ -478,7 +489,7 @@ impl ChatView {
             }
         }
         let applied = self.model.apply(&events);
-        self.sync_list(&applied);
+        self.sync_list(&applied, cx);
         self.forget_settled();
         self.ready_inputs(window, cx);
         self.announce(cx);
@@ -487,9 +498,25 @@ impl ChatView {
 
     /// Tell the list about the rows that came or changed. Rows are measured when they are
     /// drawn, so a row that changed must be measured again.
-    fn sync_list(&mut self, applied: &Applied) {
+    fn sync_list(&mut self, applied: &Applied, cx: &mut Context<Self>) {
+        self.transcript_selection.changed();
+        // Streaming content cannot leave an old copied projection. Unrelated
+        // tail updates preserve selection and participant/editor identities.
+        let selected_changed = self
+            .transcript_selection
+            .selected_rows(cx)
+            .into_iter()
+            .any(|row| match self.visible.get(row) {
+                Some(display::Row::Item(at) | display::Row::Details(at)) => {
+                    applied.touched.contains(at)
+                }
+                _ => false,
+            });
+        if selected_changed {
+            self.transcript_selection.clear(self.window_handle, cx);
+        }
         if applied.projection_changed {
-            self.refresh_projection();
+            self.refresh_projection(cx);
         }
         for (row, item) in self.visible.iter().enumerate() {
             let touched = match item {
@@ -507,13 +534,17 @@ impl ChatView {
             .remeasure_items(self.items_in_list..self.items_in_list + 1);
     }
 
-    fn refresh_projection(&mut self) {
+    fn refresh_projection(&mut self, cx: &mut Context<Self>) {
+        self.transcript_selection.changed();
         let rows = display::rows(
             &self.model.transcript,
             &self.model.completed,
             self.display_mode,
         );
         if rows != self.visible {
+            if !rows.starts_with(&self.visible) {
+                self.transcript_selection.retire(self.window_handle, cx);
+            }
             let prefix = rows
                 .iter()
                 .zip(&self.visible)
@@ -548,8 +579,8 @@ impl ChatView {
             let offset = self.list.logical_scroll_top();
             let anchor = self.visible.get(offset.item_ix).cloned();
             self.display_mode = mode;
-            self.selection = None;
-            self.refresh_projection();
+            self.transcript_selection.retire(self.window_handle, cx);
+            self.refresh_projection(cx);
             self.list.remeasure();
             if tail {
                 self.list.scroll_to_end();
@@ -618,9 +649,10 @@ impl ChatView {
     }
 
     /// The list's rows were measured at another text size.
-    fn follow_text_size(&mut self) {
+    fn follow_text_size(&mut self, cx: &mut Context<Self>) {
         let scale = ui_text::scale();
         if scale != self.scale {
+            self.transcript_selection.clear(self.window_handle, cx);
             self.scale = scale;
             self.list.remeasure();
         }
@@ -803,6 +835,9 @@ impl ChatView {
     }
 
     fn toggle(&mut self, key: &str, item: Option<usize>, cx: &mut Context<Self>) {
+        self.transcript_selection.changed();
+        // Disclosed/hidden text must not survive as a clipboard selection.
+        self.transcript_selection.clear(self.window_handle, cx);
         if !self.open.remove(key) {
             self.open.insert(key.to_owned());
         }
@@ -985,7 +1020,17 @@ impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
         let colors = look.colors;
-        self.follow_text_size();
+        if self.window_handle != window.window_handle() {
+            self.transcript_selection.retire(self.window_handle, cx);
+            // A participant and its refresh subscription belong to one
+            // window. Old-frame sweeping must never clear the new window's
+            // selection through a reused participant entity.
+            self.transcript_selection =
+                select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
+            self.window_handle = window.window_handle();
+        }
+        self.follow_text_size(cx);
+        self.refresh_selection_document(look, cx);
         self.ready_inputs(window, cx);
         if self.focus_composer {
             self.focus_composer = false;
@@ -1015,6 +1060,7 @@ impl Render for ChatView {
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(Self::interrupt_action))
             .on_action(cx.listener(Self::dictation_action))
+            .on_action(cx.listener(Self::copy_transcript))
             .on_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, _| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "return") {
                     view.enter_down = false;
@@ -1025,7 +1071,18 @@ impl Render for ChatView {
                 }
             }))
             .capture_action(cx.listener(Self::escape_action))
-            .capture_action(cx.listener(Self::copy_action))
+            // Scope ownership only: Base's window layer handles every gesture.
+            .capture_any_mouse_down(cx.listener(
+                |view, event: &gpui::MouseDownEvent, window, cx| {
+                    if event.button == gpui::MouseButton::Left {
+                        crate::behavior_controls::activate_content_scope(
+                            view.transcript_selection.scope,
+                            window,
+                            cx,
+                        );
+                    }
+                },
+            ))
             .child(body)
     }
 }
