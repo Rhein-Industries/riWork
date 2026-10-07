@@ -1228,7 +1228,7 @@ impl ChatView {
 mod hermes_tests {
     use super::*;
     use crate::chat::model::{ItemStatus, MessagePhase, Presentation};
-    use gpui::{TestAppContext, size};
+    use gpui::{Focusable, TestAppContext, size};
     use gpui_kit::test::TestWindowExt;
 
     struct RestoreTypography((f32, ui_text::Face));
