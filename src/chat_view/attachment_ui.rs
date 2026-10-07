@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     chat::{
-        attachments::{Attachment, FILE_BYTES, Preview, SEND_COUNT},
+        attachments::{Attachment, FILE_BYTES, Preview, SEND_COUNT, image_thumbnail},
         client::Client,
     },
     ui_text,
@@ -15,6 +15,7 @@ use gpui::{
     AnyElement, ClipboardEntry, ClipboardItem, Context, ExternalPaths, Image, ImageFormat,
     PathPromptOptions, Window, div, img, prelude::*, rgb,
 };
+use gpui_kit::base::TestSupportExt as _;
 use std::{
     fs,
     io::Write,
@@ -23,6 +24,9 @@ use std::{
     sync::Arc,
 };
 use uuid::Uuid;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone)]
 pub(super) enum Source {
@@ -52,8 +56,15 @@ pub(super) struct Chip {
     pub state: Stage,
     pub open: bool,
     source: Option<Source>,
+    local_preview: Option<Arc<Image>>,
 }
 impl Chip {
+    fn release_local_preview(&mut self, cx: &mut gpui::App) {
+        if let Some(image) = self.local_preview.take() {
+            // Retire after the old frame; also release GPUI's decoded asset cache.
+            cx.defer(move |cx| gpui::ImageSource::Image(image).remove_asset(cx));
+        }
+    }
     pub fn ready(attachment: Attachment) -> Self {
         Self {
             id: attachment.id.clone(),
@@ -61,6 +72,7 @@ impl Chip {
             state: Stage::Ready(attachment),
             open: false,
             source: None,
+            local_preview: None,
         }
     }
     pub fn attachment(&self) -> Option<&Attachment> {
@@ -69,6 +81,19 @@ impl Chip {
         } else {
             None
         }
+    }
+    fn image_preview(&self) -> Option<&PathBuf> {
+        match &self.attachment()?.preview {
+            // Only the validated, bounded host thumbnail, never Source or content.
+            Preview::Image { path } => Some(path),
+            Preview::Text { .. } => None,
+        }
+    }
+    fn preview_source(&self) -> Option<gpui::ImageSource> {
+        if let Stage::Ready(_) = self.state {
+            return self.image_preview().cloned().map(Into::into);
+        }
+        self.local_preview.clone().map(Into::into)
     }
 }
 
@@ -253,8 +278,10 @@ impl ChatView {
                 state: error.map_or(Stage::Pending, Stage::Failed),
                 open: false,
                 source: Some(source.clone()),
+                local_preview: None,
             });
             self.bump_generation();
+            self.start_local_preview(id.clone(), &source, window, cx);
             if self
                 .attachments
                 .last()
@@ -264,6 +291,54 @@ impl ChatView {
             }
         }
         self.focus(window, cx);
+        cx.notify();
+    }
+    fn start_local_preview(
+        &mut self,
+        id: String,
+        source: &Source,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Source::Image { image, .. } = source else {
+            return;
+        };
+        let image = image.clone();
+        // Independent task: never waits for Ensure, a socket or host staging.
+        let work = cx.background_executor().spawn(async move {
+            if !matches!(image.format(), ImageFormat::Png | ImageFormat::Jpeg) {
+                return None;
+            }
+            image_thumbnail(image.bytes()).ok().map(|bytes| {
+                let mut preview = Image::from_bytes(ImageFormat::Png, bytes);
+                // Own this asset independently of identical images in other
+                // chips/windows, so retirement cannot evict their cache.
+                preview.id = Uuid::new_v4().as_u128() as u64;
+                Arc::new(preview)
+            })
+        });
+        self.attachment_tasks
+            .push(cx.spawn_in(window, async move |this, cx| {
+                let preview = work.await;
+                let _ = this.update(cx, |view, cx| view.local_preview_finished(&id, preview, cx));
+            }));
+    }
+    fn local_preview_finished(
+        &mut self,
+        id: &str,
+        preview: Option<Arc<Image>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(chip) = self
+            .attachments
+            .iter_mut()
+            .find(|chip| chip.id == id && !matches!(chip.state, Stage::Ready(_)))
+        else {
+            return;
+        };
+        chip.release_local_preview(cx);
+        chip.local_preview = preview;
+        // Presentation only: never mark Ready or change the editor generation.
         cx.notify();
     }
     fn start_staging(
@@ -284,25 +359,34 @@ impl ChatView {
             .push(cx.spawn_in(window, async move |this, cx| {
                 let result = work.await;
                 let _ = this.update_in(cx, |view, _, cx| {
-                    // Removal/newer staging never resurrects a discarded chip.
-                    let Some(chip) = view
-                        .attachments
-                        .iter_mut()
-                        .find(|chip| chip.id == id && matches!(chip.state, Stage::Pending))
-                    else {
-                        return;
-                    };
-                    chip.state = match result {
-                        Ok(attachment) => {
-                            chip.source = None;
-                            Stage::Ready(attachment)
-                        }
-                        Err(error) => Stage::Failed(error),
-                    };
-                    view.bump_generation();
-                    cx.notify();
+                    view.staging_finished(&id, result, cx);
                 });
             }));
+    }
+    fn staging_finished(
+        &mut self,
+        id: &str,
+        result: Result<Attachment, String>,
+        cx: &mut Context<Self>,
+    ) {
+        // Removal/newer attempt UUIDs never resurrect or overwrite a chip.
+        let Some(chip) = self
+            .attachments
+            .iter_mut()
+            .find(|chip| chip.id == id && matches!(chip.state, Stage::Pending))
+        else {
+            return;
+        };
+        chip.state = match result {
+            Ok(attachment) => {
+                chip.source = None;
+                chip.release_local_preview(cx);
+                Stage::Ready(attachment)
+            }
+            Err(error) => Stage::Failed(error),
+        };
+        self.bump_generation();
+        cx.notify();
     }
     fn retry_staging(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self
@@ -328,14 +412,26 @@ impl ChatView {
         chip.id = Uuid::new_v4().to_string();
         chip.state = Stage::Pending;
         let next = chip.id.clone();
+        let needs_preview = chip.local_preview.is_none();
         self.bump_generation();
+        if needs_preview {
+            self.start_local_preview(next.clone(), &source, window, cx);
+        }
         self.start_staging(next, source, window, cx);
         cx.notify();
     }
     fn remove_attachment(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(chip) = self.attachments.iter_mut().find(|chip| chip.id == id) {
+            chip.release_local_preview(cx);
+        }
         self.attachments.retain(|c| c.id != id);
         self.bump_generation();
         cx.notify();
+    }
+    pub(super) fn release_attachment_previews(&mut self, cx: &mut gpui::App) {
+        for chip in &mut self.attachments {
+            chip.release_local_preview(cx);
+        }
     }
     pub(super) fn attachment_chips(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
         div()
@@ -347,6 +443,7 @@ impl ChatView {
                 let key = chip.id.clone();
                 let toggle = key.clone();
                 let remove = key.clone();
+                let retry = key.clone();
                 let status = match &chip.state {
                     Stage::Pending => "Staging…".into(),
                     Stage::Ready(a) => format!("{} bytes", a.bytes),
@@ -363,12 +460,34 @@ impl ChatView {
                             .flex_wrap()
                             .items_center()
                             .gap(ui_text::space(6.))
+                            .children(chip.preview_source().map(|source| {
+                                div()
+                                    .id(format!("attachment-thumbnail-{key}"))
+                                    .role(gpui::Role::Image)
+                                    .aria_label(format!("Image preview: {}", chip.name))
+                                    .size(ui_text::space(56.))
+                                    .flex_none()
+                                    .rounded(ui_text::space(4.))
+                                    .border_1()
+                                    .border_color(rgb(look.colors.divider))
+                                    .bg(rgb(look.colors.panel_active))
+                                    .overflow_hidden()
+                                    .child(
+                                        img(source)
+                                            .size_full()
+                                            .object_fit(gpui::ObjectFit::Contain),
+                                    )
+                                    .test_support()
+                            }))
                             .child(
                                 button(
                                     format!("attachment-preview-{key}"),
                                     format!("{} {}", if chip.open { "▾" } else { "▸" }, chip.name),
                                     Some(look.colors.cyan),
                                     look,
+                                )
+                                .disabled(
+                                    chip.attachment().is_none() && chip.local_preview.is_none(),
                                 )
                                 .aria_expanded(chip.open)
                                 .accessibility_label(format!("Preview {}", chip.name))
@@ -385,13 +504,17 @@ impl ChatView {
                             )
                             .child(
                                 div()
+                                    .id(format!("attachment-status-{key}"))
+                                    .role(gpui::Role::Label)
+                                    .aria_label(status.clone())
                                     .text_size(ui_text::text(10.))
                                     .text_color(rgb(if matches!(chip.state, Stage::Failed(_)) {
                                         look.colors.gold
                                     } else {
                                         look.colors.muted
                                     }))
-                                    .child(status),
+                                    .child(status)
+                                    .test_support(),
                             )
                             .children(matches!(chip.state, Stage::Failed(_)).then(|| {
                                 button(
@@ -400,8 +523,11 @@ impl ChatView {
                                     None,
                                     look,
                                 )
+                                .accessibility_label(format!("Retry staging {}", chip.name))
                                 .on_click(cx.listener(
-                                    move |view, _, window, cx| view.retry_staging(&key, window, cx),
+                                    move |view, _, window, cx| {
+                                        view.retry_staging(&retry, window, cx)
+                                    },
                                 ))
                             }))
                             .child(
@@ -413,23 +539,30 @@ impl ChatView {
                             ),
                     );
                 row.children(chip.open.then(|| {
-                    match chip.attachment().map(|a| &a.preview) {
-                        Some(Preview::Text { excerpt }) => div()
+                    match (chip.preview_source(), chip.attachment().map(|a| &a.preview)) {
+                        (None, Some(Preview::Text { excerpt })) => div()
                             .max_h(ui_text::space(140.))
                             .overflow_hidden()
                             .font_family(ui_text::code_family())
                             .text_size(ui_text::text(10.))
                             .child(excerpt.clone())
                             .into_any_element(),
-                        Some(Preview::Image { path }) => div()
+                        (Some(source), _) => div()
+                            .id(format!("attachment-expanded-{key}"))
+                            .role(gpui::Role::Image)
+                            .aria_label(format!("Expanded image preview: {}", chip.name))
+                            .max_w(ui_text::space(256.))
+                            .max_h(ui_text::space(256.))
+                            .overflow_hidden()
                             .child(
-                                img(path.clone())
+                                img(source)
                                     .max_w(ui_text::space(256.))
                                     .max_h(ui_text::space(256.))
                                     .object_fit(gpui::ObjectFit::Contain),
                             )
+                            .test_support()
                             .into_any_element(),
-                        None => div()
+                        _ => div()
                             .child("No preview until the file is staged.")
                             .into_any_element(),
                     }

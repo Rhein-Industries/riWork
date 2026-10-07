@@ -1,0 +1,31 @@
+{
+  "project": "39832c2e-23a5-476d-aa8f-5ff34a02d314",
+  "task": "8aedc5d3-d281-4a7f-98c5-9d6f601260ef",
+  "status": "SOURCE ONLY; reviewer source gate and isolated compilation/execution still required",
+  "qualified_tests": [
+    "panels::search_regression_tests::projects_search_has_readable_bounds_and_placeholder_in_narrow_colorful_panels",
+    "panels::search_regression_tests::projects_search_has_readable_bounds_and_placeholder_in_narrow_native_panels",
+    "panels::search_regression_tests::projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_colorful",
+    "panels::search_regression_tests::projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_native"
+  ],
+  "boundary": "Reviewer alone; approved private executable and whitelisted child environment; exactly one qualified name with --exact --test-threads=1. This proposal authorizes no execution or listing.",
+  "helpers": [
+    "panels::search_regression_tests::{mount,Fixture::render,geometry,editing_and_binding}",
+    "in-memory Settings (terminal matching false), Appearance (terminal/ghostty None), synthetic State/Projects only",
+    "text_input::init; behavior_controls::init; ui_text::init (font names and scale only; matching false returns before Ghostty config reads)",
+    "one headless Base Root and real render_panel(Projects), ProjectSortUi and retained InputStates/subscriptions per visible surface",
+    "form_input::test_turn: real frame/layout, synthetic pointer/key/input; effects drained outside the borrowed Window",
+    "Kit TestSupport actual mounted bounds/visibility/role/label; Base glyph range_to_bounds/cursor/selection; headless TestPlatform clipboard",
+    "no Store/StateStore/SettingsStore/SessionManager/Workspace/backend/provider construction, filesystem fixture, terminal or process launch; Projects only, with no worktrees (no worktree presence probes)",
+    "Native fixture uses actual in-memory Native light palette, system face/scale and existing icon renderer; no native application/window launch"
+  ],
+  "assertions": [
+    "160/240/480-pixel pane bounds: search/icon/editor visible, >=80-pixel editor width, line height fits chrome, no overlapping icon/input or clipped text box, real empty-placeholder caret layout, stable InputState identity",
+    "icon press focuses exact retained editor and Focus reports surface ID without PanelAction::Search fallback",
+    "actual keyboard input filters real project rows; Cmd+A/C selection and headless copy; glyph pointer click positions cursor at byte 2",
+    "clicking sibling surface emits exact sibling Change identity and preserves the first editor text/cursor; no project/open/fallback domain actions"
+  ],
+  "limits": [
+    "Uncompiled/unexecuted here. Native font/SF-symbol pixels, production pane lifecycle, OS AX/clipboard/IME and actual Cua desktop acceptance remain parent/reviewer responsibilities. Existing Workspace shortcut/membership/sibling synchronization code was source-reviewed and is unchanged; the inert fixture does not launch Workspace."
+  ]
+}

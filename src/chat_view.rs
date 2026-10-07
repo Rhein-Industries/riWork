@@ -255,6 +255,7 @@ impl ChatView {
         cx.on_release(|view, cx| {
             view.transcript_selection.retire(view.window_handle, cx);
             view.release_images(cx);
+            view.release_attachment_previews(cx);
         })
         .detach();
         let composer =

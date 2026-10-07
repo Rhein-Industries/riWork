@@ -51,7 +51,7 @@ pub(super) fn mount_selection(
     mounted
 }
 
-fn mount_config(
+pub(super) fn mount_config(
     cx: &mut TestAppContext,
     config: HostConfig,
 ) -> (
