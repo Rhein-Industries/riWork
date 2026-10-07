@@ -10998,7 +10998,6 @@ fn remote_start_project(
     remote_tree::parse_project_key(key).map(|_| key.to_owned())
 }
 
-/// What the New Tab menu's agent entries ask another Mac's `shell.create` for.
 /// The agents of the New tab menu, with their shortcuts. Each is one entry: whether it
 /// starts unrestricted is the Settings choice, not a second entry.
 const NEW_TAB_AGENTS: [(&str, &str, HarnessKind); 3] = [
@@ -11007,6 +11006,7 @@ const NEW_TAB_AGENTS: [(&str, &str, HarnessKind); 3] = [
     ("Grok", "⌘⇧G", HarnessKind::Grok),
 ];
 
+/// What the New Tab menu's agent entries ask another Mac's `shell.create` for.
 fn remote_shell_kind(harness: HarnessKind) -> NewShellKind {
     match harness {
         HarnessKind::Codex => NewShellKind::Codex,
