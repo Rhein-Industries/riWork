@@ -74,6 +74,10 @@ import RiWorkCore
     private func record(_ name: String, _ body: () async throws -> Void) async throws {
         let rec = directory.appendingPathComponent(name + ".rec"), started = directory.appendingPathComponent(name + ".recording")
         try Data().write(to: rec)
+        defer {
+            try? FileManager.default.removeItem(at: rec)
+            try? FileManager.default.removeItem(at: started)
+        }
         let deadline = Date().addingTimeInterval(10)
         while !FileManager.default.fileExists(atPath: started.path), Date() < deadline { try await Task.sleep(for: .milliseconds(100)) }
         try await Task.sleep(for: .milliseconds(1200))

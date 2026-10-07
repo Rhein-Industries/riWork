@@ -137,7 +137,7 @@ fn mark_look<E: Styled + InteractiveElement + ParentElement>(
         .border_color(rgb(accent.unwrap_or(colors.divider)))
         .rounded(px(3.0))
         .bg(rgb(colors.panel))
-        .text_size(ui_text::text(11.0))
+        .text_size(ui_text::text(11.0).min(((side - px(4.0)).max(px(1.0))) / 1.618_034))
         .text_color(rgb(accent.unwrap_or(colors.text)))
         .cursor_pointer()
         .hover(move |style| style.bg(rgb(colors.panel_active)))
@@ -1399,13 +1399,13 @@ impl ChatView {
         // their names and keys in the tooltips. Attach shows its fill only under the pointer
         // and its tooltip names the kinds and paste/drop.
         let attach = if look.native {
-            widgets::symbol_button(
+            widgets::symbol_button_sized(
                 "chat-attach",
                 "paperclip",
                 "Attach files · UTF-8 text, PNG or JPEG · or paste or drop them",
                 look,
+                side,
             )
-            .size(side)
         } else {
             mark_button(
                 "chat-attach",
@@ -1419,14 +1419,14 @@ impl ChatView {
         .on_click(cx.listener(|view, _, window, cx| view.attach_picker(window, cx)));
         let stop = running.then(|| {
             if look.native {
-                widgets::round_button(
+                widgets::round_button_sized(
                     "chat-interrupt",
                     "stop.fill",
                     "Interrupt · ⌘.",
                     Button::Secondary,
                     look,
+                    side,
                 )
-                .size(side)
             } else {
                 mark_button(
                     "chat-interrupt",
@@ -1448,7 +1448,7 @@ impl ChatView {
         // themes' as it is drawn, in every theme taking no click or key meanwhile.
         let empty = self.draft_empty(cx) || self.pending_submission.is_some();
         let send = if look.native {
-            widgets::round_button(
+            widgets::round_button_sized(
                 "chat-send",
                 "arrow.up",
                 send_tip,
@@ -1458,8 +1458,8 @@ impl ChatView {
                     Button::Primary
                 },
                 look,
+                side,
             )
-            .size(side)
         } else {
             mark_button("chat-send", "↑", send_tip, Some(colors.cyan), side, look).disabled(empty)
         }
@@ -1624,9 +1624,15 @@ impl ChatView {
                 Phase::Idle => "mic",
             };
             // Quiet at rest, as the paperclip: a bare symbol with a fill under the pointer.
-            widgets::symbol_toggle("chat-dictate", symbol, tooltip, phase.is_active(), look)
-                .size(side)
-                .when(phase.is_active(), |mic| mic.text_color(rgb(colors.working)))
+            widgets::symbol_toggle_sized(
+                "chat-dictate",
+                symbol,
+                tooltip,
+                phase.is_active(),
+                look,
+                side,
+            )
+            .when(phase.is_active(), |mic| mic.text_color(rgb(colors.working)))
         } else {
             mark_toggle(
                 "chat-dictate",

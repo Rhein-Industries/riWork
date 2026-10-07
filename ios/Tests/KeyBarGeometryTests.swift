@@ -81,6 +81,20 @@ final class BottomBarGeometryTests: XCTestCase {
         XCTAssertEqual(bounced.leading, 0); XCTAssertEqual(bounced.trailing, 0, "a row that fits never fades")
     }
 
+    func testBounceDoesNotInventHiddenKeys() {
+        for offset in [-120.0, -20.0, 0.0, 20.0, 120.0] {
+            let fade = BottomBarGeometry.fade(offset: offset, contentWidth: 200, visibleWidth: 300)
+            XCTAssertEqual(fade.leading, 0)
+            XCTAssertEqual(fade.trailing, 0)
+        }
+        let left = BottomBarGeometry.fade(offset: -20, contentWidth: 305, visibleWidth: 300)
+        XCTAssertEqual(left.leading, 0)
+        XCTAssertEqual(left.trailing, 5.0 / 16.0, accuracy: 0.001)
+        let right = BottomBarGeometry.fade(offset: 25, contentWidth: 305, visibleWidth: 300)
+        XCTAssertEqual(right.leading, 5.0 / 16.0, accuracy: 0.001)
+        XCTAssertEqual(right.trailing, 0)
+    }
+
     func testTargetsGrowWithTheInterfaceButNeverShrinkBelow44() {
         XCTAssertEqual(BottomBarGeometry.target(scale: 1), 44)
         XCTAssertEqual(BottomBarGeometry.target(scale: 0.8), 44, "80 % would be 35 points: clamped")

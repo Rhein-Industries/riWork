@@ -95,9 +95,11 @@ public enum BottomBarGeometry {
     /// How strongly each end of the scrolling row fades (0 none, 1 fully): only an end that has keys scrolled past it fades, growing
     /// over the first `fadeLength` points of scrolling, so nothing is dimmed while the row rests at that end.
     public static func fade(offset: Double, contentWidth: Double, visibleWidth: Double) -> (leading: Double, trailing: Double) {
-        let hiddenTrailing = contentWidth - visibleWidth - offset
+        let overflow = max(0, contentWidth - visibleWidth)
+        let position = min(overflow, max(0, offset))
+        let hiddenTrailing = overflow - position
         func strength(_ hidden: Double) -> Double { min(1, max(0, hidden / fadeLength)) }
-        return (strength(offset), strength(hiddenTrailing))
+        return (strength(position), strength(hiddenTrailing))
     }
 
     /// The chat composer's insets: its outermost buttons line up with the key bar's first key and Hide, and it stands as close above

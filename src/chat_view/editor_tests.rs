@@ -494,6 +494,7 @@ fn composer_frame(
     width: f32,
     native: bool,
     scale: f32,
+    active_mic: bool,
 ) -> (
     gpui::Bounds<gpui::Pixels>,
     Vec<(&'static str, gpui::Bounds<gpui::Pixels>)>,
@@ -512,7 +513,11 @@ fn composer_frame(
         });
         cx.set_global(crate::theme::Appearance {
             selected: crate::theme::ThemeChoice::RiWork,
-            palette: crate::theme::Palette::RIWORK,
+            palette: if native {
+                crate::theme::Palette::native(true)
+            } else {
+                crate::theme::Palette::RIWORK
+            },
             terminal: None,
             ghostty: None,
             error: None,
@@ -528,7 +533,7 @@ fn composer_frame(
                 ..Default::default()
             },
             |window, cx| {
-                cx.new(|cx| {
+                let view = cx.new(|cx| {
                     let mut view = ChatView::blank(
                         HostConfig {
                             ensure: Arc::new(|| Err("fixture staging is disabled".into())),
@@ -539,8 +544,12 @@ fn composer_frame(
                     view.chat_id = Some("fixture-chat".into());
                     view.feed = Some(recording_feed);
                     view.model.transcript.state = crate::chat::model::ChatState::Running;
+                    if active_mic {
+                        view.dictation_fixture(crate::dictation::Event::Start, window, cx);
+                    }
                     view
-                })
+                });
+                cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))
             },
         )
         .unwrap()
@@ -568,7 +577,7 @@ fn composer_frame(
     .into_iter()
     .filter_map(|name| visual.debug_bounds(name).map(|bounds| (name, bounds)))
     .collect();
-    let layout = super::composer::layout(width, scale, true, false, true);
+    let layout = super::composer::layout(width, scale, true, active_mic, true);
     crate::ui_text::set_for_tests(before.0, before.1);
     (field, buttons, layout)
 }
@@ -576,12 +585,12 @@ fn composer_frame(
 #[gpui::test]
 fn the_drawn_composer_keeps_its_box_and_buttons_in_any_pane(cx: &mut TestAppContext) {
     let big = 24.0 / crate::ui_text::REFERENCE_SIZE;
-    for native in [true, false] {
+    for (native, active_mic) in [(true, false), (false, false), (true, true), (false, true)] {
         let mut modes = std::collections::BTreeSet::new();
         for scale in [1.0, 1.5, big] {
-            for width in [160.0, 240.0, 300.0, 368.0, 600.0] {
+            for width in [100.0, 160.0, 240.0, 300.0, 368.0, 600.0] {
                 let what = format!("{width} px, {scale}×, native {native}");
-                let (field, buttons, layout) = composer_frame(cx, width, native, scale);
+                let (field, buttons, layout) = composer_frame(cx, width, native, scale, active_mic);
                 modes.insert((layout.stacked, layout.mic));
                 let min = (super::composer::MIN_FIELD * scale).round();
                 let floor = min.min(width - 2.0 * super::composer::COMPACT_INSET);
@@ -633,7 +642,7 @@ fn the_drawn_composer_keeps_its_box_and_buttons_in_any_pane(cx: &mut TestAppCont
         // and under it.
         assert!(modes.contains(&(false, true)), "native {native}: {modes:?}");
         assert!(
-            modes.contains(&(false, false)),
+            active_mic || modes.contains(&(false, false)),
             "native {native}: {modes:?}"
         );
         assert!(

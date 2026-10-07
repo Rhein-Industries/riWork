@@ -201,7 +201,11 @@ impl SegmentColors {
         } else {
             Self {
                 fill: None,
-                ink: colors.muted,
+                ink: if theme::contrast(colors.muted, colors.panel_active) >= 4.5 {
+                    colors.muted
+                } else {
+                    colors.text
+                },
                 hover: Button::Secondary.hover(colors),
                 hover_ink: colors.text,
             }
@@ -289,16 +293,38 @@ pub(super) fn symbol_button(
     tooltip: impl Into<SharedString>,
     look: Look,
 ) -> behavior::Button {
+    symbol_button_sized(
+        id,
+        symbol,
+        tooltip,
+        look,
+        ui_text::space(controls::TOOLBAR_BUTTON),
+    )
+}
+
+pub(super) fn symbol_button_sized(
+    id: impl Into<ElementId>,
+    symbol: &'static str,
+    tooltip: impl Into<SharedString>,
+    look: Look,
+    side: Pixels,
+) -> behavior::Button {
     let name = tooltip.into();
     bare_symbol(
         behavior::button_content(
             id,
             name.clone(),
-            icons::symbol(symbol, controls::TOOLBAR_SYMBOL, None),
+            icons::symbol_in_box(
+                symbol,
+                controls::TOOLBAR_SYMBOL,
+                None,
+                (side - px(4.0)).max(px(1.0)),
+            ),
         ),
         name,
         look,
     )
+    .size(side)
 }
 
 /// A `symbol_button` that stays pressed while `pressed`, such as the message box's mic.
@@ -310,17 +336,41 @@ pub(super) fn symbol_toggle(
     pressed: bool,
     look: Look,
 ) -> behavior::Toggle {
+    symbol_toggle_sized(
+        id,
+        symbol,
+        tooltip,
+        pressed,
+        look,
+        ui_text::space(controls::TOOLBAR_BUTTON),
+    )
+}
+
+pub(super) fn symbol_toggle_sized(
+    id: impl Into<ElementId>,
+    symbol: &'static str,
+    tooltip: impl Into<SharedString>,
+    pressed: bool,
+    look: Look,
+    side: Pixels,
+) -> behavior::Toggle {
     let name = tooltip.into();
     bare_symbol(
         behavior::toggle_content(
             id,
             name.clone(),
-            icons::symbol(symbol, controls::TOOLBAR_SYMBOL, None),
+            icons::symbol_in_box(
+                symbol,
+                controls::TOOLBAR_SYMBOL,
+                None,
+                (side - px(4.0)).max(px(1.0)),
+            ),
             pressed,
         ),
         name,
         look,
     )
+    .size(side)
 }
 
 /// A `symbol_button`'s look: a bare symbol in a round hit area that fills under the pointer
@@ -356,18 +406,45 @@ pub(super) fn round_button(
     kind: Button,
     look: Look,
 ) -> behavior::Button {
+    round_button_sized(
+        id,
+        symbol,
+        tooltip,
+        kind,
+        look,
+        ui_text::space(ROUND_BUTTON),
+    )
+}
+
+pub(super) fn round_button_sized(
+    id: impl Into<ElementId>,
+    symbol: &'static str,
+    tooltip: impl Into<SharedString>,
+    kind: Button,
+    look: Look,
+    side: Pixels,
+) -> behavior::Button {
     let colors = look.colors;
     let name = tooltip.into();
     controls::button(
-        behavior::button_content(id, name.clone(), icons::symbol(symbol, 11.0, None))
-            .line_height(gpui::relative(1.618_034))
-            .disabled(kind == Button::Disabled)
-            .flex_none()
-            .size(ui_text::space(ROUND_BUTTON))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(crate::tooltip::anchor(name, crate::tooltip::Look::Control)),
+        behavior::button_content(
+            id,
+            name.clone(),
+            icons::symbol_in_box(
+                symbol,
+                controls::TOOLBAR_SYMBOL,
+                None,
+                (side - px(4.0)).max(px(1.0)),
+            ),
+        )
+        .line_height(gpui::relative(1.618_034))
+        .disabled(kind == Button::Disabled)
+        .flex_none()
+        .size(side)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(crate::tooltip::anchor(name, crate::tooltip::Look::Control)),
         kind,
         colors,
     )
@@ -699,6 +776,7 @@ mod tests {
                 let rest = theme::contrast(segment.ink, segment.fill.unwrap_or(track));
                 let hover = theme::contrast(segment.hover_ink, segment.hover);
                 eprintln!("{name} selected={selected}: rest {rest:.2}:1, hover {hover:.2}:1");
+                assert!(rest >= 4.5, "{name} selected={selected} at rest: {rest:.2}");
                 assert!(
                     hover >= 4.5,
                     "{name} selected={selected} hovered: {hover:.2}"

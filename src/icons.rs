@@ -335,18 +335,44 @@ fn device_square(bounds: Bounds<gpui::Pixels>, scale: f32) -> Bounds<gpui::Pixel
 /// text on hover brightens the symbol with it. Native's own controls use it; elsewhere, or on
 /// a macOS without the symbol, the box stays empty.
 pub fn symbol(name: &'static str, points: f32, color: Option<u32>) -> AnyElement {
+    symbol_with_limit(name, points, color, None)
+}
+
+/// Fit both the bitmap and its canvas inside an adaptively sized control.
+pub fn symbol_in_box(
+    name: &'static str,
+    points: f32,
+    color: Option<u32>,
+    side: gpui::Pixels,
+) -> AnyElement {
+    symbol_with_limit(name, points, color, Some(f32::from(side)))
+}
+
+fn fitted_symbol_size(points: f32, scale: f32, limit: Option<f32>) -> (f32, f32) {
+    let normal = (points * 1.3).max(14.0) * scale;
+    let side = limit.map_or(normal, |limit| normal.min(limit.max(1.0)));
+    (points * scale * side / normal, side)
+}
+
+fn symbol_with_limit(
+    name: &'static str,
+    points: f32,
+    color: Option<u32>,
+    limit: Option<f32>,
+) -> AnyElement {
     let scale = ui_text::scale();
+    let (points, side) = fitted_symbol_size(points, scale, limit);
     let native = ui_text::is_native();
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
             if native {
                 let tint = color.unwrap_or_else(|| text_color(window));
-                paint_symbol(name, points * scale, Weight::Regular, tint, bounds, window);
+                paint_symbol(name, points, Weight::Regular, tint, bounds, window);
             }
         },
     )
-    .size(px((points * 1.3).max(14.0) * scale))
+    .size(px(side))
     .flex_shrink_0()
     .into_any_element()
 }
@@ -745,6 +771,21 @@ fn circle(path: &mut PathBuilder, x: f32, y: f32, radius: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fitted_symbols_keep_their_canvas_and_bitmap_inside_small_controls() {
+        for scale in [1.0, 1.5, 24.0 / 11.0] {
+            for side in [1.0, 15.0, 19.0, 26.0, 44.0] {
+                let (points, canvas) = fitted_symbol_size(11.0, scale, Some(side));
+                assert!(canvas <= side);
+                assert!(points * 1.3 <= canvas + 0.001);
+                assert!(points <= 11.0 * scale);
+            }
+            let (points, side) = fitted_symbol_size(11.0, scale, None);
+            assert!((points - 11.0 * scale).abs() <= 0.001);
+            assert!((side - 14.3 * scale).abs() <= 0.001);
+        }
+    }
 
     const PANELS: [PanelKind; 10] = [
         PanelKind::Projects,

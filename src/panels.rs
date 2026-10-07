@@ -4061,7 +4061,13 @@ mod search_regression_tests {
         _subscriptions: Vec<Subscription>,
     }
     impl Fixture {
-        fn action(&mut self, action: PanelAction, _: &mut Window, cx: &mut Context<Self>) {
+        fn action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
+            if matches!(action, PanelAction::ClearSearch) {
+                for (id, input) in &self.inputs {
+                    crate::form_input::set_value(input, String::new(), window, cx);
+                    self.queries.insert(*id, String::new());
+                }
+            }
             self.actions.push(action);
             cx.notify();
         }
@@ -4448,6 +4454,15 @@ mod search_regression_tests {
                 fixture.actions.as_slice(),
                 [PanelAction::ClearSearch]
             ));
+            for (id, input) in &fixture.inputs {
+                assert_eq!(input.read(app).value(), "");
+                assert_eq!(input.read(app).cursor(), 0);
+                assert_eq!(fixture.queries[id], "");
+            }
+            let panel = window.within(("search-fixture-panel", 101u64));
+            assert!(panel.try_find("projects-search-clear").is_none());
+            assert!(panel.try_find("project-alpha-id").is_some());
+            assert!(panel.try_find("project-beta-id").is_some());
             // The pressed field keeps its own editor focused, not the active pane's.
             assert!(
                 fixture.inputs[0]

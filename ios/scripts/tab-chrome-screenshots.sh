@@ -7,11 +7,31 @@
 set -uo pipefail
 dir=$1; udid=$2; landscape=0; [[ "${3:-}" == landscape ]] && landscape=1
 mkdir -p "$dir"
+dir=$(cd "$dir" && pwd -P)
+# Only signal and reap this invocation's own build and recorder children.
+build=0; recorder=0
+stop_child() {
+  local child=$1 signal=$2
+  (( child > 0 )) || return 0
+  kill -$signal $child 2>/dev/null || true
+  for attempt in {1..50}; do
+    kill -0 $child 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL $child 2>/dev/null || true
+  wait $child 2>/dev/null || true
+}
+cleanup() { stop_child $recorder INT; stop_child $build TERM; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 cd "$(dirname "$0")/.."
 TEST_RUNNER_RIWORK_TAB_SCREENSHOTS="$dir" TEST_RUNNER_RIWORK_TAB_SCREENSHOTS_LANDSCAPE=$landscape xcodebuild -project RiWorkRemote.xcodeproj -scheme RiWorkRemote -destination "platform=iOS Simulator,id=$udid" -derivedDataPath .derivedData \
   CODE_SIGN_IDENTITY=- -only-testing:RiWorkAppTests/TabChromeScreenshots test-without-building > "$dir/xcodebuild.log" 2>&1 &
 build=$!
+deadline=$(( SECONDS + 900 ))
 while kill -0 $build 2>/dev/null; do
+  (( SECONDS < deadline )) || exit 124
   for ready in "$dir"/*.ready(N); do
     sleep 0.2
     xcrun simctl io "$udid" screenshot "${ready%.ready}.png" >/dev/null 2>&1
@@ -23,14 +43,19 @@ while kill -0 $build 2>/dev/null; do
     recorder=$!
     sleep 0.8
     touch "$base.recording"
-    while [[ -e "$rec" ]]; do sleep 0.1; done
-    kill -INT $recorder; wait $recorder
+    recording_deadline=$(( SECONDS + 30 ))
+    while [[ -e "$rec" ]]; do
+      kill -0 $build 2>/dev/null || exit 1
+      (( SECONDS < recording_deadline && SECONDS < deadline )) || exit 124
+      sleep 0.1
+    done
+    stop_child $recorder INT; recorder=0
     if command -v ffmpeg >/dev/null; then
       ffmpeg -loglevel error -y -i "$base.mp4" -vf "fps=6,scale=-2:600,tile=12x5" -frames:v 1 "$base-frames.png"
     fi
   done
   sleep 0.1
 done
-wait $build; result=$?
+wait $build; result=$?; build=0
 grep -E "Test Case .*(passed|failed)" "$dir/xcodebuild.log"
 exit $result
