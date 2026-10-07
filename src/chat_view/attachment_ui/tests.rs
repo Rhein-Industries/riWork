@@ -118,7 +118,7 @@ fn staged_png_jpeg_thumbnails_render_above_composer_and_keep_exact_draft(cx: &mu
         let queue = window.find("chat-attachment-queue");
         assert_eq!(queue.role(), Some(gpui::Role::Group));
         assert_eq!(queue.label(), Some("Draft attachments"));
-        assert!(queue.bounds().bottom() <= window.find("chat-composer-shell").bounds().top());
+        assert!(queue.bounds().bottom() <= window.find("chat-composer").bounds().top());
         for attachment in &staged[..2] {
             let thumb = window.find(id("attachment-thumbnail", &attachment.id));
             assert_eq!(thumb.role(), Some(gpui::Role::Image));
@@ -346,7 +346,7 @@ fn mixed_image_paste_preview_survives_refusal_and_retry_guards_attempt_identity(
             window.render_frame(cx);
             assert!(
                 window.find("chat-attachment-queue").bounds().bottom()
-                    <= window.find("chat-composer-shell").bounds().top()
+                    <= window.find("chat-composer").bounds().top()
             );
             for (chip, original) in view.read(cx).attachments.iter().zip(&images) {
                 let Stage::Failed(error) = &chip.state else {

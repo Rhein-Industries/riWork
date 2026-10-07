@@ -112,3 +112,27 @@ does not depend on a host refresh or imply that refused attachments can be sent.
 Project-search-bar correction belongs to the parent/forms owner; this attachment
 change does not edit or claim to fix Workspace search. Parent alone integrates
 and activates, using actual Cua.ai Driver MCP for desktop acceptance.
+
+## Focused fixture observation correction
+
+Starting source `e8392542e89bc413e42c3d871919043e6bc307ac`, tracked-clean with
+the same untracked audit. Read all three exact preview logs under
+`/private/tmp/rw3r-jul_grwi/logs/test-chat_view-attachment_ui-tests-*`.
+Combined `1116a7de` compiled/listed successfully; its pure thumbnail admission
+case passed. Parent also reports four existing editor/Copy regressions passing.
+Both UI cases stopped at the missing observed `chat-composer-shell` lookup;
+their later behavior assertions did not run.
+
+The logs register the actual `chat-composer` beneath that decorative shell.
+`panels::composer_editor` supplies this stable ID to `text_input::textarea`,
+whose shared frame constructs Base InputBase. Pinned InputBase::new observes
+its actual frame with test_support; the outer decorative shell does not.
+Only the two placement lookups now use `chat-composer` bounds, asserting that
+the entire preview queue ends above the user's actual input. No production
+observer plumbing or source changes; every remaining bounding/status/state/
+Send/removal/retry/stale-result/cache/editor/generation/disclosure assertion stays.
+
+Formatted the owned test file and passed git diff --check only. No Cargo/check/
+build/test/list or runtime action here. Reviewer must rerun both corrected exact
+UI cases; their post-correction outcomes remain pending. Previous pure/regression
+passes belong to the prior combined source and do not validate these later paths.
