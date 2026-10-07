@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-08: Additive, in the "Terminal creation extension", no new method and no new error code: an agent `shell.create` that leaves `unrestricted` out now starts unrestricted or not as the desktop's **Agent terminals run unrestricted** setting says (on by default), and `ready.features.shell_create_as_settings` (`true`) says the desktop does that. Without the feature (an older connector or `riwork` CLI) leaving it out still means restricted. An explicit `unrestricted` is honored as before, so an older phone, which always sends it, is unaffected. The desktop's New Tab menu now has one entry per agent, unrestricted as that setting says. Applies to v1 and v2 sessions. Existing bytes and fixtures are unchanged.
 - 2026-10-05: Chat items may carry optional `presentation` with `phase` (`commentary` or `final`) and `images` (`label`, `source`). Image sources are tagged by `kind`: `local` (`path`), `data` (`mime`, `base64`), `url` (`url`), or `unavailable` (`reason`). Providers retain at most eight images and 8 MiB of encoded image data per item, with 4 MiB per image; unsupported or larger data is marked unavailable. Remote page/frame trimming replaces an image source that cannot fit with `unavailable`, rather than truncating base64. Existing clients may ignore presentation; existing events and their ordering remain intact. Desktop Normal/Verbose is a local saved display preference, with no new RPC or command.
 - 2026-10-05: Additive chat orchestrators and orchestrator creation, no new error code. `orchestrators.list` (and `shells.list`) entries gain optional `mode` (`terminal|chat`) and, for an orchestrator that runs as a chat, `chat_id` (equal to `id`) and `provider` (`codex|claude`), so the phone can open it as a chat tab with the existing `chats.list`, `chat.events` and `chat.command` methods; the `shell.*` methods on a chat orchestrator's id are `invalid_request`; see "Chat orchestrators" under "Chat extension" below. A desktop without chat orchestrators leaves the fields out and an older phone ignores them; the connector checks each field's shape, leaves a malformed one out, and passes `chat_id` and `provider` only for an entry whose `mode` is `chat`. A project's orchestrator that runs as a chat also counts in that project's `agents` and `last_activity_unix` of `projects.list`, as a terminal one does. One new method, `orchestrator.create` (`{}` or `{"project_id":"UUID"}`), makes the global or a project's orchestrator, in the mode the desktop's "Orchestrator runs as" setting says, or returns the one that exists (`created` false); it runs in the ordered lane and a creation is not cut short when the phone's session ends, and `features.orchestrator_create` in `ready` says the installed CLI has it; see "Orchestrator creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates `orchestrator.create` answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.orchestrator_create` out.
 - 2026-10-05: Additive, in the same "Chat extension": the models a chat can use and the provider's fast mode. A new `models` event (`models`: a list of `{id, name, description, efforts, default_effort, supports_fast, is_default}`, sent by the agent's driver once after it starts and again if the list changes, so it is in the chat's history like any event), `fast` on `ChatInfo` (the person's choice, a boolean, absent in a chat from before it), an optional `fast` boolean in `chat.create`, and an optional `fast` boolean in the `configure` command. A model's `id` is what `model` takes; `efforts` are the efforts that model takes; `supports_fast` says whether the toggle belongs to it. No new method and no new error code. A desktop from before it refuses `fast` as an unknown field (`invalid_request`) and never sends a `models` event; a client that has seen none offers a text field for the model and the usual efforts, as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -175,7 +176,7 @@ unsolicited response except handshake `ready`.
 | `appearance.get` | `{}` (Theme sync) | the appearance object below: `{"v":1,"updated_at":1790000000,"dark":true,"palette":{...},"terminal":{...}}` |
 | `shell.resize` | `{"shell_id":"UUID","columns":43,"rows":17}` | `{"shell_id":"UUID","columns":43,"rows":17}` |
 | `shell.resize.clear` | `{"shell_id":"UUID"}` | `{"shell_id":"UUID","status":"cleared"}` |
-| `shell.create` | `{"worktree_id":"UUID"}` or `{"project_id":"UUID"}`, plus `"kind":"shell\|codex\|claude\|grok"` and optionally `"unrestricted":false`, `"command":"..."` (Terminal creation) | `{"shell_id":"UUID","shell":Session}` |
+| `shell.create` | `{"worktree_id":"UUID"}` or `{"project_id":"UUID"}`, plus `"kind":"shell\|codex\|claude\|grok"` and optionally `"unrestricted":false` (left out: the desktop's setting, with `features.shell_create_as_settings`), `"command":"..."` (Terminal creation) | `{"shell_id":"UUID","shell":Session}` |
 | `shell.close` | `{"shell_id":"UUID"}` (Terminal creation) | `{"shell_id":"UUID","status":"closed"}` |
 | `project.create` | `{"name":"My App"}` optionally `"git":false` (Project creation) | `{"project_id":"UUID","project":Project}` |
 | `orchestrator.create` | `{}` or `{"project_id":"UUID"}` (Orchestrator creation) | `{"orchestrator":Session,"created":true}` |
@@ -799,14 +800,17 @@ desktop. Params (an object; unknown fields, nulls and wrong types fail
   `claude` or `grok`, spelled exactly. The agents start as the desktop's own
   "New Tab" entries do: the official CLI in a persistent terminal with the same
   Cua driver connection, account selection and inline-mode setting.
-- `unrestricted` (optional boolean, default `false`): only for the three agents
-  (`true` with `shell` fails `invalid_request`). The desktop offers "Codex ·
-  unrestricted", "Claude · unrestricted" and "Grok · unrestricted" as separate
-  entries of its New Tab menu, next to the restricted ones its shortcuts open,
-  and has no setting that makes unrestricted the default, so the phone may ask
-  for it and the default is the same as the desktop's: restricted (the agent's
-  own approval prompts stay on). Unrestricted adds the agent's
-  permission-bypass flag. The phone should make it a deliberate choice.
+- `unrestricted` (optional boolean): only for the three agents (`true` with
+  `shell` fails `invalid_request`). Unrestricted adds the agent's
+  permission-bypass flag; `false` keeps the agent's own approval prompts on.
+  Left out, the desktop decides (since 2026-10-08): its New Tab menu has one
+  entry per agent, which starts unrestricted while **Agent terminals run
+  unrestricted** is on in its Settings (the default) and restricted while it is
+  off, and a request without `unrestricted` gets the same. That is so when
+  `ready.features.shell_create_as_settings` is `true`; a desktop without the
+  feature starts an agent left to it restricted, as it always did. A phone that
+  follows the desktop's setting leaves the field out and shows no control for it;
+  one that wants a particular mode says so, and is obeyed.
 - `command` (optional string, only with `shell`): 1 to 4096 UTF-8 bytes, not
   blank, no `char::is_control` character and no U+2028 / U+2029 (one physical
   line, as for `shell.input`), and it must not begin with `-`. The desktop's new
@@ -850,7 +854,8 @@ other methods:
   form, the four kinds, the `unrestricted` and `command` rules above.
 - The CLI is run with its argument vector built from validated values, one
   argument per value (`shell create --worktree ID --harness codex --unrestricted
-  --json`). Nothing is concatenated into a shell string; a `command` is one
+  --json`; an agent left to the desktop gets `--as-settings` in place of
+  `--unrestricted`, which the CLI resolves from its Settings file at that moment). Nothing is concatenated into a shell string; a `command` is one
   argument. The rule against a leading `-` keeps it from being read as an option of
   its own, and `--json` is always last.
 - The project or worktree is looked up first (`riwork project show ID --json`, or
