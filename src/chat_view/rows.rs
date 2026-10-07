@@ -1325,6 +1325,149 @@ mod hermes_tests {
     }
 
     #[gpui::test]
+    fn hermes_theme_switch_reflows_mounted_rows_at_constant_scale_preserving_anchor_tail_and_draft(
+        cx: &mut TestAppContext,
+    ) {
+        struct RestoreTypography((f32, ui_text::Face));
+        impl Drop for RestoreTypography {
+            fn drop(&mut self) {
+                ui_text::set_for_tests(self.0.0, self.0.1);
+            }
+        }
+        let _restore = RestoreTypography(ui_text::set_for_tests(1.0, ui_text::Face::Menlo));
+        let (handle, view, recording) = super::super::editor_tests::mount_selection(cx);
+        let editor = view.read_with(cx, |view, _| view.composer.entity_id());
+        let switch = |choice, window: &mut Window, cx: &mut gpui::App| {
+            let mut settings = cx.global::<crate::settings::Settings>().clone();
+            settings.theme = choice;
+            // Exercise the selected face too, without changing numeric scale:
+            // a scale-only invalidation must not make this fixture pass.
+            ui_text::set_for_tests(1.0, ui_text::Face::of(&settings));
+            cx.set_global(settings);
+            cx.set_global(theme::Appearance::resolve(choice, false));
+            view.update(cx, |_, cx| cx.notify());
+            window.render_frame(cx);
+        };
+        let geometry = |at, window: &Window, cx: &gpui::App| {
+            let row = window.find(id(format!("transcript-row:{at}"))).bounds();
+            let prose = window.find(id(format!("prose:switch-{at}"))).bounds();
+            let measured = view.read(cx).list.bounds_for_item(at).unwrap();
+            assert!((measured.size.height - row.size.height).abs() <= px(1.0));
+            (row.size.height, prose.size.height)
+        };
+        cx.update_window(handle.into(), |_, window, cx| {
+            switch(theme::ThemeChoice::RiWork, window, cx);
+            view.update(cx, |view, cx| {
+                view.model.link = Link::Live;
+                view.model.transcript.items = (0..24)
+                    .map(|at| {
+                        item(
+                            &format!("switch-{at}"),
+                            ItemBody::AgentMessage {
+                                text: "First paragraph café 🦀.\n\nSecond paragraph stays readable.\n\n- First list item\n- Second list item".into(),
+                            },
+                        )
+                    })
+                    .collect();
+                view.refresh_projection(cx);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("chat-composer", cx);
+            window.input("retained theme draft café", cx);
+            view.read(cx).list.scroll_to(gpui::ListOffset {
+                item_ix: 10,
+                offset_in_item: px(0.0),
+            });
+            window.render_frame(cx);
+            let (height, _) = geometry(10, window, cx);
+            view.read(cx).list.scroll_to(gpui::ListOffset {
+                item_ix: 10,
+                offset_in_item: height / 4.0,
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let anchored = cx
+            .update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let initial = geometry(10, window, cx);
+                let offset = view.read(cx).list.logical_scroll_top();
+                assert_eq!(offset.item_ix, 10);
+                assert!(offset.offset_in_item > px(0.0));
+                let fraction = offset.offset_in_item / initial.0;
+                let mut heights = vec![initial];
+                for choice in [theme::ThemeChoice::Hermes, theme::ThemeChoice::RiWork] {
+                    switch(choice, window, cx);
+                    let measured = geometry(10, window, cx);
+                    let list = &view.read(cx).list;
+                    let offset = list.logical_scroll_top();
+                    assert_eq!(
+                        offset.item_ix, 10,
+                        "theme switch must retain the reading row"
+                    );
+                    assert!(
+                        (offset.offset_in_item - measured.0 * fraction).abs() <= px(1.0),
+                        "theme remeasurement must preserve fractional position inside the row"
+                    );
+                    assert!(
+                        !list.is_following_tail(),
+                        "reading history must not jump to tail"
+                    );
+                    assert_eq!(ui_text::scale(), 1.0);
+                    assert_eq!(view.read(cx).composer.entity_id(), editor);
+                    assert_eq!(view.read(cx).composer_text(cx), "retained theme draft café");
+                    assert!(
+                        view.read(cx)
+                            .composer
+                            .read(cx)
+                            .focus_handle(cx)
+                            .is_focused(window)
+                    );
+                    heights.push(measured);
+                }
+                heights
+            })
+            .unwrap();
+        assert!(
+            anchored[1].0 > anchored[0].0,
+            "Hermes row spacing must reflow"
+        );
+        assert!(
+            anchored[1].1 > anchored[0].1,
+            "Hermes prose must actually grow"
+        );
+        assert!((anchored[2].0 - anchored[0].0).abs() <= px(1.0));
+        assert!((anchored[2].1 - anchored[0].1).abs() <= px(1.0));
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx).list.set_follow_mode(gpui::FollowMode::Tail);
+            window.render_frame(cx);
+            let initial = geometry(23, window, cx);
+            let mut heights = vec![initial];
+            for choice in [theme::ThemeChoice::Hermes, theme::ThemeChoice::RiWork] {
+                switch(choice, window, cx);
+                let list = &view.read(cx).list;
+                assert!(list.is_following_tail());
+                // Unmeasured history may make is_scrolled_to_end unknown.
+                // Check the actual painted footer against the viewport instead.
+                let footer = window.find("transcript-row:24").bounds();
+                assert!((footer.bottom() - list.viewport_bounds().bottom()).abs() <= px(1.0));
+                assert_eq!(ui_text::scale(), 1.0);
+                assert_eq!(view.read(cx).composer.entity_id(), editor);
+                assert_eq!(view.read(cx).composer_text(cx), "retained theme draft café");
+                heights.push(geometry(23, window, cx));
+            }
+            assert!(heights[1].0 > heights[0].0);
+            assert!(heights[1].1 > heights[0].1);
+            assert!((heights[2].0 - heights[0].0).abs() <= px(1.0));
+            assert!((heights[2].1 - heights[0].1).abs() <= px(1.0));
+        })
+        .unwrap();
+        assert!(recording.try_recv().is_err());
+    }
+
+    #[gpui::test]
     fn hermes_selection_crosses_user_blocks_lists_and_streaming_edits_without_losing_draft(
         cx: &mut TestAppContext,
     ) {
