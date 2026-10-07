@@ -156,6 +156,9 @@ impl ChatView {
         if matches!(event, InputEvent::Focus) {
             gpui_kit::base::TextSelection::clear(window, cx);
         }
+        if matches!(event, InputEvent::Change) && self.menu == Some(super::Menu::Model) {
+            cx.notify();
+        }
         if text_input::is_submit(event, EnterBehavior::Submit)
             && self.menu == Some(super::Menu::Model)
             && self.model.transcript.models.is_empty()
@@ -210,6 +213,9 @@ impl ChatView {
             return;
         }
         let handled = if self.media.viewer.take().is_some() {
+            true
+        } else if self.open.remove(panels::ATTACHMENT_MENU_KEY) {
+            self.focus_composer = true;
             true
         } else if self.menu.is_some() {
             self.close_menu(cx);
@@ -511,7 +517,25 @@ impl ChatView {
             draft.prompts = question.questions;
         }
         let disabled = !self.accepts_input();
+        let placeholder = if super::widgets::Look::of(cx).hermes() {
+            "Start with a goal"
+        } else {
+            "Message"
+        };
+        let model_placeholder = if self.model.transcript.models.is_empty() {
+            "model name, then ⏎"
+        } else {
+            "Search models"
+        };
+        self.model_input.update(cx, |state, cx| {
+            if state.placeholder().as_ref() != model_placeholder {
+                state.set_placeholder(model_placeholder, window, cx);
+            }
+        });
         self.composer.update(cx, |state, cx| {
+            if state.placeholder().as_ref() != placeholder {
+                state.set_placeholder(placeholder, window, cx);
+            }
             if state.presentation().is_disabled() != disabled {
                 state.set_disabled(disabled, cx);
             }

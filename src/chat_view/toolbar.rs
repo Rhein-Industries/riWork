@@ -103,6 +103,27 @@ pub fn model_rows(models: &[ModelOption], chosen: Option<&str>) -> Vec<ModelRow>
         .collect()
 }
 
+/// Search the installed provider's metadata without inventing models or changing ordering.
+pub fn filtered_model_rows(
+    models: &[ModelOption],
+    chosen: Option<&str>,
+    query: &str,
+) -> Vec<ModelRow> {
+    let query = query.trim().to_lowercase();
+    model_rows(models, chosen)
+        .into_iter()
+        .filter(|row| {
+            query.is_empty()
+                || row.id.to_lowercase().contains(&query)
+                || row.label.to_lowercase().contains(&query)
+                || row
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.to_lowercase().contains(&query))
+        })
+        .collect()
+}
+
 /// The efforts to offer for the chosen model: the ones its driver listed for it, none at
 /// all for a model that takes none, and the provider's usual ones when the model is not
 /// described.
@@ -378,6 +399,27 @@ mod tests {
             option("luna", "Luna", &["medium", "high"], false, false),
             option("haiku", "Haiku", &[], false, false),
         ]
+    }
+
+    #[test]
+    fn model_search_preserves_provider_order_selection_and_refreshed_metadata() {
+        let mut models = list();
+        models[1].description = "Careful multilingual reasoning".into();
+        assert_eq!(
+            filtered_model_rows(&models, Some("luna"), "  MULTILINGUAL  ")[0].id,
+            "luna"
+        );
+        assert!(filtered_model_rows(&models, Some("luna"), "multilingual")[0].current);
+        assert_eq!(
+            filtered_model_rows(&models, None, "")
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sol", "luna", "haiku"]
+        );
+        models.retain(|model| model.id != "luna");
+        assert!(filtered_model_rows(&models, Some("luna"), "multilingual").is_empty());
+        assert_eq!(filtered_model_rows(&models, None, "SOL")[0].id, "sol");
     }
 
     #[test]

@@ -78,6 +78,12 @@ pub const COMPACT_GAP: f32 = 4.0;
 /// The narrowest the message box may get, in design points.
 pub const MIN_FIELD: f32 = 120.0;
 
+/// The empty Hermes field shares a row with the controls only when there is room for a
+/// readable prompt. Drafts always get the full width; narrow panes put controls below.
+pub fn hermes_compact(pane: f32, scale: f32, empty: bool) -> bool {
+    empty && pane >= (680.0 * scale.max(1.0)).round()
+}
+
 /// How the message box bar is laid out in a pane of a given width: in pixels, as drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {

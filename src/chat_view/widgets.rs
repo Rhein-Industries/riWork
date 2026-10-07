@@ -28,6 +28,19 @@ pub(super) struct Look {
 }
 
 impl Look {
+    /// Hermes uses the shared palette contract without adding state to transcript looks.
+    pub fn hermes(self) -> bool {
+        self.colors == Palette::HERMES
+    }
+
+    pub fn chat_family(self) -> SharedString {
+        if self.hermes() {
+            ".SystemUIFont".into()
+        } else {
+            ui_text::ui_family()
+        }
+    }
+
     pub fn of(cx: &App) -> Self {
         Self {
             colors: theme::palette(cx),

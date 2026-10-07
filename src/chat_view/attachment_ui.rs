@@ -518,6 +518,13 @@ impl ChatView {
                     .flex()
                     .flex_col()
                     .gap(ui_text::space(3.))
+                    .when(look.hermes(), |row| {
+                        row.p(ui_text::space(6.))
+                            .rounded(ui_text::space(4.))
+                            .border_1()
+                            .border_color(rgb(look.colors.divider))
+                            .bg(rgb(look.colors.panel))
+                    })
                     .child(
                         div()
                             .flex()
