@@ -349,6 +349,7 @@ impl ChatView {
         self.composer.update(cx, |state, cx| {
             state.set_value(saved.snapshot.text, window, cx)
         });
+        self.release_attachment_previews(cx);
         self.attachments = saved
             .snapshot
             .attachments
