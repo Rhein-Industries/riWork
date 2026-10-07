@@ -1310,16 +1310,17 @@ fn creation_failure(error: &RemoteError, host: &str, what: &str) -> String {
     }
 }
 
-/// Parameters of `shell.create`. Only an agent can be unrestricted; the protocol refuses
-/// the flag on a plain shell, so it is left out.
+/// Parameters of `shell.create`. An agent always says whether it is unrestricted, as this
+/// Mac's Settings decide: a host that is left to choose uses its own Settings. The protocol
+/// refuses the flag on a plain shell, so it is left out.
 pub fn shell_create_params(scope: &ShellScope, kind: NewShellKind, unrestricted: bool) -> Value {
     let mut params = match scope {
         ShellScope::Project(id) => json!({"project_id": id}),
         ShellScope::Worktree(id) => json!({"worktree_id": id}),
     };
     params["kind"] = json!(kind.wire());
-    if unrestricted && kind != NewShellKind::Shell {
-        params["unrestricted"] = json!(true);
+    if kind != NewShellKind::Shell {
+        params["unrestricted"] = json!(unrestricted);
     }
     params
 }
@@ -2445,9 +2446,10 @@ mod tests {
             shell_create_params(&project, NewShellKind::Shell, false),
             json!({"project_id": "p1", "kind": "shell"})
         );
+        // Restricted is said, not left out: a host left to choose follows its own Settings.
         assert_eq!(
             shell_create_params(&worktree, NewShellKind::Claude, false),
-            json!({"worktree_id": "w1", "kind": "claude"})
+            json!({"worktree_id": "w1", "kind": "claude", "unrestricted": false})
         );
         assert_eq!(
             shell_create_params(&project, NewShellKind::Codex, true),

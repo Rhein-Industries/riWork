@@ -160,7 +160,8 @@ type TabId = u64;
 #[derive(Clone, Copy)]
 enum PaneMenuAction {
     Shell,
-    Harness(HarnessKind, bool),
+    /// An agent terminal, unrestricted as Settings say (`agent_terminals_unrestricted`).
+    Harness(HarnessKind),
     /// Open the shared provider/model choice dialog.
     NewChat,
     Orchestrator(bool),
@@ -6466,33 +6467,31 @@ impl Workspace {
         if self.modal_open() {
             return;
         }
-        self.add_harness(HarnessKind::Codex, false, window, cx);
+        self.add_harness(HarnessKind::Codex, window, cx);
     }
 
     fn open_claude_action(&mut self, _: &OpenClaude, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_open() {
             return;
         }
-        self.add_harness(HarnessKind::Claude, false, window, cx);
+        self.add_harness(HarnessKind::Claude, window, cx);
     }
 
     fn open_grok_action(&mut self, _: &OpenGrok, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_open() {
             return;
         }
-        self.add_harness(HarnessKind::Grok, false, window, cx);
+        self.add_harness(HarnessKind::Grok, window, cx);
     }
 
-    fn add_harness(
-        &mut self,
-        harness: HarnessKind,
-        unrestricted: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// A Codex, Claude or Grok terminal from the New tab menu or its shortcut, unrestricted
+    /// while **Agent terminals run unrestricted** is on (read now, so every window follows a
+    /// change at once). A remote Mac's terminal follows this Mac's setting too.
+    fn add_harness(&mut self, harness: HarnessKind, window: &mut Window, cx: &mut Context<Self>) {
         if !self.ensure_layout(window, cx) {
             return;
         }
+        let unrestricted = settings::agent_terminals_unrestricted(self.sessions.state_home());
         self.panel_menu = None;
         self.finish_tab_drag(cx);
         if self.is_remote() {
@@ -9098,44 +9097,16 @@ impl Workspace {
                         ))
                         .child(pane_menu_heading("New tab", true, colors))
                         .children(
-                            [
-                                ("Shell", "⌘T", Some(Icon::Add), PaneMenuAction::Shell),
-                                (
-                                    "Codex",
-                                    "⌘⇧C",
-                                    None,
-                                    PaneMenuAction::Harness(HarnessKind::Codex, false),
-                                ),
-                                (
-                                    "Claude",
-                                    "⌘⇧L",
-                                    None,
-                                    PaneMenuAction::Harness(HarnessKind::Claude, false),
-                                ),
-                                (
-                                    "Grok",
-                                    "⌘⇧G",
-                                    None,
-                                    PaneMenuAction::Harness(HarnessKind::Grok, false),
-                                ),
-                                (
-                                    "Codex · unrestricted",
-                                    "",
-                                    None,
-                                    PaneMenuAction::Harness(HarnessKind::Codex, true),
-                                ),
-                                (
-                                    "Claude · unrestricted",
-                                    "",
-                                    None,
-                                    PaneMenuAction::Harness(HarnessKind::Claude, true),
-                                ),
-                                (
-                                    "Grok · unrestricted",
-                                    "",
-                                    None,
-                                    PaneMenuAction::Harness(HarnessKind::Grok, true),
-                                ),
+                            std::iter::once((
+                                "Shell",
+                                "⌘T",
+                                Some(Icon::Add),
+                                PaneMenuAction::Shell,
+                            ))
+                            .chain(NEW_TAB_AGENTS.into_iter().map(|(label, shortcut, kind)| {
+                                (label, shortcut, None, PaneMenuAction::Harness(kind))
+                            }))
+                            .chain([
                                 (
                                     "Global orchestrator",
                                     "⌘⇧O",
@@ -9148,8 +9119,7 @@ impl Workspace {
                                     None,
                                     PaneMenuAction::Orchestrator(true),
                                 ),
-                            ]
-                            .into_iter()
+                            ])
                             .chain(std::iter::once((
                                 "New chat…", "", None, PaneMenuAction::NewChat,
                             )))
@@ -10372,9 +10342,7 @@ impl Workspace {
                 workspace.active_pane = pane_id;
                 match action {
                     PaneMenuAction::Shell => workspace.add_tab(window, cx),
-                    PaneMenuAction::Harness(kind, unrestricted) => {
-                        workspace.add_harness(kind, unrestricted, window, cx);
-                    }
+                    PaneMenuAction::Harness(kind) => workspace.add_harness(kind, window, cx),
                     PaneMenuAction::Sessions(filter) => workspace.open_sessions(filter, window, cx),
                     PaneMenuAction::NewChat => {
                         workspace.begin_new_chat(None, false, window, cx);
@@ -11031,6 +10999,14 @@ fn remote_start_project(
 }
 
 /// What the New Tab menu's agent entries ask another Mac's `shell.create` for.
+/// The agents of the New tab menu, with their shortcuts. Each is one entry: whether it
+/// starts unrestricted is the Settings choice, not a second entry.
+const NEW_TAB_AGENTS: [(&str, &str, HarnessKind); 3] = [
+    ("Codex", "⌘⇧C", HarnessKind::Codex),
+    ("Claude", "⌘⇧L", HarnessKind::Claude),
+    ("Grok", "⌘⇧G", HarnessKind::Grok),
+];
+
 fn remote_shell_kind(harness: HarnessKind) -> NewShellKind {
     match harness {
         HarnessKind::Codex => NewShellKind::Codex,
@@ -12344,6 +12320,31 @@ mod workspace_tab_tests {
         assert_eq!(remote_shell_kind(HarnessKind::Codex), NewShellKind::Codex);
         assert_eq!(remote_shell_kind(HarnessKind::Claude), NewShellKind::Claude);
         assert_eq!(remote_shell_kind(HarnessKind::Grok), NewShellKind::Grok);
+    }
+
+    #[test]
+    fn the_new_tab_menu_has_one_entry_per_agent_and_never_names_the_permission_mode() {
+        assert_eq!(
+            NEW_TAB_AGENTS.map(|(label, shortcut, kind)| (label, shortcut, kind)),
+            [
+                ("Codex", "⌘⇧C", HarnessKind::Codex),
+                ("Claude", "⌘⇧L", HarnessKind::Claude),
+                ("Grok", "⌘⇧G", HarnessKind::Grok),
+            ]
+        );
+        // Settings decides the mode; the menu only names the agent.
+        for (label, _, _) in NEW_TAB_AGENTS {
+            assert!(!label.to_lowercase().contains("unrestricted"), "{label}");
+        }
+        // The shortcuts shown are the ones bound to the agents' actions.
+        let source = include_str!("main.rs");
+        for binding in [
+            "KeyBinding::new(\"cmd-shift-c\", OpenCodex, None)",
+            "KeyBinding::new(\"cmd-shift-l\", OpenClaude, None)",
+            "KeyBinding::new(\"cmd-shift-g\", OpenGrok, None)",
+        ] {
+            assert!(source.contains(binding), "{binding}");
+        }
     }
 
     #[test]
