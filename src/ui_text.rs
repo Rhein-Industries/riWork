@@ -67,10 +67,15 @@ pub enum Face {
     System,
     /// The system font, with monospace accents.
     SystemMono,
+    /// Proportional Hermes interface text with fixed-width technical accents.
+    Hermes,
 }
 
 impl Face {
     pub fn of(settings: &Settings) -> Self {
+        if settings.theme == ThemeChoice::Hermes {
+            return Self::Hermes;
+        }
         if settings.theme != ThemeChoice::Native {
             return Self::Menlo;
         }
@@ -91,8 +96,8 @@ impl Face {
     pub fn offset(self, matching_terminal: bool) -> f32 {
         match self {
             Self::Menlo => 0.0,
-            Self::System | Self::SystemMono if matching_terminal => 0.0,
-            Self::System | Self::SystemMono => SYSTEM_BODY_POINTS - REFERENCE_SIZE,
+            Self::System | Self::SystemMono | Self::Hermes if matching_terminal => 0.0,
+            Self::System | Self::SystemMono | Self::Hermes => SYSTEM_BODY_POINTS - REFERENCE_SIZE,
         }
     }
 }
@@ -153,7 +158,7 @@ pub fn set_for_tests(scale: f32, face: Face) -> (f32, Face) {
 /// Whether the Native theme is what the interface is drawn in: it is the one
 /// theme with the system face. Render code that has no `cx` asks this.
 pub fn is_native() -> bool {
-    face() != Face::Menlo
+    matches!(face(), Face::System | Face::SystemMono)
 }
 
 /// A label as Native shows it: in sentence case, as it is written in the source.
@@ -250,7 +255,7 @@ pub fn shown_points(settings: &Settings, points: f32) -> f32 {
 pub fn ui_family() -> SharedString {
     match face() {
         Face::Menlo => MENLO.into(),
-        Face::System | Face::SystemMono => SYSTEM_FONT.into(),
+        Face::System | Face::SystemMono | Face::Hermes => SYSTEM_FONT.into(),
     }
 }
 
@@ -260,8 +265,8 @@ pub fn mono_family() -> SharedString {
     match face() {
         Face::Menlo => MENLO.into(),
         Face::System => SYSTEM_FONT.into(),
-        Face::SystemMono if HAS_SF_MONO.with(Cell::get) => SF_MONO.into(),
-        Face::SystemMono => MENLO.into(),
+        Face::SystemMono | Face::Hermes if HAS_SF_MONO.with(Cell::get) => SF_MONO.into(),
+        Face::SystemMono | Face::Hermes => MENLO.into(),
     }
 }
 
@@ -270,7 +275,7 @@ pub fn mono_family() -> SharedString {
 /// code in a fixed-width face: Menlo in the colorful themes, SF Mono (else Menlo) in Native.
 pub fn code_family() -> SharedString {
     match face() {
-        Face::System | Face::SystemMono if HAS_SF_MONO.with(Cell::get) => SF_MONO.into(),
+        Face::System | Face::SystemMono | Face::Hermes if HAS_SF_MONO.with(Cell::get) => SF_MONO.into(),
         _ => MENLO.into(),
     }
 }
@@ -538,13 +543,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_native_draws_in_the_system_face_at_its_native_size() {
+    fn native_and_hermes_use_proportional_interface_faces() {
         let mut settings = Settings::default();
         for theme in ThemeChoice::ALL {
             settings.theme = theme;
             let face = Face::of(&settings);
-            if theme == ThemeChoice::Native {
-                assert_eq!(face, Face::SystemMono);
+            if matches!(theme, ThemeChoice::Native | ThemeChoice::Hermes) {
+                assert_eq!(face, if theme == ThemeChoice::Hermes { Face::Hermes } else { Face::SystemMono });
                 // The default 11 pt is drawn, and shown, at macOS's 13 pt body size.
                 assert_eq!(DEFAULT_POINTS + face.offset(false), SYSTEM_BODY_POINTS);
                 assert_eq!(shown_points(&settings, 12.0), 14.0);
@@ -575,6 +580,9 @@ mod tests {
             assert!(is_native());
             assert_eq!(cased("Add host"), "Add host");
         }
+        FACE.with(|cell| cell.set(Face::Hermes));
+        assert!(!is_native());
+        assert_eq!(cased("Add host"), "ADD HOST");
         FACE.with(|cell| cell.set(Face::Menlo));
     }
 
@@ -617,6 +625,7 @@ mod tests {
             families(Face::SystemMono),
             (".SystemUIFont".into(), "SF Mono".into())
         );
+        assert_eq!(families(Face::Hermes), (".SystemUIFont".into(), "SF Mono".into()));
         HAS_SF_MONO.with(|cell| cell.set(false));
         assert_eq!(families(Face::SystemMono).1, "Menlo");
         HAS_SF_MONO.with(|cell| cell.set(true));
@@ -634,8 +643,10 @@ mod tests {
         // Even with the accents off, which set technical text in the system font.
         assert_eq!(code(Face::System), "SF Mono");
         assert_eq!(code(Face::SystemMono), "SF Mono");
+        assert_eq!(code(Face::Hermes), "SF Mono");
         HAS_SF_MONO.with(|cell| cell.set(false));
         assert_eq!(code(Face::System), "Menlo");
+        assert_eq!(code(Face::Hermes), "Menlo");
         HAS_SF_MONO.with(|cell| cell.set(true));
     }
 
