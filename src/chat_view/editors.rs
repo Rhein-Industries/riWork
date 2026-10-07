@@ -533,11 +533,7 @@ impl ChatView {
             draft.prompts = question.questions;
         }
         let disabled = !self.accepts_input();
-        let placeholder = if super::widgets::Look::of(cx).hermes() {
-            "Start with a goal"
-        } else {
-            "Message"
-        };
+        let placeholder = "Message";
         self.sync_model_placeholder(window, cx);
         let presentation = self.composer.read(cx).presentation();
         let current_placeholder: &str = presentation.placeholder().as_ref();

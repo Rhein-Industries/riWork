@@ -487,19 +487,25 @@ fn real_editor_dictation_partial_final_cancel_and_user_edit_anchor(cx: &mut Test
     .unwrap();
 }
 
-/// The message box bar as drawn in a pane `width` px wide, with the mic on and a turn running:
-/// the box's and every shown button's bounds, from the frame itself.
+/// The message box card as drawn in a pane `width` px wide, with the mic on, a turn running and
+/// `draft` in the box: the pane's, the card's, the box's and every shown button's bounds, from
+/// the frame itself, and the layout planned for them.
+struct ComposerFrame {
+    pane: gpui::Bounds<gpui::Pixels>,
+    card: gpui::Bounds<gpui::Pixels>,
+    field: gpui::Bounds<gpui::Pixels>,
+    buttons: Vec<(&'static str, gpui::Bounds<gpui::Pixels>)>,
+    layout: super::composer::Layout,
+}
+
 fn composer_frame(
     cx: &mut TestAppContext,
     width: f32,
     native: bool,
     scale: f32,
     active_mic: bool,
-) -> (
-    gpui::Bounds<gpui::Pixels>,
-    Vec<(&'static str, gpui::Bounds<gpui::Pixels>)>,
-    super::composer::Layout,
-) {
+    draft: &str,
+) -> ComposerFrame {
     let face = if native {
         crate::ui_text::Face::System
     } else {
@@ -547,6 +553,8 @@ fn composer_frame(
                     if active_mic {
                         view.dictation_fixture(crate::dictation::Event::Start, window, cx);
                     }
+                    view.composer
+                        .update(cx, |state, cx| state.set_value(draft, window, cx));
                     view
                 });
                 cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))
@@ -554,7 +562,7 @@ fn composer_frame(
         )
         .unwrap()
     });
-    // The first frame measures the pane; the second lays the bar out for it.
+    // The first frame measures the pane; the second lays the card out for it.
     for _ in 0..3 {
         cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
             .unwrap();
@@ -563,11 +571,13 @@ fn composer_frame(
     let mut visual = gpui::VisualTestContext::from_window(handle.into(), cx);
     let pane = visual
         .debug_bounds("composer-pane")
-        .expect("the bar is drawn");
-    assert_eq!(f32::from(pane.size.width), width, "the bar spans the pane");
+        .expect("the pane is drawn");
     let field = visual
         .debug_bounds("composer-field")
         .expect("the box is drawn");
+    let card = visual
+        .debug_bounds("composer-card")
+        .expect("the card is drawn");
     let buttons = [
         "composer-attach",
         "composer-mic",
@@ -577,78 +587,103 @@ fn composer_frame(
     .into_iter()
     .filter_map(|name| visual.debug_bounds(name).map(|bounds| (name, bounds)))
     .collect();
-    let layout = super::composer::layout(width, scale, true, active_mic, true);
+    let layout = super::composer::layout(width, scale, draft.is_empty(), 3);
     crate::ui_text::set_for_tests(before.0, before.1);
-    (field, buttons, layout)
+    ComposerFrame {
+        pane,
+        card,
+        field,
+        buttons,
+        layout,
+    }
 }
 
 #[gpui::test]
-fn the_drawn_composer_keeps_its_box_and_buttons_in_any_pane(cx: &mut TestAppContext) {
+fn the_drawn_composer_is_the_planned_card_in_any_pane(cx: &mut TestAppContext) {
     let big = 24.0 / crate::ui_text::REFERENCE_SIZE;
     for (native, active_mic) in [(true, false), (false, false), (true, true), (false, true)] {
         let mut modes = std::collections::BTreeSet::new();
         for scale in [1.0, 1.5, big] {
-            for width in [100.0, 160.0, 240.0, 300.0, 368.0, 600.0] {
-                let what = format!("{width} px, {scale}×, native {native}");
-                let (field, buttons, layout) = composer_frame(cx, width, native, scale, active_mic);
-                modes.insert((layout.stacked, layout.mic));
-                let min = (super::composer::MIN_FIELD * scale).round();
-                let floor = min.min(width - 2.0 * super::composer::COMPACT_INSET);
-                let box_width = f32::from(field.size.width);
-                assert!(
-                    box_width >= floor - 0.5,
-                    "box {box_width} < {floor}: {what}"
-                );
-                assert!(
-                    (box_width - layout.field).abs() <= 1.0,
-                    "drawn box {box_width} vs planned {}: {what}",
-                    layout.field
-                );
-                // Attach, Stop and Send always; the mic as planned.
-                let names: Vec<_> = buttons.iter().map(|(name, _)| *name).collect();
-                assert!(names.contains(&"composer-attach"), "{what}");
-                assert!(names.contains(&"composer-stop"), "{what}");
-                assert!(names.contains(&"composer-send"), "{what}");
-                assert_eq!(names.contains(&"composer-mic"), layout.mic, "{what}");
-                for (name, bounds) in &buttons {
-                    let (left, right) = (f32::from(bounds.left()), f32::from(bounds.right()));
+            for width in [100.0, 160.0, 240.0, 300.0, 368.0, 600.0, 720.0, 1440.0] {
+                for draft in ["", "a draft"] {
+                    let what = format!("{width} px, {scale}×, native {native}, {draft:?}");
+                    let frame = composer_frame(cx, width, native, scale, active_mic, draft);
+                    let layout = frame.layout;
+                    modes.insert((layout.compact, layout.narrow));
+                    assert_eq!(
+                        f32::from(frame.pane.size.width),
+                        width,
+                        "the pane spans the tab"
+                    );
+                    // The card keeps its inset from the pane on the sides and below.
+                    let inset = px(layout.inset);
                     assert!(
-                        (f32::from(bounds.size.width) - layout.button).abs() <= 0.5,
-                        "{name} is {} wide, planned {}: {what}",
-                        bounds.size.width,
-                        layout.button
+                        (frame.card.left() - frame.pane.left() - inset).abs() <= px(0.5),
+                        "card left {:?}: {what}",
+                        frame.card.left()
                     );
                     assert!(
-                        left >= -0.5 && right <= width + 0.5,
-                        "{name} {left}..{right}: {what}"
+                        (frame.pane.right() - frame.card.right() - inset).abs() <= px(0.5),
+                        "card right {:?}: {what}",
+                        frame.card.right()
                     );
-                    // Stacked buttons sit under the box; inline ones beside it.
-                    if layout.stacked {
+                    assert!(
+                        (frame.pane.bottom() - frame.card.bottom() - inset).abs() <= px(0.5),
+                        "card bottom {:?}: {what}",
+                        frame.card.bottom()
+                    );
+                    // Attach, the mic, Stop and Send, all inside the card.
+                    let names: Vec<_> = frame.buttons.iter().map(|(name, _)| *name).collect();
+                    assert_eq!(names.len(), 4, "{what}: {names:?}");
+                    for (name, bounds) in &frame.buttons {
                         assert!(
-                            bounds.top() >= field.bottom(),
-                            "{name} under the box: {what}"
+                            bounds.left() >= frame.card.left() - px(0.5)
+                                && bounds.right() <= frame.card.right() + px(0.5),
+                            "{name} {:?}: {what}",
+                            bounds
                         );
-                    } else {
+                        if *name != "composer-attach" {
+                            assert!(
+                                (f32::from(bounds.size.width) - layout.button).abs() <= 0.5,
+                                "{name} is {:?} wide, planned {}: {what}",
+                                bounds.size.width,
+                                layout.button
+                            );
+                        }
+                        if layout.compact {
+                            // One row: beside the box.
+                            assert!(
+                                bounds.right() <= frame.field.left() + px(0.5)
+                                    || bounds.left() >= frame.field.right() - px(0.5),
+                                "{name} beside the box: {what}"
+                            );
+                        } else {
+                            // The box takes the card's width; the buttons go under it.
+                            assert!(
+                                bounds.top() >= frame.field.bottom() - px(0.5),
+                                "{name} under the box: {what}"
+                            );
+                        }
+                    }
+                    if !layout.compact {
+                        let inner = frame.card.size.width - px(2.0 * layout.padding + 2.0);
                         assert!(
-                            right <= f32::from(field.left()) + 0.5
-                                || left >= f32::from(field.right()) - 0.5,
-                            "{name} beside the box: {what}"
+                            (frame.field.size.width - inner).abs() <= px(1.0),
+                            "box {:?} vs the card's {inner:?}: {what}",
+                            frame.field.size.width
                         );
                     }
                 }
             }
         }
-        // Every way of laying it out was drawn: beside the box with and without the mic,
-        // and under it.
+        // Every way of laying it out was drawn: one row, the box over its controls, and a
+        // narrow pane's.
+        assert!(modes.contains(&(true, false)), "native {native}: {modes:?}");
+        assert!(
+            modes.contains(&(false, false)),
+            "native {native}: {modes:?}"
+        );
         assert!(modes.contains(&(false, true)), "native {native}: {modes:?}");
-        assert!(
-            active_mic || modes.contains(&(false, false)),
-            "native {native}: {modes:?}"
-        );
-        assert!(
-            modes.iter().any(|(stacked, _)| *stacked),
-            "native {native}: {modes:?}"
-        );
     }
 }
 
