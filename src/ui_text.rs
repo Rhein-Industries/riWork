@@ -140,6 +140,16 @@ pub fn face() -> Face {
     FACE.with(Cell::get)
 }
 
+/// Sets the interface scale and face directly, for tests that lay out views; returns what
+/// they were, to put back.
+#[cfg(test)]
+pub fn set_for_tests(scale: f32, face: Face) -> (f32, Face) {
+    (
+        SCALE.with(|cell| cell.replace(scale)),
+        FACE.with(|cell| cell.replace(face)),
+    )
+}
+
 /// Whether the Native theme is what the interface is drawn in: it is the one
 /// theme with the system face. Render code that has no `cx` asks this.
 pub fn is_native() -> bool {

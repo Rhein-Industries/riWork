@@ -1,5 +1,7 @@
 //! The message box: what ⏎ and ⎋ do in it, moving between its lines, and the text it sends.
 
+#[cfg(test)]
+use crate::ui_text;
 use crate::{
     chat::model::Decision,
     dictation::{self, Phase},
@@ -64,40 +66,104 @@ pub fn status(dictation: &Phase, mic: bool) -> Option<String> {
     }
 }
 
-/// The narrowest the message box may get beside its buttons, in design points.
+/// The chat header's inset from the tab's sides and the gap between its controls, in design
+/// points. The message box under the list keeps the same, so its edges line up with the
+/// header's, until a narrow pane makes it give some of that up (see `layout`).
+pub const BAR_INSET: f32 = 10.0;
+pub const BAR_GAP: f32 = 6.0;
+/// The message box bar's inset and gap in a pane too narrow for the usual ones, in pixels:
+/// these do not grow with the text, so a big text size leaves the box its room.
+pub const COMPACT_INSET: f32 = 4.0;
+pub const COMPACT_GAP: f32 = 4.0;
+/// The narrowest the message box may get, in design points.
 pub const MIN_FIELD: f32 = 120.0;
 
-/// Where the message box's buttons go.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Fit {
-    /// In one row with the box; `mic` is whether the mic still fits in it.
-    Inline { mic: bool },
-    /// The box takes the whole width, its buttons a row under it; `mic` as for `Inline`.
-    Stacked { mic: bool },
+/// How the message box bar is laid out in a pane of a given width: in pixels, as drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layout {
+    /// The box takes the whole row and the buttons a row under it.
+    pub stacked: bool,
+    /// Whether the mic is shown.
+    pub mic: bool,
+    /// The bar's padding on every side, and the gap between its pieces.
+    pub inset: f32,
+    pub gap: f32,
+    /// Every button's side. Native and the colorful themes draw the same square buttons
+    /// (a symbol or a one-character mark), so one side serves both.
+    pub button: f32,
+    /// The box's width.
+    pub field: f32,
+    /// The width the buttons take in their row (the box's row when not stacked), gaps
+    /// included.
+    pub buttons: f32,
 }
 
-/// The buttons' place for a row `width` px wide (the bar inside its padding) at interface
-/// scale `scale`, with the mic shown (`mic`) and a turn running (`running`, which adds Stop).
-/// The box keeps at least `MIN_FIELD`: the mic goes first, then every button moves to a row
-/// under the box, where the mic comes back if that row has room for it. Lengths are design
-/// points, grown with the text the way `ui_text::space` grows them. A width not yet laid
-/// out (zero) keeps everything in the row.
-pub fn fit(width: f32, scale: f32, mic: bool, running: bool, button: f32, gap: f32) -> Fit {
+/// The bar's layout for a pane `pane` px wide at interface scale `scale`, with the mic set to
+/// show (`mic`) and kept whatever the room (`keep_mic`, while it dictates), and a turn
+/// running (`running`, which adds Stop). Attach and Send are always there.
+///
+/// With the header's inset and gap, every button goes beside the box while the box keeps
+/// `MIN_FIELD`; else the mic goes first; else the box takes the whole row and the buttons a
+/// row under it, where the mic comes back if there is room. When even that row is short (or
+/// the box is short of its minimum on a row of its own), the bar falls to `COMPACT_INSET` and
+/// `COMPACT_GAP` and the buttons shrink to share the row, so the box keeps
+/// `min(MIN_FIELD, pane - 2 × COMPACT_INSET)` and the buttons never pass the pane's edge.
+/// Lengths in design points grow with the text as `ui_text::space` grows them. A pane not
+/// yet laid out (zero wide) gets the full row.
+pub fn layout(pane: f32, scale: f32, mic: bool, keep_mic: bool, running: bool) -> Layout {
     let space = |base: f32| (base * scale.max(1.0)).round();
-    // Each button with the gap before it (under the box, the gap before the space that
-    // pushes the rest to the end stands in for the box's).
-    let buttons = |count: usize| count as f32 * (space(button) + space(gap));
-    // Attach and Send are always there.
+    let (inset, gap, side, min) = (
+        space(BAR_INSET),
+        space(BAR_GAP),
+        space(super::widgets::ROUND_BUTTON),
+        space(MIN_FIELD),
+    );
     let base = 2 + usize::from(running);
     let all = base + usize::from(mic);
-    if width <= 0.0 || width >= space(MIN_FIELD) + buttons(all) {
-        Fit::Inline { mic }
-    } else if width >= space(MIN_FIELD) + buttons(base) {
-        Fit::Inline { mic: false }
-    } else {
-        Fit::Stacked {
-            mic: mic && width >= buttons(all),
+    let needed = if keep_mic && mic { all } else { base };
+    let span = |count: usize, side: f32, gap: f32| count as f32 * (side + gap);
+    let row = pane - 2.0 * inset;
+    let inline = |mic: bool| {
+        let count = base + usize::from(mic);
+        Layout {
+            stacked: false,
+            mic,
+            inset,
+            gap,
+            button: side,
+            field: row - span(count, side, gap),
+            buttons: span(count, side, gap),
         }
+    };
+    if pane <= 0.0 || row >= min + span(all, side, gap) {
+        return inline(mic);
+    }
+    if !(keep_mic && mic) && row >= min + span(base, side, gap) {
+        return inline(false);
+    }
+    // Under the box: Attach, a space that takes what is left, then the rest; a gap before
+    // each button but the first and one before the space, so one gap per button.
+    let (inset, gap) = if row >= min && row >= span(needed, side, gap) {
+        (inset, gap)
+    } else {
+        (COMPACT_INSET, COMPACT_GAP)
+    };
+    let row = pane - 2.0 * inset;
+    let side = side.min(
+        ((row - needed as f32 * gap) / needed as f32)
+            .floor()
+            .max(1.0),
+    );
+    let mic = mic && row >= span(all, side, gap);
+    let count = base + usize::from(mic);
+    Layout {
+        stacked: true,
+        mic,
+        inset,
+        gap,
+        button: side,
+        field: row,
+        buttons: span(count, side, gap),
     }
 }
 
@@ -216,30 +282,51 @@ mod tests {
     }
 
     #[test]
-    fn the_box_keeps_its_minimum_width_dropping_the_mic_then_stacking_the_buttons() {
-        let fit = |width, scale, mic, running| fit(width, scale, mic, running, 26.0, 6.0);
-        // 120 for the box and 32 per button.
-        assert_eq!(fit(500.0, 1.0, true, true), Fit::Inline { mic: true });
-        assert_eq!(fit(248.0, 1.0, true, true), Fit::Inline { mic: true });
-        assert_eq!(fit(247.0, 1.0, true, true), Fit::Inline { mic: false });
-        assert_eq!(fit(216.0, 1.0, true, true), Fit::Inline { mic: false });
-        assert_eq!(fit(215.0, 1.0, true, true), Fit::Stacked { mic: true });
-        // The narrowest pane (160 pt, 140 inside the bar) stacks, running or not, and keeps
-        // the mic under the box while its row has room.
-        assert_eq!(fit(140.0, 1.0, true, true), Fit::Stacked { mic: true });
-        assert_eq!(fit(140.0, 1.0, false, false), Fit::Stacked { mic: false });
-        // Without Stop, more room; without the mic, nothing to drop first.
-        assert_eq!(fit(184.0, 1.0, false, false), Fit::Inline { mic: false });
-        assert_eq!(fit(216.0, 1.0, true, false), Fit::Inline { mic: true });
-        // Bigger text grows the box's minimum and the buttons with it: at 1.15 the 160 pt
-        // pane's row has no room for the mic even under the box.
-        assert_eq!(fit(248.0, 1.5, true, true), Fit::Stacked { mic: true });
-        assert_eq!(fit(372.0, 1.5, true, true), Fit::Inline { mic: true });
-        assert_eq!(fit(140.0, 1.15, true, true), Fit::Stacked { mic: false });
-        // Smaller text never shrinks them below their design size.
-        assert_eq!(fit(247.0, 0.8, true, true), Fit::Inline { mic: false });
-        // Not laid out yet: everything in the row.
-        assert_eq!(fit(0.0, 1.0, true, true), Fit::Inline { mic: true });
+    fn the_box_keeps_its_minimum_and_the_buttons_stay_in_the_pane() {
+        let at = |pane, mic, running| layout(pane, 1.0, mic, false, running);
+        // At 1.0: 10 inset, 6 gap, 26 buttons (the side every composer button is drawn at),
+        // 120 box.
+        assert_eq!(
+            at(500.0, true, true).button,
+            super::super::widgets::ROUND_BUTTON
+        );
+        let wide = at(500.0, true, true);
+        assert!(!wide.stacked && wide.mic && wide.field == 480.0 - 4.0 * 32.0);
+        assert!(at(268.0, true, true).mic);
+        let short = at(267.0, true, true);
+        assert!(!short.stacked && !short.mic && short.field >= 120.0);
+        assert!(at(235.0, true, true).stacked);
+        // Not laid out yet: the full row.
+        assert!(!at(0.0, true, true).stacked && at(0.0, true, true).mic);
+        // A dictating mic is never dropped: under the box instead.
+        let dictating = layout(267.0, 1.0, true, true, true);
+        assert!(dictating.stacked && dictating.mic);
+        for scale in [0.8, 1.0, 1.5, 24.0 / ui_text::REFERENCE_SIZE] {
+            for pane in [120.0, 160.0, 200.0, 240.0, 300.0, 368.0, 500.0, 900.0] {
+                for (mic, running) in [(true, true), (true, false), (false, true), (false, false)] {
+                    let fit = layout(pane, scale, mic, false, running);
+                    let min = (MIN_FIELD * f32::max(scale, 1.0)).round();
+                    let floor = min.min(pane - 2.0 * COMPACT_INSET);
+                    let what = format!("{pane} px at {scale}× mic {mic} running {running}");
+                    assert!(fit.field >= floor, "box {} < {floor}: {what}", fit.field);
+                    let row = pane - 2.0 * fit.inset;
+                    if fit.stacked {
+                        assert!(
+                            fit.buttons <= row,
+                            "buttons {} > {row}: {what}",
+                            fit.buttons
+                        );
+                        assert_eq!(fit.field, row);
+                    } else {
+                        assert_eq!(fit.field + fit.buttons, row, "{what}");
+                    }
+                    assert!(!fit.mic || mic, "{what}");
+                }
+            }
+        }
+        // 24 pt text in the narrowest pane: compact, the box keeps 120.
+        let big = layout(160.0, 24.0 / ui_text::REFERENCE_SIZE, true, false, true);
+        assert!(big.stacked && big.inset == COMPACT_INSET && big.field >= 120.0);
     }
 
     #[test]

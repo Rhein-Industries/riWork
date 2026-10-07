@@ -26,10 +26,8 @@ use super::{
     widgets::{self, Look, button, capsule, dimmed},
 };
 
-/// The chat header's inset from the tab's sides and the gap between its controls. The
-/// message box under the list keeps the same, so its edges line up with the header's.
-const BAR_INSET: f32 = 10.0;
-const BAR_GAP: f32 = 6.0;
+/// The chat header's inset and control gap, shared with the message box (see `composer`).
+use super::composer::{BAR_GAP, BAR_INSET};
 /// The space between the message box's edge and its text, clear of its round corners.
 const FIELD_INSET: f32 = 12.0;
 
@@ -73,6 +71,37 @@ fn composer_path(path: &mut PathBuilder, bounds: gpui::Bounds<gpui::Pixels>, rad
         point(left, top),
     );
     path.close();
+}
+
+/// A message box button in the colorful themes: a square of `side` with a one-character mark,
+/// bordered like their other buttons, in `accent` for the primary or a signal one; its name
+/// and keys in the tooltip. Native draws symbols in squares of the same side.
+fn mark_button(
+    id: &'static str,
+    mark: &'static str,
+    tooltip: impl Into<SharedString>,
+    accent: Option<u32>,
+    side: gpui::Pixels,
+    look: Look,
+) -> Stateful<gpui::Div> {
+    let colors = look.colors;
+    div()
+        .id(id)
+        .flex_none()
+        .size(side)
+        .flex()
+        .items_center()
+        .justify_center()
+        .border_1()
+        .border_color(rgb(accent.unwrap_or(colors.divider)))
+        .rounded(px(3.0))
+        .bg(rgb(colors.panel))
+        .text_size(ui_text::text(11.0))
+        .text_color(rgb(accent.unwrap_or(colors.text)))
+        .cursor_pointer()
+        .hover(move |style| style.bg(rgb(colors.panel_active)))
+        .child(mark)
+        .child(tooltip::anchor(tooltip.into(), TipLook::Control))
 }
 
 /// The headline of a tab with no chat to show, in the signal color when something `failed`.
@@ -1250,8 +1279,20 @@ impl ChatView {
         // No helper text at rest: only a dictation at work says what it does.
         let status = composer::status(dictation, mic);
         let queued = !self.attachments.is_empty() || !self.submissions.is_empty();
-        // Native: a bare paperclip that shows its fill only under the pointer; the colorful
-        // themes write a plus. Its name, kinds and paste/drop are in the tooltip.
+        // Where the buttons go and how big they are, for the pane's width as last drawn (see
+        // `composer::layout`): the box keeps its minimum and the buttons stay in the pane.
+        let layout = composer::layout(
+            self.composer_width.get(),
+            ui_text::scale(),
+            mic,
+            dictation.is_active(),
+            running,
+        );
+        let side = px(layout.button);
+        let gap = px(layout.gap);
+        // Every button is a square of `side`: Native's symbols, the colorful themes' marks,
+        // their names and keys in the tooltips. Attach shows its fill only under the pointer
+        // and its tooltip names the kinds and paste/drop.
         let attach = if look.native {
             widgets::symbol_button(
                 "chat-attach",
@@ -1259,105 +1300,123 @@ impl ChatView {
                 "Attach files · UTF-8 text, PNG or JPEG · or paste or drop them",
                 look,
             )
-            .size(ui_text::space(widgets::ROUND_BUTTON))
+            .size(side)
         } else {
-            button("chat-attach", "+", None, look).child(tooltip::anchor(
+            mark_button(
+                "chat-attach",
+                "+",
                 "Attach files · UTF-8 text, PNG or JPEG · or paste or drop them",
-                TipLook::Control,
-            ))
+                None,
+                side,
+                look,
+            )
         }
         .on_click(cx.listener(|view, _, window, cx| view.attach_picker(window, cx)));
-        // The box keeps `composer::MIN_FIELD`: the mic goes first when the row is short of
-        // it, then the buttons move to a row under the box (the mic too, if that row has
-        // room). A mic that is dictating stays, under the box if need be. The colorful themes' buttons are words, wider than
-        // Native's round ones.
-        let button_width = if look.native {
-            widgets::ROUND_BUTTON
-        } else {
-            56.0
-        };
-        let fit = match composer::fit(
-            self.composer_width.get(),
-            ui_text::scale(),
-            mic,
-            running,
-            button_width,
-            BAR_GAP,
-        ) {
-            composer::Fit::Inline { mic: false } | composer::Fit::Stacked { mic: false }
-                if mic && dictation.is_active() =>
-            {
-                composer::Fit::Stacked { mic: true }
-            }
-            fit => fit,
-        };
-        let (stacked, mic) = match fit {
-            composer::Fit::Inline { mic } => (false, mic),
-            composer::Fit::Stacked { mic } => (true, mic),
-        };
-        // Native's are round symbol buttons beside the field, as a message field has them;
-        // their keys are in the tooltips. Send waits in grey until there is something to send.
-        let trailing: Vec<AnyElement> = [
-            mic.then(|| widgets::beside_field(self.mic_button(look, cx)).into_any_element()),
-            running.then(|| {
-                widgets::beside_field(
-                    if look.native {
-                        widgets::round_button(
-                            "chat-interrupt",
-                            "stop.fill",
-                            "Interrupt · ⌘.",
-                            Button::Secondary,
-                            look,
-                        )
-                    } else {
-                        button(
-                            "chat-interrupt",
-                            "Interrupt  ⌘.",
-                            Some(look.diff.removed),
-                            look,
-                        )
-                    }
-                    .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx))),
+        let stop = running.then(|| {
+            if look.native {
+                widgets::round_button(
+                    "chat-interrupt",
+                    "stop.fill",
+                    "Interrupt · ⌘.",
+                    Button::Secondary,
+                    look,
                 )
-                .into_any_element()
+                .size(side)
+            } else {
+                mark_button(
+                    "chat-interrupt",
+                    "■",
+                    "Interrupt · ⌘.",
+                    Some(look.diff.removed),
+                    side,
+                    look,
+                )
+            }
+            .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx)))
+        });
+        let send_tip = if running {
+            "Send · ⏎ steers the turn · ⇧⏎ new line"
+        } else {
+            "Send · ⏎ · ⇧⏎ new line"
+        };
+        let send = if look.native {
+            let empty = self.draft_empty(cx) || self.pending_submission.is_some();
+            widgets::round_button(
+                "chat-send",
+                "arrow.up",
+                send_tip,
+                if empty {
+                    Button::Disabled
+                } else {
+                    Button::Primary
+                },
+                look,
+            )
+            .size(side)
+        } else {
+            mark_button("chat-send", "↑", send_tip, Some(colors.cyan), side, look)
+        }
+        .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx)));
+        let trailing: Vec<AnyElement> = [
+            layout.mic.then(|| {
+                widgets::beside_field(self.mic_button(look, side, cx))
+                    .debug_selector(|| "composer-mic".into())
+                    .into_any_element()
+            }),
+            stop.map(|stop| {
+                widgets::beside_field(stop)
+                    .debug_selector(|| "composer-stop".into())
+                    .into_any_element()
             }),
             Some(
-                widgets::beside_field(
-                    if look.native {
-                        let empty = self.draft_empty(cx) || self.pending_submission.is_some();
-                        widgets::round_button(
-                            "chat-send",
-                            "arrow.up",
-                            if running {
-                                "Send · ⏎ steers the turn · ⇧⏎ new line"
-                            } else {
-                                "Send · ⏎ · ⇧⏎ new line"
-                            },
-                            if empty {
-                                Button::Disabled
-                            } else {
-                                Button::Primary
-                            },
-                            look,
-                        )
-                    } else {
-                        button("chat-send", "Send", Some(colors.cyan), look)
-                            .child(tooltip::anchor("⏎ sends · ⇧⏎ new line", TipLook::Control))
-                    }
-                    .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx))),
-                )
-                .into_any_element(),
+                widgets::beside_field(send)
+                    .debug_selector(|| "composer-send".into())
+                    .into_any_element(),
             ),
         ]
         .into_iter()
         .flatten()
         .collect();
+        let attach = widgets::beside_field(attach).debug_selector(|| "composer-attach".into());
         let field = div()
             .flex_1()
             .min_w_0()
+            .debug_selector(|| "composer-field".into())
             .child(self.composer_editor(look, window, cx));
-        // The row's width as laid out, for the next frame's `fit`. It does not depend on
-        // where the buttons go, so it settles after one redraw.
+        let buttons_and_field = if layout.stacked {
+            // The box on its own row; Attach at the start of the row under it and the rest at
+            // its end, as the row beside the box has them.
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(gap)
+                .child(div().w_full().flex().child(field))
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(gap)
+                        .child(attach)
+                        .child(div().flex_1())
+                        .children(trailing),
+                )
+        } else {
+            // The buttons keep to the bottom, each centered on the box's last line (see
+            // `widgets::beside_field`): on the box's center while it has one line, beside its
+            // last line once it grows, as a message field keeps them.
+            div()
+                .w_full()
+                .flex()
+                .items_end()
+                .gap(gap)
+                .child(attach)
+                .child(field)
+                .children(trailing)
+        };
+        // The pane's width as laid out, for the next frame's `layout`. It does not depend on
+        // the layout, so it settles after one redraw.
         let measured = self.composer_width.clone();
         let measure = canvas(
             move |bounds, window, _| {
@@ -1374,50 +1433,15 @@ impl ChatView {
         .left_0()
         .w_full()
         .h(px(0.));
-        let buttons_and_field = div().relative().w_full().child(measure).map(|frame| {
-            if stacked {
-                // The box on its own row; Attach at the start of the row under it and the
-                // rest at its end, as the row beside the box has them.
-                frame
-                    .flex()
-                    .flex_col()
-                    .gap(ui_text::space(BAR_GAP))
-                    .child(div().w_full().flex().child(field))
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            // Wider than the pane only at extreme text sizes.
-                            .flex_wrap()
-                            .items_center()
-                            .gap(ui_text::space(BAR_GAP))
-                            .child(widgets::beside_field(attach))
-                            .child(div().flex_1())
-                            .children(trailing),
-                    )
-            } else {
-                // The buttons keep to the bottom, each centered on the box's last line
-                // (see `widgets::beside_field`): on the box's center while it has one
-                // line, beside its last line once it grows, as a message field keeps them.
-                frame
-                    .flex()
-                    .items_end()
-                    .gap(ui_text::space(BAR_GAP))
-                    .child(widgets::beside_field(attach))
-                    .child(field)
-                    .children(trailing)
-            }
-        });
-        div()
+        let bar = div()
             .id("chat-composer-bar")
             .w_full()
             .flex()
             .flex_col()
-            .gap(ui_text::space(BAR_GAP))
+            .gap(gap)
             // The header's inset on the sides, so the field and the buttons line up with its
-            // controls; the same distance above and below the field.
-            .px(ui_text::space(BAR_INSET))
-            .py(ui_text::space(BAR_INSET))
+            // controls, and the same above and below the field; less in a narrow pane.
+            .p(px(layout.inset))
             .border_t_1()
             .border_color(rgb(colors.divider))
             .bg(rgb(colors.panel))
@@ -1447,15 +1471,21 @@ impl ChatView {
                     .text_size(ui_text::text(9.0))
                     .text_color(rgb(colors.text))
                     .child(status)
-            }))
+            }));
+        div()
+            .relative()
+            .w_full()
+            .debug_selector(|| "composer-pane".into())
+            .child(measure)
+            .child(bar)
             .into_any_element()
     }
 
     /// The mic beside Send: click to dictate, click again to stop; ⌃⌥D does the same. Native
     /// draws it as a bare round symbol button, as the paperclip: a mic, filled in the working
     /// color while it listens and pulsing while it gets ready or settles. The colorful themes
-    /// write it out.
-    fn mic_button(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
+    /// draw a ring, filled while it dictates.
+    fn mic_button(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let phase = self.dictation.phase();
         let key = dictation::SHORTCUT_LABEL;
@@ -1478,21 +1508,17 @@ impl ChatView {
             };
             // Quiet at rest, as the paperclip: a bare symbol with a fill under the pointer.
             widgets::symbol_button("chat-dictate", symbol, tooltip, look)
-                .size(ui_text::space(widgets::ROUND_BUTTON))
+                .size(side)
                 .when(phase.is_active(), |mic| mic.text_color(rgb(colors.working)))
         } else {
-            let label = match phase {
-                Phase::Listening { .. } => format!("● Stop  {key}"),
-                Phase::Preparing { .. } | Phase::Finishing { .. } => "Mic …".to_owned(),
-                _ => format!("Mic  {key}"),
-            };
-            button(
+            mark_button(
                 "chat-dictate",
-                label,
+                if phase.is_active() { "●" } else { "○" },
+                tooltip,
                 phase.is_active().then_some(colors.working),
+                side,
                 look,
             )
-            .child(tooltip::anchor(tooltip, TipLook::Control))
         }
         .when(listening, |mic| {
             mic.bg(rgb(look.tint(colors.working, 0.18)))
