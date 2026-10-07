@@ -1431,28 +1431,33 @@ impl ChatView {
                             }))
                         })
                 } else if look.hermes() {
-                    widgets::toggle_button(
-                        "chat-fast",
-                        if fast { "✓ Fast" } else { "Fast" },
-                        None,
-                        fast,
-                        look,
-                    )
-                    .px(px(4.0))
-                    .border_color(rgb(if fast { colors.cyan } else { colors.panel }))
-                    .bg(if fast {
-                        rgb(look.tint(colors.cyan, 0.18)).into()
-                    } else {
-                        transparent_black()
-                    })
-                    .text_color(rgb(if fast { colors.text } else { colors.muted }))
-                    .hover(move |style| {
-                        style.bg(rgb(if fast {
-                            look.tint(colors.cyan, 0.28)
+                    // This branch owns the hover style; the shared styled toggle already
+                    // registers one, so start from the behavior-only Kit primitive.
+                    let label = if fast { "✓ Fast" } else { "Fast" };
+                    crate::behavior_controls::toggle_content("chat-fast", label, label, fast)
+                        .line_height(relative(1.618_034))
+                        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                        .flex_none()
+                        .px(px(4.0))
+                        .py(ui_text::space(widgets::CAPSULE_PAD_Y))
+                        .border_1()
+                        .border_color(rgb(if fast { colors.cyan } else { colors.panel }))
+                        .rounded(px(3.0))
+                        .bg(if fast {
+                            rgb(look.tint(colors.cyan, 0.18)).into()
                         } else {
-                            colors.panel_active
-                        }))
-                    })
+                            transparent_black()
+                        })
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(if fast { colors.text } else { colors.muted }))
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style.bg(rgb(if fast {
+                                look.tint(colors.cyan, 0.28)
+                            } else {
+                                colors.panel_active
+                            }))
+                        })
                 } else {
                     widgets::toggle_button(
                         "chat-fast",
