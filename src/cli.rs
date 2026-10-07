@@ -84,7 +84,7 @@ riwork version | --version              Print the RiWork version
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork remote --help                    Pairing, relay and connector command options
 riwork shell create [--project ID | --worktree ID] [--command CMD]
-riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted]
+riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted | --as-settings]
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
 riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
@@ -836,6 +836,11 @@ fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
 ///
 /// `shell_paste`: `shell paste ID -- FILE...` pastes file paths as a drop on the terminal does,
 /// which is how the remote connector hands a shell the files a phone uploaded.
+///
+/// `shell_create_as_settings`: `shell create --harness KIND --as-settings` starts the agent
+/// unrestricted or not as **Agent terminals run unrestricted** in Settings says, which is how
+/// the remote connector answers a phone that leaves `unrestricted` out. An older CLI would
+/// refuse the flag as a usage error.
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
@@ -846,7 +851,8 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "shell_attach_exec": true,
             "chat": true,
             "orchestrator_create": true,
-            "shell_paste": true
+            "shell_paste": true,
+            "shell_create_as_settings": true
         }));
     }
     println!("verifies_shell yes");
@@ -855,6 +861,7 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     println!("chat yes");
     println!("orchestrator_create yes");
     println!("shell_paste yes");
+    println!("shell_create_as_settings yes");
     Ok(())
 }
 
@@ -1640,13 +1647,26 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 })
                 .transpose()?;
             let unrestricted = take_flag(&mut args, "--unrestricted");
+            let as_settings = take_flag(&mut args, "--as-settings");
             ensure_empty(&args)?;
             if harness.is_some() && command.is_some() {
                 return Err("Use either --harness or --command".to_owned());
             }
+            if unrestricted && as_settings {
+                return Err("Use either --unrestricted or --as-settings".to_owned());
+            }
             if unrestricted && harness.is_none() {
                 return Err("--unrestricted requires --harness".to_owned());
             }
+            if as_settings && harness.is_none() {
+                return Err("--as-settings requires --harness".to_owned());
+            }
+            // `--as-settings` is what the New tab menu does: unrestricted while
+            // **Agent terminals run unrestricted** is on. Without it the CLI stays
+            // restricted unless asked, so scripts keep their meaning.
+            let unrestricted = unrestricted
+                || (as_settings
+                    && crate::settings::agent_terminals_unrestricted(manager.state_home()));
             let state = Store::open_default()?.snapshot()?;
             let (project_id, worktree_id, cwd) =
                 launch_scope(&state, project.as_deref(), worktree.as_deref())?;

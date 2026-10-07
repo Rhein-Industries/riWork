@@ -498,6 +498,115 @@ fn an_agent_is_restricted_unless_unrestricted_is_asked_for() {
 }
 
 #[test]
+fn as_settings_follows_the_agent_terminals_setting_and_needs_an_agent() {
+    let home = Home::new();
+    let (_, worktree, _) = home.project("app");
+    let bin = home.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (name, body) in [("claude", "exec sleep 300"), ("cua-driver", "exit 0")] {
+        let path = bin.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let run = |args: &[&str]| -> Output {
+        let mut command = home.command(args);
+        command
+            .env("PATH", &path)
+            .env("RIWORK_CUA_DRIVER", bin.join("cua-driver"));
+        finish(command.spawn().unwrap(), args)
+    };
+    let create = |extra: &[&str]| -> Value {
+        let mut args = vec![
+            "shell",
+            "create",
+            "--worktree",
+            &worktree,
+            "--harness",
+            "claude",
+        ];
+        args.extend_from_slice(extra);
+        args.push("--json");
+        let output = run(&args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let bypass = |shell: &Value| {
+        shell["command"]
+            .as_str()
+            .unwrap()
+            .contains("--dangerously-skip-permissions")
+    };
+
+    assert_eq!(
+        home.ok(&["capabilities", "--json"])["shell_create_as_settings"],
+        true
+    );
+    // No settings file: on by default.
+    let shell = create(&["--as-settings"]);
+    assert_eq!(shell["unrestricted"], true, "{shell}");
+    assert!(bypass(&shell), "{shell}");
+    // Without the flag the CLI keeps its old meaning: restricted unless asked.
+    let shell = create(&[]);
+    assert_eq!(shell["unrestricted"], false, "{shell}");
+    assert!(!bypass(&shell), "{shell}");
+
+    // Turned off in Settings: the same request asks before it acts.
+    fs::write(
+        home.0.join("settings.json"),
+        r#"{"schema_version":1,"agent_terminals_unrestricted":false}"#,
+    )
+    .unwrap();
+    let shell = create(&["--as-settings"]);
+    assert_eq!(shell["unrestricted"], false, "{shell}");
+    assert!(!bypass(&shell), "{shell}");
+    // An explicit --unrestricted is still honored.
+    let shell = create(&["--unrestricted"]);
+    assert_eq!(shell["unrestricted"], true, "{shell}");
+
+    // A plain shell is never unrestricted, and the two flags do not go together.
+    for (args, error) in [
+        (
+            vec![
+                "shell",
+                "create",
+                "--worktree",
+                worktree.as_str(),
+                "--as-settings",
+            ],
+            "--as-settings requires --harness",
+        ),
+        (
+            vec![
+                "shell",
+                "create",
+                "--worktree",
+                worktree.as_str(),
+                "--harness",
+                "claude",
+                "--as-settings",
+                "--unrestricted",
+            ],
+            "Use either --unrestricted or --as-settings",
+        ),
+    ] {
+        let output = run(&args);
+        assert!(!output.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(error), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
 fn the_look_ups_the_connector_makes_before_creating_say_which_id_they_found() {
     let home = Home::new();
     let (project, worktree, _) = home.project("app");

@@ -57,7 +57,7 @@ echo "$*" >> "$D/calls.log"
 case "$1 $2" in
 'capabilities --json')
   if [ -e "$D/capabilities.unknown" ]; then echo "riwork: Unknown invocation 'capabilities'" >&2; exit 2; fi
-  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true}'; fi;;
+  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"shell_create_as_settings":true}'; fi;;
 'project show') printf '{"id":"%s"}' "$3";;
 'chat list') echo '[]';;
 'chat events')
@@ -384,6 +384,46 @@ async fn ready_announces_orchestrator_creation_when_the_cli_can_and_only_then() 
                 .contains("update RiWork")
         );
         assert_eq!(rig.calls("orchestrator", "create"), 0, "{answer:?}");
+    }
+}
+
+#[tokio::test]
+async fn ready_announces_agents_that_follow_the_desktop_settings_when_the_cli_can() {
+    let rig = Rig::new().await;
+    let phone = Phone::connect(&rig.pairing).await;
+    assert_eq!(
+        phone.ready["features"]["shell_create_as_settings"], true,
+        "{}",
+        phone.ready
+    );
+    // One question answers it with chats and orchestrators, and a yes is believed.
+    assert_eq!(rig.calls("capabilities", "--json"), 1);
+    drop(phone);
+    let again = Phone::connect(&rig.pairing).await;
+    assert_eq!(again.ready["features"]["shell_create_as_settings"], true);
+    assert_eq!(rig.calls("capabilities", "--json"), 1);
+
+    // A CLI without it, one that says no, one that answers oddly and one from before the
+    // question: not announced, the rest as it was, and still one question per handshake.
+    for answer in [
+        Some("{\"v\":1,\"chat\":true,\"orchestrator_create\":true}"),
+        Some("{\"v\":1,\"chat\":true,\"shell_create_as_settings\":false}"),
+        Some("{\"v\":1,\"shell_create_as_settings\":\"true\"}"),
+        None,
+    ] {
+        let rig = Rig::with(|dir| match answer {
+            Some(text) => std::fs::write(dir.join("capabilities.out"), text).unwrap(),
+            None => std::fs::write(dir.join("capabilities.unknown"), "").unwrap(),
+        })
+        .await;
+        let phone = Phone::connect(&rig.pairing).await;
+        let features = phone.ready["features"].as_object().unwrap();
+        assert!(
+            !features.contains_key("shell_create_as_settings"),
+            "{answer:?}: {features:?}"
+        );
+        assert!(features.contains_key("deflate"), "{answer:?}");
+        assert_eq!(rig.calls("capabilities", "--json"), 1, "{answer:?}");
     }
 }
 
