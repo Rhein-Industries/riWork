@@ -550,7 +550,7 @@ fn clipboard_staging_owns_normalized_tiff_and_exact_png_jpeg_bytes() {
         os::unix::net::UnixListener,
         thread,
     };
-    let root = crate::chat::testing::short_home();
+    let root = crate::chat::testing::private_socket_fixture_home();
     let chat = root.join("chat");
     fs::create_dir(&chat).unwrap();
     let socket = root.join("stage.sock");
@@ -559,7 +559,7 @@ fn clipboard_staging_owns_normalized_tiff_and_exact_png_jpeg_bytes() {
     let server = thread::spawn(move || {
         let mut content = Vec::new();
         for _ in 0..3 {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = crate::chat::testing::bounded_fixture_accept(&listener);
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();

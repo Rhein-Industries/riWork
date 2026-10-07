@@ -206,7 +206,7 @@ pub fn on_paste_with_reader<M: InputModeKind>(
 ) -> InputBase {
     let state = state.clone();
     frame.capture_action(move |_: &Paste, window, cx| {
-        if !state.read(cx).is_editable() {
+        if !state.read(cx).is_editable() || !state.read(cx).focus_handle(cx).is_focused(window) {
             return;
         }
         let clipboard = reader(cx);

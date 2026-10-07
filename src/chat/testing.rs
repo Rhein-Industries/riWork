@@ -299,6 +299,45 @@ pub fn short_home() -> PathBuf {
     home
 }
 
+/// An exclusively created private root for protocol-only socket fixtures.
+/// This helper never constructs a Host, provider or SessionManager.
+pub fn private_socket_fixture_home() -> PathBuf {
+    use std::os::unix::fs::DirBuilderExt;
+    let root = std::env::temp_dir().join(format!("rwcp-{}", Uuid::new_v4()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    root.canonicalize().unwrap()
+}
+
+/// Fixture-only accept/read/write deadlines; no production host or socket.
+pub fn bounded_fixture_accept(
+    listener: &std::os::unix::net::UnixListener,
+) -> std::os::unix::net::UnixStream {
+    listener.set_nonblocking(true).unwrap();
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                return stream;
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("private fixture accept failed or timed out: {error}"),
+        }
+    }
+}
+
 /// Starts a host with fake drivers. Another test may fork a child (a stub
 /// script) at the moment a previous host on the home lets go of its lock, and
 /// the child keeps the lock until it execs: `AlreadyRunning` is asked again.

@@ -337,7 +337,9 @@ impl SubscriptionCloser {
 /// Only a matched negative response establishes that a legacy host did nothing.
 /// Transport failures, malformed replies and unknown submissions stay Broken.
 fn attachment_refusal(message: String, variant: Option<&str>) -> CallError {
-    if variant.is_some_and(|variant| message.contains(&format!("unknown variant `{variant}`"))) {
+    if variant.is_some_and(|variant| {
+        message.starts_with(&format!("unreadable request: unknown variant `{variant}`"))
+    }) {
         CallError::Refused(format!(
             "The running chat backend does not support attachments. Update or refresh the chat backend, then explicitly retry staging or resend the saved draft. Your attachments and text draft are retained. Host refusal: {message}"
         ))
@@ -605,11 +607,11 @@ mod tests {
             Close,
             Delete,
         }
-        let home = crate::chat::testing::short_home();
+        let home = crate::chat::testing::private_socket_fixture_home();
         let socket = home.join("legacy.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let serving = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = crate::chat::testing::bounded_fixture_accept(&listener);
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut requests = Vec::new();
             for _ in 0..3 {
@@ -692,11 +694,17 @@ mod tests {
             attachment_refusal("quota exceeded".into(), Some("stage_attachment")),
             CallError::Refused("quota exceeded".into())
         );
-        let home = crate::chat::testing::short_home();
+        let provider_refusal =
+            "provider rejected payload containing unknown variant `stage_attachment`";
+        assert_eq!(
+            attachment_refusal(provider_refusal.into(), Some("stage_attachment")),
+            CallError::Refused(provider_refusal.into())
+        );
+        let home = crate::chat::testing::private_socket_fixture_home();
         let socket = home.join("broken.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let serving = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = crate::chat::testing::bounded_fixture_accept(&listener);
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             for case in 0..4 {
                 let mut line = String::new();
