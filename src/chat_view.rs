@@ -488,6 +488,9 @@ impl ChatView {
                         self.notices.clear(notices::LocalKey::Link);
                     }
                     if link == Link::Deleted {
+                        if let Some(id) = &self.chat_id {
+                            crate::chat_drafts::remember(id, "", cx);
+                        }
                         self.transcript_selection.retire(self.window_handle, cx);
                         self.feed = None;
                     }
@@ -818,19 +821,28 @@ impl ChatView {
         });
         self.working = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |view, cx| match result {
-                Ok(()) => cx.emit(ChatViewEvent::Close),
-                Err(error) => {
-                    view.notices.set(
-                        notices::LocalKey::Delete,
-                        NoticeLevel::Error,
-                        format!("Could not delete the chat: {error}"),
-                    );
-                    cx.notify();
-                }
-            });
+            let _ = this.update(cx, |view, cx| view.delete_result(result, cx));
         }));
         cx.notify();
+    }
+
+    fn delete_result(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
+        match result {
+            Ok(()) => {
+                if let Some(id) = &self.chat_id {
+                    crate::chat_drafts::remember(id, "", cx);
+                }
+                cx.emit(ChatViewEvent::Close);
+            }
+            Err(error) => {
+                self.notices.set(
+                    notices::LocalKey::Delete,
+                    NoticeLevel::Error,
+                    format!("Could not delete the chat: {error}"),
+                );
+                cx.notify();
+            }
+        }
     }
 
     /// Copy what an item holds: a message's text, or a command's output as it shows on screen.

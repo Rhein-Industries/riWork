@@ -344,6 +344,11 @@ impl ChatView {
         self.notices.clear(notices::LocalKey::Send);
         self.notices.clear(notices::LocalKey::Attachment);
         self.list.set_follow_mode(gpui::FollowMode::Tail);
+        if editor == self.composer.entity_id().as_u64() && generation == self.editor_generation {
+            if let Some(id) = &self.chat_id {
+                crate::chat_drafts::remember(id, "", cx);
+            }
+        }
         let result = self
             .feed
             .as_ref()
@@ -462,6 +467,7 @@ impl ChatView {
             self.bump_generation();
         }
         if let Err(error) = result {
+            self.remember_draft(cx);
             self.notices.set(notices::LocalKey::Send, NoticeLevel::Error, match error {
                 CallError::Refused(error) => {
                     format!("Submission refused: {error}. Your draft is retained.")

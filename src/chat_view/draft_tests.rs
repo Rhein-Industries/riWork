@@ -1,6 +1,7 @@
 //! A chat's unsent draft across a tab switch, closing and reopening the tab, and a restart.
 //! A view is made as `ChatView::open` makes it, with a recording feed instead of a host.
 use super::*;
+use crate::chat::client::CallError;
 use crate::chat_drafts::{self, ChatDrafts, Drafts};
 use gpui::{AnyWindowHandle, Bounds, TestAppContext, WindowBounds, WindowOptions, point, size};
 use gpui_kit::test::TestWindowExt;
@@ -153,6 +154,7 @@ fn each_chat_keeps_its_draft_while_another_tab_is_shown(cx: &mut TestAppContext)
         tabs.iter()
             .all(|(_, recording)| recording.try_recv().is_err())
     );
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
     let _ = std::fs::remove_dir_all(home);
 }
 
@@ -168,6 +170,7 @@ fn a_closed_tab_comes_back_with_its_draft_and_another_chat_without(cx: &mut Test
     let (_, _, tabs) = mount(cx, &[&a, &b]);
     assert_eq!(text(cx, &tabs[0].0), "half a thought\n  indented");
     assert_eq!(text(cx, &tabs[1].0), "");
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
     let _ = std::fs::remove_dir_all(home);
 }
 
@@ -180,6 +183,7 @@ fn a_draft_survives_a_restart_until_it_is_sent(cx: &mut TestAppContext) {
     type_into(cx, handle, "before the restart");
     drop(tabs);
     close(cx, handle);
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
     // A new process reads only what is on disk.
     cx.update(|cx| cx.set_global(ChatDrafts(Drafts::load(&home, SystemTime::now()))));
     let (handle, _, tabs) = mount(cx, &[&a]);
@@ -200,11 +204,9 @@ fn a_draft_survives_a_restart_until_it_is_sent(cx: &mut TestAppContext) {
             text: "before the restart".into()
         }
     );
-    // Until the host takes it, the draft stays, also on disk.
-    assert_eq!(
-        Drafts::load(&home, SystemTime::now()).get(&a),
-        Some("before the restart")
-    );
+    assert_eq!(cx.update(|cx| chat_drafts::draft(&a, cx)), None);
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+    assert_eq!(Drafts::load(&home, SystemTime::now()).get(&a), None);
     cx.update_window(handle, |_, window, cx| {
         view.update(cx, |v, cx| {
             v.submission_receipt(id, command, Ok(()), window, cx)
@@ -213,6 +215,130 @@ fn a_draft_survives_a_restart_until_it_is_sent(cx: &mut TestAppContext) {
     .unwrap();
     assert_eq!(text(cx, view), "");
     assert_eq!(cx.update(|cx| chat_drafts::draft(&a, cx)), None);
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
     assert_eq!(Drafts::load(&home, SystemTime::now()).get(&a), None);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn closing_a_tab_after_dispatch_does_not_restore_the_sent_draft(cx: &mut TestAppContext) {
+    let home = home();
+    start(cx, &home);
+    let a = chat_id();
+    let (handle, pane, tabs) = mount(cx, &[&a]);
+    type_into(cx, handle, "send and close");
+    cx.update_window(handle, |_, window, cx| {
+        tabs[0].0.update(cx, |v, cx| v.send_message(window, cx));
+    })
+    .unwrap();
+    assert!(matches!(
+        tabs[0].1.try_recv().unwrap(),
+        feed::Delivery::Submission { .. }
+    ));
+    drop(tabs);
+    drop(pane);
+    close(cx, handle);
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+    assert_eq!(Drafts::load(&home, SystemTime::now()).get(&a), None);
+    let (_, _, tabs) = mount(cx, &[&a]);
+    assert_eq!(text(cx, &tabs[0].0), "");
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn refused_and_uncertain_drafts_are_persisted_again(cx: &mut TestAppContext) {
+    let home = home();
+    start(cx, &home);
+    for error in [
+        CallError::Refused("no".into()),
+        CallError::Broken("reply lost".into()),
+    ] {
+        let a = chat_id();
+        let (handle, _, tabs) = mount(cx, &[&a]);
+        type_into(cx, handle, "  keep this draft 🦀");
+        cx.update_window(handle, |_, window, cx| {
+            tabs[0].0.update(cx, |v, cx| v.send_message(window, cx));
+        })
+        .unwrap();
+        let feed::Delivery::Submission { id, command } = tabs[0].1.try_recv().unwrap() else {
+            panic!("a submission");
+        };
+        assert_eq!(cx.update(|cx| chat_drafts::draft(&a, cx)), None);
+        cx.update_window(handle, |_, window, cx| {
+            tabs[0].0.update(cx, |v, cx| {
+                v.submission_receipt(id, command, Err(error), window, cx)
+            });
+        })
+        .unwrap();
+        cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+        assert_eq!(
+            Drafts::load(&home, SystemTime::now()).get(&a),
+            Some("  keep this draft 🦀")
+        );
+        type_into(cx, handle, " newer");
+        cx.update_window(handle, |_, window, cx| {
+            tabs[0]
+                .0
+                .update(cx, |v, cx| v.restore_snapshot(id, window, cx));
+        })
+        .unwrap();
+        cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+        assert_eq!(text(cx, &tabs[0].0), "  keep this draft 🦀");
+        assert_eq!(
+            Drafts::load(&home, SystemTime::now()).get(&a),
+            Some("  keep this draft 🦀")
+        );
+        drop(tabs);
+        close(cx, handle);
+    }
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn a_deleted_link_forgets_the_chat_draft(cx: &mut TestAppContext) {
+    let home = home();
+    start(cx, &home);
+    let a = chat_id();
+    let (handle, _, tabs) = mount(cx, &[&a]);
+    type_into(cx, handle, "delete this draft");
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+    cx.update_window(handle, |_, window, cx| {
+        tabs[0].0.update(cx, |v, cx| {
+            v.accept(vec![FeedMsg::Link(Link::Deleted)], window, cx)
+        });
+    })
+    .unwrap();
+    assert_eq!(cx.update(|cx| chat_drafts::draft(&a, cx)), None);
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+    assert_eq!(Drafts::load(&home, SystemTime::now()).get(&a), None);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn deleting_a_chat_forgets_its_draft_only_on_success(cx: &mut TestAppContext) {
+    let home = home();
+    start(cx, &home);
+    let a = chat_id();
+    let (handle, _, tabs) = mount(cx, &[&a]);
+    type_into(cx, handle, "delete this draft");
+    for result in [Err("refused".into()), Ok(())] {
+        let expected = if result.is_ok() {
+            None
+        } else {
+            Some("delete this draft")
+        };
+        cx.update_window(handle, |_, _, cx| {
+            tabs[0].0.update(cx, |v, cx| v.delete_result(result, cx));
+        })
+        .unwrap();
+        cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+        assert_eq!(
+            cx.update(|cx| chat_drafts::draft(&a, cx)).as_deref(),
+            expected
+        );
+        assert_eq!(Drafts::load(&home, SystemTime::now()).get(&a), expected);
+    }
     let _ = std::fs::remove_dir_all(home);
 }

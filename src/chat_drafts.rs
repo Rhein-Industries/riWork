@@ -15,6 +15,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, Sender},
+    thread::{self, JoinHandle},
     time::{Duration, SystemTime},
 };
 use uuid::Uuid;
@@ -24,10 +26,11 @@ pub const MAX_DRAFTS: usize = 64;
 pub const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 pub const MAX_BYTES: usize = 256 * 1024;
 
-/// The drafts of one RiWork data directory, as they are on disk.
+/// The drafts of one RiWork data directory, with writes queued off the UI thread.
 pub struct Drafts {
-    dir: PathBuf,
     texts: HashMap<String, String>,
+    writer: Option<Sender<WriteDraft>>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Drafts {
@@ -59,9 +62,17 @@ impl Drafts {
         for (_, name, _) in found.drain(MAX_DRAFTS.min(found.len())..) {
             let _ = fs::remove_file(dir.join(name));
         }
+        let texts: HashMap<_, _> = found.into_iter().map(|(_, id, text)| (id, text)).collect();
+        let persisted = texts.clone();
+        let (writer, receiver) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("chat-drafts".into())
+            .spawn(move || write_drafts(dir, persisted, receiver))
+            .expect("start the chat draft writer");
         Self {
-            texts: found.into_iter().map(|(_, id, text)| (id, text)).collect(),
-            dir,
+            texts,
+            writer: Some(writer),
+            thread: Some(thread),
         }
     }
 
@@ -69,38 +80,112 @@ impl Drafts {
         self.texts.get(chat_id).map(String::as_str)
     }
 
-    /// Keep `text` as the draft of `chat_id`, writing it only when it changed. An id that
+    /// Keep `text` as the draft of `chat_id` and queue it for the writer. An id that
     /// is not a UUID, or a draft over the size bound, is kept for this run only: an older
     /// copy on disk is removed rather than come back after a restart.
     pub fn set(&mut self, chat_id: &str, text: &str) -> Result<(), String> {
-        if self
-            .texts
-            .get(chat_id)
-            .map_or(text.is_empty(), |kept| kept == text)
-        {
-            return Ok(());
-        }
         if text.is_empty() {
             self.texts.remove(chat_id);
         } else {
             self.texts.insert(chat_id.to_owned(), text.to_owned());
         }
-        if !is_chat_id(chat_id) {
-            return Ok(());
-        }
-        let path = self.dir.join(chat_id);
-        if text.is_empty() || text.len() > MAX_BYTES {
-            return match fs::remove_file(&path) {
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    Err(format!("Cannot remove {}: {error}", path.display()))
-                }
-                _ => Ok(()),
-            };
-        }
-        crate::paths::create_private_dir(&self.dir)
-            .map_err(|error| format!("Cannot create {}: {error}", self.dir.display()))?;
-        write_private_file(&self.dir, &path, text.as_bytes())
+        self.writer
+            .as_ref()
+            .ok_or_else(|| "The chat draft writer has stopped".to_owned())?
+            .send(WriteDraft::Set(chat_id.to_owned(), text.to_owned()))
+            .map_err(|error| format!("Cannot queue the chat draft: {error}"))
     }
+
+    fn finish(&mut self) {
+        self.writer.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+
+    #[cfg(test)]
+    pub fn flush(&self) {
+        let (sender, receiver) = mpsc::channel();
+        self.writer
+            .as_ref()
+            .unwrap()
+            .send(WriteDraft::Flush(sender))
+            .unwrap();
+        receiver.recv().unwrap();
+    }
+}
+
+impl Drop for Drafts {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+enum WriteDraft {
+    Set(String, String),
+    #[cfg(test)]
+    Flush(Sender<()>),
+}
+
+fn write_drafts(
+    dir: PathBuf,
+    mut persisted: HashMap<String, String>,
+    receiver: Receiver<WriteDraft>,
+) {
+    while let Ok(first) = receiver.recv() {
+        let mut pending = HashMap::new();
+        #[cfg(test)]
+        let mut flush = None;
+        let mut next = Some(first);
+        while let Some(message) = next {
+            match message {
+                WriteDraft::Set(id, text) => {
+                    pending.insert(id, text);
+                }
+                #[cfg(test)]
+                WriteDraft::Flush(sender) => {
+                    flush = Some(sender);
+                    break;
+                }
+            }
+            next = receiver.try_recv().ok();
+        }
+        for (id, text) in pending {
+            if !is_chat_id(&id) || persisted.get(&id).is_some_and(|kept| kept == &text) {
+                continue;
+            }
+            // A failed write stays out of the cache, so identical text retries it.
+            match persist(&dir, &id, &text) {
+                Ok(()) => {
+                    if text.is_empty() {
+                        persisted.remove(&id);
+                    } else {
+                        persisted.insert(id, text);
+                    }
+                }
+                Err(error) => eprintln!("riwork: {error}"),
+            }
+        }
+        #[cfg(test)]
+        if let Some(sender) = flush {
+            let _ = sender.send(());
+        }
+    }
+}
+
+fn persist(dir: &Path, chat_id: &str, text: &str) -> Result<(), String> {
+    let path = dir.join(chat_id);
+    if text.is_empty() || text.len() > MAX_BYTES {
+        return match fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                Err(format!("Cannot remove {}: {error}", path.display()))
+            }
+            _ => Ok(()),
+        };
+    }
+    crate::paths::create_private_dir(dir)
+        .map_err(|error| format!("Cannot create {}: {error}", dir.display()))?;
+    write_private_file(dir, &path, text.as_bytes())
 }
 
 /// A canonical UUID, which is how the chat host names chats: nothing else becomes a path.
@@ -151,6 +236,11 @@ impl Global for ChatDrafts {}
 
 pub fn init(home: &Path, cx: &mut App) {
     cx.set_global(ChatDrafts(Drafts::load(home, SystemTime::now())));
+    cx.on_app_quit(|cx| {
+        cx.global_mut::<ChatDrafts>().0.finish();
+        async {}
+    })
+    .detach();
 }
 
 pub fn draft(chat_id: &str, cx: &App) -> Option<String> {
@@ -190,6 +280,7 @@ mod tests {
         let mut drafts = Drafts::load(&home, SystemTime::now());
         drafts.set(&a, "half a thought 🦀\n  ").unwrap();
         drafts.set(&b, "another chat").unwrap();
+        drafts.flush();
         let reloaded = Drafts::load(&home, SystemTime::now());
         assert_eq!(reloaded.get(&a), Some("half a thought 🦀\n  "));
         assert_eq!(reloaded.get(&b), Some("another chat"));
@@ -203,6 +294,7 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         drafts.set(&a, "").unwrap();
+        drafts.flush();
         assert!(!home.join(DIR_NAME).join(&a).exists());
         let reloaded = Drafts::load(&home, SystemTime::now());
         assert_eq!(
@@ -230,8 +322,55 @@ mod tests {
         let big = "x".repeat(MAX_BYTES + 1);
         drafts.set(&a, &big).unwrap();
         assert_eq!(drafts.get(&a), Some(big.as_str()));
+        drafts.flush();
         // The older copy must not come back after a restart.
         assert_eq!(Drafts::load(&home, SystemTime::now()).get(&a), None);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn failed_writes_and_removals_retry_identical_text() {
+        let home = home();
+        let a = id();
+        let dir = home.join(DIR_NAME);
+        fs::write(&dir, "blocks the directory").unwrap();
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts.set(&a, "retry me").unwrap();
+        assert_eq!(drafts.get(&a), Some("retry me"));
+        drafts.flush();
+        fs::remove_file(&dir).unwrap();
+        drafts.set(&a, "retry me").unwrap();
+        drafts.flush();
+        assert_eq!(fs::read_to_string(dir.join(&a)).unwrap(), "retry me");
+        fs::remove_file(dir.join(&a)).unwrap();
+        fs::create_dir(dir.join(&a)).unwrap();
+        drafts.set(&a, "").unwrap();
+        drafts.flush();
+        assert_eq!(drafts.get(&a), None);
+        fs::remove_dir(dir.join(&a)).unwrap();
+        fs::write(dir.join(&a), "old").unwrap();
+        drafts.set(&a, "").unwrap();
+        drafts.flush();
+        assert!(!dir.join(&a).exists());
+        drop(drafts);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn dropping_the_writer_drains_the_latest_text_for_each_chat() {
+        let home = home();
+        let (a, b) = (id(), id());
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        for index in 0..1000 {
+            drafts.set(&a, &index.to_string()).unwrap();
+            drafts.set(&b, "another chat").unwrap();
+        }
+        assert_eq!(drafts.get(&a), Some("999"));
+        drop(drafts);
+        let reloaded = Drafts::load(&home, SystemTime::now());
+        assert_eq!(reloaded.get(&a), Some("999"));
+        assert_eq!(reloaded.get(&b), Some("another chat"));
+        drop(reloaded);
         let _ = fs::remove_dir_all(home);
     }
 
@@ -242,6 +381,7 @@ mod tests {
         let ids: Vec<String> = (0..MAX_DRAFTS + 2).map(|_| id()).collect();
         for (index, id) in ids.iter().enumerate() {
             drafts.set(id, "draft").unwrap();
+            drafts.flush();
             // Oldest first, a second apart.
             let at = SystemTime::now() - Duration::from_secs((ids.len() - index) as u64);
             File::options()
@@ -252,6 +392,7 @@ mod tests {
                 .unwrap();
         }
         fs::write(home.join(DIR_NAME).join(".draft-x.tmp"), "partial").unwrap();
+        drafts.flush();
         let reloaded = Drafts::load(&home, SystemTime::now());
         assert_eq!(reloaded.texts.len(), MAX_DRAFTS);
         assert_eq!(reloaded.get(&ids[0]), None);
