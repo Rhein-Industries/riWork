@@ -115,12 +115,12 @@ pub fn valid_model(id: &str) -> bool {
     !id.trim().is_empty() && id.chars().count() <= 100 && !id.chars().any(char::is_control)
 }
 
-/// What `provider` offers to a chat of `project`: the newest saved list of a chat that runs
-/// under the account a new chat of the project would get, and the other ids such chats were
-/// set to.
-pub fn saved(home: &Path, project: &str, provider: Provider) -> Catalog {
+/// What `provider` offers to a chat of `project` (or of no project): the newest saved list of
+/// a chat that runs under the account a new chat there would get, and the other ids such chats
+/// were set to.
+pub fn saved(home: &Path, project: Option<&str>, provider: Provider) -> Catalog {
     let binding = match provider {
-        Provider::Codex => match sessions::selected_codex_binding(home, Some(project)) {
+        Provider::Codex => match sessions::selected_codex_binding(home, project) {
             Ok(binding) => Some(binding),
             Err(error) => {
                 return Catalog {
@@ -259,7 +259,7 @@ mod tests {
             },
         ));
         std::fs::write(dir.join("events.jsonl"), &events).unwrap();
-        assert_eq!(saved(&home, "p", Provider::Claude).supported, []);
+        assert_eq!(saved(&home, Some("p"), Provider::Claude).supported, []);
         assert_eq!(
             reported(&home, &id, Provider::Claude),
             None,
@@ -274,7 +274,7 @@ mod tests {
         ));
         std::fs::write(dir.join("events.jsonl"), &events).unwrap();
         assert_eq!(
-            saved(&home, "p", Provider::Claude).supported,
+            saved(&home, Some("p"), Provider::Claude).supported,
             [option("opus")]
         );
         std::fs::remove_dir_all(home).unwrap();

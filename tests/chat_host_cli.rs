@@ -287,6 +287,8 @@ fn events_and_command_refuse_an_unknown_chat_and_capabilities_announce_chat() {
     assert!(capabilities.status.success(), "{}", stderr(&capabilities));
     let capabilities: serde_json::Value = serde_json::from_slice(&capabilities.stdout).unwrap();
     assert_eq!(capabilities["chat"], true);
+    assert_eq!(capabilities["chat_provider_switch"], true);
+    assert_eq!(capabilities["chat_models"], true);
     assert_eq!(capabilities["v"], 1);
     assert!(stdout(&home.run(&["capabilities"])).contains("chat yes"));
 

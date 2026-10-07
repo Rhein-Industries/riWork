@@ -128,8 +128,8 @@ impl ChatChoice {
         let metadata_project = project.clone();
         let work = cx.background_executor().spawn(async move {
             [
-                catalog::saved(&home, &metadata_project, Provider::Codex),
-                catalog::saved(&home, &metadata_project, Provider::Claude),
+                catalog::saved(&home, Some(&metadata_project), Provider::Codex),
+                catalog::saved(&home, Some(&metadata_project), Provider::Claude),
             ]
         });
         cx.spawn(async move |this, cx| {
