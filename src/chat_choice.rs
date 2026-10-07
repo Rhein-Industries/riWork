@@ -6,7 +6,7 @@ use crate::{
         log,
         model::{ApprovalMode, ChatInfo, ModelOption, NewChat, Provider},
     },
-    codex_accounts, form_input, sessions,
+    codex_accounts, controls, form_input, sessions,
     text_input::{self, InputEvent, InputState},
     theme, ui_text,
 };
@@ -459,6 +459,80 @@ impl ChatChoice {
         )
     }
 
+    // Preserve the existing painted-button geometry for actual choice controls.
+    // Radio/Toggle own their checked semantics and activation; this adds only styles.
+    fn choice_style<E: gpui::Styled + gpui::InteractiveElement>(
+        control: E,
+        selected: bool,
+        colors: theme::Palette,
+    ) -> E {
+        let kind = if selected {
+            controls::Button::Primary
+        } else {
+            controls::Button::Secondary
+        };
+        let control = control
+            .flex()
+            .items_center()
+            .justify_center()
+            .line_height(gpui::relative(1.0))
+            .px(ui_text::space(8.0))
+            .py(ui_text::space(4.0))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .rounded(ui_text::space(3.0))
+            .bg(rgb(if selected { colors.cyan } else { colors.panel }))
+            .text_color(rgb(if selected { colors.bg } else { colors.text }))
+            .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+            .hover(move |style| style.bg(rgb(kind.hover(colors))))
+            .max_w_full();
+        controls::native(control, |control| controls::button(control, kind, colors))
+    }
+
+    fn radio(
+        &self,
+        key: String,
+        label: String,
+        checked: bool,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
+        let id = format!("new-chat-{key}");
+        let change = cx.listener(move |choice, checked: &bool, window, cx| {
+            if *checked {
+                action(choice, window, cx);
+            }
+        });
+        form_input::control_element(
+            id.clone(),
+            Self::choice_style(
+                behavior::radio_content(id, label.clone(), label, checked),
+                checked,
+                theme::palette(cx),
+            )
+            .track_focus(&self.controls[&key])
+            .on_change(move |checked, _, window, app| change(&checked, window, app)),
+        )
+    }
+
+    fn fast_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        let label = if self.fast { "Fast on" } else { "Fast off" };
+        let change = cx.listener(|choice, pressed: &bool, _, cx| {
+            choice.fast = *pressed;
+            cx.notify();
+        });
+        form_input::control_element(
+            "new-chat-fast",
+            Self::choice_style(
+                behavior::toggle_content("new-chat-fast", label, label, self.fast),
+                self.fast,
+                theme::palette(cx),
+            )
+            .track_focus(&self.controls["fast"])
+            .on_change(move |pressed, _, window, app| change(&pressed, window, app)),
+        )
+    }
+
     fn group(label: &'static str, children: Vec<AnyElement>) -> AnyElement {
         div()
             .flex()
@@ -485,11 +559,10 @@ impl Render for ChatChoice {
             .into_iter()
             .enumerate()
             .map(|(index, provider)| {
-                self.button(
+                self.radio(
                     format!("provider-{index}"),
                     provider_label(provider).into(),
                     self.provider == provider,
-                    false,
                     cx,
                     move |choice, window, cx| {
                         if choice.provider != provider {
@@ -505,11 +578,10 @@ impl Render for ChatChoice {
             .into_iter()
             .enumerate()
             .map(|(index, (mode, label))| {
-                self.button(
+                self.radio(
                     format!("mode-{index}"),
                     label.into(),
                     self.mode == mode,
-                    false,
                     cx,
                     move |choice, _, cx| {
                         choice.mode = mode;
@@ -523,11 +595,10 @@ impl Render for ChatChoice {
             .iter()
             .enumerate()
             .map(|(index, location)| {
-                self.button(
+                self.radio(
                     format!("location-{index}"),
                     location.label.clone(),
                     self.location == index,
-                    false,
                     cx,
                     move |choice, _, cx| {
                         choice.location = index;
@@ -538,11 +609,10 @@ impl Render for ChatChoice {
             .collect();
         let query = self.search.read(cx).value().trim().to_lowercase();
         let current = self.model.read(cx).value().trim().to_owned();
-        let mut model_rows = vec![self.button(
+        let mut model_rows = vec![self.radio(
             "model-default".into(),
             "Provider default".into(),
             current.is_empty(),
-            false,
             cx,
             |choice, window, cx| choice.pick_model(String::new(), window, cx),
         )];
@@ -554,7 +624,7 @@ impl Render for ChatChoice {
                 continue;
             }
             let id = model.id.clone();
-            model_rows.push(self.button(
+            model_rows.push(self.radio(
                 format!("model-{index}-{row}"),
                 format!(
                     "{}{}",
@@ -562,7 +632,6 @@ impl Render for ChatChoice {
                     if model.is_default { " · default" } else { "" }
                 ),
                 current == id,
-                false,
                 cx,
                 move |choice, window, cx| choice.pick_model(id.clone(), window, cx),
             ));
@@ -572,11 +641,10 @@ impl Render for ChatChoice {
                 continue;
             }
             let id = id.clone();
-            model_rows.push(self.button(
+            model_rows.push(self.radio(
                 format!("configured-{index}-{row}"),
                 format!("{id} · previously configured"),
                 current == id,
-                false,
                 cx,
                 move |choice, window, cx| choice.pick_model(id.clone(), window, cx),
             ));
@@ -588,11 +656,10 @@ impl Render for ChatChoice {
         let supports_fast = selected.is_some_and(|model| model.supports_fast);
         let mut effort_rows = Vec::new();
         if !efforts.is_empty() {
-            effort_rows.push(self.button(
+            effort_rows.push(self.radio(
                 "effort-default".into(),
                 "Default effort".into(),
                 self.effort.is_none(),
-                false,
                 cx,
                 |choice, _, cx| {
                     choice.effort = None;
@@ -600,11 +667,10 @@ impl Render for ChatChoice {
                 },
             ));
             for effort in efforts {
-                effort_rows.push(self.button(
+                effort_rows.push(self.radio(
                     format!("effort-{effort}"),
                     effort.clone(),
                     self.effort.as_ref() == Some(&effort),
-                    false,
                     cx,
                     move |choice, _, cx| {
                         choice.effort = Some(effort.clone());
@@ -696,19 +762,7 @@ impl Render for ChatChoice {
             ))
             .child(div().text_color(rgb(colors.muted)).child(note))
             .children((!effort_rows.is_empty()).then(|| Self::group("Reasoning", effort_rows)))
-            .children(supports_fast.then(|| {
-                self.button(
-                    "fast".into(),
-                    if self.fast { "Fast on" } else { "Fast off" }.into(),
-                    self.fast,
-                    false,
-                    cx,
-                    |choice, _, cx| {
-                        choice.fast = !choice.fast;
-                        cx.notify();
-                    },
-                )
-            }))
+            .children(supports_fast.then(|| self.fast_toggle(cx)))
             .children(
                 self.error
                     .as_ref()
@@ -810,6 +864,32 @@ mod tests {
     fn browsing_model_search_and_enter_never_create_and_confirmation_is_single_use(
         cx: &mut TestAppContext,
     ) {
+        let assert_radio = |window: &mut Window, app: &mut gpui::App, id: &str, checked: bool| {
+            let node = form_input::test_ax_node(window, app, id.to_owned());
+            assert_eq!(node.role(), gpui::Role::RadioButton, "{id}");
+            assert_eq!(node.is_selected(), Some(checked), "{id}");
+            assert_eq!(
+                node.toggled(),
+                Some(if checked {
+                    gpui::accesskit::Toggled::True
+                } else {
+                    gpui::accesskit::Toggled::False
+                }),
+                "{id}"
+            );
+        };
+        let assert_fast = |window: &mut Window, app: &mut gpui::App, pressed: bool| {
+            let node = form_input::test_ax_node(window, app, "new-chat-fast");
+            assert_eq!(node.role(), gpui::Role::Button);
+            assert_eq!(
+                node.toggled(),
+                Some(if pressed {
+                    gpui::accesskit::Toggled::True
+                } else {
+                    gpui::accesskit::Toggled::False
+                })
+            );
+        };
         let (handle, choice) = fixture(cx);
         let requests = Rc::new(RefCell::new(Vec::new()));
         let observed = requests.clone();
@@ -824,18 +904,55 @@ mod tests {
             (choice.model.entity_id(), choice.search.entity_id())
         });
         test_turn(cx, handle, |window, app| {
+            for (id, checked) in [
+                ("new-chat-provider-0", true),
+                ("new-chat-provider-1", false),
+                ("new-chat-location-0", false),
+                ("new-chat-location-1", true),
+                ("new-chat-mode-0", true),
+                ("new-chat-mode-2", false),
+                ("new-chat-model-default", true),
+                ("new-chat-model-0-0", false),
+                ("new-chat-effort-default", true),
+                ("new-chat-effort-high", false),
+            ] {
+                assert_radio(window, app, id, checked);
+            }
+            assert_fast(window, app, false);
+            let cancel = form_input::test_ax_node(window, app, "new-chat-cancel");
+            assert_eq!(cancel.role(), gpui::Role::Button);
+            assert_eq!(cancel.is_selected(), None);
+            assert_eq!(cancel.toggled(), None);
+            window.click("new-chat-location-0", app);
             window.click("new-chat-provider-1", app);
             window.click("new-chat-model-search", app);
             window.input("Claude", app);
         });
         assert!(requests.borrow().is_empty());
         test_turn(cx, handle, |window, app| {
+            assert_radio(window, app, "new-chat-provider-0", false);
+            assert_radio(window, app, "new-chat-provider-1", true);
+            assert_radio(window, app, "new-chat-location-0", true);
+            assert_radio(window, app, "new-chat-location-1", false);
+            assert_radio(window, app, "new-chat-model-default", true);
+            assert_radio(window, app, "new-chat-model-1-0", false);
             assert!(
                 window.try_find("new-chat-model-0-0").is_none(),
                 "Codex models do not appear under Claude"
             );
+            window.click("new-chat-location-1", app);
             window.click("new-chat-model-1-0", app);
             window.click("new-chat-mode-2", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            assert_radio(window, app, "new-chat-location-0", false);
+            assert_radio(window, app, "new-chat-location-1", true);
+            assert_radio(window, app, "new-chat-mode-0", false);
+            assert_radio(window, app, "new-chat-mode-2", true);
+            assert_radio(window, app, "new-chat-model-default", false);
+            assert_radio(window, app, "new-chat-model-1-0", true);
+            window.click("new-chat-effort-high", app);
+            window.click("new-chat-fast", app);
             window.click("new-chat-model-input", app);
             window.press("enter", app);
         });
@@ -848,23 +965,110 @@ mod tests {
             identities
         );
         test_turn(cx, handle, |window, app| {
-            let node = crate::form_input::test_ax_node(window, app, "new-chat-confirm");
+            assert_radio(window, app, "new-chat-effort-default", false);
+            assert_radio(window, app, "new-chat-effort-high", true);
+            assert_fast(window, app, true);
+            let node = form_input::test_ax_node(window, app, "new-chat-confirm");
             assert_eq!(node.role(), gpui::Role::Button);
             assert_eq!(node.label(), Some("Create chat"));
-            // Invoke the actual confirmation callback twice to model queued duplicate activation.
-            choice.update(app, |choice, cx| {
-                choice.confirm(window, cx);
-                choice.confirm(window, cx);
-            });
+            assert_eq!(node.is_selected(), None);
+            assert_eq!(node.toggled(), None);
+            window.click("new-chat-confirm", app);
         });
-        let requests = requests.borrow();
+        assert_eq!(requests.borrow().len(), 1, "actual pointer confirmation");
+        test_turn(cx, handle, |window, app| {
+            // A queued duplicate after actual pointer confirmation stays inert.
+            choice.update(app, |choice, cx| choice.confirm(window, cx));
+        });
+        {
+            let requests = requests.borrow();
+            assert_eq!(requests.len(), 1);
+            let request = &requests[0];
+            assert_eq!(request.provider, Provider::Claude);
+            assert_eq!(request.model.as_deref(), Some("claude-fixture"));
+            assert_eq!(request.approval_mode, ApprovalMode::Full);
+            assert_eq!(request.worktree_id.as_deref(), Some("fixture-tree"));
+            assert_eq!(request.cwd, PathBuf::from("/fixture/tree"));
+            assert_eq!(request.effort.as_deref(), Some("high"));
+            assert!(request.fast);
+            assert_eq!(request.codex_account_id, None);
+        }
+
+        // A fresh invocation exercises Base keyboard activation independently of
+        // pointer focus/confirmation; the same named test covers both entry paths.
+        let (keyboard_handle, keyboard_choice) = fixture(cx);
+        let keyboard_requests = Rc::new(RefCell::new(Vec::new()));
+        let observed = keyboard_requests.clone();
+        let _keyboard_subscription = cx.update(|app| {
+            app.subscribe(&keyboard_choice, move |_, event: &ChoiceEvent, _| {
+                if let ChoiceEvent::Confirmed(request) = event {
+                    observed.borrow_mut().push(request.clone());
+                }
+            })
+        });
+        test_turn(cx, keyboard_handle, |window, app| {
+            assert!(
+                keyboard_choice
+                    .read(app)
+                    .search
+                    .read(app)
+                    .focus_handle(app)
+                    .is_focused(window)
+            );
+            window.press("enter", app);
+        });
+        assert!(keyboard_requests.borrow().is_empty());
+        for (key, previous, activation) in [
+            ("provider-1", "provider-0", "space"),
+            ("location-0", "location-1", "enter"),
+            ("mode-1", "mode-0", "space"),
+            ("model-1-0", "model-default", "enter"),
+            ("effort-high", "effort-default", "space"),
+        ] {
+            test_turn(cx, keyboard_handle, |window, app| {
+                assert_radio(window, app, &format!("new-chat-{key}"), false);
+                assert_radio(window, app, &format!("new-chat-{previous}"), true);
+                let focus = keyboard_choice.read(app).controls[key].clone();
+                focus.focus(window, app);
+                window.press(activation, app);
+            });
+            test_turn(cx, keyboard_handle, |window, app| {
+                assert_radio(window, app, &format!("new-chat-{key}"), true);
+                assert_radio(window, app, &format!("new-chat-{previous}"), false);
+            });
+            assert!(keyboard_requests.borrow().is_empty());
+        }
+        test_turn(cx, keyboard_handle, |window, app| {
+            assert_fast(window, app, false);
+            let focus = keyboard_choice.read(app).controls["fast"].clone();
+            focus.focus(window, app);
+            window.press("space", app);
+        });
+        assert!(keyboard_requests.borrow().is_empty());
+        test_turn(cx, keyboard_handle, |window, app| {
+            assert_fast(window, app, true);
+            let focus = keyboard_choice.read(app).controls["confirm"].clone();
+            focus.focus(window, app);
+            window.press("enter", app);
+        });
+        assert_eq!(
+            keyboard_requests.borrow().len(),
+            1,
+            "actual keyboard confirmation"
+        );
+        test_turn(cx, keyboard_handle, |window, app| {
+            keyboard_choice.update(app, |choice, cx| choice.confirm(window, cx));
+        });
+        let requests = keyboard_requests.borrow();
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
         assert_eq!(request.provider, Provider::Claude);
         assert_eq!(request.model.as_deref(), Some("claude-fixture"));
-        assert_eq!(request.approval_mode, ApprovalMode::Full);
-        assert_eq!(request.worktree_id.as_deref(), Some("fixture-tree"));
-        assert_eq!(request.cwd, PathBuf::from("/fixture/tree"));
+        assert_eq!(request.approval_mode, ApprovalMode::AutoEdit);
+        assert_eq!(request.worktree_id, None);
+        assert_eq!(request.cwd, PathBuf::from("/fixture/root"));
+        assert_eq!(request.effort.as_deref(), Some("high"));
+        assert!(request.fast);
         assert_eq!(request.codex_account_id, None);
     }
 
