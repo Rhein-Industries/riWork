@@ -6854,6 +6854,8 @@ impl Workspace {
                         info.project_id.as_deref() == Some(self.project_id.as_str())
                     })
                 {
+                    // The picker row disappears; cancel returns to the retained composer.
+                    view.update(cx, |view, cx| view.focus(window, cx));
                     self.begin_new_chat(Some(*provider), false, window, cx);
                 }
             }
