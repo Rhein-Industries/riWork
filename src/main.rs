@@ -4,6 +4,7 @@ mod appearance_file;
 mod appearance_sync;
 mod behavior_controls;
 mod chat;
+mod chat_drafts;
 mod chat_view;
 mod cli;
 mod cli_agents;
@@ -11440,6 +11441,7 @@ fn main() {
         ui_text::init(cx);
         text_input::init(cx);
         behavior_controls::init(cx);
+        chat_drafts::init(&state_home, cx);
         // After both globals exist: publishes now and again on every change.
         appearance_sync::start(state_home, cx);
         settings::refresh_codex_accounts(cx);

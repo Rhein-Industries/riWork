@@ -46,6 +46,8 @@ mod dictate;
 mod diff;
 mod display;
 #[cfg(test)]
+mod draft_tests;
+#[cfg(test)]
 mod editor_tests;
 mod editors;
 mod feed;
@@ -234,6 +236,7 @@ impl ChatView {
     ) -> Self {
         let mut view = Self::blank(config, window, cx);
         view.chat_id = Some(chat_id.clone());
+        view.restore_draft(window, cx);
         view.follow_display_setting(cx);
         view.start_feed(chat_id, 0, window, cx);
         view
@@ -411,6 +414,8 @@ impl ChatView {
         match result {
             Ok(info) => {
                 self.chat_id = Some(info.id.clone());
+                // What was typed while the host made the chat is its first draft.
+                self.remember_draft(cx);
                 if let Some(mode) = self.pending_display.take() {
                     self.choose_display(mode, cx);
                 } else {

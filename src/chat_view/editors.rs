@@ -92,6 +92,30 @@ impl ChatView {
                 .collect(),
         }
     }
+    /// Bring back what the chat's message box held when its tab closed or the app quit
+    /// (`chat_drafts`), unless something was typed meanwhile.
+    pub(super) fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self
+            .chat_id
+            .as_deref()
+            .and_then(|id| crate::chat_drafts::draft(id, cx))
+        else {
+            return;
+        };
+        if self.composer_text(cx).is_empty() {
+            self.composer
+                .update(cx, |state, cx| state.set_value(text, window, cx));
+            self.bump_generation();
+        }
+    }
+    /// Keep the message box's text as the chat's draft. `set_value` sends no Change, so
+    /// the code that sets the composer calls this too.
+    pub(super) fn remember_draft(&self, cx: &mut Context<Self>) {
+        if let Some(id) = self.chat_id.clone() {
+            let text = self.composer_text(cx);
+            crate::chat_drafts::remember(&id, &text, cx);
+        }
+    }
     pub(super) fn bump_generation(&mut self) {
         self.editor_generation = self
             .editor_generation
@@ -114,6 +138,7 @@ impl ChatView {
                 } else {
                     self.dictation.user_edited();
                 }
+                self.remember_draft(cx);
                 cx.notify();
             }
             InputEvent::Focus => {
@@ -357,6 +382,7 @@ impl ChatView {
         self.composer.update(cx, |state, cx| {
             state.set_value(saved.snapshot.text, window, cx)
         });
+        self.remember_draft(cx);
         self.release_attachment_previews(cx);
         self.attachments = saved
             .snapshot
@@ -431,6 +457,7 @@ impl ChatView {
         if clear {
             self.composer
                 .update(cx, |state, cx| state.set_value("", window, cx));
+            self.remember_draft(cx);
             self.attachments.clear();
             self.bump_generation();
         }
