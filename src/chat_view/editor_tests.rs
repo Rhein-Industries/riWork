@@ -449,3 +449,159 @@ fn real_editor_dictation_partial_final_cancel_and_user_edit_anchor(cx: &mut Test
     })
     .unwrap();
 }
+
+/// The message box bar as drawn in a pane `width` px wide, with the mic on and a turn running:
+/// the box's and every shown button's bounds, from the frame itself.
+fn composer_frame(
+    cx: &mut TestAppContext,
+    width: f32,
+    native: bool,
+    scale: f32,
+) -> (
+    gpui::Bounds<gpui::Pixels>,
+    Vec<(&'static str, gpui::Bounds<gpui::Pixels>)>,
+    super::composer::Layout,
+) {
+    let face = if native {
+        crate::ui_text::Face::System
+    } else {
+        crate::ui_text::Face::Menlo
+    };
+    let before = crate::ui_text::set_for_tests(scale, face);
+    let handle = cx.update(|cx| {
+        cx.set_global(crate::settings::Settings {
+            dictation_mic: true,
+            ..Default::default()
+        });
+        cx.set_global(crate::theme::Appearance {
+            selected: crate::theme::ThemeChoice::RiWork,
+            palette: crate::theme::Palette::RIWORK,
+            terminal: None,
+            ghostty: None,
+            error: None,
+        });
+        text_input::init(cx);
+        let (recording_feed, _recording) = Feed::recording();
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    point(px(0.), px(0.)),
+                    size(px(width), px(600.)),
+                ))),
+                ..Default::default()
+            },
+            |window, cx| {
+                cx.new(|cx| {
+                    let mut view = ChatView::blank(
+                        HostConfig {
+                            ensure: Arc::new(|| Err("fixture staging is disabled".into())),
+                        },
+                        window,
+                        cx,
+                    );
+                    view.chat_id = Some("fixture-chat".into());
+                    view.feed = Some(recording_feed);
+                    view.model.transcript.state = crate::chat::model::ChatState::Running;
+                    view
+                })
+            },
+        )
+        .unwrap()
+    });
+    // The first frame measures the pane; the second lays the bar out for it.
+    for _ in 0..3 {
+        cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+    let mut visual = gpui::VisualTestContext::from_window(handle.into(), cx);
+    let pane = visual
+        .debug_bounds("composer-pane")
+        .expect("the bar is drawn");
+    assert_eq!(f32::from(pane.size.width), width, "the bar spans the pane");
+    let field = visual
+        .debug_bounds("composer-field")
+        .expect("the box is drawn");
+    let buttons = [
+        "composer-attach",
+        "composer-mic",
+        "composer-stop",
+        "composer-send",
+    ]
+    .into_iter()
+    .filter_map(|name| visual.debug_bounds(name).map(|bounds| (name, bounds)))
+    .collect();
+    let layout = super::composer::layout(width, scale, true, false, true);
+    crate::ui_text::set_for_tests(before.0, before.1);
+    (field, buttons, layout)
+}
+
+#[gpui::test]
+fn the_drawn_composer_keeps_its_box_and_buttons_in_any_pane(cx: &mut TestAppContext) {
+    let big = 24.0 / crate::ui_text::REFERENCE_SIZE;
+    for native in [true, false] {
+        let mut modes = std::collections::BTreeSet::new();
+        for scale in [1.0, 1.5, big] {
+            for width in [160.0, 240.0, 300.0, 368.0, 600.0] {
+                let what = format!("{width} px, {scale}×, native {native}");
+                let (field, buttons, layout) = composer_frame(cx, width, native, scale);
+                modes.insert((layout.stacked, layout.mic));
+                let min = (super::composer::MIN_FIELD * scale).round();
+                let floor = min.min(width - 2.0 * super::composer::COMPACT_INSET);
+                let box_width = f32::from(field.size.width);
+                assert!(
+                    box_width >= floor - 0.5,
+                    "box {box_width} < {floor}: {what}"
+                );
+                assert!(
+                    (box_width - layout.field).abs() <= 1.0,
+                    "drawn box {box_width} vs planned {}: {what}",
+                    layout.field
+                );
+                // Attach, Stop and Send always; the mic as planned.
+                let names: Vec<_> = buttons.iter().map(|(name, _)| *name).collect();
+                assert!(names.contains(&"composer-attach"), "{what}");
+                assert!(names.contains(&"composer-stop"), "{what}");
+                assert!(names.contains(&"composer-send"), "{what}");
+                assert_eq!(names.contains(&"composer-mic"), layout.mic, "{what}");
+                for (name, bounds) in &buttons {
+                    let (left, right) = (f32::from(bounds.left()), f32::from(bounds.right()));
+                    assert!(
+                        (f32::from(bounds.size.width) - layout.button).abs() <= 0.5,
+                        "{name} is {} wide, planned {}: {what}",
+                        bounds.size.width,
+                        layout.button
+                    );
+                    assert!(
+                        left >= -0.5 && right <= width + 0.5,
+                        "{name} {left}..{right}: {what}"
+                    );
+                    // Stacked buttons sit under the box; inline ones beside it.
+                    if layout.stacked {
+                        assert!(
+                            bounds.top() >= field.bottom(),
+                            "{name} under the box: {what}"
+                        );
+                    } else {
+                        assert!(
+                            right <= f32::from(field.left()) + 0.5
+                                || left >= f32::from(field.right()) - 0.5,
+                            "{name} beside the box: {what}"
+                        );
+                    }
+                }
+            }
+        }
+        // Every way of laying it out was drawn: beside the box with and without the mic,
+        // and under it.
+        assert!(modes.contains(&(false, true)), "native {native}: {modes:?}");
+        assert!(
+            modes.contains(&(false, false)),
+            "native {native}: {modes:?}"
+        );
+        assert!(
+            modes.iter().any(|(stacked, _)| *stacked),
+            "native {native}: {modes:?}"
+        );
+    }
+}

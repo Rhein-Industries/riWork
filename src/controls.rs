@@ -368,7 +368,8 @@ pub fn search_field<E: Styled>(element: E, focused: bool, colors: Palette) -> E 
         .h(ui_text::space(24.0))
         .mx(ui_text::space(LIST_MARGIN))
         .mb(ui_text::space(6.0))
-        .px(ui_text::space(8.0))
+        // Its magnifier on the text edge of the header's title and the rows below.
+        .px(ui_text::space(PANEL_INSET - LIST_MARGIN))
         .flex()
         .items_center()
         .gap(ui_text::space(5.0))
