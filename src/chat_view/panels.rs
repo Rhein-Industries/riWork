@@ -894,6 +894,8 @@ impl ChatView {
                         .role(gpui::Role::MenuItem)
                         .on_click(cx.listener(move |view, _, _, cx| {
                             view.close_menu(cx);
+                            // The new-chat chooser owns focus after this request.
+                            view.focus_composer = false;
                             cx.emit(ChatViewEvent::NewProviderChat { provider });
                         }))
                         .into_any_element()
@@ -2396,8 +2398,9 @@ mod tests {
                 let events = Rc::new(RefCell::new(Vec::new()));
                 let captured = events.clone();
                 let _subscription = cx.update(|cx| {
-                    cx.subscribe(&view, move |_, event, _| match event {
+                    cx.subscribe(&view, move |emitter, event, cx| match event {
                         ChatViewEvent::NewProviderChat { provider } => {
+                            assert!(!emitter.read(cx).focus_composer);
                             captured.borrow_mut().push(*provider)
                         }
                         _ => panic!("provider button emitted an unrelated event"),
@@ -2420,6 +2423,7 @@ mod tests {
                     assert_eq!(window.find(button_id).role(), Some(gpui::Role::MenuItem));
                     assert_eq!(window.find(button_id).label(), Some(label));
                     window.click(button_id, cx);
+                    assert!(!view.read(cx).focus_composer);
                 })
                 .unwrap();
                 draw_hermes(cx, handle);
