@@ -2,12 +2,12 @@
 use super::{
     ChatView,
     attachment_draft::{Draft, Status, Submission},
-    panels,
+    notices, panels,
 };
 use crate::{
     chat::{
         client::CallError,
-        model::{ChatCommand, Question},
+        model::{ChatCommand, NoticeLevel, Question},
     },
     text_input::{self, EnterBehavior, InputEvent, InputState, TextareaState},
 };
@@ -252,7 +252,11 @@ impl ChatView {
             return;
         }
         if self.dictation.phase().is_active() {
-            self.notice = Some("Finish dictation before sending the draft.".into());
+            self.notices.set(
+                notices::LocalKey::Send,
+                NoticeLevel::Warning,
+                "Finish dictation before sending the draft.",
+            );
             cx.notify();
             return;
         }
@@ -261,8 +265,10 @@ impl ChatView {
             .iter()
             .any(|chip| chip.attachment().is_none())
         {
-            self.notice = Some(
-                "Wait for staging, or remove the attachment with an error before sending.".into(),
+            self.notices.set(
+                notices::LocalKey::Send,
+                NoticeLevel::Warning,
+                "Wait for staging, or remove the attachment with an error before sending.",
             );
             cx.notify();
             return;
@@ -272,7 +278,7 @@ impl ChatView {
                 && s.generation == self.editor_generation
                 && matches!(s.status, Status::Refused(_) | Status::Uncertain(_))
         }) {
-            self.notice = Some("Review the saved submission below. Inspect the transcript before explicitly resending.".into());
+            self.notices.set(notices::LocalKey::Send, NoticeLevel::Warning, "Review the saved submission below. Inspect the transcript before explicitly resending.");
             cx.notify();
             return;
         }
@@ -309,7 +315,7 @@ impl ChatView {
         self.submissions.push(submission);
         self.pending_submission = Some(id);
         self.sent_at = Some(Instant::now());
-        self.notice = None;
+        self.notices.clear(notices::LocalKey::Send);
         self.list.set_follow_mode(gpui::FollowMode::Tail);
         let result = self
             .feed
@@ -396,7 +402,11 @@ impl ChatView {
                         error: error.clone(),
                     },
                 );
-                self.notice = Some(format!("Answer submission: {error}"));
+                self.notices.set(
+                    notices::LocalKey::Answer,
+                    NoticeLevel::Error,
+                    format!("Answer submission: {error}"),
+                );
             }
             // Answers and choices are retained until RequestResolved, even on success.
             cx.notify();
@@ -423,7 +433,7 @@ impl ChatView {
             self.bump_generation();
         }
         if let Err(error) = result {
-            self.notice = Some(match error {
+            self.notices.set(notices::LocalKey::Send, NoticeLevel::Error, match error {
                 CallError::Refused(error) => {
                     format!("Submission refused: {error}. Your draft is retained.")
                 }
@@ -541,7 +551,11 @@ impl ChatView {
             &self.typed_answers(question, cx),
         );
         if answers.iter().any(Vec::is_empty) {
-            self.notice = Some("Answer every question first.".into());
+            self.notices.set(
+                notices::LocalKey::Answer,
+                NoticeLevel::Warning,
+                "Answer every question first.",
+            );
             cx.notify();
             return;
         }
@@ -556,8 +570,10 @@ impl ChatView {
                 failure.snapshot.command == command && matches!(failure.error, CallError::Broken(_))
             })
         {
-            self.notice = Some(
-                "Inspect the transcript before explicitly resending the saved answers.".into(),
+            self.notices.set(
+                notices::LocalKey::Answer,
+                NoticeLevel::Warning,
+                "Inspect the transcript before explicitly resending the saved answers.",
             );
             cx.notify();
             return;
@@ -593,7 +609,11 @@ impl ChatView {
                 self.answer_failures.remove(&request);
             }
             Err(error) => {
-                self.notice = Some(error.to_string());
+                self.notices.set(
+                    notices::LocalKey::Answer,
+                    NoticeLevel::Error,
+                    error.to_string(),
+                );
                 self.answer_failures
                     .insert(request, AnswerFailure { snapshot, error });
             }

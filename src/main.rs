@@ -6689,6 +6689,9 @@ impl Workspace {
             ChatViewEvent::OpenFile { target } => {
                 self.open_chat_file(view.clone(), target.clone(), window, cx)
             }
+            ChatViewEvent::ShowUsage => {
+                self.open_panel(PanelKind::Usage, self.active_pane, window, cx)
+            }
         }
     }
 
@@ -10466,7 +10469,31 @@ impl Render for Workspace {
                                 .shadow_md()
                         })
                     })
-                    .child(notice.clone())
+                    .flex()
+                    .items_start()
+                    .gap(ui_text::space(6.0))
+                    .child(div().flex_1().min_w_0().child(notice.clone()))
+                    // Every notice closes: × or, while × has the focus, Esc.
+                    .child(
+                        behavior_controls::toolbar_button(
+                            "workspace-notice-close",
+                            "xmark",
+                            "Dismiss",
+                            true,
+                            colors,
+                        )
+                        .on_click(cx.listener(|workspace, _, _, cx| {
+                            workspace.notice = None;
+                            cx.notify();
+                        }))
+                        .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, _, cx| {
+                            if event.keystroke.key == "escape" {
+                                cx.stop_propagation();
+                                workspace.notice = None;
+                                cx.notify();
+                            }
+                        })),
+                    )
             }))
             .children(
                 cx.has_active_drag()
