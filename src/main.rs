@@ -6850,6 +6850,7 @@ impl Workspace {
             ChatViewEvent::HandOff => self.begin_handoff_from_chat(view, window, cx),
             ChatViewEvent::NewProviderChat { provider } => {
                 if place.is_some()
+                    && !self.modal_open()
                     && view.read(cx).info().is_some_and(|info| {
                         info.project_id.as_deref() == Some(self.project_id.as_str())
                     })
