@@ -13,6 +13,7 @@ use gpui::{
     AnyElement, Bounds, Context, Div, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
     MouseButton, Pixels, Render, Stateful, Window, canvas, div, prelude::*, px, rgb,
 };
+use gpui_kit::TestSupportExt;
 
 use crate::{
     activity::{ActivityCounts, AgentActivity, AgentState, ChatActivity},
@@ -1228,13 +1229,12 @@ fn panel_search<V: 'static>(
     native: bool,
     window: &Window,
     cx: &mut Context<V>,
-) -> Div {
+) -> AnyElement {
     let colors = theme::palette(cx);
     let name = kind.name();
     let focused = input.is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window));
     let search = div()
         .id(format!("{name}-search"))
-        .test_support()
         .relative()
         .cursor_text()
         .flex()
@@ -1255,14 +1255,14 @@ fn panel_search<V: 'static>(
         .child(
             div()
                 .id(format!("{name}-search-icon"))
-                .test_support()
                 .flex_none()
                 .w(ui_text::space(12.0))
                 .h(ui_text::space(12.0))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icons::mark("⌕", 10.0, colors.muted)),
+                .child(icons::mark("⌕", 10.0, colors.muted))
+                .test_support(),
         )
         .children(input.map(|input| {
             crate::form_input::search_frame(format!("{name}-search-input"), input, window, cx)
@@ -1279,6 +1279,8 @@ fn panel_search<V: 'static>(
                 }
             })
         })
+        .test_support()
+        .into_any_element()
 }
 
 /// The numbers a Native panel's header and list are drawn from.
