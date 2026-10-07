@@ -2641,6 +2641,7 @@ fn push_remote_panel<V: 'static>(
                     (false, _) => remote_worktree_label(remote, shell.worktree_id.as_deref()),
                 };
                 let command = shell.harness.as_deref().unwrap_or("shell");
+                let status = shell_status_label(shell.alive, None);
                 if !matches(&[
                     &shell.id,
                     &label,
