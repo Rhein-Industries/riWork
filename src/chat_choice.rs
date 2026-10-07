@@ -7,7 +7,7 @@ use crate::{
         model::{ApprovalMode, ChatInfo, ModelOption, NewChat, Provider},
     },
     codex_accounts, form_input, sessions,
-    text_input::{self, InputState},
+    text_input::{self, InputEvent, InputState},
     theme, ui_text,
 };
 use gpui::{
@@ -267,7 +267,7 @@ impl ChatChoice {
         let search = text_input::single_line("", "Search saved models", window, cx);
         let subscriptions = [&model, &search]
             .into_iter()
-            .map(|input| cx.subscribe(input, |_, _, _, cx| cx.notify()))
+            .map(|input| cx.subscribe(input, |_, _, _: &InputEvent, cx| cx.notify()))
             .collect();
         let location = locations
             .iter()
@@ -677,9 +677,9 @@ impl Render for ChatChoice {
             ))
             .child(
                 div()
+                    .id("new-chat-model-list")
                     .max_h(ui_text::space(170.0))
                     .overflow_y_scroll()
-                    .id("new-chat-model-list")
                     .child(Self::group("Model", model_rows)),
             )
             .child(form_input::frame(
@@ -809,7 +809,7 @@ mod tests {
         let requests = Rc::new(RefCell::new(Vec::new()));
         let observed = requests.clone();
         let _subscription = cx.update(|app| {
-            app.subscribe(&choice, move |_, event, _| {
+            app.subscribe(&choice, move |_, event: &ChoiceEvent, _| {
                 if let ChoiceEvent::Confirmed(request) = event {
                     observed.borrow_mut().push(request.clone());
                 }
@@ -869,7 +869,7 @@ mod tests {
         let events = Rc::new(RefCell::new((0usize, 0usize)));
         let observed = events.clone();
         let _subscription = cx.update(|app| {
-            app.subscribe(&choice, move |_, event, _| match event {
+            app.subscribe(&choice, move |_, event: &ChoiceEvent, _| match event {
                 ChoiceEvent::Closed => observed.borrow_mut().0 += 1,
                 ChoiceEvent::Confirmed(_) => observed.borrow_mut().1 += 1,
             })
@@ -900,7 +900,7 @@ mod tests {
         let requests = Rc::new(RefCell::new(Vec::new()));
         let observed = requests.clone();
         let _subscription = cx.update(|app| {
-            app.subscribe(&choice, move |_, event, _| {
+            app.subscribe(&choice, move |_, event: &ChoiceEvent, _| {
                 if let ChoiceEvent::Confirmed(request) = event {
                     observed.borrow_mut().push(request.clone());
                 }
