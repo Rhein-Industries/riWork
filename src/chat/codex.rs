@@ -460,7 +460,7 @@ impl Session {
                 id,
                 turn_id: self.turn.clone(),
                 status: ItemStatus::Completed,
-                body: ItemBody::Notice { level, text },
+                body: ItemBody::notice(level, text, None),
             },
         });
     }

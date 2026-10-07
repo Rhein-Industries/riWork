@@ -313,10 +313,7 @@ fn unreadable(chat_id: &str, seq: u64) -> Envelope {
                 id: format!("unreadable-{seq}"),
                 turn_id: None,
                 status: ItemStatus::Completed,
-                body: ItemBody::Notice {
-                    level: NoticeLevel::Warning,
-                    text: "An event from the chat host could not be read. This RiWork may be older than the host.".to_owned(),
-                },
+                body: ItemBody::notice(NoticeLevel::Warning, "An event from the chat host could not be read. This RiWork may be older than the host.", None),
             },
         },
     }

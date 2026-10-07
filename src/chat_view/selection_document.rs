@@ -110,7 +110,7 @@ pub(super) fn leaves(view: &ChatView, look: Look) -> Vec<SourceLeaf> {
                 format!("compaction:{}", item.id),
                 super::widgets::sentence("context compacted", look),
             ),
-            ItemBody::Notice { level, text } => {
+            ItemBody::Notice { level, text, .. } => {
                 let prefix = if look.native {
                     ""
                 } else {

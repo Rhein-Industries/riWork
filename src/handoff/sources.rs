@@ -148,7 +148,7 @@ fn chat_entry(body: &ItemBody, status: ItemStatus) -> Option<Entry> {
                 .collect(),
         },
         ItemBody::Compaction => Entry::Note("The context was compacted here.".into()),
-        ItemBody::Notice { level, text } => match level {
+        ItemBody::Notice { level, text, .. } => match level {
             NoticeLevel::Info => return None,
             NoticeLevel::Warning => Entry::Note(format!("Warning: {text}")),
             NoticeLevel::Error => Entry::Note(format!("Error: {text}")),

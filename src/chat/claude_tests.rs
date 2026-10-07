@@ -169,7 +169,7 @@ fn notices(events: &[ChatEvent]) -> Vec<(NoticeLevel, String)> {
             ChatEvent::ItemCompleted {
                 item:
                     Item {
-                        body: ItemBody::Notice { level, text },
+                        body: ItemBody::Notice { level, text, .. },
                         ..
                     },
             } => Some((*level, text.clone())),

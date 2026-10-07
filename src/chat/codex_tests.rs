@@ -92,7 +92,7 @@ impl Run {
             .items
             .into_iter()
             .filter_map(|item| match item.body {
-                ItemBody::Notice { level, text } => Some((level, text)),
+                ItemBody::Notice { level, text, .. } => Some((level, text)),
                 _ => None,
             })
             .collect()
@@ -805,10 +805,7 @@ fn plans_tools_searches_and_file_changes_map_to_items() {
     // An error that Codex will retry is a warning.
     assert_eq!(
         run.item("retry-turn-1").body,
-        ItemBody::Notice {
-            level: NoticeLevel::Warning,
-            text: "Reconnecting 1/5".into()
-        }
+        ItemBody::notice(NoticeLevel::Warning, "Reconnecting 1/5", None)
     );
     run.end();
 }
@@ -836,10 +833,7 @@ fn a_failed_turn_says_why_once() {
         .collect();
     assert_eq!(
         notices,
-        vec![ItemBody::Notice {
-            level: NoticeLevel::Error,
-            text: "usage limit reached\ntry later".into()
-        }]
+        vec![ItemBody::notice(NoticeLevel::Error, "usage limit reached\ntry later", None)]
     );
     run.end();
 }
@@ -854,7 +848,7 @@ fn an_oversized_line_is_skipped_with_a_notice_and_the_turn_goes_on() {
         .items
         .iter()
         .find_map(|item| match &item.body {
-            ItemBody::Notice { level, text } => Some((*level, text.clone())),
+            ItemBody::Notice { level, text, .. } => Some((*level, text.clone())),
             _ => None,
         })
         .expect("a notice");

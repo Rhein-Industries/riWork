@@ -627,10 +627,7 @@ mod tests {
                 text: "hello".into(),
             },
             ItemBody::Compaction,
-            ItemBody::Notice {
-                level: NoticeLevel::Info,
-                text: "x".into(),
-            },
+            ItemBody::notice(NoticeLevel::Info, "x", None),
         ] {
             assert_eq!(head(&item(ItemStatus::Completed, body), None), None);
         }

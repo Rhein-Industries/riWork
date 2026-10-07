@@ -84,7 +84,7 @@ pub fn lines(transcript: &Transcript) -> Vec<String> {
                 lines.push(format!("[todo] {done} of {} items done", items.len()));
             }
             ItemBody::Compaction => lines.push("[context compacted]".to_owned()),
-            ItemBody::Notice { level, text } => lines.push(format!(
+            ItemBody::Notice { level, text, .. } => lines.push(format!(
                 "[{}] {}",
                 match level {
                     NoticeLevel::Info => "notice",

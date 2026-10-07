@@ -696,10 +696,7 @@ impl Core {
             id: format!("notice-{}-{}", self.notice_prefix, self.notice_counter),
             turn_id: self.turn_id(),
             status: ItemStatus::Completed,
-            body: ItemBody::Notice {
-                level,
-                text: text.into(),
-            },
+            body: ItemBody::notice(level, text, None),
         };
         self.born(item);
     }

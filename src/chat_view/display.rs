@@ -465,18 +465,12 @@ mod tests {
             item(
                 "warning",
                 None,
-                ItemBody::Notice {
-                    level: NoticeLevel::Warning,
-                    text: "Review permissions".into(),
-                },
+                ItemBody::notice(NoticeLevel::Warning, "Review permissions", None),
             ),
             item(
                 "error",
                 None,
-                ItemBody::Notice {
-                    level: NoticeLevel::Error,
-                    text: "Action required".into(),
-                },
+                ItemBody::notice(NoticeLevel::Error, "Action required", None),
             ),
         ];
         t.items[2].status = ItemStatus::Failed;
