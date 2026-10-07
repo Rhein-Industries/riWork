@@ -313,7 +313,9 @@ impl ChatView {
             media: Default::default(),
             preview_root: None,
             scale: ui_text::scale(),
-            row_theme: cx.try_global::<crate::theme::Appearance>().map(|a| a.selected),
+            row_theme: cx
+                .try_global::<crate::theme::Appearance>()
+                .map(|a| a.selected),
             focus,
             composer,
             model_input,
@@ -686,7 +688,9 @@ impl ChatView {
     /// The list's rows were measured with different typography.
     fn follow_text_size(&mut self, cx: &mut Context<Self>) {
         let scale = ui_text::scale();
-        let row_theme = cx.try_global::<crate::theme::Appearance>().map(|a| a.selected);
+        let row_theme = cx
+            .try_global::<crate::theme::Appearance>()
+            .map(|a| a.selected);
         if scale != self.scale || row_theme != self.row_theme {
             self.transcript_selection.clear(self.window_handle, cx);
             self.scale = scale;

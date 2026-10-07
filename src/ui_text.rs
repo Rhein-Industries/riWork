@@ -275,7 +275,9 @@ pub fn mono_family() -> SharedString {
 /// code in a fixed-width face: Menlo in the colorful themes, SF Mono (else Menlo) in Native.
 pub fn code_family() -> SharedString {
     match face() {
-        Face::System | Face::SystemMono | Face::Hermes if HAS_SF_MONO.with(Cell::get) => SF_MONO.into(),
+        Face::System | Face::SystemMono | Face::Hermes if HAS_SF_MONO.with(Cell::get) => {
+            SF_MONO.into()
+        }
         _ => MENLO.into(),
     }
 }
@@ -549,7 +551,14 @@ mod tests {
             settings.theme = theme;
             let face = Face::of(&settings);
             if matches!(theme, ThemeChoice::Native | ThemeChoice::Hermes) {
-                assert_eq!(face, if theme == ThemeChoice::Hermes { Face::Hermes } else { Face::SystemMono });
+                assert_eq!(
+                    face,
+                    if theme == ThemeChoice::Hermes {
+                        Face::Hermes
+                    } else {
+                        Face::SystemMono
+                    }
+                );
                 // The default 11 pt is drawn, and shown, at macOS's 13 pt body size.
                 assert_eq!(DEFAULT_POINTS + face.offset(false), SYSTEM_BODY_POINTS);
                 assert_eq!(shown_points(&settings, 12.0), 14.0);
@@ -625,7 +634,10 @@ mod tests {
             families(Face::SystemMono),
             (".SystemUIFont".into(), "SF Mono".into())
         );
-        assert_eq!(families(Face::Hermes), (".SystemUIFont".into(), "SF Mono".into()));
+        assert_eq!(
+            families(Face::Hermes),
+            (".SystemUIFont".into(), "SF Mono".into())
+        );
         HAS_SF_MONO.with(|cell| cell.set(false));
         assert_eq!(families(Face::SystemMono).1, "Menlo");
         HAS_SF_MONO.with(|cell| cell.set(true));
