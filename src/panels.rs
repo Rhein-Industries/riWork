@@ -3107,7 +3107,7 @@ fn row<V: 'static>(
     let colors = theme::palette(cx);
     let mut children = children.into_iter();
     let first = children.next().unwrap_or_else(|| div().into_any_element());
-    behavior::button_content(id, accessible_name, first)
+    let control = behavior::button_content(id.clone(), accessible_name, first)
         .aria_selected(selected)
         .items_stretch()
         .focus_visible(move |style| style.border_color(rgb(colors.focus)))
@@ -3133,8 +3133,8 @@ fn row<V: 'static>(
         .children(children)
         .on_click(cx.listener(move |view, _, window, cx| {
             on_action(view, action.clone(), window, cx);
-        }))
-        .into_any_element()
+        }));
+    crate::form_input::control_element(id, control)
 }
 
 /// What a panel lists, for its count and its empty state: "projects", "shells".
