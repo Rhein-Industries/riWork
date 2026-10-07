@@ -127,7 +127,8 @@ impl Fixture {
     }
 }
 
-/// Logs each call (arguments separated by U+001F). `project show` and
+/// Logs each call (arguments separated by U+001F). `capabilities --json` prints
+/// `capabilities.json`, or nothing, like a CLI from before the question. `project show` and
 /// `worktree show` print the id they were asked for, or the one in `show.id`,
 /// or fail with the line in `show.error`. `shell create` waits `create.delay`
 /// seconds if that exists, marks `create.ran`, then prints
@@ -146,6 +147,7 @@ fn stub_cli(dir: &Path) -> PathBuf {
              for a in \"$@\"; do printf '%s\\037' \"$a\"; done >> \"$d/argv.log\"\n\
              printf '\\n' >> \"$d/argv.log\"\n\
              case \"$1 $2\" in\n\
+             'capabilities --json') if [ -e \"$d/capabilities.json\" ]; then cat \"$d/capabilities.json\"; fi;;\n\
              'project show'|'worktree show')\n\
                if [ -e \"$d/show.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/show.error\")\" >&2; exit 2; fi\n\
                if [ -e \"$d/show.id\" ]; then printf '{{\"id\":\"%s\"}}' \"$(cat \"$d/show.id\")\"; else printf '{{\"id\":\"%s\"}}' \"$3\"; fi;;\n\
@@ -429,11 +431,104 @@ async fn every_value_is_its_own_argument_and_the_cli_gets_json() {
         expected.push("--json".into());
         assert_eq!(f.calls().last().unwrap(), &expected, "{params}");
     }
-    // Only the look-up and the creation ran: no listing, no second call.
-    assert!(
-        f.calls()
-            .iter()
-            .all(|c| c[1] == "show" || c[..2] == ["shell", "create"])
+    // Only the look-up and the creation ran, and the question an agent left to the
+    // desktop asks first: no listing, no second call.
+    assert!(f.calls().iter().all(|c| c[1] == "show"
+        || c[..2] == ["shell", "create"]
+        || c[..2] == ["capabilities", "--json"]));
+}
+
+#[tokio::test]
+async fn an_agent_left_to_the_desktop_follows_its_settings_when_the_cli_can_ask_them() {
+    let f = Fixture::new();
+    let (p, shell) = (f.project.clone(), new_uuid());
+    f.set(
+        "capabilities.json",
+        &json!({"v": 1, "shell_create_as_settings": true}).to_string(),
+    );
+    for (kind, unrestricted, flags, asks) in [
+        // Left out: the CLI decides from Settings.
+        (
+            "codex",
+            None,
+            vec!["--harness", "codex", "--as-settings"],
+            true,
+        ),
+        (
+            "claude",
+            None,
+            vec!["--harness", "claude", "--as-settings"],
+            true,
+        ),
+        (
+            "grok",
+            None,
+            vec!["--harness", "grok", "--as-settings"],
+            true,
+        ),
+        // Said: honored as it always was, without a question.
+        ("codex", Some(false), vec!["--harness", "codex"], false),
+        (
+            "claude",
+            Some(true),
+            vec!["--harness", "claude", "--unrestricted"],
+            false,
+        ),
+        // A plain shell is never unrestricted, and nothing is asked for it.
+        ("shell", None, vec![], false),
+        ("shell", Some(false), vec![], false),
+    ] {
+        let harness = if kind == "shell" {
+            Value::Null
+        } else {
+            json!(kind)
+        };
+        f.cli_says(json!({
+            "id": shell, "project_id": p, "worktree_id": null, "kind": "project",
+            "cwd": "/x", "harness": harness, "alive": true, "created_at_unix": 1
+        }));
+        let before = f.calls_of("capabilities", "--json").len();
+        let mut params = json!({"project_id":p,"kind":kind});
+        if let Some(flag) = unrestricted {
+            params["unrestricted"] = json!(flag);
+        }
+        let response = f.create(params.clone()).await;
+        assert_eq!(response["ok"], true, "{params}: {response}");
+        let mut expected: Vec<String> = ["shell", "create", "--project", &p]
+            .map(String::from)
+            .to_vec();
+        expected.extend(flags.iter().map(|flag| flag.to_string()));
+        expected.push("--json".into());
+        assert_eq!(f.calls().last().unwrap(), &expected, "{params}");
+        // A yes is remembered: the question is asked once at most.
+        let asked = f.calls_of("capabilities", "--json").len() - before;
+        assert!(asked <= usize::from(asks), "{params}: asked {asked} times");
+    }
+    assert_eq!(f.calls_of("capabilities", "--json").len(), 1);
+
+    // A CLI that does not say so starts the agent restricted, as before.
+    let older = Fixture::new();
+    older.cli_says(json!({
+        "id": shell, "project_id": older.project, "worktree_id": null, "kind": "project",
+        "cwd": "/x", "harness": "codex", "alive": true, "created_at_unix": 1
+    }));
+    let response = older
+        .create(json!({"project_id":older.project,"kind":"codex"}))
+        .await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        older.calls().last().unwrap(),
+        &[
+            "shell",
+            "create",
+            "--project",
+            &older.project,
+            "--harness",
+            "codex",
+            "--json"
+        ]
+        .map(String::from)
+        .to_vec()
     );
 }
 

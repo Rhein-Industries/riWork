@@ -855,11 +855,16 @@ impl Rpc {
             return Ok(true);
         }
         let started = std::time::Instant::now();
+        let answers = self.capability_answers.load(Ordering::Acquire);
         let Ok(_asking) = timeout(limit, self.asking_chat.lock()).await else {
             return Err(cli_fault("RiWork CLI timeout"));
         };
-        if flag.load(Ordering::Relaxed) {
-            return Ok(true);
+        // Answered while this one waited (a handshake asks about several at once): that
+        // answer stands, a no as much as a yes.
+        if flag.load(Ordering::Relaxed)
+            || self.capability_answers.load(Ordering::Acquire) != answers
+        {
+            return Ok(flag.load(Ordering::Relaxed));
         }
         let asked = self
             .raw_within(
@@ -874,16 +879,21 @@ impl Rpc {
                     for (flag, name) in [
                         (&self.chat, "chat"),
                         (&self.orchestrator_create, "orchestrator_create"),
+                        (&self.shell_create_as_settings, "shell_create_as_settings"),
                     ] {
                         if reply.get(name) == Some(&Value::Bool(true)) {
                             flag.store(true, Ordering::Relaxed);
                         }
                     }
                 }
+                self.capability_answers.fetch_add(1, Ordering::Release);
                 Ok(flag.load(Ordering::Relaxed))
             }
             // It ran and refused the question: a CLI from before `capabilities`.
-            Err(e) if e.to_string().starts_with("RiWork CLI failed") => Ok(false),
+            Err(e) if e.to_string().starts_with("RiWork CLI failed") => {
+                self.capability_answers.fetch_add(1, Ordering::Release);
+                Ok(false)
+            }
             Err(e) => Err(cli_fault(e)),
         }
     }
