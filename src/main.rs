@@ -4,6 +4,7 @@ mod appearance_file;
 mod appearance_sync;
 mod behavior_controls;
 mod chat;
+mod chat_choice;
 mod chat_view;
 mod cli;
 mod cli_agents;
@@ -76,7 +77,7 @@ use std::{
 
 use crate::text_input::{EnterBehavior, InputEvent, InputState};
 use activity::{ActivityTracker, AgentActivity, AgentState, ChatActivity};
-use chat::model::{ApprovalMode, ChatInfo, NewChat, OrchestratorScope, Provider};
+use chat::model::{ChatInfo, NewChat, OrchestratorScope, Provider};
 use chat_view::{ChatView, ChatViewEvent, HostConfig, ToggleDictation};
 use file_explorer::{
     ExplorerRoot, FileExplorer, FileExplorerEvent, FileExplorerSurface, FilePreview,
@@ -133,6 +134,7 @@ actions!(
         OpenCodex,
         OpenClaude,
         OpenGrok,
+        OpenNewChat,
         OpenCodexChat,
         OpenClaudeChat,
         CreateProject,
@@ -159,8 +161,8 @@ type TabId = u64;
 enum PaneMenuAction {
     Shell,
     Harness(HarnessKind, bool),
-    /// A chat tab with the agent, unrestricted or not.
-    Chat(Provider, bool),
+    /// Open the shared provider/model choice dialog.
+    NewChat,
     Orchestrator(bool),
     /// Pass the selected agent tab's conversation to a new shell or chat.
     Handoff,
@@ -970,44 +972,6 @@ fn saved_chat(chat_id: &str) -> Option<SavedTab> {
     })
 }
 
-/// What a new chat asks the chat host for: the worktree it works in, and, for an
-/// unrestricted one, never asking before it acts (as the terminal agents' unrestricted
-/// launches).
-fn new_chat_request(
-    provider: Provider,
-    unrestricted: bool,
-    project_id: &str,
-    worktree_id: Option<String>,
-    cwd: PathBuf,
-) -> NewChat {
-    NewChat {
-        provider,
-        project_id: Some(project_id.to_owned()),
-        worktree_id,
-        cwd,
-        codex_account_id: None,
-        title: None,
-        approval_mode: if unrestricted {
-            ApprovalMode::Full
-        } else {
-            ApprovalMode::Supervised
-        },
-        model: None,
-        effort: None,
-        orchestrator: None,
-        fast: false,
-    }
-}
-
-/// The chat rows of the New Tab menu: label, shortcut, agent, unrestricted. Unrestricted
-/// ones have no shortcut, as the terminal agents' have none.
-const CHAT_MENU: [(&str, &str, Provider, bool); 4] = [
-    ("Codex chat", "⌘⌥⇧C", Provider::Codex, false),
-    ("Claude chat", "⌘⌥⇧L", Provider::Claude, false),
-    ("Codex chat · unrestricted", "", Provider::Codex, true),
-    ("Claude chat · unrestricted", "", Provider::Claude, true),
-];
-
 /// The text of a chat tab: what the chat is doing, the agent's name unless the tab shows
 /// its mark instead (`icon`), and the chat's title. A title that already starts with the
 /// agent's name is not prefixed with it again.
@@ -1173,6 +1137,27 @@ fn plan_orchestrator_chat(
     }
 }
 
+/// Sessions never opens a second tab for a UUID. A new history tab belongs to
+/// the main/unlocked work area even while the locked navigation pane has focus.
+/// Explicitly locked existing tabs stay where the user put them.
+fn plan_session_chat(
+    open: Option<(PaneId, TabId)>,
+    panes: &BTreeMap<PaneId, Pane>,
+    main: Option<PaneId>,
+    selected: PaneId,
+    locked: &dyn Fn(PaneId) -> bool,
+) -> Option<ChatOrchestratorTab> {
+    let destination = chat_choice::destination(panes.keys().copied(), main, selected, locked);
+    match open {
+        Some((pane, tab)) => Some(ChatOrchestratorTab::Reuse {
+            pane,
+            tab,
+            into: bring_up_target(panes, destination, pane, tab, locked(pane)),
+        }),
+        None => destination.map(|pane| ChatOrchestratorTab::Open { pane }),
+    }
+}
+
 /// What a status bar item or a tab says of an orchestrator chat that is doing something: the
 /// agent marks the tabs of chats use. An orchestrator is told its start message at once, so
 /// an idle one has finished a turn.
@@ -1318,6 +1303,8 @@ struct Workspace {
     remote_prompt: Option<Entity<RemotePrompt>>,
     /// The dialog behind **Hand off…**, while it is open.
     handoff_dialog: Option<Entity<HandoffDialog>>,
+    /// Explicit launch choices; the chat does not exist before confirmation.
+    new_chat_dialog: Option<Entity<chat_choice::ChatChoice>>,
     /// A hand off whose dialog was hidden while it works (see `HandoffEvent::Detached`);
     /// holding the dialog keeps the work, and the way to hear its end, alive.
     handoff_running: Option<Entity<HandoffDialog>>,
@@ -1959,6 +1946,7 @@ impl Workspace {
             folder_editor: None,
             remote_prompt: None,
             handoff_dialog: None,
+            new_chat_dialog: None,
             handoff_running: None,
             remote_ended: HashSet::new(),
             remote_pair_defaults: (String::new(), String::new()),
@@ -2970,6 +2958,11 @@ impl Workspace {
                     self.show_existing_chat(chat, window, cx);
                 }
             }
+            PanelAction::NewChat { project, generation } => {
+                if project == self.project_id && generation == self.native_sessions_generation {
+                    self.begin_new_chat(None, false, window, cx);
+                }
+            }
             PanelAction::SessionFilter(filter) => {
                 self.session_filter = filter;
                 self.set_search(String::new(), None, window, cx);
@@ -3464,6 +3457,7 @@ impl Workspace {
             || self.folder_editor.is_some()
             || self.remote_prompt.is_some()
             || self.handoff_dialog.is_some()
+            || self.new_chat_dialog.is_some()
     }
 
     fn begin_tab_drag(&mut self, cx: &mut Context<Self>) {
@@ -6547,7 +6541,7 @@ impl Workspace {
         if self.modal_open() {
             return;
         }
-        self.add_chat(Provider::Codex, false, window, cx);
+        self.begin_new_chat(Some(Provider::Codex), false, window, cx);
     }
 
     fn open_claude_chat_action(
@@ -6559,45 +6553,126 @@ impl Workspace {
         if self.modal_open() {
             return;
         }
-        self.add_chat(Provider::Claude, false, window, cx);
+        self.begin_new_chat(Some(Provider::Claude), false, window, cx);
     }
 
-    /// Open a chat with `provider` in the pane new tabs go to, working in the selected
-    /// worktree. The chat host makes the chat; the tab is there at once and fills in.
-    fn add_chat(
+    fn open_new_chat_action(
         &mut self,
-        provider: Provider,
+        _: &OpenNewChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.begin_new_chat(None, false, window, cx);
+    }
+
+    /// New chat entry points only open this dialog. No host creation until confirmation.
+    fn begin_new_chat(
+        &mut self,
+        provider: Option<Provider>,
         unrestricted: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.ensure_layout(window, cx) {
+        if self.modal_open() || !self.ensure_layout(window, cx) {
             return;
         }
         self.panel_menu = None;
         self.finish_tab_drag(cx);
         if self.is_remote() {
-            self.notice =
-                Some("Chats run on this Mac. Open a project here to start one.".to_owned());
+            self.notice = Some("Chats run on this Mac. Open a project here to start one.".into());
             cx.notify();
             return;
         }
-        let worktree_id = self.selected_worktree_id.clone();
-        let cwd = worktree_id
-            .as_ref()
-            .and_then(|id| {
-                self.state
-                    .worktrees
-                    .iter()
-                    .find(|worktree| &worktree.id == id)
-            })
-            .map(|worktree| worktree.path.clone())
-            .unwrap_or_else(|| self.cwd.clone());
-        let request = new_chat_request(provider, unrestricted, &self.project_id, worktree_id, cwd);
+        if self.chat_destination().is_none() {
+            self.notice = Some("Unlock a chat pane before starting a conversation.".into());
+            cx.notify();
+            return;
+        }
+        let locations = self.chat_locations();
+        let dialog = cx.new(|cx| {
+            chat_choice::ChatChoice::new(
+                self.project_id.clone(),
+                self.sessions.state_home().to_path_buf(),
+                locations,
+                self.selected_worktree_id.as_deref(),
+                provider,
+                unrestricted,
+                window,
+                cx,
+            )
+        });
+        cx.subscribe_in(&dialog, window, |workspace, dialog, event, window, cx| {
+            // A queued event from an obsolete dialog cannot create anything.
+            if workspace.new_chat_dialog.as_ref() != Some(dialog) {
+                return;
+            }
+            workspace.new_chat_dialog = None;
+            match event {
+                chat_choice::ChoiceEvent::Closed => {}
+                chat_choice::ChoiceEvent::Confirmed(request) => {
+                    workspace.create_confirmed_chat(request.clone(), window, cx)
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        self.new_chat_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    fn chat_destination(&self) -> Option<PaneId> {
+        chat_choice::destination(
+            self.panes.keys().copied(),
+            self.main_pane(),
+            self.active_pane,
+            &|pane| self.pane_is_locked(pane),
+        )
+    }
+
+    fn chat_locations(&self) -> Vec<chat_choice::Location> {
+        let mut locations = vec![chat_choice::Location {
+            worktree_id: None,
+            label: "Project root".into(),
+            path: self.cwd.clone(),
+        }];
+        locations.extend(
+            self.state
+                .worktrees_for(&self.project_id)
+                .into_iter()
+                .map(|tree| chat_choice::Location {
+                    worktree_id: Some(tree.id.clone()),
+                    label: tree.branch.clone(),
+                    path: tree.path.clone(),
+                }),
+        );
+        locations
+    }
+
+    fn create_confirmed_chat(
+        &mut self,
+        request: NewChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Revalidate project/worktree routing after a modal's asynchronous metadata read.
+        if self.is_remote()
+            || !self.layout_ready
+            || !chat_choice::context_matches(&request, &self.project_id, &self.chat_locations())
+        {
+            self.notice =
+                Some("The chat's project or worktree changed. Open New chat again.".into());
+            cx.notify();
+            return;
+        }
+        let Some(pane) = self.chat_destination() else {
+            self.notice = Some("Unlock a chat pane before starting a conversation.".into());
+            cx.notify();
+            return;
+        };
         let config = self.chat_config();
         let view = cx.new(|cx| ChatView::create(request, config, window, cx));
         let tab = self.chat_tab(String::new(), view, window, cx);
-        if let Err(error) = self.place_new_tab(self.new_tab_pane(), tab, window, cx) {
+        if let Err(error) = self.place_new_tab(pane, tab, window, cx) {
             self.notice = Some(error);
         }
         self.focus_active(window, cx);
@@ -7493,14 +7568,24 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let plan = plan_orchestrator_chat(
-            chat_tab_in(&self.panes, &chat.id),
-            &self.panes,
-            self.main_pane,
-            self.focus_mode,
-            self.active_pane,
-            &|pane| self.pane_is_locked(pane),
-        );
+        let open = chat_tab_in(&self.panes, &chat.id);
+        let plan = if existing_home.is_some() {
+            if chat.project_id.as_deref() != Some(self.project_id.as_str())
+                || !uuid::Uuid::parse_str(&chat.id).is_ok_and(|id| id.to_string() == chat.id)
+            {
+                return;
+            }
+            let Some(plan) = plan_session_chat(open, &self.panes, self.main_pane(),
+                self.active_pane, &|pane| self.pane_is_locked(pane)) else {
+                self.notice = Some("Unlock a chat pane to open this conversation.".into());
+                cx.notify();
+                return;
+            };
+            plan
+        } else {
+            plan_orchestrator_chat(open, &self.panes, self.main_pane, self.focus_mode,
+                self.active_pane, &|pane| self.pane_is_locked(pane))
+        };
         match plan {
             ChatOrchestratorTab::Reuse { pane, tab, into } => {
                 self.show_open_tab(pane, tab, into, window, cx);
@@ -9053,16 +9138,9 @@ impl Workspace {
                                 ),
                             ]
                             .into_iter()
-                            .chain(CHAT_MENU.iter().map(
-                                |&(label, shortcut, provider, unrestricted)| {
-                                    (
-                                        label,
-                                        shortcut,
-                                        None,
-                                        PaneMenuAction::Chat(provider, unrestricted),
-                                    )
-                                },
-                            ))
+                            .chain(std::iter::once((
+                                "New chat…", "", None, PaneMenuAction::NewChat,
+                            )))
                             .map(|(label, shortcut, icon, action)| {
                                 self.pane_menu_row(pane_id, label, shortcut, icon, action, cx)
                             }),
@@ -10286,8 +10364,8 @@ impl Workspace {
                         workspace.add_harness(kind, unrestricted, window, cx);
                     }
                     PaneMenuAction::Sessions(filter) => workspace.open_sessions(filter, window, cx),
-                    PaneMenuAction::Chat(provider, unrestricted) => {
-                        workspace.add_chat(provider, unrestricted, window, cx);
+                    PaneMenuAction::NewChat => {
+                        workspace.begin_new_chat(None, false, window, cx);
                     }
                     PaneMenuAction::Orchestrator(project_scoped) => {
                         let project_id = project_scoped.then(|| workspace.project_id.clone());
@@ -10427,6 +10505,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_codex_action))
             .on_action(cx.listener(Self::open_claude_action))
             .on_action(cx.listener(Self::open_grok_action))
+            .on_action(cx.listener(Self::open_new_chat_action))
             .on_action(cx.listener(Self::open_codex_chat_action))
             .on_action(cx.listener(Self::open_claude_chat_action))
             .on_action(cx.listener(Self::split_right_action))
@@ -10588,6 +10667,14 @@ impl Render for Workspace {
                         .bg(gpui::rgba(0x00000099))
                         .occlude()
                         .child(prompt.clone()),
+                    self.modal_selection_scope,
+                )
+            }))
+            .children(self.new_chat_dialog.as_ref().map(|dialog| {
+                behavior_controls::selection_scope(
+                    div().absolute().inset_0().size_full().p(ui_text::space(16.0))
+                        .flex().items_center().justify_center().bg(gpui::rgba(0x00000099))
+                        .occlude().child(dialog.clone()),
                     self.modal_selection_scope,
                 )
             }))
@@ -11664,6 +11751,7 @@ fn main() {
             behavior_controls::edit_menu(),
             // RiWork's own text; terminals zoom with the same keys while focused.
             Menu::new("View").items([
+                MenuItem::action("New chat…", OpenNewChat),
                 MenuItem::action("Sessions", OpenSessions),
                 MenuItem::action("Default Layout", ApplyDefaultLayout),
                 MenuItem::action("Gather Tabs into Main Pane", GatherTabs),
@@ -13361,9 +13449,11 @@ mod main_pane_tests {
         let other = uuid::Uuid::from_u128(2).to_string();
         let chat: ChatInfo = serde_json::from_value(serde_json::json!({
             "id": id, "provider":"claude", "project_id":"project", "cwd":"/synthetic-only/history",
-            "title":"Same title", "created_at_unix":1, "state":{"state":"stopped"}
+            "title":"Same title", "created_at_unix":1, "state":{"state":"stopped"},
+            "provider_thread_id":"existing-thread", "model":"existing-model", "worktree_id":"existing-tree"
         }))
         .unwrap();
+        let original = chat.clone();
         let mut second = chat.clone();
         second.id = other.clone();
         second.provider = Provider::Codex;
@@ -13387,14 +13477,14 @@ mod main_pane_tests {
         // a terminal, exactly as the production chat_tab_in -> planner boundary sees it.
         let locations = BTreeMap::from([(id.clone(), (3, 4))]);
         let selected = catalog.selected("project", 7, &id).unwrap();
-        let plan = plan_orchestrator_chat(
+        let plan = plan_session_chat(
             locations.get(&selected.id).copied(),
             &panes,
             Some(2),
-            false,
             1,
             &|p| p == 1,
-        );
+        )
+        .unwrap();
         assert_eq!(
             plan,
             ChatOrchestratorTab::Reuse {
@@ -13415,7 +13505,7 @@ mod main_pane_tests {
             1
         );
         // A repeat selection reuses the same tab; identical titles never choose it for Codex.
-        let repeated = plan_orchestrator_chat(Some((2, 4)), &panes, Some(2), false, 1, &|p| p == 1);
+        let repeated = plan_session_chat(Some((2, 4)), &panes, Some(2), 1, &|p| p == 1).unwrap();
         assert_eq!(
             repeated,
             ChatOrchestratorTab::Reuse {
@@ -13426,18 +13516,49 @@ mod main_pane_tests {
         );
         let second = catalog.selected("project", 7, &other).unwrap();
         assert_eq!(
-            plan_orchestrator_chat(
+            plan_session_chat(
                 locations.get(&second.id).copied(),
                 &panes,
                 Some(2),
-                false,
                 1,
                 &|p| p == 1
-            ),
+            )
+            .unwrap(),
             ChatOrchestratorTab::Open { pane: 2 }
         );
         assert!(catalog.selected("other-project", 7, &id).is_none());
         assert!(catalog.selected("project", 6, &id).is_none());
+        assert_eq!(
+            catalog.selected("project", 7, &id),
+            Some(original),
+            "routing leaves the provider, thread, model, worktree and UUID intact"
+        );
+    }
+
+    #[test]
+    fn sessions_from_locked_navigation_use_an_unlocked_pane_without_a_main() {
+        let panes = BTreeMap::from([
+            (1, pane(vec![panel(1, PanelKind::Shells)], 0)),
+            (2, pane(vec![shell(2)], 0)),
+        ]);
+        for main in [None, Some(1), Some(99), Some(2)] {
+            assert_eq!(
+                plan_session_chat(None, &panes, main, 1, &|id| id == 1),
+                Some(ChatOrchestratorTab::Open { pane: 2 })
+            );
+        }
+        // Locking every pane prevents an unopened UUID from gaining a tab.
+        assert_eq!(plan_session_chat(None, &panes, Some(2), 1, &|_| true), None);
+        // An existing UUID can still be selected, without a duplicate or a move
+        // out of a pane the user explicitly locked.
+        assert_eq!(
+            plan_session_chat(Some((2, 2)), &panes, Some(1), 1, &|_| true),
+            Some(ChatOrchestratorTab::Reuse {
+                pane: 2,
+                tab: 2,
+                into: None
+            })
+        );
     }
 
     #[test]
@@ -14817,22 +14938,6 @@ mod chat_tab_tests {
     use super::*;
 
     #[test]
-    fn the_new_tab_menu_lists_both_agents_with_and_without_limits() {
-        assert_eq!(
-            CHAT_MENU.map(|(label, _, provider, unrestricted)| (label, provider, unrestricted)),
-            [
-                ("Codex chat", Provider::Codex, false),
-                ("Claude chat", Provider::Claude, false),
-                ("Codex chat · unrestricted", Provider::Codex, true),
-                ("Claude chat · unrestricted", Provider::Claude, true),
-            ]
-        );
-        // Like the terminal agents, only the plain entries have a shortcut.
-        let shortcuts = CHAT_MENU.map(|(_, shortcut, _, _)| shortcut);
-        assert_eq!(shortcuts, ["⌘⌥⇧C", "⌘⌥⇧L", "", ""]);
-    }
-
-    #[test]
     fn only_an_agent_in_a_terminal_offers_to_hand_off() {
         let shell = |kind: &str, harness: Option<&str>| -> ShellSession {
             serde_json::from_value(serde_json::json!({
@@ -14864,36 +14969,6 @@ mod chat_tab_tests {
                 chat_id: "0d3f".to_owned()
             })
         );
-    }
-
-    #[test]
-    fn a_new_chat_works_in_the_selected_worktree_and_unrestricted_never_asks() {
-        let request = new_chat_request(
-            Provider::Claude,
-            false,
-            "project-1",
-            Some("tree-2".to_owned()),
-            PathBuf::from("/work/app"),
-        );
-        assert_eq!(request.provider, Provider::Claude);
-        assert_eq!(request.project_id.as_deref(), Some("project-1"));
-        assert_eq!(request.worktree_id.as_deref(), Some("tree-2"));
-        assert_eq!(request.cwd, PathBuf::from("/work/app"));
-        assert_eq!(request.approval_mode, ApprovalMode::Supervised);
-        assert_eq!(
-            (request.title, request.model, request.effort),
-            (None, None, None)
-        );
-
-        let unrestricted = new_chat_request(
-            Provider::Codex,
-            true,
-            "project-1",
-            None,
-            PathBuf::from("/work"),
-        );
-        assert_eq!(unrestricted.approval_mode, ApprovalMode::Full);
-        assert_eq!(unrestricted.worktree_id, None);
     }
 
     /// Every key binding in this file as (keystroke in a fixed order, context).

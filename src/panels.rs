@@ -67,6 +67,8 @@ pub enum PanelAction {
     },
     SessionFilter(Filter),
     RefreshSessions,
+    /// Open choices; rendering or filtering sessions never creates a chat.
+    NewChat { project: String, generation: u64 },
     Search,
     /// Empty the search field, from its clear button.
     ClearSearch,
@@ -1166,6 +1168,15 @@ pub fn render_panel<V: Render + 'static>(
             .flex_wrap()
             .gap(ui_text::space(4.0))
             .p(ui_text::space(6.0));
+        let handler = on_action.clone();
+        let project = data.project_id.to_owned();
+        let generation = data.session_catalog_generation;
+        toolbar = toolbar.child(
+            behavior::button("sessions-new-chat", "New chat…", controls::Button::Primary, colors)
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    handler(view, PanelAction::NewChat { project: project.clone(), generation }, window, cx)
+                })),
+        );
         for filter in Filter::ALL {
             let handler = on_action.clone();
             toolbar = toolbar.child(
@@ -4565,6 +4576,56 @@ mod search_regression_tests {
     #[gpui::test]
     fn sessions_native_controls_search_and_exact_uuid_selection(cx: &mut TestAppContext) {
         sessions_controls(cx, true);
+    }
+
+    #[gpui::test]
+    fn sessions_new_chat_is_explicit_and_survives_narrow_filtered_history(cx: &mut TestAppContext) {
+        let (handle, owner) = mount(cx, true);
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.kind = PanelKind::Shells;
+                owner.width = 280.;
+                owner.native_chats = vec![history(
+                    1,
+                    "claude",
+                    serde_json::json!({"state":"stopped"}),
+                    "alpha-id",
+                )];
+                cx.notify();
+            })
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(
+                owner.read(app).actions.is_empty(),
+                "render does not request a launch"
+            );
+            window.click("sessions-filter-Shells", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(
+                owner
+                    .read(app)
+                    .actions
+                    .iter()
+                    .all(|action| matches!(action, PanelAction::SessionFilter(Filter::Shells)))
+            );
+            assert!(window.find("sessions-new-chat").visible());
+            window.click("sessions-new-chat", app);
+        });
+        test_turn(cx, handle, |_, app| {
+            let actions = &owner.read(app).actions;
+            assert_eq!(
+                actions
+                    .iter()
+                    .filter(|action| matches!(action, PanelAction::NewChat { .. }))
+                    .count(),
+                1
+            );
+            assert!(
+                matches!(actions.last(), Some(PanelAction::NewChat { project, generation: 7 })
+                if project == "alpha-id")
+            );
+        });
     }
 
     #[gpui::test]
