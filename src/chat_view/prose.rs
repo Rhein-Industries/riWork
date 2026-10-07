@@ -11,7 +11,7 @@ use gpui::{
 };
 use gpui_kit::base::TestSupportExt as _;
 
-use crate::{controls, theme::Palette, ui_text};
+use crate::{controls, ui_text};
 
 use super::{
     ChatView,
@@ -96,13 +96,14 @@ impl ChatView {
             .min_w_0()
             .flex()
             .flex_col()
-            .gap(ui_text::space(8.0))
-            .when(look.colors == Palette::HERMES, |prose| {
+            // Every design's prose spacing: roomy lines and paragraphs. Hermes sets it in its
+            // proportional face, a size up.
+            .gap(ui_text::space(12.0))
+            .line_height(gpui::relative(1.5))
+            .when(look.hermes(), |prose| {
                 prose
                     .font_family(".SystemUIFont")
                     .text_size(ui_text::text(14.0))
-                    .line_height(gpui::relative(1.5))
-                    .gap(ui_text::space(12.0))
             })
             .children(
                 blocks
@@ -116,7 +117,7 @@ impl ChatView {
 
     fn block(&self, block: &Block, key: &str, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
-        let hermes = colors == Palette::HERMES;
+        let hermes = look.hermes();
         match block {
             Block::Paragraph(spans) => self.text(spans, key, look, None, cx),
             Block::Heading { level, spans } => {
@@ -153,7 +154,7 @@ impl ChatView {
                 .flex()
                 .flex_col()
                 .min_w_0()
-                .gap(ui_text::space(if hermes { 8.0 } else { 3.0 }))
+                .gap(ui_text::space(8.0))
                 .children(items.iter().enumerate().map(|(at, item)| {
                     let marker = match start {
                         Some(first) => format!("{}.", first + at as u64),
@@ -163,7 +164,7 @@ impl ChatView {
                         .w_full()
                         .flex()
                         .items_start()
-                        .gap(ui_text::space(if hermes { 10.0 } else { 6.0 }))
+                        .gap(ui_text::space(10.0))
                         .child(
                             div()
                                 .flex_none()
@@ -179,7 +180,7 @@ impl ChatView {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .gap(ui_text::space(if hermes { 8.0 } else { 4.0 }))
+                                .gap(ui_text::space(8.0))
                                 .children(item.iter().enumerate().map(|(inner, block)| {
                                     self.block(block, &format!("{key}/{at}/{inner}"), look, cx)
                                 })),
@@ -194,7 +195,7 @@ impl ChatView {
                 .text_color(rgb(colors.muted))
                 .flex()
                 .flex_col()
-                .gap(ui_text::space(if hermes { 12.0 } else { 6.0 }))
+                .gap(ui_text::space(12.0))
                 .children(
                     inner
                         .iter()
@@ -237,7 +238,7 @@ impl ChatView {
             })
             .border_1()
             .border_color(rgb(colors.divider))
-            .bg(rgb(if colors == Palette::HERMES {
+            .bg(rgb(if look.hermes() {
                 colors.panel
             } else {
                 colors.panel_active

@@ -23,6 +23,12 @@ use super::{
 const OUTPUT_LINES: usize = 200;
 const OUTPUT_BYTES: usize = 32 * 1024;
 
+/// Every design's transcript geometry, in design points: a row's inset from the pane's sides
+/// and from the rows around it, and the widest the reading column gets, centered in the pane.
+const ROW_INSET_X: f32 = 20.0;
+const ROW_INSET_Y: f32 = 8.0;
+const COLUMN_WIDTH: f32 = 1040.0;
+
 /// Makes the body of a card, which is made only for a card that is open.
 type BodyMaker<'a> = dyn Fn(&ChatView, &mut Context<ChatView>) -> AnyElement + 'a;
 
@@ -38,7 +44,6 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = Look::of(cx);
-        let hermes = look.colors == theme::Palette::HERMES;
         let content = match self.visible.get(ix) {
             Some(row @ (super::display::Row::Item(at) | super::display::Row::Details(at))) => {
                 let item = &self.model.transcript.items[*at];
@@ -208,14 +213,14 @@ impl ChatView {
             .id(id(format!("transcript-row:{ix}")))
             .w_full()
             .min_w_0()
-            .px(ui_text::space(if hermes { 20.0 } else { 14.0 }))
-            .py(ui_text::space(if hermes { 8.0 } else { 4.0 }))
+            .px(ui_text::space(ROW_INSET_X))
+            .py(ui_text::space(ROW_INSET_Y))
             .child(
                 div()
                     .id(id(format!("transcript-content:{ix}")))
                     .w_full()
                     .min_w_0()
-                    .max_w(ui_text::space(if hermes { 1040.0 } else { 920.0 }))
+                    .max_w(ui_text::space(COLUMN_WIDTH))
                     .mx_auto()
                     .child(content)
                     .test_support(),
@@ -226,39 +231,34 @@ impl ChatView {
 
     fn item(&self, ix: usize, item: &Item, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
-        let hermes = colors == theme::Palette::HERMES;
         match &item.body {
+            // What you sent is a block across the reading column, in every design; Native's
+            // is plain grey with its rounded corners, Hermes's a bordered panel, the colorful
+            // themes' tinted in their accent.
             ItemBody::UserMessage { text } => div()
                 .w_full()
                 .flex()
-                .justify_end()
                 .child(
                     div()
                         .id(id(format!("user-message:{}", item.id)))
+                        .w_full()
                         .min_w_0()
-                        .max_w(gpui::relative(0.85))
-                        .px(ui_text::space(10.0))
-                        .py(ui_text::space(6.0))
-                        // Native's is a plain grey bubble, as Messages draws one.
-                        .when(look.native, |bubble| {
-                            bubble
-                                .px(ui_text::space(12.0))
+                        .px(ui_text::space(12.0))
+                        .py(ui_text::space(8.0))
+                        .when(look.native, |block| {
+                            block
                                 .rounded(controls::radius(BUBBLE_RADIUS))
                                 .bg(rgb(colors.panel_active))
                         })
-                        .when(hermes, |bubble| {
-                            bubble
-                                .w_full()
-                                .max_w_full()
-                                .px(ui_text::space(12.0))
-                                .py(ui_text::space(8.0))
+                        .when(look.hermes(), |block| {
+                            block
                                 .rounded(px(4.0))
                                 .border_1()
                                 .border_color(rgb(colors.divider))
                                 .bg(rgb(colors.panel))
                         })
-                        .when(!look.native && !hermes, |bubble| {
-                            bubble
+                        .when(!look.native && !look.hermes(), |block| {
+                            block
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(rgb(look.tint(colors.cyan, 0.45)))
@@ -988,7 +988,7 @@ impl ChatView {
     }
 }
 
-/// A user message bubble's corner radius under Native.
+/// A user message block's corner radius under Native.
 const BUBBLE_RADIUS: f32 = 12.0;
 
 /// A card's surface: Native rounds it like its rows and lets the hairline be its edge.
@@ -1225,10 +1225,10 @@ impl ChatView {
 }
 
 #[cfg(test)]
-mod hermes_tests {
+mod layout_tests {
     use super::*;
     use crate::chat::model::{ItemStatus, MessagePhase, Presentation};
-    use gpui::{Focusable, TestAppContext, size};
+    use gpui::{Focusable, Pixels, TestAppContext, size};
     use gpui_kit::test::TestWindowExt;
 
     struct RestoreTypography((f32, ui_text::Face));
@@ -1258,9 +1258,10 @@ mod hermes_tests {
         cx.set_global(theme::Appearance {
             selected: choice,
             palette: match choice {
+                theme::ThemeChoice::Native => theme::Palette::native(false),
                 theme::ThemeChoice::RiWork => theme::Palette::RIWORK,
                 theme::ThemeChoice::Hermes => theme::Palette::HERMES,
-                _ => panic!("the mounted typography fixture only switches RiWork and Hermes"),
+                _ => panic!("the mounted typography fixture switches Native, RiWork and Hermes"),
             },
             terminal: None,
             ghostty: None,
@@ -1271,7 +1272,7 @@ mod hermes_tests {
     fn item(id: &str, body: ItemBody) -> Item {
         Item {
             id: id.into(),
-            turn_id: Some("hermes-fixture-turn".into()),
+            turn_id: Some("layout-fixture-turn".into()),
             status: ItemStatus::Completed,
             presentation: Presentation {
                 phase: Some(MessagePhase::Final),
@@ -1281,16 +1282,27 @@ mod hermes_tests {
         }
     }
 
+    /// The designs the layout tests draw: Native, a colorful theme and Hermes.
+    const DESIGNS: [theme::ThemeChoice; 3] = [
+        theme::ThemeChoice::Native,
+        theme::ThemeChoice::RiWork,
+        theme::ThemeChoice::Hermes,
+    ];
+
     fn install(
         view: &gpui::Entity<ChatView>,
         items: Vec<Item>,
+        design: theme::ThemeChoice,
         window: &mut Window,
         cx: &mut gpui::App,
     ) {
-        configure_theme(theme::ThemeChoice::Hermes, ui_text::scale(), cx);
+        configure_theme(design, ui_text::scale(), cx);
         ui_text::init(cx);
-        assert_eq!(ui_text::face(), ui_text::Face::Hermes);
-        assert!(!ui_text::is_native());
+        assert_eq!(
+            ui_text::face(),
+            ui_text::Face::of(cx.global::<crate::settings::Settings>())
+        );
+        assert_eq!(ui_text::is_native(), design == theme::ThemeChoice::Native);
         view.update(cx, |view, cx| {
             view.model.link = Link::Live;
             view.model.transcript.items = items;
@@ -1301,9 +1313,34 @@ mod hermes_tests {
     }
 
     #[gpui::test]
-    fn hermes_user_blocks_and_assistant_prose_fit_narrow_and_wide_transcripts(
+    fn every_design_draws_user_blocks_and_prose_across_one_reading_column(cx: &mut TestAppContext) {
+        let mut columns = Vec::new();
+        for design in DESIGNS {
+            columns.push(user_blocks_and_prose_fit_narrow_and_wide_transcripts(
+                cx, design,
+            ));
+        }
+        // The same column in every design: a row's inset and the column's width.
+        for (design, column) in DESIGNS.iter().zip(&columns).skip(1) {
+            for ((row, content), (row0, content0)) in column.iter().zip(&columns[0]) {
+                assert!((row.left() - row0.left()).abs() <= px(0.5), "{design:?}");
+                assert!(
+                    (content.left() - content0.left()).abs() <= px(0.5),
+                    "{design:?}"
+                );
+                assert!(
+                    (content.size.width - content0.size.width).abs() <= px(0.5),
+                    "{design:?}"
+                );
+            }
+        }
+    }
+
+    /// The first row's bounds and its content's, at each width.
+    fn user_blocks_and_prose_fit_narrow_and_wide_transcripts(
         cx: &mut TestAppContext,
-    ) {
+        design: theme::ThemeChoice,
+    ) -> Vec<(gpui::Bounds<Pixels>, gpui::Bounds<Pixels>)> {
         let _restore = RestoreTypography::capture();
         let (handle, view, recording) = super::super::editor_tests::mount_selection(cx);
         cx.update_window(handle.into(), |_, window, cx| {
@@ -1323,6 +1360,7 @@ mod hermes_tests {
                         },
                     ),
                 ],
+                design,
                 window,
                 cx,
             );
@@ -1330,6 +1368,7 @@ mod hermes_tests {
         .unwrap();
         cx.run_until_parked();
         let mut heights = Vec::new();
+        let mut columns = Vec::new();
         for width in [320.0, 700.0, 1440.0] {
             cx.simulate_window_resize(handle.into(), size(px(width), px(800.0)));
             cx.run_until_parked();
@@ -1341,14 +1380,32 @@ mod hermes_tests {
                     let user = window.find("user-message:user").bounds();
                     let prose = window.find("prose:user:user").bounds();
                     let agent = window.find("agent-message:answer").bounds();
+                    let what = format!("{design:?} at {width}");
                     assert!(content.left() >= row.left() && content.right() <= row.right());
-                    assert!((user.size.width - content.size.width).abs() <= px(1.0));
-                    assert!((agent.size.width - content.size.width).abs() <= px(1.0));
+                    // The column is the pane less the rows' inset, up to its widest, centered.
+                    let column = (row.size.width - ui_text::space(2.0 * ROW_INSET_X))
+                        .min(ui_text::space(COLUMN_WIDTH));
+                    assert!((content.size.width - column).abs() <= px(1.0), "{what}");
+                    assert!(
+                        ((content.left() - row.left()) - (row.right() - content.right())).abs()
+                            <= px(1.0),
+                        "{what}"
+                    );
+                    // What you sent is a block across the column, as wide as the answer.
+                    assert!(
+                        (user.size.width - content.size.width).abs() <= px(1.0),
+                        "{what}"
+                    );
+                    assert!(
+                        (agent.size.width - content.size.width).abs() <= px(1.0),
+                        "{what}"
+                    );
                     assert!(prose.left() > user.left() && prose.right() < user.right());
                     let leaf = window.find("transcript:user:user/0");
                     assert_eq!(leaf.role(), Some(gpui::Role::Label));
                     assert!(leaf.bounds().right() <= user.right());
                     assert!(leaf.label().unwrap().contains("café 🦀"));
+                    columns.push((row, content));
                     user.size.height
                 })
                 .unwrap(),
@@ -1360,10 +1417,11 @@ mod hermes_tests {
         );
         assert!(heights[1] >= heights[2]);
         assert!(recording.try_recv().is_err());
+        columns
     }
 
     #[gpui::test]
-    fn hermes_theme_switch_reflows_mounted_rows_at_constant_scale_preserving_anchor_tail_and_draft(
+    fn theme_switch_reflows_mounted_rows_at_constant_scale_preserving_anchor_tail_and_draft(
         cx: &mut TestAppContext,
     ) {
         let _restore = RestoreTypography::capture();
@@ -1477,9 +1535,10 @@ mod hermes_tests {
                 .unwrap(),
             );
         }
+        // Hermes sets its prose a size up, in its proportional face: the rows reflow.
         assert!(
             anchored[1].0 > anchored[0].0,
-            "Hermes row spacing must reflow"
+            "Hermes rows must reflow to its larger prose"
         );
         assert!(
             anchored[1].1 > anchored[0].1,
@@ -1529,8 +1588,19 @@ mod hermes_tests {
     }
 
     #[gpui::test]
-    fn hermes_selection_crosses_user_blocks_lists_and_streaming_edits_without_losing_draft(
+    fn every_design_selection_crosses_user_blocks_lists_and_streaming_edits_without_losing_draft(
         cx: &mut TestAppContext,
+    ) {
+        for design in DESIGNS {
+            selection_crosses_user_blocks_lists_and_streaming_edits_without_losing_draft(
+                cx, design,
+            );
+        }
+    }
+
+    fn selection_crosses_user_blocks_lists_and_streaming_edits_without_losing_draft(
+        cx: &mut TestAppContext,
+        design: theme::ThemeChoice,
     ) {
         let _restore = RestoreTypography::capture();
         let (handle, view, recording) = super::super::editor_tests::mount_selection(cx);
@@ -1552,6 +1622,7 @@ mod hermes_tests {
                         },
                     ),
                 ],
+                design,
                 window,
                 cx,
             );
