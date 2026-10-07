@@ -15,6 +15,7 @@ use gpui::{
     AnyElement, ClipboardEntry, ClipboardItem, Context, ExternalPaths, Image, ImageFormat,
     PathPromptOptions, Window, div, img, prelude::*, rgb,
 };
+use gpui_kit::base::TestSupportExt as _;
 use std::{
     fs,
     io::Write,
@@ -23,6 +24,9 @@ use std::{
     sync::Arc,
 };
 use uuid::Uuid;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone)]
 pub(super) enum Source {
@@ -68,6 +72,13 @@ impl Chip {
             Some(a)
         } else {
             None
+        }
+    }
+    fn image_preview(&self) -> Option<&PathBuf> {
+        match &self.attachment()?.preview {
+            // Only the validated, bounded host thumbnail, never Source or content.
+            Preview::Image { path } => Some(path),
+            Preview::Text { .. } => None,
         }
     }
 }
@@ -324,8 +335,9 @@ impl ChatView {
         let Some(source) = chip.source.clone() else {
             return;
         };
-        // Each explicit retry has a new identity, so any old completion is harmless.
-        chip.id = Uuid::new_v4().to_string();
+        // Failed is terminal for the prior one-shot staging task. An explicit
+        // retry keeps this chip/source identity; only Failed may become Pending,
+        // so repeated activation cannot queue concurrent attempts for this chip.
         chip.state = Stage::Pending;
         let next = chip.id.clone();
         self.bump_generation();
@@ -347,6 +359,7 @@ impl ChatView {
                 let key = chip.id.clone();
                 let toggle = key.clone();
                 let remove = key.clone();
+                let retry = key.clone();
                 let status = match &chip.state {
                     Stage::Pending => "Staging…".into(),
                     Stage::Ready(a) => format!("{} bytes", a.bytes),
@@ -363,6 +376,25 @@ impl ChatView {
                             .flex_wrap()
                             .items_center()
                             .gap(ui_text::space(6.))
+                            .children(chip.image_preview().map(|path| {
+                                div()
+                                    .id(format!("attachment-thumbnail-{key}"))
+                                    .role(gpui::Role::Image)
+                                    .aria_label(format!("Image preview: {}", chip.name))
+                                    .size(ui_text::space(56.))
+                                    .flex_none()
+                                    .rounded(ui_text::space(4.))
+                                    .border_1()
+                                    .border_color(rgb(look.colors.divider))
+                                    .bg(rgb(look.colors.panel_active))
+                                    .overflow_hidden()
+                                    .child(
+                                        img(path.clone())
+                                            .size_full()
+                                            .object_fit(gpui::ObjectFit::Contain),
+                                    )
+                                    .test_support()
+                            }))
                             .child(
                                 button(
                                     format!("attachment-preview-{key}"),
@@ -370,6 +402,7 @@ impl ChatView {
                                     Some(look.colors.cyan),
                                     look,
                                 )
+                                .disabled(chip.attachment().is_none())
                                 .aria_expanded(chip.open)
                                 .accessibility_label(format!("Preview {}", chip.name))
                                 .on_click(cx.listener(
@@ -385,13 +418,17 @@ impl ChatView {
                             )
                             .child(
                                 div()
+                                    .id(format!("attachment-status-{key}"))
+                                    .role(gpui::Role::Label)
+                                    .aria_label(status.clone())
                                     .text_size(ui_text::text(10.))
                                     .text_color(rgb(if matches!(chip.state, Stage::Failed(_)) {
                                         look.colors.gold
                                     } else {
                                         look.colors.muted
                                     }))
-                                    .child(status),
+                                    .child(status)
+                                    .test_support(),
                             )
                             .children(matches!(chip.state, Stage::Failed(_)).then(|| {
                                 button(
@@ -400,8 +437,11 @@ impl ChatView {
                                     None,
                                     look,
                                 )
+                                .accessibility_label(format!("Retry staging {}", chip.name))
                                 .on_click(cx.listener(
-                                    move |view, _, window, cx| view.retry_staging(&key, window, cx),
+                                    move |view, _, window, cx| {
+                                        view.retry_staging(&retry, window, cx)
+                                    },
                                 ))
                             }))
                             .child(
@@ -422,12 +462,19 @@ impl ChatView {
                             .child(excerpt.clone())
                             .into_any_element(),
                         Some(Preview::Image { path }) => div()
+                            .id(format!("attachment-expanded-{key}"))
+                            .role(gpui::Role::Image)
+                            .aria_label(format!("Expanded image preview: {}", chip.name))
+                            .max_w(ui_text::space(256.))
+                            .max_h(ui_text::space(256.))
+                            .overflow_hidden()
                             .child(
                                 img(path.clone())
                                     .max_w(ui_text::space(256.))
                                     .max_h(ui_text::space(256.))
                                     .object_fit(gpui::ObjectFit::Contain),
                             )
+                            .test_support()
                             .into_any_element(),
                         None => div()
                             .child("No preview until the file is staged.")

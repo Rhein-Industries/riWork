@@ -8,6 +8,7 @@ use gpui::{
     SharedString, Stateful, Window, canvas, deferred, div, list, point, prelude::*,
     pulsating_between, px, relative, rgb, transparent_black,
 };
+use gpui_kit::base::TestSupportExt as _;
 
 use crate::{
     chat::model::{ApprovalKind, ApprovalMode, ChatState, Decision, Provider, Question},
@@ -1326,6 +1327,17 @@ impl ChatView {
             .border_t_1()
             .border_color(rgb(colors.divider))
             .bg(rgb(colors.panel))
+            .children((!self.attachments.is_empty()).then(|| {
+                div()
+                    .id("chat-attachment-queue")
+                    .role(gpui::Role::Group)
+                    .aria_label("Draft attachments")
+                    .max_h(ui_text::space(280.))
+                    .flex_none()
+                    .overflow_y_scroll()
+                    .child(self.attachment_chips(look, cx))
+                    .test_support()
+            }))
             .child(
                 // The buttons keep to the bottom, each centered on the box's last line (see
                 // `widgets::beside_field`), so they share one center line with the box.
@@ -1403,10 +1415,9 @@ impl ChatView {
             )
             .child(
                 div()
-                    .id("chat-attachment-queue")
+                    .id("chat-submission-reviews")
                     .max_h(ui_text::space(280.))
                     .overflow_y_scroll()
-                    .child(self.attachment_chips(look, cx))
                     .child(self.submission_cards(look, cx)),
             )
             .child(
