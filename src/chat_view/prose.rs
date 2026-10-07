@@ -9,8 +9,9 @@ use gpui::{
     AnyElement, Context, ElementId, FontStyle, FontWeight, HighlightStyle, SharedString,
     StrikethroughStyle, UnderlineStyle, div, prelude::*, px, rgb,
 };
+use gpui_kit::base::TestSupportExt as _;
 
-use crate::{controls, ui_text};
+use crate::{controls, theme::Palette, ui_text};
 
 use super::{
     ChatView,
@@ -90,22 +91,32 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
+            .id(ElementId::Name(SharedString::from(format!("prose:{key}"))))
             .w_full()
             .min_w_0()
             .flex()
             .flex_col()
             .gap(ui_text::space(8.0))
+            .when(look.colors == Palette::HERMES, |prose| {
+                prose
+                    .font_family(".SystemUIFont")
+                    .text_size(ui_text::text(14.0))
+                    .line_height(gpui::relative(1.5))
+                    .gap(ui_text::space(12.0))
+            })
             .children(
                 blocks
                     .iter()
                     .enumerate()
                     .map(|(at, block)| self.block(block, &format!("{key}/{at}"), look, cx)),
             )
+            .test_support()
             .into_any_element()
     }
 
     fn block(&self, block: &Block, key: &str, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
+        let hermes = colors == Palette::HERMES;
         match block {
             Block::Paragraph(spans) => self.text(spans, key, look, None, cx),
             Block::Heading { level, spans } => {
@@ -124,9 +135,9 @@ impl ChatView {
                 div()
                     .w_full()
                     .pt(ui_text::space(4.0))
-                    .text_size(ui_text::text(12.0 * size))
+                    .text_size(ui_text::text((if hermes { 14.0 } else { 12.0 }) * size))
                     .font_weight(weight)
-                    .text_color(rgb(if *level <= 2 {
+                    .text_color(rgb(if *level <= 2 && !hermes {
                         colors.cyan
                     } else {
                         colors.text
@@ -141,7 +152,8 @@ impl ChatView {
                 .w_full()
                 .flex()
                 .flex_col()
-                .gap(ui_text::space(3.0))
+                .min_w_0()
+                .gap(ui_text::space(if hermes { 8.0 } else { 3.0 }))
                 .children(items.iter().enumerate().map(|(at, item)| {
                     let marker = match start {
                         Some(first) => format!("{}.", first + at as u64),
@@ -151,7 +163,7 @@ impl ChatView {
                         .w_full()
                         .flex()
                         .items_start()
-                        .gap(ui_text::space(6.0))
+                        .gap(ui_text::space(if hermes { 10.0 } else { 6.0 }))
                         .child(
                             div()
                                 .flex_none()
@@ -167,7 +179,7 @@ impl ChatView {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .gap(ui_text::space(4.0))
+                                .gap(ui_text::space(if hermes { 8.0 } else { 4.0 }))
                                 .children(item.iter().enumerate().map(|(inner, block)| {
                                     self.block(block, &format!("{key}/{at}/{inner}"), look, cx)
                                 })),
@@ -182,7 +194,7 @@ impl ChatView {
                 .text_color(rgb(colors.muted))
                 .flex()
                 .flex_col()
-                .gap(ui_text::space(6.0))
+                .gap(ui_text::space(if hermes { 12.0 } else { 6.0 }))
                 .children(
                     inner
                         .iter()
@@ -225,7 +237,11 @@ impl ChatView {
             })
             .border_1()
             .border_color(rgb(colors.divider))
-            .bg(rgb(colors.panel_active))
+            .bg(rgb(if colors == Palette::HERMES {
+                colors.panel
+            } else {
+                colors.panel_active
+            }))
             .overflow_hidden()
             .child(
                 div()

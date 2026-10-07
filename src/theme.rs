@@ -91,14 +91,14 @@ impl Palette {
     /// Hermes keeps the canvas distinct from its navy controls and user messages.
     /// Primary actions use warm gold; metadata stays subdued and readable.
     pub const HERMES: Self = Self {
-        bg: 0x102661,
-        panel: 0x162449,
-        panel_active: 0x203361,
+        bg: 0x162564,
+        panel: 0x192248,
+        panel_active: 0x243364,
         divider: 0x2b4070,
         cyan: 0xf5dbb8,
         magenta: 0xb7bfd7,
         gold: 0xf5dbb8,
-        text: 0xead8c2,
+        text: 0xecdcc7,
         muted: 0xa1a7bb,
         focus: 0xf5dbb8,
         working: 0xf5dbb8,
@@ -471,7 +471,7 @@ fn preset(choice: ThemeChoice) -> TerminalTheme {
             Palette::HERMES.bg,
             Palette::HERMES.text,
             [
-                0x162449, 0xf29b9f, 0x9bc9ad, 0xf5dbb8, 0x9ebcf5, 0xc4b4df, 0xa8c8da, 0xead8c2,
+                0x192248, 0xf29b9f, 0x9bc9ad, 0xf5dbb8, 0x9ebcf5, 0xc4b4df, 0xa8c8da, 0xecdcc7,
                 0xa1a7bb, 0xffb7b8, 0xb4dfc1, 0xffe6c9, 0xb7ceff, 0xdfcaf2, 0xc2dfed, 0xfff1df,
             ],
         ),
@@ -1285,6 +1285,65 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hermes_settings_round_trip_preserves_every_existing_theme_name() {
+        for (name, choice) in [
+            ("ghostty", ThemeChoice::Ghostty),
+            ("native", ThemeChoice::Native),
+            ("ri_work", ThemeChoice::RiWork),
+            ("catppuccin", ThemeChoice::Catppuccin),
+            ("tokyo_night", ThemeChoice::TokyoNight),
+            ("gruvbox_light", ThemeChoice::GruvboxLight),
+            ("hermes", ThemeChoice::Hermes),
+        ] {
+            let mut settings: Settings = serde_json::from_value(serde_json::json!({
+                "theme": name,
+                "chat_display_modes": { "saved-chat": "verbose" }
+            }))
+            .unwrap();
+            assert_eq!(settings.theme, choice);
+            settings.theme = ThemeChoice::Hermes;
+            let saved = serde_json::to_value(&settings).unwrap();
+            assert_eq!(saved["theme"], "hermes");
+            assert_eq!(saved["chat_display_modes"]["saved-chat"], "verbose");
+            settings.theme = choice;
+            assert_eq!(serde_json::to_value(settings).unwrap()["theme"], name);
+        }
+        assert_eq!(ThemeChoice::default(), ThemeChoice::Ghostty);
+    }
+
+    #[test]
+    fn hermes_prose_metadata_and_primary_controls_read_on_every_surface() {
+        for system_dark in [false, true] {
+            let appearance = Appearance::resolve(ThemeChoice::Hermes, system_dark);
+            let palette = appearance.palette;
+            assert!(appearance.published(false).dark);
+            assert!(!appearance.is_stale_for(!system_dark));
+            for foreground in [
+                palette.text,
+                palette.muted,
+                palette.cyan,
+                palette.magenta,
+                palette.gold,
+            ] {
+                for background in [palette.bg, palette.panel, palette.panel_active] {
+                    assert!(
+                        contrast(foreground, background) >= 4.5,
+                        "{foreground:06x} on {background:06x}"
+                    );
+                }
+            }
+            // Filled primary controls put canvas ink on gold, including send.
+            assert!(contrast(palette.bg, palette.gold) >= 7.0);
+            let terminal = appearance.terminal_override(false).unwrap();
+            assert_eq!(color_u32(terminal.background), palette.bg);
+            assert!(contrast(color_u32(terminal.foreground), palette.bg) >= 7.0);
+            let diff = DiffColors::from_terminal(&terminal, palette.panel_active);
+            assert!(contrast(diff.added, palette.panel_active) >= 4.5);
+            assert!(contrast(diff.removed, palette.panel_active) >= 4.5);
+        }
+    }
 
     #[test]
     fn presets_share_background_and_readable_colors_with_terminals() {

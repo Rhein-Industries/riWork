@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use gpui::{AnyElement, Context, ElementId, SharedString, Window, div, prelude::*, px, rgb};
+use gpui_kit::base::TestSupportExt as _;
 
 use crate::{
     chat::model::{ChangeKind, FileChange, Item, ItemBody, NoticeLevel, Step, StepStatus},
@@ -37,6 +38,7 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = Look::of(cx);
+        let hermes = look.colors == theme::Palette::HERMES;
         let content = match self.visible.get(ix) {
             Some(row @ (super::display::Row::Item(at) | super::display::Row::Details(at))) => {
                 let item = &self.model.transcript.items[*at];
@@ -203,21 +205,28 @@ impl ChatView {
             None => self.footer(look),
         };
         div()
+            .id(id(format!("transcript-row:{ix}")))
             .w_full()
-            .px(ui_text::space(14.0))
-            .py(ui_text::space(4.0))
+            .min_w_0()
+            .px(ui_text::space(if hermes { 20.0 } else { 14.0 }))
+            .py(ui_text::space(if hermes { 8.0 } else { 4.0 }))
             .child(
                 div()
+                    .id(id(format!("transcript-content:{ix}")))
                     .w_full()
-                    .max_w(ui_text::space(920.0))
+                    .min_w_0()
+                    .max_w(ui_text::space(if hermes { 1040.0 } else { 920.0 }))
                     .mx_auto()
-                    .child(content),
+                    .child(content)
+                    .test_support(),
             )
+            .test_support()
             .into_any_element()
     }
 
     fn item(&self, ix: usize, item: &Item, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
+        let hermes = colors == theme::Palette::HERMES;
         match &item.body {
             ItemBody::UserMessage { text } => div()
                 .w_full()
@@ -225,6 +234,8 @@ impl ChatView {
                 .justify_end()
                 .child(
                     div()
+                        .id(id(format!("user-message:{}", item.id)))
+                        .min_w_0()
                         .max_w(gpui::relative(0.85))
                         .px(ui_text::space(10.0))
                         .py(ui_text::space(6.0))
@@ -235,7 +246,18 @@ impl ChatView {
                                 .rounded(controls::radius(BUBBLE_RADIUS))
                                 .bg(rgb(colors.panel_active))
                         })
-                        .when(!look.native, |bubble| {
+                        .when(hermes, |bubble| {
+                            bubble
+                                .w_full()
+                                .max_w_full()
+                                .px(ui_text::space(12.0))
+                                .py(ui_text::space(8.0))
+                                .rounded(px(4.0))
+                                .border_1()
+                                .border_color(rgb(colors.divider))
+                                .bg(rgb(colors.panel))
+                        })
+                        .when(!look.native && !hermes, |bubble| {
                             bubble
                                 .rounded(px(6.0))
                                 .border_1()
@@ -247,7 +269,8 @@ impl ChatView {
                             &format!("user:{}", item.id),
                             look,
                             cx,
-                        )),
+                        ))
+                        .test_support(),
                 )
                 .into_any_element(),
             ItemBody::AgentMessage { text } => self.agent_message(ix, item, text, look, cx),
@@ -380,9 +403,11 @@ impl ChatView {
         let message = item.id.clone();
         let group = SharedString::from(format!("agent-{ix}"));
         div()
+            .id(id(format!("agent-message:{}", item.id)))
             .group(group.clone())
             .relative()
             .w_full()
+            .min_w_0()
             .child(self.prose(&blocks, &item.id, look, cx))
             .child(
                 div()
@@ -399,6 +424,7 @@ impl ChatView {
                             })),
                     ),
             )
+            .test_support()
             .into_any_element()
     }
 
@@ -1195,5 +1221,177 @@ impl ChatView {
                 ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod hermes_tests {
+    use super::*;
+    use crate::chat::model::{ItemStatus, MessagePhase, Presentation};
+    use gpui::{TestAppContext, size};
+    use gpui_kit::test::TestWindowExt;
+
+    fn item(id: &str, body: ItemBody) -> Item {
+        Item {
+            id: id.into(),
+            turn_id: Some("hermes-fixture-turn".into()),
+            status: ItemStatus::Completed,
+            presentation: Presentation {
+                phase: Some(MessagePhase::Final),
+                ..Presentation::default()
+            },
+            body,
+        }
+    }
+
+    fn install(
+        view: &gpui::Entity<ChatView>,
+        items: Vec<Item>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        cx.set_global(theme::Appearance::resolve(
+            theme::ThemeChoice::Hermes,
+            false,
+        ));
+        view.update(cx, |view, cx| {
+            view.model.link = Link::Live;
+            view.model.transcript.items = items;
+            view.refresh_projection(cx);
+            view.list.remeasure();
+            cx.notify();
+        });
+        window.render_frame(cx);
+    }
+
+    #[gpui::test]
+    fn hermes_user_blocks_and_assistant_prose_fit_narrow_and_wide_transcripts(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, view, recording) = super::super::editor_tests::mount_selection(cx);
+        cx.update_window(handle.into(), |_, window, cx| {
+            install(
+                &view,
+                vec![
+                    item(
+                        "user",
+                        ItemBody::UserMessage {
+                            text: "A long user message café 🦀 with words that wrap naturally and stay readable in a narrow pane. ".repeat(2),
+                        },
+                    ),
+                    item(
+                        "answer",
+                        ItemBody::AgentMessage {
+                            text: "Readable assistant prose.\n\n- First item café\n- Second item 🦀".into(),
+                        },
+                    ),
+                ],
+                window,
+                cx,
+            );
+        })
+        .unwrap();
+        let mut heights = Vec::new();
+        for width in [320.0, 700.0, 1440.0] {
+            cx.simulate_window_resize(handle.into(), size(px(width), px(800.0)));
+            cx.run_until_parked();
+            heights.push(
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    let row = window.find("transcript-row:0").bounds();
+                    let content = window.find("transcript-content:0").bounds();
+                    let user = window.find("user-message:user").bounds();
+                    let prose = window.find("prose:user:user").bounds();
+                    let agent = window.find("agent-message:answer").bounds();
+                    assert!(content.left() >= row.left() && content.right() <= row.right());
+                    assert!((user.size.width - content.size.width).abs() <= px(1.0));
+                    assert!((agent.size.width - content.size.width).abs() <= px(1.0));
+                    assert!(prose.left() > user.left() && prose.right() < user.right());
+                    let leaf = window.find("transcript:user:user/0");
+                    assert_eq!(leaf.role(), Some(gpui::Role::Label));
+                    assert!(leaf.bounds().right() <= user.right());
+                    assert!(leaf.label().unwrap().contains("café 🦀"));
+                    user.size.height
+                })
+                .unwrap(),
+            );
+        }
+        assert!(
+            heights[0] > heights[1],
+            "narrow prose must wrap rather than overflow"
+        );
+        assert!(heights[1] >= heights[2]);
+        assert!(recording.try_recv().is_err());
+    }
+
+    #[gpui::test]
+    fn hermes_selection_crosses_user_blocks_lists_and_streaming_edits_without_losing_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, view, recording) = super::super::editor_tests::mount_selection(cx);
+        cx.update_window(handle.into(), |_, window, cx| {
+            install(
+                &view,
+                vec![
+                    item(
+                        "user",
+                        ItemBody::UserMessage {
+                            text: "user café 🦀".into(),
+                        },
+                    ),
+                    item(
+                        "answer",
+                        ItemBody::AgentMessage {
+                            text: "**First answer**\n\n- café 🦀\n- second item".into(),
+                        },
+                    ),
+                ],
+                window,
+                cx,
+            );
+            window.click("chat-composer", cx);
+            window.input("retained draft café", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let selection = &view.read(cx).transcript_selection;
+            let from = selection.glyph_span_points("user:user/0").0;
+            let to = selection.glyph_span_points("answer/1/1/0").1;
+            window.drag(from, to, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("cmd-c", cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "user café 🦀\nFirst answer\ncafé 🦀\nsecond item"
+            );
+            assert_eq!(view.read(cx).composer_text(cx), "retained draft café");
+            // Equal byte lengths still invalidate parsed Markdown and current-source copy.
+            view.update(cx, |view, cx| {
+                view.model.transcript.items[1].body = ItemBody::AgentMessage {
+                    text: "**Fresh answer**\n\n- café 🦀\n- second item".into(),
+                };
+                view.refresh_projection(cx);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let (from, to) = view
+                .read(cx)
+                .transcript_selection
+                .glyph_span_points("answer/0");
+            window.drag(from, to, cx);
+            window.press("cmd-c", cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "Fresh answer"
+            );
+            assert_eq!(view.read(cx).composer_text(cx), "retained draft café");
+        })
+        .unwrap();
+        assert!(recording.try_recv().is_err());
     }
 }
