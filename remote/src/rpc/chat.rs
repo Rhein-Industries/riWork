@@ -1,5 +1,5 @@
 //! Chats on the phone ("Chat extension" in `docs/remote-protocol.md`): `chats.list`,
-//! `chat.create`, `chat.events`, `chat.command` and `chat.stop`.
+//! `chat.create`, `chat.events`, `chat.command`, `chat.stop` and `chat.models`.
 //!
 //! Each is one call of the installed CLI (`riwork chat ...`), which talks to the chat host.
 //! The connector validates the params before any CLI runs, builds the argument vector from
@@ -329,6 +329,56 @@ pub(super) fn events_spec(params: &Value) -> std::result::Result<EventsSpec, Fau
         bounded: flag(object, "bounded")?.unwrap_or(false),
     })
 }
+/// A validated `chat.models`: the provider whose models are wanted, and the project whose
+/// Codex account the list is for.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ModelsSpec {
+    provider: &'static str,
+    project: Option<String>,
+}
+pub(super) fn models_spec(params: &Value) -> std::result::Result<ModelsSpec, Fault> {
+    let object = fields(params, &["provider", "project_id"])?;
+    let provider = match required(object, "provider")? {
+        "codex" => "codex",
+        "claude" => "claude",
+        _ => return Err(invalid("provider must be codex or claude")),
+    };
+    Ok(ModelsSpec {
+        provider,
+        project: uuid_field(object, "project_id")?,
+    })
+}
+/// The `chat.models` result for what the CLI printed, or `None` if it is not an answer for
+/// `provider`: the models (each with an `id` and a `name`), the other ids chats were set to,
+/// the Codex account's label and why the provider cannot be offered, and nothing else.
+fn models_result(provider: &str, cli: &Value) -> Option<Value> {
+    let models = cli.get("models")?.as_array()?;
+    let model_ok = |model: &Value| {
+        model.is_object()
+            && model.get("id").is_some_and(Value::is_string)
+            && model.get("name").is_some_and(Value::is_string)
+    };
+    let configured = cli.get("configured")?.as_array()?;
+    let nullable_text = |name: &str| match cli.get(name) {
+        None | Some(Value::Null) => Some(Value::Null),
+        Some(Value::String(text)) => Some(json!(text)),
+        Some(_) => None,
+    };
+    (cli.get("provider").and_then(Value::as_str) == Some(provider)
+        && models.iter().all(model_ok)
+        && configured.iter().all(Value::is_string))
+    .then(|| {
+        Some(json!({
+            "provider": provider,
+            "models": models,
+            "configured": configured,
+            "account_label": nullable_text("account_label")?,
+            "error": nullable_text("error")?,
+        }))
+    })
+    .flatten()
+}
+
 /// How long the CLI may take for a `chat.events` that waits up to `wait_ms`: the wait plus
 /// the margin of any waiting call, and never less than any other call.
 fn events_limit(wait_ms: i64) -> Duration {
@@ -378,9 +428,10 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
         "approve" => &["command", "request_id", "decision"],
         "answer" => &["command", "request_id", "answers"],
         "configure" => &["command", "model", "effort", "approval_mode", "fast"],
+        "switch" => &["command", "provider", "model", "effort", "fast"],
         _ => {
             return Err(invalid(
-                "command.command must be send, interrupt, approve, answer, configure, compact or stop",
+                "command.command must be send, interrupt, approve, answer, configure, compact, stop or switch",
             ));
         }
     };
@@ -434,6 +485,33 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
                 ));
             }
             Value::Object(changes)
+        }
+        "switch" => {
+            let provider = match required(object, "provider")? {
+                "codex" => "codex",
+                "claude" => "claude",
+                _ => return Err(invalid("provider must be codex or claude")),
+            };
+            let mut switch = Map::from_iter([
+                ("command".to_owned(), json!("switch")),
+                ("provider".to_owned(), json!(provider)),
+            ]);
+            for (name, value) in [
+                (
+                    "model",
+                    label("model", text(object, "model")?, MODEL_MAX_CHARS)?.map(Value::from),
+                ),
+                (
+                    "effort",
+                    label("effort", text(object, "effort")?, EFFORT_MAX_CHARS)?.map(Value::from),
+                ),
+                ("fast", flag(object, "fast")?.map(Value::from)),
+            ] {
+                if let Some(value) = value {
+                    switch.insert(name.to_owned(), value);
+                }
+            }
+            Value::Object(switch)
         }
         other => json!({ "command": other }),
     })
@@ -874,6 +952,8 @@ impl Rpc {
                     for (flag, name) in [
                         (&self.chat, "chat"),
                         (&self.orchestrator_create, "orchestrator_create"),
+                        (&self.chat_provider_switch, "chat_provider_switch"),
+                        (&self.chat_models, "chat_models"),
                     ] {
                         if reply.get(name) == Some(&Value::Bool(true)) {
                             flag.store(true, Ordering::Relaxed);
@@ -892,6 +972,20 @@ impl Rpc {
     /// the whole handshake ten).
     pub async fn chat_supported(&self) -> bool {
         self.chat_known(Duration::from_secs(3))
+            .await
+            .unwrap_or(false)
+    }
+    /// What `ready` announces as `features.chat_provider_switch`: a chat takes the `switch`
+    /// command. Short, like `chat_supported`, whose question it shares.
+    pub async fn chat_provider_switch_supported(&self) -> bool {
+        self.capability_known(&self.chat_provider_switch, Duration::from_secs(3))
+            .await
+            .unwrap_or(false)
+    }
+    /// What `ready` announces as `features.chat_models`: `chat.models` lists a provider's
+    /// saved models.
+    pub async fn chat_models_supported(&self) -> bool {
+        self.capability_known(&self.chat_models, Duration::from_secs(3))
             .await
             .unwrap_or(false)
     }
@@ -963,6 +1057,43 @@ impl Rpc {
             chats.push(chat);
         }
         Ok(json!({ "chats": chats }))
+    }
+
+    /// The models a chat of a provider can be set to, as `riwork chat models` reads them
+    /// from saved chats: for a chat that does not run that provider yet. Starts no host and
+    /// no agent.
+    pub(super) async fn chat_models(
+        &self,
+        spec: ModelsSpec,
+        reply_limit: usize,
+    ) -> std::result::Result<Value, Fault> {
+        self.require_chat().await?;
+        if !self
+            .capability_known(&self.chat_models, CLI_TIMEOUT)
+            .await?
+        {
+            return Err(Fault::new(
+                "cli_error",
+                "the installed riwork CLI cannot list saved chat models; update RiWork",
+            ));
+        }
+        let mut args: Vec<String> = vec![
+            "chat".into(),
+            "models".into(),
+            "--provider".into(),
+            spec.provider.into(),
+        ];
+        if let Some(project) = &spec.project {
+            self.target_exists(&CreateTarget::Project(project.clone()), chat_fault)
+                .await?;
+            args.extend(["--project".into(), project.clone()]);
+        }
+        let listed = self
+            .read_capped(args, CLI_TIMEOUT, reply_limit)
+            .await
+            .map_err(chat_fault)?;
+        models_result(spec.provider, &listed)
+            .ok_or_else(|| cli_fault("CLI returned models that do not fit the request"))
     }
 
     /// Start a chat in a project or worktree that exists on the desktop, as `riwork chat
@@ -1177,6 +1308,17 @@ impl Rpc {
         spec: CommandSpec,
     ) -> std::result::Result<Value, Fault> {
         self.require_chat().await?;
+        // An older CLI would refuse it as a command it does not know; this says why.
+        if spec.command.get("command") == Some(&json!("switch"))
+            && !self
+                .capability_known(&self.chat_provider_switch, CLI_TIMEOUT)
+                .await?
+        {
+            return Err(Fault::new(
+                "cli_error",
+                "the installed riwork CLI cannot move a chat to another provider; update RiWork",
+            ));
+        }
         self.still_authorized(device)?;
         let command = serde_json::to_string(&spec.command).map_err(cli_fault)?;
         let args = vec![

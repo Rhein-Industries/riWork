@@ -57,7 +57,7 @@ echo "$*" >> "$D/calls.log"
 case "$1 $2" in
 'capabilities --json')
   if [ -e "$D/capabilities.unknown" ]; then echo "riwork: Unknown invocation 'capabilities'" >&2; exit 2; fi
-  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true}'; fi;;
+  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"chat_provider_switch":true,"chat_models":true}'; fi;;
 'project show') printf '{"id":"%s"}' "$3";;
 'chat list') echo '[]';;
 'chat events')
@@ -295,12 +295,30 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
         phone.ready["features"]["upload"],
         riwork_remote::upload::features()
     );
+    // A chat can go on with the other provider, and the phone can ask for its models.
+    assert_eq!(phone.ready["features"]["chat_provider_switch"], true);
+    assert_eq!(phone.ready["features"]["chat_models"], true);
     assert_eq!(rig.calls("capabilities", "--json"), 1);
     // Believed once it said yes: a second phone does not ask again.
     drop(phone);
     let again = Phone::connect(&rig.pairing).await;
     assert_eq!(again.ready["features"]["chat"], true);
+    assert_eq!(again.ready["features"]["chat_provider_switch"], true);
     assert_eq!(rig.calls("capabilities", "--json"), 1);
+
+    // A CLI with chats from before the switch: chats, and neither of the two.
+    let rig = Rig::with(|dir| {
+        std::fs::write(dir.join("capabilities.out"), "{\"v\":1,\"chat\":true}").unwrap()
+    })
+    .await;
+    let phone = Phone::connect(&rig.pairing).await;
+    let features = phone.ready["features"].as_object().unwrap();
+    assert_eq!(features["chat"], true);
+    assert!(
+        !features.contains_key("chat_provider_switch"),
+        "{features:?}"
+    );
+    assert!(!features.contains_key("chat_models"), "{features:?}");
 
     // A CLI that says no, one that does not know the question, and one that answers it
     // oddly: no `chat` in features at all, and the rest as it was.
@@ -319,6 +337,10 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
         let mut phone = Phone::connect(&rig.pairing).await;
         let features = phone.ready["features"].as_object().unwrap();
         assert!(!features.contains_key("chat"), "{answer:?}: {features:?}");
+        assert!(
+            !features.contains_key("chat_provider_switch"),
+            "{answer:?}: {features:?}"
+        );
         assert!(features.contains_key("deflate"), "{answer:?}");
         // And the methods say why.
         let refused = phone.call("chats.list", json!({})).await;

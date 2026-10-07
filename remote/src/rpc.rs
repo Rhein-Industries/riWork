@@ -1082,6 +1082,10 @@ pub struct Rpc {
     chat: AtomicBool,
     /// Whether the CLI said it can create orchestrators (see `orchestrator_create_supported`).
     orchestrator_create: AtomicBool,
+    /// Whether the CLI said a chat can switch provider (see `chat_provider_switch_supported`).
+    chat_provider_switch: AtomicBool,
+    /// Whether the CLI said it has `chat models` (see `chat_models_supported`).
+    chat_models: AtomicBool,
     /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
     /// once run it once.
     asking_chat: tokio::sync::Mutex<()>,
@@ -1100,6 +1104,8 @@ impl Rpc {
             attach_exec: AtomicBool::new(false),
             chat: AtomicBool::new(false),
             orchestrator_create: AtomicBool::new(false),
+            chat_provider_switch: AtomicBool::new(false),
+            chat_models: AtomicBool::new(false),
             asking_chat: tokio::sync::Mutex::new(()),
             shell_paste: AtomicBool::new(false),
             uploads: Arc::new(crate::upload::Uploads::new(storage.dir.clone())),
@@ -1816,6 +1822,10 @@ impl Rpc {
             "chat.stop" => {
                 let spec = chat::stop_spec(&r.params)?;
                 self.chat_stop(device, spec).await
+            }
+            "chat.models" => {
+                let spec = chat::models_spec(&r.params)?;
+                self.chat_models(spec, reply_limit).await
             }
             // Files from the phone; see `upload`.
             "upload.begin" => {
