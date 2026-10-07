@@ -42,6 +42,7 @@ mod schedule_chat;
 mod schedule_panel;
 mod schedule_service;
 mod schedules;
+mod session_catalog;
 mod session_input;
 mod session_keys;
 mod session_reload;
@@ -140,6 +141,7 @@ actions!(
         OpenProjectSettings,
         OpenSchedules,
         OpenFiles,
+        OpenSessions,
         OpenPreview,
         GatherTabs,
         ApplyDefaultLayout,
@@ -163,6 +165,7 @@ enum PaneMenuAction {
     /// Pass the selected agent tab's conversation to a new shell or chat.
     Handoff,
     View(PanelKind),
+    Sessions(session_catalog::Filter),
     Split(Axis),
     Close,
     Main,
@@ -1385,6 +1388,9 @@ struct Workspace {
     metrics: BTreeMap<String, SessionMetrics>,
     session_refresh_pending: bool,
     session_refresh_generation: u64,
+    native_sessions: session_catalog::Catalog,
+    native_sessions_generation: u64,
+    session_filter: session_catalog::Filter,
     agent_activity: BTreeMap<String, AgentState>,
     activity_tracker: Option<ActivityTracker>,
     project_last_edits: BTreeMap<String, u64>,
@@ -2002,6 +2008,9 @@ impl Workspace {
             orchestrators_starting: HashSet::new(),
             shell_cwds: BTreeMap::new(),
             metrics: BTreeMap::new(),
+            native_sessions: session_catalog::Catalog::default(),
+            native_sessions_generation: 0,
+            session_filter: session_catalog::Filter::default(),
             session_refresh_pending: false,
             session_refresh_generation: 0,
             agent_activity: BTreeMap::new(),
@@ -2611,7 +2620,7 @@ impl Workspace {
             PanelKind::Files => "FILES",
             PanelKind::Preview => "PREVIEW",
             PanelKind::Tasks => "TASKS",
-            PanelKind::Shells => "SHELLS",
+            PanelKind::Shells => "SESSIONS",
             PanelKind::Usage => "USAGE",
             PanelKind::Settings => "SETTINGS",
             PanelKind::Schedules => "AUTOMATIONS",
@@ -2726,6 +2735,9 @@ impl Workspace {
             self.focus_active(window, cx);
             self.save_layout();
             cx.notify();
+        }
+        if panel == PanelKind::Shells {
+            self.refresh_native_sessions(true, cx);
         }
         if panel == PanelKind::Usage {
             // Show Grok's figures now, not on the next tick.
@@ -2930,7 +2942,39 @@ impl Workspace {
             PanelAction::OpenProject(id) => self.open_project_window(&id, cx),
             PanelAction::Worktree(id) => self.select_worktree(&id, window, cx),
             PanelAction::Task(id) => self.select_task(&id, window, cx),
-            PanelAction::Shell(id) => self.show_shell(&id, window, cx),
+            PanelAction::Shell {
+                project,
+                generation,
+                id,
+            } => {
+                if !self.is_remote()
+                    && project == self.project_id
+                    && generation == self.native_sessions_generation
+                    && self.shells.iter().any(|shell| {
+                        shell.id == id && shell.project_id.as_deref() == Some(project.as_str())
+                    })
+                {
+                    self.show_shell(&id, window, cx);
+                }
+            }
+            PanelAction::Chat {
+                project,
+                generation,
+                id,
+            } => {
+                if !self.is_remote()
+                    && project == self.project_id
+                    && generation == self.native_sessions_generation
+                    && let Some(chat) = self.native_sessions.selected(&project, generation, &id)
+                {
+                    self.show_existing_chat(chat, window, cx);
+                }
+            }
+            PanelAction::SessionFilter(filter) => {
+                self.session_filter = filter;
+                self.set_search(String::new(), None, window, cx);
+            }
+            PanelAction::RefreshSessions => self.refresh_native_sessions(true, cx),
             PanelAction::Search => self.focus_search_input(window, cx),
             // The panel keeps its own field's editor focused (see `panels::panel_search`).
             PanelAction::ClearSearch => self.set_search(String::new(), None, window, cx),
@@ -3724,6 +3768,10 @@ impl Workspace {
 
     fn load_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.session_refresh_generation = self.session_refresh_generation.wrapping_add(1);
+        self.native_sessions_generation = self.native_sessions_generation.wrapping_add(1);
+        self.native_sessions
+            .bind(&self.project_id, self.native_sessions_generation);
+        self.session_filter = session_catalog::Filter::All;
         // The tabs below are rebuilt from the layout, which claims what is kept again.
         self.release_tab_claims();
         // A new project's restored tabs can reuse numeric IDs. Retire old owners
@@ -5257,6 +5305,7 @@ impl Workspace {
             changed = true;
         }
         self.refresh_sessions(window, cx);
+        self.refresh_native_sessions(false, cx);
         request_codex_usage(false, cx);
         changed |= self.remember_active_worktree(window, cx);
         if files_visible {
@@ -5275,6 +5324,44 @@ impl Workspace {
         if changed || heartbeat || panels_open {
             cx.notify();
         }
+    }
+
+    /// Metadata reads run independently of terminal sampling, once per workspace at a time.
+    fn refresh_native_sessions(&mut self, force: bool, cx: &mut Context<Self>) {
+        if self.is_remote() {
+            return;
+        }
+        let Some(ticket) = self.native_sessions.begin(
+            &self.project_id,
+            self.native_sessions_generation,
+            Instant::now(),
+            force,
+        ) else {
+            return;
+        };
+        cx.notify();
+        let home = self.sessions.state_home().to_path_buf();
+        let project = ticket.project.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { session_catalog::read(&home, &project) });
+        cx.spawn(async move |this, cx| {
+            let snapshot = work.await;
+            let _ = this.update(cx, |workspace, cx| {
+                // Binding again also protects a remote/project switch while this read ran.
+                workspace
+                    .native_sessions
+                    .bind(&workspace.project_id, workspace.native_sessions_generation);
+                let accepted = workspace
+                    .native_sessions
+                    .finish(&ticket, snapshot, Instant::now());
+                if !accepted {
+                    workspace.refresh_native_sessions(false, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn refresh_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6850,6 +6937,30 @@ impl Workspace {
         self.open_panel(PanelKind::ProjectSettings, self.active_pane, window, cx);
     }
 
+    fn open_sessions_action(
+        &mut self,
+        _: &OpenSessions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal_open() {
+            return;
+        }
+        self.open_sessions(session_catalog::Filter::All, window, cx);
+    }
+
+    fn open_sessions(
+        &mut self,
+        filter: session_catalog::Filter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_search(String::new(), None, window, cx);
+        self.open_panel(PanelKind::Shells, self.active_pane, window, cx);
+        self.session_filter = filter;
+        cx.notify();
+    }
+
     fn open_files_action(&mut self, _: &OpenFiles, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_open() {
             return;
@@ -7358,11 +7469,26 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Show the tab of an orchestrator that runs as a chat: the tab already open on its chat,
-    /// brought up by the main-pane rules, or a new one where new tabs open.
+    /// Navigation opens history by UUID and only subscribes to a running host.
+    fn show_existing_chat(&mut self, chat: ChatInfo, window: &mut Window, cx: &mut Context<Self>) {
+        let config = HostConfig::for_running_home(self.sessions.state_home().to_path_buf());
+        self.show_chat_with_config(chat, config, window, cx);
+    }
+
+    /// Show an orchestrator through the same existing-tab routing used by Sessions.
     fn show_orchestrator_chat(
         &mut self,
         chat: ChatInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_chat_with_config(chat, self.chat_config(), window, cx);
+    }
+
+    fn show_chat_with_config(
+        &mut self,
+        chat: ChatInfo,
+        config: HostConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -7379,10 +7505,14 @@ impl Workspace {
                 self.show_open_tab(pane, tab, into, window, cx);
             }
             ChatOrchestratorTab::Open { pane } => {
-                let config = self.chat_config();
                 let chat_id = chat.id.clone();
                 let view = cx.new(|cx| ChatView::open(chat_id.clone(), config, window, cx));
                 let mut tab = self.chat_tab(chat_id, view, window, cx);
+                tab.title = format!(
+                    "{} · {}",
+                    session_catalog::provider_label(chat.provider),
+                    chat.title
+                );
                 if let Some(scope) = &chat.orchestrator {
                     tab.title = orchestrators::tab_title(scope).to_owned();
                 }
@@ -8633,6 +8763,11 @@ impl Workspace {
                     metrics: &self.metrics,
                     activity: &self.agent_activity,
                     chats: &chats,
+                    native_chats: self.native_sessions.chats(),
+                    session_catalog_note: self.native_sessions.note(),
+                    session_catalog_loading: self.native_sessions.loading(),
+                    session_catalog_generation: self.native_sessions_generation,
+                    session_filter: self.session_filter,
                     query: &self.search,
                     search_focused: active_tab
                         .and_then(|tab| self.search_inputs.get(&tab.id))
@@ -8844,7 +8979,23 @@ impl Workspace {
                             if !workspace.menu_return.restore_within(&workspace.focus, window, cx) { workspace.focus_active(window, cx); }
                             cx.notify();
                         })), ("pane-menu-scope", pane_id), &self.menu_focus);
-                    menu.child(pane_menu_heading("New tab", true, colors))
+                    menu.child(self.pane_menu_row(
+                        pane_id,
+                        "Existing sessions",
+                        "⌘⌥S",
+                        Some(Icon::Panel(PanelKind::Shells)),
+                        PaneMenuAction::Sessions(session_catalog::Filter::All),
+                        cx,
+                    ))
+                        .child(self.pane_menu_row(
+                            pane_id,
+                            "Existing Claude chats",
+                            "",
+                            None,
+                            PaneMenuAction::Sessions(session_catalog::Filter::Claude),
+                            cx,
+                        ))
+                        .child(pane_menu_heading("New tab", true, colors))
                         .children(
                             [
                                 ("Shell", "⌘T", Some(Icon::Add), PaneMenuAction::Shell),
@@ -9202,21 +9353,25 @@ impl Workspace {
                     &self.agent_activity,
                 )
                 .with_chats_in_project(&self.project_id, &self.chat_activity(cx));
-                behavior_controls::action("status-agent-activity", "Show agent sessions", colors)
-                    .max_w(ui_text::space(250.0))
-                    .min_w_0()
-                    .text_ellipsis()
-                    .overflow_hidden()
-                    .text_color(rgb(if counts.working > 0 {
-                        colors.working
-                    } else {
-                        colors.muted
-                    }))
-                    .child(counts.summary().unwrap_or_else(|| "Agents · —".to_owned()))
-                    .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.open_panel(PanelKind::Shells, workspace.active_pane, window, cx);
-                    }))
-                    .into_any_element()
+                behavior_controls::action(
+                    "status-agent-activity",
+                    "Show Sessions: Codex chats, Claude chats and shells",
+                    colors,
+                )
+                .max_w(ui_text::space(250.0))
+                .min_w_0()
+                .text_ellipsis()
+                .overflow_hidden()
+                .text_color(rgb(if counts.working > 0 {
+                    colors.working
+                } else {
+                    colors.muted
+                }))
+                .child(counts.summary().unwrap_or_else(|| "Agents · —".to_owned()))
+                .on_click(cx.listener(|workspace, _, window, cx| {
+                    workspace.open_panel(PanelKind::Shells, workspace.active_pane, window, cx);
+                }))
+                .into_any_element()
             }
             StatusItemKind::LiveSessions => div()
                 .flex_none()
@@ -10126,6 +10281,7 @@ impl Workspace {
                     PaneMenuAction::Harness(kind, unrestricted) => {
                         workspace.add_harness(kind, unrestricted, window, cx);
                     }
+                    PaneMenuAction::Sessions(filter) => workspace.open_sessions(filter, window, cx),
                     PaneMenuAction::Chat(provider, unrestricted) => {
                         workspace.add_chat(provider, unrestricted, window, cx);
                     }
@@ -10280,6 +10436,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_project_settings_action))
             .on_action(cx.listener(Self::open_schedules_action))
             .on_action(cx.listener(Self::open_files_action))
+            .on_action(cx.listener(Self::open_sessions_action))
             .on_action(cx.listener(Self::open_preview_action))
             .on_action(cx.listener(Self::gather_tabs_action))
             .on_action(cx.listener(Self::apply_default_layout_action))
@@ -10699,7 +10856,7 @@ fn panel_tooltip(panel: PanelKind) -> &'static str {
         PanelKind::Files => "Files · ⌘⇧E",
         PanelKind::Preview => "Preview · ⌘⇧P",
         PanelKind::Tasks => "Tasks",
-        PanelKind::Shells => "Shells",
+        PanelKind::Shells => "Sessions · ⌘⌥S",
         PanelKind::Usage => "Usage",
         PanelKind::Settings => "Settings · ⌘,",
         PanelKind::ProjectSettings => "Project Settings · ⌘⌥A",
@@ -11465,6 +11622,7 @@ fn main() {
             KeyBinding::new("cmd-alt-a", OpenProjectSettings, None),
             KeyBinding::new("cmd-shift-s", OpenSchedules, None),
             KeyBinding::new("cmd-shift-e", OpenFiles, None),
+            KeyBinding::new("cmd-alt-s", OpenSessions, None),
             KeyBinding::new("cmd-shift-p", OpenPreview, None),
             KeyBinding::new("cmd-shift-m", GatherTabs, None),
             KeyBinding::new("cmd-alt-l", ApplyDefaultLayout, None),
@@ -11502,6 +11660,7 @@ fn main() {
             behavior_controls::edit_menu(),
             // RiWork's own text; terminals zoom with the same keys while focused.
             Menu::new("View").items([
+                MenuItem::action("Sessions", OpenSessions),
                 MenuItem::action("Default Layout", ApplyDefaultLayout),
                 MenuItem::action("Gather Tabs into Main Pane", GatherTabs),
                 MenuItem::separator(),
@@ -12145,7 +12304,7 @@ mod workspace_tab_tests {
             (PanelKind::Files, "Files"),
             (PanelKind::Preview, "Preview"),
             (PanelKind::Tasks, "Tasks"),
-            (PanelKind::Shells, "Shells"),
+            (PanelKind::Shells, "Sessions"),
             (PanelKind::Usage, "Usage"),
             (PanelKind::Settings, "Settings"),
             (PanelKind::ProjectSettings, "Project Settings"),
@@ -13190,6 +13349,91 @@ mod main_pane_tests {
         assert_eq!(plan(None, None, false, 3), Open { pane: 3 });
         // Shells, panels and the like are not chat tabs.
         assert_eq!(chat_tab_in(&window.panes, "chat-1"), None);
+    }
+
+    #[test]
+    fn catalog_uuid_selection_preserves_pane_routing_and_one_tab_identity() {
+        let id = uuid::Uuid::from_u128(1).to_string();
+        let other = uuid::Uuid::from_u128(2).to_string();
+        let chat: ChatInfo = serde_json::from_value(serde_json::json!({
+            "id": id, "provider":"claude", "project_id":"project", "cwd":"/synthetic-only/history",
+            "title":"Same title", "created_at_unix":1, "state":{"state":"stopped"}
+        }))
+        .unwrap();
+        let mut second = chat.clone();
+        second.id = other.clone();
+        second.provider = Provider::Codex;
+        let now = Instant::now();
+        let mut catalog = session_catalog::Catalog::default();
+        let ticket = catalog.begin("project", 7, now, false).unwrap();
+        catalog.finish(
+            &ticket,
+            session_catalog::Snapshot {
+                chats: vec![chat, second],
+                note: None,
+            },
+            now,
+        );
+        let mut panes = BTreeMap::from([
+            (1, pane(vec![panel(1, PanelKind::Shells)], 0)),
+            (2, pane(vec![shell(2)], 0)),
+            (3, pane(vec![shell(3), shell(4)], 0)),
+        ]);
+        // Recorded UUID/tab locations stand in for ChatView entities. Tab 4 is behind
+        // a terminal, exactly as the production chat_tab_in -> planner boundary sees it.
+        let locations = BTreeMap::from([(id.clone(), (3, 4))]);
+        let selected = catalog.selected("project", 7, &id).unwrap();
+        let plan = plan_orchestrator_chat(
+            locations.get(&selected.id).copied(),
+            &panes,
+            Some(2),
+            false,
+            1,
+            &|p| p == 1,
+        );
+        assert_eq!(
+            plan,
+            ChatOrchestratorTab::Reuse {
+                pane: 3,
+                tab: 4,
+                into: Some(2)
+            }
+        );
+        assert!(move_tab_between_panes(&mut panes, 3, 4, 2, true));
+        assert_eq!(panes[&2].tabs[panes[&2].active].id, 4);
+        assert_eq!(panes[&3].tabs[panes[&3].active].id, 3);
+        assert_eq!(
+            panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .filter(|tab| tab.id == 4)
+                .count(),
+            1
+        );
+        // A repeat selection reuses the same tab; identical titles never choose it for Codex.
+        let repeated = plan_orchestrator_chat(Some((2, 4)), &panes, Some(2), false, 1, &|p| p == 1);
+        assert_eq!(
+            repeated,
+            ChatOrchestratorTab::Reuse {
+                pane: 2,
+                tab: 4,
+                into: None
+            }
+        );
+        let second = catalog.selected("project", 7, &other).unwrap();
+        assert_eq!(
+            plan_orchestrator_chat(
+                locations.get(&second.id).copied(),
+                &panes,
+                Some(2),
+                false,
+                1,
+                &|p| p == 1
+            ),
+            ChatOrchestratorTab::Open { pane: 2 }
+        );
+        assert!(catalog.selected("other-project", 7, &id).is_none());
+        assert!(catalog.selected("project", 6, &id).is_none());
     }
 
     #[test]
@@ -14469,7 +14713,7 @@ mod main_pane_tests {
         );
         assert_eq!(
             default_layout_notice(&applied(0, &[PanelKind::Tasks, PanelKind::Shells]), 0),
-            "Applied the default layout: opened Tasks, Shells. Nothing was closed"
+            "Applied the default layout: opened Tasks, Sessions. Nothing was closed"
         );
         assert_eq!(
             default_layout_notice(&applied(0, &[]), 0),

@@ -17,11 +17,14 @@ use gpui_kit::TestSupportExt;
 
 use crate::{
     activity::{ActivityCounts, AgentActivity, AgentState, ChatActivity},
-    behavior_controls as behavior, controls,
+    behavior_controls as behavior,
+    chat::model::ChatInfo,
+    controls,
     icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
     remote_tree::{FolderView, Link, Listing, ProjectView, RemoteShell, SelectedView, folder_key},
+    session_catalog::{self, Filter},
     sessions::{SessionMetrics, ShellKind, ShellSession},
     store::{State, TaskStatus},
     theme::{self, Palette},
@@ -52,7 +55,18 @@ pub enum PanelAction {
     OpenProject(String),
     Worktree(String),
     Task(String),
-    Shell(String),
+    Shell {
+        project: String,
+        generation: u64,
+        id: String,
+    },
+    Chat {
+        project: String,
+        generation: u64,
+        id: String,
+    },
+    SessionFilter(Filter),
+    RefreshSessions,
     Search,
     /// Empty the search field, from its clear button.
     ClearSearch,
@@ -175,6 +189,11 @@ pub struct PanelData<'a> {
     pub activity: &'a BTreeMap<String, AgentState>,
     /// The open chat tabs, counted among the agents beside the shells.
     pub chats: &'a [ChatActivity],
+    pub native_chats: &'a [ChatInfo],
+    pub session_catalog_note: Option<&'a str>,
+    pub session_catalog_loading: bool,
+    pub session_catalog_generation: u64,
+    pub session_filter: Filter,
     pub query: &'a str,
     pub search_focused: bool,
     pub search_input: Option<&'a Entity<crate::text_input::InputState>>,
@@ -917,11 +936,83 @@ pub fn render_panel<V: Render + 'static>(
             }
         }
         PanelKind::Shells => {
+            for chat in data
+                .native_chats
+                .iter()
+                .filter(|chat| chat.project_id.as_deref() == Some(data.project_id))
+            {
+                total += 1;
+                if !data.session_filter.accepts_chat(chat.provider) {
+                    continue;
+                }
+                let provider = session_catalog::provider_label(chat.provider);
+                let status = session_catalog::status_label(&chat.state);
+                let title = if chat.title.trim().is_empty() {
+                    "Untitled chat"
+                } else {
+                    &chat.title
+                };
+                let worktree = data
+                    .state
+                    .worktrees_for(data.project_id)
+                    .into_iter()
+                    .find(|tree| chat.worktree_id.as_deref() == Some(tree.id.as_str()))
+                    .or_else(|| {
+                        data.state
+                            .worktrees_for(data.project_id)
+                            .into_iter()
+                            .filter(|tree| chat.cwd.starts_with(&tree.path))
+                            .max_by_key(|tree| tree.path.as_os_str().len())
+                    });
+                let context = worktree.map(|tree| tree.branch.clone()).unwrap_or_else(|| {
+                    chat.worktree_id
+                        .as_deref()
+                        .map(|id| format!("Worktree {}", short_id(id)))
+                        .unwrap_or_else(|| "Project root".into())
+                });
+                let path = chat.cwd.to_string_lossy();
+                if !matches(&[
+                    &chat.id,
+                    title,
+                    provider,
+                    status,
+                    &context,
+                    &path,
+                    chat.worktree_id.as_deref().unwrap_or(""),
+                ]) {
+                    continue;
+                }
+                rows.push(row(
+                    format!("session-chat-{}", chat.id),
+                    format!(
+                        "{provider} chat · {title} · {status} · {context} · {}",
+                        chat.id
+                    ),
+                    false,
+                    colors.cyan,
+                    vec![
+                        line(format!("{provider} · {title}"), colors.text, 11.0),
+                        line(format!("{status} · {context}"), colors.muted, 10.0),
+                        mono_line(path.into_owned(), colors.muted, 10.0),
+                        mono_line(chat.id.clone(), colors.muted, 10.0),
+                    ],
+                    PanelAction::Chat {
+                        project: data.project_id.into(),
+                        generation: data.session_catalog_generation,
+                        id: chat.id.clone(),
+                    },
+                    on_action.clone(),
+                    cx,
+                ));
+            }
             for shell in data.shells.iter().filter(|shell| {
                 shell.kind == ShellKind::Project
                     && shell.project_id.as_deref() == Some(data.project_id)
             }) {
                 total += 1;
+                if !data.session_filter.accepts_shell() {
+                    continue;
+                }
                 let cwd = data.shell_cwds.get(&shell.id).unwrap_or(&shell.cwd);
                 let current_worktree = data
                     .state
@@ -935,6 +1026,8 @@ pub fn render_panel<V: Render + 'static>(
                 let path = cwd.to_string_lossy();
                 let command = shell.command.as_deref().unwrap_or("shell");
                 if !matches(&[
+                    "shell",
+                    shell.harness.map(|harness| harness.program()).unwrap_or(""),
                     &shell.id,
                     label,
                     &path,
@@ -950,7 +1043,7 @@ pub fn render_panel<V: Render + 'static>(
                 if ui_text::is_native() {
                     let lines = native_shell_lines(
                         NativeShell {
-                            title: label.to_owned(),
+                            title: format!("Shell · {label}"),
                             status: native_shell_status(shell.alive, agent),
                             path: path.into_owned(),
                             detail: format!(
@@ -964,11 +1057,15 @@ pub fn render_panel<V: Render + 'static>(
                     );
                     rows.push(row(
                         format!("shell-{}", shell.id),
-                        format!("{} · {}", label, short_id(&shell.id)),
+                        format!("Shell · {label} · {status} · {}", shell.id),
                         false,
                         colors.cyan,
                         lines,
-                        PanelAction::Shell(shell.id.clone()),
+                        PanelAction::Shell {
+                            project: data.project_id.into(),
+                            generation: data.session_catalog_generation,
+                            id: shell.id.clone(),
+                        },
                         on_action.clone(),
                         cx,
                     ));
@@ -976,7 +1073,7 @@ pub fn render_panel<V: Render + 'static>(
                 }
                 rows.push(row(
                     format!("shell-{}", shell.id),
-                    format!("{} · {}", label, short_id(&shell.id)),
+                    format!("Shell · {label} · {status} · {}", shell.id),
                     false,
                     colors.cyan,
                     vec![
@@ -986,7 +1083,7 @@ pub fn render_panel<V: Render + 'static>(
                             .justify_between()
                             .gap(ui_text::space(6.0))
                             .child(line(
-                                format!("{} · {label}", short_id(&shell.id)),
+                                format!("Shell · {} · {label}", short_id(&shell.id)),
                                 colors.text,
                                 11.0,
                             ))
@@ -1019,7 +1116,11 @@ pub fn render_panel<V: Render + 'static>(
                         ),
                         mono_line(shell.id.clone(), colors.muted, 10.0),
                     ],
-                    PanelAction::Shell(shell.id.clone()),
+                    PanelAction::Shell {
+                        project: data.project_id.into(),
+                        generation: data.session_catalog_generation,
+                        id: shell.id.clone(),
+                    },
                     on_action.clone(),
                     cx,
                 ));
@@ -1058,6 +1159,60 @@ pub fn render_panel<V: Render + 'static>(
                 .into_any_element()
         });
     }
+    let mut session_controls = Vec::new();
+    if kind == PanelKind::Shells && data.selected_remote.is_none() {
+        let mut toolbar = div()
+            .flex()
+            .flex_wrap()
+            .gap(ui_text::space(4.0))
+            .p(ui_text::space(6.0));
+        for filter in Filter::ALL {
+            let handler = on_action.clone();
+            toolbar = toolbar.child(
+                behavior::button(
+                    format!("sessions-filter-{}", filter.label()),
+                    filter.label(),
+                    if data.session_filter == filter {
+                        controls::Button::Primary
+                    } else {
+                        controls::Button::Secondary
+                    },
+                    colors,
+                )
+                .aria_selected(data.session_filter == filter)
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    handler(view, PanelAction::SessionFilter(filter), window, cx);
+                })),
+            );
+        }
+        let handler = on_action.clone();
+        toolbar = toolbar.child(
+            behavior::button(
+                "sessions-refresh",
+                "Refresh",
+                controls::Button::Secondary,
+                colors,
+            )
+            .disabled(data.session_catalog_loading)
+            .on_click(cx.listener(move |view, _, window, cx| {
+                handler(view, PanelAction::RefreshSessions, window, cx)
+            })),
+        );
+        session_controls.push(toolbar.flex_none().into_any_element());
+        if let Some(note) = data.session_catalog_note {
+            session_controls.push(
+                div()
+                    .flex_none()
+                    .p(ui_text::space(8.0))
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child(note.to_owned())
+                    .into_any_element(),
+            );
+        } else if data.session_catalog_loading {
+            session_controls.push(line("Loading chat history…".to_owned(), colors.muted, 10.0));
+        }
+    }
     if native {
         let panel = native_panel(
             kind,
@@ -1066,6 +1221,7 @@ pub fn render_panel<V: Render + 'static>(
                 count,
                 total,
                 rows,
+                session_controls,
                 sort_selector_bounds: Rc::new(Cell::new(Bounds::<Pixels>::default())),
             },
             on_action,
@@ -1173,6 +1329,7 @@ pub fn render_panel<V: Render + 'static>(
                         )
                     })),
             )
+            .children(session_controls)
             .child(
                 div()
                     .id(format!("{name}-rows"))
@@ -1281,7 +1438,7 @@ fn panel_search<V: 'static>(
         )
         .children(input.map(|input| {
             crate::form_input::search_frame(format!("{name}-search-input"), input, window, cx)
-                .accessibility_label(format!("Search {name}"))
+                .accessibility_label(format!("Search {}", panel_noun(kind)))
         }))
         .children((!query.is_empty()).then(|| {
             let input = input.cloned();
@@ -1313,6 +1470,7 @@ struct NativeChrome {
     count: usize,
     total: usize,
     rows: Vec<AnyElement>,
+    session_controls: Vec<AnyElement>,
     sort_selector_bounds: Rc<Cell<Bounds<Pixels>>>,
 }
 
@@ -1357,6 +1515,7 @@ fn native_panel<V: Render + 'static>(
         count,
         total,
         rows,
+        session_controls,
         sort_selector_bounds,
     } = chrome;
     let mut meta = native_count(count, total, panel_noun(kind));
@@ -1440,6 +1599,7 @@ fn native_panel<V: Render + 'static>(
             colors,
         ))
         .child(search)
+        .children(session_controls)
         .child(
             div()
                 .id(format!("{name}-rows"))
@@ -2455,6 +2615,7 @@ fn push_remote_panel<V: 'static>(
             }
         }
         _ => {
+            rows.push(note("Native Codex and Claude chat history is unavailable on remote hosts. Showing remote shells.".to_owned(), colors.muted));
             if let Some(message) = &remote.failure {
                 rows.push(failure_row(
                     format!("remote-shell-failure-{}", remote.project),
@@ -2543,7 +2704,7 @@ fn push_remote_panel<V: 'static>(
                 rows.push(dimmed_if(
                     row(
                         format!("remote-shell-{}", shell.id),
-                        format!("{} · {}", label, short_id(&shell.id)),
+                        format!("Shell · {label} · {status} · {}", shell.id),
                         false,
                         colors.cyan,
                         lines,
@@ -2598,7 +2759,7 @@ pub fn unavailable<V: 'static>(kind: PanelKind, host: &str, cx: &mut Context<V>)
         PanelKind::Projects => "Projects",
         PanelKind::Worktrees => "Worktrees",
         PanelKind::Tasks => "Tasks",
-        PanelKind::Shells => "Shells",
+        PanelKind::Shells => "Sessions",
         PanelKind::Settings => "Settings",
     };
     div()
@@ -2979,6 +3140,7 @@ fn row<V: 'static>(
 fn panel_noun(kind: PanelKind) -> &'static str {
     match kind {
         PanelKind::ProjectSettings => "project settings",
+        PanelKind::Shells => "sessions",
         kind => kind.name(),
     }
 }
@@ -4050,6 +4212,10 @@ mod search_regression_tests {
     // SessionManager, filesystem fixture, terminal or backend is constructed.
     struct Fixture {
         state: State,
+        kind: PanelKind,
+        native_chats: Vec<ChatInfo>,
+        shells: Vec<ShellSession>,
+        session_filter: Filter,
         inputs: Vec<(u64, Entity<InputState>)>,
         queries: BTreeMap<u64, String>,
         sorts: Vec<ProjectSortUi>,
@@ -4062,7 +4228,13 @@ mod search_regression_tests {
     }
     impl Fixture {
         fn action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
-            if matches!(action, PanelAction::ClearSearch) {
+            if let PanelAction::SessionFilter(filter) = &action {
+                self.session_filter = *filter;
+            }
+            if matches!(
+                action,
+                PanelAction::ClearSearch | PanelAction::SessionFilter(_)
+            ) {
                 for (id, input) in &self.inputs {
                     crate::form_input::set_value(input, String::new(), window, cx);
                     self.queries.insert(*id, String::new());
@@ -4085,19 +4257,28 @@ mod search_regression_tests {
                             .test_support()
                             .flex_none()
                             .w(px(self.width))
-                            .h(px(360.))
+                            .h(px(if self.kind == PanelKind::Shells {
+                                600.
+                            } else {
+                                360.
+                            }))
                             .child(render_panel(
-                                PanelKind::Projects,
+                                self.kind,
                                 PanelData {
                                     state: &self.state,
                                     project_id: "alpha-id",
                                     selected_worktree_id: None,
                                     selected_task_id: None,
-                                    shells: &[],
+                                    shells: &self.shells,
                                     shell_cwds: &BTreeMap::new(),
                                     metrics: &BTreeMap::new(),
                                     activity: &BTreeMap::new(),
                                     chats: &[],
+                                    native_chats: &self.native_chats,
+                                    session_catalog_note: None,
+                                    session_catalog_loading: false,
+                                    session_catalog_generation: 7,
+                                    session_filter: self.session_filter,
                                     query: &self.queries[id],
                                     search_focused: input
                                         .read(cx)
@@ -4210,6 +4391,10 @@ mod search_regression_tests {
                                 })
                                 .collect();
                             Fixture {
+                                kind: PanelKind::Projects,
+                                native_chats: Vec::new(),
+                                shells: Vec::new(),
+                                session_filter: Filter::All,
                                 state: State {
                                     projects,
                                     ..Default::default()
@@ -4239,6 +4424,153 @@ mod search_regression_tests {
         test_turn(cx, handle, |window, _| window.activate_window());
         (handle, owner)
     }
+    fn history(id: u128, provider: &str, state: serde_json::Value, project: &str) -> ChatInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::from_u128(id).to_string(), "provider": provider,
+            "project_id": project, "worktree_id": "saved-tree", "cwd": "/synthetic-only/history",
+            "title": "Same title", "created_at_unix": id as u64, "state": state,
+        }))
+        .unwrap()
+    }
+
+    // A mounted Root and an in-memory action recorder only. There is no chat feed,
+    // Workspace, StateStore, SessionManager, filesystem or provider in this fixture.
+    fn sessions_controls(cx: &mut TestAppContext, native: bool) {
+        let (handle, owner) = mount(cx, native);
+        let claude = uuid::Uuid::from_u128(1).to_string();
+        let codex = uuid::Uuid::from_u128(2).to_string();
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.kind = PanelKind::Shells;
+                owner.width = 480.;
+                owner.native_chats = vec![
+                    history(
+                        1,
+                        "claude",
+                        serde_json::json!({"state":"stopped"}),
+                        "alpha-id",
+                    ),
+                    history(
+                        2,
+                        "codex",
+                        serde_json::json!({"state":"failed", "message":"offline"}),
+                        "alpha-id",
+                    ),
+                    history(
+                        3,
+                        "claude",
+                        serde_json::json!({"state":"idle"}),
+                        "other-project",
+                    ),
+                ];
+                owner.shells = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "id": uuid::Uuid::from_u128(4).to_string(), "project_id":"alpha-id",
+                        "kind":"project", "cwd":"/synthetic-only/shell", "created_at_unix":4,
+                    }))
+                    .unwrap(),
+                ];
+                cx.notify();
+            })
+        });
+        test_turn(cx, handle, |window, app| {
+            let node =
+                crate::form_input::test_ax_node(window, app, format!("session-chat-{claude}"));
+            assert_eq!(node.role(), gpui::Role::Button);
+            assert!(
+                node.label()
+                    .unwrap()
+                    .contains("Claude chat · Same title · Stopped")
+            );
+            let node =
+                crate::form_input::test_ax_node(window, app, format!("session-chat-{codex}"));
+            assert!(
+                node.label()
+                    .unwrap()
+                    .contains("Codex chat · Same title · Failed")
+            );
+            assert!(
+                window
+                    .try_find(format!("session-chat-{}", uuid::Uuid::from_u128(3)))
+                    .is_none()
+            );
+            // Provider filters are real Base buttons, usable by mouse and keyboard.
+            window.click("sessions-filter-Claude chats", app);
+        });
+        test_turn(cx, handle, |window, app| window.press("space", app));
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).session_filter, Filter::Claude);
+            assert!(window.try_find(format!("session-chat-{codex}")).is_none());
+            assert!(
+                window
+                    .try_find(format!("shell-{}", uuid::Uuid::from_u128(4)))
+                    .is_none()
+            );
+            assert!(
+                owner
+                    .read(app)
+                    .actions
+                    .iter()
+                    .all(|a| matches!(a, PanelAction::SessionFilter(Filter::Claude)))
+            );
+            window.click(format!("session-chat-{claude}"), app);
+        });
+        test_turn(cx, handle, |window, app| window.press("enter", app));
+        test_turn(cx, handle, |_, app| {
+            let actions = &owner.read(app).actions;
+            assert_eq!(actions.len(), 4);
+            assert!(actions[2..].iter().all(|action| matches!(action,
+                PanelAction::Chat { project, generation: 7, id } if project == "alpha-id" && id == &claude)));
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("sessions-filter-Shells", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click(format!("shell-{}", uuid::Uuid::from_u128(4)), app);
+        });
+        test_turn(cx, handle, |_, app| {
+            assert!(
+                matches!(owner.read(app).actions.last(), Some(PanelAction::Shell { project, generation: 7, id }) if project == "alpha-id" && id == &uuid::Uuid::from_u128(4).to_string())
+            );
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("sessions-filter-All sessions", app)
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("shells-search-icon", app)
+        });
+        for character in "failed".chars() {
+            test_turn(cx, handle, |window, app| {
+                window.input(&character.to_string(), app)
+            });
+        }
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).queries[&101], "failed");
+            assert!(window.try_find(format!("session-chat-{claude}")).is_none());
+            assert!(
+                window
+                    .try_find(format!("shell-{}", uuid::Uuid::from_u128(4)))
+                    .is_none()
+            );
+            window.click(format!("session-chat-{codex}"), app);
+        });
+        test_turn(cx, handle, |_, app| {
+            assert!(
+                matches!(owner.read(app).actions.last(), Some(PanelAction::Chat { id, .. }) if id == &codex)
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn sessions_native_controls_search_and_exact_uuid_selection(cx: &mut TestAppContext) {
+        sessions_controls(cx, true);
+    }
+
+    #[gpui::test]
+    fn sessions_colorful_controls_search_and_exact_uuid_selection(cx: &mut TestAppContext) {
+        sessions_controls(cx, false);
+    }
+
     fn geometry(cx: &mut TestAppContext, native: bool) {
         let (handle, owner) = mount(cx, native);
         let entity = owner.read_with(cx, |owner, _| owner.inputs[0].1.entity_id());

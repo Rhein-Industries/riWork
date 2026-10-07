@@ -953,7 +953,7 @@ impl PanelKind {
             Self::Files => "Files",
             Self::Preview => "Preview",
             Self::Tasks => "Tasks",
-            Self::Shells => "Shells",
+            Self::Shells => "Sessions",
             Self::Usage => "Usage",
             Self::Settings => "Settings",
             Self::Schedules => "Automations",
@@ -1905,6 +1905,23 @@ impl LayoutStore {
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn sessions_keeps_the_persisted_shells_panel_identity() {
+        let panel: PanelKind = serde_json::from_str("\"shells\"").unwrap();
+        assert_eq!(panel, PanelKind::Shells);
+        assert_eq!(serde_json::to_string(&panel).unwrap(), "\"shells\"");
+        assert_eq!(panel.name(), "shells");
+        assert_eq!(panel.label(), "Sessions");
+        assert!(NAVIGATION_PANELS.contains(&panel));
+        let saved: SavedTab = serde_json::from_str(r#"{"kind":"panel","panel":"shells"}"#).unwrap();
+        assert_eq!(saved, SavedTab::Panel { panel });
+        assert_eq!(saved.key(), "panel:shells");
+        assert_eq!(
+            serde_json::to_value(saved).unwrap(),
+            serde_json::json!({"kind":"panel","panel":"shells"})
+        );
+    }
 
     struct TestDirectory(PathBuf);
 
