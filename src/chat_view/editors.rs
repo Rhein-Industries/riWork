@@ -146,6 +146,20 @@ impl ChatView {
             _ => {}
         }
     }
+    /// Presentation follows live metadata; query/value and the retained editor stay intact.
+    pub(super) fn sync_model_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let placeholder = if self.model.transcript.models.is_empty() {
+            "model name, then ⏎"
+        } else {
+            "Search models"
+        };
+        self.model_input.update(cx, |state, cx| {
+            if state.placeholder().as_ref() != placeholder {
+                state.set_placeholder(placeholder, window, cx);
+            }
+        });
+    }
+
     pub(super) fn model_event(
         &mut self,
         state: &Entity<InputState>,
@@ -522,16 +536,7 @@ impl ChatView {
         } else {
             "Message"
         };
-        let model_placeholder = if self.model.transcript.models.is_empty() {
-            "model name, then ⏎"
-        } else {
-            "Search models"
-        };
-        self.model_input.update(cx, |state, cx| {
-            if state.placeholder().as_ref() != model_placeholder {
-                state.set_placeholder(model_placeholder, window, cx);
-            }
-        });
+        self.sync_model_placeholder(window, cx);
         self.composer.update(cx, |state, cx| {
             if state.placeholder().as_ref() != placeholder {
                 state.set_placeholder(placeholder, window, cx);

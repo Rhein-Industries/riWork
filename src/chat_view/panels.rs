@@ -1370,6 +1370,7 @@ impl ChatView {
 
     /// Same-provider choices stay with the retained chat and its authoritative model list.
     fn composer_choices(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let colors = look.colors;
         let info = self.model.transcript.info.as_ref();
         let models = &self.model.transcript.models;
         let model = info.and_then(|info| info.model.as_deref());
@@ -1404,18 +1405,63 @@ impl ChatView {
                 )
             }))
             .children(toolbar::fast_available(models, model).then(|| {
-                widgets::toggle_button("chat-fast", "Fast", None, fast, look)
-                    .accessibility_label(toolbar::fast_label(fast))
-                    .when(look.hermes(), |toggle| {
-                        toggle
-                            .border_color(transparent_black())
-                            .bg(transparent_black())
-                            .text_color(rgb(if fast {
-                                look.colors.text
+                let toggle = if look.native {
+                    widgets::toggle_capsule("chat-fast", "Fast", fast, look)
+                        .pl(ui_text::space(8.0))
+                        .child(icons::symbol(
+                            if fast { "bolt.fill" } else { "bolt" },
+                            10.0,
+                            None,
+                        ))
+                        .flex_row_reverse()
+                        .when(fast, |toggle| {
+                            toggle
+                                .bg(rgb(look.tint(colors.working, 0.18)))
+                                .text_color(rgb(colors.working))
+                        })
+                        .when(!fast, |toggle| toggle.text_color(rgb(colors.muted)))
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style.bg(rgb(if fast {
+                                look.tint(colors.working, 0.28)
                             } else {
-                                look.colors.muted
+                                Button::Secondary.hover(colors)
                             }))
+                        })
+                } else if look.hermes() {
+                    widgets::toggle_button(
+                        "chat-fast",
+                        if fast { "✓ Fast" } else { "Fast" },
+                        None,
+                        fast,
+                        look,
+                    )
+                    .px(px(4.0))
+                    .border_color(rgb(if fast { colors.cyan } else { colors.panel }))
+                    .bg(if fast {
+                        rgb(look.tint(colors.cyan, 0.18))
+                    } else {
+                        transparent_black()
                     })
+                    .text_color(rgb(if fast { colors.text } else { colors.muted }))
+                    .hover(move |style| {
+                        style.bg(rgb(if fast {
+                            look.tint(colors.cyan, 0.28)
+                        } else {
+                            colors.panel_active
+                        }))
+                    })
+                } else {
+                    widgets::toggle_button(
+                        "chat-fast",
+                        toolbar::fast_label(fast),
+                        fast.then_some(colors.cyan),
+                        fast,
+                        look,
+                    )
+                };
+                toggle
+                    .accessibility_label(toolbar::fast_label(fast))
                     .child(tooltip::anchor(
                         "Fast mode answers sooner and uses more of your limits",
                         TipLook::Control,
@@ -1487,12 +1533,13 @@ impl ChatView {
         .on_click(cx.listener(move |view, _, window, cx| {
             view.open.remove(ATTACHMENT_MENU_KEY);
             let opening = view.menu != Some(menu);
+            if menu == Menu::Model {
+                view.sync_model_placeholder(window, cx);
+            }
             view.toggle_menu(menu, window, cx);
             if opening && view.menu == Some(Menu::Model) && !view.model.transcript.models.is_empty()
             {
                 view.model_seeded = false;
-                view.model_input
-                    .update(cx, |state, cx| state.set_value("", window, cx));
                 view.model_input.read(cx).focus_handle(cx).focus(window, cx);
             }
         }));
@@ -2543,15 +2590,37 @@ mod tests {
     fn hermes_model_search_refresh_retains_input_and_menu_fits_narrow_pane(
         cx: &mut gpui::TestAppContext,
     ) {
-        let previous = ui_text::set_for_tests(1.0, ui_text::Face::Menlo);
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::Hermes);
         let (handle, view) = hermes_fixture(cx, 240.0);
+        let (feed, recording) = super::super::feed::Feed::recording();
+        let chat_id = uuid::Uuid::from_u128(3).to_string();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.feed = Some(feed);
+                view.chat_id = Some(chat_id.clone());
+                view.composer.update(cx, |state, cx| {
+                    state.set_value("Retain this draft 🦀\nexactly", window, cx)
+                });
+                cx.notify();
+            })
+        })
+        .unwrap();
         draw_hermes(cx, handle);
-        let input = view.read_with(cx, |view, _| view.model_input.entity_id());
+        let (input, editor, generation) = view.read_with(cx, |view, _| {
+            (
+                view.model_input.entity_id(),
+                view.composer.entity_id(),
+                view.editor_generation,
+            )
+        });
         cx.update_window(handle.into(), |_, window, cx| {
             window.click("chat-model", cx)
         })
         .unwrap();
         draw_hermes(cx, handle);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.model_input.read(cx).placeholder(), "Search models")
+        });
         cx.update_window(handle.into(), |_, window, cx| {
             window.click("chat-model-search", cx);
             window.input("fixture", cx);
@@ -2562,6 +2631,45 @@ mod tests {
         let menu = visual.debug_bounds("composer-choices-menu").unwrap();
         assert!(menu.left() >= px(0.0) && menu.right() <= px(240.0));
         assert!(menu.top() >= px(0.0) && menu.bottom() <= px(900.0));
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert!(menu.bottom() <= window.find("chat-model").bounds().top());
+            window.press("enter", cx);
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+        assert!(matches!(
+            recording.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        assert!(view.read_with(cx, |view, _| view.menu == Some(Menu::Model)));
+        let catalog = view.read_with(cx, |view, _| view.model.transcript.models.clone());
+        cx.update_window(handle.into(), |_, _, cx| {
+            view.update(cx, |view, cx| {
+                view.model.transcript.models.clear();
+                cx.notify();
+            })
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                view.model_input.read(cx).placeholder(),
+                "model name, then ⏎"
+            );
+            assert_eq!(view.model_input.read(cx).value(), "fixture");
+        });
+        cx.update_window(handle.into(), |_, _, cx| {
+            view.update(cx, |view, cx| {
+                view.model.transcript.models = catalog;
+                cx.notify();
+            })
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.model_input.read(cx).placeholder(), "Search models");
+            assert_eq!(view.model_input.read(cx).value(), "fixture");
+        });
         cx.update_window(handle.into(), |_, _, cx| {
             view.update(cx, |view, cx| {
                 view.model.transcript.models[0].name = "Refreshed fixture label".into();
@@ -2580,7 +2688,33 @@ mod tests {
         view.read_with(cx, |view, cx| {
             assert_eq!(view.model_input.entity_id(), input);
             assert_eq!(view.model_input.read(cx).value(), "fixture");
-            assert_eq!(view.chat_id.as_deref(), Some("hermes-fixture"));
+            assert_eq!(view.chat_id.as_deref(), Some(chat_id.as_str()));
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("model-fixture-model", cx)
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+        assert!(
+            matches!(recording.try_recv(), Ok(super::super::feed::Delivery::Command(
+            crate::chat::model::ChatCommand::Configure { model: Some(model), effort: None, approval_mode: None, fast: None }
+        )) if model == "fixture-model")
+        );
+        assert!(matches!(
+            recording.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.chat_id.as_deref(), Some(chat_id.as_str()));
+            assert_eq!(view.composer.entity_id(), editor);
+            assert_eq!(view.editor_generation, generation);
+            assert_eq!(
+                view.composer.read(cx).value(),
+                "Retain this draft 🦀\nexactly"
+            );
+            assert_eq!(view.model_input.entity_id(), input);
+            assert_eq!(view.model_input.read(cx).value(), "fixture");
+            assert!(view.submissions.is_empty());
         });
         ui_text::set_for_tests(previous.0, previous.1);
     }
