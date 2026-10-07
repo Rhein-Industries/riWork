@@ -320,6 +320,9 @@ pub fn bounded_fixture_accept(
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                // macOS can inherit O_NONBLOCK from the listener. The fixture
+                // reads bounded frames with SO_RCVTIMEO rather than polling.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
