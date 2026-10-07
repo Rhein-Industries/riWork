@@ -754,6 +754,11 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
     let events = rig.until(|event| {
         matches!(event, ChatEvent::ItemCompleted { item } if matches!(item.body, ItemBody::Notice { .. }))
     });
+    assert_notice(
+        &completed_notices(&events)[0],
+        notice_kind::SETTING_REFUSED,
+        false,
+    );
     let notices = notices(&events);
     assert_eq!(notices[0].0, NoticeLevel::Warning);
     assert!(
@@ -1059,6 +1064,11 @@ fn an_oversized_line_is_skipped_with_a_notice_and_the_turn_goes_on() {
     let transcript = rig.transcript();
     assert_eq!(agent_texts(&transcript).len(), 3);
     assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Completed]);
+    assert_notice(
+        &completed_notices(&rig.seen)[0],
+        notice_kind::OVERSIZED_LINE,
+        false,
+    );
 }
 
 #[test]
@@ -1130,7 +1140,18 @@ fn a_failed_result_fails_the_turn_without_saying_the_same_thing_twice() {
         agent_texts(&rig.transcript()),
         ["Failed to authenticate. API Error: 401"]
     );
-    assert!(notices(&rig.seen).is_empty());
+    assert_eq!(
+        notices(&rig.seen),
+        vec![(
+            NoticeLevel::Error,
+            "Claude stopped because the turn failed.".into()
+        )]
+    );
+    assert_notice(
+        &completed_notices(&rig.seen)[0],
+        notice_kind::TURN_FAILED,
+        false,
+    );
 }
 
 #[test]
@@ -1162,7 +1183,7 @@ fn retries_and_rate_limits_become_notices_but_an_allowed_limit_does_not() {
     rig.send("go");
     rig.until_idle();
     let notices = notices(&rig.seen);
-    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert_eq!(notices.len(), 3, "{notices:?}");
     assert_eq!(notices[0].0, NoticeLevel::Warning);
     assert!(notices[0].1.contains("status 529"), "{notices:?}");
     assert!(notices[0].1.contains("attempt 1 of 5"), "{notices:?}");
@@ -1188,7 +1209,7 @@ fn retries_and_rate_limits_become_notices_but_an_allowed_limit_does_not() {
     let other = {
         let (sender, _events) = mpsc::channel();
         let mut core = Core::new(&bare_config(), sender, "s".into());
-        core.notice(NoticeLevel::Info, "x");
+        core.notice(NoticeLevel::Info, notice_kind::PROVIDER_WARNING, "x");
         core.notice_prefix
     };
     assert_ne!(other, prefix);
@@ -1204,7 +1225,7 @@ fn silence_during_a_turn_is_a_notice_and_the_process_is_left_alone() {
     rig.send("go");
     rig.until_idle();
     let notices = notices(&rig.seen);
-    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices.len(), 2, "{notices:?}");
     assert!(notices[0].1.contains("silent"), "{notices:?}");
     assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Completed]);
     assert_eq!(rig.fake.starts().len(), 1);
@@ -1375,6 +1396,11 @@ fn resuming_a_session_claude_never_saved_starts_it_again_under_the_same_id() {
         event,
         ChatEvent::Usage { .. } | ChatEvent::TurnStarted { .. }
     )));
+    assert_notice(
+        &completed_notices(&rig.seen)[0],
+        notice_kind::RESUMED_FRESH,
+        false,
+    );
 }
 
 #[test]
@@ -1608,6 +1634,11 @@ fn messages_queued_for_a_restart_that_fails_are_reported_not_lost() {
             .any(|item| matches!(item.body, ItemBody::UserMessage { .. }))
     );
     assert!(rig.driver.command(ChatCommand::Compact).is_err());
+    assert_notice(
+        &completed_notices(&events)[0],
+        notice_kind::UNDELIVERED,
+        false,
+    );
 }
 
 // The pure parts.
@@ -1992,4 +2023,243 @@ fn result_marks_only_authoritative_text_final_and_tool_images_survive() {
     assert!(
         matches!(&final_item.body, ItemBody::AgentMessage { text } if text == "The completed result")
     );
+}
+
+fn completed_notices(events: &[ChatEvent]) -> Vec<Item> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            ChatEvent::ItemCompleted { item } if matches!(item.body, ItemBody::Notice { .. }) => {
+                Some(item.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_notice(item: &Item, expected: &str, resolved: bool) {
+    assert!(
+        matches!(&item.body, ItemBody::Notice { kind: Some(kind), resolved: actual, .. }
+        if kind == expected && *actual == resolved),
+        "{item:?}"
+    );
+}
+
+#[test]
+fn rate_limit_status_is_remembered_across_turns_and_allowed_resolves_the_last_item() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.ready = true;
+    let warning = json!({"type":"rate_limit_event", "rate_limit_info": {
+        "status":"allowed_warning", "rateLimitType":"seven_day", "resetsAt":1767225600000u64
+    }});
+    core.ensure_turn();
+    core.on_frame(&warning);
+    core.on_result(&json!({"subtype":"success"}));
+    core.ensure_turn();
+    core.on_frame(&warning);
+    let first = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(first.len(), 1);
+    assert_notice(&first[0], "rate_limit:seven_day", false);
+    assert!(
+        matches!(&first[0].body, ItemBody::Notice { text, resets_at: Some(1767225600), .. }
+        if text == "This account is close to the weekly usage limit.")
+    );
+    core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
+        "status":"rejected","rateLimitType":"seven_day","resetsAt":1767225700
+    }}));
+    core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
+        "status":"allowed","rateLimitType":"seven_day"
+    }}));
+    core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
+        "status":"allowed","rateLimitType":"seven_day"
+    }}));
+    let updates = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(updates.len(), 2);
+    assert_ne!(first[0].id, updates[0].id);
+    assert_eq!(updates[0].id, updates[1].id);
+    assert_notice(&updates[1], "rate_limit:seven_day", true);
+    assert!(
+        matches!(&updates[0].body, ItemBody::Notice { text, resets_at: Some(1767225700), level: NoticeLevel::Error, .. }
+        if text == "This account has reached the weekly usage limit.")
+    );
+    for window in [Some("new_provider_window"), None] {
+        core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
+            "status":"rejected","rateLimitType":window
+        }}));
+        let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+        assert_eq!(items.len(), 1);
+        assert_notice(
+            &items[0],
+            &notice_kind::rate_limit(window.unwrap_or("unknown")),
+            false,
+        );
+    }
+}
+
+#[test]
+fn api_retries_update_one_item_per_turn_and_resolve_on_assistant_or_result() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.ready = true;
+    for attempt in [1, 2] {
+        core.on_frame(
+            &json!({"type":"system","subtype":"api_retry","attempt":attempt,"max_retries":5}),
+        );
+    }
+    core.on_frame(&json!({"type":"assistant","message":{"id":"answer","content":[{"type":"text","text":"hello"}]}}));
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 3);
+    assert!(items.iter().all(|item| item.id == items[0].id));
+    assert_notice(&items[0], notice_kind::API_RETRY, false);
+    assert!(
+        matches!(&items[1].body, ItemBody::Notice {text, ..} if text.contains("attempt 2 of 5"))
+    );
+    assert_notice(&items[2], notice_kind::API_RETRY, true);
+    // A further retry in this turn still updates its original item.
+    core.on_frame(&json!({"type":"system","subtype":"api_retry","attempt":3}));
+    core.on_frame(&json!({"type":"result","subtype":"success"}));
+    let more = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(more.len(), 2);
+    assert!(more.iter().all(|item| item.id == items[0].id));
+    assert_notice(&more[1], notice_kind::API_RETRY, true);
+    core.on_frame(&json!({"type":"system","subtype":"api_retry","attempt":1}));
+    let next = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_ne!(next[0].id, items[0].id);
+}
+
+#[test]
+fn silence_and_fast_mode_resolve_their_warning_ids() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.ready = true;
+    core.ensure_turn();
+    core.last_activity = Instant::now() - Duration::from_secs(601);
+    core.watch(&fast());
+    core.on_frame(&json!({"type":"assistant","message":{"content":[]}}));
+    core.settings.fast = true;
+    core.note_fast_state(&json!({"fast_mode_state":"off"}));
+    core.note_fast_state(&json!({"fast_mode_state":"on"}));
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 4);
+    for (pair, kind) in items
+        .chunks(2)
+        .zip([notice_kind::SILENCE, notice_kind::FAST_MODE])
+    {
+        assert_eq!(pair[0].id, pair[1].id);
+        assert_notice(&pair[0], kind, false);
+        assert_notice(&pair[1], kind, true);
+        assert!(matches!(
+            pair[1].body,
+            ItemBody::Notice {
+                level: NoticeLevel::Info,
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn authentication_errors_are_not_agent_messages_and_clear_after_a_successful_turn() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.ready = true;
+    core.on_frame(
+        &json!({"type":"assistant","error":"authentication_failed","message":{
+            "model":"<synthetic>","content":[{"type":"text","text":"Please log in."}]
+        }}),
+    );
+    core.on_frame(&json!({"type":"result","is_error":true,"result":"Please log in."}));
+    let failed = events.try_iter().collect::<Vec<_>>();
+    let items = completed_notices(&failed);
+    assert_eq!(items.len(), 1);
+    assert_notice(&items[0], notice_kind::AUTH_REQUIRED, false);
+    assert!(agent_texts(&fold(&failed)).is_empty());
+    core.ensure_turn();
+    core.on_frame(&json!({"type":"result","subtype":"success","result":"done"}));
+    let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(items[0].id, resolved[0].id);
+    assert_notice(&resolved[0], notice_kind::AUTH_REQUIRED, true);
+}
+
+#[test]
+fn failed_results_use_readable_subtypes_or_provider_errors() {
+    for (subtype, errors, expected) in [
+        (
+            "error_max_turns",
+            json!([]),
+            "Claude stopped: it reached the maximum number of turns.",
+        ),
+        (
+            "error_during_execution",
+            json!([]),
+            "Claude stopped because of an error during execution.",
+        ),
+        (
+            "error_during_execution",
+            json!(["first", "second"]),
+            "first\nsecond",
+        ),
+    ] {
+        let (sender, events) = mpsc::channel();
+        let mut core = Core::new(&bare_config(), sender, "session".into());
+        core.ensure_turn();
+        core.on_result(&json!({"subtype":subtype,"errors":errors}));
+        let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+        assert_eq!(items.len(), 1);
+        assert_notice(&items[0], notice_kind::TURN_FAILED, false);
+        assert!(matches!(&items[0].body, ItemBody::Notice {text, ..} if text == expected));
+    }
+    for error in ["billing_error", "rate_limit"] {
+        let (sender, events) = mpsc::channel();
+        let mut core = Core::new(&bare_config(), sender, "session".into());
+        core.on_assistant(&json!({"error":error,"message":{"model":"<synthetic>","content":[{"type":"text","text":"provider failed"}]}}));
+        core.on_result(&json!({"is_error":true,"result":"provider failed"}));
+        let seen = events.try_iter().collect::<Vec<_>>();
+        assert_eq!(agent_texts(&fold(&seen)), ["provider failed"]);
+        let items = completed_notices(&seen);
+        assert_eq!(items.len(), 1);
+        assert_notice(&items[0], notice_kind::TURN_FAILED, false);
+        assert!(matches!(&items[0].body, ItemBody::Notice {text, ..} if text != "provider failed"));
+    }
+}
+
+#[test]
+fn a_refused_fast_mode_change_is_a_setting_refused_notice() {
+    let text = format!(
+        "{}\n{}",
+        fixture("claude/idle_only.ndjson"),
+        json!({
+            "type":"expect", "frame":{"type":"control_request","request":{"subtype":"apply_flag_settings"}},
+            "reply":[{"type":"control_response","response":{"subtype":"error","request_id":"$request_id","error":"Fast mode refused"}}]
+        })
+    );
+    let fake = Fake::new(&[&text]);
+    let (sender, events) = mpsc::channel();
+    let mut driver = start_with(fake.config(Provider::Claude), sender, fast()).unwrap();
+    until(&events, is_idle);
+    driver.command(configure_fast(true)).unwrap();
+    let seen = until(&events, is_notice);
+    let items = completed_notices(&seen);
+    assert_eq!(items.len(), 1);
+    assert_notice(&items[0], notice_kind::SETTING_REFUSED, false);
+    assert!(
+        matches!(&items[0].body, ItemBody::Notice {text, ..} if text.contains("Fast mode refused"))
+    );
+    assert!(!fake.saw("mismatch"));
+}
+
+#[test]
+fn repeated_failed_results_emit_one_turn_failed_notice() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.state_events = true;
+    core.ensure_turn();
+    for _ in 0..2 {
+        core.on_result(&json!({"is_error":true,"errors":["failed"]}));
+    }
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 1);
+    assert_notice(&items[0], notice_kind::TURN_FAILED, false);
 }

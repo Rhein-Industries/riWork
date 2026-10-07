@@ -151,6 +151,7 @@
 
 use super::child::{self, Frame, FrameReader, MAX_FRAME_BYTES, Proc};
 use super::driver::{Driver, DriverConfig, StartDriver};
+use super::model::notice_kind;
 use super::model::{
     Approval, ApprovalKind, ApprovalMode, ChangeKind, ChatCommand, ChatEvent, ChatState, Decision,
     Delta, FileChange, Item, ItemBody, ItemStatus, ModelOption, NoticeLevel, Question,
@@ -364,6 +365,8 @@ struct Session {
     streamed: HashMap<String, Streamed>,
     file_changes: HashMap<String, Vec<FileChange>>,
     notices: u64,
+    open_notices: HashMap<String, Item>,
+    reconnecting: HashMap<String, Item>,
     /// Keeps this session's notice ids apart from earlier sessions' in the
     /// chat's log, where an equal id would replace the older notice.
     notice_prefix: String,
@@ -407,6 +410,8 @@ impl Session {
             streamed: HashMap::new(),
             file_changes: HashMap::new(),
             notices: 0,
+            open_notices: HashMap::new(),
+            reconnecting: HashMap::new(),
             notice_prefix: Uuid::new_v4().simple().to_string()[..8].to_owned(),
             stopping: false,
             finished: false,
@@ -446,23 +451,60 @@ impl Session {
         self.set_state(state);
     }
 
-    fn notice(&mut self, level: NoticeLevel, text: String) {
+    fn notice(&mut self, level: NoticeLevel, kind: &str, text: String) {
         self.notices += 1;
         let id = format!("notice-{}-{}", self.notice_prefix, self.notices);
-        self.notice_with_id(id, level, text);
+        self.notice_with_id(id, level, kind, text, self.turn.clone());
     }
 
     /// A notice that a later one with the same id replaces.
-    fn notice_with_id(&mut self, id: String, level: NoticeLevel, text: String) {
-        self.emit(ChatEvent::ItemCompleted {
-            item: Item {
-                presentation: Default::default(),
-                id,
-                turn_id: self.turn.clone(),
-                status: ItemStatus::Completed,
-                body: ItemBody::notice(level, text, None),
-            },
-        });
+    fn notice_with_id(
+        &mut self,
+        id: String,
+        level: NoticeLevel,
+        kind: &str,
+        text: String,
+        turn_id: Option<String>,
+    ) -> Item {
+        let item = Item {
+            presentation: Default::default(),
+            id,
+            turn_id,
+            status: ItemStatus::Completed,
+            body: ItemBody::notice(level, text, Some(kind)),
+        };
+        if matches!(kind, notice_kind::AUTH_REQUIRED | "rate_limit:codex") {
+            self.open_notices.insert(kind.to_owned(), item.clone());
+        }
+        self.emit(ChatEvent::ItemCompleted { item: item.clone() });
+        item
+    }
+
+    fn resolve_item(&self, mut item: Item, text: &str) {
+        if let ItemBody::Notice {
+            resolved,
+            text: message,
+            level,
+            ..
+        } = &mut item.body
+        {
+            *resolved = true;
+            *message = text.to_owned();
+            *level = NoticeLevel::Info;
+        }
+        self.emit(ChatEvent::ItemCompleted { item });
+    }
+
+    fn resolve_notice(&mut self, kind: &str, text: &str) {
+        if let Some(item) = self.open_notices.remove(kind) {
+            self.resolve_item(item, text);
+        }
+    }
+
+    fn resolve_reconnecting(&mut self, turn: &str) {
+        if let Some(item) = self.reconnecting.remove(turn) {
+            self.resolve_item(item, "Reconnected.");
+        }
     }
 
     /// Open `turn_id` unless it is open or over already. Returns the frames to
@@ -588,6 +630,7 @@ impl Session {
             self.effort_dropped = Some(dropped);
             self.notice(
                 NoticeLevel::Warning,
+                notice_kind::EFFORT_REFUSED,
                 format!(
                     "{model} does not take the reasoning effort {effort}; the model's own is used."
                 ),
@@ -678,7 +721,16 @@ impl Session {
         } else if !self.completed_before_receipt.contains(turn_id) {
             self.completion_overflow = true;
         }
+        let repeated = self.last_finished_turn.as_deref() == Some(turn_id);
         self.last_finished_turn = Some(turn_id.to_owned());
+        self.resolve_reconnecting(turn_id);
+        // A completion can precede the turn/start receipt. It still proves recovery.
+        if self.turn.as_deref() == Some(turn_id) || (self.turn.is_none() && !repeated) {
+            self.resolve_notice("rate_limit:codex", "Codex can answer again.");
+            if matches!(outcome, TurnOutcome::Completed) {
+                self.resolve_notice(notice_kind::AUTH_REQUIRED, "Codex is signed in again.");
+            }
+        }
         if self.turn.as_deref() != Some(turn_id) {
             return Vec::new();
         }
@@ -692,7 +744,11 @@ impl Session {
         if let TurnOutcome::Failed { message } = &outcome
             && !self.error_shown
         {
-            self.notice(NoticeLevel::Error, message.clone());
+            self.notice(
+                NoticeLevel::Error,
+                notice_kind::TURN_FAILED,
+                message.clone(),
+            );
         }
         self.emit(ChatEvent::TurnCompleted {
             turn_id: turn_id.to_owned(),
@@ -741,6 +797,7 @@ impl Session {
                     session.interrupt_wanted = false;
                     session.notice(
                         NoticeLevel::Error,
+                        notice_kind::SETTING_REFUSED,
                         format!("Codex did not start the turn: {message}"),
                     );
                     session.refresh_state();
@@ -799,7 +856,7 @@ impl Codex {
                         if session.turn.is_none() {
                             session.starting = false;
                         }
-                        session.notice(NoticeLevel::Error, error);
+                        session.notice(NoticeLevel::Error, notice_kind::SETTING_REFUSED, error);
                         session.refresh_state();
                     }
                 });
@@ -900,7 +957,7 @@ impl Codex {
             session.ready = true;
             if let Some(old) = replaced {
                 session.notice(
-                    NoticeLevel::Info,
+                    NoticeLevel::Info, notice_kind::RESUMED_FRESH,
                     format!("Codex had no saved thread {old} to resume, so this chat continues in a new thread."),
                 );
             }
@@ -953,6 +1010,7 @@ impl Codex {
                 Ok(Some(Frame::Oversized(bytes))) => self.with(|session| {
                     session.notice(
                         NoticeLevel::Warning,
+                        notice_kind::OVERSIZED_LINE,
                         format!(
                             "Skipped an oversized message from codex ({} MB).",
                             bytes.div_ceil(1_000_000)
@@ -1045,6 +1103,7 @@ impl Codex {
                             let chosen = chosen.unwrap_or_default();
                             session.notice(
                                 NoticeLevel::Warning,
+                                notice_kind::EFFORT_REFUSED,
                                 format!(
                                     "{chosen} does not take the reasoning effort {effort}, \
                                      so it was not changed."
@@ -1072,6 +1131,7 @@ impl Codex {
                                 codex.with(|session| {
                                     session.notice(
                                         NoticeLevel::Error,
+                                        notice_kind::SETTING_REFUSED,
                                         format!("Codex could not compact the context: {message}"),
                                     )
                                 });
@@ -1466,11 +1526,21 @@ impl Codex {
                 self.with(|session| {
                     session.notice(
                         NoticeLevel::Warning,
+                        notice_kind::MCP_ELICITATION,
                         "An MCP server asked for input that chats cannot take yet; declined."
                             .to_owned(),
                     )
                 });
                 json!({"id": id, "result": {"action": "decline"}})
+            }
+            "account/chatgptAuthTokens/refresh" => {
+                self.with(|session| {
+                    if !session.open_notices.contains_key(notice_kind::AUTH_REQUIRED) {
+                        session.notice(NoticeLevel::Error, notice_kind::AUTH_REQUIRED,
+                            "Codex could not refresh sign-in tokens. Run `codex login` to sign in again.".into());
+                    }
+                });
+                json!({"id": id, "error": {"code": -32601, "message": format!("riwork does not handle {method}")}})
             }
             // Requests RiWork cannot serve: tool calls it never registered,
             // token refreshes (it does not handle credentials), attestation.
@@ -1514,7 +1584,15 @@ impl Session {
         {
             return Vec::new();
         }
-        let turn_id = params["turnId"].as_str().map(str::to_owned);
+        let turn_id = params["turnId"]
+            .as_str()
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_owned);
+        if method.starts_with("item/") {
+            if let Some(id) = turn_id.as_deref() {
+                self.resolve_reconnecting(id);
+            }
+        }
         match method {
             "turn/started" => {
                 if let Some(id) = params["turn"]["id"].as_str() {
@@ -1655,18 +1733,84 @@ impl Session {
                 if let Some(details) = error["additionalDetails"].as_str() {
                     text.push_str(&format!("\n{details}"));
                 }
-                if params["willRetry"].as_bool().unwrap_or(false) {
+                let info = &error["codexErrorInfo"];
+                let has = |key: &str| {
+                    info.as_str() == Some(key)
+                        || info.as_object().is_some_and(|obj| obj.contains_key(key))
+                };
+                let kind = if has("unauthorized") {
+                    notice_kind::AUTH_REQUIRED
+                } else if has("usageLimitExceeded") {
+                    "rate_limit:codex"
+                } else {
+                    notice_kind::TURN_FAILED
+                };
+                if params["willRetry"].as_bool().unwrap_or(false)
+                    && kind == notice_kind::TURN_FAILED
+                {
                     // "Reconnecting... 3/5" repeats: one notice, updated.
-                    let id = format!("retry-{}", turn_id.as_deref().unwrap_or_default());
-                    self.notice_with_id(id, NoticeLevel::Warning, text);
+                    // A missing turn id must not collapse unrelated retries into "retry-".
+                    let retry_turn = turn_id.clone().or_else(|| self.turn.clone());
+                    if let Some(turn) = retry_turn.filter(|id| !id.trim().is_empty()) {
+                        let id = format!("retry-{turn}");
+                        let item = self.notice_with_id(
+                            id,
+                            NoticeLevel::Warning,
+                            notice_kind::RECONNECTING,
+                            text,
+                            Some(turn.clone()),
+                        );
+                        self.reconnecting.insert(turn, item);
+                    } else {
+                        self.notice(NoticeLevel::Warning, notice_kind::RECONNECTING, text);
+                    }
                 } else {
                     self.error_shown = true;
-                    self.notice(NoticeLevel::Error, text);
+                    self.notice(NoticeLevel::Error, kind, text);
+                }
+            }
+            "account/updated" if params["authMode"].is_null() && params["planType"].is_null() => {
+                self.notice(
+                    NoticeLevel::Error,
+                    notice_kind::AUTH_REQUIRED,
+                    "Codex is signed out. Run `codex login` to sign in again.".into(),
+                );
+            }
+            "account/login/completed" if params["success"].as_bool() == Some(false) => {
+                let text = params["error"]
+                    .as_str()
+                    .or_else(|| params["error"]["message"].as_str())
+                    .unwrap_or("Codex sign-in failed. Run `codex login` to sign in again.");
+                self.notice(NoticeLevel::Error, notice_kind::AUTH_REQUIRED, text.into());
+            }
+            "model/rerouted" => {
+                let from = params["fromModel"].as_str().unwrap_or("the selected model");
+                let to = params["toModel"].as_str().unwrap_or("another model");
+                let reason = params["reason"]
+                    .as_str()
+                    .unwrap_or("the selected model was unavailable");
+                self.notice(
+                    NoticeLevel::Warning,
+                    notice_kind::MODEL_FALLBACK,
+                    format!("Codex answered with {to} instead of {from} ({reason})."),
+                );
+            }
+            "deprecationNotice" => {
+                if let Some(summary) = params["summary"].as_str() {
+                    let mut text = summary.to_owned();
+                    if let Some(details) = params["details"].as_str() {
+                        text.push_str(&format!("\n{details}"));
+                    }
+                    self.notice(NoticeLevel::Info, notice_kind::DEPRECATION, text);
                 }
             }
             "warning" => {
                 if let Some(message) = params["message"].as_str() {
-                    self.notice(NoticeLevel::Warning, message.to_owned());
+                    self.notice(
+                        NoticeLevel::Warning,
+                        notice_kind::PROVIDER_WARNING,
+                        message.to_owned(),
+                    );
                 }
             }
             "configWarning" => {
@@ -1675,7 +1819,7 @@ impl Session {
                     if let Some(details) = params["details"].as_str() {
                         text.push_str(&format!("\n{details}"));
                     }
-                    self.notice(NoticeLevel::Warning, text);
+                    self.notice(NoticeLevel::Warning, notice_kind::CONFIG_WARNING, text);
                 }
             }
             _ => {}

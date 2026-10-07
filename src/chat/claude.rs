@@ -57,7 +57,7 @@
 //! | `control_cancel_request`                     | `ApprovalResolved { Cancel }` / `QuestionResolved`      |
 //! | `result`                                     | `Usage` (cost is the CLI's running total, never summed); a failed result also a `Notice` |
 //! | `system/compact_boundary`                    | `ItemCompleted` `Compaction`                            |
-//! | `system/api_retry`, `rate_limit_event` (not `allowed`) | `Notice`                                      |
+//! | `system/api_retry`, `rate_limit_event` | `Notice` (retry updates and changed window statuses; `allowed` resolves)                                      |
 //! | oversized line, silence for two minutes      | `Notice` (the line is dropped; the process is left alone) |
 //! | end of output                                | `TurnCompleted { Failed }` then `State { Failed }`, with the end of stderr |
 //!
@@ -146,6 +146,7 @@
 
 use super::child::{self, Frame, FrameReader, MAX_FRAME_BYTES, Proc};
 use super::driver::{Driver, DriverConfig};
+use super::model::notice_kind;
 use super::model::{
     Approval, ApprovalKind, ApprovalMode, ChangeKind, ChatCommand, ChatEvent, ChatState, Decision,
     FileChange, Item, ItemBody, ItemStatus, ModelOption, NoticeLevel, Question, QuestionOption,
@@ -234,6 +235,7 @@ fn start_with(
             launch(&shared, false)?;
             shared.lock().notice(
                 NoticeLevel::Info,
+                notice_kind::RESUMED_FRESH,
                 format!(
                     "Claude had no saved conversation {session_id} to resume, \
                      so this chat starts it again."
@@ -310,7 +312,7 @@ impl Driver for ClaudeDriver {
                 core.session_used = true;
                 let turn_id = core.ensure_turn();
                 core.last_activity = Instant::now();
-                core.silent = false;
+                core.reset_silence();
                 let images = attachments
                     .iter()
                     .filter_map(|a| match &a.kind {
@@ -432,6 +434,7 @@ struct Turn {
     /// The last assistant text, so a failure is not said twice.
     last_text: Option<String>,
     last_item: Option<Item>,
+    failure_noticed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -548,6 +551,9 @@ struct Core {
     /// one log for the chat, and a transcript replaces items with equal ids.
     notice_prefix: String,
     notice_counter: u64,
+    open_notices: HashMap<String, Item>,
+    rate_status: HashMap<String, String>,
+    retry_item: Option<Item>,
     totals: Totals,
     /// The models the CLI offers, from its `initialize` answer; empty if it said none.
     models: Vec<ModelOption>,
@@ -598,6 +604,9 @@ impl Core {
             sigint_at: None,
             notice_prefix: Uuid::new_v4().simple().to_string()[..8].to_owned(),
             notice_counter: 0,
+            open_notices: HashMap::new(),
+            rate_status: HashMap::new(),
+            retry_item: None,
             totals: Totals::default(),
             models: Vec::new(),
             fast_reported: None,
@@ -647,9 +656,10 @@ impl Core {
             result: None,
             last_text: None,
             last_item: None,
+            failure_noticed: false,
         });
         self.last_activity = Instant::now();
-        self.silent = false;
+        self.reset_silence();
         self.emit(ChatEvent::TurnStarted {
             turn_id: id.clone(),
         });
@@ -658,6 +668,10 @@ impl Core {
     }
 
     fn close_turn(&mut self, outcome: TurnOutcome) {
+        if self.turn.is_some() && matches!(outcome, TurnOutcome::Completed) {
+            self.resolve_notice(notice_kind::AUTH_REQUIRED, "Claude is signed in again.");
+        }
+        self.retry_item = None;
         let Some(turn) = self.turn.take() else {
             return;
         };
@@ -689,16 +703,77 @@ impl Core {
         self.emit(ChatEvent::ItemCompleted { item });
     }
 
-    fn notice(&mut self, level: NoticeLevel, text: impl Into<String>) {
+    fn notice(&mut self, level: NoticeLevel, kind: &str, text: impl Into<String>) {
+        self.notice_at(level, kind, text.into(), None);
+    }
+
+    fn notice_at(&mut self, level: NoticeLevel, kind: &str, text: String, resets_at: Option<u64>) {
         self.notice_counter += 1;
+        let mut body = ItemBody::notice(level, text, Some(kind));
+        if let ItemBody::Notice {
+            resets_at: reset, ..
+        } = &mut body
+        {
+            *reset = resets_at;
+        }
         let item = Item {
             presentation: Default::default(),
             id: format!("notice-{}-{}", self.notice_prefix, self.notice_counter),
             turn_id: self.turn_id(),
             status: ItemStatus::Completed,
-            body: ItemBody::notice(level, text, None),
+            body,
         };
+        if matches!(
+            kind,
+            notice_kind::AUTH_REQUIRED
+                | notice_kind::API_RETRY
+                | notice_kind::SILENCE
+                | notice_kind::FAST_MODE
+        ) || kind.starts_with("rate_limit:")
+        {
+            self.open_notices.insert(kind.to_owned(), item.clone());
+        }
         self.born(item);
+    }
+
+    fn reset_silence(&mut self) {
+        self.resolve_notice(notice_kind::SILENCE, "Claude is responding again.");
+        self.silent = false;
+    }
+
+    fn resolve_notice(&mut self, kind: &str, text: &str) {
+        if let Some(mut item) = self.open_notices.remove(kind) {
+            if let ItemBody::Notice {
+                resolved,
+                level,
+                text: message,
+                ..
+            } = &mut item.body
+            {
+                *resolved = true;
+                *level = NoticeLevel::Info;
+                *message = text.to_owned();
+            }
+            self.emit(ChatEvent::ItemCompleted { item });
+        }
+    }
+
+    fn retry_notice(&mut self, text: String) {
+        self.ensure_turn();
+        if let Some(mut item) = self.retry_item.clone() {
+            item.body = ItemBody::notice(
+                NoticeLevel::Warning,
+                text,
+                Some(notice_kind::API_RETRY.into()),
+            );
+            self.open_notices
+                .insert(notice_kind::API_RETRY.into(), item.clone());
+            self.emit(ChatEvent::ItemCompleted { item: item.clone() });
+            self.retry_item = Some(item);
+        } else {
+            self.notice(NoticeLevel::Warning, notice_kind::API_RETRY, text);
+            self.retry_item = self.open_notices.get(notice_kind::API_RETRY).cloned();
+        }
     }
 
     fn write(&self, value: &Value) -> Result<(), String> {
@@ -830,7 +905,7 @@ impl Core {
         self.session_used = true;
         let turn_id = self.ensure_turn();
         self.last_activity = Instant::now();
-        self.silent = false;
+        self.reset_silence();
         if echo {
             self.born(Item {
                 presentation: Default::default(),
@@ -969,7 +1044,7 @@ impl Core {
     /// A prompt was answered: the time the user took is not the CLI's silence.
     fn answered(&mut self) {
         self.last_activity = Instant::now();
-        self.silent = false;
+        self.reset_silence();
     }
 
     fn configure(
@@ -1027,6 +1102,7 @@ impl Core {
                 core.settings.fast = !fast;
                 core.notice(
                     NoticeLevel::Warning,
+                    notice_kind::SETTING_REFUSED,
                     format!("claude did not change Fast mode: {error}"),
                 );
             }
@@ -1086,7 +1162,7 @@ impl Core {
         }
         if state == "on" {
             if self.fast_reported.take().is_some() {
-                self.notice(NoticeLevel::Info, "Fast mode is on again.");
+                self.resolve_notice(notice_kind::FAST_MODE, "Fast mode is on again.");
             }
             return;
         }
@@ -1099,6 +1175,7 @@ impl Core {
             self.fast_reported = said;
             self.notice(
                 NoticeLevel::Warning,
+                notice_kind::FAST_MODE,
                 fast_off_text(state, reason.as_deref()),
             );
         }
@@ -1121,6 +1198,7 @@ impl Core {
                     revert(core);
                     core.notice(
                         NoticeLevel::Warning,
+                        notice_kind::SETTING_REFUSED,
                         format!("claude did not change {what}: {error}"),
                     );
                 }
@@ -1142,7 +1220,7 @@ impl Core {
             return;
         }
         self.last_activity = Instant::now();
-        self.silent = false;
+        self.reset_silence();
         match kind {
             Some("system") => self.on_system(frame),
             Some("stream_event") => self.on_stream_event(frame),
@@ -1223,13 +1301,10 @@ impl Core {
                         .unwrap_or("a connection error")
                         .to_owned(),
                 };
-                self.notice(
-                    NoticeLevel::Warning,
-                    format!(
-                        "The API failed ({cause}); retrying in {:.1} s (attempt {attempt} of {max})",
-                        delay as f64 / 1000.0
-                    ),
-                );
+                self.retry_notice(format!(
+                    "The API failed ({cause}); retrying in {:.1} s (attempt {attempt} of {max})",
+                    delay as f64 / 1000.0
+                ));
             }
             _ => {}
         }
@@ -1342,6 +1417,26 @@ impl Core {
     }
 
     fn on_assistant(&mut self, frame: &Value) {
+        self.resolve_notice(notice_kind::API_RETRY, "The API answered again.");
+        if str_of(frame, "error") == Some("authentication_failed") {
+            self.ensure_turn();
+            let text = frame["message"]["content"]
+                .as_array()
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter_map(|block| str_of(block, "text"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| "Claude authentication failed. Sign in again.".into());
+            if let Some(turn) = &mut self.turn {
+                turn.last_text = Some(text.clone());
+            }
+            self.notice(NoticeLevel::Error, notice_kind::AUTH_REQUIRED, text);
+            return;
+        }
         let message = &frame["message"];
         let subagent = !frame["parent_tool_use_id"].is_null();
         let message_id = str_of(message, "id")
@@ -1521,6 +1616,7 @@ impl Core {
     }
 
     fn on_result(&mut self, frame: &Value) {
+        self.resolve_notice(notice_kind::API_RETRY, "The API answered again.");
         let failed = frame
             .get("is_error")
             .and_then(Value::as_bool)
@@ -1542,21 +1638,57 @@ impl Core {
         self.emit(ChatEvent::Usage { usage });
         self.note_fast_state(frame);
         if failed {
-            let message = str_of(frame, "result")
-                .filter(|text| !text.is_empty())
-                .or_else(|| str_of(frame, "subtype"))
-                .unwrap_or("claude reported an error")
-                .to_owned();
+            let errors = frame["errors"]
+                .as_array()
+                .map(|errors| {
+                    errors
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .filter(|text| !text.is_empty());
+            let message = errors
+                .or_else(|| {
+                    str_of(frame, "result")
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| match str_of(frame, "subtype") {
+                    Some("error_max_turns") => {
+                        "Claude stopped: it reached the maximum number of turns.".into()
+                    }
+                    Some("error_during_execution") => {
+                        "Claude stopped because of an error during execution.".into()
+                    }
+                    _ => "Claude reported an error.".into(),
+                });
             let interrupted = self.interrupt.is_some();
             let repeated = self
                 .turn
                 .as_ref()
                 .and_then(|turn| turn.last_text.as_deref())
                 == Some(message.as_str());
-            if !interrupted && !repeated {
-                self.notice(NoticeLevel::Error, message.clone());
+            if !interrupted
+                && !self.turn.as_ref().is_some_and(|turn| turn.failure_noticed)
+                && !self
+                    .open_notices
+                    .get(notice_kind::AUTH_REQUIRED)
+                    .is_some_and(|item| item.turn_id == self.turn_id())
+            {
+                self.notice(
+                    NoticeLevel::Error,
+                    notice_kind::TURN_FAILED,
+                    if repeated {
+                        "Claude stopped because the turn failed.".to_owned()
+                    } else {
+                        message.clone()
+                    },
+                );
             }
             if let Some(turn) = &mut self.turn {
+                turn.failure_noticed = true;
                 turn.result = Some(TurnOutcome::Failed { message });
             }
         }
@@ -1617,22 +1749,44 @@ impl Core {
 
     fn on_rate_limit(&mut self, frame: &Value) {
         let info = &frame["rate_limit_info"];
-        let (level, what) = match str_of(info, "status") {
-            Some("allowed_warning") => (NoticeLevel::Warning, "is close to"),
-            Some("rejected") => (NoticeLevel::Error, "has reached"),
-            _ => return,
+        let status = str_of(info, "status").unwrap_or_default();
+        if !matches!(status, "allowed" | "allowed_warning" | "rejected") {
+            return;
+        }
+        let provider_window = str_of(info, "rateLimitType").unwrap_or("unknown");
+        if self.rate_status.get(provider_window).map(String::as_str) == Some(status) {
+            return;
+        }
+        self.rate_status
+            .insert(provider_window.to_owned(), status.to_owned());
+        let kind = notice_kind::rate_limit(provider_window);
+        if status == "allowed" {
+            self.resolve_notice(&kind, "This account can use this usage window again.");
+            return;
+        }
+        let (level, what) = if status == "allowed_warning" {
+            (NoticeLevel::Warning, "is close to")
+        } else {
+            (NoticeLevel::Error, "has reached")
         };
-        let window = match str_of(info, "rateLimitType") {
-            Some("five_hour") => "the five-hour usage limit",
-            Some("seven_day") => "the weekly usage limit",
-            Some("seven_day_opus") => "the weekly Opus limit",
-            Some("seven_day_sonnet") => "the weekly Sonnet limit",
-            Some("overage") => "the extra usage limit",
+        let window = match provider_window {
+            "five_hour" => "the five-hour usage limit",
+            "seven_day" => "the weekly usage limit",
+            "seven_day_opus" => "the weekly Opus limit",
+            "seven_day_sonnet" => "the weekly Sonnet limit",
+            "overage" => "the extra usage limit",
             _ => "a usage limit",
         };
-        // `utilization` and `resetsAt` are left out: the SDK types do not say
-        // in what units they come.
-        self.notice(level, format!("This account {what} {window}"));
+        let resets_at = info["resetsAt"]
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .map(|n| (if n > 1e11 { n / 1000.0 } else { n }) as u64);
+        self.notice_at(
+            level,
+            &kind,
+            format!("This account {what} {window}."),
+            resets_at,
+        );
     }
 
     fn on_control_request(&mut self, frame: &Value) {
@@ -1752,6 +1906,7 @@ impl Core {
             self.silent = true;
             self.notice(
                 NoticeLevel::Warning,
+                notice_kind::SILENCE,
                 format!(
                     "claude has been silent for {}; it may be running a long command",
                     describe_duration(silence)
@@ -1980,6 +2135,7 @@ fn read_loop(shared: Arc<Shared>, generation: u64, proc: Arc<Proc>, stdout: Chil
                 core.last_activity = Instant::now();
                 core.notice(
                     NoticeLevel::Warning,
+                    notice_kind::OVERSIZED_LINE,
                     format!(
                         "Skipped an oversized message from claude ({:.1} MB)",
                         bytes as f64 / 1_000_000.0
@@ -2072,7 +2228,7 @@ fn restart(shared: &Arc<Shared>) {
                 } else {
                     format!("{undelivered} messages sent while claude restarted were not delivered")
                 };
-                core.notice(NoticeLevel::Warning, what);
+                core.notice(NoticeLevel::Warning, notice_kind::UNDELIVERED, what);
             }
             core.dead = Some(error.clone());
             core.set_state(ChatState::Failed { message: error });
